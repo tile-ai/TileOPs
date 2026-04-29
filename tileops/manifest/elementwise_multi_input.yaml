@@ -14,8 +14,16 @@ WhereFwdOp:
   #     PyTorch-aligned (condition, input, other) form.
   #   - forward parameter names are (cond, x, y) instead of
   #     (condition, input, other).
+  #   - kernel currently assumes condition.shape == input.shape == other.shape;
+  #     the spec admits full PyTorch broadcasting across all three inputs.
   # Code conforms to this spec in a follow-up PR per the manifest trust
   # model (.claude/rules/manifest-trust-model.md).
+  #
+  # TODO(spec-followup): PyTorch's ``torch.where`` also performs implicit
+  # type promotion between ``input`` and ``other``. The manifest currently
+  # constrains them to ``same_as(input)``; once the kernel grows an input
+  # cast path, relax ``other`` to the full float union and document the
+  # promotion contract here.
   status: spec-only
 
   signature:
@@ -26,9 +34,9 @@ WhereFwdOp:
     outputs:
       out: {dtype: "same_as(input)"}
     shape_rules:
-      - "condition.shape == input.shape"
-      - "other.shape == input.shape"
-      - "out.shape == input.shape"
+      # PyTorch's torch.where broadcasts condition/input/other together;
+      # the output shape is the broadcast of all three.
+      - "out.shape == broadcast_shapes(condition.shape, input.shape, other.shape)"
 
   workloads:
     - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}

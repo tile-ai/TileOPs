@@ -1697,6 +1697,127 @@ class TestDtypeOptionsHelper:
 
 
 # ---------------------------------------------------------------------------
+# shape_rules broadcasting helpers (broadcast_shapes / is_broadcastable_to)
+# ---------------------------------------------------------------------------
+
+
+class TestShapeRuleBroadcastBuiltins:
+    """Unit tests for the broadcasting helpers exposed in shape_rules eval.
+
+    These mirror PyTorch's ``torch.broadcast_shapes`` semantics and the
+    unidirectional ``a is broadcastable to b`` predicate, but are pure
+    Python so the validator does not need ``torch`` to evaluate L1
+    shape_rules expressions.
+    """
+
+    # -- broadcast_shapes -------------------------------------------------
+
+    def test_broadcast_shapes_helper_registered(self, validator):
+        """``broadcast_shapes`` must be exposed in ``_SHAPE_RULE_BUILTINS``."""
+        assert "broadcast_shapes" in validator._SHAPE_RULE_BUILTINS
+
+    def test_broadcast_shapes_identical_shapes(self, validator):
+        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
+        assert fn((2, 3), (2, 3)) == (2, 3)
+
+    def test_broadcast_shapes_scalar_with_tensor(self, validator):
+        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
+        assert fn((), (4, 5)) == (4, 5)
+        assert fn((4, 5), ()) == (4, 5)
+
+    def test_broadcast_shapes_size_one_expands(self, validator):
+        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
+        assert fn((1, 3), (2, 1)) == (2, 3)
+
+    def test_broadcast_shapes_rank_promotion(self, validator):
+        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
+        assert fn((3,), (2, 4, 3)) == (2, 4, 3)
+
+    def test_broadcast_shapes_three_or_more_args(self, validator):
+        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
+        assert fn((1, 3), (2, 1), (1, 1)) == (2, 3)
+
+    def test_broadcast_shapes_no_args_returns_empty(self, validator):
+        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
+        assert fn() == ()
+
+    def test_broadcast_shapes_single_arg(self, validator):
+        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
+        assert fn((2, 3)) == (2, 3)
+
+    def test_broadcast_shapes_incompatible_raises(self, validator):
+        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
+        with pytest.raises(ValueError, match="not broadcast-compatible"):
+            fn((2, 3), (3, 3))
+
+    def test_broadcast_shapes_accepts_lists(self, validator):
+        """Tensor.shape may surface as list[int] depending on context."""
+        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
+        assert fn([1, 3], [2, 1]) == (2, 3)
+
+    # -- is_broadcastable_to ---------------------------------------------
+
+    def test_is_broadcastable_to_helper_registered(self, validator):
+        assert "is_broadcastable_to" in validator._SHAPE_RULE_BUILTINS
+
+    def test_is_broadcastable_to_equal_shapes(self, validator):
+        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
+        assert fn((2, 3), (2, 3)) is True
+
+    def test_is_broadcastable_to_size_one_expands(self, validator):
+        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
+        assert fn((1, 3), (2, 3)) is True
+        assert fn((3,), (2, 3)) is True
+        assert fn((), (2, 3)) is True
+
+    def test_is_broadcastable_to_unidirectional(self, validator):
+        """``is_broadcastable_to(src, dst)`` is asymmetric.
+
+        ``src`` may grow into ``dst`` but ``dst`` is fixed; expanding
+        ``dst`` into a larger shape is not allowed.
+        """
+        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
+        # (2, 3) cannot broadcast *to* (3,) — dst is smaller.
+        assert fn((2, 3), (3,)) is False
+        # (2, 1) into (2, 3) — fine.
+        assert fn((2, 1), (2, 3)) is True
+        # (2, 3) into (2, 1) — would require shrinking dst dim 1.
+        assert fn((2, 3), (2, 1)) is False
+
+    def test_is_broadcastable_to_mismatched_dim_returns_false(self, validator):
+        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
+        assert fn((2, 4), (2, 3)) is False
+
+    def test_is_broadcastable_to_extra_leading_dim_returns_false(self, validator):
+        """Source rank may not exceed destination rank."""
+        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
+        assert fn((5, 2, 3), (2, 3)) is False
+
+    # -- end-to-end via _eval_shape_rule ---------------------------------
+
+    def test_broadcast_shapes_in_shape_rule(self, validator):
+        ok, reason = validator._eval_shape_rule(
+            "broadcast_shapes((1, 3), (2, 1)) == (2, 3)", {},
+        )
+        assert reason is None
+        assert ok is True
+
+    def test_is_broadcastable_to_in_shape_rule_true(self, validator):
+        ok, reason = validator._eval_shape_rule(
+            "is_broadcastable_to((1, 3), (2, 3))", {},
+        )
+        assert reason is None
+        assert ok is True
+
+    def test_is_broadcastable_to_in_shape_rule_false(self, validator):
+        ok, reason = validator._eval_shape_rule(
+            "is_broadcastable_to((2, 3), (2, 1))", {},
+        )
+        assert reason is None
+        assert ok is False
+
+
+# ---------------------------------------------------------------------------
 # L3 extension: _validate_dtypes parity with dtype_combos / unions
 # ---------------------------------------------------------------------------
 

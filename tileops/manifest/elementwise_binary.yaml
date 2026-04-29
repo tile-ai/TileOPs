@@ -49,12 +49,60 @@ PreluFwdOp:
 
 MaskedFillFwdOp:
   ref_api: "torch.Tensor.masked_fill"
-  # Scalar-value variant: PyTorch's masked_fill also accepts a 0-dim Tensor
-  # value; the manifest tracks the scalar (Number) slice that the kernel
-  # implements.
+  # Primary entry: PyTorch's torch.Tensor.masked_fill(mask, value: Tensor)
+  # where ``value`` is a 0-dim Tensor. The out-of-place
+  # ``Tensor.masked_fill`` returns a new tensor whose shape is the
+  # bidirectional broadcast of ``input`` and ``mask`` — either operand
+  # may be expanded (verified directly: ``torch.zeros((2,1)).masked_fill(
+  # mask=torch.zeros((2,3), dtype=torch.bool), value=1.0)`` returns shape
+  # ``(2, 3)``). The in-place ``masked_fill_`` is unidirectional, but
+  # the manifest models only the out-of-place form. The scalar (Number)
+  # value form lands as MaskedFillScalarFwdOp below per the
+  # "No Optional[Tensor]" manifest rule for variant splits.
+  family: elementwise
+  # status: spec-only — no kernel currently implements the 0-dim Tensor
+  # value form; tileops/ops/elementwise.py:MaskedFillFwdOp implements
+  # the scalar form (see MaskedFillScalarFwdOp). Code conforms to this
+  # spec in a follow-up PR per the manifest trust model
+  # (.claude/rules/manifest-trust-model.md).
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      mask: {dtype: "bool"}
+      value: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      # Out-of-place masked_fill returns the bidirectional broadcast of
+      # input and mask; value is 0-dim.
+      - "value.shape == ()"
+      - "out.shape == broadcast_shapes(input.shape, mask.shape)"
+
+  workloads: []
+
+  roofline:
+    # Func mode: post-broadcast N_total uses broadcast_shapes which is
+    # not in the inline-roofline vars-layer namespace per
+    # docs/design/roofline.md §4.4.4. Broadcast logic lives in Python.
+    func: "tileops.perf.formulas.masked_fill_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_independent_elementwise.py
+    bench_manifest_driven: false
+
+MaskedFillScalarFwdOp:
+  ref_api: "torch.Tensor.masked_fill"
+  # Scalar-value variant: PyTorch's torch.Tensor.masked_fill(mask, value: Number).
+  # Per the "No Optional[Tensor]" manifest rule, this is split from the
+  # 0-dim-Tensor-value primary entry above.
   family: elementwise
   # status: spec-only — current tileops/ops/elementwise.py:MaskedFillFwdOp
-  # does not conform to this spec:
+  # implements this scalar form but does not conform to this spec:
   #   - __init__ takes (N_total, dtype, fill_value) instead of the
   #     PyTorch-aligned (input, mask, value) form.
   #   - param name is `fill_value` instead of `value`.
@@ -62,6 +110,7 @@ MaskedFillFwdOp:
   # Code conforms to this spec in a follow-up PR per the manifest trust
   # model (.claude/rules/manifest-trust-model.md).
   status: spec-only
+  variant_of: MaskedFillFwdOp
 
   signature:
     inputs:
@@ -70,22 +119,22 @@ MaskedFillFwdOp:
     outputs:
       out: {dtype: "same_as(input)"}
     params:
-      value: {type: float, default: 0.0}
+      value: {type: Number, default: 0.0}
     shape_rules:
-      - "mask.shape == input.shape"
-      - "out.shape == input.shape"
+      # Out-of-place masked_fill returns the bidirectional broadcast of
+      # input and mask; out shape follows that broadcast (verified against
+      # ``torch.Tensor.masked_fill`` — input may also be expanded up).
+      - "out.shape == broadcast_shapes(input.shape, mask.shape)"
 
   workloads:
     - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
     - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N_total: "product(input.shape)"
-    # One predicated select per element
-    flops: "N_total"
-    # Read input + read mask (1 byte) + write out
-    bytes: "N_total + 2 * N_total * elem_bytes"
+    # Func mode: shared with MaskedFillFwdOp (Tensor-value primary). See
+    # MaskedFillFwdOp.roofline for rationale (broadcast_shapes not in
+    # inline-roofline vars-layer namespace).
+    func: "tileops.perf.formulas.masked_fill_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
