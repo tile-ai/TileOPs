@@ -1,7 +1,9 @@
 """Benchmarks for argreduce ops (argmax, argmin).
 
 Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
-Workload shapes and roofline formulas are loaded from the ops manifest (tileops/manifest/).
+Workload shapes, dtypes, and op-call parameters (e.g. ``dim``) are loaded
+from the ops manifest (``tileops/manifest/``) — the benchmark must not
+hard-code op parameters that are declared on manifest workload entries.
 """
 
 import pytest
@@ -21,12 +23,12 @@ _ARGMIN_OP = "ArgminFwdOp"
 # ===================================================================
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ARGMAX_OP))
-def test_argmax_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize("shape, dtype, extra", workloads_to_params(_ARGMAX_OP, include_extra=True))
+def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     workload = ArgmaxTest(shape, dtype)
     inputs = workload.gen_inputs()
 
-    op = ArgmaxFwdOp(dtype=dtype)
+    op = ArgmaxFwdOp(dtype=dtype, **extra)
     bm = ManifestBenchmark(_ARGMAX_OP, op, workload)
     # FIXME(staged-rollout): ArgreduceKernel skips large-N manifest workloads
     #
@@ -42,8 +44,10 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = extra["dim"]
+
     def baseline_fn(x):
-        return x.argmax(dim=-1)
+        return x.argmax(dim=dim)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
@@ -54,12 +58,12 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 # ===================================================================
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ARGMIN_OP))
-def test_argmin_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize("shape, dtype, extra", workloads_to_params(_ARGMIN_OP, include_extra=True))
+def test_argmin_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     workload = ArgminTest(shape, dtype)
     inputs = workload.gen_inputs()
 
-    op = ArgminFwdOp(dtype=dtype)
+    op = ArgminFwdOp(dtype=dtype, **extra)
     bm = ManifestBenchmark(_ARGMIN_OP, op, workload)
     # FIXME(staged-rollout): ArgreduceKernel skips large-N manifest workloads
     #
@@ -75,8 +79,10 @@ def test_argmin_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = extra["dim"]
+
     def baseline_fn(x):
-        return x.argmin(dim=-1)
+        return x.argmin(dim=dim)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")

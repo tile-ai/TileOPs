@@ -543,7 +543,7 @@ VarMeanFwdOp:
 ArgmaxFwdOp:
   ref_api: "torch.argmax"
   family: reduction
-  status: spec-only  # dim=None (full-tensor reduction) not yet implemented; _validate_dim rejects None. Flip to implemented when full-reduction path lands.
+  status: implemented
 
   signature:
     inputs:
@@ -562,9 +562,9 @@ ArgmaxFwdOp:
 
   workloads:
     # LM head argmax (batch, vocab_size) -- greedy decoding
-    - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-argmax"}
+    - {x_shape: [4, 102400], dtypes: [float16, bfloat16], dim: -1, label: "lm-head-argmax"}
     # Hidden state argmax
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-argmax"}
+    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], dim: -1, label: "hidden-state-argmax"}
 
   roofline:
     vars:
@@ -586,7 +586,7 @@ ArgmaxFwdOp:
 ArgminFwdOp:
   ref_api: "torch.argmin"
   family: reduction
-  status: spec-only  # dim=None (full-tensor reduction) not yet implemented; _validate_dim rejects None. Flip to implemented when full-reduction path lands.
+  status: implemented
 
   signature:
     inputs:
@@ -605,9 +605,9 @@ ArgminFwdOp:
 
   workloads:
     # LM head argmin
-    - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-argmin"}
+    - {x_shape: [4, 102400], dtypes: [float16, bfloat16], dim: -1, label: "lm-head-argmin"}
     # Hidden state argmin
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-argmin"}
+    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], dim: -1, label: "hidden-state-argmin"}
 
   roofline:
     vars:
