@@ -11,7 +11,7 @@ from the input tensor at forward time, and kernels are cached by
 
 import warnings
 from math import prod
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 
@@ -25,19 +25,7 @@ __all__ = ["_SoftmaxBaseOp"]
 
 
 def _resolve_implicit_softmax_dim(name: str, ndim: int) -> int:
-    """Resolve ``dim=None`` to a scalar axis matching PyTorch's implicit choice.
-
-    Mirrors ``torch.nn.functional._get_softmax_dim``: pick 0 for
-    ``ndim in {0, 1, 3}`` else 1, and emit the same deprecation
-    ``UserWarning`` PyTorch emits.
-
-    Args:
-        name: Op name used in the warning message (e.g. ``"softmax"``).
-        ndim: Rank of the input tensor.
-
-    Returns:
-        Resolved scalar reduction axis (non-negative).
-    """
+    """Mirror ``torch.nn.functional._get_softmax_dim``: pick 0 for ``ndim in {0, 1, 3}`` else 1, with the same deprecation warning."""
     warnings.warn(
         f"Implicit dimension choice for {name} has been deprecated. "
         "Change the call to include dim=X as an argument.",
@@ -124,7 +112,7 @@ class _SoftmaxBaseOp(Op):
 
         # Resolve dim=None per call (don't mutate self.dim) so the same op
         # instance accepts inputs of different ranks, matching F.softmax.
-        effective_dim: Union[int, List[int], None] = self.dim
+        effective_dim: Union[int, List[int], Tuple[int, ...], None] = self.dim
         if effective_dim is None and not self._supports_multidim:
             effective_dim = _resolve_implicit_softmax_dim(self._op_kind, x.ndim)
 
