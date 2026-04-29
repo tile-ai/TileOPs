@@ -122,23 +122,20 @@ class _SoftmaxBaseOp(Op):
         self._validate(x)
         orig_shape = x.shape
 
-        # PyTorch implicit-axis fallback for scalar-dim ops (softmax, log_softmax):
-        # when ``dim=None`` and the op does not support multi-dim full-reduction,
-        # resolve to PyTorch's _get_softmax_dim choice and emit the same
-        # deprecation UserWarning. Mutating ``self.dim`` here keeps a single
-        # source of truth for kernel-cache keying / introspection consumers.
-        if self.dim is None and not self._supports_multidim:
-            self.dim = _resolve_implicit_softmax_dim(self._op_kind, x.ndim)
+        # Resolve dim=None per call (don't mutate self.dim) so the same op
+        # instance accepts inputs of different ranks, matching F.softmax.
+        effective_dim: Union[int, List[int], None] = self.dim
+        if effective_dim is None and not self._supports_multidim:
+            effective_dim = _resolve_implicit_softmax_dim(self._op_kind, x.ndim)
 
-        # --- multi-dim path (includes dim=None for full reduction) ---
-        if isinstance(self.dim, (list, tuple)) or self.dim is None:
+        if isinstance(effective_dim, (list, tuple)) or effective_dim is None:
             if not self._supports_multidim:
                 raise ValueError(
                     f"{type(self).__name__} does not support multi-dim reduction. "
                     "Use a scalar dim."
                 )
             dims = normalize_dim(
-                self.dim, x.ndim, empty_dim_policy=self._empty_dim_policy,
+                effective_dim, x.ndim, empty_dim_policy=self._empty_dim_policy,
             )
             # Bind the dynamic static-axes (param-dependent reduction axes) so
             # the Op-layer cache-key / introspection consumers see the
@@ -159,19 +156,20 @@ class _SoftmaxBaseOp(Op):
 
         # --- single-dim path ---
         # Validate and normalize dim (match PyTorch IndexError behavior).
-        if self.dim < -x.ndim or self.dim >= x.ndim:
+        assert isinstance(effective_dim, int)
+        if effective_dim < -x.ndim or effective_dim >= x.ndim:
             raise IndexError(
                 f"Dimension out of range (expected to be in range of "
-                f"[{-x.ndim}, {x.ndim - 1}], but got {self.dim})"
+                f"[{-x.ndim}, {x.ndim - 1}], but got {effective_dim})"
             )
-        dim = self.dim % x.ndim
+        dim = effective_dim % x.ndim
 
         # N = size along reduction dim, M = product of all other dims.
         N = x.shape[dim]
         if self.N is not None and N != self.N:
             raise ValueError(
                 f"{type(self).__name__}: committed N={self.N} does not match "
-                f"x.shape[{self.dim}]={N}"
+                f"x.shape[{effective_dim}]={N}"
             )
         # Bind the dynamic static-axis (param-dependent N axis) so the
         # Op-layer cache-key / introspection consumers see the committed axis.

@@ -636,5 +636,82 @@ def test_log_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) ->
     )
 
 
+# ===================================================================
+# dim=None must not mutate self.dim — reused op instance across ranks.
+#
+# Regression for the bug where forward() resolved ``dim=None`` by writing
+# the resolved scalar back to ``self.dim``: the second call with a
+# different-rank input would then reuse the stale resolved axis (and a
+# stale ``self.N``) and either pick the wrong axis or raise a spurious
+# committed-N mismatch. PyTorch's ``F.softmax(x, dim=None)`` re-resolves
+# per call, so the same op instance must accept inputs of different ranks.
+# ===================================================================
+
+
+@pytest.mark.smoke
+def test_softmax_dim_none_reused_across_ranks() -> None:
+    """SoftmaxFwdOp(dim=None) must re-resolve per call (no self.dim mutation).
+
+    Mirrors the exact reproducer from review F001: a single op instance
+    constructed with ``N=4, dim=None`` must accept inputs of different
+    ranks. Pre-fix, the first rank-1 call wrote ``self.dim=0`` and the
+    rank-2 call then raised ``committed N=4 does not match x.shape[0]=2``.
+    """
+    import warnings as _warnings
+    op = SoftmaxFwdOp(N=4, dtype=torch.float32, dim=None)
+
+    # Rank 1: implicit dim resolves to 0; N = x.shape[0] = 4 (matches committed N).
+    x1 = torch.randn(4, dtype=torch.float32, device="cuda")
+    # Rank 2: implicit dim resolves to 1; N = x.shape[1] = 4 (matches committed N).
+    # This is the case that previously raised due to self.dim mutation.
+    x2 = torch.randn(2, 4, dtype=torch.float32, device="cuda")
+    # Rank 3: implicit dim resolves to 0; N = x.shape[0] = 4 (matches committed N).
+    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device="cuda")
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", UserWarning)
+        y1 = op(x1)
+        y2 = op(x2)
+        y3 = op(x3)
+        y1_ref = F.softmax(x1.float(), dim=None)
+        y2_ref = F.softmax(x2.float(), dim=None)
+        y3_ref = F.softmax(x3.float(), dim=None)
+
+    # self.dim must remain None across calls (no mutation).
+    assert op.dim is None, f"op.dim was mutated to {op.dim!r}; expected None"
+
+    atol, rtol = _get_tolerances(torch.float32)
+    assert torch.allclose(y1, y1_ref, atol=atol, rtol=rtol)
+    assert torch.allclose(y2, y2_ref, atol=atol, rtol=rtol)
+    assert torch.allclose(y3, y3_ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+def test_log_softmax_dim_none_reused_across_ranks() -> None:
+    """LogSoftmaxFwdOp(dim=None) must re-resolve per call (no self.dim mutation)."""
+    import warnings as _warnings
+    op = LogSoftmaxFwdOp(N=4, dtype=torch.float32, dim=None)
+
+    x1 = torch.randn(4, dtype=torch.float32, device="cuda")
+    x2 = torch.randn(2, 4, dtype=torch.float32, device="cuda")
+    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device="cuda")
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", UserWarning)
+        y1 = op(x1)
+        y2 = op(x2)
+        y3 = op(x3)
+        y1_ref = F.log_softmax(x1.float(), dim=None)
+        y2_ref = F.log_softmax(x2.float(), dim=None)
+        y3_ref = F.log_softmax(x3.float(), dim=None)
+
+    assert op.dim is None, f"op.dim was mutated to {op.dim!r}; expected None"
+
+    atol, rtol = _get_tolerances(torch.float32)
+    assert torch.allclose(y1, y1_ref, atol=atol, rtol=rtol)
+    assert torch.allclose(y2, y2_ref, atol=atol, rtol=rtol)
+    assert torch.allclose(y3, y3_ref, atol=atol, rtol=rtol)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
