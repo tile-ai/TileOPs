@@ -396,13 +396,24 @@ def test_inf_norm_multidim(
 
 
 @pytest.mark.smoke
-def test_empty_dim_list_full_reduction() -> None:
-    """normalize_dim([], ndim) returns all dims (PyTorch full-reduction semantics)."""
+def test_normalize_dim_empty_default_rejects() -> None:
+    """normalize_dim is policy-neutral by default; empty-dim must raise."""
     from tileops.ops.reduction._multidim import normalize_dim
 
-    assert normalize_dim([], ndim=3) == [0, 1, 2]
-    assert normalize_dim((), ndim=3) == [0, 1, 2]
-    assert normalize_dim([], ndim=1) == [0]
+    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
+        normalize_dim([], ndim=3)
+    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
+        normalize_dim((), ndim=3)
+
+
+@pytest.mark.smoke
+def test_normalize_dim_empty_full_opt_in() -> None:
+    """Callers whose contract is full-reduction opt in via empty_dim_policy."""
+    from tileops.ops.reduction._multidim import normalize_dim
+
+    assert normalize_dim([], ndim=3, empty_dim_policy="full") == [0, 1, 2]
+    assert normalize_dim((), ndim=3, empty_dim_policy="full") == [0, 1, 2]
+    assert normalize_dim([], ndim=1, empty_dim_policy="full") == [0]
 
 
 @pytest.mark.smoke
@@ -431,6 +442,28 @@ def test_mean_empty_dim_full_reduction() -> None:
     y_none = op_none(x)
     assert y.shape == y_none.shape
     assert torch.allclose(y, y_none, **_tol(torch.float16))
+
+
+@pytest.mark.smoke
+def test_logsumexp_empty_dim_rejects() -> None:
+    """LogSumExpFwdOp keeps reject policy (per manifest); shared helper change must not leak."""
+    from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
+
+    x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
+    op = LogSumExpFwdOp(dtype=torch.float16, dim=[], keepdim=False)
+    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
+        op(x)
+
+
+@pytest.mark.smoke
+def test_all_empty_dim_rejects() -> None:
+    """AllFwdOp keeps reject policy; shared helper change must not silently full-reduce."""
+    from tileops.ops.reduction.all_op import AllFwdOp
+
+    x = (torch.randn(2, 3, 4, device="cuda") > 0).to(torch.float16)
+    op = AllFwdOp(dtype=torch.float16, dim=[], keepdim=False)
+    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
+        op(x)
 
 
 @pytest.mark.smoke

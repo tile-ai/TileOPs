@@ -23,7 +23,7 @@ from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.reduce import ReduceKernel
 
 from ..op_base import Op
-from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
+from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = [
     "AmaxFwdOp",
@@ -69,6 +69,10 @@ class _ReduceOpBase(Op):
     _kernel_key: str = "reduce"  # overridden by subclasses for different kernel families
     _kernel_cls: type = ReduceKernel  # overridden by subclasses for different kernel classes
     _kernel_handles_padding: bool = False  # True when kernel accepts (M, N) with masked loads
+    # Empty-dim policy ("reject" | "full"). Subclasses whose PyTorch /
+    # manifest contract treats dim=[] as full reduction override to "full"
+    # (e.g. SumFwdOp, MeanFwdOp, L1/L2/InfNormFwdOp).
+    _empty_dim_policy: EmptyDimPolicy = "reject"
 
     def __init__(
         self,
@@ -259,7 +263,9 @@ class _ReduceOpBase(Op):
 
         # --- multi-dim path (includes dim=None for full reduction) ---
         if isinstance(self.dim, (list, tuple)) or self.dim is None:
-            dims = normalize_dim(self.dim, x.ndim)
+            dims = normalize_dim(
+                self.dim, x.ndim, empty_dim_policy=self._empty_dim_policy,
+            )
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
             M = prod(x.shape[:-1])
@@ -358,12 +364,14 @@ class SumFwdOp(_SimpleReduceOp):
     """Sum reduction along dim=-1."""
 
     _op_kind = "sum"
+    _empty_dim_policy: EmptyDimPolicy = "full"  # torch.sum(x, dim=[]) full-reduces
 
 
 class MeanFwdOp(_SimpleReduceOp):
     """Mean reduction along dim=-1."""
 
     _op_kind = "mean"
+    _empty_dim_policy: EmptyDimPolicy = "full"  # torch.mean(x, dim=[]) full-reduces
 
 
 class AminFwdOp(_SimpleReduceOp):

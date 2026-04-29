@@ -19,6 +19,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 
+from ._multidim import EmptyDimPolicy
 from .reduce import _ReduceOpBase
 
 __all__ = ["InfNormFwdOp"]
@@ -50,6 +51,8 @@ class InfNormFwdOp(_ReduceOpBase):
     _kernel_key = "vector_norm"
     _kernel_cls = VectorNormKernel
     _required_ord: Union[int, float] = inf
+    # torch.linalg.vector_norm(x, dim=[]) full-reduces.
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
     def __init__(
         self,
