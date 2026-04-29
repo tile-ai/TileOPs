@@ -222,13 +222,12 @@ class DaCumsumFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # For small batch/head configs, intra-block parallelism can improve occupancy.
-        return [
-            {"threads": 1},
-            {"threads": 32},
-            {"threads": 64},
-            {"threads": 128},
-        ]
+        # The inner scan is T.serial(Q): every thread executes the same loop
+        # and writes to the same locations.  Multiple threads cause redundant
+        # work and write contention with no benefit.  threads=1 is the only
+        # valid configuration until the scan is parallelised (e.g. warp-level
+        # __shfl_up reduce).
+        return [{"threads": 1}]
 
     def forward(
         self,
