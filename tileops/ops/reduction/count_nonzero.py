@@ -1,8 +1,9 @@
 """CountNonzeroFwdOp: counts non-zero elements along ``dim``, returning int64.
 
 The Op layer validates inputs, normalizes ``dim``, reshapes to 2D (M, N),
-pads to alignment (with 0, which is neutral for sum/count), calls the kernel,
-and reshapes the output back.  Output dtype is always int64.
+calls the kernel, and reshapes the output back.  Alignment padding is handled
+inside the kernel with 0, which is neutral for sum/count.  Output dtype is
+always int64.
 
 Supports any numeric dtype as input including torch.bool, int32, int64, and
 complex types. Inputs with unsupported TileLang storage dtypes (bool, int32,
@@ -62,6 +63,7 @@ class CountNonzeroFwdOp(_ReduceOpBase):
     _kernel_key = "logical_reduce"
     _kernel_cls = LogicalReduceKernel
     _empty_dim_policy: EmptyDimPolicy = "full"
+    _kernel_handles_padding = True
 
     def __init__(
         self,

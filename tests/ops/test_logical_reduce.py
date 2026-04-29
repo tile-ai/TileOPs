@@ -621,5 +621,31 @@ def test_count_nonzero_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_kind, dtype",
+    [
+        ("any", torch.bool),
+        ("all", torch.bool),
+        ("count_nonzero", torch.float16),
+    ],
+)
+def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) -> None:
+    """Exercise the N-tiled path with a tail-M block."""
+    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+
+    op_map = {
+        "any": AnyFwdOp,
+        "all": AllFwdOp,
+        "count_nonzero": CountNonzeroFwdOp,
+    }
+    test = LogicalReduceTest(3, 33024, dtype, op_kind)
+    op = op_map[op_kind](dtype=dtype)
+    compare = _exact_compare_int64 if op_kind == "count_nonzero" else _exact_compare
+    test.check(op, *test.gen_inputs(), compare=compare)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

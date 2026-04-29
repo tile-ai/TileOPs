@@ -562,5 +562,16 @@ def test_empty_dim_full_reduction_3d_dtypes(
     allclose_compare(y, ref, atol=atol, rtol=rtol)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
+def test_vector_norm_long_sequence_tiled(op_kind: str) -> None:
+    """Exercise the N-tiled path with a tail-M block."""
+    dtype = torch.bfloat16
+    test = VectorNormTest(3, 33024, dtype, op_kind)
+    op = _make_op(dtype, op_kind)
+    atol, rtol = _get_tolerances(dtype)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

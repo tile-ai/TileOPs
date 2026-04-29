@@ -1,8 +1,9 @@
 """L2NormFwdOp: computes L2 norm (Euclidean norm) along a given dim.
 
-The Op layer validates inputs, reshapes to 2D (M, N), pads to alignment
-(with 0.0, which is neutral for sum of squares), calls the kernel, and reshapes
-the output back. Output dtype matches input dtype; internal computation in fp32.
+The Op layer validates inputs, reshapes to 2D (M, N), calls the kernel, and
+reshapes the output back. Alignment padding is handled inside the kernel with
+0.0, which is neutral for sum of squares. Output dtype matches input dtype;
+internal computation in fp32.
 """
 
 from typing import Dict, List, Optional, Union
@@ -41,6 +42,7 @@ class L2NormFwdOp(_ReduceOpBase):
     _op_kind = "l2"
     _kernel_key = "vector_norm"
     _kernel_cls = VectorNormKernel
+    _kernel_handles_padding = True
     _required_ord: Union[int, float] = 2
     _empty_dim_policy: EmptyDimPolicy = "full"
 
