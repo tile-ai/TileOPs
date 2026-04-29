@@ -499,6 +499,31 @@ def _apply_fp8_post_cast(result: torch.Tensor, kernel) -> torch.Tensor:
     return result
 
 
+_FP8_DTYPES = (torch.float8_e4m3fn, torch.float8_e5m2)
+
+
+def _is_fp8(dtype: torch.dtype) -> bool:
+    """Return True iff ``dtype`` is one of the supported fp8 dtypes."""
+    return dtype in _FP8_DTYPES
+
+
+def _fp8_compute_dtype(dtype: torch.dtype) -> torch.dtype:
+    """Return the compute dtype used to emulate fp8 elementwise fallbacks.
+
+    PyTorch's CUDA backend does not implement ``clamp``/``maximum``/
+    ``minimum``/``masked_fill_`` on Float8 tensors (raises NotImplementedError
+    on ``clamp_cuda`` / ``max_elementwise_cuda`` / ``min_elementwise_cuda`` /
+    ``masked_fill_``). Both e4m3fn (finite range ±448) and e5m2 (finite range
+    ±57344) fit in fp16, so we upcast to fp16, run the op, and cast back. The
+    final cast preserves Inf/NaN for e5m2 (PyTorch's fp16->e5m2 conversion is
+    non-saturating) and saturates for e4m3fn (matching PyTorch's default
+    fp16->e4m3fn behaviour).
+    """
+    if not _is_fp8(dtype):
+        raise ValueError(f"_fp8_compute_dtype expects an fp8 dtype, got {dtype}")
+    return torch.float16
+
+
 class UnaryOp(Op):
     """Template base class for unary elementwise ops.
 
@@ -1645,7 +1670,15 @@ class ClampFwdOp(_ClampTensorBase):
         self, input: torch.Tensor, min: torch.Tensor, max: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
         # Use torch.clamp for full PyTorch parity (handles NaN / dtype
-        # promotion identically). Broadcasting is implicit.
+        # promotion identically). Broadcasting is implicit. PyTorch's CUDA
+        # ``clamp`` has no fp8 implementation (raises NotImplementedError
+        # ``clamp_cuda``), so we route fp8 inputs through fp16 and cast
+        # back — preserves Inf/NaN for e5m2 via the non-saturating fp16
+        # post-cast.
+        if _is_fp8(self.dtype):
+            compute = _fp8_compute_dtype(self.dtype)
+            result = torch.clamp(input.to(compute), min.to(compute), max.to(compute))
+            return result.to(self.dtype)
         return torch.clamp(input, min, max)
 
     def forward(
@@ -1699,6 +1732,12 @@ class ClampMinFwdOp(_ClampTensorBase):
     def _eager_forward(
         self, input: torch.Tensor, min: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
+        # ``torch.maximum`` has no fp8 CUDA kernel (NotImplementedError
+        # ``max_elementwise_cuda``); route fp8 through fp16 and cast back.
+        if _is_fp8(self.dtype):
+            compute = _fp8_compute_dtype(self.dtype)
+            result = torch.maximum(input.to(compute), min.to(compute))
+            return result.to(self.dtype)
         return torch.maximum(input, min)
 
     def forward(
@@ -1751,6 +1790,12 @@ class ClampMaxFwdOp(_ClampTensorBase):
     def _eager_forward(
         self, input: torch.Tensor, max: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
+        # ``torch.minimum`` has no fp8 CUDA kernel (NotImplementedError
+        # ``min_elementwise_cuda``); route fp8 through fp16 and cast back.
+        if _is_fp8(self.dtype):
+            compute = _fp8_compute_dtype(self.dtype)
+            result = torch.minimum(input.to(compute), max.to(compute))
+            return result.to(self.dtype)
         return torch.minimum(input, max)
 
     def forward(
@@ -1880,6 +1925,14 @@ class MaskedFillFwdOp(Op):
         # PyTorch's Tensor.masked_fill with a 0-dim Tensor value is
         # semantically identical to the scalar form; defer to it for full
         # parity (broadcasts ``input`` and ``mask`` together).
+        # ``masked_fill_`` has no fp8 CUDA kernel (NotImplementedError); for
+        # fp8 we run masked_fill in fp16 and cast back.
+        if _is_fp8(self.dtype):
+            compute = _fp8_compute_dtype(self.dtype)
+            inp_b = input.to(compute).expand(self.out_shape).contiguous()
+            value_c = value.to(compute)
+            result = torch.masked_fill(inp_b, mask.expand(self.out_shape), value_c)
+            return result.to(self.dtype)
         return torch.masked_fill(input.expand(self.out_shape).contiguous(),
                                  mask.expand(self.out_shape), value)
 
@@ -1962,8 +2015,15 @@ class MaskedFillScalarFwdOp(Op):
 
     def _eager_forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:  # noqa: A002
         if self._needs_broadcast or self.kernel is None:
-            inp_b = input.expand(self.out_shape).contiguous()
             mask_b = mask.expand(self.out_shape)
+            # ``masked_fill_`` has no fp8 CUDA kernel; route fp8 through fp16
+            # and cast back to preserve manifest-declared fp8 support on the
+            # broadcasting fallback path.
+            if _is_fp8(self.dtype):
+                compute = _fp8_compute_dtype(self.dtype)
+                inp_b = input.to(compute).expand(self.out_shape).contiguous()
+                return inp_b.masked_fill(mask_b, self.value).to(self.dtype)
+            inp_b = input.expand(self.out_shape).contiguous()
             return inp_b.masked_fill(mask_b, self.value)
         orig_shape = input.shape
         mask_flat = (mask if mask.dtype == torch.bool else mask.bool()).contiguous().view(-1)

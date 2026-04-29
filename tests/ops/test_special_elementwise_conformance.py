@@ -292,3 +292,126 @@ def test_l1_signature_conformance(op_name, expected_inputs, expected_params):
         init_params=init_params,
     )
     assert errors == [], f"{op_name}: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# fp8 coverage: the manifest declares ``float8_e4m3fn | float8_e5m2`` for the
+# Tensor-bound clamp variants and both masked_fill variants. PyTorch's CUDA
+# backend does not implement clamp/maximum/minimum/masked_fill on Float8, so
+# the eager fallback paths must upcast to fp16 internally and cast back. These
+# tests exercise both fp8 dtypes against a fp16 reference computation.
+# ---------------------------------------------------------------------------
+
+
+_FP8_DTYPES = [torch.float8_e4m3fn, torch.float8_e5m2]
+
+
+def _fp8_to_fp16_via_pytorch(t: torch.Tensor) -> torch.Tensor:
+    return t.to(torch.float16)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", _FP8_DTYPES)
+def test_clamp_tensor_bounds_fp8(dtype):
+    from tileops.ops.elementwise import ClampFwdOp
+
+    # Use moderate magnitudes so values fit in e4m3fn finite range (±448).
+    inp = (torch.randn((4, 8), device="cuda") * 4).to(dtype)
+    mn = (torch.full((1, 8), -1.0, device="cuda")).to(dtype)
+    mx = (torch.full((4, 1), 2.0, device="cuda")).to(dtype)
+
+    ref = torch.clamp(_fp8_to_fp16_via_pytorch(inp),
+                      _fp8_to_fp16_via_pytorch(mn),
+                      _fp8_to_fp16_via_pytorch(mx)).to(dtype)
+    op = ClampFwdOp(input=tuple(inp.shape), min=tuple(mn.shape),
+                    max=tuple(mx.shape), dtype=dtype)
+    out = op(inp, mn, mx)
+    assert out.dtype == dtype
+    torch.testing.assert_close(out.to(torch.float16), ref.to(torch.float16),
+                               atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", _FP8_DTYPES)
+def test_clamp_min_tensor_fp8(dtype):
+    from tileops.ops.elementwise import ClampMinFwdOp
+
+    inp = (torch.randn((4, 8), device="cuda") * 4).to(dtype)
+    mn = (torch.full((1, 8), -0.5, device="cuda")).to(dtype)
+    ref = torch.maximum(_fp8_to_fp16_via_pytorch(inp),
+                        _fp8_to_fp16_via_pytorch(mn)).to(dtype)
+    op = ClampMinFwdOp(input=tuple(inp.shape), min=tuple(mn.shape), dtype=dtype)
+    out = op(inp, mn)
+    assert out.dtype == dtype
+    torch.testing.assert_close(out.to(torch.float16), ref.to(torch.float16),
+                               atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", _FP8_DTYPES)
+def test_clamp_max_tensor_fp8(dtype):
+    from tileops.ops.elementwise import ClampMaxFwdOp
+
+    inp = (torch.randn((4, 8), device="cuda") * 4).to(dtype)
+    mx = (torch.full((4, 1), 1.5, device="cuda")).to(dtype)
+    ref = torch.minimum(_fp8_to_fp16_via_pytorch(inp),
+                        _fp8_to_fp16_via_pytorch(mx)).to(dtype)
+    op = ClampMaxFwdOp(input=tuple(inp.shape), max=tuple(mx.shape), dtype=dtype)
+    out = op(inp, mx)
+    assert out.dtype == dtype
+    torch.testing.assert_close(out.to(torch.float16), ref.to(torch.float16),
+                               atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", _FP8_DTYPES)
+def test_masked_fill_tensor_value_fp8(dtype):
+    from tileops.ops.elementwise import MaskedFillFwdOp
+
+    inp = (torch.randn((4, 8), device="cuda") * 2).to(dtype)
+    mask = torch.randint(0, 2, (1, 8), device="cuda").bool()
+    value = torch.tensor(-1.0, device="cuda").to(dtype)
+
+    out_shape = torch.broadcast_shapes(inp.shape, mask.shape)
+    ref = (
+        _fp8_to_fp16_via_pytorch(inp).expand(out_shape).clone()
+        .masked_fill(mask.expand(out_shape), float(value.to(torch.float16).item()))
+        .to(dtype)
+    )
+
+    op = MaskedFillFwdOp(input=tuple(inp.shape), mask=tuple(mask.shape),
+                         value=tuple(value.shape), dtype=dtype)
+    out = op(inp, mask, value)
+    assert out.dtype == dtype
+    torch.testing.assert_close(out.to(torch.float16), ref.to(torch.float16),
+                               atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", _FP8_DTYPES)
+@pytest.mark.parametrize(
+    "input_shape, mask_shape",
+    [
+        ((4, 8), (4, 8)),  # exact-shape (kernel path)
+        ((1, 8), (4, 8)),  # broadcast (eager fallback path)
+    ],
+)
+def test_masked_fill_scalar_fp8(dtype, input_shape, mask_shape):
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
+
+    inp = (torch.randn(input_shape, device="cuda") * 2).to(dtype)
+    mask = torch.randint(0, 2, mask_shape, device="cuda").bool()
+
+    out_shape = torch.broadcast_shapes(input_shape, mask_shape)
+    ref = (
+        _fp8_to_fp16_via_pytorch(inp).expand(out_shape).clone()
+        .masked_fill(mask.expand(out_shape), -1.0)
+        .to(dtype)
+    )
+
+    op = MaskedFillScalarFwdOp(input=tuple(inp.shape), mask=tuple(mask.shape),
+                               value=-1.0, dtype=dtype)
+    out = op(inp, mask)
+    assert out.dtype == dtype
+    torch.testing.assert_close(out.to(torch.float16), ref.to(torch.float16),
+                               atol=0, rtol=0)
