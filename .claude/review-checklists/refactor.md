@@ -1,4 +1,4 @@
-# Review rule: refactor
+# Review checklist: refactor
 
 For `[Refactor]`.
 

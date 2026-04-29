@@ -1,6 +1,6 @@
-# Review rule: manifest
+# Review checklist: manifest
 
-For `[Maintain]` (almost always `[Maintain][Manifest]`) — any `tileops/manifest/` change. Also load this rule for `[Refactor][Manifest]` and for `[Refactor][Ops]` PRs that flip `status`.
+For `[Maintain]` (almost always `[Maintain][Manifest]`) — any `tileops/manifest/` change. Also load this checklist for `[Refactor][Manifest]` and for `[Refactor][Ops]` PRs that flip `status`.
 
 Sub-cases:
 

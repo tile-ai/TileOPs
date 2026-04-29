@@ -1,4 +1,4 @@
-# Review rule: doc
+# Review checklist: doc
 
 For `[Doc]` and `[Design]`. When the change touches `docs/design/`, also load `.claude/domain-rules/design-docs.md`.
 

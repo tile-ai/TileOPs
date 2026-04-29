@@ -1,6 +1,6 @@
-# Review rule: feature
+# Review checklist: feature
 
-For `[Feat]` and `[Enhancement]`. If the PR adds an op/kernel, the structural axis is covered by `.foundry/mold/op-readiness-checklist.md` (filled by author into `## Structural Readiness`). This rule covers cross-cutting axes only.
+For `[Feat]` and `[Enhancement]`. If the PR adds an op/kernel, the structural axis is covered by `.foundry/mold/op-readiness-checklist.md` (filled by author into `## Structural Readiness`). This checklist covers cross-cutting axes only.
 
 ## Checklist
 
