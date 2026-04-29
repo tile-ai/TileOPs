@@ -175,20 +175,38 @@ def where_fwd_roofline(op: "Op") -> tuple[int, int]:
     ``WhereFwdOp.roofline``). Inline mode binds ``elem_bytes`` to a single
     dtype and cannot express that.
 
-    ``N_total`` follows the post-broadcast convention:
-    ``N_total = product(out.shape)`` where ``out.shape`` is
-    ``broadcast_shapes(condition.shape, input.shape, other.shape)``.
-    The byte traffic is approximated as
-    ``N_total + 3 * N_total * elem_bytes`` (1-byte broadcast condition
-    read + input/other reads + output write at the float dtype). The
-    individual per-input reads are counted post-broadcast for simplicity;
-    a tighter pre-broadcast accounting is left to a follow-up that aligns
-    with codegen's chosen broadcasting strategy.
+    ``N_total`` follows the post-broadcast convention used by
+    ``WhereFwdOp.shape_rules``:
+    ``N_total = product(broadcast_shapes(condition.shape, input.shape,
+    other.shape))``. The function reads ``op.N_total`` directly when the
+    bound Op exposes it (current ``WhereFwdOp`` stores the flattened
+    element count there); when the conformed Op grows
+    ``condition``/``input``/``other`` shape attributes per the spec, the
+    same value can be derived as ``op.condition.shape`` /
+    ``op.input.shape`` / ``op.other.shape`` broadcast together, and a
+    ``static_dims``-driven update will flow in via codegen.
 
-    TODO: implement the formula once ``WhereFwdOp`` flips from
-    ``status: spec-only`` to ``implemented``.
+    Byte traffic is approximated as
+    ``N_total + 3 * N_total * elem_bytes`` — a 1-byte condition read
+    (logical bytes; the bool is broadcast to ``N_total``) plus input,
+    other, and out at the float ``elem_bytes`` each. This matches the
+    "logical bytes, post-broadcast" convention used elsewhere in the
+    elementwise manifest entries.
+
+    Args:
+        op: The bound ``WhereFwdOp`` instance. Must expose ``N_total``
+            (int) and ``dtype`` (``torch.dtype``).
+
+    Returns:
+        ``(flops, bytes)`` as ints, with ``flops == N_total`` (one
+        predicated select per output element) and
+        ``bytes == N_total + 3 * N_total * elem_bytes``.
     """
-    raise NotImplementedError
+    n_total = int(op.N_total)
+    elem_bytes = op.dtype.itemsize
+    flops = n_total
+    nbytes = n_total + 3 * n_total * elem_bytes
+    return flops, nbytes
 
 
 # ---------------------------------------------------------------------------

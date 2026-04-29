@@ -50,10 +50,14 @@ PreluFwdOp:
 MaskedFillFwdOp:
   ref_api: "torch.Tensor.masked_fill"
   # Primary entry: PyTorch's torch.Tensor.masked_fill(mask, value: Tensor)
-  # where ``value`` is a 0-dim Tensor. ``mask`` broadcasts unidirectionally
-  # *to* ``input.shape`` (PyTorch does not expand input into the mask
-  # shape for masked_fill); ``out.shape == input.shape``. The scalar
-  # (Number) value form lands as MaskedFillScalarFwdOp below per the
+  # where ``value`` is a 0-dim Tensor. The out-of-place
+  # ``Tensor.masked_fill`` returns a new tensor whose shape is the
+  # bidirectional broadcast of ``input`` and ``mask`` — either operand
+  # may be expanded (verified directly: ``torch.zeros((2,1)).masked_fill(
+  # mask=torch.zeros((2,3), dtype=torch.bool), value=1.0)`` returns shape
+  # ``(2, 3)``). The in-place ``masked_fill_`` is unidirectional, but
+  # the manifest models only the out-of-place form. The scalar (Number)
+  # value form lands as MaskedFillScalarFwdOp below per the
   # "No Optional[Tensor]" manifest rule for variant splits.
   family: elementwise
   # status: spec-only — no kernel currently implements the 0-dim Tensor
@@ -71,17 +75,18 @@ MaskedFillFwdOp:
     outputs:
       out: {dtype: "same_as(input)"}
     shape_rules:
-      # mask broadcasts unidirectionally to input.shape; value is 0-dim.
-      - "is_broadcastable_to(mask.shape, input.shape)"
+      # Out-of-place masked_fill returns the bidirectional broadcast of
+      # input and mask; value is 0-dim.
       - "value.shape == ()"
-      - "out.shape == input.shape"
+      - "out.shape == broadcast_shapes(input.shape, mask.shape)"
 
   workloads: []
 
   roofline:
     vars:
-      N_total: "product(input.shape)"
-    # One predicated select per element.
+      # Post-broadcast element count: out.shape == broadcast(input, mask).
+      N_total: "product(broadcast_shapes(input.shape, mask.shape))"
+    # One predicated select per output element.
     flops: "N_total"
     # Read input + read mask (1 byte broadcast to N_total) + read 0-dim
     # value (negligible vs N_total but counted at elem_bytes) + write out.
@@ -120,9 +125,10 @@ MaskedFillScalarFwdOp:
     params:
       value: {type: Number, default: 0.0}
     shape_rules:
-      # mask broadcasts unidirectionally to input.shape; out follows input.
-      - "is_broadcastable_to(mask.shape, input.shape)"
-      - "out.shape == input.shape"
+      # Out-of-place masked_fill returns the bidirectional broadcast of
+      # input and mask; out shape follows that broadcast (verified against
+      # ``torch.Tensor.masked_fill`` — input may also be expanded up).
+      - "out.shape == broadcast_shapes(input.shape, mask.shape)"
 
   workloads:
     - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -130,8 +136,9 @@ MaskedFillScalarFwdOp:
 
   roofline:
     vars:
-      N_total: "product(input.shape)"
-    # One predicated select per element
+      # Post-broadcast element count: out.shape == broadcast(input, mask).
+      N_total: "product(broadcast_shapes(input.shape, mask.shape))"
+    # One predicated select per output element
     flops: "N_total"
     # Read input + read mask (1 byte) + write out
     bytes: "N_total + 2 * N_total * elem_bytes"
