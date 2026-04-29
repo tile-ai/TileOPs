@@ -9,8 +9,9 @@ from the input tensor at forward time, and kernels are cached by
 ``(M, N)`` to avoid rebuilds.
 """
 
+import warnings
 from math import prod
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 
@@ -21,6 +22,19 @@ from ..op_base import Op
 from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = ["_SoftmaxBaseOp"]
+
+
+def _resolve_implicit_softmax_dim(name: str, ndim: int) -> int:
+    """Mirror ``torch.nn.functional._get_softmax_dim``: pick 0 for ``ndim in {0, 1, 3}`` else 1, with the same deprecation warning."""
+    warnings.warn(
+        f"Implicit dimension choice for {name} has been deprecated. "
+        "Change the call to include dim=X as an argument.",
+        UserWarning,
+        stacklevel=3,
+    )
+    if ndim in (0, 1, 3):
+        return 0
+    return 1
 
 
 class _SoftmaxBaseOp(Op):
@@ -96,15 +110,20 @@ class _SoftmaxBaseOp(Op):
         self._validate(x)
         orig_shape = x.shape
 
-        # --- multi-dim path (includes dim=None for full reduction) ---
-        if isinstance(self.dim, (list, tuple)) or self.dim is None:
+        # Resolve dim=None per call (don't mutate self.dim) so the same op
+        # instance accepts inputs of different ranks, matching F.softmax.
+        effective_dim: Union[int, List[int], Tuple[int, ...], None] = self.dim
+        if effective_dim is None and not self._supports_multidim:
+            effective_dim = _resolve_implicit_softmax_dim(self._op_kind, x.ndim)
+
+        if isinstance(effective_dim, (list, tuple)) or effective_dim is None:
             if not self._supports_multidim:
                 raise ValueError(
                     f"{type(self).__name__} does not support multi-dim reduction. "
                     "Use a scalar dim."
                 )
             dims = normalize_dim(
-                self.dim, x.ndim, empty_dim_policy=self._empty_dim_policy,
+                effective_dim, x.ndim, empty_dim_policy=self._empty_dim_policy,
             )
             # Bind the dynamic static-axes (param-dependent reduction axes) so
             # the Op-layer cache-key / introspection consumers see the
@@ -125,19 +144,20 @@ class _SoftmaxBaseOp(Op):
 
         # --- single-dim path ---
         # Validate and normalize dim (match PyTorch IndexError behavior).
-        if self.dim < -x.ndim or self.dim >= x.ndim:
+        assert isinstance(effective_dim, int)
+        if effective_dim < -x.ndim or effective_dim >= x.ndim:
             raise IndexError(
                 f"Dimension out of range (expected to be in range of "
-                f"[{-x.ndim}, {x.ndim - 1}], but got {self.dim})"
+                f"[{-x.ndim}, {x.ndim - 1}], but got {effective_dim})"
             )
-        dim = self.dim % x.ndim
+        dim = effective_dim % x.ndim
 
         # N = size along reduction dim, M = product of all other dims.
         N = x.shape[dim]
         if self.N is not None and N != self.N:
             raise ValueError(
                 f"{type(self).__name__}: committed N={self.N} does not match "
-                f"x.shape[{self.dim}]={N}"
+                f"x.shape[{effective_dim}]={N}"
             )
         # Bind the dynamic static-axis (param-dependent N axis) so the
         # Op-layer cache-key / introspection consumers see the committed axis.

@@ -538,5 +538,131 @@ def test_logsumexp_accepts_multidim() -> None:
     assert torch.allclose(y, y_ref, atol=1e-5, rtol=1e-5)
 
 
+class SoftmaxImplicitDimFixture(FixtureBase):
+    # Smoke covers each ndim branch (1D, 2D, 3D) and each dtype at least once.
+    PARAMS = [
+        (
+            "shape, dtype",
+            [
+                pytest.param((256,), torch.float32, marks=pytest.mark.smoke),
+                pytest.param((32, 256), torch.float16, marks=pytest.mark.smoke),
+                pytest.param((4, 16, 32), torch.bfloat16, marks=pytest.mark.smoke),
+            ],
+        ),
+    ]
+
+
+def _expected_implicit_dim(ndim: int) -> int:
+    return 0 if ndim in (0, 1, 3) else 1
+
+
+@SoftmaxImplicitDimFixture
+def test_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> None:
+    """SoftmaxFwdOp(dim=None) must match F.softmax(x, dim=None) and warn."""
+    import warnings as _warnings
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    expected_dim = _expected_implicit_dim(x.ndim)
+    op = SoftmaxFwdOp(N=shape[expected_dim], dtype=dtype, dim=None)
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        y = op(x)
+        assert any(
+            issubclass(w.category, UserWarning) and "Implicit dimension choice" in str(w.message)
+            for w in caught
+        ), f"Expected implicit-dim UserWarning, got {[str(w.message) for w in caught]}"
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", UserWarning)
+        y_ref = F.softmax(x.float(), dim=None).to(dtype)
+
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"dim=None softmax (shape={shape}, dtype={dtype}) failed, "
+        f"max err: {(y - y_ref).abs().max()}"
+    )
+
+
+@SoftmaxImplicitDimFixture
+def test_log_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> None:
+    """LogSoftmaxFwdOp(dim=None) must match F.log_softmax(x, dim=None) and warn."""
+    import warnings as _warnings
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    expected_dim = _expected_implicit_dim(x.ndim)
+    op = LogSoftmaxFwdOp(N=shape[expected_dim], dtype=dtype, dim=None)
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        y = op(x)
+        assert any(
+            issubclass(w.category, UserWarning) and "Implicit dimension choice" in str(w.message)
+            for w in caught
+        ), f"Expected implicit-dim UserWarning, got {[str(w.message) for w in caught]}"
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", UserWarning)
+        y_ref = F.log_softmax(x.float(), dim=None).to(dtype)
+
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+        f"dim=None log_softmax (shape={shape}, dtype={dtype}) failed, "
+        f"max err: {(y - y_ref).abs().max()}"
+    )
+
+
+@pytest.mark.smoke
+def test_softmax_dim_none_reused_across_ranks() -> None:
+    """SoftmaxFwdOp(dim=None) must re-resolve per call across input ranks."""
+    import warnings as _warnings
+    op = SoftmaxFwdOp(N=4, dtype=torch.float32, dim=None)
+
+    x1 = torch.randn(4, dtype=torch.float32, device="cuda")
+    x2 = torch.randn(2, 4, dtype=torch.float32, device="cuda")
+    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device="cuda")
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", UserWarning)
+        y1 = op(x1)
+        y2 = op(x2)
+        y3 = op(x3)
+        y1_ref = F.softmax(x1.float(), dim=None)
+        y2_ref = F.softmax(x2.float(), dim=None)
+        y3_ref = F.softmax(x3.float(), dim=None)
+
+    assert op.dim is None, f"op.dim was mutated to {op.dim!r}; expected None"
+
+    atol, rtol = _get_tolerances(torch.float32)
+    assert torch.allclose(y1, y1_ref, atol=atol, rtol=rtol)
+    assert torch.allclose(y2, y2_ref, atol=atol, rtol=rtol)
+    assert torch.allclose(y3, y3_ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+def test_log_softmax_dim_none_reused_across_ranks() -> None:
+    """LogSoftmaxFwdOp(dim=None) must re-resolve per call (no self.dim mutation)."""
+    import warnings as _warnings
+    op = LogSoftmaxFwdOp(N=4, dtype=torch.float32, dim=None)
+
+    x1 = torch.randn(4, dtype=torch.float32, device="cuda")
+    x2 = torch.randn(2, 4, dtype=torch.float32, device="cuda")
+    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device="cuda")
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", UserWarning)
+        y1 = op(x1)
+        y2 = op(x2)
+        y3 = op(x3)
+        y1_ref = F.log_softmax(x1.float(), dim=None)
+        y2_ref = F.log_softmax(x2.float(), dim=None)
+        y3_ref = F.log_softmax(x3.float(), dim=None)
+
+    assert op.dim is None, f"op.dim was mutated to {op.dim!r}; expected None"
+
+    atol, rtol = _get_tolerances(torch.float32)
+    assert torch.allclose(y1, y1_ref, atol=atol, rtol=rtol)
+    assert torch.allclose(y2, y2_ref, atol=atol, rtol=rtol)
+    assert torch.allclose(y3, y3_ref, atol=atol, rtol=rtol)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

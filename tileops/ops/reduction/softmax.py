@@ -33,7 +33,11 @@ class SoftmaxFwdOp(_SoftmaxBaseOp):
         N: Reduction-dim size (statically committed at ctor; corresponds to
             manifest ``static_dims.N = "x.shape[dim]"``).
         dtype: Data type (float32, float16, or bfloat16).
-        dim: Reduction dimension (default -1).
+        dim: Reduction dimension (default ``None``, matching PyTorch's
+            ``torch.nn.functional.softmax``). When ``None``, the axis is
+            resolved at forward time using PyTorch's implicit-axis rule
+            (``0`` for ``ndim in {0, 1, 3}`` else ``1``) and the same
+            deprecation ``UserWarning`` is emitted.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """
@@ -47,7 +51,7 @@ class SoftmaxFwdOp(_SoftmaxBaseOp):
         *,
         N: int,
         dtype: torch.dtype,
-        dim: int = -1,
+        dim: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
