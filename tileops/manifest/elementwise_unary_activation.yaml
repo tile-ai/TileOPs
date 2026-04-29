@@ -421,12 +421,10 @@ ClampFwdOp:
   workloads: []
 
   roofline:
-    vars:
-      N_total: "product(broadcast_shapes(input.shape, min.shape, max.shape))"
-    # One max + one min per output element (post-broadcast).
-    flops: "2 * N_total"
-    # Read input + read min + read max + write out, all post-broadcast.
-    bytes: "4 * N_total * elem_bytes"
+    # Func mode: post-broadcast N_total uses broadcast_shapes which is
+    # not in the inline-roofline vars-layer namespace per
+    # docs/design/roofline.md §4.4.4. Broadcast logic lives in Python.
+    func: "tileops.perf.formulas.clamp_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -501,12 +499,9 @@ ClampMinFwdOp:
   workloads: []
 
   roofline:
-    vars:
-      N_total: "product(broadcast_shapes(input.shape, min.shape))"
-    # One max(input, min) per output element (post-broadcast).
-    flops: "N_total"
-    # Read input + read min + write out, all post-broadcast.
-    bytes: "3 * N_total * elem_bytes"
+    # Func mode: see ClampFwdOp.roofline for rationale (broadcast_shapes
+    # not in inline-roofline vars-layer namespace).
+    func: "tileops.perf.formulas.clamp_min_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -535,12 +530,9 @@ ClampMaxFwdOp:
   workloads: []
 
   roofline:
-    vars:
-      N_total: "product(broadcast_shapes(input.shape, max.shape))"
-    # One min(input, max) per output element (post-broadcast).
-    flops: "N_total"
-    # Read input + read max + write out, all post-broadcast.
-    bytes: "3 * N_total * elem_bytes"
+    # Func mode: see ClampFwdOp.roofline for rationale (broadcast_shapes
+    # not in inline-roofline vars-layer namespace).
+    func: "tileops.perf.formulas.clamp_max_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py

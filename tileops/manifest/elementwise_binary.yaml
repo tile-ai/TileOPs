@@ -83,14 +83,10 @@ MaskedFillFwdOp:
   workloads: []
 
   roofline:
-    vars:
-      # Post-broadcast element count: out.shape == broadcast(input, mask).
-      N_total: "product(broadcast_shapes(input.shape, mask.shape))"
-    # One predicated select per output element.
-    flops: "N_total"
-    # Read input + read mask (1 byte broadcast to N_total) + read 0-dim
-    # value (negligible vs N_total but counted at elem_bytes) + write out.
-    bytes: "N_total + 2 * N_total * elem_bytes"
+    # Func mode: post-broadcast N_total uses broadcast_shapes which is
+    # not in the inline-roofline vars-layer namespace per
+    # docs/design/roofline.md §4.4.4. Broadcast logic lives in Python.
+    func: "tileops.perf.formulas.masked_fill_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -135,13 +131,10 @@ MaskedFillScalarFwdOp:
     - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      # Post-broadcast element count: out.shape == broadcast(input, mask).
-      N_total: "product(broadcast_shapes(input.shape, mask.shape))"
-    # One predicated select per output element
-    flops: "N_total"
-    # Read input + read mask (1 byte) + write out
-    bytes: "N_total + 2 * N_total * elem_bytes"
+    # Func mode: shared with MaskedFillFwdOp (Tensor-value primary). See
+    # MaskedFillFwdOp.roofline for rationale (broadcast_shapes not in
+    # inline-roofline vars-layer namespace).
+    func: "tileops.perf.formulas.masked_fill_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
