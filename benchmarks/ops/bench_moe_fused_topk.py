@@ -102,7 +102,7 @@ def test_fused_topk_bench(
     dtype = torch.bfloat16
     test = FusedTopKTest(num_tokens, num_experts, top_k, scoring_func, renormalize, dtype)
     bm = FusedTopKBenchmark(test)
-    gating_output = test.gen_inputs()
+    (gating_output,) = test.gen_inputs()
 
     # TileOPs
     op = FusedTopKOp(num_tokens, num_experts, top_k, scoring_func, renormalize)
