@@ -1,28 +1,13 @@
 # Review rule: refactor
 
-Applies to PRs prefixed `[Refactor]` — restructures code without changing externally observable behavior.
+For `[Refactor]`.
 
-## Must check
+## Checklist
 
-- **Behavior preservation**: existing tests still pass without being weakened. Any `xfail` / `skip` / loosened assertion needs a `FIXME(staged-rollout)` block per `.claude/rules/code-style.md`.
-- **Scope discipline**: refactor PRs do one thing. Mixing refactor + new behavior makes review and revert hard — push back.
-- **Public interface stability**: if the refactor changes a signature, callers must be updated in the same PR. If the op has a manifest entry, signature must still match it.
-- **Import + naming hygiene**: `.claude/rules/code-style.md` (relative imports inside package, abbreviation casing, underscore-separated norm filenames).
+- [ ] [REQ] Any `xfail` / `skip` / loosened assertion has a `FIXME(staged-rollout)` block per `.claude/rules/code-style.md`
+- [ ] [REQ] If the op has a manifest entry, signature still matches it
 
-## Sub-type: `[Refactor][Manifest]`
+## Sub-types
 
-Treat as a manifest-spec change. Load `manifest.md` instead — the manifest review rule covers restructuring as well as additions and status flips. Code under `tileops/ops/` and `tileops/kernels/` must NOT be touched in the same PR (trust model).
-
-## Sub-type: `[Refactor][Ops]` / `[Refactor][<Family>]`
-
-Code-side migration. Often co-occurs with a `status: spec-only → implemented` flip — if so, also load `manifest.md` alongside this rule.
-
-## Don't gate on
-
-- Stylistic preferences not encoded in `.claude/rules/`.
-- Adding tests beyond what the refactored code already covered (refactors aren't an excuse to demand new coverage).
-
-## Hard rejects
-
-- Silently weakens a test to make refactored code pass.
-- Refactor PR also adds a new feature or fixes a separate bug.
+- `[Refactor][Manifest]` → load `manifest.md` instead. `tileops/ops/` and `tileops/kernels/` must NOT change in the same PR.
+- `[Refactor][Ops]` / `[Refactor][<Family>]` that flips `status` → also load `manifest.md`.

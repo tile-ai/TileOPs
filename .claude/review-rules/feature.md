@@ -1,22 +1,11 @@
 # Review rule: feature
 
-Applies to PRs prefixed `[Feat]` or `[Enhancement]` — adds new behavior or extends existing behavior (op, kernel, module, skill, tooling).
+For `[Feat]` and `[Enhancement]`. If the PR adds an op/kernel, the structural axis is covered by `.foundry/mold/op-readiness-checklist.md` (filled by author into `## Structural Readiness`). This rule covers cross-cutting axes only.
 
-## Must check
+## Checklist
 
-- **Spec conformance**: if the PR adds an op/kernel, its public interface must match the corresponding `tileops/manifest/` entry. If no manifest entry exists, the PR is in the wrong order — manifest PR comes first.
-- **Trust model**: feature PRs must NOT modify `tileops/manifest/` (see `.claude/rules/manifest-trust-model.md`). Flag any mixed diff.
-- **Test coverage**: new public behavior needs tests. PyTorch is the ground truth for numerical ops.
-- **Design fit**: cross-check against `docs/design/architecture.md` module boundaries (M1-M8) and `docs/design/ops-design.md` if the feature is an op.
-- **Naming + style**: `.claude/rules/code-style.md` (PascalCase abbreviations, filename casing, docstring style).
-
-## Don't gate on
-
-- Optional polish (extra docstring sections, README updates) unless the change is user-facing API.
-- Performance numbers unless the PR claims a perf goal.
-
-## Hard rejects
-
-- Adds an op/kernel without a matching manifest entry.
-- Mixes feature code with manifest edits in one PR.
-- Hardcoded secrets, `--no-verify`, or `# ruff: noqa` at file scope (`.claude/rules/security.md`, `.claude/rules/code-style.md`).
+- [ ] [REQ] Op/kernel public interface matches its `tileops/manifest/` entry. No entry → wrong PR order
+- [ ] [REQ] Diff does not modify `tileops/manifest/` (`.claude/rules/manifest-trust-model.md`)
+- [ ] [REQ] Spot-check at least one `[REQ]` item from `## Structural Readiness` against the diff; flag dishonest pass
+- [ ] [REC] New module placement matches `docs/design/architecture.md` M1–M8 boundaries
+- [ ] [REC] If feature is an op, follows `docs/design/ops-design.md`
