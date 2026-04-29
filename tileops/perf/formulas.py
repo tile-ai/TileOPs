@@ -175,6 +175,16 @@ def where_fwd_roofline(op: "Op") -> tuple[int, int]:
     ``WhereFwdOp.roofline``). Inline mode binds ``elem_bytes`` to a single
     dtype and cannot express that.
 
+    ``N_total`` follows the post-broadcast convention:
+    ``N_total = product(out.shape)`` where ``out.shape`` is
+    ``broadcast_shapes(condition.shape, input.shape, other.shape)``.
+    The byte traffic is approximated as
+    ``N_total + 3 * N_total * elem_bytes`` (1-byte broadcast condition
+    read + input/other reads + output write at the float dtype). The
+    individual per-input reads are counted post-broadcast for simplicity;
+    a tighter pre-broadcast accounting is left to a follow-up that aligns
+    with codegen's chosen broadcasting strategy.
+
     TODO: implement the formula once ``WhereFwdOp`` flips from
     ``status: spec-only`` to ``implemented``.
     """

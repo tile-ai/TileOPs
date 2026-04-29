@@ -1411,9 +1411,86 @@ def _class_overrides_method(cls: type, name: str) -> bool:
     return False
 
 
+def _broadcast_shapes(*shapes: object) -> tuple:
+    """Pure-Python equivalent of ``torch.broadcast_shapes``.
+
+    Computes the broadcasted output shape from one or more input shapes
+    using NumPy/PyTorch broadcasting rules: shapes are right-aligned,
+    each dimension must be equal, or one of them must be 1 (or missing).
+
+    Args:
+        *shapes: Iterables of integers (typically tuples or lists)
+            representing tensor shapes. May be empty (scalar shape).
+
+    Returns:
+        The broadcasted shape as a tuple of ints. Returns ``()`` when
+        called with no arguments.
+
+    Raises:
+        ValueError: If the shapes are not broadcast-compatible.
+    """
+    if not shapes:
+        return ()
+    normalized = [tuple(int(d) for d in s) for s in shapes]
+    ndim = max((len(s) for s in normalized), default=0)
+    out: list[int] = []
+    for axis in range(ndim):
+        # Right-align: walk from the trailing dim back.
+        dim = 1
+        for s in normalized:
+            i = len(s) - ndim + axis
+            if i < 0:
+                # This shape has no entry at this axis (treat as 1).
+                continue
+            d = s[i]
+            if d == 1 or d == dim:
+                continue
+            if dim == 1:
+                dim = d
+                continue
+            raise ValueError(
+                f"shapes {shapes!r} are not broadcast-compatible at axis {axis}",
+            )
+        out.append(dim)
+    return tuple(out)
+
+
+def _is_broadcastable_to(src: object, dst: object) -> bool:
+    """Return True if ``src`` is broadcastable *to* ``dst`` (unidirectional).
+
+    Unlike ``broadcast_shapes`` which is symmetric, this predicate fixes
+    the destination shape and asks whether ``src`` can expand into it
+    without shrinking ``dst``: each ``src`` dim (right-aligned) must be
+    equal to the matching ``dst`` dim or be 1, and ``src`` may not have
+    more dimensions than ``dst``.
+
+    Args:
+        src: Source shape (iterable of ints).
+        dst: Destination shape (iterable of ints).
+
+    Returns:
+        True iff ``src`` broadcasts to ``dst``.
+    """
+    src_t = tuple(int(d) for d in src)
+    dst_t = tuple(int(d) for d in dst)
+    if len(src_t) > len(dst_t):
+        return False
+    offset = len(dst_t) - len(src_t)
+    for i, s_dim in enumerate(src_t):
+        d_dim = dst_t[offset + i]
+        if s_dim == d_dim or s_dim == 1:
+            continue
+        return False
+    return True
+
+
 # Safe builtins allowed in shape_rules eval — matches the R11 / R11a
 # documented helper set (see docs/design/ops-design-reference.md). Keep this list
 # aligned with manifest spec; widening it changes the rule language.
+#
+# Broadcasting helpers (``broadcast_shapes`` / ``is_broadcastable_to``)
+# mirror PyTorch semantics but are pure-Python so the validator does
+# not require ``torch`` to evaluate L1 shape_rules.
 _SHAPE_RULE_BUILTINS: dict = {
     "len": len,
     "isinstance": isinstance,
@@ -1428,6 +1505,8 @@ _SHAPE_RULE_BUILTINS: dict = {
     "abs": abs,
     "min": min,
     "max": max,
+    "broadcast_shapes": _broadcast_shapes,
+    "is_broadcastable_to": _is_broadcastable_to,
 }
 
 
@@ -1443,9 +1522,10 @@ def _eval_shape_rule(
 
     The eval globals expose the ``_SHAPE_RULE_BUILTINS`` helper set
     (``len``, ``isinstance``, ``int``, ``tuple``, ``list``, ``type``,
-    ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``, ``max``) so
-    R11 / R11a-style rules that use these helpers can be evaluated
-    against the mock context instead of being silently skipped.
+    ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``, ``max``,
+    ``broadcast_shapes``, ``is_broadcastable_to``) so R11 / R11a-style
+    rules that use these helpers can be evaluated against the mock
+    context instead of being silently skipped.
 
     The context names (inputs / outputs / params) are injected into both
     eval globals and locals. Comprehensions (generator / set / list /

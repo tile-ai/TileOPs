@@ -392,11 +392,57 @@ SoftplusFwdOp:
 
 ClampFwdOp:
   ref_api: "torch.clamp"
-  # Scalar-bound variant: PyTorch's torch.clamp also accepts Tensor min/max;
-  # the manifest tracks the scalar (Number) slice that the kernel implements.
+  # Primary entry: PyTorch's torch.clamp(input, min=None, max=None) where
+  # min and max are Tensors. PyTorch broadcasts min/max with input. The
+  # "No Optional[Tensor]" rule (.claude/rules/manifest-trust-model.md +
+  # .claude/domain-rules/manifest-spec.md) forbids encoding optional
+  # tensor inputs in a single entry; the scalar (Number) form, the
+  # single-bound min-only form, and the single-bound max-only form each
+  # land as their own variant_of entries below.
   family: elementwise
-  # status: spec-only — current tileops/ops/elementwise.py:ClampFwdOp does
-  # not conform to this spec:
+  # status: spec-only — current tileops/ops/elementwise.py:ClampFwdOp
+  # implements the *scalar* form (see ClampScalarFwdOp below) and does
+  # not conform to this Tensor-bound primary spec. Code conforms to this
+  # spec in a follow-up PR per the manifest trust model
+  # (.claude/rules/manifest-trust-model.md).
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      min: {dtype: "same_as(input)"}
+      max: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      # PyTorch broadcasts input/min/max together for tensor-bound clamp.
+      - "out.shape == broadcast_shapes(input.shape, min.shape, max.shape)"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N_total: "product(broadcast_shapes(input.shape, min.shape, max.shape))"
+    # One max + one min per output element (post-broadcast).
+    flops: "2 * N_total"
+    # Read input + read min + read max + write out, all post-broadcast.
+    bytes: "4 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_independent_elementwise.py
+    bench_manifest_driven: false
+
+ClampScalarFwdOp:
+  ref_api: "torch.clamp"
+  # Scalar-bound variant: PyTorch's torch.clamp(input, min=None, max=None)
+  # with Number (or None) bounds. Per the "No Optional[Tensor]" manifest
+  # rule, this is split from the Tensor-bound primary entry above.
+  family: elementwise
+  # status: spec-only — current tileops/ops/elementwise.py:ClampFwdOp
+  # implements this scalar form but does not conform to the spec:
   #   - __init__ takes (N_total, dtype, min_val, max_val) instead of the
   #     PyTorch-aligned (input, min, max) form.
   #   - param names are (min_val, max_val) instead of (min, max).
@@ -404,6 +450,7 @@ ClampFwdOp:
   # Code conforms to this spec in a follow-up PR per the manifest trust
   # model (.claude/rules/manifest-trust-model.md).
   status: spec-only
+  variant_of: ClampFwdOp
 
   signature:
     inputs:
@@ -426,6 +473,74 @@ ClampFwdOp:
     # At most one max + one min per element
     flops: "2 * N_total"
     bytes: "2 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_independent_elementwise.py
+    bench_manifest_driven: false
+
+ClampMinFwdOp:
+  ref_api: "torch.clamp_min"
+  # Single-bound Tensor variant: torch.clamp_min(input, min: Tensor) —
+  # equivalent to torch.clamp with only the lower bound provided.
+  family: elementwise
+  status: spec-only
+  variant_of: ClampFwdOp
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      min: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == broadcast_shapes(input.shape, min.shape)"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N_total: "product(broadcast_shapes(input.shape, min.shape))"
+    # One max(input, min) per output element (post-broadcast).
+    flops: "N_total"
+    # Read input + read min + write out, all post-broadcast.
+    bytes: "3 * N_total * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    op: tileops/ops/elementwise.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_independent_elementwise.py
+    bench_manifest_driven: false
+
+ClampMaxFwdOp:
+  ref_api: "torch.clamp_max"
+  # Single-bound Tensor variant: torch.clamp_max(input, max: Tensor) —
+  # equivalent to torch.clamp with only the upper bound provided.
+  family: elementwise
+  status: spec-only
+  variant_of: ClampFwdOp
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      max: {dtype: "same_as(input)"}
+    outputs:
+      out: {dtype: "same_as(input)"}
+    shape_rules:
+      - "out.shape == broadcast_shapes(input.shape, max.shape)"
+
+  workloads: []
+
+  roofline:
+    vars:
+      N_total: "product(broadcast_shapes(input.shape, max.shape))"
+    # One min(input, max) per output element (post-broadcast).
+    flops: "N_total"
+    # Read input + read max + write out, all post-broadcast.
+    bytes: "3 * N_total * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
