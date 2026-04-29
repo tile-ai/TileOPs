@@ -27,6 +27,7 @@ from tileops.kernels.reduction.logical_reduce import (
     to_logical_float32,
 )
 
+from ._multidim import EmptyDimPolicy
 from .reduce import _ReduceOpBase
 
 __all__ = ["CountNonzeroFwdOp"]
@@ -60,6 +61,8 @@ class CountNonzeroFwdOp(_ReduceOpBase):
     _op_kind = "count_nonzero"
     _kernel_key = "logical_reduce"
     _kernel_cls = LogicalReduceKernel
+    # torch.count_nonzero(x, dim=()) full-reduces.
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
     def __init__(
         self,

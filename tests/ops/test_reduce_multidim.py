@@ -445,6 +445,82 @@ def test_mean_empty_dim_full_reduction() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_name, empty_dim",
+    [
+        ("amin", []), ("amin", ()),
+        ("amax", []), ("amax", ()),
+        ("count_nonzero", []), ("count_nonzero", ()),
+    ],
+)
+def test_simple_op_empty_dim_full_reduction(op_name: str, empty_dim) -> None:
+    """amin/amax/count_nonzero(dim=[] | ()) reduce over all dims (PyTorch parity)."""
+    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.reduce import AmaxFwdOp, AminFwdOp
+
+    op_cls = {"amin": AminFwdOp, "amax": AmaxFwdOp, "count_nonzero": CountNonzeroFwdOp}[op_name]
+    x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
+    op_empty = op_cls(dtype=torch.float16, dim=empty_dim)
+    op_none = op_cls(dtype=torch.float16, dim=None)
+    y_empty = op_empty(x)
+    y_none = op_none(x)
+    assert y_empty.shape == y_none.shape
+    if op_name == "count_nonzero":
+        assert (y_empty == y_none).all()
+    else:
+        assert torch.allclose(y_empty, y_none, **_tol(torch.float16))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_name, empty_dim",
+    [
+        ("std", []), ("std", ()),
+        ("var", []), ("var", ()),
+    ],
+)
+def test_welford_op_empty_dim_full_reduction(op_name: str, empty_dim) -> None:
+    """std/var(dim=[] | ()) reduce over all dims (PyTorch parity)."""
+    from tileops.ops.reduction.reduce import StdFwdOp, VarFwdOp
+
+    op_cls = {"std": StdFwdOp, "var": VarFwdOp}[op_name]
+    x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
+    op_empty = op_cls(dtype=torch.float16, dim=empty_dim, keepdim=False)
+    op_none = op_cls(dtype=torch.float16, dim=None, keepdim=False)
+    y_empty = op_empty(x)
+    y_none = op_none(x)
+    assert y_empty.shape == y_none.shape
+    assert torch.allclose(y_empty, y_none, **_tol(torch.float16))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("empty_dim", [[], ()])
+def test_var_mean_empty_dim_full_reduction(empty_dim) -> None:
+    """var_mean(dim=[] | ()) returns (var, mean) over all dims."""
+    from tileops.ops.reduction.reduce import VarMeanFwdOp
+
+    x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
+    op_empty = VarMeanFwdOp(dtype=torch.float16, dim=empty_dim, keepdim=False)
+    op_none = VarMeanFwdOp(dtype=torch.float16, dim=None, keepdim=False)
+    var_e, mean_e = op_empty(x)
+    var_n, mean_n = op_none(x)
+    assert var_e.shape == var_n.shape and mean_e.shape == mean_n.shape
+    assert torch.allclose(var_e, var_n, **_tol(torch.float16))
+    assert torch.allclose(mean_e, mean_n, **_tol(torch.float16))
+
+
+@pytest.mark.smoke
+def test_prod_empty_dim_rejects() -> None:
+    """ProdFwdOp keeps reject: torch.prod has no list-dim form, contract is undefined."""
+    from tileops.ops.reduction.reduce import ProdFwdOp
+
+    x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
+    op = ProdFwdOp(dtype=torch.float16, dim=[], keepdim=False)
+    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
+        op(x)
+
+
+@pytest.mark.smoke
 def test_logsumexp_empty_dim_rejects() -> None:
     """LogSumExpFwdOp keeps reject policy (per manifest); shared helper change must not leak."""
     from tileops.ops.reduction.logsumexp import LogSumExpFwdOp

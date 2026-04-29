@@ -378,12 +378,14 @@ class AminFwdOp(_SimpleReduceOp):
     """Amin (element-wise minimum) reduction along dim=-1."""
 
     _op_kind = "amin"
+    _empty_dim_policy: EmptyDimPolicy = "full"  # torch.amin(x, dim=()) full-reduces
 
 
 class AmaxFwdOp(_SimpleReduceOp):
     """Amax (element-wise maximum) reduction along dim=-1."""
 
     _op_kind = "amax"
+    _empty_dim_policy: EmptyDimPolicy = "full"  # torch.amax(x, dim=()) full-reduces
 
 
 class ProdFwdOp(_SimpleReduceOp):
@@ -418,6 +420,8 @@ class _WelfordReduceOp(_ReduceOpBase):
     """
 
     _kernel_handles_padding = True
+    # torch.std/var/var_mean(x, dim=()) full-reduce.
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
     def __init__(
         self,
