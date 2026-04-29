@@ -473,35 +473,30 @@ def test_argreduce_rejects_multidim(op_cls_path: str, dim) -> None:
 
 
 class ArgreduceDimNoneFixture(FixtureBase):
-    """Full-tensor reduction (dim=None) across ndim in {1, 2, 3, 4}.
+    """Full-tensor reduction (dim=None).
 
-    Shapes are kept modest so the flattened 1D row fits comfortably within
-    the argreduce kernel's shared-memory budget across fp16/bf16/fp32.
+    Coverage rationale (testing.md §Test case policy):
+      - dtype dispatch: one 2D shape across {fp16, bf16, fp32}.
+      - ndim shape branches (flatten path): 1D / 3D / 4D in fp16 only;
+        ndim and dtype are not crossed since the flatten code path is
+        dtype-independent.
+      - One non-aligned flat size as full coverage (tail handling).
     """
 
     PARAMS = [
         (
             "shape, dtype",
             [
-                # 1D
-                pytest.param((512,), torch.float16, marks=pytest.mark.smoke),
-                pytest.param((512,), torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param((512,), torch.float32, marks=pytest.mark.smoke),
-                # 2D
+                # dtype dispatch on a single 2D shape
                 pytest.param((16, 64), torch.float16, marks=pytest.mark.smoke),
                 pytest.param((16, 64), torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param((16, 64), torch.float32, marks=pytest.mark.smoke),
-                # 3D
+                # ndim shape coverage (flatten path is dtype-agnostic)
+                pytest.param((512,), torch.float16, marks=pytest.mark.smoke),
                 pytest.param((4, 8, 32), torch.float16, marks=pytest.mark.smoke),
-                pytest.param((4, 8, 32), torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param((4, 8, 32), torch.float32, marks=pytest.mark.smoke),
-                # 4D
                 pytest.param((2, 4, 8, 16), torch.float16, marks=pytest.mark.smoke),
-                pytest.param((2, 4, 8, 16), torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param((2, 4, 8, 16), torch.float32, marks=pytest.mark.smoke),
-                # Non-aligned flat size (300 is not a multiple of 256)
+                # Non-aligned flat size (tail handling)
                 pytest.param((10, 30), torch.float16, marks=pytest.mark.full),
-                pytest.param((10, 30), torch.float32, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -509,69 +504,42 @@ class ArgreduceDimNoneFixture(FixtureBase):
 
 @ArgreduceDimNoneFixture
 def test_argmax_dim_none(shape: tuple, dtype: torch.dtype) -> None:
-    """ArgmaxFwdOp(dim=None) matches torch.argmax(x) on the flattened tensor."""
+    """ArgmaxFwdOp(dim=None) matches torch.argmax(x); covers keepdim={False, True}."""
     from tileops.ops.reduction.argmax import ArgmaxFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = ArgmaxFwdOp(dtype=dtype, dim=None)
-    ref = torch.argmax(x)
-    y = _call(op, x)
-    assert y.dtype == torch.int64
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), (
-        f"dim=None argmax mismatch on shape={shape} dtype={dtype}: "
-        f"got {y.item()} expected {ref.item()}"
-    )
-
-
-@ArgreduceDimNoneFixture
-def test_argmax_dim_none_keepdim(shape: tuple, dtype: torch.dtype) -> None:
-    """ArgmaxFwdOp(dim=None, keepdim=True) returns all-ones shape with flat index."""
-    from tileops.ops.reduction.argmax import ArgmaxFwdOp
-
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = ArgmaxFwdOp(dtype=dtype, dim=None, keepdim=True)
-    y = _call(op, x)
-    expected_shape = tuple(1 for _ in shape)
-    assert y.dtype == torch.int64
-    assert y.shape == expected_shape, f"shape mismatch: {y.shape} vs {expected_shape}"
-    # Flat-index value must equal torch.argmax(x).
     ref_flat = torch.argmax(x)
-    assert torch.equal(y.reshape(()), ref_flat), (
+
+    y = _call(ArgmaxFwdOp(dtype=dtype, dim=None), x)
+    assert y.dtype == torch.int64
+    assert y.shape == ref_flat.shape, f"shape mismatch: {y.shape} vs {ref_flat.shape}"
+    assert torch.equal(y, ref_flat), f"dim=None argmax mismatch on shape={shape} dtype={dtype}"
+
+    y_keep = _call(ArgmaxFwdOp(dtype=dtype, dim=None, keepdim=True), x)
+    expected_shape = tuple(1 for _ in shape)
+    assert y_keep.shape == expected_shape, f"keepdim shape mismatch: {y_keep.shape} vs {expected_shape}"
+    assert torch.equal(y_keep.reshape(()), ref_flat), (
         f"dim=None keepdim argmax value mismatch on shape={shape} dtype={dtype}"
     )
 
 
 @ArgreduceDimNoneFixture
 def test_argmin_dim_none(shape: tuple, dtype: torch.dtype) -> None:
-    """ArgminFwdOp(dim=None) matches torch.argmin(x) on the flattened tensor."""
+    """ArgminFwdOp(dim=None) matches torch.argmin(x); covers keepdim={False, True}."""
     from tileops.ops.reduction.argmin import ArgminFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = ArgminFwdOp(dtype=dtype, dim=None)
-    ref = torch.argmin(x)
-    y = _call(op, x)
-    assert y.dtype == torch.int64
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.equal(y, ref), (
-        f"dim=None argmin mismatch on shape={shape} dtype={dtype}: "
-        f"got {y.item()} expected {ref.item()}"
-    )
-
-
-@ArgreduceDimNoneFixture
-def test_argmin_dim_none_keepdim(shape: tuple, dtype: torch.dtype) -> None:
-    """ArgminFwdOp(dim=None, keepdim=True) returns all-ones shape with flat index."""
-    from tileops.ops.reduction.argmin import ArgminFwdOp
-
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = ArgminFwdOp(dtype=dtype, dim=None, keepdim=True)
-    y = _call(op, x)
-    expected_shape = tuple(1 for _ in shape)
-    assert y.dtype == torch.int64
-    assert y.shape == expected_shape, f"shape mismatch: {y.shape} vs {expected_shape}"
     ref_flat = torch.argmin(x)
-    assert torch.equal(y.reshape(()), ref_flat), (
+
+    y = _call(ArgminFwdOp(dtype=dtype, dim=None), x)
+    assert y.dtype == torch.int64
+    assert y.shape == ref_flat.shape, f"shape mismatch: {y.shape} vs {ref_flat.shape}"
+    assert torch.equal(y, ref_flat), f"dim=None argmin mismatch on shape={shape} dtype={dtype}"
+
+    y_keep = _call(ArgminFwdOp(dtype=dtype, dim=None, keepdim=True), x)
+    expected_shape = tuple(1 for _ in shape)
+    assert y_keep.shape == expected_shape, f"keepdim shape mismatch: {y_keep.shape} vs {expected_shape}"
+    assert torch.equal(y_keep.reshape(()), ref_flat), (
         f"dim=None keepdim argmin value mismatch on shape={shape} dtype={dtype}"
     )
 
