@@ -8,23 +8,12 @@
 WhereFwdOp:
   ref_api: "torch.where"
   family: elementwise
-  # status: spec-only — current tileops/ops/elementwise.py:WhereFwdOp does
-  # not conform to this spec:
-  #   - __init__ signature is (N_total, dtype) instead of the
-  #     PyTorch-aligned (condition, input, other) form.
-  #   - forward parameter names are (cond, x, y) instead of
-  #     (condition, input, other).
-  #   - kernel currently assumes condition.shape == input.shape == other.shape;
-  #     the spec admits full PyTorch broadcasting across all three inputs.
-  # Code conforms to this spec in a follow-up PR per the manifest trust
-  # model (.claude/rules/manifest-trust-model.md).
-  #
   # TODO(spec-followup): PyTorch's ``torch.where`` also performs implicit
   # type promotion between ``input`` and ``other``. The manifest currently
   # constrains them to ``same_as(input)``; once the kernel grows an input
   # cast path, relax ``other`` to the full float union and document the
   # promotion contract here.
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -51,6 +40,8 @@ WhereFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      where: WhereFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py

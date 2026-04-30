@@ -400,12 +400,7 @@ ClampFwdOp:
   # single-bound min-only form, and the single-bound max-only form each
   # land as their own variant_of entries below.
   family: elementwise
-  # status: spec-only — current tileops/ops/elementwise.py:ClampFwdOp
-  # implements the *scalar* form (see ClampScalarFwdOp below) and does
-  # not conform to this Tensor-bound primary spec. Code conforms to this
-  # spec in a follow-up PR per the manifest trust model
-  # (.claude/rules/manifest-trust-model.md).
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -428,6 +423,8 @@ ClampFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      clamp_tensor: ClampTensorFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
@@ -439,15 +436,7 @@ ClampScalarFwdOp:
   # with Number (or None) bounds. Per the "No Optional[Tensor]" manifest
   # rule, this is split from the Tensor-bound primary entry above.
   family: elementwise
-  # status: spec-only — current tileops/ops/elementwise.py:ClampFwdOp
-  # implements this scalar form but does not conform to the spec:
-  #   - __init__ takes (N_total, dtype, min_val, max_val) instead of the
-  #     PyTorch-aligned (input, min, max) form.
-  #   - param names are (min_val, max_val) instead of (min, max).
-  #   - forward parameter is named `x` instead of `input`.
-  # Code conforms to this spec in a follow-up PR per the manifest trust
-  # model (.claude/rules/manifest-trust-model.md).
-  status: spec-only
+  status: implemented
   variant_of: ClampFwdOp
 
   signature:
@@ -474,6 +463,8 @@ ClampScalarFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      clamp: ClampFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
@@ -484,7 +475,7 @@ ClampMinFwdOp:
   # Single-bound Tensor variant: torch.clamp_min(input, min: Tensor) —
   # equivalent to torch.clamp with only the lower bound provided.
   family: elementwise
-  status: spec-only
+  status: implemented
   variant_of: ClampFwdOp
 
   signature:
@@ -505,6 +496,8 @@ ClampMinFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      clamp_tensor: ClampTensorFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
@@ -515,7 +508,7 @@ ClampMaxFwdOp:
   # Single-bound Tensor variant: torch.clamp_max(input, max: Tensor) —
   # equivalent to torch.clamp with only the upper bound provided.
   family: elementwise
-  status: spec-only
+  status: implemented
   variant_of: ClampFwdOp
 
   signature:
@@ -536,6 +529,8 @@ ClampMaxFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      clamp_tensor: ClampTensorFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
