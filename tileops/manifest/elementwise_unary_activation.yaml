@@ -413,7 +413,9 @@ ClampFwdOp:
       # PyTorch broadcasts input/min/max together for tensor-bound clamp.
       - "out.shape == broadcast_shapes(input.shape, min.shape, max.shape)"
 
-  workloads: []
+  workloads:
+    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     # Func mode: post-broadcast N_total uses broadcast_shapes which is
@@ -487,7 +489,9 @@ ClampMinFwdOp:
     shape_rules:
       - "out.shape == broadcast_shapes(input.shape, min.shape)"
 
-  workloads: []
+  workloads:
+    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     # Func mode: see ClampFwdOp.roofline for rationale (broadcast_shapes
@@ -520,7 +524,9 @@ ClampMaxFwdOp:
     shape_rules:
       - "out.shape == broadcast_shapes(input.shape, max.shape)"
 
-  workloads: []
+  workloads:
+    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     # Func mode: see ClampFwdOp.roofline for rationale (broadcast_shapes
