@@ -37,9 +37,8 @@ Hard rules:
 
 ### 4. Hard rules
 
-- Read every changed file in full — diff alone lacks context.
 - Do not comment outside the PR diff.
 - Do not invent issues on a clean PR.
-- No eager design-doc reads — only when a checklist item names a doc AND the diff makes that item ambiguous.
+- No eager design-doc reads — only when a guard names a doc AND the diff makes that item ambiguous, or the divergence trigger fires.
 - All review text in English.
 - All `gh` calls run with `GH_CONFIG_DIR` already exported by the caller. Repo is fixed at `tile-ai/TileOPs`.
