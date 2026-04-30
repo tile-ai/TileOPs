@@ -1,5 +1,3 @@
-### Steps
-
 1. **Read every changed source file in full.** The diff alone lacks surrounding context.
 1. **Apply each loaded checklist.** Walk its bullets against the diff and the source files. Note any items that flag.
 1. **Triage unresolved review threads.** For each thread, judge whether the developer's latest change resolves the concern. If unresolved, surface as an inline comment.
