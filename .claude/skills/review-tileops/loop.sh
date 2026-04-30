@@ -294,16 +294,6 @@ compose_prompt() {
           echo ""
         fi
       done
-    else
-      echo "## Iteration round (round $n of $MAX_ROUNDS)"
-      echo ""
-      echo "Developer pushed / replied. Verify both:"
-      echo ""
-      echo "1. Prior blockers actually fixed (read the changed source, not the reply)."
-      echo "2. No new problems introduced by the new commits."
-      echo ""
-      echo "Round 1's procedure and guards still apply — already in session memory."
-      echo ""
     fi
 
     if [[ "$consecutive_rc" -ge 3 ]]; then
@@ -347,6 +337,15 @@ ANCHOR
 
     echo "## Task"
     echo ""
+    if [[ "$n" -gt 1 ]]; then
+      echo "Developer pushed / replied. Verify both:"
+      echo ""
+      echo "1. Prior blockers actually fixed (read the changed source, not the reply)."
+      echo "2. No new problems introduced by the new commits."
+      echo ""
+      echo "Round 1's procedure and guards still apply — already in session memory."
+      echo ""
+    fi
     echo "Read the diff at the path above and any changed source files referenced therein, in full. Apply the loaded checklists. Submit ONE atomic review on \`$REPO\` PR #$PR via \`gh\` per the format spec."
     echo ""
     echo "The summary body MUST end with this trailer line (the loop driver parses it; review is rejected without it):"
