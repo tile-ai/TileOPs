@@ -7,6 +7,12 @@ set -euo pipefail
 PR="${1:?usage: preflight.sh <PR_NUMBER>}"
 REPO="tile-ai/TileOPs"
 
+if ! command -v codex >/dev/null 2>&1; then
+  echo "error: codex CLI not found in PATH." >&2
+  echo "  the review loop runs each round under Codex; install it from https://github.com/openai/codex" >&2
+  exit 1
+fi
+
 if [ -z "${TILEOPS_REVIEW_GH_CONFIG_DIR:-}" ]; then
   echo "error: TILEOPS_REVIEW_GH_CONFIG_DIR is not set." >&2
   echo "  export it in your shell rc; see .claude/skills/review-tileops/README.md" >&2
