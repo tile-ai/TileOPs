@@ -303,10 +303,12 @@ compose_prompt() {
     else
       echo "## Iteration round (round $n of $MAX_ROUNDS)"
       echo ""
-      echo "Developer pushed changes since the last review. Verify:"
+      echo "Developer pushed changes / replied since the last review. Strictly verify:"
       echo ""
-      echo "1. Are the prior blockers actually resolved?"
-      echo "2. Were any new problems introduced by the new commits?"
+      echo "1. Are the prior blockers actually resolved? Read the changed source, not just the developer's reply."
+      echo "2. Did the new commits introduce any new problems?"
+      echo ""
+      echo "Procedure and checklists from round 1 still apply — they are in your session memory."
       echo ""
     fi
 
@@ -586,19 +588,21 @@ while true; do
     : > "$RUN_DIR/inbox.md"
   fi
 
-  # criteria.md / procedure.md mtime checks — round 1 always inlines both,
-  # later rounds only re-inline when the file changed since last inclusion
-  # (Codex's session memory carries unchanged content forward).
+  # procedure.md is round-1-only: round 2+ replaces it with the short
+  # "iteration round" block in compose_prompt (verify last round's
+  # blockers are fixed; flag any newly introduced issues). criteria.md
+  # uses an mtime gate — re-inline only when the format spec changed
+  # since last inclusion (Codex's session memory carries unchanged
+  # content forward).
   CRITERIA_MTIME=$(stat -c %Y "$CRITERIA_PATH")
   PROCEDURE_MTIME=$(stat -c %Y "$PROCEDURE_PATH")
   LAST_CRITERIA_MTIME=$(jq -r '.last_criteria_mtime // 0' "$META")
-  LAST_PROCEDURE_MTIME=$(jq -r '.last_procedure_mtime // 0' "$META")
   INCLUDE_CRITERIA=0
   INCLUDE_PROCEDURE=0
   if [[ "$NEXT_ROUND" -eq 1 || "$CRITERIA_MTIME" -gt "$LAST_CRITERIA_MTIME" ]]; then
     INCLUDE_CRITERIA=1
   fi
-  if [[ "$NEXT_ROUND" -eq 1 || "$PROCEDURE_MTIME" -gt "$LAST_PROCEDURE_MTIME" ]]; then
+  if [[ "$NEXT_ROUND" -eq 1 ]]; then
     INCLUDE_PROCEDURE=1
   fi
 
