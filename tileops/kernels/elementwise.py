@@ -2556,6 +2556,13 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
 
     For fp8 the cast/compute uses fp32 to preserve precision; for non-fp8
     the kernel uses register_copy with fp32 accumulation.
+
+    NaN semantics: matches ``torch.clamp`` / ``torch.clamp_min`` /
+    ``torch.clamp_max``. If ``x``, ``lo``, or ``hi`` is NaN at a position,
+    the output at that position is NaN. ``T.max`` / ``T.min`` on CUDA do
+    not propagate NaN by themselves (they return the non-NaN operand), so
+    we add explicit ``isnan`` guards in fp32 -- mirroring the pattern used
+    by ``MaximumFwdKernel`` / ``MinimumFwdKernel``.
     """
     if not (has_min or has_max):
         raise ValueError(
@@ -2579,12 +2586,17 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
                         for i, j in T.Parallel(threads_arg, npt_arg):
                             idx = (bx * threads_arg + i) * npt_arg + j
                             if idx < N:
-                                v32 = T.cast(x[idx], "float32")
+                                x32 = T.cast(x[idx], "float32")
                                 lo32 = T.cast(lo[idx], "float32")
                                 hi32 = T.cast(hi[idx], "float32")
-                                v32 = T.max(v32, lo32)
-                                v32 = T.min(v32, hi32)
-                                y[idx] = T.Cast(out_dtype, v32)
+                                r = T.max(x32, lo32)
+                                r = T.min(r, hi32)
+                                # NaN propagation (PyTorch semantics):
+                                # if any of x/lo/hi is NaN -> output NaN.
+                                r = T.if_then_else(T.isnan(hi32), hi32, r)
+                                r = T.if_then_else(T.isnan(lo32), lo32, r)
+                                r = T.if_then_else(T.isnan(x32), x32, r)
+                                y[idx] = T.Cast(out_dtype, r)
 
                 return main
 
@@ -2602,10 +2614,14 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
                         for i, j in T.Parallel(threads_arg, npt_arg):
                             idx = (bx * threads_arg + i) * npt_arg + j
                             if idx < N:
-                                v32 = T.cast(x[idx], "float32")
+                                x32 = T.cast(x[idx], "float32")
                                 lo32 = T.cast(lo[idx], "float32")
-                                v32 = T.max(v32, lo32)
-                                y[idx] = T.Cast(out_dtype, v32)
+                                r = T.max(x32, lo32)
+                                # NaN propagation (PyTorch clamp_min):
+                                # if x or lo is NaN -> output NaN.
+                                r = T.if_then_else(T.isnan(lo32), lo32, r)
+                                r = T.if_then_else(T.isnan(x32), x32, r)
+                                y[idx] = T.Cast(out_dtype, r)
 
                 return main
 
@@ -2624,10 +2640,14 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         idx = (bx * threads_arg + i) * npt_arg + j
                         if idx < N:
-                            v32 = T.cast(x[idx], "float32")
+                            x32 = T.cast(x[idx], "float32")
                             hi32 = T.cast(hi[idx], "float32")
-                            v32 = T.min(v32, hi32)
-                            y[idx] = T.Cast(out_dtype, v32)
+                            r = T.min(x32, hi32)
+                            # NaN propagation (PyTorch clamp_max):
+                            # if x or hi is NaN -> output NaN.
+                            r = T.if_then_else(T.isnan(hi32), hi32, r)
+                            r = T.if_then_else(T.isnan(x32), x32, r)
+                            y[idx] = T.Cast(out_dtype, r)
 
             return main
 
@@ -2653,12 +2673,17 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
                     T.copy(hi[bx * block_size : (bx + 1) * block_size], hi_reg)
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         k = i * npt_arg + j
-                        v32 = T.cast(x_reg[k], "float32")
+                        x32 = T.cast(x_reg[k], "float32")
                         lo32 = T.cast(lo_reg[k], "float32")
                         hi32 = T.cast(hi_reg[k], "float32")
-                        v32 = T.max(v32, lo32)
-                        v32 = T.min(v32, hi32)
-                        x_reg[k] = T.Cast(dtype, v32)
+                        r = T.max(x32, lo32)
+                        r = T.min(r, hi32)
+                        # NaN propagation (PyTorch clamp):
+                        # if any of x/lo/hi is NaN -> output NaN.
+                        r = T.if_then_else(T.isnan(hi32), hi32, r)
+                        r = T.if_then_else(T.isnan(lo32), lo32, r)
+                        r = T.if_then_else(T.isnan(x32), x32, r)
+                        x_reg[k] = T.Cast(dtype, r)
                     T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
 
             return main
@@ -2680,10 +2705,14 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
                     T.copy(lo[bx * block_size : (bx + 1) * block_size], lo_reg)
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         k = i * npt_arg + j
-                        v32 = T.cast(x_reg[k], "float32")
+                        x32 = T.cast(x_reg[k], "float32")
                         lo32 = T.cast(lo_reg[k], "float32")
-                        v32 = T.max(v32, lo32)
-                        x_reg[k] = T.Cast(dtype, v32)
+                        r = T.max(x32, lo32)
+                        # NaN propagation (PyTorch clamp_min):
+                        # if x or lo is NaN -> output NaN.
+                        r = T.if_then_else(T.isnan(lo32), lo32, r)
+                        r = T.if_then_else(T.isnan(x32), x32, r)
+                        x_reg[k] = T.Cast(dtype, r)
                     T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
 
             return main
@@ -2706,10 +2735,14 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
                 T.copy(hi[bx * block_size : (bx + 1) * block_size], hi_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
-                    v32 = T.cast(x_reg[k], "float32")
+                    x32 = T.cast(x_reg[k], "float32")
                     hi32 = T.cast(hi_reg[k], "float32")
-                    v32 = T.min(v32, hi32)
-                    x_reg[k] = T.Cast(dtype, v32)
+                    r = T.min(x32, hi32)
+                    # NaN propagation (PyTorch clamp_max):
+                    # if x or hi is NaN -> output NaN.
+                    r = T.if_then_else(T.isnan(hi32), hi32, r)
+                    r = T.if_then_else(T.isnan(x32), x32, r)
+                    x_reg[k] = T.Cast(dtype, r)
                 T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main

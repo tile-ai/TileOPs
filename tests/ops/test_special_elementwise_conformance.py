@@ -315,6 +315,91 @@ def test_clamp_max_init_signature_pytorch_aligned():
 
 
 # ---------------------------------------------------------------------------
+# Regression: NaN propagation for Tensor-bound clamp variants.
+#
+# torch.clamp / torch.clamp_min / torch.clamp_max propagate NaN: if any of
+# input / min / max is NaN at position i, the output at i is NaN. CUDA's
+# fmax / fmin (used by T.max / T.min) drop NaN by returning the non-NaN
+# operand, so the kernel adds explicit isnan guards. These tests pin the
+# semantics so a future refactor cannot regress to non-IEEE behaviour.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_clamp_tensor_nan_propagation(dtype):
+    """ClampFwdOp must match torch.clamp NaN semantics (Tensor min + max)."""
+    from tileops.ops.elementwise import ClampFwdOp
+
+    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=dtype)
+    mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device="cuda", dtype=dtype)
+    mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device="cuda", dtype=dtype)
+
+    ref = torch.clamp(x, mn, mx)
+    op = ClampFwdOp(input=(4,), min=(4,), max=(4,), dtype=dtype)
+    out = op(x, mn, mx)
+    torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.smoke
+def test_clamp_tensor_min_only_nan_propagation():
+    """ClampFwdOp(min=Tensor, max=None) must propagate NaN like torch.clamp."""
+    from tileops.ops.elementwise import ClampFwdOp
+
+    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=torch.float32)
+    mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device="cuda", dtype=torch.float32)
+
+    ref = torch.clamp(x, mn, None)
+    op = ClampFwdOp(input=(4,), min=(4,), max=None, dtype=torch.float32)
+    out = op(x, mn, None)
+    torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.smoke
+def test_clamp_tensor_max_only_nan_propagation():
+    """ClampFwdOp(min=None, max=Tensor) must propagate NaN like torch.clamp."""
+    from tileops.ops.elementwise import ClampFwdOp
+
+    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=torch.float32)
+    mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device="cuda", dtype=torch.float32)
+
+    ref = torch.clamp(x, None, mx)
+    op = ClampFwdOp(input=(4,), min=None, max=(4,), dtype=torch.float32)
+    out = op(x, None, mx)
+    torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_clamp_min_nan_propagation(dtype):
+    """ClampMinFwdOp must match torch.clamp_min NaN semantics."""
+    from tileops.ops.elementwise import ClampMinFwdOp
+
+    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=dtype)
+    mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device="cuda", dtype=dtype)
+
+    ref = torch.clamp_min(x, mn)
+    op = ClampMinFwdOp(input=(4,), min=(4,), dtype=dtype)
+    out = op(x, mn)
+    torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_clamp_max_nan_propagation(dtype):
+    """ClampMaxFwdOp must match torch.clamp_max NaN semantics."""
+    from tileops.ops.elementwise import ClampMaxFwdOp
+
+    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=dtype)
+    mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device="cuda", dtype=dtype)
+
+    ref = torch.clamp_max(x, mx)
+    op = ClampMaxFwdOp(input=(4,), max=(4,), dtype=dtype)
+    out = op(x, mx)
+    torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
+
+
+# ---------------------------------------------------------------------------
 # AC-4: MaskedFillFwdOp (0-dim Tensor) / MaskedFillScalarFwdOp (Number)
 # ---------------------------------------------------------------------------
 
