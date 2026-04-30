@@ -1,8 +1,4 @@
-# Review Criteria — tile-ai/TileOPs
-
-Edit here, not in `SKILL.md`.
-
-## 1. Review checklists to load
+# 1. Review checklists to load
 
 Always load `.claude/review-checklists/pre-review.md` first — it carries the meta-rules every domain checklist depends on (open-set, concrete-and-decidable, reviewer-restraint).
 
@@ -31,7 +27,7 @@ Unmatched prefixes (`[Fix]`, `[BugFix]`, `[Perf]`, `[Bench]`, `[CI]`, `[Chore]`,
 
 Read every changed source file in full — the de-prioritization is design docs only.
 
-## 2. Review priority (descending)
+# 2. Review priority (descending)
 
 1. **Design consistency** — does the PR follow established patterns, or introduce a new pattern where an existing one applies?
 1. **Interface conformance** — Op signatures vs manifest spec, class hierarchy vs `ops-design.md`.
@@ -40,11 +36,11 @@ Read every changed source file in full — the de-prioritization is design docs 
 
 Ignore style/formatting (pre-commit handles it).
 
-## 3. Extra-prompt override
+# 3. Extra-prompt override
 
 If the caller provides extra guidance as the second positional arg, it **overrides** these defaults for this review. Apply it explicitly.
 
-## 4. Submit
+# 4. Submit
 
 ```bash
 gh api repos/tile-ai/TileOPs/pulls/<N>/reviews \
@@ -55,7 +51,7 @@ gh api repos/tile-ai/TileOPs/pulls/<N>/reviews \
 
 `<EVENT>`: `REQUEST_CHANGES` if any blocking issue, `APPROVE` if clean, `COMMENT` for non-blocking questions only. Before emitting `APPROVE`, run the §1 approval gate when applicable.
 
-## 5. Inline format
+# 5. Inline format
 
 ```
 <what is wrong and why> → <what to change>
@@ -63,7 +59,7 @@ gh api repos/tile-ai/TileOPs/pulls/<N>/reviews \
 
 One comment per issue. Name the function, variable, or pattern. The reader is an agent that executes fixes literally.
 
-## 6. Summary format (markdown)
+# 6. Summary format (markdown)
 
 The summary is for what does **not** fit in an inline comment. Per-file issues belong inline (§5), not in a summary list. Omit empty sections.
 
@@ -81,7 +77,7 @@ Hard rules:
 - Per-file/per-line items go in the `comments=[...]` array of §4, never in the summary body.
 - Clean PR: one line, `Clean — no issues.`
 
-## 7. Hard rules
+# 7. Hard rules
 
 - Read every changed file in full — diff alone lacks context.
 - Do not comment outside the PR diff.
