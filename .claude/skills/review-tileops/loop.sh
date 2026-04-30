@@ -402,6 +402,10 @@ run_codex_round() {
 
     attempt=$((attempt+1))
     log "codex attempt $attempt empty/failed; retrying in 10s …"
+    # Surface the tail of the events file so the human log shows *why*
+    # — otherwise repeated failures look identical and the cause stays
+    # buried in $events.
+    tail -n 5 "$events" 2>/dev/null | sed 's/^/  | /' >&2 || true
     sleep 10
   done
 
