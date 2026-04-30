@@ -1,5 +1,3 @@
-# Pre-review
-
 Common rules for every checklist in this folder. Load this file before any specific checklist.
 
 - **Open set, not exhaustive.** The items in each checklist are the floor; add PR-specific checks as needed.
