@@ -662,11 +662,18 @@ while true; do
 
   log "round $NEXT_ROUND done — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
 
-  # APPROVE this round → exit immediately. If the developer pushes a new
-  # commit later that auto-dismisses the approval, re-running the loop
-  # picks it up via the GitHub-state check at the top of the iteration.
+  # APPROVE this round → exit, but re-check stability first. HEAD_SHA
+  # and LATEST_HUMAN_ID were snapshotted before Codex ran (potentially
+  # minutes ago); a push or non-reviewer comment arriving during the
+  # review must not be silently skipped. If anything moved, fall
+  # through to sleep + next iteration, which will pick up the change.
   if [[ "$EVENT" == "APPROVE" ]]; then
-    converge_and_exit
+    POST_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+    POST_HUMAN_ID=$(latest_human_comment_id)
+    if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" && "$POST_HUMAN_ID" == "$LATEST_HUMAN_ID" ]]; then
+      converge_and_exit
+    fi
+    log "APPROVE produced but state moved during review (head_changed=$([[ "$POST_HEAD_SHA" != "$HEAD_SHA" ]] && echo y || echo n), comments_changed=$([[ "$POST_HUMAN_ID" != "$LATEST_HUMAN_ID" ]] && echo y || echo n)) — falling through"
   fi
 
   sleep "$POLL_INTERVAL"
