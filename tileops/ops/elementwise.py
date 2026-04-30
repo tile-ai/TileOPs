@@ -32,6 +32,7 @@ from tileops.kernels.elementwise import (
     BitwiseXorFwdKernel,
     CeilFwdKernel,
     ClampFwdKernel,
+    ClampTensorFwdKernel,
     CosFwdKernel,
     DivFwdKernel,
     EluFwdKernel,
@@ -62,6 +63,7 @@ from tileops.kernels.elementwise import (
     LogicalOrFwdKernel,
     LtFwdKernel,
     MaskedFillFwdKernel,
+    MaskedFillTensorValueFwdKernel,
     MaximumFwdKernel,
     MinimumFwdKernel,
     MishFwdKernel,
@@ -220,7 +222,12 @@ def _register_prelu_custom_op(op_cls):
 
 
 def _register_where_custom_op(op_cls):
-    """Register a where-style op (cond, x, y -> out) for torch.compile."""
+    """Register a where-style op (cond, x, y -> out) for torch.compile.
+
+    The fake function computes the broadcast output shape from
+    ``cond`` / ``x`` / ``y`` so that ``torch.compile(fullgraph=True)``
+    works for both same-shape and broadcasting inputs.
+    """
     op_name = op_cls._op_name
 
     @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
@@ -240,13 +247,19 @@ def _register_where_custom_op(op_cls):
         y: torch.Tensor,
         instance_key: int,
     ) -> torch.Tensor:
-        return torch.empty_like(x)
+        out_shape = torch.broadcast_shapes(cond.shape, x.shape, y.shape)
+        return x.new_empty(out_shape)
 
     op_cls._wrapped = _wrapped
 
 
 def _register_masked_fill_custom_op(op_cls):
-    """Register a masked-fill-style op (x, mask -> y) for torch.compile."""
+    """Register a masked-fill-style op (x, mask -> y) for torch.compile.
+
+    The fake function computes the bidirectional broadcast output shape
+    of ``x`` and ``mask`` so ``torch.compile(fullgraph=True)`` works for
+    both same-shape and broadcasting inputs.
+    """
     op_name = op_cls._op_name
 
     @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
@@ -264,7 +277,135 @@ def _register_masked_fill_custom_op(op_cls):
         mask: torch.Tensor,
         instance_key: int,
     ) -> torch.Tensor:
-        return torch.empty_like(x)
+        out_shape = torch.broadcast_shapes(x.shape, mask.shape)
+        return x.new_empty(out_shape)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_masked_fill_tensor_value_custom_op(op_cls):
+    """Register a masked-fill (Tensor value) op (input, mask, value -> out).
+
+    The fake function computes the broadcast output shape of ``input`` and
+    ``mask`` (``value`` is a 0-dim Tensor). Registered under a distinct
+    namespace from the scalar masked_fill variant to avoid collision.
+    """
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(
+        f"top::elementwise_{op_name}_tensor_value", mutates_args=(),
+    )
+    def _wrapped(
+        input: torch.Tensor,  # noqa: A002
+        mask: torch.Tensor,
+        value: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(input, mask, value)
+
+    @_wrapped.register_fake
+    def _(
+        input: torch.Tensor,  # noqa: A002
+        mask: torch.Tensor,
+        value: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        out_shape = torch.broadcast_shapes(input.shape, mask.shape)
+        return input.new_empty(out_shape)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_clamp_tensor_custom_op(op_cls):
+    """Register a Tensor-bound clamp op (input, min?, max? -> out).
+
+    ``min`` and ``max`` are each ``Optional[Tensor]``; the schema is
+    inferred by ``torch.library.custom_op`` from the ``Optional[torch.Tensor]``
+    annotations, producing ``Tensor? min, Tensor? max`` in the underlying
+    custom-op schema. The fake function computes the broadcast output
+    shape of all non-``None`` operands so ``torch.compile(fullgraph=True)``
+    works for both same-shape and broadcasting inputs. Registered under
+    a distinct ``_tensor`` namespace from the scalar-bound clamp variant.
+    """
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(
+        f"top::elementwise_{op_name}_tensor", mutates_args=(),
+    )
+    def _wrapped(
+        input: torch.Tensor,  # noqa: A002
+        min: Optional[torch.Tensor],  # noqa: A002
+        max: Optional[torch.Tensor],  # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(input, min, max)
+
+    @_wrapped.register_fake
+    def _(
+        input: torch.Tensor,  # noqa: A002
+        min: Optional[torch.Tensor],  # noqa: A002
+        max: Optional[torch.Tensor],  # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        shapes = [input.shape]
+        if min is not None:
+            shapes.append(min.shape)
+        if max is not None:
+            shapes.append(max.shape)
+        out_shape = torch.broadcast_shapes(*shapes)
+        return input.new_empty(out_shape)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_clamp_min_custom_op(op_cls):
+    """Register single-bound Tensor lower-clamp (input, min -> out)."""
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
+    def _wrapped(
+        input: torch.Tensor,  # noqa: A002
+        min: torch.Tensor,    # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(input, min)
+
+    @_wrapped.register_fake
+    def _(
+        input: torch.Tensor,  # noqa: A002
+        min: torch.Tensor,    # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        out_shape = torch.broadcast_shapes(input.shape, min.shape)
+        return input.new_empty(out_shape)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_clamp_max_custom_op(op_cls):
+    """Register single-bound Tensor upper-clamp (input, max -> out)."""
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
+    def _wrapped(
+        input: torch.Tensor,  # noqa: A002
+        max: torch.Tensor,    # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(input, max)
+
+    @_wrapped.register_fake
+    def _(
+        input: torch.Tensor,  # noqa: A002
+        max: torch.Tensor,    # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        out_shape = torch.broadcast_shapes(input.shape, max.shape)
+        return input.new_empty(out_shape)
 
     op_cls._wrapped = _wrapped
 
@@ -414,7 +555,11 @@ __all__ = [
     "PreluFwdOp",
     "WhereFwdOp",
     "ClampFwdOp",
+    "ClampScalarFwdOp",
+    "ClampMinFwdOp",
+    "ClampMaxFwdOp",
     "MaskedFillFwdOp",
+    "MaskedFillScalarFwdOp",
     "NanToNumFwdOp",
     "AlibiFwdOp",
     "SinusoidalFwdOp",
@@ -493,6 +638,31 @@ def _apply_fp8_post_cast(result: torch.Tensor, kernel) -> torch.Tensor:
     if fp8_out is not None:
         return result.to(fp8_out)
     return result
+
+
+_FP8_DTYPES = (torch.float8_e4m3fn, torch.float8_e5m2)
+
+
+def _is_fp8(dtype: torch.dtype) -> bool:
+    """Return True iff ``dtype`` is one of the supported fp8 dtypes."""
+    return dtype in _FP8_DTYPES
+
+
+def _fp8_compute_dtype(dtype: torch.dtype) -> torch.dtype:
+    """Return the compute dtype used to emulate fp8 elementwise fallbacks.
+
+    PyTorch's CUDA backend does not implement ``clamp``/``maximum``/
+    ``minimum``/``masked_fill_`` on Float8 tensors (raises NotImplementedError
+    on ``clamp_cuda`` / ``max_elementwise_cuda`` / ``min_elementwise_cuda`` /
+    ``masked_fill_``). Both e4m3fn (finite range ±448) and e5m2 (finite range
+    ±57344) fit in fp16, so we upcast to fp16, run the op, and cast back. The
+    final cast preserves Inf/NaN for e5m2 (PyTorch's fp16->e5m2 conversion is
+    non-saturating) and saturates for e4m3fn (matching PyTorch's default
+    fp16->e4m3fn behaviour).
+    """
+    if not _is_fp8(dtype):
+        raise ValueError(f"_fp8_compute_dtype expects an fp8 dtype, got {dtype}")
+    return torch.float16
 
 
 class UnaryOp(Op):
@@ -1497,20 +1667,41 @@ class PreluFwdOp(Op):
 
 
 class WhereFwdOp(Op):
-    """Where: out = cond ? x : y.
+    """Where: out = condition ? input : other (with full PyTorch broadcasting).
+
+    Conforms to ``torch.where(condition, input, other)``: ``condition`` is a
+    bool tensor and ``input`` / ``other`` may broadcast with each other and
+    with ``condition`` to produce the output. The Op layer expands all
+    three inputs to the broadcast shape and dispatches the existing flat
+    where kernel on ``N_total = product(broadcast_shape)`` elements.
 
     Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype for x and y.
+        condition: Shape of the condition tensor (any shape broadcastable
+            with ``input`` / ``other``).
+        input: Shape of the value-when-true tensor.
+        other: Shape of the value-when-false tensor.
+        dtype: Torch dtype for ``input`` / ``other``.
     """
 
     _op_name = "where"
     _wrapped = None
 
-    def __init__(self, N_total: int, dtype: torch.dtype):
-        self.N_total = N_total
+    def __init__(
+        self,
+        condition: tuple,
+        input: tuple,  # noqa: A002 — manifest-aligned PyTorch param name
+        other: tuple,
+        dtype: torch.dtype,
+    ):
+        self.condition_shape = tuple(condition)
+        self.input_shape = tuple(input)
+        self.other_shape = tuple(other)
         self.dtype = dtype
-        self.kernel = WhereFwdKernel(N_total, dtype)
+        self.out_shape = tuple(
+            torch.broadcast_shapes(self.condition_shape, self.input_shape, self.other_shape)
+        )
+        self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.kernel = WhereFwdKernel(self.N_total, dtype)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -1518,56 +1709,351 @@ class WhereFwdOp(Op):
     def default_kernel_map(self):
         return {"where": WhereFwdKernel}
 
+    @staticmethod
+    def _expand_flat(t: torch.Tensor, target_shape: tuple) -> torch.Tensor:
+        """Expand ``t`` to ``target_shape`` and return a contiguous flat view."""
+        if tuple(t.shape) != tuple(target_shape):
+            t = t.expand(target_shape)
+        return t.contiguous().view(-1)
+
     def _eager_forward(
-        self, cond: torch.Tensor, x: torch.Tensor, y: torch.Tensor,
+        self, condition: torch.Tensor, input: torch.Tensor, other: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
-        orig_shape = x.shape
-        # Fast path: cast to bool if needed, then flatten + pack to uint8
-        # for vectorized T.copy in the kernel.
-        cond_flat = (cond if cond.dtype == torch.bool else cond.bool()).contiguous().view(-1)
-        x_flat = x.contiguous().view(-1)
-        y_flat = y.contiguous().view(-1)
-        return self.kernel(cond_flat.view(torch.uint8), x_flat, y_flat).view(orig_shape)
+        out_shape = self.out_shape if self.out_shape else (1,)
+        cond_b = condition if condition.dtype == torch.bool else condition.bool()
+        cond_flat = self._expand_flat(cond_b, out_shape).view(torch.uint8)
+        x_flat = self._expand_flat(input, out_shape)
+        y_flat = self._expand_flat(other, out_shape)
+        result = self.kernel(cond_flat, x_flat, y_flat).view(out_shape if self.out_shape else ())
+        return result
 
     def forward(
-        self, cond: torch.Tensor, x: torch.Tensor, y: torch.Tensor,
+        self, condition: torch.Tensor, input: torch.Tensor, other: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
-        if not x.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.numel() != self.N_total:
-            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
+        if not (condition.is_cuda and input.is_cuda and other.is_cuda):
+            raise ValueError("Inputs must be CUDA tensors")
+        if condition.dtype != torch.bool:
+            raise ValueError(
+                f"Expected condition.dtype torch.bool, got {condition.dtype}"
+            )
+        if input.dtype != self.dtype:
+            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        if other.dtype != self.dtype:
+            raise ValueError(f"Expected other.dtype {self.dtype}, got {other.dtype}")
+        if tuple(condition.shape) != self.condition_shape:
+            raise ValueError(
+                f"Expected condition.shape {self.condition_shape}, got {tuple(condition.shape)}"
+            )
+        if tuple(input.shape) != self.input_shape:
+            raise ValueError(
+                f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}"
+            )
+        if tuple(other.shape) != self.other_shape:
+            raise ValueError(
+                f"Expected other.shape {self.other_shape}, got {tuple(other.shape)}"
+            )
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(cond, x, y, self._instance_key)
-        return self._eager_forward(cond, x, y)
+            return wrapped(condition, input, other, self._instance_key)
+        return self._eager_forward(condition, input, other)
 
 
-class ClampFwdOp(Op):
-    """Clamp: y = clamp(x, min, max) with optional bounds.
+class _ClampTensorBase(Op):
+    """Shared infrastructure for Tensor-bound clamp variants (broadcasting)."""
+
+    _wrapped = None
+
+    @staticmethod
+    def _expand_flat(t: torch.Tensor, target_shape: tuple) -> torch.Tensor:
+        if tuple(t.shape) != tuple(target_shape):
+            t = t.expand(target_shape)
+        return t.contiguous().view(-1)
+
+
+class ClampFwdOp(_ClampTensorBase):
+    """Clamp with Tensor lower and/or upper bounds (broadcasting).
+
+    Conforms to ``torch.clamp(input, min, max)`` where ``min`` and ``max``
+    are each either a Tensor or ``None``. At least one of the two bounds
+    must be a Tensor. All Tensor operands broadcast together. The
+    primary spec entry in ``tileops/manifest/`` covers the both-Tensor
+    form; the mixed Tensor/``None`` cases are runtime-equivalent to
+    ``ClampMinFwdOp`` / ``ClampMaxFwdOp`` and are accepted here so callers
+    can mirror PyTorch's ``torch.clamp`` API directly.
 
     Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
-        min_val: Lower bound (None = no lower bound).
-        max_val: Upper bound (None = no upper bound).
+        input: Shape of the input tensor.
+        min: Shape of the lower-bound tensor, or ``None`` for no lower bound.
+        max: Shape of the upper-bound tensor, or ``None`` for no upper bound.
+        dtype: Torch dtype for all operands.
+
+    Raises:
+        ValueError: If both ``min`` and ``max`` are ``None``.
     """
 
     _op_name = "clamp"
     _wrapped = None
 
-    def __init__(self, N_total: int, dtype: torch.dtype,
-                 min_val: Optional[float] = None, max_val: Optional[float] = None):
-        if min_val is not None:
-            _validate_scalar_param_repr("min_val", min_val, dtype, self._op_name)
-        if max_val is not None:
-            _validate_scalar_param_repr("max_val", max_val, dtype, self._op_name)
-        self.N_total = N_total
+    def __init__(
+        self,
+        input: tuple,  # noqa: A002 — manifest-aligned PyTorch param name
+        min: Optional[tuple] = None,  # noqa: A002 — manifest-aligned PyTorch param name
+        max: Optional[tuple] = None,  # noqa: A002 — manifest-aligned PyTorch param name
+        dtype: torch.dtype = torch.float32,
+    ):
+        if min is None and max is None:
+            raise ValueError(
+                "ClampFwdOp requires at least one of `min` or `max` to be a "
+                "Tensor shape; both None is not a valid clamp."
+            )
+        self.input_shape = tuple(input)
+        self.min_shape = None if min is None else tuple(min)
+        self.max_shape = None if max is None else tuple(max)
         self.dtype = dtype
-        self.min_val = min_val
-        self.max_val = max_val
-        self.kernel = ClampFwdKernel(N_total, dtype, min_val=min_val, max_val=max_val)
+        broadcast_args = [self.input_shape]
+        if self.min_shape is not None:
+            broadcast_args.append(self.min_shape)
+        if self.max_shape is not None:
+            broadcast_args.append(self.max_shape)
+        self.out_shape = tuple(torch.broadcast_shapes(*broadcast_args))
+        self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.kernel = ClampTensorFwdKernel(
+            self.N_total, dtype,
+            has_min=self.min_shape is not None,
+            has_max=self.max_shape is not None,
+        )
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"clamp_tensor": ClampTensorFwdKernel}
+
+    def _eager_forward(
+        self,
+        input: torch.Tensor,  # noqa: A002
+        min: Optional[torch.Tensor] = None,  # noqa: A002
+        max: Optional[torch.Tensor] = None,  # noqa: A002
+    ) -> torch.Tensor:
+        # Broadcast all operands to ``out_shape`` and dispatch the
+        # TileLang Tensor-bound clamp kernel. The kernel branches on
+        # ``has_min`` / ``has_max`` at build time, so this single Op
+        # class also covers the mixed Tensor/None cases.
+        out_shape = self.out_shape if self.out_shape else (1,)
+        x_flat = self._expand_flat(input, out_shape)
+        lo_flat = None if min is None else self._expand_flat(min, out_shape)
+        hi_flat = None if max is None else self._expand_flat(max, out_shape)
+        result = self.kernel(x_flat, lo_flat, hi_flat)
+        return result.view(self.out_shape if self.out_shape else ())
+
+    def forward(
+        self,
+        input: torch.Tensor,  # noqa: A002
+        min: Optional[torch.Tensor] = None,  # noqa: A002
+        max: Optional[torch.Tensor] = None,  # noqa: A002
+    ) -> torch.Tensor:
+        # Validate that the runtime None / Tensor pattern matches what
+        # __init__ was configured for — the broadcast shape and the
+        # presence of each bound is baked in at construction.
+        if (min is None) != (self.min_shape is None):
+            raise ValueError(
+                f"min was {'None' if self.min_shape is None else 'a Tensor shape'} at "
+                f"__init__ but {'None' if min is None else 'a Tensor'} at forward()"
+            )
+        if (max is None) != (self.max_shape is None):
+            raise ValueError(
+                f"max was {'None' if self.max_shape is None else 'a Tensor shape'} at "
+                f"__init__ but {'None' if max is None else 'a Tensor'} at forward()"
+            )
+        tensors = [("input", input, self.input_shape)]
+        if min is not None:
+            tensors.append(("min", min, self.min_shape))
+        if max is not None:
+            tensors.append(("max", max, self.max_shape))
+        for _, t, _ in tensors:
+            if not t.is_cuda:
+                raise ValueError("Inputs must be CUDA tensors")
+        for name, t, expected in tensors:
+            if t.dtype != self.dtype:
+                raise ValueError(f"Expected {name}.dtype {self.dtype}, got {t.dtype}")
+            if tuple(t.shape) != expected:
+                raise ValueError(
+                    f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
+                )
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(input, min, max, self._instance_key)
+        return self._eager_forward(input, min, max)
+
+
+class ClampMinFwdOp(_ClampTensorBase):
+    """Single-bound Tensor lower clamp (``torch.clamp_min``).
+
+    Args:
+        input: Shape of the input tensor.
+        min: Shape of the lower-bound tensor.
+        dtype: Torch dtype.
+    """
+
+    _op_name = "clamp_min"
+    _wrapped = None
+
+    def __init__(
+        self,
+        input: tuple,  # noqa: A002
+        min: tuple,    # noqa: A002
+        dtype: torch.dtype,
+    ):
+        self.input_shape = tuple(input)
+        self.min_shape = tuple(min)
+        self.dtype = dtype
+        self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.min_shape))
+        self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.kernel = ClampTensorFwdKernel(
+            self.N_total, dtype, has_min=True, has_max=False,
+        )
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"clamp_tensor": ClampTensorFwdKernel}
+
+    def _eager_forward(
+        self, input: torch.Tensor, min: torch.Tensor,  # noqa: A002
+    ) -> torch.Tensor:
+        # Broadcast input/min to out_shape and dispatch the TileLang
+        # min-only Tensor-bound clamp kernel.
+        out_shape = self.out_shape if self.out_shape else (1,)
+        x_flat = self._expand_flat(input, out_shape)
+        lo_flat = self._expand_flat(min, out_shape)
+        result = self.kernel(x_flat, lo_flat, None)
+        return result.view(self.out_shape if self.out_shape else ())
+
+    def forward(
+        self, input: torch.Tensor, min: torch.Tensor,  # noqa: A002
+    ) -> torch.Tensor:
+        if not (input.is_cuda and min.is_cuda):
+            raise ValueError("Inputs must be CUDA tensors")
+        for name, t, expected in [
+            ("input", input, self.input_shape),
+            ("min", min, self.min_shape),
+        ]:
+            if t.dtype != self.dtype:
+                raise ValueError(f"Expected {name}.dtype {self.dtype}, got {t.dtype}")
+            if tuple(t.shape) != expected:
+                raise ValueError(
+                    f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
+                )
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(input, min, self._instance_key)
+        return self._eager_forward(input, min)
+
+
+class ClampMaxFwdOp(_ClampTensorBase):
+    """Single-bound Tensor upper clamp (``torch.clamp_max``).
+
+    Args:
+        input: Shape of the input tensor.
+        max: Shape of the upper-bound tensor.
+        dtype: Torch dtype.
+    """
+
+    _op_name = "clamp_max"
+    _wrapped = None
+
+    def __init__(
+        self,
+        input: tuple,  # noqa: A002
+        max: tuple,    # noqa: A002
+        dtype: torch.dtype,
+    ):
+        self.input_shape = tuple(input)
+        self.max_shape = tuple(max)
+        self.dtype = dtype
+        self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.max_shape))
+        self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.kernel = ClampTensorFwdKernel(
+            self.N_total, dtype, has_min=False, has_max=True,
+        )
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"clamp_tensor": ClampTensorFwdKernel}
+
+    def _eager_forward(
+        self, input: torch.Tensor, max: torch.Tensor,  # noqa: A002
+    ) -> torch.Tensor:
+        # Broadcast input/max to out_shape and dispatch the TileLang
+        # max-only Tensor-bound clamp kernel.
+        out_shape = self.out_shape if self.out_shape else (1,)
+        x_flat = self._expand_flat(input, out_shape)
+        hi_flat = self._expand_flat(max, out_shape)
+        result = self.kernel(x_flat, None, hi_flat)
+        return result.view(self.out_shape if self.out_shape else ())
+
+    def forward(
+        self, input: torch.Tensor, max: torch.Tensor,  # noqa: A002
+    ) -> torch.Tensor:
+        if not (input.is_cuda and max.is_cuda):
+            raise ValueError("Inputs must be CUDA tensors")
+        for name, t, expected in [
+            ("input", input, self.input_shape),
+            ("max", max, self.max_shape),
+        ]:
+            if t.dtype != self.dtype:
+                raise ValueError(f"Expected {name}.dtype {self.dtype}, got {t.dtype}")
+            if tuple(t.shape) != expected:
+                raise ValueError(
+                    f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
+                )
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(input, max, self._instance_key)
+        return self._eager_forward(input, max)
+
+
+class ClampScalarFwdOp(Op):
+    """Scalar-bound clamp (``torch.clamp(input, min: Number|None, max: Number|None)``).
+
+    Args:
+        input: Shape of the input tensor.
+        min: Lower bound (Number or None).
+        max: Upper bound (Number or None).
+        dtype: Torch dtype.
+    """
+
+    _op_name = "clamp"
+    _wrapped = None
+
+    def __init__(
+        self,
+        input: tuple,  # noqa: A002
+        min: Optional[float] = None,  # noqa: A002
+        max: Optional[float] = None,  # noqa: A002
+        dtype: torch.dtype = torch.float32,
+    ):
+        if min is None and max is None:
+            raise ValueError(
+                "ClampScalarFwdOp requires at least one of `min` or `max` to be a "
+                "Number; both None is not a valid clamp."
+            )
+        if min is not None:
+            _validate_scalar_param_repr("min", min, dtype, self._op_name)
+        if max is not None:
+            _validate_scalar_param_repr("max", max, dtype, self._op_name)
+        self.input_shape = tuple(input)
+        self.N_total = prod(self.input_shape) if self.input_shape else 1
+        self.dtype = dtype
+        self.min = min
+        self.max = max
+        # Backwards-compat aliases for legacy callers.
+        self.min_val = min
+        self.max_val = max
+        self.kernel = ClampFwdKernel(self.N_total, dtype, min_val=min, max_val=max)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -1575,42 +2061,157 @@ class ClampFwdOp(Op):
     def default_kernel_map(self):
         return {"clamp": ClampFwdKernel}
 
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        orig_shape = x.shape
-        result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        orig_shape = input.shape
+        result = self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.numel() != self.N_total:
-            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
+        if input.dtype != self.dtype:
+            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        if tuple(input.shape) != self.input_shape:
+            raise ValueError(
+                f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}"
+            )
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, self._instance_key)
-        return self._eager_forward(x)
+            return wrapped(input, self._instance_key)
+        return self._eager_forward(input)
 
 
 class MaskedFillFwdOp(Op):
-    """MaskedFill: out = mask ? fill_value : x.
+    """MaskedFill with 0-dim Tensor value (``torch.Tensor.masked_fill(mask, value: Tensor)``).
+
+    Output shape is the bidirectional broadcast of ``input`` and ``mask``;
+    ``value`` must be a 0-dim Tensor. The Op expands ``input`` and ``mask``
+    to the broadcast shape and dispatches the existing flat scalar kernel
+    using ``value.item()`` as the fill literal — this keeps the
+    fast vectorized kernel path while satisfying the manifest's Tensor-value
+    contract (the kernel reads ``value`` once at forward time, which is
+    consistent with the 0-dim semantics).
 
     Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
-        fill_value: Scalar value to fill where mask is True.
+        input: Shape of the input tensor.
+        mask: Shape of the mask tensor (bool).
+        value: Shape of the value tensor (must be ``()`` per the manifest).
+        dtype: Torch dtype for ``input`` / ``value``.
     """
 
     _op_name = "masked_fill"
     _wrapped = None
 
-    def __init__(self, N_total: int, dtype: torch.dtype, fill_value: float):
-        _validate_scalar_param_repr("fill_value", fill_value, dtype, self._op_name)
-        self.N_total = N_total
+    def __init__(
+        self,
+        input: tuple,  # noqa: A002
+        mask: tuple,
+        value: tuple,
+        dtype: torch.dtype,
+    ):
+        if tuple(value) != ():
+            raise ValueError(
+                f"MaskedFillFwdOp requires a 0-dim value Tensor; got shape {tuple(value)}"
+            )
+        self.input_shape = tuple(input)
+        self.mask_shape = tuple(mask)
+        self.value_shape = tuple(value)
         self.dtype = dtype
-        self.fill_value = fill_value
-        self.kernel = MaskedFillFwdKernel(N_total, dtype, fill_value)
+        self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.mask_shape))
+        self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.kernel = MaskedFillTensorValueFwdKernel(self.N_total, dtype)
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self):
+        return {"masked_fill_tensor_value": MaskedFillTensorValueFwdKernel}
+
+    @staticmethod
+    def _expand_flat(t: torch.Tensor, target_shape: tuple) -> torch.Tensor:
+        if tuple(t.shape) != tuple(target_shape):
+            t = t.expand(target_shape)
+        return t.contiguous().view(-1)
+
+    def _eager_forward(
+        self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,  # noqa: A002
+    ) -> torch.Tensor:
+        # Broadcast input/mask to out_shape, pack mask as uint8, reshape
+        # the 0-dim value to (1,), and dispatch the TileLang kernel.
+        out_shape = self.out_shape if self.out_shape else (1,)
+        x_flat = self._expand_flat(input, out_shape)
+        mask_b = mask if mask.dtype == torch.bool else mask.bool()
+        mask_flat = self._expand_flat(mask_b, out_shape).view(torch.uint8)
+        value_1d = value.contiguous().view(1)
+        result = self.kernel(x_flat, mask_flat, value_1d)
+        return result.view(self.out_shape if self.out_shape else ())
+
+    def forward(
+        self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,  # noqa: A002
+    ) -> torch.Tensor:
+        if not (input.is_cuda and mask.is_cuda and value.is_cuda):
+            raise ValueError("Inputs must be CUDA tensors")
+        if input.dtype != self.dtype:
+            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        if mask.dtype != torch.bool:
+            raise ValueError(f"Expected mask.dtype torch.bool, got {mask.dtype}")
+        if value.dtype != self.dtype:
+            raise ValueError(f"Expected value.dtype {self.dtype}, got {value.dtype}")
+        if tuple(input.shape) != self.input_shape:
+            raise ValueError(
+                f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}"
+            )
+        if tuple(mask.shape) != self.mask_shape:
+            raise ValueError(
+                f"Expected mask.shape {self.mask_shape}, got {tuple(mask.shape)}"
+            )
+        if tuple(value.shape) != ():
+            raise ValueError(f"Expected value.shape (), got {tuple(value.shape)}")
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(input, mask, value, self._instance_key)
+        return self._eager_forward(input, mask, value)
+
+
+class MaskedFillScalarFwdOp(Op):
+    """MaskedFill with Number (scalar) value.
+
+    Conforms to ``torch.Tensor.masked_fill(mask, value: Number)``. Output
+    shape follows the bidirectional broadcast of ``input`` and ``mask``.
+
+    Args:
+        input: Shape of the input tensor.
+        mask: Shape of the mask tensor (bool).
+        value: Scalar fill value.
+        dtype: Torch dtype.
+    """
+
+    _op_name = "masked_fill"
+    _wrapped = None
+
+    def __init__(
+        self,
+        input: tuple,  # noqa: A002
+        mask: tuple,
+        value: float = 0.0,
+        dtype: torch.dtype = torch.float32,
+    ):
+        _validate_scalar_param_repr("value", value, dtype, self._op_name)
+        self.input_shape = tuple(input)
+        self.mask_shape = tuple(mask)
+        self.dtype = dtype
+        self.value = value
+        # Backwards-compat alias.
+        self.fill_value = value
+        self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.mask_shape))
+        self.N_total = prod(self.out_shape) if self.out_shape else 1
+        # The kernel is always built on the broadcast (output) flat size.
+        # When input/mask already match out_shape, this is a no-op expand;
+        # otherwise the Op layer broadcasts both before dispatch.
+        self._needs_broadcast = (
+            self.input_shape != self.out_shape or self.mask_shape != self.out_shape
+        )
+        self.kernel = MaskedFillFwdKernel(self.N_total, dtype, value)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -1618,34 +2219,41 @@ class MaskedFillFwdOp(Op):
     def default_kernel_map(self):
         return {"masked_fill": MaskedFillFwdKernel}
 
-    def _eager_forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        orig_shape = x.shape
-        # Fast path: cast to bool if needed, then flatten + pack to uint8
-        # for vectorized T.copy in the kernel.
-        mask_flat = (mask if mask.dtype == torch.bool else mask.bool()).contiguous().view(-1)
-        x_flat = x.contiguous().view(-1)
-        result = self.kernel(x_flat, mask_flat.view(torch.uint8)).view(orig_shape)
+    @staticmethod
+    def _expand_flat(t: torch.Tensor, target_shape: tuple) -> torch.Tensor:
+        if tuple(t.shape) != tuple(target_shape):
+            t = t.expand(target_shape)
+        return t.contiguous().view(-1)
+
+    def _eager_forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        out_shape = self.out_shape if self.out_shape else (1,)
+        x_flat = self._expand_flat(input, out_shape)
+        mask_b = mask if mask.dtype == torch.bool else mask.bool()
+        mask_flat = self._expand_flat(mask_b, out_shape).view(torch.uint8)
+        result = self.kernel(x_flat, mask_flat).view(self.out_shape if self.out_shape else ())
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
+    def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.numel() != self.N_total:
-            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
+        if input.dtype != self.dtype:
+            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        if tuple(input.shape) != self.input_shape:
+            raise ValueError(
+                f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}"
+            )
         if not mask.is_cuda:
             raise ValueError("Mask must be a CUDA tensor")
         if mask.dtype != torch.bool:
             raise ValueError(f"Expected mask.dtype torch.bool, got {mask.dtype}")
-        if mask.numel() != self.N_total:
+        if tuple(mask.shape) != self.mask_shape:
             raise ValueError(
-                f"Expected mask with {self.N_total} elements, got {mask.numel()}"
+                f"Expected mask.shape {self.mask_shape}, got {tuple(mask.shape)}"
             )
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, mask, self._instance_key)
-        return self._eager_forward(x, mask)
+            return wrapped(input, mask, self._instance_key)
+        return self._eager_forward(input, mask)
 
 
 class NanToNumFwdOp(Op):
@@ -1831,19 +2439,41 @@ for _cls in [SiluAndMulFwdOp, GeluAndMulFwdOp, GeluTanhAndMulFwdOp]:
     _register_fused_gated_custom_op(_cls)
 
 # --- Independent unary-like ops (6 ops: x -> y with baked params) ---
+# ClampScalarFwdOp is the scalar-bound clamp (single-tensor input + min/max
+# baked into __init__). The Tensor-bound ClampFwdOp / ClampMinFwdOp /
+# ClampMaxFwdOp variants register their own multi-input custom_ops below.
 for _cls in [
-    LeakyReluFwdOp, EluFwdOp, HardtanhFwdOp, SoftplusFwdOp, ClampFwdOp, NanToNumFwdOp,
+    LeakyReluFwdOp, EluFwdOp, HardtanhFwdOp, SoftplusFwdOp, ClampScalarFwdOp,
+    NanToNumFwdOp,
 ]:
     _register_unary_custom_op(_cls)
 
 # --- PReLU op (1 op: x, weight -> y) ---
 _register_prelu_custom_op(PreluFwdOp)
 
-# --- Where op (1 op: cond, x, y -> out) ---
-_register_where_custom_op(WhereFwdOp)
+# --- Tensor-bound clamp variants (3 ops: multi-tensor inputs -> out) ---
+# Registered under distinct custom_op namespaces from ClampScalarFwdOp:
+# ``top::elementwise_clamp_tensor`` (Optional Tensor min/max),
+# ``top::elementwise_clamp_min`` and ``top::elementwise_clamp_max`` for the
+# single-bound variants. register_fake is broadcast-aware so
+# torch.compile(fullgraph=True) traces correctly for both same-shape and
+# broadcasting inputs.
+_register_clamp_tensor_custom_op(ClampFwdOp)
+_register_clamp_min_custom_op(ClampMinFwdOp)
+_register_clamp_max_custom_op(ClampMaxFwdOp)
 
-# --- MaskedFill op (1 op: x, mask -> y) ---
-_register_masked_fill_custom_op(MaskedFillFwdOp)
+# --- MaskedFill variants (input, mask[, value] -> out) ---
+# Both register broadcast-aware fake functions so torch.compile(fullgraph=True)
+# works for same-shape and broadcasting inputs. The Tensor-value variant is
+# registered under a distinct ``_tensor_value`` namespace to avoid colliding
+# with the scalar variant's ``top::elementwise_masked_fill``.
+_register_masked_fill_custom_op(MaskedFillScalarFwdOp)
+_register_masked_fill_tensor_value_custom_op(MaskedFillFwdOp)
+
+# --- Where op (1 op: cond, x, y -> out) ---
+# The fake function is broadcast-aware so torch.compile(fullgraph=True)
+# traces correctly for both same-shape and broadcasting inputs.
+_register_where_custom_op(WhereFwdOp)
 
 # --- Generative ops (2 ops: no tensor input -> out) ---
 _register_generative_custom_op(

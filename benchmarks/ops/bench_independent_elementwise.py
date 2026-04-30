@@ -14,11 +14,11 @@ import torch.nn.functional as F
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import (
     AlibiFwdOp,
-    ClampFwdOp,
+    ClampScalarFwdOp,
     EluFwdOp,
     HardtanhFwdOp,
     LeakyReluFwdOp,
-    MaskedFillFwdOp,
+    MaskedFillScalarFwdOp,
     NanToNumFwdOp,
     PreluFwdOp,
     SinusoidalFwdOp,
@@ -78,7 +78,7 @@ _UNARY_OPS = {
     "elu": (EluFwdOp, lambda x: F.elu(x, 1.0), {}),
     "hardtanh": (HardtanhFwdOp, lambda x: F.hardtanh(x, -1.0, 1.0), {"min_val": -1.0, "max_val": 1.0}),
     "softplus": (SoftplusFwdOp, lambda x: F.softplus(x, 1.0, 20.0), {}),
-    "clamp": (ClampFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min_val": -0.5, "max_val": 0.5}),
+    "clamp": (ClampScalarFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min": -0.5, "max": 0.5}),
     "nan_to_num": (NanToNumFwdOp, lambda x: torch.nan_to_num(x, 0.0, 1e4, -1e4), {}),
 }
 
@@ -91,7 +91,10 @@ def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype)
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
+    if op_cls.__name__ == "ClampScalarFwdOp":
+        op = op_cls(input=(n_total,), dtype=dtype, **extra_kwargs)
+    else:
+        op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 
@@ -204,7 +207,7 @@ def test_where_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = WhereBenchmark(test)
     cond, x, y = test.gen_inputs()
 
-    op = WhereFwdOp(N_total=n_total, dtype=dtype)
+    op = WhereFwdOp(condition=tuple(shape), input=tuple(shape), other=tuple(shape), dtype=dtype)
     result = bm.profile(op, cond, x, y)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -248,7 +251,7 @@ def test_masked_fill_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = MaskedFillBenchmark(test)
     x, mask = test.gen_inputs()
 
-    op = MaskedFillFwdOp(N_total=n_total, dtype=dtype, fill_value=-65000.0)
+    op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-65000.0, dtype=dtype)
     result = bm.profile(op, x, mask)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -376,7 +379,7 @@ class Fp8UnaryBenchmark(BenchmarkBase[Fp8UnaryBenchCase]):
 _FP8_UNARY_OPS = {
     "leaky_relu": (LeakyReluFwdOp, lambda x: F.leaky_relu(x, 0.01), {}),
     "elu": (EluFwdOp, lambda x: F.elu(x, 1.0), {}),
-    "clamp": (ClampFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min_val": -0.5, "max_val": 0.5}),
+    "clamp": (ClampScalarFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min": -0.5, "max": 0.5}),
 }
 
 
@@ -408,7 +411,10 @@ def test_fp8_unary_independent_bench(
     bm = Fp8UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
+    if op_cls.__name__ == "ClampScalarFwdOp":
+        op = op_cls(input=(n_total,), dtype=dtype, **extra_kwargs)
+    else:
+        op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(f"{op_name}_fp8", locals(), result, tag="tileops")
 
@@ -503,7 +509,7 @@ def test_fp8_selection_bench(
         bm = Fp8WhereBenchmark(test)
         cond, x, y = test.gen_inputs()
 
-        op = WhereFwdOp(N_total=n_total, dtype=dtype)
+        op = WhereFwdOp(condition=tuple(shape), input=tuple(shape), other=tuple(shape), dtype=dtype)
         result = bm.profile(op, cond, x, y)
         BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -518,7 +524,7 @@ def test_fp8_selection_bench(
         bm = Fp8MaskedFillBenchmark(test)
         x, mask = test.gen_inputs()
 
-        op = MaskedFillFwdOp(N_total=n_total, dtype=dtype, fill_value=-100.0)
+        op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-100.0, dtype=dtype)
         result = bm.profile(op, x, mask)
         BenchmarkReport.record(op, locals(), result, tag="tileops")
 

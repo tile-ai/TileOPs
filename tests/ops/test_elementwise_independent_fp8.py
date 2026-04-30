@@ -159,14 +159,14 @@ def test_elu_fp8_correctness(dtype):
 @Fp8DtypeFixture
 def test_clamp_fp8_correctness(dtype):
     """Clamp correctness with fp8 input/output."""
-    from tileops.ops.elementwise import ClampFwdOp
+    from tileops.ops.elementwise import ClampScalarFwdOp
 
     n = _N
     min_val = -0.5
     max_val = 0.5
     x_fp16 = torch.randn(n, dtype=torch.float16, device="cuda") * 2.0
     x = x_fp16.to(dtype)
-    op = ClampFwdOp(N_total=n, dtype=dtype, min_val=min_val, max_val=max_val)
+    op = ClampScalarFwdOp(input=(n,), min=min_val, max=max_val, dtype=dtype)
     out = op(x)
     ref = torch.clamp(x.to(torch.float16), min_val, max_val).to(dtype)
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
@@ -201,14 +201,14 @@ def test_sinusoidal_fp8_output_dtype(dtype):
 @Fp8DtypeFixture
 def test_masked_fill_fp8_correctness(dtype):
     """MaskedFill correctness with fp8, including e5m2 post-cast path."""
-    from tileops.ops.elementwise import MaskedFillFwdOp
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
     n = _N
     fill_value = -1.0
     x_fp16 = torch.randn(n, dtype=torch.float16, device="cuda") * 2.0
     x = x_fp16.to(dtype)
     mask = torch.rand(n, device="cuda") > 0.5
-    op = MaskedFillFwdOp(N_total=n, dtype=dtype, fill_value=fill_value)
+    op = MaskedFillScalarFwdOp(input=(n,), mask=(n,), value=fill_value, dtype=dtype)
     out = op(x, mask)
     ref = x.to(torch.float16).masked_fill(mask, fill_value).to(dtype)
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
@@ -246,13 +246,13 @@ def test_leaky_relu_e4m3fn_saturation():
 @pytest.mark.smoke
 def test_clamp_e5m2_preserves_values():
     """Clamp e5m2 preserves values within range correctly."""
-    from tileops.ops.elementwise import ClampFwdOp
+    from tileops.ops.elementwise import ClampScalarFwdOp
 
     n = 1024
     dtype = torch.float8_e5m2
     x_fp16 = torch.randn(n, dtype=torch.float16, device="cuda") * 0.5
     x = x_fp16.to(dtype)
-    op = ClampFwdOp(N_total=n, dtype=dtype, min_val=-1.0, max_val=1.0)
+    op = ClampScalarFwdOp(input=(n,), min=-1.0, max=1.0, dtype=dtype)
     out = op(x)
     ref = torch.clamp(x.to(torch.float16), -1.0, 1.0).to(dtype)
     assert out.dtype == dtype
@@ -275,13 +275,13 @@ def test_elu_e5m2_output_dtype():
 @pytest.mark.smoke
 def test_masked_fill_e5m2_overflow_fill_value():
     """MaskedFill rejects fill_value that exceeds effective kernel dtype range."""
-    from tileops.ops.elementwise import MaskedFillFwdOp
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
     n = 1024
     dtype = torch.float8_e5m2
     fill_value = 1e5
-    with pytest.raises(ValueError, match="fill_value=.*not representable"):
-        MaskedFillFwdOp(N_total=n, dtype=dtype, fill_value=fill_value)
+    with pytest.raises(ValueError, match="value=.*not representable"):
+        MaskedFillScalarFwdOp(input=(n,), mask=(n,), value=fill_value, dtype=dtype)
 
 
 @pytest.mark.smoke
@@ -360,14 +360,14 @@ def test_elu_fp8_unaligned_n(dtype):
 @UnalignedFp8Fixture
 def test_clamp_fp8_unaligned_n(dtype):
     """Clamp fp8 correctness with non-aligned N (tail block guard)."""
-    from tileops.ops.elementwise import ClampFwdOp
+    from tileops.ops.elementwise import ClampScalarFwdOp
 
     n = _N_UNALIGNED
     min_val = -0.5
     max_val = 0.5
     x_fp16 = torch.randn(n, dtype=torch.float16, device="cuda") * 2.0
     x = x_fp16.to(dtype)
-    op = ClampFwdOp(N_total=n, dtype=dtype, min_val=min_val, max_val=max_val)
+    op = ClampScalarFwdOp(input=(n,), min=min_val, max=max_val, dtype=dtype)
     out = op(x)
     ref = torch.clamp(x.to(torch.float16), min_val, max_val).to(dtype)
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
