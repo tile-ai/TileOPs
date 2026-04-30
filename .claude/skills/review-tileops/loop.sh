@@ -379,9 +379,13 @@ run_codex_round() {
         --json --output-last-message "$lastmsg" --cd "$WORKTREE_DIR" \
         "$(cat "$prompt_file")" > "$events" 2>&1 || true
     else
-      codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
-        --json --output-last-message "$lastmsg" --cd "$WORKTREE_DIR" \
-        "$(cat "$prompt_file")" > "$events" 2>&1 || true
+      # `codex exec resume` does not accept --cd; the session already
+      # remembers its cwd from the initial `exec`, but cd anyway as a
+      # belt-and-suspenders for source-file lookups.
+      ( cd "$WORKTREE_DIR" && \
+        codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
+          --json --output-last-message "$lastmsg" \
+          "$(cat "$prompt_file")" ) > "$events" 2>&1 || true
     fi
 
     if [[ -s "$lastmsg" ]]; then
@@ -425,9 +429,10 @@ run_codex_oneoff() {
   if [[ "$sid" == "null" || -z "$sid" ]]; then
     return 1
   fi
-  codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
-    --output-last-message "$outfile" --cd "$WORKTREE_DIR" \
-    "$prompt" >/dev/null 2>&1 || true
+  ( cd "$WORKTREE_DIR" && \
+    codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
+      --output-last-message "$outfile" \
+      "$prompt" ) >/dev/null 2>&1 || true
   [[ -s "$outfile" ]]
 }
 
