@@ -423,6 +423,8 @@ ClampFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      clamp_tensor: ClampTensorFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
@@ -461,6 +463,8 @@ ClampScalarFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      clamp: ClampFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
@@ -492,6 +496,8 @@ ClampMinFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      clamp_tensor: ClampTensorFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
@@ -523,6 +529,8 @@ ClampMaxFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      clamp_tensor: ClampTensorFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py

@@ -85,6 +85,8 @@ MaskedFillFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      masked_fill_tensor_value: MaskedFillTensorValueFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
@@ -125,6 +127,8 @@ MaskedFillScalarFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      masked_fill: MaskedFillFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py

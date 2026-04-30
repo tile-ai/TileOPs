@@ -40,6 +40,8 @@ WhereFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      where: WhereFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
