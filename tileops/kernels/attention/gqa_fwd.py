@@ -813,7 +813,8 @@ def _gqa_prefill_fwd_kernel(batch: int,
         q_shape = (batch, seq_len_q, heads, dim)
         kv_shape = (batch, seq_len_kv, heads_kv, dim)
         o_shape = (batch, seq_len_q, heads, dim)
-        online_softmax = make_online_softmax(scale, accum_dtype, block_m, block_n)
+        online_softmax = make_online_softmax_with_mask_guard(
+            scale, accum_dtype, block_m, block_n)
         rescale = make_rescale(block_m, dim)
 
         @T.prim_func
@@ -838,7 +839,12 @@ def _gqa_prefill_fwd_kernel(batch: int,
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
                 logsum = T.alloc_fragment([block_m], accum_dtype)
 
-                T.copy(q[bz, bx * block_m:(bx + 1) * block_m, by, :], q_shared)
+                for i, d in T.Parallel(block_m, dim):
+                    q_pos = bx * block_m + i
+                    if q_pos < seq_len_q:
+                        q_shared[i, d] = q[bz, q_pos, by, d]
+                    else:
+                        q_shared[i, d] = T.cast(0, dtype)
                 T.clear(acc_o)
                 T.clear(logsum)
                 T.fill(scores_max, -T.infinity(accum_dtype))
@@ -848,32 +854,46 @@ def _gqa_prefill_fwd_kernel(batch: int,
                     if is_causal else T.ceildiv(seq_len_kv, block_n))
 
                 for k_idx in T.Pipelined(loop_range, num_stages=num_stages):
-                    T.copy(k[bz, k_idx * block_n:(k_idx + 1) * block_n, by // groups, :], k_shared)
-                    if is_causal:
-                        for i, j in T.Parallel(block_m, block_n):
-                            acc_s[i, j] = T.if_then_else(
-                                bx * block_m + i + causal_offset >= k_idx * block_n + j, 0,
-                                -T.infinity(acc_s.dtype))
-                    else:
-                        T.clear(acc_s)
+                    for j, d in T.Parallel(block_n, dim):
+                        kv_pos = k_idx * block_n + j
+                        if kv_pos < seq_len_kv:
+                            k_shared[j, d] = k[bz, kv_pos, by // groups, d]
+                            v_shared[j, d] = v[bz, kv_pos, by // groups, d]
+                        else:
+                            k_shared[j, d] = T.cast(0, dtype)
+                            v_shared[j, d] = T.cast(0, dtype)
+                    for i, j in T.Parallel(block_m, block_n):
+                        q_pos = bx * block_m + i
+                        kv_pos = k_idx * block_n + j
+                        if is_causal:
+                            valid = (
+                                (q_pos < seq_len_q)
+                                & (kv_pos < seq_len_kv)
+                                & (q_pos + causal_offset >= kv_pos)
+                            )
+                            acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
+                        else:
+                            valid = (q_pos < seq_len_q) & (kv_pos < seq_len_kv)
+                            acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
                     T.gemm(
                         q_shared,
                         k_shared,
                         acc_s,
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullRow)
-                    T.copy(v[bz, k_idx * block_n:(k_idx + 1) * block_n, by // groups, :], v_shared)
                     online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum,
                                    logsum)
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
                     T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_m, dim):
-                    acc_o[i, j] /= logsum[i]
-                T.copy(acc_o, output[bz, bx * block_m:(bx + 1) * block_m, by, :])
+                    q_pos = bx * block_m + i
+                    if q_pos < seq_len_q:
+                        output[bz, q_pos, by, j] = acc_o[i, j] / logsum[i]
                 for i in T.Parallel(block_m):
-                    logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
-                T.copy(logsum, lse[bz, by, bx * block_m:(bx + 1) * block_m])
+                    q_pos = bx * block_m + i
+                    if q_pos < seq_len_q:
+                        lse[bz, by, q_pos] = T.log2(logsum[i]) + scores_max[i] * scale
 
         return _gqa_prefill_fwd_main
 
@@ -1048,7 +1068,12 @@ def _gqa_prefill_with_kv_cache_fwd_kernel(batch: int,
                 total_len = old_len + seq_len_new
                 cur_kv_head = by // groups
 
-                T.copy(q[bz, bx * block_m:(bx + 1) * block_m, by, :], q_shared)
+                for i, d in T.Parallel(block_m, dim):
+                    new_pos = bx * block_m + i
+                    if new_pos < seq_len_new:
+                        q_shared[i, d] = q[bz, new_pos, by, d]
+                    else:
+                        q_shared[i, d] = T.cast(0, dtype)
 
                 if by < heads_kv:
                     for i, d in T.Parallel(block_m, dim):
@@ -1105,14 +1130,20 @@ def _gqa_prefill_with_kv_cache_fwd_kernel(batch: int,
                 for i, j in T.Parallel(block_m, dim):
                     acc_o[i, j] = T.if_then_else(bx * block_m + i < seq_len_new,
                                                  acc_o[i, j] / logsum[i], T.cast(0, accum_dtype))
-                T.copy(acc_o, output[bz, bx * block_m:(bx + 1) * block_m, by, :])
+                for i, j in T.Parallel(block_m, dim):
+                    new_pos = bx * block_m + i
+                    if new_pos < seq_len_new:
+                        output[bz, new_pos, by, j] = acc_o[i, j]
                 for i in T.Parallel(block_m):
                     logsum[i] = T.if_then_else(
                         bx * block_m + i < seq_len_new,
                         T.log2(logsum[i]) + scores_max[i] * scale,
                         T.cast(0, accum_dtype),
                     )
-                T.copy(logsum, lse[bz, by, bx * block_m:(bx + 1) * block_m])
+                for i in T.Parallel(block_m):
+                    new_pos = bx * block_m + i
+                    if new_pos < seq_len_new:
+                        lse[bz, by, new_pos] = logsum[i]
 
         return _gqa_prefill_with_kv_cache_fwd_main
 
