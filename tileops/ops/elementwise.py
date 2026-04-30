@@ -2071,8 +2071,10 @@ class ClampScalarFwdOp(Op):
             raise ValueError("Input must be a CUDA tensor")
         if input.dtype != self.dtype:
             raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
-        if input.numel() != self.N_total:
-            raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
+        if tuple(input.shape) != self.input_shape:
+            raise ValueError(
+                f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}"
+            )
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(input, self._instance_key)

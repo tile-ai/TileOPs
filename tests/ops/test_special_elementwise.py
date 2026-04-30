@@ -496,16 +496,18 @@ def test_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> None:
     pytest.param("EluFwdOp", {"alpha": 1.0}, id="elu"),
     pytest.param("HardtanhFwdOp", {"min_val": -1.0, "max_val": 1.0}, id="hardtanh"),
     pytest.param("SoftplusFwdOp", {"beta": 1.0, "threshold": 20.0}, id="softplus"),
-    pytest.param("ClampScalarFwdOp", {"min": -0.5, "max": 0.5}, id="clamp"),
 ])
 def test_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> None:
-    """forward() must raise ValueError when input numel mismatches."""
+    """forward() must raise ValueError when input numel mismatches.
+
+    ClampScalarFwdOp validates the full input.shape (not just numel), so
+    its mismatch case is covered by
+    test_clamp_scalar_rejects_same_numel_wrong_shape in
+    tests/ops/test_special_elementwise_conformance.py.
+    """
     import tileops.ops.elementwise as mod
     cls = getattr(mod, op_cls)
-    if cls.__name__ == "ClampScalarFwdOp":
-        op = cls(input=(1024,), dtype=torch.float16, **kwargs)
-    else:
-        op = cls(N_total=1024, dtype=torch.float16, **kwargs)
+    op = cls(N_total=1024, dtype=torch.float16, **kwargs)
     x = torch.randn(512, device="cuda", dtype=torch.float16)
     with pytest.raises(ValueError, match="elements"):
         op(x)

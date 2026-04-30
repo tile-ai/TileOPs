@@ -229,6 +229,17 @@ def test_clamp_scalar_both_none_rejected():
 
 
 @pytest.mark.smoke
+def test_clamp_scalar_rejects_same_numel_wrong_shape():
+    """ClampScalarFwdOp.forward must validate full input.shape, not just numel."""
+    from tileops.ops.elementwise import ClampScalarFwdOp
+
+    op = ClampScalarFwdOp(input=(2, 3), min=0.0, max=1.0, dtype=torch.float32)
+    bad = torch.randn(6, device="cuda", dtype=torch.float32)  # same numel, wrong shape
+    with pytest.raises(ValueError, match=r"input\.shape"):
+        op(bad)
+
+
+@pytest.mark.smoke
 def test_clamp_runtime_tensor_none_must_match_init():
     """Forward-time None / Tensor presence must agree with __init__ config."""
     from tileops.ops.elementwise import ClampFwdOp

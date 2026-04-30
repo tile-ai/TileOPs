@@ -647,12 +647,11 @@ def test_where_compile_broadcast():
 def test_clamp_scalar_compile():
     """Compile-smoke for ClampScalarFwdOp (Number min/max baked into __init__)."""
     shape = (1024, 1024)
-    n_total = shape[0] * shape[1]
     x = torch.randn(shape, dtype=_DTYPE, device="cuda")
     op = ClampScalarFwdOp(input=shape, min=-0.5, max=0.5, dtype=_DTYPE)
     compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x.reshape(n_total))
-    ref = torch.clamp(x.float(), min=-0.5, max=0.5).to(_DTYPE).reshape(n_total)
+    out = compiled_op(x)
+    ref = torch.clamp(x.float(), min=-0.5, max=0.5).to(_DTYPE)
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
