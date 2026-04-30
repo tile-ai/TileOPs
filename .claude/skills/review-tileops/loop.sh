@@ -59,21 +59,27 @@ RUN_DIR="$TASK_ROOT/review"
 META="$RUN_DIR/meta.json"
 CONTEXT="$RUN_DIR/context.json"
 WORKTREE_DIR="$RUN_DIR/worktree"
-WORKTREE_BRANCH="review-pr-$PR-head"
 mkdir -p "$RUN_DIR/rounds" "$RUN_DIR/inbox-history"
 
 # Maintain a dedicated worktree pinned at the PR's head sha. Codex reads
 # source files from there; the user's main worktree is never disturbed.
+#
+# Fetch into FETCH_HEAD only — never into a named branch — so subsequent
+# fetches are not rejected by git for "would update a checked-out branch".
+# The worktree itself is on detached HEAD, advanced via reset --hard to the
+# fetched sha each round.
 sync_pr_worktree() {
-  git -C "$REPO_PATH" fetch "$TILEOPS_REMOTE" "pull/$PR/head:$WORKTREE_BRANCH" -f \
+  git -C "$REPO_PATH" fetch "$TILEOPS_REMOTE" "pull/$PR/head" -f \
     >/dev/null 2>&1 || {
       echo "loop.sh: failed to fetch pull/$PR/head from $TILEOPS_REMOTE" >&2
       return 1
     }
+  local target
+  target=$(git -C "$REPO_PATH" rev-parse FETCH_HEAD)
   if [[ ! -d "$WORKTREE_DIR/.git" && ! -e "$WORKTREE_DIR/.git" ]]; then
-    git -C "$REPO_PATH" worktree add "$WORKTREE_DIR" "$WORKTREE_BRANCH" >/dev/null
+    git -C "$REPO_PATH" worktree add --detach "$WORKTREE_DIR" "$target" >/dev/null
   else
-    git -C "$WORKTREE_DIR" reset --hard "$WORKTREE_BRANCH" >/dev/null
+    git -C "$WORKTREE_DIR" reset --hard "$target" >/dev/null
   fi
 }
 sync_pr_worktree
