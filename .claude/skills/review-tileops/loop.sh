@@ -273,20 +273,7 @@ compose_prompt() {
     fi
 
     if [[ "$n" -eq 1 ]]; then
-      local title type scope
-      title=$(jq -r .title "$CONTEXT")
-      type=$(jq -r .type "$CONTEXT")
-      scope=$(jq -r .scope "$CONTEXT")
-      echo "## PR classification"
-      echo ""
-      echo "- Title: \`$title\`"
-      echo "- Type: \`[$type]\`   Scope: \`[$scope]\`"
-      echo "- Loaded checklists:"
-      jq -r '.checklists[]' "$CONTEXT" | while read -r cl; do
-        echo "  - \`.claude/review-checklists/$cl\`"
-      done
-      echo ""
-      echo "## Checklist content"
+      echo "## Checklists"
       echo ""
       jq -r '.checklists[]' "$CONTEXT" | while read -r cl; do
         local path="$CHECKLISTS_DIR/$cl"
