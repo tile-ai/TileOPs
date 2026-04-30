@@ -280,6 +280,8 @@ compose_prompt() {
     if [[ "$n" -eq 1 ]]; then
       echo "## Project-specific regression guards"
       echo ""
+      echo "Apply LAST, after the free-form review. These catch known regression classes the free-form pass can miss — they do not replace it."
+      echo ""
       jq -r '.checklists[]' "$CONTEXT" | while read -r cl; do
         local path="$CHECKLISTS_DIR/$cl"
         if [[ -f "$path" ]]; then
@@ -339,7 +341,7 @@ ANCHOR
       echo "Developer pushed / replied since the last round. Verify: (1) prior blockers actually fixed — read the changed source, not the reply; (2) no new problems from the new commits. Round 1's procedure and guards still apply (already in session memory)."
       echo ""
     fi
-    echo "Run the procedure end to end and submit one atomic review. The summary body MUST end with this trailer (the loop driver parses it; review is rejected without it):"
+    echo "Run the procedure end to end and submit one atomic review. **Free-form review (procedure step 2) is the primary review step**; project-specific guards apply LAST as a regression net, not in place of it. The summary body MUST end with this trailer (the loop driver parses it; review is rejected without it):"
     echo ""
     echo '```'
     echo "<!-- review-loop: event=APPROVE|REQUEST_CHANGES; blockers=<N>; sha=$(printf '%s' "$head_sha" | cut -c1-7) -->"
