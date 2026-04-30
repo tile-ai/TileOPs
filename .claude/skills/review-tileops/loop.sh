@@ -209,7 +209,6 @@ if [[ ! -f "$META" ]]; then
     last_human_comment_id: 0,
     last_codex_event: null,
     last_criteria_mtime: 0,
-    last_procedure_mtime: 0,
     consecutive_codex_failures: 0,
     status: "active"
   }' > "$META"
@@ -527,17 +526,21 @@ while true; do
   LAST_HUMAN_ID_PREV=$(jq -r .last_human_comment_id "$META")
   LATEST_HUMAN_ID=$(latest_human_comment_id)
 
-  # Resume / restart: if local meta says we approved last time, ask GitHub
-  # whether that approval is still standing. If a new commit was pushed
-  # the codebase's branch protection auto-dismisses approvals, in which
-  # case we drop back to a fresh review on the current head. If GitHub
-  # still shows APPROVED, exit immediately (no second round needed).
+  # Resume / restart: if local meta says we approved last time, converge
+  # only if GitHub still shows APPROVED *and* nothing has changed since
+  # the approval. New commits auto-dismiss approvals (state goes
+  # DISMISSED), but new issue/review comments do not — so a comments-
+  # changed check is still required to avoid silently skipping unread
+  # human feedback. Any miss → fall through to a fresh round on the
+  # current head.
   if [[ "$LAST_EVENT" == "APPROVE" ]]; then
     GH_REVIEW_STATE=$(latest_reviewer_review_state)
-    if [[ "$GH_REVIEW_STATE" == "APPROVED" ]]; then
+    if [[ "$GH_REVIEW_STATE" == "APPROVED" \
+          && "$HEAD_SHA" == "$LAST_SHA" \
+          && "$LATEST_HUMAN_ID" == "$LAST_HUMAN_ID_PREV" ]]; then
       converge_and_exit
     fi
-    log "local APPROVE but GitHub state=$GH_REVIEW_STATE (likely dismissed by new commit) — re-reviewing current head"
+    log "prior APPROVE no longer current (gh=$GH_REVIEW_STATE, head_changed=$([[ "$HEAD_SHA" != "$LAST_SHA" ]] && echo y || echo n), comments_changed=$([[ "$LATEST_HUMAN_ID" != "$LAST_HUMAN_ID_PREV" ]] && echo y || echo n)) — re-reviewing current head"
     jq '.last_codex_event="DISMISSED" | .last_reviewed_sha=null' \
       "$META" > "$META.tmp" && mv "$META.tmp" "$META"
     LAST_EVENT="DISMISSED"
@@ -607,13 +610,10 @@ while true; do
   fi
 
   # procedure.md is round-1-only: round 2+ replaces it with the short
-  # "iteration round" block in compose_prompt (verify last round's
-  # blockers are fixed; flag any newly introduced issues). criteria.md
-  # uses an mtime gate — re-inline only when the format spec changed
-  # since last inclusion (Codex's session memory carries unchanged
-  # content forward).
+  # "iteration round" block in compose_prompt. criteria.md uses an mtime
+  # gate — re-inline only when the format spec changed since last
+  # inclusion (Codex's session memory carries unchanged content forward).
   CRITERIA_MTIME=$(stat -c %Y "$CRITERIA_PATH")
-  PROCEDURE_MTIME=$(stat -c %Y "$PROCEDURE_PATH")
   LAST_CRITERIA_MTIME=$(jq -r '.last_criteria_mtime // 0' "$META")
   INCLUDE_CRITERIA=0
   INCLUDE_PROCEDURE=0
@@ -645,10 +645,9 @@ while true; do
   NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   jq --argjson r "$NEXT_ROUND" --arg sha "$HEAD_SHA" --arg now "$NOW" \
      --argjson hid "$LATEST_HUMAN_ID" --arg ev "$EVENT" \
-     --argjson cm "$CRITERIA_MTIME" --argjson pm "$PROCEDURE_MTIME" \
+     --argjson cm "$CRITERIA_MTIME" \
      '.round=$r | .last_reviewed_sha=$sha | .last_human_comment_id=$hid
       | .last_codex_event=$ev | .last_criteria_mtime=$cm
-      | .last_procedure_mtime=$pm
       | .consecutive_codex_failures=0 | .last_reviewed_at=$now' \
      "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 
