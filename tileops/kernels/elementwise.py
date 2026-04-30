@@ -2879,10 +2879,10 @@ def _make_masked_fill_tensor_value_kernel(N, dtype, output_dtype=None,
                 out: T.Tensor((N,), out_dtype),
             ):
                 with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    fv = T.Cast(out_dtype, value[0])
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         idx = (bx * threads_arg + i) * npt_arg + j
                         if idx < N:
-                            fv = T.Cast(out_dtype, value[0])
                             x_val = T.Cast(out_dtype, x[idx])
                             out[idx] = T.if_then_else(
                                 mask[idx] != T.cast(0, "uint8"), fv, x_val,
@@ -2906,9 +2906,9 @@ def _make_masked_fill_tensor_value_kernel(N, dtype, output_dtype=None,
                 x_reg = T.alloc_fragment((block_size,), dtype)
                 T.copy(mask[bx * block_size : (bx + 1) * block_size], m_reg)
                 T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                fv = value[0]
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
-                    fv = value[0]
                     x_reg[k] = T.if_then_else(
                         m_reg[k] != T.cast(0, "uint8"), fv, x_reg[k],
                     )
