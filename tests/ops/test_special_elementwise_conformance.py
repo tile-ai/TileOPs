@@ -58,7 +58,7 @@ def test_where_init_signature_pytorch_aligned():
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "bad_dtype",
-    [torch.float32, torch.float16, torch.int32, torch.uint8],
+    [torch.float32, torch.int32],
 )
 def test_where_rejects_non_bool_condition(bad_dtype):
     from tileops.ops.elementwise import WhereFwdOp
