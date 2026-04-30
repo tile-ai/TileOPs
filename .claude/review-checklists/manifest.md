@@ -36,3 +36,5 @@ Often bundled with a `[Refactor][Ops]` op-migration PR.
 - [ ] **`FIXME(staged-rollout)` markers tied to this op removed.**
 - [ ] **Flip back to `spec-only`** is legitimate only when implementation is removed or known-broken. Challenge any other rationale.
 - [ ] **Pure flip.** This PR changes `status` only — no rewrite of `signature` / `shape_rules` / `roofline`. If the entry needs spec edits to match implementation, that is reverse-engineering from code; reject and require a separate `add-manifest`- or `fix-manifest`-style PR.
+- [ ] **`source.kernel_map` present.** `status: implemented` requires the Op→Kernel dispatch map. Absent `kernel_map` on a flipped entry is a blocker.
+- [ ] **`workloads` non-empty.** `status: implemented` requires at least 2 workloads (`test_every_op_has_at_least_two_workloads`). Empty `workloads: []` on a flipped entry is a blocker — copy from the sibling variant or derive from the op's typical usage shapes.
