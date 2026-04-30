@@ -1,4 +1,4 @@
-# 1. Submit
+### 1. Submit
 
 ```bash
 gh api repos/tile-ai/TileOPs/pulls/<N>/reviews \
@@ -9,7 +9,7 @@ gh api repos/tile-ai/TileOPs/pulls/<N>/reviews \
 
 `<EVENT>`: `REQUEST_CHANGES` if any blocking issue, `APPROVE` if clean, `COMMENT` for non-blocking questions only.
 
-# 2. Inline format
+### 2. Inline format
 
 ```
 <what is wrong and why> → <what to change>
@@ -17,7 +17,7 @@ gh api repos/tile-ai/TileOPs/pulls/<N>/reviews \
 
 One comment per issue. Name the function, variable, or pattern. The reader is an agent that executes fixes literally.
 
-# 3. Summary format (markdown)
+### 3. Summary format (markdown)
 
 The summary is for what does **not** fit in an inline comment. Per-file issues belong inline (§2), not in a summary list. Omit empty sections.
 
@@ -35,7 +35,7 @@ Hard rules:
 - Per-file/per-line items go in the `comments=[...]` array of §1, never in the summary body.
 - Clean PR: one line, `Clean — no issues.`
 
-# 4. Hard rules
+### 4. Hard rules
 
 - Read every changed file in full — diff alone lacks context.
 - Do not comment outside the PR diff.

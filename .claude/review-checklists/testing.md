@@ -4,7 +4,7 @@ Load `.claude/domain-rules/testing-budget.md` and `docs/design/testing.md §Test
 
 **Burden of proof flips above threshold.** If growth crosses the threshold below, the author justifies; reviewer silence is not approval.
 
-# Checklist
+#### Checklist
 
 - [ ] **Trigger.** Compute `delta_pct = (HEAD − Base) / Base × 100` from the PR body's `## Test node delta`. If `delta_pct > 10%`, every check below is required; otherwise this file is informational.
 - [ ] **Per-case purpose stated.** Each new case (or each new parametrize cell) serves exactly one of: dtype correctness / kernel-branch shape coverage / feature coverage / regression — per `docs/design/testing.md §Test case policy`. The PR body justification names which, with file:line.

@@ -100,6 +100,22 @@ sync_pr_worktree() {
     git -C "$WORKTREE_DIR" reset --hard "$target" >/dev/null
   fi
 }
+
+# Drop the per-PR worktree and ref. Called on APPROVE convergence so the
+# loop doesn't leave a full repo checkout sitting on disk per merged PR.
+# Other state under $RUN_DIR (logs, prompts, retrospective) stays for
+# postmortem inspection.
+cleanup_pr_worktree() {
+  if [[ -e "$WORKTREE_DIR" ]]; then
+    git -C "$REPO_PATH" worktree remove --force "$WORKTREE_DIR" >/dev/null 2>&1 \
+      || rm -rf "$WORKTREE_DIR"
+  fi
+  # Drop stale worktree admin entries left over if `worktree remove` failed
+  # and we fell back to `rm -rf`. Without this, the next `worktree add` to
+  # this path would fail with "already registered".
+  git -C "$REPO_PATH" worktree prune >/dev/null 2>&1 || true
+  git -C "$REPO_PATH" update-ref -d "$PR_REF" 2>/dev/null || true
+}
 sync_pr_worktree
 
 # Task-level meta.json (cross-stage state, shared with future foundry-pipeline
@@ -193,8 +209,8 @@ if [[ ! -f "$META" ]]; then
     last_human_comment_id: 0,
     last_codex_event: null,
     last_criteria_mtime: 0,
-    last_procedure_mtime: 0,
     consecutive_codex_failures: 0,
+    consecutive_request_changes: 0,
     status: "active"
   }' > "$META"
 fi
@@ -233,6 +249,7 @@ compose_prompt() {
   local last_sha="$8"
   local last_event="$9"
   local inbox_block="${10}"
+  local consecutive_rc="${11}"
   local out="$snap.prompt.md"
 
   {
@@ -240,14 +257,14 @@ compose_prompt() {
     echo ""
 
     if [[ "$include_criteria" == "1" ]]; then
-      echo "## Review output format (criteria.md)"
+      echo "## Review output format"
       echo ""
       cat "$CRITERIA_PATH"
       echo ""
     fi
 
     if [[ "$include_procedure" == "1" ]]; then
-      echo "## Review procedure (procedure.md)"
+      echo "## Review procedure"
       echo ""
       cat "$PROCEDURE_PATH"
       echo ""
@@ -261,20 +278,9 @@ compose_prompt() {
     fi
 
     if [[ "$n" -eq 1 ]]; then
-      local title type scope
-      title=$(jq -r .title "$CONTEXT")
-      type=$(jq -r .type "$CONTEXT")
-      scope=$(jq -r .scope "$CONTEXT")
-      echo "## PR classification"
+      echo "## Project-specific regression guards"
       echo ""
-      echo "- Title: \`$title\`"
-      echo "- Type: \`[$type]\`   Scope: \`[$scope]\`"
-      echo "- Loaded checklists:"
-      jq -r '.checklists[]' "$CONTEXT" | while read -r cl; do
-        echo "  - \`.claude/review-checklists/$cl\`"
-      done
-      echo ""
-      echo "## Checklist content"
+      echo "Apply alongside the free-form review, not in place of it."
       echo ""
       jq -r '.checklists[]' "$CONTEXT" | while read -r cl; do
         local path="$CHECKLISTS_DIR/$cl"
@@ -291,33 +297,35 @@ compose_prompt() {
     else
       echo "## Iteration round (round $n of $MAX_ROUNDS)"
       echo ""
-      echo "Developer pushed changes since the last review. Verify:"
+      echo "Developer pushed / replied. Verify both:"
       echo ""
-      echo "1. Are the prior blockers actually resolved?"
-      echo "2. Were any new problems introduced by the new commits?"
+      echo "1. Prior blockers actually fixed (read the changed source, not the reply)."
+      echo "2. No new problems introduced by the new commits."
+      echo ""
+      echo "Round 1's procedure and guards still apply — already in session memory."
       echo ""
     fi
 
-    if [[ "$n" -ge 7 ]]; then
-      cat <<'ANCHOR'
-## Round 7+ — Design re-anchoring (mandatory)
+    if [[ "$consecutive_rc" -ge 3 ]]; then
+      cat <<ANCHOR
+## Divergence trigger — design re-anchoring (mandatory)
 
-The bottom-up checklist is failing to converge. Re-anchor top-down.
+This PR has been REQUEST_CHANGES for $consecutive_rc rounds in a row. Stop iterating bottom-up. Re-anchor top-down.
 
-1. **Re-read from disk** (not memory): `docs/design/architecture.md`, `docs/design/ops-design.md`, plus any design doc named by your active checklist items.
-2. **Audit the blocker thread.** One root concern, or local patches on a moving target?
-3. **Question your anchor.** Cite the design passage that grounds the blocker. No citation possible → overfitted.
+1. **Re-read from disk** (not memory): \`docs/design/architecture.md\`, \`docs/design/ops-design.md\`, plus any design doc named by an active guard.
+2. **Audit the recurring blocker.** One root design concern, or local patches on a moving target?
+3. **Question your anchor.** Cite the design passage that grounds the blocker. No citation possible → you've over-fitted on trivial details.
 4. **Decide:**
    - **Reaffirm** — cite the passage inline.
    - **Withdraw** — retract explicitly. Remaining unease becomes a summary question, not a blocker.
    - **Reframe** — restate once at the design level with citation; stop relitigating surface variants.
 
 Required line at the top of the summary (before the trailer):
-```
-Round-7 introspection: <reaffirmed|withdrawn|reframed> — <one-line reason>
-```
+\`\`\`
+Divergence introspection: <reaffirmed|withdrawn|reframed> — <one-line reason>
+\`\`\`
 
-Stop bickering with the developer over minor details. If `reaffirmed` and the author shows no movement for 2+ further rounds, state in the summary that the PR is stalling and recommend human review.
+If reaffirmed and the next round still doesn't converge, recommend human review in the summary.
 
 ANCHOR
     fi
@@ -367,9 +375,13 @@ run_codex_round() {
         --json --output-last-message "$lastmsg" --cd "$WORKTREE_DIR" \
         "$(cat "$prompt_file")" > "$events" 2>&1 || true
     else
-      codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
-        --json --output-last-message "$lastmsg" --cd "$WORKTREE_DIR" \
-        "$(cat "$prompt_file")" > "$events" 2>&1 || true
+      # `codex exec resume` does not accept --cd; the session already
+      # remembers its cwd from the initial `exec`, but cd anyway as a
+      # belt-and-suspenders for source-file lookups.
+      ( cd "$WORKTREE_DIR" && \
+        codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
+          --json --output-last-message "$lastmsg" \
+          "$(cat "$prompt_file")" ) > "$events" 2>&1 || true
     fi
 
     if [[ -s "$lastmsg" ]]; then
@@ -386,12 +398,40 @@ run_codex_round() {
 
     attempt=$((attempt+1))
     log "codex attempt $attempt empty/failed; retrying in 10s …"
+    # Surface the tail of the events file so the human log shows *why*
+    # — otherwise repeated failures look identical and the cause stays
+    # buried in $events.
+    tail -n 5 "$events" 2>/dev/null | sed 's/^/  | /' >&2 || true
     sleep 10
   done
 
   log "codex failed $CODEX_RETRY times — stopping"
   set_meta_status "error"
   return 1
+}
+
+# State of the reviewer's most recent review on the PR — APPROVED,
+# CHANGES_REQUESTED, COMMENTED, or DISMISSED (returned by GitHub when a
+# stale-approval rule retracts an APPROVE on new commits). Returns
+# "NONE" if there's no review yet or the call fails.
+latest_reviewer_review_state() {
+  gh api "repos/$REPO/pulls/$PR/reviews" \
+    --jq "[.[]|select(.user.login==\"$REVIEWER_LOGIN\")]|sort_by(.submitted_at)|last|.state // \"NONE\"" \
+    2>/dev/null || echo NONE
+}
+
+# Final convergence path: introspection + retrospective + worktree cleanup, exit 0.
+converge_and_exit() {
+  log "converged — APPROVE on PR #$PR. running introspection + retrospective"
+  set_meta_status "success"
+  set_task_review_event APPROVE
+  run_introspection
+  run_retrospective
+  log "checklist-suggestions: $RUN_DIR/checklist-suggestions.md"
+  log "retrospective:        $RUN_DIR/retrospective.md"
+  cleanup_pr_worktree
+  log "worktree removed: $WORKTREE_DIR"
+  exit 0
 }
 
 # Parse the trailer from the latest reviewer-login review on the PR.
@@ -413,9 +453,10 @@ run_codex_oneoff() {
   if [[ "$sid" == "null" || -z "$sid" ]]; then
     return 1
   fi
-  codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
-    --output-last-message "$outfile" --cd "$WORKTREE_DIR" \
-    "$prompt" >/dev/null 2>&1 || true
+  ( cd "$WORKTREE_DIR" && \
+    codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
+      --output-last-message "$outfile" \
+      "$prompt" ) >/dev/null 2>&1 || true
   [[ -s "$outfile" ]]
 }
 
@@ -487,18 +528,25 @@ while true; do
   LAST_HUMAN_ID_PREV=$(jq -r .last_human_comment_id "$META")
   LATEST_HUMAN_ID=$(latest_human_comment_id)
 
-  # Convergence: prior round APPROVE, head sha unchanged, no new comments.
-  if [[ "$LAST_EVENT" == "APPROVE" \
-        && "$HEAD_SHA" == "$LAST_SHA" \
-        && "$LATEST_HUMAN_ID" == "$LAST_HUMAN_ID_PREV" ]]; then
-    log "converged — APPROVE on stable sha, no new comments. running introspection + retrospective"
-    set_meta_status "success"
-    set_task_review_event APPROVE
-    run_introspection
-    run_retrospective
-    log "checklist-suggestions: $RUN_DIR/checklist-suggestions.md"
-    log "retrospective:        $RUN_DIR/retrospective.md"
-    exit 0
+  # Resume / restart: if local meta says we approved last time, converge
+  # only if GitHub still shows APPROVED *and* nothing has changed since
+  # the approval. New commits auto-dismiss approvals (state goes
+  # DISMISSED), but new issue/review comments do not — so a comments-
+  # changed check is still required to avoid silently skipping unread
+  # human feedback. Any miss → fall through to a fresh round on the
+  # current head.
+  if [[ "$LAST_EVENT" == "APPROVE" ]]; then
+    GH_REVIEW_STATE=$(latest_reviewer_review_state)
+    if [[ "$GH_REVIEW_STATE" == "APPROVED" \
+          && "$HEAD_SHA" == "$LAST_SHA" \
+          && "$LATEST_HUMAN_ID" == "$LAST_HUMAN_ID_PREV" ]]; then
+      converge_and_exit
+    fi
+    log "prior APPROVE no longer current (gh=$GH_REVIEW_STATE, head_changed=$([[ "$HEAD_SHA" != "$LAST_SHA" ]] && echo y || echo n), comments_changed=$([[ "$LATEST_HUMAN_ID" != "$LAST_HUMAN_ID_PREV" ]] && echo y || echo n)) — re-reviewing current head"
+    jq '.last_codex_event="DISMISSED" | .last_reviewed_sha=null' \
+      "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+    LAST_EVENT="DISMISSED"
+    LAST_SHA="null"
   fi
 
   # Anything new since last round?
@@ -563,24 +611,25 @@ while true; do
     : > "$RUN_DIR/inbox.md"
   fi
 
-  # criteria.md / procedure.md mtime checks — round 1 always inlines both,
-  # later rounds only re-inline when the file changed since last inclusion
-  # (Codex's session memory carries unchanged content forward).
+  # procedure.md is round-1-only: round 2+ replaces it with the short
+  # "iteration round" block in compose_prompt. criteria.md uses an mtime
+  # gate — re-inline only when the format spec changed since last
+  # inclusion (Codex's session memory carries unchanged content forward).
   CRITERIA_MTIME=$(stat -c %Y "$CRITERIA_PATH")
-  PROCEDURE_MTIME=$(stat -c %Y "$PROCEDURE_PATH")
   LAST_CRITERIA_MTIME=$(jq -r '.last_criteria_mtime // 0' "$META")
-  LAST_PROCEDURE_MTIME=$(jq -r '.last_procedure_mtime // 0' "$META")
   INCLUDE_CRITERIA=0
   INCLUDE_PROCEDURE=0
   if [[ "$NEXT_ROUND" -eq 1 || "$CRITERIA_MTIME" -gt "$LAST_CRITERIA_MTIME" ]]; then
     INCLUDE_CRITERIA=1
   fi
-  if [[ "$NEXT_ROUND" -eq 1 || "$PROCEDURE_MTIME" -gt "$LAST_PROCEDURE_MTIME" ]]; then
+  if [[ "$NEXT_ROUND" -eq 1 ]]; then
     INCLUDE_PROCEDURE=1
   fi
 
+  CONSECUTIVE_RC=$(jq -r '.consecutive_request_changes // 0' "$META")
   compose_prompt "$SNAP" "$NEXT_ROUND" "$INCLUDE_CRITERIA" "$INCLUDE_PROCEDURE" \
-    "$DIFF_FILE" "$PR_STATE" "$HEAD_SHA" "$LAST_SHA" "$LAST_EVENT" "$INBOX_BLOCK"
+    "$DIFF_FILE" "$PR_STATE" "$HEAD_SHA" "$LAST_SHA" "$LAST_EVENT" "$INBOX_BLOCK" \
+    "$CONSECUTIVE_RC"
 
   log "round $NEXT_ROUND — invoking codex"
   if ! run_codex_round "$SNAP"; then
@@ -598,12 +647,17 @@ while true; do
   BLOCKERS=$(printf '%s' "$TRAILER" | sed -nE 's/.*blockers=([0-9]+).*/\1/p')
 
   NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [[ "$EVENT" == "REQUEST_CHANGES" ]]; then
+    NEW_RC=$((CONSECUTIVE_RC + 1))
+  else
+    NEW_RC=0
+  fi
   jq --argjson r "$NEXT_ROUND" --arg sha "$HEAD_SHA" --arg now "$NOW" \
      --argjson hid "$LATEST_HUMAN_ID" --arg ev "$EVENT" \
-     --argjson cm "$CRITERIA_MTIME" --argjson pm "$PROCEDURE_MTIME" \
+     --argjson cm "$CRITERIA_MTIME" --argjson rc "$NEW_RC" \
      '.round=$r | .last_reviewed_sha=$sha | .last_human_comment_id=$hid
       | .last_codex_event=$ev | .last_criteria_mtime=$cm
-      | .last_procedure_mtime=$pm
+      | .consecutive_request_changes=$rc
       | .consecutive_codex_failures=0 | .last_reviewed_at=$now' \
      "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 
@@ -618,6 +672,19 @@ while true; do
 
   log "round $NEXT_ROUND done — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
 
-  # Loop will check convergence at the top of the next iteration.
+  # APPROVE this round → exit, but re-check stability first. HEAD_SHA
+  # and LATEST_HUMAN_ID were snapshotted before Codex ran (potentially
+  # minutes ago); a push or non-reviewer comment arriving during the
+  # review must not be silently skipped. If anything moved, fall
+  # through to sleep + next iteration, which will pick up the change.
+  if [[ "$EVENT" == "APPROVE" ]]; then
+    POST_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+    POST_HUMAN_ID=$(latest_human_comment_id)
+    if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" && "$POST_HUMAN_ID" == "$LATEST_HUMAN_ID" ]]; then
+      converge_and_exit
+    fi
+    log "APPROVE produced but state moved during review (head_changed=$([[ "$POST_HEAD_SHA" != "$HEAD_SHA" ]] && echo y || echo n), comments_changed=$([[ "$POST_HUMAN_ID" != "$LATEST_HUMAN_ID" ]] && echo y || echo n)) — falling through"
+  fi
+
   sleep "$POLL_INTERVAL"
 done
