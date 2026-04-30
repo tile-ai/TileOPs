@@ -1,12 +1,12 @@
 Run before approving any PR that adds or modifies tests. If any check fails, request changes; do not approve until the developer pushes a triage commit.
 
-- [ ] **Per-case verdict (blocker default).** For every test case added or modified in this PR, post an inline comment on the test definition with one of:
+- [ ] **Per-case verdict (blocker default).** Triage every test case added or modified in this PR as one of `keep` / `shrink` / `delete`. Inline comments are required only for blocker verdicts; clean test PRs stay clean (no per-case inline noise) — consistent with `criteria.md §3` (`Clean — no issues.`).
 
-  - `keep — guards <distinct code path or dtype>` (no action required) — per `docs/design/testing.md §Test case policy`.
-  - `shrink — fold to <axis>` (**BLOCKER**) — Cartesian expansion; fold to "boundary + one representative interior point".
-  - `delete — duplicate of <node ID>` (**BLOCKER**) — same-failure-mode duplicate of a kept case.
+  - `keep — guards <distinct code path or dtype>` (no action required) — per `docs/design/testing.md §Test case policy`. **Do not** post inline.
+  - `shrink — fold to <axis>` (**BLOCKER, inline required**) — Cartesian expansion; fold to "boundary + one representative interior point".
+  - `delete — duplicate of <node ID>` (**BLOCKER, inline required**) — same-failure-mode duplicate of a kept case.
 
-  Cases left without a verdict comment count as untriaged and are also **BLOCKER**. Every blocker must be resolved (case shrunk / deleted, or verdict downgraded to `keep` with rationale) before APPROVE.
+  Cases the reviewer cannot classify with confidence count as untriaged → **BLOCKER, inline required** asking the developer for the rationale. Every blocker must be resolved (case shrunk / deleted, or verdict downgraded to `keep` with rationale) before APPROVE.
 
 - [ ] **Numerical floor.** Run `python scripts/test_node_delta.py --base upstream/main`. If existing-file growth > 25% AND any added case lacks a verdict comment, REQUEST_CHANGES with the full list of unjustified node IDs in the summary.
 
