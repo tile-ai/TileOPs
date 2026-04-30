@@ -279,7 +279,7 @@ compose_prompt() {
     if [[ "$n" -eq 1 ]]; then
       echo "## Project-specific regression guards"
       echo ""
-      echo "These are project-specific defenses against known classes of regression. Apply them in addition to free-form review, not instead of it."
+      echo "Apply alongside the free-form review, not in place of it."
       echo ""
       jq -r '.checklists[]' "$CONTEXT" | while read -r cl; do
         local path="$CHECKLISTS_DIR/$cl"
@@ -296,12 +296,12 @@ compose_prompt() {
     else
       echo "## Iteration round (round $n of $MAX_ROUNDS)"
       echo ""
-      echo "Developer pushed changes / replied since the last review. Strictly verify:"
+      echo "Developer pushed / replied. Verify both:"
       echo ""
-      echo "1. Are the prior blockers actually resolved? Read the changed source, not just the developer's reply."
-      echo "2. Did the new commits introduce any new problems?"
+      echo "1. Prior blockers actually fixed (read the changed source, not the reply)."
+      echo "2. No new problems introduced by the new commits."
       echo ""
-      echo "Procedure and checklists from round 1 still apply — they are in your session memory."
+      echo "Round 1's procedure and guards still apply — already in session memory."
       echo ""
     fi
 
