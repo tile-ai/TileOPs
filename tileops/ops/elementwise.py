@@ -1732,6 +1732,10 @@ class WhereFwdOp(Op):
     ) -> torch.Tensor:
         if not (condition.is_cuda and input.is_cuda and other.is_cuda):
             raise ValueError("Inputs must be CUDA tensors")
+        if condition.dtype != torch.bool:
+            raise ValueError(
+                f"Expected condition.dtype torch.bool, got {condition.dtype}"
+            )
         if input.dtype != self.dtype:
             raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
         if other.dtype != self.dtype:

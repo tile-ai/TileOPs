@@ -55,6 +55,25 @@ def test_where_init_signature_pytorch_aligned():
     assert fwd_params[1:] == ["condition", "input", "other"], fwd_params
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "bad_dtype",
+    [torch.float32, torch.float16, torch.int32, torch.uint8],
+)
+def test_where_rejects_non_bool_condition(bad_dtype):
+    from tileops.ops.elementwise import WhereFwdOp
+
+    shape = (4, 8)
+    cond = torch.zeros(shape, device="cuda", dtype=bad_dtype)
+    inp = torch.randn(shape, device="cuda", dtype=torch.float16)
+    other = torch.randn(shape, device="cuda", dtype=torch.float16)
+    op = WhereFwdOp(
+        condition=shape, input=shape, other=shape, dtype=torch.float16
+    )
+    with pytest.raises(ValueError, match="condition.dtype torch.bool"):
+        op(cond, inp, other)
+
+
 # ---------------------------------------------------------------------------
 # AC-2: ClampFwdOp Tensor min/max
 # ---------------------------------------------------------------------------
