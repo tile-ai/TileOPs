@@ -1,19 +1,6 @@
 # Review procedure
 
-Single source of truth for "one review pass on one tile-ai/TileOPs PR". Followed verbatim by:
-
-- `SKILL.md` — manual single-shot via Claude / Codex session.
-- `loop.sh` — per-PR autonomous loop, each round.
-
-Both modes wrap this procedure with mode-specific concerns (preflight, input gathering, round bookkeeping, trailer for the loop driver). The review behavior itself lives only here.
-
-## Assumed inputs
-
-The caller has already ensured:
-
-- `preflight.sh` has run and `GH_CONFIG_DIR` is exported to the reviewer identity.
-- The PR has been classified per `loading.yaml`; the list of applicable checklist files is known.
-- The diff (full or incremental), unresolved review threads, recent non-reviewer comments, and CI status are accessible (either pre-fetched on disk or fetchable on demand).
+Single source of truth for "one review pass on one tile-ai/TileOPs PR". Loaded by both `SKILL.md` (manual single-shot) and `loop.sh` (each round of the autonomous loop). The wrapper handles preflight, input gathering, and bookkeeping; this file is only the review behavior itself.
 
 ## Steps
 

@@ -100,6 +100,18 @@ sync_pr_worktree() {
     git -C "$WORKTREE_DIR" reset --hard "$target" >/dev/null
   fi
 }
+
+# Drop the per-PR worktree and ref. Called on APPROVE convergence so the
+# loop doesn't leave a full repo checkout sitting on disk per merged PR.
+# Other state under $RUN_DIR (logs, prompts, retrospective) stays for
+# postmortem inspection.
+cleanup_pr_worktree() {
+  if [[ -e "$WORKTREE_DIR" ]]; then
+    git -C "$REPO_PATH" worktree remove --force "$WORKTREE_DIR" >/dev/null 2>&1 \
+      || rm -rf "$WORKTREE_DIR"
+  fi
+  git -C "$REPO_PATH" update-ref -d "$PR_REF" 2>/dev/null || true
+}
 sync_pr_worktree
 
 # Task-level meta.json (cross-stage state, shared with future foundry-pipeline
@@ -498,6 +510,8 @@ while true; do
     run_retrospective
     log "checklist-suggestions: $RUN_DIR/checklist-suggestions.md"
     log "retrospective:        $RUN_DIR/retrospective.md"
+    cleanup_pr_worktree
+    log "worktree removed: $WORKTREE_DIR"
     exit 0
   fi
 
