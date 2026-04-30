@@ -277,7 +277,9 @@ compose_prompt() {
     fi
 
     if [[ "$n" -eq 1 ]]; then
-      echo "## Checklists"
+      echo "## Project-specific regression guards"
+      echo ""
+      echo "These are project-specific defenses against known classes of regression. Apply them in addition to free-form review, not instead of it."
       echo ""
       jq -r '.checklists[]' "$CONTEXT" | while read -r cl; do
         local path="$CHECKLISTS_DIR/$cl"
