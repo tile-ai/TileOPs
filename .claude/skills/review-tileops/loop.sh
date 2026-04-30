@@ -25,7 +25,7 @@ REPO="tile-ai/TileOPs"
 MAX_ROUNDS=10
 POLL_INTERVAL=180
 CODEX_RETRY=3
-FOUNDRY_ROOT="${FOUNDRY_ROOT:-/home/cy/TileOps-dev/foundry}"
+: "${FOUNDRY_ROOT:?FOUNDRY_ROOT must be exported (preflight.sh checks this)}"
 REPO_PATH="$(git rev-parse --show-toplevel)"
 
 CRITERIA_PATH="$SKILL_DIR/criteria.md"

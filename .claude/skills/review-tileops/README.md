@@ -12,10 +12,11 @@ This skill reviews PRs as a GitHub identity distinct from the PR author. The ide
    GH_CONFIG_DIR=/path/to/your/reviewer-config gh auth login --hostname github.com
    ```
 
-1. Export the same path in your shell rc:
+1. Export the same path in your shell rc, plus point at your foundry checkout (the loop calls foundry helpers):
 
    ```bash
    export TILEOPS_REVIEW_GH_CONFIG_DIR=/path/to/your/reviewer-config
+   export FOUNDRY_ROOT=/path/to/foundry
    ```
 
 ## Before reviewing each PR

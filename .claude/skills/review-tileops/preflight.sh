@@ -13,6 +13,20 @@ if ! command -v codex >/dev/null 2>&1; then
   exit 1
 fi
 
+if [ -z "${FOUNDRY_ROOT:-}" ]; then
+  echo "error: FOUNDRY_ROOT is not set." >&2
+  echo "  the review loop calls foundry helpers (task-root.sh, task-meta.sh)." >&2
+  echo "  export it in your shell rc, pointing at your foundry checkout:" >&2
+  echo "    export FOUNDRY_ROOT=/path/to/foundry" >&2
+  exit 1
+fi
+
+if [ ! -x "$FOUNDRY_ROOT/scripts/task-root.sh" ] || [ ! -x "$FOUNDRY_ROOT/scripts/task-meta.sh" ]; then
+  echo "error: $FOUNDRY_ROOT does not contain executable scripts/task-root.sh + scripts/task-meta.sh." >&2
+  echo "  ensure FOUNDRY_ROOT points at a foundry checkout with the helper scripts present." >&2
+  exit 1
+fi
+
 if [ -z "${TILEOPS_REVIEW_GH_CONFIG_DIR:-}" ]; then
   echo "error: TILEOPS_REVIEW_GH_CONFIG_DIR is not set." >&2
   echo "  export it in your shell rc; see .claude/skills/review-tileops/README.md" >&2
