@@ -21,6 +21,10 @@ from tileops.ops.elementwise import (
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
     CeilFwdOp,
+    ClampFwdOp,
+    ClampMaxFwdOp,
+    ClampMinFwdOp,
+    ClampScalarFwdOp,
     CosFwdOp,
     DivFwdOp,
     EqFwdOp,
@@ -47,6 +51,8 @@ from tileops.ops.elementwise import (
     LogicalNotFwdOp,
     LogicalOrFwdOp,
     LtFwdOp,
+    MaskedFillFwdOp,
+    MaskedFillScalarFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
     MishFwdOp,
@@ -632,6 +638,192 @@ def test_where_compile_broadcast():
     out = compiled_op(cond, x, y)
     ref = torch.where(cond, x, y)
     assert out.shape == ref.shape == (4, 8)
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+# --- ClampScalarFwdOp (input -> out, scalar min/max baked) ---
+
+@pytest.mark.full
+def test_clamp_scalar_compile():
+    """Compile-smoke for ClampScalarFwdOp (Number min/max baked into __init__)."""
+    shape = (1024, 1024)
+    n_total = shape[0] * shape[1]
+    x = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    op = ClampScalarFwdOp(input=shape, min=-0.5, max=0.5, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x.reshape(n_total))
+    ref = torch.clamp(x.float(), min=-0.5, max=0.5).to(_DTYPE).reshape(n_total)
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+# --- Tensor-bound ClampFwdOp (input, min?, max? -> out) ---
+
+@pytest.mark.full
+def test_clamp_tensor_compile_same_shape():
+    """Compile-smoke for ClampFwdOp with both Tensor bounds at same shape.
+
+    Regression: ensures ClampFwdOp registers a custom_op so
+    torch.compile(fullgraph=True) does not fail with
+    "torch.* op returned non-Tensor".
+    """
+    shape = (16, 16)
+    x = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    lo = torch.full(shape, -0.5, dtype=_DTYPE, device="cuda")
+    hi = torch.full(shape, 0.5, dtype=_DTYPE, device="cuda")
+    op = ClampFwdOp(input=shape, min=shape, max=shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x, lo, hi)
+    ref = torch.clamp(x.float(), lo.float(), hi.float()).to(_DTYPE)
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.full
+def test_clamp_tensor_compile_broadcast():
+    """Compile-smoke for ClampFwdOp with broadcasting Tensor bounds."""
+    input_shape = (4, 8)
+    min_shape = (1, 8)
+    max_shape = (4, 1)
+    x = torch.randn(input_shape, dtype=_DTYPE, device="cuda")
+    lo = torch.full(min_shape, -0.5, dtype=_DTYPE, device="cuda")
+    hi = torch.full(max_shape, 0.5, dtype=_DTYPE, device="cuda")
+    op = ClampFwdOp(input=input_shape, min=min_shape, max=max_shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x, lo, hi)
+    ref = torch.clamp(x.float(), lo.float(), hi.float()).to(_DTYPE)
+    assert out.shape == ref.shape == input_shape
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+# --- Single-bound Tensor clamp variants ---
+
+@pytest.mark.full
+def test_clamp_min_compile_same_shape():
+    """Compile-smoke for ClampMinFwdOp at same shape."""
+    shape = (16, 16)
+    x = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    lo = torch.full(shape, -0.5, dtype=_DTYPE, device="cuda")
+    op = ClampMinFwdOp(input=shape, min=shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x, lo)
+    ref = torch.clamp(x.float(), min=lo.float()).to(_DTYPE)
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.full
+def test_clamp_min_compile_broadcast():
+    """Compile-smoke for ClampMinFwdOp with broadcasting min."""
+    input_shape = (4, 8)
+    min_shape = (1, 8)
+    x = torch.randn(input_shape, dtype=_DTYPE, device="cuda")
+    lo = torch.full(min_shape, -0.5, dtype=_DTYPE, device="cuda")
+    op = ClampMinFwdOp(input=input_shape, min=min_shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x, lo)
+    ref = torch.clamp(x.float(), min=lo.float()).to(_DTYPE)
+    assert out.shape == ref.shape == input_shape
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.full
+def test_clamp_max_compile_same_shape():
+    """Compile-smoke for ClampMaxFwdOp at same shape."""
+    shape = (16, 16)
+    x = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    hi = torch.full(shape, 0.5, dtype=_DTYPE, device="cuda")
+    op = ClampMaxFwdOp(input=shape, max=shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x, hi)
+    ref = torch.clamp(x.float(), max=hi.float()).to(_DTYPE)
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.full
+def test_clamp_max_compile_broadcast():
+    """Compile-smoke for ClampMaxFwdOp with broadcasting max."""
+    input_shape = (4, 8)
+    max_shape = (4, 1)
+    x = torch.randn(input_shape, dtype=_DTYPE, device="cuda")
+    hi = torch.full(max_shape, 0.5, dtype=_DTYPE, device="cuda")
+    op = ClampMaxFwdOp(input=input_shape, max=max_shape, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x, hi)
+    ref = torch.clamp(x.float(), max=hi.float()).to(_DTYPE)
+    assert out.shape == ref.shape == input_shape
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+# --- MaskedFillFwdOp (Tensor value) ---
+
+@pytest.mark.full
+def test_masked_fill_tensor_compile_same_shape():
+    """Compile-smoke for MaskedFillFwdOp (0-dim Tensor value) at same shape.
+
+    Regression: ensures MaskedFillFwdOp registers a custom_op so
+    torch.compile(fullgraph=True) does not fail with
+    "torch.* op returned non-Tensor".
+    """
+    shape = (16, 16)
+    x = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    mask = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+    value = torch.tensor(-1.0, dtype=_DTYPE, device="cuda")
+    op = MaskedFillFwdOp(input=shape, mask=shape, value=(), dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x, mask, value)
+    ref = torch.where(mask, value.expand(shape), x)
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.full
+def test_masked_fill_tensor_compile_broadcast():
+    """Compile-smoke for MaskedFillFwdOp with broadcasting input/mask."""
+    input_shape = (4, 8)
+    mask_shape = (1, 8)
+    x = torch.randn(input_shape, dtype=_DTYPE, device="cuda")
+    mask = torch.randint(0, 2, mask_shape, dtype=torch.bool, device="cuda")
+    value = torch.tensor(-1.0, dtype=_DTYPE, device="cuda")
+    op = MaskedFillFwdOp(input=input_shape, mask=mask_shape, value=(), dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x, mask, value)
+    ref = torch.where(
+        mask.expand(input_shape), value.expand(input_shape), x,
+    )
+    assert out.shape == ref.shape == input_shape
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+# --- MaskedFillScalarFwdOp (broadcast path now uses custom_op) ---
+
+@pytest.mark.full
+def test_masked_fill_scalar_compile_same_shape():
+    """Compile-smoke for MaskedFillScalarFwdOp at same shape."""
+    shape = (16, 16)
+    x = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    mask = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+    op = MaskedFillScalarFwdOp(input=shape, mask=shape, value=-1.0, dtype=_DTYPE)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x, mask)
+    ref = x.masked_fill(mask, -1.0)
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.full
+def test_masked_fill_scalar_compile_broadcast():
+    """Compile-smoke for MaskedFillScalarFwdOp with broadcasting input/mask.
+
+    Regression for the removed ``not self._needs_broadcast`` guard:
+    register_fake is now broadcast-aware so the custom_op path works.
+    """
+    input_shape = (4, 8)
+    mask_shape = (1, 8)
+    x = torch.randn(input_shape, dtype=_DTYPE, device="cuda")
+    mask = torch.randint(0, 2, mask_shape, dtype=torch.bool, device="cuda")
+    op = MaskedFillScalarFwdOp(
+        input=input_shape, mask=mask_shape, value=-1.0, dtype=_DTYPE,
+    )
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(x, mask)
+    ref = x.masked_fill(mask.expand(input_shape), -1.0)
+    assert out.shape == ref.shape == input_shape
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 

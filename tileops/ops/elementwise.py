@@ -254,7 +254,12 @@ def _register_where_custom_op(op_cls):
 
 
 def _register_masked_fill_custom_op(op_cls):
-    """Register a masked-fill-style op (x, mask -> y) for torch.compile."""
+    """Register a masked-fill-style op (x, mask -> y) for torch.compile.
+
+    The fake function computes the bidirectional broadcast output shape
+    of ``x`` and ``mask`` so ``torch.compile(fullgraph=True)`` works for
+    both same-shape and broadcasting inputs.
+    """
     op_name = op_cls._op_name
 
     @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
@@ -272,7 +277,135 @@ def _register_masked_fill_custom_op(op_cls):
         mask: torch.Tensor,
         instance_key: int,
     ) -> torch.Tensor:
-        return torch.empty_like(x)
+        out_shape = torch.broadcast_shapes(x.shape, mask.shape)
+        return x.new_empty(out_shape)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_masked_fill_tensor_value_custom_op(op_cls):
+    """Register a masked-fill (Tensor value) op (input, mask, value -> out).
+
+    The fake function computes the broadcast output shape of ``input`` and
+    ``mask`` (``value`` is a 0-dim Tensor). Registered under a distinct
+    namespace from the scalar masked_fill variant to avoid collision.
+    """
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(
+        f"top::elementwise_{op_name}_tensor_value", mutates_args=(),
+    )
+    def _wrapped(
+        input: torch.Tensor,  # noqa: A002
+        mask: torch.Tensor,
+        value: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(input, mask, value)
+
+    @_wrapped.register_fake
+    def _(
+        input: torch.Tensor,  # noqa: A002
+        mask: torch.Tensor,
+        value: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        out_shape = torch.broadcast_shapes(input.shape, mask.shape)
+        return input.new_empty(out_shape)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_clamp_tensor_custom_op(op_cls):
+    """Register a Tensor-bound clamp op (input, min?, max? -> out).
+
+    ``min`` and ``max`` are each ``Optional[Tensor]``; the schema is
+    inferred by ``torch.library.custom_op`` from the ``Optional[torch.Tensor]``
+    annotations, producing ``Tensor? min, Tensor? max`` in the underlying
+    custom-op schema. The fake function computes the broadcast output
+    shape of all non-``None`` operands so ``torch.compile(fullgraph=True)``
+    works for both same-shape and broadcasting inputs. Registered under
+    a distinct ``_tensor`` namespace from the scalar-bound clamp variant.
+    """
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(
+        f"top::elementwise_{op_name}_tensor", mutates_args=(),
+    )
+    def _wrapped(
+        input: torch.Tensor,  # noqa: A002
+        min: Optional[torch.Tensor],  # noqa: A002
+        max: Optional[torch.Tensor],  # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(input, min, max)
+
+    @_wrapped.register_fake
+    def _(
+        input: torch.Tensor,  # noqa: A002
+        min: Optional[torch.Tensor],  # noqa: A002
+        max: Optional[torch.Tensor],  # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        shapes = [input.shape]
+        if min is not None:
+            shapes.append(min.shape)
+        if max is not None:
+            shapes.append(max.shape)
+        out_shape = torch.broadcast_shapes(*shapes)
+        return input.new_empty(out_shape)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_clamp_min_custom_op(op_cls):
+    """Register single-bound Tensor lower-clamp (input, min -> out)."""
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
+    def _wrapped(
+        input: torch.Tensor,  # noqa: A002
+        min: torch.Tensor,    # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(input, min)
+
+    @_wrapped.register_fake
+    def _(
+        input: torch.Tensor,  # noqa: A002
+        min: torch.Tensor,    # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        out_shape = torch.broadcast_shapes(input.shape, min.shape)
+        return input.new_empty(out_shape)
+
+    op_cls._wrapped = _wrapped
+
+
+def _register_clamp_max_custom_op(op_cls):
+    """Register single-bound Tensor upper-clamp (input, max -> out)."""
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
+    def _wrapped(
+        input: torch.Tensor,  # noqa: A002
+        max: torch.Tensor,    # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(input, max)
+
+    @_wrapped.register_fake
+    def _(
+        input: torch.Tensor,  # noqa: A002
+        max: torch.Tensor,    # noqa: A002
+        instance_key: int,
+    ) -> torch.Tensor:
+        out_shape = torch.broadcast_shapes(input.shape, max.shape)
+        return input.new_empty(out_shape)
 
     op_cls._wrapped = _wrapped
 
@@ -1655,6 +1788,7 @@ class ClampFwdOp(_ClampTensorBase):
     """
 
     _op_name = "clamp"
+    _wrapped = None
 
     def __init__(
         self,
@@ -1742,6 +1876,9 @@ class ClampFwdOp(_ClampTensorBase):
                 raise ValueError(
                     f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
                 )
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(input, min, max, self._instance_key)
         return self._eager_forward(input, min, max)
 
 
@@ -1755,6 +1892,7 @@ class ClampMinFwdOp(_ClampTensorBase):
     """
 
     _op_name = "clamp_min"
+    _wrapped = None
 
     def __init__(
         self,
@@ -1803,6 +1941,9 @@ class ClampMinFwdOp(_ClampTensorBase):
                 raise ValueError(
                     f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
                 )
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(input, min, self._instance_key)
         return self._eager_forward(input, min)
 
 
@@ -1816,6 +1957,7 @@ class ClampMaxFwdOp(_ClampTensorBase):
     """
 
     _op_name = "clamp_max"
+    _wrapped = None
 
     def __init__(
         self,
@@ -1864,6 +2006,9 @@ class ClampMaxFwdOp(_ClampTensorBase):
                 raise ValueError(
                     f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
                 )
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(input, max, self._instance_key)
         return self._eager_forward(input, max)
 
 
@@ -2016,6 +2161,9 @@ class MaskedFillFwdOp(Op):
             )
         if tuple(value.shape) != ():
             raise ValueError(f"Expected value.shape (), got {tuple(value.shape)}")
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(input, mask, value, self._instance_key)
         return self._eager_forward(input, mask, value)
 
 
@@ -2097,7 +2245,7 @@ class MaskedFillScalarFwdOp(Op):
                 f"Expected mask.shape {self.mask_shape}, got {tuple(mask.shape)}"
             )
         wrapped = type(self)._wrapped
-        if wrapped is not None and not self._needs_broadcast:
+        if wrapped is not None:
             return wrapped(input, mask, self._instance_key)
         return self._eager_forward(input, mask)
 
@@ -2286,9 +2434,8 @@ for _cls in [SiluAndMulFwdOp, GeluAndMulFwdOp, GeluTanhAndMulFwdOp]:
 
 # --- Independent unary-like ops (6 ops: x -> y with baked params) ---
 # ClampScalarFwdOp is the scalar-bound clamp (single-tensor input + min/max
-# baked into __init__); the Tensor-bound ClampFwdOp / ClampMinFwdOp /
-# ClampMaxFwdOp variants do not register a unary custom op because they
-# take multiple tensor inputs.
+# baked into __init__). The Tensor-bound ClampFwdOp / ClampMinFwdOp /
+# ClampMaxFwdOp variants register their own multi-input custom_ops below.
 for _cls in [
     LeakyReluFwdOp, EluFwdOp, HardtanhFwdOp, SoftplusFwdOp, ClampScalarFwdOp,
     NanToNumFwdOp,
@@ -2298,11 +2445,24 @@ for _cls in [
 # --- PReLU op (1 op: x, weight -> y) ---
 _register_prelu_custom_op(PreluFwdOp)
 
-# --- MaskedFill scalar variant (1 op: input, mask -> out) ---
-# The Tensor-value MaskedFillFwdOp uses an eager broadcasting path and is
-# not registered as a custom_op because the 0-dim Tensor value cannot be
-# folded into a static schema cleanly.
+# --- Tensor-bound clamp variants (3 ops: multi-tensor inputs -> out) ---
+# Registered under distinct custom_op namespaces from ClampScalarFwdOp:
+# ``top::elementwise_clamp_tensor`` (Optional Tensor min/max),
+# ``top::elementwise_clamp_min`` and ``top::elementwise_clamp_max`` for the
+# single-bound variants. register_fake is broadcast-aware so
+# torch.compile(fullgraph=True) traces correctly for both same-shape and
+# broadcasting inputs.
+_register_clamp_tensor_custom_op(ClampFwdOp)
+_register_clamp_min_custom_op(ClampMinFwdOp)
+_register_clamp_max_custom_op(ClampMaxFwdOp)
+
+# --- MaskedFill variants (input, mask[, value] -> out) ---
+# Both register broadcast-aware fake functions so torch.compile(fullgraph=True)
+# works for same-shape and broadcasting inputs. The Tensor-value variant is
+# registered under a distinct ``_tensor_value`` namespace to avoid colliding
+# with the scalar variant's ``top::elementwise_masked_fill``.
 _register_masked_fill_custom_op(MaskedFillScalarFwdOp)
+_register_masked_fill_tensor_value_custom_op(MaskedFillFwdOp)
 
 # --- Where op (1 op: cond, x, y -> out) ---
 # The fake function is broadcast-aware so torch.compile(fullgraph=True)
