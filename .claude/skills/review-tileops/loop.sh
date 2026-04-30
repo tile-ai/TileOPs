@@ -210,6 +210,7 @@ if [[ ! -f "$META" ]]; then
     last_codex_event: null,
     last_criteria_mtime: 0,
     consecutive_codex_failures: 0,
+    consecutive_request_changes: 0,
     status: "active"
   }' > "$META"
 fi
@@ -248,6 +249,7 @@ compose_prompt() {
   local last_sha="$8"
   local last_event="$9"
   local inbox_block="${10}"
+  local consecutive_rc="${11}"
   local out="$snap.prompt.md"
 
   {
@@ -304,26 +306,26 @@ compose_prompt() {
       echo ""
     fi
 
-    if [[ "$n" -ge 7 ]]; then
-      cat <<'ANCHOR'
-## Round 7+ — Design re-anchoring (mandatory)
+    if [[ "$consecutive_rc" -ge 3 ]]; then
+      cat <<ANCHOR
+## Divergence trigger — design re-anchoring (mandatory)
 
-The bottom-up checklist is failing to converge. Re-anchor top-down.
+This PR has been REQUEST_CHANGES for $consecutive_rc rounds in a row. Stop iterating bottom-up. Re-anchor top-down.
 
-1. **Re-read from disk** (not memory): `docs/design/architecture.md`, `docs/design/ops-design.md`, plus any design doc named by your active checklist items.
-2. **Audit the blocker thread.** One root concern, or local patches on a moving target?
-3. **Question your anchor.** Cite the design passage that grounds the blocker. No citation possible → overfitted.
+1. **Re-read from disk** (not memory): \`docs/design/architecture.md\`, \`docs/design/ops-design.md\`, plus any design doc named by an active guard.
+2. **Audit the recurring blocker.** One root design concern, or local patches on a moving target?
+3. **Question your anchor.** Cite the design passage that grounds the blocker. No citation possible → you've over-fitted on trivial details.
 4. **Decide:**
    - **Reaffirm** — cite the passage inline.
    - **Withdraw** — retract explicitly. Remaining unease becomes a summary question, not a blocker.
    - **Reframe** — restate once at the design level with citation; stop relitigating surface variants.
 
 Required line at the top of the summary (before the trailer):
-```
-Round-7 introspection: <reaffirmed|withdrawn|reframed> — <one-line reason>
-```
+\`\`\`
+Divergence introspection: <reaffirmed|withdrawn|reframed> — <one-line reason>
+\`\`\`
 
-Stop bickering with the developer over minor details. If `reaffirmed` and the author shows no movement for 2+ further rounds, state in the summary that the PR is stalling and recommend human review.
+If reaffirmed and the next round still doesn't converge, recommend human review in the summary.
 
 ANCHOR
     fi
@@ -624,8 +626,10 @@ while true; do
     INCLUDE_PROCEDURE=1
   fi
 
+  CONSECUTIVE_RC=$(jq -r '.consecutive_request_changes // 0' "$META")
   compose_prompt "$SNAP" "$NEXT_ROUND" "$INCLUDE_CRITERIA" "$INCLUDE_PROCEDURE" \
-    "$DIFF_FILE" "$PR_STATE" "$HEAD_SHA" "$LAST_SHA" "$LAST_EVENT" "$INBOX_BLOCK"
+    "$DIFF_FILE" "$PR_STATE" "$HEAD_SHA" "$LAST_SHA" "$LAST_EVENT" "$INBOX_BLOCK" \
+    "$CONSECUTIVE_RC"
 
   log "round $NEXT_ROUND — invoking codex"
   if ! run_codex_round "$SNAP"; then
@@ -643,11 +647,17 @@ while true; do
   BLOCKERS=$(printf '%s' "$TRAILER" | sed -nE 's/.*blockers=([0-9]+).*/\1/p')
 
   NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [[ "$EVENT" == "REQUEST_CHANGES" ]]; then
+    NEW_RC=$((CONSECUTIVE_RC + 1))
+  else
+    NEW_RC=0
+  fi
   jq --argjson r "$NEXT_ROUND" --arg sha "$HEAD_SHA" --arg now "$NOW" \
      --argjson hid "$LATEST_HUMAN_ID" --arg ev "$EVENT" \
-     --argjson cm "$CRITERIA_MTIME" \
+     --argjson cm "$CRITERIA_MTIME" --argjson rc "$NEW_RC" \
      '.round=$r | .last_reviewed_sha=$sha | .last_human_comment_id=$hid
       | .last_codex_event=$ev | .last_criteria_mtime=$cm
+      | .consecutive_request_changes=$rc
       | .consecutive_codex_failures=0 | .last_reviewed_at=$now' \
      "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 
