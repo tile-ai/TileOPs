@@ -271,7 +271,7 @@ compose_prompt() {
     fi
 
     if [[ -n "$inbox_block" ]]; then
-      echo "## Per-round guidance from human (inbox, one-shot)"
+      echo "## Per-round guidance from human"
       echo ""
       echo "$inbox_block"
       echo ""
@@ -280,7 +280,7 @@ compose_prompt() {
     if [[ "$n" -eq 1 ]]; then
       echo "## Project-specific regression guards"
       echo ""
-      echo "Apply alongside the free-form review, not in place of it."
+      echo "Apply LAST, after the free-form review. These catch known regression classes the free-form pass can miss — they do not replace it."
       echo ""
       jq -r '.checklists[]' "$CONTEXT" | while read -r cl; do
         local path="$CHECKLISTS_DIR/$cl"
@@ -294,16 +294,6 @@ compose_prompt() {
           echo ""
         fi
       done
-    else
-      echo "## Iteration round (round $n of $MAX_ROUNDS)"
-      echo ""
-      echo "Developer pushed / replied. Verify both:"
-      echo ""
-      echo "1. Prior blockers actually fixed (read the changed source, not the reply)."
-      echo "2. No new problems introduced by the new commits."
-      echo ""
-      echo "Round 1's procedure and guards still apply — already in session memory."
-      echo ""
     fi
 
     if [[ "$consecutive_rc" -ge 3 ]]; then
@@ -347,15 +337,24 @@ ANCHOR
 
     echo "## Task"
     echo ""
-    echo "Read the diff at the path above and any changed source files referenced therein, in full. Apply the loaded checklists. Submit ONE atomic review on \`$REPO\` PR #$PR via \`gh\` per the format spec."
-    echo ""
-    echo "The summary body MUST end with this trailer line (the loop driver parses it; review is rejected without it):"
+    if [[ "$n" -gt 1 ]]; then
+      echo "Developer pushed / replied since the last round. Verify both:"
+      echo ""
+      echo "1. Prior blockers actually fixed — read the changed source, not the reply."
+      echo "2. No new problems from the new commits."
+      echo ""
+      echo "Round 1's procedure and guards still apply (already in session memory)."
+      echo ""
+    fi
+    echo "Run the procedure end to end and submit one atomic review."
+    echo "**Free-form review (procedure step 2) is the primary review step**; project-specific guards apply LAST as a regression net, not in place of it."
+    echo "The summary body MUST end with this trailer (the loop driver parses it; review is rejected without it):"
     echo ""
     echo '```'
     echo "<!-- review-loop: event=APPROVE|REQUEST_CHANGES; blockers=<N>; sha=$(printf '%s' "$head_sha" | cut -c1-7) -->"
     echo '```'
     echo ""
-    echo "\`<N>\` = unresolved blockers after this review (0 for APPROVE)."
+    echo "\`<N>\` = unresolved blockers (0 for APPROVE)."
   } > "$out"
 }
 

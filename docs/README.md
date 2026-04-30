@@ -29,4 +29,4 @@ Empirical performance guidance lives under [`perf/`](perf/README.md). Each op ca
 
 ## External
 
-- [TileOPs.github.io](https://github.com/tile-ai/TileOPs.github.io) — auto-generated documentation site (API reference, perf tables, support matrix).
+- [TileOPs.github.io](https://tile-ai.github.io/TileOPs.github.io/) — auto-generated documentation site (API reference, perf tables, support matrix).
