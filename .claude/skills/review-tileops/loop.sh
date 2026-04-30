@@ -59,23 +59,23 @@ RUN_DIR="$TASK_ROOT/review"
 META="$RUN_DIR/meta.json"
 CONTEXT="$RUN_DIR/context.json"
 WORKTREE_DIR="$RUN_DIR/worktree"
+# Per-PR ref outside refs/heads/ so it isn't a branch (no
+# "checked-out-branch" rejection on subsequent fetches) and is namespaced
+# per PR (no race against concurrent per-PR loops sharing FETCH_HEAD).
+PR_REF="refs/review-loop/pr-$PR/head"
 mkdir -p "$RUN_DIR/rounds" "$RUN_DIR/inbox-history"
 
 # Maintain a dedicated worktree pinned at the PR's head sha. Codex reads
 # source files from there; the user's main worktree is never disturbed.
-#
-# Fetch into FETCH_HEAD only — never into a named branch — so subsequent
-# fetches are not rejected by git for "would update a checked-out branch".
-# The worktree itself is on detached HEAD, advanced via reset --hard to the
-# fetched sha each round.
+# Worktree is on detached HEAD; advance each round via reset --hard.
 sync_pr_worktree() {
-  git -C "$REPO_PATH" fetch "$TILEOPS_REMOTE" "pull/$PR/head" -f \
+  git -C "$REPO_PATH" fetch "$TILEOPS_REMOTE" "+pull/$PR/head:$PR_REF" \
     >/dev/null 2>&1 || {
       echo "loop.sh: failed to fetch pull/$PR/head from $TILEOPS_REMOTE" >&2
       return 1
     }
   local target
-  target=$(git -C "$REPO_PATH" rev-parse FETCH_HEAD)
+  target=$(git -C "$REPO_PATH" rev-parse "$PR_REF")
   if [[ ! -d "$WORKTREE_DIR/.git" && ! -e "$WORKTREE_DIR/.git" ]]; then
     git -C "$REPO_PATH" worktree add --detach "$WORKTREE_DIR" "$target" >/dev/null
   else
