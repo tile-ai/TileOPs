@@ -7,7 +7,7 @@ Two non-negotiable principles cut across every event:
 - **Reference semantic alignment.** Any change to an op's spec (signature, shape rules, dtype combos, roofline vars) must map back to an authoritative reference — PyTorch public API for `torch.nn.*` / `torch.nn.functional.*` names; the paper or vendor docs otherwise. Reverse-engineering from current TileOps code is forbidden — spec is upstream of code.
 - **`status` field truthfulness.** `status: implemented` is a hard claim that code conforms to the entry. The reviewer's job is to *disprove* it, not to take it on faith. Status flips that don't reflect actual conformance corrupt the trust model.
 
-# Add-manifest (new entry)
+#### Add-manifest (new entry)
 
 PRs from the `add-manifest` skill, or any PR that adds a previously-absent op entry.
 
@@ -18,7 +18,7 @@ PRs from the `add-manifest` skill, or any PR that adds a previously-absent op en
 - [ ] **Validator green.** `scripts/validate_manifest.py` passes with no checks disabled.
 - [ ] **No code change.** Diff does not modify `tileops/ops/` or `tileops/kernels/`.
 
-# Fix-manifest (patch existing entry)
+#### Fix-manifest (patch existing entry)
 
 PRs from the `fix-manifest` skill — patches one missing structural field (`kernel_map`, `static_dims`) on an existing entry.
 
@@ -27,7 +27,7 @@ PRs from the `fix-manifest` skill — patches one missing structural field (`ker
 - [ ] **Validator green.**
 - [ ] **No code change.** Diff does not modify `tileops/ops/` or `tileops/kernels/`.
 
-# Status flip (`spec-only` ↔ `implemented`)
+#### Status flip (`spec-only` ↔ `implemented`)
 
 Often bundled with a `[Refactor][Ops]` op-migration PR.
 
