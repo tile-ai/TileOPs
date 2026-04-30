@@ -1,5 +1,3 @@
-# Approval gate
-
 Run before approving any PR that adds or modifies tests. If any check fails, request changes; do not approve until the developer pushes a triage commit.
 
 - [ ] Classify every new or changed test case as **keep** / **shrink** / **delete**:
