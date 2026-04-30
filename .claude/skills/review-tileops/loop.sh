@@ -25,7 +25,6 @@ REPO="tile-ai/TileOPs"
 MAX_ROUNDS=10
 POLL_INTERVAL=180
 CODEX_RETRY=3
-: "${FOUNDRY_ROOT:?FOUNDRY_ROOT must be exported (preflight.sh checks this)}"
 REPO_PATH="$(git rev-parse --show-toplevel)"
 
 CRITERIA_PATH="$SKILL_DIR/criteria.md"
@@ -54,10 +53,29 @@ export GH_CONFIG_DIR="$TILEOPS_REVIEW_GH_CONFIG_DIR"
 # ---------------------------------------------------------------------------
 # Step B: resolve task root + state dirs
 # ---------------------------------------------------------------------------
-TASK_ROOT=$("$FOUNDRY_ROOT/scripts/task-root.sh" "$PR")
+# Resolve task root from PR body. Same convention as foundry pipeline:
+# `Closes #N` → .foundry/runs/issue-N/, otherwise .foundry/runs/pr-<PR>/.
+# Inlined to avoid a cross-repo dep on foundry just to run 10 lines of bash.
+resolve_task_root() {
+  local pr="$1" body issue
+  body=$(gh pr view "$pr" --repo "$REPO" --json body --jq .body 2>/dev/null || echo "")
+  issue=$(printf '%s' "$body" \
+    | grep -oiE '(Closes|Fixes|Resolves)[[:space:]]+#[0-9]+' \
+    | head -1 \
+    | grep -oE '[0-9]+' \
+    || true)
+  if [[ -n "$issue" ]]; then
+    printf '%s/.foundry/runs/issue-%s\n' "$REPO_PATH" "$issue"
+  else
+    printf '%s/.foundry/runs/pr-%s\n' "$REPO_PATH" "$pr"
+  fi
+}
+
+TASK_ROOT=$(resolve_task_root "$PR")
 RUN_DIR="$TASK_ROOT/review"
 META="$RUN_DIR/meta.json"
 CONTEXT="$RUN_DIR/context.json"
+TASK_META="$TASK_ROOT/meta.json"
 WORKTREE_DIR="$RUN_DIR/worktree"
 # Per-PR ref outside refs/heads/ so it isn't a branch (no
 # "checked-out-branch" rejection on subsequent fetches) and is namespaced
@@ -84,8 +102,44 @@ sync_pr_worktree() {
 }
 sync_pr_worktree
 
-# Initialize task-level meta if foundry pipeline hadn't created it
-"$FOUNDRY_ROOT/scripts/task-meta.sh" --task-root "$TASK_ROOT" init 2>/dev/null || true
+# Task-level meta.json (cross-stage state, shared with future foundry-pipeline
+# coexistence). Loop only writes the .stages.review.* fields; if foundry
+# pipeline has already initialized the file, we leave its other stages alone.
+ensure_task_meta() {
+  [[ -f "$TASK_META" ]] && return 0
+  mkdir -p "$TASK_ROOT"
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq -n --arg now "$now" '{
+    current_stage: "review",
+    stages: {
+      pipeline: { status: "pending", started_at: null, ended_at: null, rounds: 0, last_event: null },
+      dev:      { status: "pending", started_at: null, ended_at: null, rounds: 0, last_event: null },
+      review:   { status: "active",  started_at: $now, ended_at: null, rounds: 0, last_event: null }
+    },
+    updated_at: $now
+  }' > "$TASK_META"
+}
+
+set_task_review_rounds() {
+  ensure_task_meta
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq --argjson n "$1" --arg now "$now" \
+     '.stages.review.rounds = $n | .updated_at = $now' \
+     "$TASK_META" > "$TASK_META.tmp" && mv "$TASK_META.tmp" "$TASK_META"
+}
+
+set_task_review_event() {
+  ensure_task_meta
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq --arg ev "$1" --arg now "$now" \
+     '.stages.review.last_event = $ev | .updated_at = $now' \
+     "$TASK_META" > "$TASK_META.tmp" && mv "$TASK_META.tmp" "$TASK_META"
+}
+
+ensure_task_meta
 
 # ---------------------------------------------------------------------------
 # Step C: classify PR (once; persisted in context.json)
@@ -439,7 +493,7 @@ while true; do
         && "$LATEST_HUMAN_ID" == "$LAST_HUMAN_ID_PREV" ]]; then
     log "converged — APPROVE on stable sha, no new comments. running introspection + retrospective"
     set_meta_status "success"
-    "$FOUNDRY_ROOT/scripts/task-meta.sh" --task-root "$TASK_ROOT" set-event review APPROVE 2>/dev/null || true
+    set_task_review_event APPROVE
     run_introspection
     run_retrospective
     log "checklist-suggestions: $RUN_DIR/checklist-suggestions.md"
@@ -559,8 +613,8 @@ while true; do
     '{round:$r, finished_at:$now, head_sha_before:$sha_b, head_sha_after:$sha_a,
       codex_event:$ev, blockers_after:$bl}' > "$SNAP.json"
 
-  "$FOUNDRY_ROOT/scripts/task-meta.sh" --task-root "$TASK_ROOT" set-rounds review "$NEXT_ROUND" 2>/dev/null || true
-  "$FOUNDRY_ROOT/scripts/task-meta.sh" --task-root "$TASK_ROOT" set-event review "$EVENT" 2>/dev/null || true
+  set_task_review_rounds "$NEXT_ROUND"
+  set_task_review_event "$EVENT"
 
   log "round $NEXT_ROUND done — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
 
