@@ -403,6 +403,30 @@ run_codex_round() {
   return 1
 }
 
+# State of the reviewer's most recent review on the PR — APPROVED,
+# CHANGES_REQUESTED, COMMENTED, or DISMISSED (returned by GitHub when a
+# stale-approval rule retracts an APPROVE on new commits). Returns
+# "NONE" if there's no review yet or the call fails.
+latest_reviewer_review_state() {
+  gh api "repos/$REPO/pulls/$PR/reviews" \
+    --jq "[.[]|select(.user.login==\"$REVIEWER_LOGIN\")]|sort_by(.submitted_at)|last|.state // \"NONE\"" \
+    2>/dev/null || echo NONE
+}
+
+# Final convergence path: introspection + retrospective + worktree cleanup, exit 0.
+converge_and_exit() {
+  log "converged — APPROVE on PR #$PR. running introspection + retrospective"
+  set_meta_status "success"
+  set_task_review_event APPROVE
+  run_introspection
+  run_retrospective
+  log "checklist-suggestions: $RUN_DIR/checklist-suggestions.md"
+  log "retrospective:        $RUN_DIR/retrospective.md"
+  cleanup_pr_worktree
+  log "worktree removed: $WORKTREE_DIR"
+  exit 0
+}
+
 # Parse the trailer from the latest reviewer-login review on the PR.
 parse_trailer() {
   local body trailer
@@ -497,20 +521,21 @@ while true; do
   LAST_HUMAN_ID_PREV=$(jq -r .last_human_comment_id "$META")
   LATEST_HUMAN_ID=$(latest_human_comment_id)
 
-  # Convergence: prior round APPROVE, head sha unchanged, no new comments.
-  if [[ "$LAST_EVENT" == "APPROVE" \
-        && "$HEAD_SHA" == "$LAST_SHA" \
-        && "$LATEST_HUMAN_ID" == "$LAST_HUMAN_ID_PREV" ]]; then
-    log "converged — APPROVE on stable sha, no new comments. running introspection + retrospective"
-    set_meta_status "success"
-    set_task_review_event APPROVE
-    run_introspection
-    run_retrospective
-    log "checklist-suggestions: $RUN_DIR/checklist-suggestions.md"
-    log "retrospective:        $RUN_DIR/retrospective.md"
-    cleanup_pr_worktree
-    log "worktree removed: $WORKTREE_DIR"
-    exit 0
+  # Resume / restart: if local meta says we approved last time, ask GitHub
+  # whether that approval is still standing. If a new commit was pushed
+  # the codebase's branch protection auto-dismisses approvals, in which
+  # case we drop back to a fresh review on the current head. If GitHub
+  # still shows APPROVED, exit immediately (no second round needed).
+  if [[ "$LAST_EVENT" == "APPROVE" ]]; then
+    GH_REVIEW_STATE=$(latest_reviewer_review_state)
+    if [[ "$GH_REVIEW_STATE" == "APPROVED" ]]; then
+      converge_and_exit
+    fi
+    log "local APPROVE but GitHub state=$GH_REVIEW_STATE (likely dismissed by new commit) — re-reviewing current head"
+    jq '.last_codex_event="DISMISSED" | .last_reviewed_sha=null' \
+      "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+    LAST_EVENT="DISMISSED"
+    LAST_SHA="null"
   fi
 
   # Anything new since last round?
@@ -632,6 +657,12 @@ while true; do
 
   log "round $NEXT_ROUND done — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
 
-  # Loop will check convergence at the top of the next iteration.
+  # APPROVE this round → exit immediately. If the developer pushes a new
+  # commit later that auto-dismisses the approval, re-running the loop
+  # picks it up via the GitHub-state check at the top of the iteration.
+  if [[ "$EVENT" == "APPROVE" ]]; then
+    converge_and_exit
+  fi
+
   sleep "$POLL_INTERVAL"
 done
