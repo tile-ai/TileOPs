@@ -33,6 +33,16 @@ PROCEDURE_PATH="$SKILL_DIR/procedure.md"
 LOADING_YAML="$SKILL_DIR/loading.yaml"
 CHECKLISTS_DIR="$REPO_PATH/.claude/review-checklists"
 
+# Discover the local remote that points at tile-ai/TileOPs. Different clones
+# use different remote names (origin in clones, upstream in forks, anything
+# in CI environments) so we never hard-code.
+TILEOPS_REMOTE=$(git -C "$REPO_PATH" remote -v \
+  | awk '/tile-ai\/TileOPs(\.git)?[[:space:]]+\(fetch\)/ {print $1; exit}')
+if [[ -z "$TILEOPS_REMOTE" ]]; then
+  echo "loop.sh: no git remote in $REPO_PATH points at tile-ai/TileOPs" >&2
+  exit 1
+fi
+
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
 # ---------------------------------------------------------------------------
@@ -48,7 +58,25 @@ TASK_ROOT=$("$FOUNDRY_ROOT/scripts/task-root.sh" "$PR")
 RUN_DIR="$TASK_ROOT/review"
 META="$RUN_DIR/meta.json"
 CONTEXT="$RUN_DIR/context.json"
+WORKTREE_DIR="$RUN_DIR/worktree"
+WORKTREE_BRANCH="review-pr-$PR-head"
 mkdir -p "$RUN_DIR/rounds" "$RUN_DIR/inbox-history"
+
+# Maintain a dedicated worktree pinned at the PR's head sha. Codex reads
+# source files from there; the user's main worktree is never disturbed.
+sync_pr_worktree() {
+  git -C "$REPO_PATH" fetch "$TILEOPS_REMOTE" "pull/$PR/head:$WORKTREE_BRANCH" -f \
+    >/dev/null 2>&1 || {
+      echo "loop.sh: failed to fetch pull/$PR/head from $TILEOPS_REMOTE" >&2
+      return 1
+    }
+  if [[ ! -d "$WORKTREE_DIR/.git" && ! -e "$WORKTREE_DIR/.git" ]]; then
+    git -C "$REPO_PATH" worktree add "$WORKTREE_DIR" "$WORKTREE_BRANCH" >/dev/null
+  else
+    git -C "$WORKTREE_DIR" reset --hard "$WORKTREE_BRANCH" >/dev/null
+  fi
+}
+sync_pr_worktree
 
 # Initialize task-level meta if foundry pipeline hadn't created it
 "$FOUNDRY_ROOT/scripts/task-meta.sh" --task-root "$TASK_ROOT" init 2>/dev/null || true
@@ -276,11 +304,11 @@ run_codex_round() {
   while (( attempt < CODEX_RETRY )); do
     if [[ "$sid" == "null" || -z "$sid" ]]; then
       codex --dangerously-bypass-approvals-and-sandbox exec \
-        --json --output-last-message "$lastmsg" --cd "$REPO_PATH" \
+        --json --output-last-message "$lastmsg" --cd "$WORKTREE_DIR" \
         "$(cat "$prompt_file")" > "$events" 2>&1 || true
     else
       codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
-        --json --output-last-message "$lastmsg" --cd "$REPO_PATH" \
+        --json --output-last-message "$lastmsg" --cd "$WORKTREE_DIR" \
         "$(cat "$prompt_file")" > "$events" 2>&1 || true
     fi
 
@@ -326,7 +354,7 @@ run_codex_oneoff() {
     return 1
   fi
   codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
-    --output-last-message "$outfile" --cd "$REPO_PATH" \
+    --output-last-message "$outfile" --cd "$WORKTREE_DIR" \
     "$prompt" >/dev/null 2>&1 || true
   [[ -s "$outfile" ]]
 }
@@ -428,13 +456,15 @@ while true; do
   SNAP="$RUN_DIR/rounds/round-$N"
   log "round $NEXT_ROUND — gathering inputs (head=${HEAD_SHA:0:7})"
 
+  # Move the worktree forward to this round's HEAD so Codex reads source from
+  # the actual reviewed sha (not the user's main worktree branch).
+  sync_pr_worktree
+
   # Diff
   if [[ "$LAST_SHA" == "null" || -z "$LAST_SHA" ]]; then
     gh pr diff "$PR" --repo "$REPO" > "$SNAP.full.diff"
     DIFF_FILE="$SNAP.full.diff"
   else
-    git -C "$REPO_PATH" fetch upstream "pull/$PR/head:review-pr-$PR-head" -f \
-      >/dev/null 2>&1 || true
     git -C "$REPO_PATH" diff "$LAST_SHA".."$HEAD_SHA" > "$SNAP.incremental.diff"
     DIFF_FILE="$SNAP.incremental.diff"
   fi
