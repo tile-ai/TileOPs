@@ -29,6 +29,8 @@ __all__ = [
     "gqa_decode_paged_roofline",
     "gqa_decode_roofline",
     "gqa_fwd_roofline",
+    "gqa_prefill_fwd_roofline",
+    "gqa_prefill_with_kv_cache_fwd_roofline",
     "gqa_sliding_window_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
     "masked_fill_fwd_roofline",
@@ -72,6 +74,83 @@ def gqa_fwd_roofline(**kwargs: Any) -> dict[str, int]:
     TODO: implement full formula based on B, S, H, H_kv, D, is_causal.
     """
     raise NotImplementedError
+
+
+def _dtype_itemsize(dtype: Any) -> int:
+    if isinstance(dtype, (list, tuple)):
+        dtype = dtype[0] if dtype else "float16"
+    if hasattr(dtype, "itemsize"):
+        return int(dtype.itemsize)
+    dtype_name = str(dtype)
+    if "float32" in dtype_name or "int32" in dtype_name:
+        return 4
+    if "float64" in dtype_name or "int64" in dtype_name:
+        return 8
+    if "bool" in dtype_name or "int8" in dtype_name or "uint8" in dtype_name:
+        return 1
+    return 2
+
+
+def _causal_prefill_visible_scores(seq_len_q: int, seq_len_kv: int) -> int:
+    return seq_len_q * seq_len_kv - seq_len_q * (seq_len_q - 1) // 2
+
+
+def gqa_prefill_fwd_roofline(**kwargs: Any) -> dict[str, int]:
+    """Conservative roofline for dense GQA prefill.
+
+    Workloads bind ``q_shape`` and ``kv_shape``. Causal mode uses bottom-right
+    alignment with ``S_q <= S_kv``.
+    """
+    q_shape = kwargs["q_shape"]
+    kv_shape = kwargs.get("kv_shape", kwargs.get("k_shape"))
+    batch, seq_len_q, heads, dim = q_shape
+    _, seq_len_kv, heads_kv, _ = kv_shape
+    is_causal = bool(kwargs.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(kwargs.get("dtype", kwargs.get("dtypes", "float16")))
+
+    visible = (
+        _causal_prefill_visible_scores(seq_len_q, seq_len_kv)
+        if is_causal else seq_len_q * seq_len_kv)
+    flops = 4 * batch * heads * visible * dim
+
+    q_elems = batch * seq_len_q * heads * dim
+    kv_elems = batch * seq_len_kv * heads_kv * dim
+    o_elems = q_elems
+    nbytes = (q_elems + 2 * kv_elems + o_elems) * elem_bytes
+    return {"flops": int(flops), "bytes": int(nbytes)}
+
+
+def gqa_prefill_with_kv_cache_fwd_roofline(**kwargs: Any) -> dict[str, int]:
+    """Conservative roofline for contiguous-cache GQA prefill.
+
+    The benchmark workload convention uses
+    ``old_len = S_kv_cap - S_new`` for every batch item.
+    """
+    q_shape = kwargs["q_shape"]
+    k_new_shape = kwargs["k_new_shape"]
+    k_cache_shape = kwargs["k_cache_shape"]
+    batch, seq_len_new, heads, dim = q_shape
+    _, _, heads_kv, _ = k_new_shape
+    _, seq_len_cap, _, _ = k_cache_shape
+    old_len = seq_len_cap - seq_len_new
+    is_causal = bool(kwargs.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(kwargs.get("dtype", kwargs.get("dtypes", "float16")))
+
+    visible = (
+        seq_len_new * old_len + seq_len_new * (seq_len_new + 1) // 2
+        if is_causal else seq_len_new * (old_len + seq_len_new))
+    flops = 4 * batch * heads * visible * dim
+
+    q_elems = batch * seq_len_new * heads * dim
+    old_kv_elems = 2 * batch * old_len * heads_kv * dim
+    new_kv_elems = 2 * batch * seq_len_new * heads_kv * dim
+    append_kv_elems = new_kv_elems
+    o_elems = q_elems
+    cache_seqlens_bytes = batch * 4
+    nbytes = (
+        (q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems) * elem_bytes
+        + cache_seqlens_bytes)
+    return {"flops": int(flops), "bytes": int(nbytes)}
 
 
 def gqa_bwd_roofline(**kwargs: Any) -> dict[str, int]:

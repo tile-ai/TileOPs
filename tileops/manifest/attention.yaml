@@ -134,6 +134,94 @@ GroupedQueryAttentionFwdOp:
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
 
+GroupedQueryAttentionPrefillFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      is_causal: {type: bool, default: true}
+      sm_scale: {type: float, default: null}
+    shape_rules:
+      - "q.shape == (B, S_q, H, D)"
+      - "k.shape == (B, S_kv, H_kv, D)"
+      - "v.shape == (B, S_kv, H_kv, D)"
+      - "o.shape == (B, S_q, H, D)"
+      - "H % H_kv == 0"
+      - "not is_causal or S_q <= S_kv"
+
+  workloads:
+    # Llama-3.1-8B (H=32, H_kv=8, D=128)
+    - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense"}
+    - {q_shape: [2, 512, 32, 128], kv_shape: [2, 4096, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense-q-lt-kv"}
+    # Llama-3.1-70B (H=64, H_kv=8, D=128)
+    - {q_shape: [1, 512, 64, 128], kv_shape: [1, 4096, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-dense-q-lt-kv"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_prefill_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_fwd.py
+    kernel_map:
+      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa.py
+    bench: benchmarks/ops/attention/bench_gqa.py
+
+GroupedQueryAttentionPrefillWithKVCacheFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k_new: {dtype: "same_as(q)"}
+      v_new: {dtype: "same_as(q)"}
+      k_cache: {dtype: "same_as(q)"}
+      v_cache: {dtype: "same_as(q)"}
+      cache_seqlens: {dtype: "int32"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      is_causal: {type: bool, default: true}
+      sm_scale: {type: float, default: null}
+    shape_rules:
+      - "q.shape == (B, S_new, H, D)"
+      - "k_new.shape == (B, S_new, H_kv, D)"
+      - "v_new.shape == (B, S_new, H_kv, D)"
+      - "k_cache.shape == (B, S_kv_cap, H_kv, D)"
+      - "v_cache.shape == (B, S_kv_cap, H_kv, D)"
+      - "cache_seqlens.shape == (B,)"
+      - "o.shape == (B, S_new, H, D)"
+      - "H % H_kv == 0"
+      - "S_new <= S_kv_cap"
+
+  workloads:
+    # Llama-3.1-8B (H=32, H_kv=8, D=128)
+    - {q_shape: [1, 512, 32, 128], k_new_shape: [1, 512, 8, 128], v_new_shape: [1, 512, 8, 128], k_cache_shape: [1, 4608, 8, 128], v_cache_shape: [1, 4608, 8, 128], cache_seqlens_shape: [1], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-contig-4k-old-512-new"}
+    - {q_shape: [2, 256, 32, 128], k_new_shape: [2, 256, 8, 128], v_new_shape: [2, 256, 8, 128], k_cache_shape: [2, 2304, 8, 128], v_cache_shape: [2, 2304, 8, 128], cache_seqlens_shape: [2], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-contig-batch2"}
+    # Llama-3.1-70B (H=64, H_kv=8, D=128)
+    - {q_shape: [1, 512, 64, 128], k_new_shape: [1, 512, 8, 128], v_new_shape: [1, 512, 8, 128], k_cache_shape: [1, 4608, 8, 128], v_cache_shape: [1, 4608, 8, 128], cache_seqlens_shape: [1], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-contig-4k-old-512-new"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_prefill_with_kv_cache_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_fwd.py
+    kernel_map:
+      gqa_prefill_with_kv_cache_fwd_kernel: GQAPrefillWithKVCacheFwdKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa.py
+    bench: benchmarks/ops/attention/bench_gqa.py
+
 GroupedQueryAttentionBwdOp:
   ref_api: "torch.nn.functional.scaled_dot_product_attention"
   family: attention
