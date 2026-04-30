@@ -110,6 +110,10 @@ cleanup_pr_worktree() {
     git -C "$REPO_PATH" worktree remove --force "$WORKTREE_DIR" >/dev/null 2>&1 \
       || rm -rf "$WORKTREE_DIR"
   fi
+  # Drop stale worktree admin entries left over if `worktree remove` failed
+  # and we fell back to `rm -rf`. Without this, the next `worktree add` to
+  # this path would fail with "already registered".
+  git -C "$REPO_PATH" worktree prune >/dev/null 2>&1 || true
   git -C "$REPO_PATH" update-ref -d "$PR_REF" 2>/dev/null || true
 }
 sync_pr_worktree
