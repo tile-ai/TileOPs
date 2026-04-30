@@ -29,6 +29,7 @@ FOUNDRY_ROOT="${FOUNDRY_ROOT:-/home/cy/TileOps-dev/foundry}"
 REPO_PATH="$(git rev-parse --show-toplevel)"
 
 CRITERIA_PATH="$SKILL_DIR/criteria.md"
+PROCEDURE_PATH="$SKILL_DIR/procedure.md"
 LOADING_YAML="$SKILL_DIR/loading.yaml"
 CHECKLISTS_DIR="$REPO_PATH/.claude/review-checklists"
 
@@ -104,6 +105,7 @@ if [[ ! -f "$META" ]]; then
     last_human_comment_id: 0,
     last_codex_event: null,
     last_criteria_mtime: 0,
+    last_procedure_mtime: 0,
     consecutive_codex_failures: 0,
     status: "active"
   }' > "$META"
@@ -136,12 +138,13 @@ compose_prompt() {
   local snap="$1"
   local n="$2"
   local include_criteria="$3"
-  local diff_file="$4"
-  local pr_state="$5"
-  local head_sha="$6"
-  local last_sha="$7"
-  local last_event="$8"
-  local inbox_block="$9"
+  local include_procedure="$4"
+  local diff_file="$5"
+  local pr_state="$6"
+  local head_sha="$7"
+  local last_sha="$8"
+  local last_event="$9"
+  local inbox_block="${10}"
   local out="$snap.prompt.md"
 
   {
@@ -149,16 +152,18 @@ compose_prompt() {
     echo ""
 
     if [[ "$include_criteria" == "1" ]]; then
-      echo "## Review output format"
+      echo "## Review output format (criteria.md)"
       echo ""
       cat "$CRITERIA_PATH"
       echo ""
     fi
 
-    echo "## Approval-gate reminder"
-    echo ""
-    echo "If you intend to APPROVE this round, first read \`.claude/review-checklists/approval-gate.md\` and run every check it lists. Downgrade to REQUEST_CHANGES if any fail."
-    echo ""
+    if [[ "$include_procedure" == "1" ]]; then
+      echo "## Review procedure (procedure.md)"
+      echo ""
+      cat "$PROCEDURE_PATH"
+      echo ""
+    fi
 
     if [[ -n "$inbox_block" ]]; then
       echo "## Per-round guidance from human (inbox, one-shot)"
@@ -468,16 +473,24 @@ while true; do
     : > "$RUN_DIR/inbox.md"
   fi
 
-  # criteria.md mtime check
+  # criteria.md / procedure.md mtime checks — round 1 always inlines both,
+  # later rounds only re-inline when the file changed since last inclusion
+  # (Codex's session memory carries unchanged content forward).
   CRITERIA_MTIME=$(stat -c %Y "$CRITERIA_PATH")
+  PROCEDURE_MTIME=$(stat -c %Y "$PROCEDURE_PATH")
   LAST_CRITERIA_MTIME=$(jq -r '.last_criteria_mtime // 0' "$META")
+  LAST_PROCEDURE_MTIME=$(jq -r '.last_procedure_mtime // 0' "$META")
   INCLUDE_CRITERIA=0
+  INCLUDE_PROCEDURE=0
   if [[ "$NEXT_ROUND" -eq 1 || "$CRITERIA_MTIME" -gt "$LAST_CRITERIA_MTIME" ]]; then
     INCLUDE_CRITERIA=1
   fi
+  if [[ "$NEXT_ROUND" -eq 1 || "$PROCEDURE_MTIME" -gt "$LAST_PROCEDURE_MTIME" ]]; then
+    INCLUDE_PROCEDURE=1
+  fi
 
-  compose_prompt "$SNAP" "$NEXT_ROUND" "$INCLUDE_CRITERIA" "$DIFF_FILE" \
-    "$PR_STATE" "$HEAD_SHA" "$LAST_SHA" "$LAST_EVENT" "$INBOX_BLOCK"
+  compose_prompt "$SNAP" "$NEXT_ROUND" "$INCLUDE_CRITERIA" "$INCLUDE_PROCEDURE" \
+    "$DIFF_FILE" "$PR_STATE" "$HEAD_SHA" "$LAST_SHA" "$LAST_EVENT" "$INBOX_BLOCK"
 
   log "round $NEXT_ROUND — invoking codex"
   if ! run_codex_round "$SNAP"; then
@@ -497,9 +510,10 @@ while true; do
   NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   jq --argjson r "$NEXT_ROUND" --arg sha "$HEAD_SHA" --arg now "$NOW" \
      --argjson hid "$LATEST_HUMAN_ID" --arg ev "$EVENT" \
-     --argjson cm "$CRITERIA_MTIME" \
+     --argjson cm "$CRITERIA_MTIME" --argjson pm "$PROCEDURE_MTIME" \
      '.round=$r | .last_reviewed_sha=$sha | .last_human_comment_id=$hid
       | .last_codex_event=$ev | .last_criteria_mtime=$cm
+      | .last_procedure_mtime=$pm
       | .consecutive_codex_failures=0 | .last_reviewed_at=$now' \
      "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 

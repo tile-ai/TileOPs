@@ -1,21 +1,20 @@
 ---
 name: review-tileops
-description: Single-shot review of a tile-ai/TileOPs PR as a separate GitHub identity from the PR author. Inline comments on code, agent-targeted summary. Enforces design consistency via project review checklists. For multi-round review until APPROVE, run `bash .claude/skills/review-tileops/loop.sh <PR>` instead.
+description: Single-shot review of a tile-ai/TileOPs PR as a separate GitHub identity from the PR author. Manual / interactive — for autonomous multi-round review until APPROVE, run `bash .claude/skills/review-tileops/loop.sh <PR>` instead.
 ---
 
 ## Input
 
 `$ARGUMENTS`: integer PR number in `tile-ai/TileOPs`. E.g. `1122`.
 
-## Step 0: Identity wiring
-
-Caller must have run `bash .claude/skills/review-tileops/preflight.sh <PR>` once for this PR before invoking the skill (env var, `hosts.yml`, reviewer ≠ author, codex CLI all verified there).
+## Step 0: Preflight
 
 ```bash
+bash .claude/skills/review-tileops/preflight.sh <PR> || exit 1
 export GH_CONFIG_DIR="$TILEOPS_REVIEW_GH_CONFIG_DIR"
 ```
 
-## Step 1: Fetch PR
+## Step 1: Gather inputs
 
 ```bash
 gh pr view <PR> --repo tile-ai/TileOPs \
@@ -23,24 +22,14 @@ gh pr view <PR> --repo tile-ai/TileOPs \
 gh pr diff <PR> --repo tile-ai/TileOPs
 ```
 
-Extract `title`, changed file list, full diff.
-
-## Step 2: Classify PR → load checklists
-
 Parse the title's first two bracket tokens — `[type][scope] description`. Look both up in `loading.yaml`:
 
-- Always load every entry under `always:`.
+- Always load entries under `always:`.
 - For each token, if it appears as a key under `match:`, load the listed checklist files.
-- Multi-match → union load. Both tokens unmatched → no domain checklist; rely on the format spec + general judgment.
+- Multi-match across the two tokens → union. Both unmatched → no domain checklist; rely on general judgment.
 
-Read each checklist file under `.claude/review-checklists/`.
+Read each loaded checklist file under `.claude/review-checklists/`, plus `criteria.md`. Skim unresolved review threads (`gh api graphql … reviewThreads`), recent non-reviewer comments (`gh api repos/.../issues/<N>/comments` and `…/pulls/<N>/comments`), and CI status (`gh pr checks <N>`) if relevant to the diff.
 
-## Step 3: Read criteria + inputs
+## Step 2: Execute the review
 
-Read `criteria.md` (output format spec). Read every changed source file in full. Skim unresolved review threads, recent non-reviewer comments, and CI status if relevant.
-
-## Step 4: Submit
-
-Apply checklists to the diff. Compose inline comments + summary per `criteria.md` §2-§3. Submit one atomic review via `gh api` per `criteria.md` §1. Follow `criteria.md` §4 hard rules.
-
-If the diff touches `tests/` and you intend to APPROVE, first read `.claude/review-checklists/approval-gate.md` and run every check it lists; downgrade to `REQUEST_CHANGES` if any fail.
+Follow `procedure.md` end to end. Submit one atomic review at the end.
