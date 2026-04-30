@@ -1,8 +1,4 @@
-# Review procedure
-
-Single source of truth for "one review pass on one tile-ai/TileOPs PR". Loaded by both `SKILL.md` (manual single-shot) and `loop.sh` (each round of the autonomous loop). The wrapper handles preflight, input gathering, and bookkeeping; this file is only the review behavior itself.
-
-## Steps
+### Steps
 
 1. **Read every changed source file in full.** The diff alone lacks surrounding context.
 1. **Apply each loaded checklist.** Walk its bullets against the diff and the source files. Note any items that flag.

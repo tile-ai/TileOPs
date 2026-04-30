@@ -252,14 +252,14 @@ compose_prompt() {
     echo ""
 
     if [[ "$include_criteria" == "1" ]]; then
-      echo "## Review output format (criteria.md)"
+      echo "## Review output format"
       echo ""
       cat "$CRITERIA_PATH"
       echo ""
     fi
 
     if [[ "$include_procedure" == "1" ]]; then
-      echo "## Review procedure (procedure.md)"
+      echo "## Review procedure"
       echo ""
       cat "$PROCEDURE_PATH"
       echo ""
