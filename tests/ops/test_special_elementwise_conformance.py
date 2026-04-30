@@ -121,71 +121,43 @@ def test_clamp_init_signature_pytorch_aligned():
 
 # AC-2 (mixed): ClampFwdOp must accept Tensor min with max=None and
 # Tensor max with min=None, matching torch.clamp(input, min=tensor, max=None)
-# and torch.clamp(input, min=None, max=tensor) on CUDA.
+# and torch.clamp(input, min=None, max=tensor) on CUDA. Single-bound shape
+# matrix is covered by test_clamp_min_tensor / test_clamp_max_tensor on the
+# dedicated ClampMin/Max ops; here we only verify ClampFwdOp's None routing.
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "input_shape, bound_shape, dtype",
-    [
-        ((4, 8), (4, 8), torch.float16),
-        ((4, 8), (1, 8), torch.float32),
-        ((4, 8), (), torch.bfloat16),
-    ],
-)
-def test_clamp_min_only_tensor_parity(input_shape, bound_shape, dtype):
+def test_clamp_min_only_tensor_parity():
     from tileops.ops.elementwise import ClampFwdOp
 
-    inp = torch.randn(input_shape, device="cuda", dtype=dtype)
-    mn = torch.randn(bound_shape, device="cuda", dtype=dtype) - 0.5
+    inp = torch.randn((4, 8), device="cuda", dtype=torch.float32)
+    mn = torch.randn((4, 8), device="cuda", dtype=torch.float32) - 0.5
     ref = torch.clamp(inp, mn, None)
-    op = ClampFwdOp(input=tuple(inp.shape), min=tuple(mn.shape), max=None, dtype=dtype)
+    op = ClampFwdOp(input=(4, 8), min=(4, 8), max=None, dtype=torch.float32)
     out = op(inp, mn, None)
-    if dtype == torch.float16:
-        atol, rtol = 1e-3, 1e-3
-    elif dtype == torch.bfloat16:
-        atol, rtol = 1.6e-2, 1.6e-2
-    else:
-        atol, rtol = 1e-5, 1e-5
-    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "input_shape, bound_shape, dtype",
-    [
-        ((4, 8), (4, 8), torch.float16),
-        ((4, 8), (1, 8), torch.float32),
-        ((4, 8), (), torch.bfloat16),
-    ],
-)
-def test_clamp_max_only_tensor_parity(input_shape, bound_shape, dtype):
+def test_clamp_max_only_tensor_parity():
     from tileops.ops.elementwise import ClampFwdOp
 
-    inp = torch.randn(input_shape, device="cuda", dtype=dtype)
-    mx = torch.randn(bound_shape, device="cuda", dtype=dtype) + 0.5
+    inp = torch.randn((4, 8), device="cuda", dtype=torch.float32)
+    mx = torch.randn((4, 8), device="cuda", dtype=torch.float32) + 0.5
     ref = torch.clamp(inp, None, mx)
-    op = ClampFwdOp(input=tuple(inp.shape), min=None, max=tuple(mx.shape), dtype=dtype)
+    op = ClampFwdOp(input=(4, 8), min=None, max=(4, 8), dtype=torch.float32)
     out = op(inp, None, mx)
-    if dtype == torch.float16:
-        atol, rtol = 1e-3, 1e-3
-    elif dtype == torch.bfloat16:
-        atol, rtol = 1.6e-2, 1.6e-2
-    else:
-        atol, rtol = 1e-5, 1e-5
-    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
 
+# fp8 routing for mixed Tensor/None bounds: covers the has_min-only and
+# has_max-only kernel branches under fp8 cast. The fp8 dtype × dual-bound
+# path is already covered by test_clamp_tensor_bounds_fp8 (both fp8 dtypes,
+# has_min+has_max), so here we only vary `which` branch — single fp8 dtype.
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "fp8_dtype",
-    [
-        pytest.param(torch.float8_e4m3fn, id="e4m3fn"),
-        pytest.param(torch.float8_e5m2, id="e5m2"),
-    ],
-)
 @pytest.mark.parametrize(
     "which", ["min_only", "max_only"],
 )
-def test_clamp_mixed_tensor_none_fp8(which, fp8_dtype):
+def test_clamp_mixed_tensor_none_fp8(which):
+    fp8_dtype = torch.float8_e4m3fn
     """fp8 routing for mixed Tensor/None bounds (matches both-Tensor case)."""
     from tileops.ops.elementwise import ClampFwdOp
 
@@ -371,32 +343,10 @@ def test_clamp_tensor_nan_propagation(dtype):
     torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
 
 
-@pytest.mark.smoke
-def test_clamp_tensor_min_only_nan_propagation():
-    """ClampFwdOp(min=Tensor, max=None) must propagate NaN like torch.clamp."""
-    from tileops.ops.elementwise import ClampFwdOp
-
-    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=torch.float32)
-    mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device="cuda", dtype=torch.float32)
-
-    ref = torch.clamp(x, mn, None)
-    op = ClampFwdOp(input=(4,), min=(4,), max=None, dtype=torch.float32)
-    out = op(x, mn, None)
-    torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
-
-
-@pytest.mark.smoke
-def test_clamp_tensor_max_only_nan_propagation():
-    """ClampFwdOp(min=None, max=Tensor) must propagate NaN like torch.clamp."""
-    from tileops.ops.elementwise import ClampFwdOp
-
-    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=torch.float32)
-    mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device="cuda", dtype=torch.float32)
-
-    ref = torch.clamp(x, None, mx)
-    op = ClampFwdOp(input=(4,), min=None, max=(4,), dtype=torch.float32)
-    out = op(x, None, mx)
-    torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
+# Single-bound NaN behaviour is covered by test_clamp_min_nan_propagation /
+# test_clamp_max_nan_propagation below — same ClampTensorFwdKernel branch
+# (has_min only / has_max only). ClampFwdOp(min=Tensor, max=None) /
+# (min=None, max=Tensor) dispatch is verified separately.
 
 
 @pytest.mark.smoke
@@ -574,11 +524,15 @@ def test_clamp_tensor_bounds_fp8(dtype):
                                atol=0, rtol=0)
 
 
+# test_clamp_tensor_bounds_fp8 above is the umbrella for both fp8 dtypes.
+# The dtype × kernel-branch cross is one path here (single-bound only), so
+# a single representative dtype suffices per testing-budget.md §"Dtype × shape:
+# only when the combination triggers a distinct code path".
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", _FP8_DTYPES)
-def test_clamp_min_tensor_fp8(dtype):
+def test_clamp_min_tensor_fp8():
     from tileops.ops.elementwise import ClampMinFwdOp
 
+    dtype = torch.float8_e4m3fn
     inp = (torch.randn((4, 8), device="cuda") * 4).to(dtype)
     mn = (torch.full((1, 8), -0.5, device="cuda")).to(dtype)
     ref = torch.maximum(_fp8_to_fp16_via_pytorch(inp),
@@ -591,10 +545,10 @@ def test_clamp_min_tensor_fp8(dtype):
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", _FP8_DTYPES)
-def test_clamp_max_tensor_fp8(dtype):
+def test_clamp_max_tensor_fp8():
     from tileops.ops.elementwise import ClampMaxFwdOp
 
+    dtype = torch.float8_e4m3fn
     inp = (torch.randn((4, 8), device="cuda") * 4).to(dtype)
     mx = (torch.full((4, 1), 1.5, device="cuda")).to(dtype)
     ref = torch.minimum(_fp8_to_fp16_via_pytorch(inp),
@@ -607,9 +561,10 @@ def test_clamp_max_tensor_fp8(dtype):
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", _FP8_DTYPES)
-def test_masked_fill_tensor_value_fp8(dtype):
+def test_masked_fill_tensor_value_fp8():
     from tileops.ops.elementwise import MaskedFillFwdOp
+
+    dtype = torch.float8_e4m3fn
 
     inp = (torch.randn((4, 8), device="cuda") * 2).to(dtype)
     mask = torch.randint(0, 2, (1, 8), device="cuda").bool()
