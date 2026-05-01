@@ -27,7 +27,7 @@ Orchestrators are the day-to-day entry points. Atomics are their sub-skills — 
 | Patch `kernel_map` or `static_dims` on an existing manifest entry  | `/fix-manifest <op_name>`                  |
 | Scaffold a fresh op file, bypassing the orchestrator               | `/scaffold-op <op_name>`                   |
 | Debug one atomic phase by hand                                     | `/test-op` · `/implement-op` · `/bench-op` |
-| Run the Codex review loop on a TileOPs PR until APPROVE            | `/review-tileops <PR>`                     |
+| Run the review loop on a TileOPs PR until APPROVE                  | `/review-tileops <PR>`                     |
 | Resolve reviewer feedback on a TileOPs PR (per-round driver)       | `/resolve-tileops <PR>`                    |
 | Generate follow-up issues for deferred work after a PR             | `/follow-up <PR>`                          |
 
@@ -115,34 +115,13 @@ Surgical patch of an existing manifest entry for fields **derived from on-disk o
 
 ### workflow
 
-Workflow skills operate on PRs and sessions, not on ops. Per the [trust model](#trust-model--who-may-write-what), they never write `tileops/manifest/` outside the standard manifest skills. Other write scopes vary per skill — see each block's **Trust model** line.
+Workflow skills operate on PRs and sessions, not on ops. They never write `tileops/manifest/` outside the standard manifest skills (see the [trust-model table](#trust-model--who-may-write-what)). See each skill's contract for its full write scope.
 
-**review-tileops** · workflow atomic
-
-Single-shot review of a `tile-ai/TileOPs` PR as a separate GitHub identity from the PR author. Loads the matching domain checklists from `.claude/review-checklists/` based on the PR title's `[type][scope]` tokens, inspects the diff, and submits one atomic review.
-
-- **Use when.** You want a Codex-style review on a TileOPs PR. For an autonomous multi-round loop until APPROVE, run `bash .claude/skills/review-tileops/loop.sh <PR>` instead of the single-shot command.
-- **Don't use when.** You are the PR author and want to address feedback — use `resolve-tileops`.
-- **Trust model.** Reads PR + repo state, posts review comments. Does not modify code, manifest, tests, or benchmarks.
-- **Contract:** [SKILL.md](../.claude/skills/review-tileops/SKILL.md)
-
-**resolve-tileops** · workflow atomic
-
-Per-round driver of stateful Claude-driven review-resolution on a `tile-ai/TileOPs` PR (developer side). Designed for `/loop` dynamic mode — re-fires until a terminal action. State persists in `.foundry/runs/{issue-<N> | pr-<PR>}/resolve/`.
-
-- **Use when.** You are the PR author and want to address reviewer feedback on a TileOPs PR across multiple rounds.
-- **Don't use when.** You want to *produce* a review — use `review-tileops`. The resolution work itself runs in the current Claude session; the outer caller must run `preflight.sh` once before starting the loop.
-- **Trust model.** Edits the PR's branch (code, tests, benchmarks, docs as needed); does not write `tileops/manifest/` outside the standard manifest skills.
-- **Contract:** [SKILL.md](../.claude/skills/resolve-tileops/SKILL.md)
-
-**follow-up** · workflow atomic
-
-Introspect a development session and generate follow-up issues for deferred work, discovered problems, and coverage gaps. Max 3 issues per invocation. Operates in *session-rich* mode (uses conversation history as primary signal) or *session-poor* mode (uses PR diff + reviewer comments).
-
-- **Use when.** A PR is wrapping up and you want to capture deferred work or discovered gaps as issues, plus optionally apply in-scope fixes onto the PR branch.
-- **Don't use when.** You need to file a single ad-hoc bug — open an issue directly.
-- **Trust model.** Creates issues, may push an applied-fix commit to the PR branch, and prints out-of-scope suggestions to stdout. Never edits the PR body — that belongs to the review skill. Does not write `tileops/manifest/` outside the standard manifest skills.
-- **Contract:** [SKILL.md](../.claude/skills/follow-up/SKILL.md)
+| Skill               | What it does                                                                               | Contract                                               |
+| ------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| **review-tileops**  | Reviews a TileOPs PR as a separate GitHub identity, loading domain checklists by PR title. | [SKILL.md](../.claude/skills/review-tileops/SKILL.md)  |
+| **resolve-tileops** | Drives stateful, multi-round resolution of reviewer feedback on a PR (developer side).     | [SKILL.md](../.claude/skills/resolve-tileops/SKILL.md) |
+| **follow-up**       | Generates follow-up issues for deferred work and coverage gaps from a session or PR.       | [SKILL.md](../.claude/skills/follow-up/SKILL.md)       |
 
 ## Composition
 
