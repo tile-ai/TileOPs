@@ -414,8 +414,8 @@ ClampFwdOp:
       - "out.shape == broadcast_shapes(input.shape, min.shape, max.shape)"
 
   workloads:
-    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+    - {input_shape: [4096, 4096], min_shape: [4096, 4096], max_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], min_shape: [16384, 16384], max_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     # Func mode: post-broadcast N_total uses broadcast_shapes which is
@@ -490,8 +490,8 @@ ClampMinFwdOp:
       - "out.shape == broadcast_shapes(input.shape, min.shape)"
 
   workloads:
-    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+    - {input_shape: [4096, 4096], min_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], min_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     # Func mode: see ClampFwdOp.roofline for rationale (broadcast_shapes
@@ -525,8 +525,8 @@ ClampMaxFwdOp:
       - "out.shape == broadcast_shapes(input.shape, max.shape)"
 
   workloads:
-    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+    - {input_shape: [4096, 4096], max_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], max_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     # Func mode: see ClampFwdOp.roofline for rationale (broadcast_shapes
