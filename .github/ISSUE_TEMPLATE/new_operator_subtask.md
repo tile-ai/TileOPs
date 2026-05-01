@@ -1,7 +1,7 @@
 ---
 name: New Operator Sub-task
 about: A specific sub-task for implementing a part of a new operator
-title: '[Feat][Ops] <Operator Name>: <manifest/test/impl/bench scope>'
+title: '[<Feat/Perf/Fix>][Ops] <Operator Name>: <manifest/test/impl/bench scope>'
 labels: sub-task, operator
 assignees: ''
 ---
@@ -44,3 +44,4 @@ Refer to:
 - [ ] Tests use an independent reference implementation and cover relevant FP16/BF16 and edge cases.
 - [ ] Benchmarks consume manifest workloads and record at least one non-`tileops` baseline unless explicitly justified.
 - [ ] PR title and commits follow the current `[Feat][Scope]` / `[Perf][Scope]` / `[Fix][Scope]` convention.
+- [ ] Implementation follows **Google Python Style** for code and docstrings.
