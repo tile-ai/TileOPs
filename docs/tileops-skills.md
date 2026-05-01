@@ -146,5 +146,5 @@ align-op <op_name>                       ← per-op orchestrator
 
 - **Per-skill blocks above** mirror each skill's `description` frontmatter. Edit the frontmatter first; update the matching block here to stay consistent.
 - **At-a-glance matrix, intent table, use/don't-use rules, composition diagram, trust-model table**: hand-maintained. Add entries when a new skill lands; remove when one is retired.
-- **Authoritative skill list**: `ls .claude/skills/` is the source of truth. Every directory there should appear in the at-a-glance matrix and have a block in "Skills in detail".
+- **Authoritative skill list (op-development scope)**: this guide covers op-, family-, and manifest-scoped skills only. Every in-scope skill must appear in the at-a-glance matrix and have a block in "Skills in detail". Process / workflow skills (those that operate on PRs or sessions, not on ops) are out of scope; they live in `.claude/skills/` alongside in-scope skills but are documented with their workflow guides, not here.
 - **Lint automation**: none at 7-skill scale. Revisit if drift becomes observable or the count passes ~15.
