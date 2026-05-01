@@ -25,6 +25,16 @@ REPO="tile-ai/TileOPs"
 MAX_ROUNDS=15
 POLL_INTERVAL=180
 CODEX_RETRY=3
+# Stall safety: terminate after this many consecutive idle polls (no new
+# commits / comments). With POLL_INTERVAL=180s, MAX_IDLE=5 ≈ 15min — short
+# enough that a dead resolve-loop counterpart doesn't burn cycles
+# indefinitely, long enough to absorb agent / CI / network slowness.
+MAX_IDLE=5
+# Belt-and-suspenders: hard wall-clock cap independent of round/idle
+# accounting, in case a logic bug skips both. Far above any realistic PR
+# lifetime (hours), low enough that a runaway is bounded to a day.
+MAX_WALL_CLOCK_HOURS=24
+LOOP_START_EPOCH=$(date +%s)
 REPO_PATH="$(git rev-parse --show-toplevel)"
 
 CRITERIA_PATH="$SKILL_DIR/criteria.md"
@@ -211,6 +221,7 @@ if [[ ! -f "$META" ]]; then
     last_criteria_mtime: 0,
     consecutive_codex_failures: 0,
     consecutive_request_changes: 0,
+    consecutive_idle: 0,
     status: "active"
   }' > "$META"
 fi
@@ -504,6 +515,15 @@ log "loop started — PR #$PR, MAX_ROUNDS=$MAX_ROUNDS, POLL_INTERVAL=${POLL_INTE
 while true; do
   ROUND=$(jq -r .round "$META")
 
+  # Wall-clock backstop: independent of round/idle accounting, in case a
+  # logic bug skips both. Runs before any GitHub API call.
+  WALL_CLOCK_S=$(( $(date +%s) - LOOP_START_EPOCH ))
+  if (( WALL_CLOCK_S > MAX_WALL_CLOCK_HOURS * 3600 )); then
+    log "wall-clock cap (${MAX_WALL_CLOCK_HOURS}h) exceeded — runaway, exiting"
+    set_meta_status "runaway"
+    exit 6
+  fi
+
   # External / hard-cutoff terminations come first.
   PR_VIEW=$(gh pr view "$PR" --repo "$REPO" --json state,headRefOid,isDraft 2>/dev/null) \
     || { log "gh pr view failed; sleeping ${POLL_INTERVAL}s"; sleep "$POLL_INTERVAL"; continue; }
@@ -552,7 +572,16 @@ while true; do
   if [[ "$ROUND" -gt 0 \
         && "$HEAD_SHA" == "$LAST_SHA" \
         && "$LATEST_HUMAN_ID" == "$LAST_HUMAN_ID_PREV" ]]; then
-    log "no new commits / comments — sleeping ${POLL_INTERVAL}s"
+    CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
+    NEW_IDLE=$((CONSECUTIVE_IDLE + 1))
+    jq --argjson n "$NEW_IDLE" '.consecutive_idle=$n' "$META" \
+      > "$META.tmp" && mv "$META.tmp" "$META"
+    if (( NEW_IDLE >= MAX_IDLE )); then
+      log "idle for $NEW_IDLE consecutive polls (MAX_IDLE=$MAX_IDLE) — stalled, exiting"
+      set_meta_status "stalled"
+      exit 5
+    fi
+    log "no new commits / comments — idle $NEW_IDLE/$MAX_IDLE, sleeping ${POLL_INTERVAL}s"
     sleep "$POLL_INTERVAL"
     continue
   fi
@@ -657,7 +686,9 @@ while true; do
      '.round=$r | .last_reviewed_sha=$sha | .last_human_comment_id=$hid
       | .last_codex_event=$ev | .last_criteria_mtime=$cm
       | .consecutive_request_changes=$rc
-      | .consecutive_codex_failures=0 | .last_reviewed_at=$now' \
+      | .consecutive_codex_failures=0
+      | .consecutive_idle=0
+      | .last_reviewed_at=$now' \
      "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 
   jq -n --argjson r "$NEXT_ROUND" --arg now "$NOW" \

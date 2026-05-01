@@ -25,9 +25,9 @@ MESSAGE=$(echo "$PRE" | jq -r .message)
 
 Branch on `ACTION`:
 
-- `terminate-success` / `terminate-diverged` / `terminate-external` —
-  write retrospective (see below), print `MESSAGE`, **return without
-  ScheduleWakeup**.
+- `terminate-success` / `terminate-diverged` / `terminate-external` /
+  `terminate-stalled` — write retrospective (see below), print
+  `MESSAGE`, **return without ScheduleWakeup**.
 - `idle` — print `MESSAGE`, ScheduleWakeup with `delaySeconds=180`,
   `prompt=/resolve-tileops <PR>`, `reason="PR #<PR> idle — polling"`. Return.
 - `continue` — proceed to Step 2.

@@ -44,6 +44,11 @@ ROUND=$(jq -r '.round' "$META")
 MAX_ROUNDS=$(jq -r '.max_rounds' "$META")
 LAST_REVIEW_ID_PREV=$(jq -r '.last_processed_review_id' "$META")
 LAST_REVIEW_COMMENT_ID_PREV=$(jq -r '.last_processed_review_comment_id' "$META")
+# Stall safety net. Increment on idle (no progress this round), reset on
+# continue. Hitting max_idle terminates the loop so a dead counterpart
+# (e.g. review-loop crashed) doesn't leave us polling forever.
+CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
+MAX_IDLE=$(jq -r '.max_idle // 5' "$META")
 
 PR_JSON=$(gh pr view "$PR" --repo "$REPO" --json state,headRefOid,isDraft 2>/dev/null) \
   || { echo "round-pre: gh pr view failed" >&2; exit 1; }
@@ -127,6 +132,24 @@ if [[ -z "$ACTION" \
 fi
 
 [[ -z "$ACTION" ]] && ACTION="continue"
+
+# Stall counter: increment on idle, reset on continue. If idle persists
+# beyond max_idle, escalate to terminate-stalled — protects against the
+# review-loop dying silently while we poll forever.
+if [[ "$ACTION" == "idle" ]]; then
+  NEW_IDLE=$((CONSECUTIVE_IDLE + 1))
+  if (( NEW_IDLE >= MAX_IDLE )); then
+    ACTION="terminate-stalled"
+    MESSAGE="No reviewer activity for $NEW_IDLE consecutive rounds (max_idle=$MAX_IDLE) — terminating."
+  fi
+  jq --argjson n "$NEW_IDLE" '.consecutive_idle=$n' "$META" \
+    > "$META.tmp" && mv "$META.tmp" "$META"
+elif [[ "$ACTION" == "continue" ]]; then
+  if (( CONSECUTIVE_IDLE != 0 )); then
+    jq '.consecutive_idle=0' "$META" \
+      > "$META.tmp" && mv "$META.tmp" "$META"
+  fi
+fi
 
 NEXT_ROUND=$((ROUND + 1))
 SNAP_PREFIX=""
