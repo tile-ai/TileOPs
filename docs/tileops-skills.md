@@ -2,7 +2,7 @@
 
 Skills this repo provides for TileOPs op development: what each does, when to use it, when not to. Authoritative per-skill contracts live in each `SKILL.md`; this page is the human-facing map.
 
-Naming is verb-noun. The verb is the action; the noun is the scope (`op`, `family`, `manifest`, or a workflow target like `tileops` / a PR session).
+Skill names are hyphenated command names. Op- and manifest-scoped skills use **verb-scope** (verb is the action; scope is `op`, `family`, or `manifest`). Workflow skills may use a workflow target or phrase instead — e.g. `review-tileops`, `resolve-tileops`, `follow-up`.
 
 ## At a glance
 
@@ -141,7 +141,7 @@ Introspect a development session and generate follow-up issues for deferred work
 
 - **Use when.** A PR is wrapping up and you want to capture deferred work or discovered gaps as issues, plus optionally apply in-scope fixes onto the PR branch.
 - **Don't use when.** You need to file a single ad-hoc bug — open an issue directly.
-- **Trust model.** Creates issues, may push an applied-fix commit to the PR branch, and prints out-of-scope suggestions to stdout. Never edits the PR body — that belongs to the review skill.
+- **Trust model.** Creates issues, may push an applied-fix commit to the PR branch, and prints out-of-scope suggestions to stdout. Never edits the PR body — that belongs to the review skill. Does not write `tileops/manifest/` outside the standard manifest skills.
 - **Contract:** [SKILL.md](../.claude/skills/follow-up/SKILL.md)
 
 ## Composition
