@@ -46,20 +46,15 @@ Extract: `PR_NUMBER`, `PR_TITLE`, `PR_URL`, `PR_BODY`, `BASE_BRANCH`, `OWNER_REP
 | In-code markers         | Grep changed files for `TODO`, `FIXME`, `HACK`, `XXX`                  |
 | Human reviewer comments | `gh api` — see below                                                   |
 
-**Reviewer comment extraction** (excludes PR author and bots):
+**Reviewer comment extraction** (excludes PR author and bots). Apply the same filter to both endpoints — inline review comments and general PR comments:
 
 ```bash
 export PR_AUTHOR=$(gh pr view $PR_NUMBER --json author -q '.author.login')
+FILTER='[.[] | select(.user.login != env.PR_AUTHOR and .user.type != "Bot"
+        and (.user.login | test("copilot|gemini|github-actions"; "i") | not))]'
 
-# Inline review comments
-gh api repos/$OWNER_REPO/pulls/$PR_NUMBER/comments --paginate \
-  --jq '[.[] | select(.user.login != env.PR_AUTHOR and .user.type != "Bot"
-         and (.user.login | test("copilot|gemini|github-actions"; "i") | not))]'
-
-# General PR comments
-gh api repos/$OWNER_REPO/issues/$PR_NUMBER/comments --paginate \
-  --jq '[.[] | select(.user.login != env.PR_AUTHOR and .user.type != "Bot"
-         and (.user.login | test("copilot|gemini|github-actions"; "i") | not))]'
+gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER/comments"  --paginate --jq "$FILTER"
+gh api "repos/$OWNER_REPO/issues/$PR_NUMBER/comments" --paginate --jq "$FILTER"
 ```
 
 ### 3. CLASSIFY
@@ -75,10 +70,10 @@ gh api repos/$OWNER_REPO/issues/$PR_NUMBER/comments --paginate \
 
 **Suggestion** (→ no issue). Split by scope:
 
-| Sub-tier         | Signal                                                                                                                                                                                                              | Disposition                          |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| **In-scope**     | Touches only files already in this PR's diff; fix is small, mechanical, low-risk (style, naming, formatting, local refactor, obvious typo); does not change observable behavior beyond what this PR already changes | Apply directly in this PR (step 6.5) |
-| **Out-of-scope** | Touches files outside this PR's diff, OR would expand PR's behavioral surface, OR is judgment-dependent (API naming debate, design tradeoff)                                                                        | Print in stdout report (step 7)      |
+| Sub-tier         | Signal                                                                                                                          | Disposition                          |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| **In-scope**     | Touches only files in this PR's diff; fix is small, mechanical, low-risk; does not expand the PR's observable behavior          | Apply directly in this PR (step 6.5) |
+| **Out-of-scope** | Touches files outside this PR's diff, OR expands the PR's behavioral surface, OR is judgment-dependent (subjective design call) | Print in stdout report (step 7)      |
 
 When uncertain, classify as out-of-scope — do not silently enlarge the PR's diff.
 
@@ -114,7 +109,7 @@ Execution order: {#1, #2} → #3
 In-scope fixes (apply directly in this PR):
   - <file:line> — <nit>
 
-Out-of-scope suggestions (PR body text only):
+Out-of-scope suggestions (deferred — printed in step 7, not committed):
   - <nit>
 
 Actions: confirm all / drop by number / edit / move <item> to out-of-scope
@@ -194,9 +189,9 @@ Record `APPLIED_FIXES` (file:line + one-line summary per fix) for step 7.
 
 ### 7. REPORT
 
-**Do not edit the PR body.** The review skill's approval gate is the single point that asks the developer to refresh the body — duplicating that here causes write conflicts and stale text. This skill ends with a stdout report; the developer folds the relevant pieces into the PR body when the reviewer asks.
+**Do not edit the PR body.** The review skill owns body updates at its approval gate; this skill prints a stdout report only.
 
-Print the report to stdout. Omit empty sections entirely — do not write "none" inside a section, just drop the heading.
+Omit empty sections entirely — do not write "none" inside a section, just drop the heading.
 
 ```
 PR #<PR_NUMBER> follow-up complete.
