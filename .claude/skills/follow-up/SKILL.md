@@ -1,19 +1,19 @@
 ---
-name: create-follow-up-issue
+name: follow-up
 description: Introspect a development session and generate follow-up issues for deferred work, discovered problems, and coverage gaps. Max 3 issues per invocation.
 ---
 
 ## Arguments
 
-| Argument   | Required | Description                                              |
-| ---------- | -------- | -------------------------------------------------------- |
-| `<PR_URL>` | No       | GitHub PR URL. If omitted, inferred from current branch. |
+| Argument      | Required | Description                      |
+| ------------- | -------- | -------------------------------- |
+| `<PR_NUMBER>` | Yes      | TileOPs PR number (e.g. `1131`). |
 
 ## Contract
 
 - **Input**: PR reference + conversation history (if available)
-- **Output**: up to 3 follow-up issues + in-scope suggestions committed into the PR + remaining out-of-scope suggestions listed in PR body
-- **Termination**: PR body updated — with issues, applied-fix commit, out-of-scope suggestions, or explicit "no follow-up" declaration
+- **Output**: up to 3 follow-up issues + in-scope suggestions committed into the PR + remaining out-of-scope suggestions printed to stdout for the developer to fold into the PR body at the reviewer's approval gate
+- **Termination**: issues created (if any) + applied-fix commit pushed (if any) + a stdout report listing what was created/applied/deferred. **Never edit the PR body** — the review skill owns body updates.
 
 ## Modes
 
@@ -24,16 +24,18 @@ description: Introspect a development session and generate follow-up issues for 
 
 ### 1. GATE
 
-Resolve PR. Try explicit URL first, else current branch:
+`<PR_NUMBER>` is required. If missing, terminate immediately: `Missing PR number. Usage: /follow-up <PR_NUMBER>`.
+
+Resolve PR:
 
 ```bash
-gh pr view <PR_URL_or_empty> --json number,title,url,body,baseRefName
+gh pr view <PR_NUMBER> --json number,title,url,body,baseRefName
 OWNER_REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner')
 ```
 
 Extract: `PR_NUMBER`, `PR_TITLE`, `PR_URL`, `PR_BODY`, `BASE_BRANCH`, `OWNER_REPO`.
 
-**Fail** → terminate: `No PR found. Provide a PR URL (/create-follow-up-issue <url>), or run on a branch with an associated PR.`
+**Fail** (PR not found) → terminate: `PR #<PR_NUMBER> not found in $OWNER_REPO.`
 
 ### 2. COLLECT (parallel)
 
@@ -76,11 +78,11 @@ gh api repos/$OWNER_REPO/issues/$PR_NUMBER/comments --paginate \
 | Sub-tier         | Signal                                                                                                                                                                                                              | Disposition                          |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
 | **In-scope**     | Touches only files already in this PR's diff; fix is small, mechanical, low-risk (style, naming, formatting, local refactor, obvious typo); does not change observable behavior beyond what this PR already changes | Apply directly in this PR (step 6.5) |
-| **Out-of-scope** | Touches files outside this PR's diff, OR would expand PR's behavioral surface, OR is judgment-dependent (API naming debate, design tradeoff)                                                                        | List as text in PR body (step 7)     |
+| **Out-of-scope** | Touches files outside this PR's diff, OR would expand PR's behavioral surface, OR is judgment-dependent (API naming debate, design tradeoff)                                                                        | Print in stdout report (step 7)      |
 
 When uncertain, classify as out-of-scope — do not silently enlarge the PR's diff.
 
-**Termination gate:** Zero issue-worthy items AND zero in-scope suggestions → skip to step 7. Do not manufacture follow-ups.
+**Termination gate:** Zero issue-worthy items AND zero in-scope suggestions → skip to step 7 (print empty report). Do not manufacture follow-ups.
 
 ### 4. MERGE
 
@@ -190,49 +192,30 @@ Constraints:
 
 Record `APPLIED_FIXES` (file:line + one-line summary per fix) for step 7.
 
-### 7. UPDATE PR BODY
+### 7. REPORT
 
-Update existing PR body to match the final implementation (fix summary/description if the plan changed during development). Then append `## Follow-up`.
+**Do not edit the PR body.** The review skill's approval gate is the single point that asks the developer to refresh the body — duplicating that here causes write conflicts and stale text. This skill ends with a stdout report; the developer folds the relevant pieces into the PR body when the reviewer asks.
 
-```bash
-CURRENT_BODY=$(gh pr view $PR_NUMBER --json body -q '.body')
-gh pr edit $PR_NUMBER --body "$CURRENT_BODY
+Print the report to stdout. Omit empty sections entirely — do not write "none" inside a section, just drop the heading.
 
-$FOLLOWUP_SECTION"
 ```
+PR #<PR_NUMBER> follow-up complete.
 
-Omit empty sections entirely — do not write "none".
-
-**Section blocks (compose as needed):**
-
-```markdown
-## Follow-up
-
-Issues:
+Issues created:
 - #<N> — <one-line summary>
 - #<N> — <one-line summary> (depends on #<N>)
 
-Applied in this PR:
+Applied in this PR (commit <sha>):
 - <file:line> — <one-line summary>
 
-Out-of-scope suggestions:
+Out-of-scope suggestions (fold into PR body at the reviewer's approval gate):
 - <nit>
+
+Execution order: {#1, #2} → #3
 ```
 
 **Clean close** (nothing in any bucket):
 
-```markdown
-## Follow-up
-
-No follow-up issues or suggestions.
 ```
-
-## Output
-
-```
-PR #<number> body updated.
-  Issues: #<N>, #<N> (or "none")
-  Applied in-PR: <count> (or "none") — commit <sha>
-  Out-of-scope suggestions: <count> (or "none")
-  Execution order: {#1, #2} → #3
+PR #<PR_NUMBER>: no follow-up issues or suggestions.
 ```
