@@ -18,6 +18,8 @@ set -euo pipefail
 
 PR="${1:?usage: round-pre.sh <PR_NUMBER>}"
 [[ "$PR" =~ ^[0-9]+$ ]] || { echo "round-pre: PR must be a positive integer" >&2; exit 1; }
+command -v gh >/dev/null 2>&1 || { echo "round-pre: missing gh" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "round-pre: missing jq" >&2; exit 1; }
 
 REPO="tile-ai/TileOPs"
 REVIEWER_LOGIN="${RESOLVE_REVIEWER_LOGIN:-Ibuki-wind}"
@@ -50,12 +52,17 @@ HEAD_SHA=$(echo "$PR_JSON" | jq -r .headRefOid)
 
 # Reviews + inline comments — paginate so PRs with >1 page don't
 # silently lose the latest IDs / state.
-LATEST_REVIEWER_STATE=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews" \
-  --jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")] | sort_by(.submitted_at) | last | .state // \"NONE\"")
-LATEST_REVIEW_ID=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews" \
-  --jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")|.id]|max // 0")
-LATEST_REVIEW_COMMENT_ID=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/comments" \
-  --jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")|.id]|max // 0")
+# --slurp + --jq are mutually exclusive in `gh api`; pipe through
+# external jq instead. --paginate --slurp produces an array of pages
+# (each page is itself an array of items), so jq flattens with [.[][]].
+ALL_REVIEWS=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews")
+ALL_COMMENTS=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/comments")
+LATEST_REVIEWER_STATE=$(printf '%s' "$ALL_REVIEWS" \
+  | jq -r "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")] | sort_by(.submitted_at) | last | .state // \"NONE\"")
+LATEST_REVIEW_ID=$(printf '%s' "$ALL_REVIEWS" \
+  | jq -r "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")|.id]|max // 0")
+LATEST_REVIEW_COMMENT_ID=$(printf '%s' "$ALL_COMMENTS" \
+  | jq -r "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")|.id]|max // 0")
 
 # Unresolved review thread count — paginate via cursor so PRs with
 # >100 threads don't undercount.
@@ -129,12 +136,12 @@ if [[ "$ACTION" == "continue" ]]; then
   SNAP_PREFIX="$RUN_DIR/rounds/round-$N"
   mkdir -p "$RUN_DIR/rounds"
 
-  gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews" \
-    --jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_ID_PREV)|{id,state,body,submitted_at}]" \
+  printf '%s' "$ALL_REVIEWS" \
+    | jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_ID_PREV)|{id,state,body,submitted_at}]" \
     > "$SNAP_PREFIX.new-reviews.json"
 
-  gh api --paginate --slurp "repos/$REPO/pulls/$PR/comments" \
-    --jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_COMMENT_ID_PREV)|{id,path,line,body,in_reply_to_id,created_at}]" \
+  printf '%s' "$ALL_COMMENTS" \
+    | jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_COMMENT_ID_PREV)|{id,path,line,body,in_reply_to_id,created_at}]" \
     > "$SNAP_PREFIX.new-inline-comments.json"
 
   # Snapshot ALL unresolved threads (paginated) — agent acts on these
@@ -178,8 +185,10 @@ if [[ "$ACTION" == "continue" ]]; then
     > "$SNAP_PREFIX.ci.json" 2>/dev/null || echo '[]' > "$SNAP_PREFIX.ci.json"
 
   # Archive inbox for this round, then clear it. Skill body reads the
-  # archived copy if it wants this round's guidance.
+  # archived copy if it wants this round's guidance. Ensure inbox-history
+  # exists in case the state dir was partially deleted/corrupted.
   if [[ -s "$RUN_DIR/inbox.md" ]]; then
+    mkdir -p "$RUN_DIR/inbox-history"
     mv "$RUN_DIR/inbox.md" "$RUN_DIR/inbox-history/round-$N.md"
     : > "$RUN_DIR/inbox.md"
   fi

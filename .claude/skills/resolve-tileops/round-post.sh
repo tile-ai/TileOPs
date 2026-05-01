@@ -14,6 +14,8 @@ set -euo pipefail
 
 PR="${1:?usage: round-post.sh <PR_NUMBER>}"
 [[ "$PR" =~ ^[0-9]+$ ]] || { echo "round-post: PR must be a positive integer" >&2; exit 1; }
+command -v gh >/dev/null 2>&1 || { echo "round-post: missing gh" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "round-post: missing jq" >&2; exit 1; }
 
 REPO="tile-ai/TileOPs"
 REPO_PATH="$(git rev-parse --show-toplevel 2>/dev/null)" \
@@ -87,8 +89,6 @@ ROUND=$(jq -r '.round' "$META")
 NEXT_ROUND=$((ROUND + 1))
 N=$(printf '%02d' "$NEXT_ROUND")
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-LAST_PUSHED_SHA_PREV=$(jq -r '.last_pushed_sha // ""' "$META")
-
 # Round summary file
 jq -n --argjson r "$NEXT_ROUND" --arg now "$NOW" \
   --arg sha_b "$HEAD_SHA_BEFORE" --arg sha_a "$NEW_HEAD_SHA" \
@@ -101,19 +101,28 @@ jq -n --argjson r "$NEXT_ROUND" --arg now "$NOW" \
     unresolved_after:$unresolved_after, reviewer_state_before:$reviewer_state}' \
   > "$RUN_DIR/rounds/round-$N.json"
 
-# Advance meta. last_pushed_sha is sticky: only updated when a push
-# actually happened this round. Watermarks come from the PRE-round
-# baseline so mid-round reviewer activity is picked up next round.
-PUSHED_FOR_META="$LAST_PUSHED_SHA_PREV"
-[[ "$PUSHED_SHA" != "none" ]] && PUSHED_FOR_META="$PUSHED_SHA"
-jq --argjson r "$NEXT_ROUND" \
-   --argjson rid "$PRE_LATEST_REVIEW_ID" \
-   --argjson cid "$PRE_LATEST_REVIEW_COMMENT_ID" \
-   --arg pushed "$PUSHED_FOR_META" \
-  '.round=$r | .last_processed_review_id=$rid
-   | .last_processed_review_comment_id=$cid
-   | .last_pushed_sha=$pushed' \
-  "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+# Advance meta. last_pushed_sha is sticky: only touched when a push
+# actually happened this round, preserving its prior value (null on a
+# fresh state, or the last real sha) otherwise. Watermarks come from the
+# PRE-round baseline so mid-round reviewer activity is picked up next
+# round.
+if [[ "$PUSHED_SHA" != "none" ]]; then
+  jq --argjson r "$NEXT_ROUND" \
+     --argjson rid "$PRE_LATEST_REVIEW_ID" \
+     --argjson cid "$PRE_LATEST_REVIEW_COMMENT_ID" \
+     --arg pushed "$PUSHED_SHA" \
+    '.round=$r | .last_processed_review_id=$rid
+     | .last_processed_review_comment_id=$cid
+     | .last_pushed_sha=$pushed' \
+    "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+else
+  jq --argjson r "$NEXT_ROUND" \
+     --argjson rid "$PRE_LATEST_REVIEW_ID" \
+     --argjson cid "$PRE_LATEST_REVIEW_COMMENT_ID" \
+    '.round=$r | .last_processed_review_id=$rid
+     | .last_processed_review_comment_id=$cid' \
+    "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+fi
 
 rm -f "$PRE_JSON"
 
