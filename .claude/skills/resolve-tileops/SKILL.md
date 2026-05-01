@@ -20,48 +20,49 @@ Invoke bare for a single round: `/resolve-tileops 1072`.
 - GitHub: bare `gh` (developer's own identity, NOT `gh-review`).
 - Resolution work runs in **this Claude session** — no external subagent.
 
-## Preflight
+## Step 0: Locate or initialize state
 
-```bash
-command -v gh >/dev/null 2>&1 || { echo "missing gh" >&2; exit 1; }
-
-REPO_PATH=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" >&2; exit 1; }
-
-UPSTREAM_REMOTE=$(git -C "$REPO_PATH" remote -v | \
-  awk '/tile-ai\/TileOPs(\.git)?[[:space:]]+\(fetch\)/ {print $1; exit}')
-if [ -z "$UPSTREAM_REMOTE" ]; then
-  echo "no git remote in $REPO_PATH points to tile-ai/TileOPs" >&2
-  exit 1
-fi
-```
-
-Each worktree owns its own `$TASK_ROOT/resolve/`; `cd` into the worktree
-before invoking.
-
-______________________________________________________________________
-
-## Step 0: Init
-
-Resolve `TASK_ROOT` from the PR body (same convention as review-tileops's
-loop driver) so `resolve` and `review` stages share a task root:
+The skill is re-fired every round under `/loop`. **Preflight + init run on round 1 only**; subsequent rounds locate the existing run dir from the META file persisted on round 1.
 
 ```bash
 PR=$ARGUMENTS  # must be integer
-PR_BODY=$(gh pr view "$PR" --repo "$REPO" --json body --jq .body 2>/dev/null || echo "")
-ISSUE=$(printf '%s' "$PR_BODY" \
-  | grep -oiE '(Closes|Fixes|Resolves)[[:space:]]+#[0-9]+' \
-  | head -1 \
-  | grep -oE '[0-9]+' \
-  || true)
-if [ -n "$ISSUE" ]; then
-  TASK_ROOT="$REPO_PATH/.foundry/runs/issue-$ISSUE"
-else
-  TASK_ROOT="$REPO_PATH/.foundry/runs/pr-$PR"
-fi
-RUN_DIR="$TASK_ROOT/resolve"
-META="$RUN_DIR/meta.json"
+REPO_PATH=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" >&2; exit 1; }
 
-if [ ! -f "$META" ]; then
+# Round 2+ fast path: locate existing META by pr_number across all task roots.
+META=""
+for m in "$REPO_PATH/.foundry/runs"/*/resolve/meta.json; do
+  [ -f "$m" ] || continue
+  if [ "$(jq -r '.pr_number' "$m" 2>/dev/null)" = "$PR" ]; then
+    META="$m"
+    break
+  fi
+done
+
+if [ -n "$META" ]; then
+  # Round 2+: state exists. Derive paths and continue.
+  RUN_DIR=$(dirname "$META")
+  TASK_ROOT=$(dirname "$RUN_DIR")
+else
+  # Round 1: cold start. Verify env, resolve TASK_ROOT from PR body, init state.
+  command -v gh >/dev/null 2>&1 || { echo "missing gh" >&2; exit 1; }
+  UPSTREAM_REMOTE=$(git -C "$REPO_PATH" remote -v | \
+    awk '/tile-ai\/TileOPs(\.git)?[[:space:]]+\(fetch\)/ {print $1; exit}')
+  [ -n "$UPSTREAM_REMOTE" ] || { echo "no git remote in $REPO_PATH points to tile-ai/TileOPs" >&2; exit 1; }
+
+  PR_BODY=$(gh pr view "$PR" --repo "$REPO" --json body --jq .body 2>/dev/null || echo "")
+  ISSUE=$(printf '%s' "$PR_BODY" \
+    | grep -oiE '(Closes|Fixes|Resolves)[[:space:]]+#[0-9]+' \
+    | head -1 \
+    | grep -oE '[0-9]+' \
+    || true)
+  if [ -n "$ISSUE" ]; then
+    TASK_ROOT="$REPO_PATH/.foundry/runs/issue-$ISSUE"
+  else
+    TASK_ROOT="$REPO_PATH/.foundry/runs/pr-$PR"
+  fi
+  RUN_DIR="$TASK_ROOT/resolve"
+  META="$RUN_DIR/meta.json"
+
   mkdir -p "$RUN_DIR/rounds" "$RUN_DIR/inbox-history"
   sed "s/__PR_NUMBER__/$PR/g" \
     "$REPO_PATH/.claude/skills/resolve-tileops/policy-template.md" > "$RUN_DIR/policy.md"
@@ -76,6 +77,9 @@ if [ ! -f "$META" ]; then
   }' > "$META"
 fi
 ```
+
+Each worktree owns its own `$TASK_ROOT/resolve/`; `cd` into the worktree
+before invoking.
 
 Print: `Resolve loop for PR #<N> — round <current+1>/20.`
 
