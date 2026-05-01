@@ -115,7 +115,7 @@ Surgical patch of an existing manifest entry for fields **derived from on-disk o
 
 ### workflow
 
-Workflow skills operate on PRs and sessions, not on ops. Per the [trust model](#trust-model--who-may-write-what), they do not write `tileops/manifest/`, op files, kernel files, tests, or benchmarks; they read PRs, post review comments, drive resolution rounds, or open follow-up issues.
+Workflow skills operate on PRs and sessions, not on ops. Per the [trust model](#trust-model--who-may-write-what), they never write `tileops/manifest/` outside the standard manifest skills. Other write scopes vary per skill — see each block's **Trust model** line.
 
 **review-tileops** · workflow atomic
 
