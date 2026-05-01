@@ -49,7 +49,7 @@ Extract: `PR_NUMBER`, `PR_TITLE`, `PR_URL`, `PR_BODY`, `BASE_BRANCH`, `OWNER_REP
 **Reviewer comment extraction** (excludes PR author and bots):
 
 ```bash
-PR_AUTHOR=$(gh pr view $PR_NUMBER --json author -q '.author.login')
+export PR_AUTHOR=$(gh pr view $PR_NUMBER --json author -q '.author.login')
 
 # Inline review comments
 gh api repos/$OWNER_REPO/pulls/$PR_NUMBER/comments --paginate \
