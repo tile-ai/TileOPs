@@ -2,7 +2,7 @@
 
 Skills this repo provides for TileOPs op development: what each does, when to use it, when not to. Authoritative per-skill contracts live in each `SKILL.md`; this page is the human-facing map.
 
-Skill names are hyphenated command names. Op- and manifest-scoped skills use **verb-scope** (verb is the action; scope is `op`, `family`, or `manifest`). Workflow skills may use a workflow target or phrase instead — e.g. `review-tileops`, `resolve-tileops`, `follow-up`.
+Skill names are hyphenated command names. Op-, family-, and manifest-scoped skills use **verb-scope** (verb is the action; scope is `op`, `family`, or `manifest`). Workflow skills may use a workflow target or phrase instead — e.g. `review-tileops`, `resolve-tileops`, `follow-up`.
 
 ## At a glance
 
