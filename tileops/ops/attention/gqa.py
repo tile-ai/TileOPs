@@ -15,6 +15,8 @@ from tileops.kernels.attention import (
     GQAFwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
+    GQAPrefillFwdKernel,
+    GQAPrefillWithKVCacheFwdKernel,
     GQASlidingWindowFwdKernel,
     GQASlidingWindowFwdWgmmaPipelinedKernel,
     GQASlidingWindowVarlenFwdKernel,
@@ -30,6 +32,8 @@ __all__ = [
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionFwdOp",
+    "GroupedQueryAttentionPrefillFwdOp",
+    "GroupedQueryAttentionPrefillWithKVCacheFwdOp",
     "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
 ]
@@ -112,6 +116,34 @@ def _select_gqa_fwd_kernel_cls(
     return GQAFwdWgmmaPipelinedKernel
 
 
+def _select_gqa_prefill_fwd_kernel_cls() -> Type[Kernel]:
+    return GQAPrefillFwdKernel
+
+
+def _select_gqa_prefill_with_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
+    return GQAPrefillWithKVCacheFwdKernel
+
+
+def _validate_gqa_dims(heads: int, heads_kv: int, dim: int) -> None:
+    if heads <= 0:
+        raise ValueError("heads must be positive")
+    if heads_kv <= 0:
+        raise ValueError("heads_kv must be positive")
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
+    if dim <= 0:
+        raise ValueError("dim must be positive")
+
+
+def _attention_scale(dim: int, sm_scale: Optional[float]) -> float:
+    return dim**-0.5 if sm_scale is None else sm_scale
+
+
+def _attention_output(result: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+    output, _ = result
+    return output
+
+
 class GroupedQueryAttentionFwdOp(Op):
     """Layout: BSHD"""
 
@@ -155,6 +187,153 @@ class GroupedQueryAttentionFwdOp(Op):
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return self.kernel(q, k, v)
+
+
+class GroupedQueryAttentionPrefillFwdOp(Op):
+    """Dense GQA prefill. Layout: BSHD.
+
+    Supports ``seq_len_q != seq_len_kv``. Causal prefill uses bottom-right
+    alignment: key position ``j`` is visible to query position ``i`` iff
+    ``j <= i + (seq_len_kv - seq_len_q)``.
+    """
+
+    def __init__(self,
+                 batch: int,
+                 heads: int,
+                 heads_kv: int,
+                 seq_len_q: int,
+                 seq_len_kv: int,
+                 dim: int,
+                 is_causal: bool = True,
+                 dtype: torch.dtype = torch.float16,
+                 sm_scale: Optional[float] = None,
+                 kernel_map: Optional[Dict[str, Kernel]] = None,
+                 tune: bool = False) -> None:
+        _validate_gqa_dims(heads, heads_kv, dim)
+        if is_causal and seq_len_q > seq_len_kv:
+            raise ValueError("causal prefill requires seq_len_q <= seq_len_kv")
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len_q = seq_len_q
+        self.seq_len_kv = seq_len_kv
+        self.dim = dim
+        self.is_causal = is_causal
+        self.dtype = dtype
+        self.sm_scale = _attention_scale(dim, sm_scale)
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["gqa_prefill_fwd_kernel"](
+            batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, is_causal, self.dtype,
+            sm_scale=self.sm_scale, tune=tune)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {"gqa_prefill_fwd_kernel": _select_gqa_prefill_fwd_kernel_cls()}
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return _attention_output(self.kernel(q, k, v))
+
+
+class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
+    """Dense GQA prefill with contiguous KV cache append. Layout: BSHD.
+
+    ``cache_seqlens`` stores the per-batch KV length before append. The fused
+    kernel computes attention over old cache plus current ``k_new/v_new`` and
+    appends the current chunk into ``k_cache/v_cache`` in-place.
+    """
+
+    def __init__(self,
+                 batch: int,
+                 heads: int,
+                 heads_kv: int,
+                 seq_len_new: int,
+                 seqlen_kv: int,
+                 dim: int,
+                 is_causal: bool = True,
+                 dtype: torch.dtype = torch.float16,
+                 sm_scale: Optional[float] = None,
+                 kernel_map: Optional[Dict[str, Kernel]] = None,
+                 tune: bool = False) -> None:
+        _validate_gqa_dims(heads, heads_kv, dim)
+        if seq_len_new > seqlen_kv:
+            raise ValueError("seq_len_new must not exceed seqlen_kv")
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len_new = seq_len_new
+        self.seqlen_kv = seqlen_kv
+        self.dim = dim
+        self.is_causal = is_causal
+        self.dtype = dtype
+        self.sm_scale = _attention_scale(dim, sm_scale)
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["gqa_prefill_with_kv_cache_fwd_kernel"](
+            batch, heads, heads_kv, seq_len_new, seqlen_kv, dim, is_causal, self.dtype,
+            sm_scale=self.sm_scale, tune=tune)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {
+            "gqa_prefill_with_kv_cache_fwd_kernel":
+                _select_gqa_prefill_with_kv_cache_fwd_kernel_cls()
+        }
+
+    def _validate_forward_inputs(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
+                                 k_cache: torch.Tensor, v_cache: torch.Tensor,
+                                 cache_seqlens: torch.Tensor) -> None:
+        tensors = {
+            "q": q,
+            "k_new": k_new,
+            "v_new": v_new,
+            "k_cache": k_cache,
+            "v_cache": v_cache,
+            "cache_seqlens": cache_seqlens,
+        }
+        for name, tensor in tensors.items():
+            if not tensor.is_cuda:
+                raise ValueError(f"{name} must be a CUDA tensor")
+            if not tensor.is_contiguous():
+                raise ValueError(f"{name} must be contiguous")
+
+        expected_shapes = {
+            "q": (self.batch, self.seq_len_new, self.heads, self.dim),
+            "k_new": (self.batch, self.seq_len_new, self.heads_kv, self.dim),
+            "v_new": (self.batch, self.seq_len_new, self.heads_kv, self.dim),
+            "k_cache": (self.batch, self.seqlen_kv, self.heads_kv, self.dim),
+            "v_cache": (self.batch, self.seqlen_kv, self.heads_kv, self.dim),
+            "cache_seqlens": (self.batch,),
+        }
+        for name, expected_shape in expected_shapes.items():
+            actual_shape = tuple(tensors[name].shape)
+            if actual_shape != expected_shape:
+                raise ValueError(
+                    f"Expected {name} shape {expected_shape}, got {actual_shape}")
+
+        for name, tensor in tensors.items():
+            if name == "cache_seqlens":
+                continue
+            if tensor.dtype != self.dtype:
+                raise ValueError(f"Expected {name}.dtype {self.dtype}, got {tensor.dtype}")
+        if cache_seqlens.dtype != torch.int32:
+            raise ValueError(f"Expected cache_seqlens.dtype torch.int32, got {cache_seqlens.dtype}")
+
+        min_cache_len = int(cache_seqlens.min().item())
+        max_cache_len = int(cache_seqlens.max().item())
+        if min_cache_len < 0:
+            raise ValueError("cache_seqlens must be non-negative")
+        if max_cache_len + self.seq_len_new > self.seqlen_kv:
+            raise ValueError(
+                "cache_seqlens + seq_len_new exceeds KV cache capacity: "
+                f"max cache_seqlen {max_cache_len}, seq_len_new {self.seq_len_new}, "
+                f"seqlen_kv {self.seqlen_kv}")
+
+    def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
+                k_cache: torch.Tensor, v_cache: torch.Tensor,
+                cache_seqlens: torch.Tensor) -> torch.Tensor:
+        self._validate_forward_inputs(q, k_new, v_new, k_cache, v_cache, cache_seqlens)
+        return _attention_output(self.kernel(q, k_new, v_new, k_cache, v_cache, cache_seqlens))
 
 
 class GroupedQueryAttentionBwdOp(Op):

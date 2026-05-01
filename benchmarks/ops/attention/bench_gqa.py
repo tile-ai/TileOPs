@@ -11,10 +11,19 @@ from tileops.kernels.attention import (
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
 )
-from tileops.ops import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
+from tileops.ops import (
+    GroupedQueryAttentionBwdOp,
+    GroupedQueryAttentionFwdOp,
+    GroupedQueryAttentionPrefillFwdOp,
+    GroupedQueryAttentionPrefillWithKVCacheFwdOp,
+)
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdTest,
     GroupedQueryAttentionFwdTest,
+)
+from workloads.attention.gqa_prefill import (
+    GQAPrefillFwdTest,
+    GQAPrefillWithKVCacheFwdTest,
 )
 
 
@@ -45,6 +54,49 @@ class GroupedQueryAttentionBwdBenchmark(BenchmarkBase[GroupedQueryAttentionBwdTe
         t = self.workload
         total_heads = (3 * t.heads + 4 * t.heads_kv)
         return t.batch * total_heads * t.seq_len * t.dim * t.dtype.itemsize
+
+
+class GQAPrefillFwdBenchmark(BenchmarkBase[GQAPrefillFwdTest]):
+
+    def calculate_flops(self) -> Optional[float]:
+        t = self.workload
+        visible = (
+            t.seq_len_q * t.seq_len_kv - t.seq_len_q * (t.seq_len_q - 1) / 2
+            if t.is_causal else t.seq_len_q * t.seq_len_kv)
+        return 4.0 * t.batch * t.heads * visible * t.dim
+
+    def calculate_memory(self) -> Optional[float]:
+        t = self.workload
+        query_size = t.batch * t.seq_len_q * t.heads * t.dim
+        kv_size = t.batch * t.seq_len_kv * t.heads_kv * t.dim
+        output_size = query_size
+        return (query_size + 2 * kv_size + output_size) * t.dtype.itemsize
+
+
+class GQAPrefillWithKVCacheFwdBenchmark(BenchmarkBase[GQAPrefillWithKVCacheFwdTest]):
+
+    def calculate_flops(self) -> Optional[float]:
+        t = self.workload
+        old_len = t.seq_len_cap - t.seq_len_new
+        visible = (
+            t.seq_len_new * old_len + t.seq_len_new * (t.seq_len_new + 1) / 2
+            if t.is_causal else t.seq_len_new * t.seq_len_cap)
+        return 4.0 * t.batch * t.heads * visible * t.dim
+
+    def calculate_memory(self) -> Optional[float]:
+        t = self.workload
+        query_size = t.batch * t.seq_len_new * t.heads * t.dim
+        old_len = t.seq_len_cap - t.seq_len_new
+        old_kv_size = 2 * t.batch * old_len * t.heads_kv * t.dim
+        new_kv_size = 2 * t.batch * t.seq_len_new * t.heads_kv * t.dim
+        append_kv_size = new_kv_size
+        output_size = query_size
+        cache_seqlens_size = t.batch
+        return (
+            (query_size + old_kv_size + new_kv_size + append_kv_size + output_size)
+            * t.dtype.itemsize
+            + cache_seqlens_size * torch.int32.itemsize
+        )
 
 
 def _fa3_gqa_fwd(test: GroupedQueryAttentionFwdTest):
@@ -131,6 +183,53 @@ def _torch_gqa_bwd(test):
             is_causal=test.is_causal, enable_gqa=True)
         out.transpose(1, 2).contiguous().backward(grad_output)
         return q.grad, k.grad, v.grad
+    return fn
+
+
+def _torch_gqa_prefill_ref(test: GQAPrefillFwdTest):
+    """Materialized torch reference for dense prefill with bottom-right causal mask."""
+    def fn(q, k, v):
+        groups = test.heads // test.heads_kv
+        q_bhsd = q.transpose(1, 2).float()
+        k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
+        v_bhsd = v.repeat_interleave(groups, dim=2).transpose(1, 2).float()
+        scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * (test.dim**-0.5)
+        if test.is_causal:
+            offset = test.seq_len_kv - test.seq_len_q
+            q_pos = torch.arange(test.seq_len_q, device=q.device)[:, None] + offset
+            k_pos = torch.arange(test.seq_len_kv, device=q.device)[None, :]
+            mask = k_pos <= q_pos
+            scores = scores.masked_fill(
+                ~mask.view(1, 1, test.seq_len_q, test.seq_len_kv), float("-inf"))
+        probs = torch.softmax(scores, dim=-1)
+        return torch.matmul(probs, v_bhsd).transpose(1, 2).to(q.dtype).contiguous()
+    return fn
+
+
+def _torch_gqa_prefill_with_kv_cache_ref(test: GQAPrefillWithKVCacheFwdTest):
+    """Materialized torch reference for contiguous-cache prefill."""
+    def fn(q, k_new, v_new, k_cache, v_cache, cache_seqlens):
+        groups = test.heads // test.heads_kv
+        outputs = []
+        for b in range(test.batch):
+            old_len = int(cache_seqlens[b].item())
+            k_all = torch.cat([k_cache[b, :old_len], k_new[b]], dim=0)
+            v_all = torch.cat([v_cache[b, :old_len], v_new[b]], dim=0)
+            q_bhsd = q[b].transpose(0, 1).float()
+            k_bhsd = k_all.repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+            v_bhsd = v_all.repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+            total_len = old_len + test.seq_len_new
+            scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * (test.dim**-0.5)
+            if test.is_causal:
+                q_pos = torch.arange(test.seq_len_new, device=q.device)[:, None] + old_len
+                k_pos = torch.arange(total_len, device=q.device)[None, :]
+                mask = k_pos <= q_pos
+                scores = scores.masked_fill(~mask.view(1, test.seq_len_new, total_len),
+                                            float("-inf"))
+            probs = torch.softmax(scores, dim=-1)
+            outputs.append(
+                torch.matmul(probs, v_bhsd).transpose(0, 1).to(q.dtype).contiguous())
+        return torch.stack(outputs, dim=0)
     return fn
 
 
@@ -255,6 +354,68 @@ def test_gqa_bwd_bench(batch: int, seq_len: int, heads: int, heads_kv: int, dim:
         result_bl = bm.profile(_torch_gqa_bwd(test), *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
+
+
+_GQA_PREFILL_FWD_BENCH_PARAMS = [
+    pytest.param(1, 128, 128, 8, 2, 64, True, torch.float16, False,
+                 id="prefill-dense-q-eq-kv-fp16"),
+    pytest.param(1, 128, 256, 8, 2, 64, True, torch.float16, False,
+                 id="prefill-dense-q-lt-kv-fp16"),
+    pytest.param(1, 128, 256, 8, 2, 64, True, torch.bfloat16, False,
+                 id="prefill-dense-q-lt-kv-bf16"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len_q, seq_len_kv, heads, heads_kv, dim, causal, dtype, tune",
+    _GQA_PREFILL_FWD_BENCH_PARAMS,
+)
+def test_gqa_prefill_fwd_bench(batch: int, seq_len_q: int, seq_len_kv: int, heads: int,
+                               heads_kv: int, dim: int, causal: bool, dtype: torch.dtype,
+                               tune: bool) -> None:
+    test = GQAPrefillFwdTest(batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, causal, dtype)
+    bm = GQAPrefillFwdBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, causal, dtype, tune=tune)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(_torch_gqa_prefill_ref(test), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+
+_GQA_PREFILL_WITH_KV_CACHE_FWD_BENCH_PARAMS = [
+    pytest.param(1, 64, 256, 8, 2, 64, True, torch.float16, False,
+                 id="prefill-contig-cache-fp16"),
+    pytest.param(2, 64, 320, 16, 4, 128, True, torch.float16, False,
+                 id="prefill-contig-cache-batch2-fp16"),
+    pytest.param(1, 64, 256, 8, 2, 64, True, torch.bfloat16, False,
+                 id="prefill-contig-cache-bf16"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len_new, seq_len_cap, heads, heads_kv, dim, causal, dtype, tune",
+    _GQA_PREFILL_WITH_KV_CACHE_FWD_BENCH_PARAMS,
+)
+def test_gqa_prefill_with_kv_cache_fwd_bench(batch: int, seq_len_new: int,
+                                             seq_len_cap: int, heads: int, heads_kv: int,
+                                             dim: int, causal: bool, dtype: torch.dtype,
+                                             tune: bool) -> None:
+    test = GQAPrefillWithKVCacheFwdTest(
+        batch, heads, heads_kv, seq_len_new, seq_len_cap, dim, causal, dtype)
+    bm = GQAPrefillWithKVCacheFwdBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = GroupedQueryAttentionPrefillWithKVCacheFwdOp(
+        batch, heads, heads_kv, seq_len_new, seq_len_cap, dim, causal, dtype, tune=tune)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(_torch_gqa_prefill_with_kv_cache_ref(test), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":
