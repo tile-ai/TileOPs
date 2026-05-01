@@ -8,7 +8,7 @@ Run before approving any PR. Apply each item below if its scope matches the diff
 
   Cases the reviewer cannot classify with confidence count as untriaged → **BLOCKER, inline required** asking the developer for the rationale. Every blocker must be resolved (case shrunk / deleted, or verdict downgraded to `keep` with rationale) before APPROVE.
 
-- [ ] **Numerical floor.** Run `python scripts/test_node_delta.py --base upstream/main`. If existing-file growth > 25% AND any case carries an unresolved blocker verdict (`shrink` / `delete`) or remains untriaged, REQUEST_CHANGES with the full list of affected node IDs in the summary. (Absence of an inline comment is not a blocker on its own — silent `keep` is the default.)
+- [ ] **Numerical floor.** Run `python scripts/test_node_delta.py --base upstream/main` (prereq: `upstream` remote points to tile-ai/TileOPs and is fresh — `git fetch upstream` first). If existing-file growth > 25% AND any case carries an unresolved blocker verdict (`shrink` / `delete`) or remains untriaged, REQUEST_CHANGES with the full list of affected node IDs in the summary. (Absence of an inline comment is not a blocker on its own — silent `keep` is the default.)
 
 - [ ] Reject "AC-N required this matrix" as a defense — AC text does not bind the merged suite.
 

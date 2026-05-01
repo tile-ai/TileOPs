@@ -29,11 +29,11 @@ description: Introspect a development session and generate follow-up issues for 
 Resolve PR:
 
 ```bash
-gh pr view <PR_NUMBER> --json number,title,url,body,baseRefName
+gh pr view <PR_NUMBER> --json number,title,url,body
 OWNER_REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner')
 ```
 
-Extract: `PR_NUMBER`, `PR_TITLE`, `PR_URL`, `PR_BODY`, `BASE_BRANCH`, `OWNER_REPO`.
+Extract: `PR_NUMBER`, `PR_TITLE`, `PR_URL`, `PR_BODY`, `OWNER_REPO`.
 
 **Fail** (PR not found) → terminate: `PR #<PR_NUMBER> not found in $OWNER_REPO.`
 
@@ -41,7 +41,7 @@ Extract: `PR_NUMBER`, `PR_TITLE`, `PR_URL`, `PR_BODY`, `BASE_BRANCH`, `OWNER_REP
 
 | Source                  | How                                                                    |
 | ----------------------- | ---------------------------------------------------------------------- |
-| Code diff               | `git diff $BASE_BRANCH...HEAD`                                         |
+| Code diff               | `gh pr diff "$PR_NUMBER"`                                              |
 | Session history         | Scan conversation for deferrals, workarounds, surprises, blocked items |
 | In-code markers         | Grep changed files for `TODO`, `FIXME`, `HACK`, `XXX`                  |
 | Human reviewer comments | `gh api` — see below                                                   |
@@ -70,14 +70,14 @@ gh api "repos/$OWNER_REPO/issues/$PR_NUMBER/comments" --paginate --jq "$FILTER"
 
 **Suggestion** (→ no issue). Split by scope:
 
-| Sub-tier         | Signal                                                                                                                          | Disposition                          |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| **In-scope**     | Touches only files in this PR's diff; fix is small, mechanical, low-risk; does not expand the PR's observable behavior          | Apply directly in this PR (step 6.5) |
-| **Out-of-scope** | Touches files outside this PR's diff, OR expands the PR's behavioral surface, OR is judgment-dependent (subjective design call) | Print in stdout report (step 7)      |
+| Sub-tier         | Signal                                                                                                                          | Disposition                        |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| **In-scope**     | Touches only files in this PR's diff; fix is small, mechanical, low-risk; does not expand the PR's observable behavior          | Apply directly in this PR (step 7) |
+| **Out-of-scope** | Touches files outside this PR's diff, OR expands the PR's behavioral surface, OR is judgment-dependent (subjective design call) | Print in stdout report (step 8)    |
 
 When uncertain, classify as out-of-scope — do not silently enlarge the PR's diff.
 
-**Termination gate:** Zero issue-worthy items AND zero in-scope suggestions → skip to step 7 (print empty report). Do not manufacture follow-ups.
+**Termination gate:** Zero issue-worthy items AND zero in-scope suggestions → skip to step 8 (print empty report). Do not manufacture follow-ups.
 
 ### 4. MERGE
 
@@ -109,7 +109,7 @@ Execution order: {#1, #2} → #3
 In-scope fixes (apply directly in this PR):
   - <file:line> — <nit>
 
-Out-of-scope suggestions (deferred — printed in step 7, not committed):
+Out-of-scope suggestions (deferred — printed in step 8, not committed):
   - <nit>
 
 Actions: confirm all / drop by number / edit / move <item> to out-of-scope
@@ -161,11 +161,11 @@ Discovered during PR #<PR_NUMBER> (<PR_TITLE>).
 - [ ] AC-1: Modified files pass unit tests
 ```
 
-### 6.5. APPLY IN-SCOPE FIXES
+### 7. APPLY IN-SCOPE FIXES
 
 For each confirmed in-scope suggestion:
 
-1. Verify file is in PR diff (`git diff --name-only $BASE_BRANCH...HEAD`). If not, demote to out-of-scope and skip.
+1. Verify the file is in the PR diff with `gh pr diff --name-only "$PR_NUMBER"`. If not, demote to out-of-scope and skip.
 1. Apply edit with the Edit tool.
 1. Run the most relevant fast check for the file type (e.g., `pre-commit run --files <paths>`, or unit tests for the touched module). Not the full suite.
 
@@ -185,9 +185,9 @@ Constraints:
 - If a fix fails its check or adds unrelated diff noise → `git restore` that file and demote to out-of-scope before committing the rest.
 - Never force-push. Never amend existing commits.
 
-Record `APPLIED_FIXES` (file:line + one-line summary per fix) for step 7.
+Record `APPLIED_FIXES` (file:line + one-line summary per fix) for step 8.
 
-### 7. REPORT
+### 8. REPORT
 
 **Do not edit the PR body.** The review skill owns body updates at its approval gate; this skill prints a stdout report only.
 
