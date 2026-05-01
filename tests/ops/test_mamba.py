@@ -1,5 +1,6 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
 from tests.test_base import TestBase, allclose_compare
 from tileops.ops.da_cumsum import DaCumsumFwdOp
@@ -28,28 +29,58 @@ def da_cumsum_fwd_ref(
     A: torch.Tensor,
     num_chunks: int,
     chunk_len: int,
-) -> torch.Tensor:
-    """PyTorch reference for da_cumsum_fwd."""
+    dt_bias: torch.Tensor | None = None,
+    dt_softplus: bool = False,
+    dt_min: float = 0.0,
+    dt_max: float = float("inf"),
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """PyTorch reference for da_cumsum_fwd.
+
+    Applies the same bias / softplus / clamp pipeline as the kernel, then
+    computes dt_out and the chunk-local inclusive prefix sum of dA = dt_out * A.
+
+    Returns:
+        dt_out:    (batch, n_heads, num_chunks, chunk_len) float32
+        dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32
+    """
     b, S, h = dt.shape
     Q = chunk_len
     C = num_chunks
-    dt_chunked = dt.float().reshape(b, C, Q, h)
-    dA = dt_chunked * A.float()
-    dA_cumsum = dA.cumsum(dim=2)
-    return dA_cumsum.permute(0, 3, 1, 2).contiguous()
+    dt_val = dt.float()
+    if dt_bias is not None:
+        dt_val = dt_val + dt_bias.float()
+    if dt_softplus:
+        dt_val = F.softplus(dt_val)
+    dt_val = torch.clamp(dt_val, min=dt_min, max=dt_max)
+    dt_chunked = dt_val.reshape(b, C, Q, h)           # (b, C, Q, h)
+    dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
+    dA = dt_chunked * A.float()                        # (b, C, Q, h)
+    dA_cumsum = dA.cumsum(dim=2).permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
+    return dt_out, dA_cumsum
 
 
 class DaCumsumFwdTest(_DaCumsumFwdTestWorkload, TestBase):
-    def ref_program(self, dt, A):
-        return da_cumsum_fwd_ref(dt, A, self.num_chunks, self.chunk_len)
+    def ref_program(self, dt, A, dt_bias):
+        return da_cumsum_fwd_ref(
+            dt, A, self.num_chunks, self.chunk_len,
+            dt_bias=dt_bias if self.has_dt_bias else None,
+            dt_softplus=self.dt_softplus,
+            dt_min=self.dt_min,
+            dt_max=self.dt_max,
+        )
 
 
 @DaCumsumFwdFixture
-def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, tune):
-    test = DaCumsumFwdTest(batch, num_chunks, chunk_len, n_heads)
+def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, tune):
+    test = DaCumsumFwdTest(
+        batch, num_chunks, chunk_len, n_heads,
+        has_dt_bias=has_dt_bias, dt_softplus=dt_softplus,
+    )
     op = DaCumsumFwdOp(
         batch, num_chunks, chunk_len, n_heads,
         seq_len=num_chunks * chunk_len,
+        has_dt_bias=has_dt_bias,
+        dt_softplus=dt_softplus,
         tune=tune,
     )
     inputs = test.gen_inputs()
