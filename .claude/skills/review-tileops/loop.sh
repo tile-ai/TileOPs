@@ -22,7 +22,7 @@ PR="${1:?usage: loop.sh <PR_NUMBER>}"
 # ---------------------------------------------------------------------------
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="tile-ai/TileOPs"
-MAX_ROUNDS=10
+MAX_ROUNDS=15
 POLL_INTERVAL=180
 CODEX_RETRY=3
 REPO_PATH="$(git rev-parse --show-toplevel)"
