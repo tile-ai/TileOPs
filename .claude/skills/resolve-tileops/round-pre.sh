@@ -20,6 +20,7 @@ PR="${1:?usage: round-pre.sh <PR_NUMBER>}"
 [[ "$PR" =~ ^[0-9]+$ ]] || { echo "round-pre: PR must be a positive integer" >&2; exit 1; }
 
 REPO="tile-ai/TileOPs"
+REVIEWER_LOGIN="${RESOLVE_REVIEWER_LOGIN:-Ibuki-wind}"
 REPO_PATH="$(git rev-parse --show-toplevel 2>/dev/null)" \
   || { echo "round-pre: not in a git repo" >&2; exit 1; }
 
@@ -47,22 +48,44 @@ PR_JSON=$(gh pr view "$PR" --repo "$REPO" --json state,headRefOid,isDraft 2>/dev
 PR_STATE=$(echo "$PR_JSON" | jq -r .state)
 HEAD_SHA=$(echo "$PR_JSON" | jq -r .headRefOid)
 
-LATEST_REVIEWER_STATE=$(gh api "repos/$REPO/pulls/$PR/reviews" \
-  --jq '[.[]|select(.user.login=="Ibuki-wind")] | sort_by(.submitted_at) | last | .state // "NONE"')
-LATEST_REVIEW_ID=$(gh api "repos/$REPO/pulls/$PR/reviews" \
-  --jq '[.[]|select(.user.login=="Ibuki-wind")|.id]|max // 0')
-LATEST_REVIEW_COMMENT_ID=$(gh api "repos/$REPO/pulls/$PR/comments" \
-  --jq '[.[]|select(.user.login=="Ibuki-wind")|.id]|max // 0')
+# Reviews + inline comments — paginate so PRs with >1 page don't
+# silently lose the latest IDs / state.
+LATEST_REVIEWER_STATE=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews" \
+  --jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")] | sort_by(.submitted_at) | last | .state // \"NONE\"")
+LATEST_REVIEW_ID=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews" \
+  --jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")|.id]|max // 0")
+LATEST_REVIEW_COMMENT_ID=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/comments" \
+  --jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")|.id]|max // 0")
 
-UNRESOLVED=$(gh api graphql -f query='
-  query($owner:String!,$repo:String!,$pr:Int!){
-    repository(owner:$owner,name:$repo){
-      pullRequest(number:$pr){
-        reviewThreads(first:100){ nodes{ isResolved } }
-      }
-    }
-  }' -F owner=tile-ai -F repo=TileOPs -F pr="$PR" \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length')
+# Unresolved review thread count — paginate via cursor so PRs with
+# >100 threads don't undercount.
+count_unresolved() {
+  local cursor='null' total=0 page page_unresolved has_next
+  while :; do
+    page=$(gh api graphql -f query='
+      query($owner:String!,$repo:String!,$pr:Int!,$after:String){
+        repository(owner:$owner,name:$repo){
+          pullRequest(number:$pr){
+            reviewThreads(first:100, after:$after){
+              nodes{ isResolved }
+              pageInfo{ hasNextPage endCursor }
+            }
+          }
+        }
+      }' -F owner=tile-ai -F repo=TileOPs -F pr="$PR" \
+        ${cursor:+-f after="$cursor"})
+    page_unresolved=$(printf '%s' "$page" \
+      | jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length')
+    total=$((total + page_unresolved))
+    has_next=$(printf '%s' "$page" \
+      | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+    [[ "$has_next" == "true" ]] || break
+    cursor=$(printf '%s' "$page" \
+      | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+  done
+  echo "$total"
+}
+UNRESOLVED=$(count_unresolved)
 
 # Decide action — first match wins. PR_STATE==DRAFT does not stop.
 ACTION=""; MESSAGE=""
@@ -80,14 +103,16 @@ if [[ -z "$ACTION" \
   # Approve + nothing actionable left → exit immediately. The APPROVE
   # review itself doesn't need "processing" — no threads, no inline
   # comments to reply to. Symmetric with review-tileops/loop.sh's
-  # converge condition (state + sha + comment-id stable; no review-id
-  # equality requirement).
+  # converge condition (state + sha + comment-id stable).
   ACTION="terminate-success"
   MESSAGE="PR #$PR converged — all threads resolved, reviewer approved."
 fi
 
-# Idle gate: no new reviewer activity since last processed round.
+# Idle gate: only sleep when there's nothing to do. Unresolved threads
+# (from any source) override idle — the dev should still process them
+# even if the canonical reviewer hasn't posted new activity.
 if [[ -z "$ACTION" \
+      && "$UNRESOLVED" -eq 0 \
       && "$LATEST_REVIEW_ID" == "$LAST_REVIEW_ID_PREV" \
       && "$LATEST_REVIEW_COMMENT_ID" == "$LAST_REVIEW_COMMENT_ID_PREV" ]]; then
   ACTION="idle"
@@ -104,29 +129,50 @@ if [[ "$ACTION" == "continue" ]]; then
   SNAP_PREFIX="$RUN_DIR/rounds/round-$N"
   mkdir -p "$RUN_DIR/rounds"
 
-  gh api "repos/$REPO/pulls/$PR/reviews" \
-    --jq "[.[]|select(.user.login==\"Ibuki-wind\" and .id>$LAST_REVIEW_ID_PREV)|{id,state,body,submitted_at}]" \
+  gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews" \
+    --jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_ID_PREV)|{id,state,body,submitted_at}]" \
     > "$SNAP_PREFIX.new-reviews.json"
 
-  gh api "repos/$REPO/pulls/$PR/comments" \
-    --jq "[.[]|select(.user.login==\"Ibuki-wind\" and .id>$LAST_REVIEW_COMMENT_ID_PREV)|{id,path,line,body,in_reply_to_id,created_at}]" \
+  gh api --paginate --slurp "repos/$REPO/pulls/$PR/comments" \
+    --jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_COMMENT_ID_PREV)|{id,path,line,body,in_reply_to_id,created_at}]" \
     > "$SNAP_PREFIX.new-inline-comments.json"
 
-  gh api graphql -f query='
-    query($owner:String!,$repo:String!,$pr:Int!){
-      repository(owner:$owner,name:$repo){
-        pullRequest(number:$pr){
-          reviewThreads(first:100){
-            nodes{
-              id isResolved
-              comments(first:20){ nodes{ databaseId author{login} body path line } }
+  # Snapshot ALL unresolved threads (paginated) — agent acts on these
+  # regardless of which reviewer raised them.
+  : > "$SNAP_PREFIX.unresolved-threads.json"
+  echo '[' > "$SNAP_PREFIX.unresolved-threads.json"
+  cursor='null'; first_page=1
+  while :; do
+    page=$(gh api graphql -f query='
+      query($owner:String!,$repo:String!,$pr:Int!,$after:String){
+        repository(owner:$owner,name:$repo){
+          pullRequest(number:$pr){
+            reviewThreads(first:100, after:$after){
+              nodes{
+                id isResolved
+                comments(first:100){ nodes{ databaseId author{login} body path line } }
+              }
+              pageInfo{ hasNextPage endCursor }
             }
           }
         }
-      }
-    }' -F owner=tile-ai -F repo=TileOPs -F pr="$PR" \
-    --jq '.data.repository.pullRequest.reviewThreads.nodes|map(select(.isResolved==false))' \
-    > "$SNAP_PREFIX.unresolved-threads.json"
+      }' -F owner=tile-ai -F repo=TileOPs -F pr="$PR" \
+        ${cursor:+-f after="$cursor"})
+    items=$(printf '%s' "$page" \
+      | jq -c '.data.repository.pullRequest.reviewThreads.nodes|map(select(.isResolved==false))[]')
+    if [[ -n "$items" ]]; then
+      while IFS= read -r line; do
+        [[ "$first_page" -eq 1 ]] && first_page=0 || echo ',' >> "$SNAP_PREFIX.unresolved-threads.json"
+        echo -n "$line" >> "$SNAP_PREFIX.unresolved-threads.json"
+      done <<< "$items"
+    fi
+    has_next=$(printf '%s' "$page" \
+      | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+    [[ "$has_next" == "true" ]] || break
+    cursor=$(printf '%s' "$page" \
+      | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+  done
+  echo ']' >> "$SNAP_PREFIX.unresolved-threads.json"
 
   gh pr checks "$PR" --repo "$REPO" --json name,state,conclusion \
     > "$SNAP_PREFIX.ci.json" 2>/dev/null || echo '[]' > "$SNAP_PREFIX.ci.json"
@@ -139,11 +185,16 @@ if [[ "$ACTION" == "continue" ]]; then
   fi
 
   # Persist baseline so round-post.sh can compute deltas without
-  # re-querying.
+  # re-querying. Critically, persist LATEST_REVIEW_ID and
+  # LATEST_REVIEW_COMMENT_ID so round-post advances the watermark to the
+  # PRE-round max — items that arrive mid-round get picked up next round.
   jq -n --arg sha "$HEAD_SHA" \
     --argjson unresolved "$UNRESOLVED" \
     --arg state "$LATEST_REVIEWER_STATE" \
-    '{head_sha:$sha, unresolved_before:$unresolved, reviewer_state_before:$state}' \
+    --argjson rid "$LATEST_REVIEW_ID" \
+    --argjson cid "$LATEST_REVIEW_COMMENT_ID" \
+    '{head_sha:$sha, unresolved_before:$unresolved, reviewer_state_before:$state,
+      latest_review_id:$rid, latest_review_comment_id:$cid}' \
     > "$RUN_DIR/.round-pre.json"
 fi
 

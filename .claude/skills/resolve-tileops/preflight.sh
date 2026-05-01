@@ -16,7 +16,6 @@ PR="${1:?usage: preflight.sh <PR_NUMBER>}"
 [[ "$PR" =~ ^[0-9]+$ ]] || { echo "preflight: PR must be a positive integer" >&2; exit 1; }
 
 REPO="tile-ai/TileOPs"
-SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_PATH="$(git rev-parse --show-toplevel 2>/dev/null)" \
   || { echo "preflight: not in a git repo" >&2; exit 1; }
 
@@ -37,15 +36,15 @@ if [[ -n "$META" ]]; then
 fi
 
 # Round 1 cold start: validate env, resolve TASK_ROOT, create state.
-command -v gh >/dev/null 2>&1 \
-  || { echo "preflight: missing gh" >&2; exit 1; }
+command -v gh >/dev/null 2>&1 || { echo "preflight: missing gh" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "preflight: missing jq" >&2; exit 1; }
 
-UPSTREAM_REMOTE=$(git -C "$REPO_PATH" remote -v \
-  | awk '/tile-ai\/TileOPs(\.git)?[[:space:]]+\(fetch\)/ {print $1; exit}')
-[[ -n "$UPSTREAM_REMOTE" ]] \
+git -C "$REPO_PATH" remote -v \
+  | awk '/tile-ai\/TileOPs(\.git)?[[:space:]]+\(fetch\)/ {found=1; exit} END{exit !found}' \
   || { echo "preflight: no git remote in $REPO_PATH points to tile-ai/TileOPs" >&2; exit 1; }
 
-PR_BODY=$(gh pr view "$PR" --repo "$REPO" --json body --jq .body 2>/dev/null || echo "")
+PR_BODY=$(gh pr view "$PR" --repo "$REPO" --json body --jq .body) \
+  || { echo "preflight: gh pr view failed for PR #$PR (auth? missing?)" >&2; exit 1; }
 ISSUE=$(printf '%s' "$PR_BODY" \
   | grep -oiE '(Closes|Fixes|Resolves)[[:space:]]+#[0-9]+' \
   | head -1 \

@@ -37,26 +37,51 @@ PRE_JSON="$RUN_DIR/.round-pre.json"
 HEAD_SHA_BEFORE=$(jq -r '.head_sha' "$PRE_JSON")
 UNRESOLVED_BEFORE=$(jq -r '.unresolved_before' "$PRE_JSON")
 REVIEWER_STATE_BEFORE=$(jq -r '.reviewer_state_before' "$PRE_JSON")
+# Use the PRE-round watermark when advancing meta. If the reviewer added
+# new comments mid-round (after round-pre snapshotted but before
+# round-post), they'd be lost if we used the post-round max. Reading from
+# the baseline guarantees mid-round feedback is processed next round.
+PRE_LATEST_REVIEW_ID=$(jq -r '.latest_review_id' "$PRE_JSON")
+PRE_LATEST_REVIEW_COMMENT_ID=$(jq -r '.latest_review_comment_id' "$PRE_JSON")
 
 NEW_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
 PUSHED_SHA="none"
 [[ "$NEW_HEAD_SHA" != "$HEAD_SHA_BEFORE" ]] && PUSHED_SHA="$NEW_HEAD_SHA"
 
-NEW_UNRESOLVED=$(gh api graphql -f query='
-  query($owner:String!,$repo:String!,$pr:Int!){
-    repository(owner:$owner,name:$repo){
-      pullRequest(number:$pr){
-        reviewThreads(first:100){ nodes{ isResolved } }
+# Paginate reviewThreads — same rationale as round-pre.sh.
+NEW_UNRESOLVED=0
+cursor='null'
+while :; do
+  page=$(gh api graphql -f query='
+    query($owner:String!,$repo:String!,$pr:Int!,$after:String){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$pr){
+          reviewThreads(first:100, after:$after){
+            nodes{ isResolved }
+            pageInfo{ hasNextPage endCursor }
+          }
+        }
       }
-    }
-  }' -F owner=tile-ai -F repo=TileOPs -F pr="$PR" \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length')
-THREADS_RESOLVED=$(( UNRESOLVED_BEFORE - NEW_UNRESOLVED ))
+    }' -F owner=tile-ai -F repo=TileOPs -F pr="$PR" \
+      ${cursor:+-f after="$cursor"})
+  page_unresolved=$(printf '%s' "$page" \
+    | jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length')
+  NEW_UNRESOLVED=$((NEW_UNRESOLVED + page_unresolved))
+  has_next=$(printf '%s' "$page" \
+    | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+  [[ "$has_next" == "true" ]] || break
+  cursor=$(printf '%s' "$page" \
+    | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+done
 
-LATEST_REVIEW_ID=$(gh api "repos/$REPO/pulls/$PR/reviews" \
-  --jq '[.[]|select(.user.login=="Ibuki-wind")|.id]|max // 0')
-LATEST_REVIEW_COMMENT_ID=$(gh api "repos/$REPO/pulls/$PR/comments" \
-  --jq '[.[]|select(.user.login=="Ibuki-wind")|.id]|max // 0')
+# Clamp at 0 — new threads opened during the round can make the raw
+# delta negative, but reporting "-3 threads_resolved" is misleading.
+THREADS_RESOLVED_RAW=$(( UNRESOLVED_BEFORE - NEW_UNRESOLVED ))
+if (( THREADS_RESOLVED_RAW < 0 )); then
+  THREADS_RESOLVED=0
+else
+  THREADS_RESOLVED=$THREADS_RESOLVED_RAW
+fi
 
 ROUND=$(jq -r '.round' "$META")
 NEXT_ROUND=$((ROUND + 1))
@@ -77,12 +102,13 @@ jq -n --argjson r "$NEXT_ROUND" --arg now "$NOW" \
   > "$RUN_DIR/rounds/round-$N.json"
 
 # Advance meta. last_pushed_sha is sticky: only updated when a push
-# actually happened this round.
+# actually happened this round. Watermarks come from the PRE-round
+# baseline so mid-round reviewer activity is picked up next round.
 PUSHED_FOR_META="$LAST_PUSHED_SHA_PREV"
 [[ "$PUSHED_SHA" != "none" ]] && PUSHED_FOR_META="$PUSHED_SHA"
 jq --argjson r "$NEXT_ROUND" \
-   --argjson rid "$LATEST_REVIEW_ID" \
-   --argjson cid "$LATEST_REVIEW_COMMENT_ID" \
+   --argjson rid "$PRE_LATEST_REVIEW_ID" \
+   --argjson cid "$PRE_LATEST_REVIEW_COMMENT_ID" \
    --arg pushed "$PUSHED_FOR_META" \
   '.round=$r | .last_processed_review_id=$rid
    | .last_processed_review_comment_id=$cid
