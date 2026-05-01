@@ -13,7 +13,8 @@ Invoke bare for a single round: `/resolve-tileops 1072`.
 ## Constants
 
 - `REPO=tile-ai/TileOPs`
-- `RUN_DIR=$REPO_PATH/.foundry/runs/resolve-pr-<N>`
+- `TASK_ROOT=$REPO_PATH/.foundry/runs/{issue-<N> | pr-<PR>}` — task root, shared with the reviewer loop's `$TASK_ROOT/review/`. `issue-<N>` if the PR body has `Closes #N` (also `Fixes`/`Resolves`), else `pr-<PR>`.
+- `RUN_DIR=$TASK_ROOT/resolve` — this loop's per-stage subdirectory.
 - `MAX_ROUNDS=20`
 - `POLL_INTERVAL_S=180` (3 min — same cadence as review-tileops-loop)
 - GitHub: bare `gh` (developer's own identity, NOT `gh-review`).
@@ -34,16 +35,30 @@ if [ -z "$UPSTREAM_REMOTE" ]; then
 fi
 ```
 
-Each worktree owns its own `.foundry/runs/resolve-pr-<N>/`; `cd` into the
-worktree before invoking.
+Each worktree owns its own `$TASK_ROOT/resolve/`; `cd` into the worktree
+before invoking.
 
 ______________________________________________________________________
 
 ## Step 0: Init
 
+Resolve `TASK_ROOT` from the PR body (same convention as review-tileops's
+loop driver) so `resolve` and `review` stages share a task root:
+
 ```bash
 PR=$ARGUMENTS  # must be integer
-RUN_DIR="$REPO_PATH/.foundry/runs/resolve-pr-$PR"
+PR_BODY=$(gh pr view "$PR" --repo "$REPO" --json body --jq .body 2>/dev/null || echo "")
+ISSUE=$(printf '%s' "$PR_BODY" \
+  | grep -oiE '(Closes|Fixes|Resolves)[[:space:]]+#[0-9]+' \
+  | head -1 \
+  | grep -oE '[0-9]+' \
+  || true)
+if [ -n "$ISSUE" ]; then
+  TASK_ROOT="$REPO_PATH/.foundry/runs/issue-$ISSUE"
+else
+  TASK_ROOT="$REPO_PATH/.foundry/runs/pr-$PR"
+fi
+RUN_DIR="$TASK_ROOT/resolve"
 META="$RUN_DIR/meta.json"
 
 if [ ! -f "$META" ]; then
@@ -319,19 +334,24 @@ ______________________________________________________________________
 ## Files written per run
 
 ```
-.foundry/runs/resolve-pr-<N>/
-├── meta.json
-├── policy.md                       # user-editable; applies next round
-├── inbox.md                        # user-editable; consumed each round
-├── inbox-history/round-NN.md       # archived inbox per round
-├── retrospective.md                # written on termination
-└── rounds/
-    ├── round-NN.json               # summary
-    ├── round-NN.new-reviews.json
-    ├── round-NN.new-inline-comments.json
-    ├── round-NN.unresolved-threads.json
-    └── round-NN.ci.json
+.foundry/runs/{issue-<N> | pr-<PR>}/   # task root, shared with reviewer loop
+└── resolve/                            # this loop's stage subdir
+    ├── meta.json
+    ├── policy.md                       # user-editable; applies next round
+    ├── inbox.md                        # user-editable; consumed each round
+    ├── inbox-history/round-NN.md       # archived inbox per round
+    ├── retrospective.md                # written on termination
+    └── rounds/
+        ├── round-NN.json               # summary
+        ├── round-NN.new-reviews.json
+        ├── round-NN.new-inline-comments.json
+        ├── round-NN.unresolved-threads.json
+        └── round-NN.ci.json
 ```
+
+The reviewer loop writes its state to `<task root>/review/`; the two
+stages share the task root so all state for one development task lives
+together.
 
 ## User interaction
 
