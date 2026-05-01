@@ -1,17 +1,17 @@
 ---
 name: resolve-tileops
-description: Per-round driver of stateful Claude-driven review-resolution on a tile-ai/TileOPs PR (developer side). Designed for /loop dynamic mode — re-fires until a terminal action. Assumes preflight.sh has run for this PR (see README.md). State persists in `.foundry/runs/{issue-<N> | pr-<PR>}/resolve/`.
+description: Per-round driver of stateful Claude-driven review-resolution on a tile-ai/TileOPs PR (developer side). Designed for /loop dynamic mode — re-fires until a terminal action. Outer caller must run preflight.sh once before starting the loop. State persists in `.foundry/runs/{issue-<N> | pr-<PR>}/resolve/`.
 ---
 
-## Notes
+## Arguments
 
-- GitHub auth: developer's own `gh` identity (not `gh-review`).
-- Resolution work runs in **this Claude session** — no external subagent.
+| Argument      | Required | Description                      |
+| ------------- | -------- | -------------------------------- |
+| `<PR_NUMBER>` | Yes      | TileOPs PR number (e.g. `1133`). |
+
+Resolution work runs in **this Claude session** — no external subagent.
 
 ## Step 1: Pre-round
-
-Run the pre-round script. It locates state, decides the action, and (on
-`continue`) gathers the round's input snapshots.
 
 ```bash
 PR=$ARGUMENTS
@@ -25,7 +25,7 @@ MESSAGE=$(echo "$PRE" | jq -r .message)
 
 Branch on `ACTION`:
 
-- `terminate-success`, `terminate-diverged`, `terminate-external` —
+- `terminate-success` / `terminate-diverged` / `terminate-external` —
   write retrospective (see below), print `MESSAGE`, **return without
   ScheduleWakeup**.
 - `idle` — print `MESSAGE`, ScheduleWakeup with `delaySeconds=180`,
@@ -67,17 +67,13 @@ Round 2+ rely on session memory.
 - `$SNAP.unresolved-threads.json`
 - `$SNAP.ci.json`
 
-`round-pre.sh` only snapshots reviewer items NEW since the last processed
-round, so round 2+ already sees only delta — no re-action on already-replied
-threads needed.
-
 ## Step 3: Resolve
 
 Apply `procedure.md`. Inbox guidance for this round (if any) overrides
 default behavior where they conflict.
 
-Do NOT post a structured trailer in any PR comment — the loop driver
-detects round effects from GitHub state in Step 4.
+Do NOT post a structured trailer in any PR comment — `round-post.sh`
+detects round effects from GitHub state.
 
 ## Step 4: Post-round
 

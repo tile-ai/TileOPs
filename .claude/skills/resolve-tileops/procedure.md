@@ -18,16 +18,7 @@ Evaluate all feedback on merit, regardless of whether the reviewer is human or b
 
 ## Apply fixes
 
-For each accepted comment:
-
-1. Read the relevant file and understand the context.
-1. Make the minimal fix.
-
-After all fixes:
-
-1. Run pre-commit / linters.
-1. Commit using `[Chore][<scope>] address review feedback` where `<scope>` is extracted from the PR title's `[Type][Scope]` pattern. If the PR title has no scope, omit it: `[Chore] address review feedback`.
-1. Push to the PR branch (use the correct remote for cross-fork PRs).
+For each accepted comment, read the relevant file, understand the context, and make the **minimal** fix. Commit message: `[Chore][<scope>] address review feedback` where `<scope>` comes from the PR title's `[Type][Scope]` pattern (omit `[<scope>]` if the title has none).
 
 ## Reply and resolve threads; optional top-level note
 
@@ -49,8 +40,6 @@ gh api graphql -f query='
   }' -f id="<thread_node_id>"
 ```
 
-Reply formats and hard rules: `.claude/skills/resolve-tileops/criteria.md`.
-
 ### Top-level PR comment (optional)
 
 Skip if every item is covered by an inline reply. Only post when there is something inline can't carry: cross-cutting context, a defer rationale that spans the PR, or a one-line pointer to the fix commit.
@@ -58,8 +47,6 @@ Skip if every item is covered by an inline reply. Only post when there is someth
 ```bash
 gh api "repos/$REPO/issues/$PR/comments" -f body="<top-level note>"
 ```
-
-Format and hard rules: `.claude/skills/resolve-tileops/criteria.md` §Top-level note.
 
 **Deduplicate**: if multiple reviewers (or summary + inline) raise the same point, fix once, reference the same commit in each reply.
 
