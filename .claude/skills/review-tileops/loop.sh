@@ -26,10 +26,14 @@ MAX_ROUNDS=15
 POLL_INTERVAL=180
 CODEX_RETRY=3
 # Stall safety: terminate after this many consecutive idle polls (no new
-# commits / comments). With POLL_INTERVAL=180s, MAX_IDLE=5 ≈ 15min — short
-# enough that a dead resolve-loop counterpart doesn't burn cycles
-# indefinitely, long enough to absorb agent / CI / network slowness.
-MAX_IDLE=5
+# commits / comments). MAX_IDLE * POLL_INTERVAL must comfortably exceed
+# the longest legitimate in-progress counterpart round (codex review on a
+# large PR, or a developer round of edit + test + push). 20 polls * 180s
+# = 60min — wide enough that a single slow but live counterpart round
+# does not trip terminate-stalled, narrow enough that a truly dead
+# counterpart still exits within the hour. Wall-clock cap below caps
+# absolute runaway risk.
+MAX_IDLE=20
 # Belt-and-suspenders: hard wall-clock cap independent of round/idle
 # accounting, in case a logic bug skips both. Far above any realistic PR
 # lifetime (hours), low enough that a runaway is bounded to a day.

@@ -48,7 +48,7 @@ LAST_REVIEW_COMMENT_ID_PREV=$(jq -r '.last_processed_review_comment_id' "$META")
 # continue. Hitting max_idle terminates the loop so a dead counterpart
 # (e.g. review-loop crashed) doesn't leave us polling forever.
 CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
-MAX_IDLE=$(jq -r '.max_idle // 5' "$META")
+MAX_IDLE=$(jq -r '.max_idle // 20' "$META")
 
 PR_JSON=$(gh pr view "$PR" --repo "$REPO" --json state,headRefOid,isDraft 2>/dev/null) \
   || { echo "round-pre: gh pr view failed" >&2; exit 1; }
