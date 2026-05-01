@@ -1,7 +1,7 @@
 ---
 name: New Operator Sub-task
 about: A specific sub-task for implementing a part of a new operator
-title: '[New Op Sub-task] <Operator Name> - <L1/L2/Benchmark>'
+title: '[Feat][Ops] <Operator Name>: <manifest/test/impl/bench scope>'
 labels: sub-task, operator
 assignees: ''
 ---
@@ -16,9 +16,10 @@ Part of #
 
 <!-- Please check the relevant component for this sub-issue -->
 
-- [ ] **L1: Kernel Implementation** (Write TileLang kernel)
-- [ ] **L2: Op Implementation** (Wrapper + Unit Tests + Benchmarks)
-- [ ] **Benchmarks** (Performance Profiling)
+- [ ] **Manifest / Spec** (required for any public Op)
+- [ ] **Kernel / Op Implementation**
+- [ ] **Correctness Tests / Workloads**
+- [ ] **Benchmark / Performance**
 
 ## Description
 
@@ -26,9 +27,20 @@ Part of #
 
 ## Checklist
 
-<!-- Refer to docs/workflow.md and docs/design/testing.md for specific requirements for each layer -->
+<!--
+Refer to:
+- docs/design/manifest.md for manifest fields and validation levels
+- docs/design/ops-design.md for Op/Kernel implementation rules
+- docs/design/testing.md for tests, workloads, and benchmark structure
+- docs/design/roofline.md for roofline authoring and benchmark consumers
+-->
 
-- [ ] Implementation follows **Google Python Style** for code and docstrings.
-- [ ] **(L1 Only)** Kernel verified on unit tests.
-- [ ] **(L2 Only)** Unit tests match PyTorch reference (FP16/BF16).
-- [ ] **(L2 Only)** Benchmarks implemented (Latency/TFLOPS/Bandwidth).
+- [ ] Public Op has a `tileops/manifest/` entry (or updates an existing entry).
+- [ ] Manifest `signature` declares inputs, outputs, params, shape rules, and dtype coverage.
+- [ ] Manifest `workloads` declare benchmark shapes/dtypes; unit-test edge cases are not generated from manifest workloads.
+- [ ] Manifest `roofline` is present and consumable by `op.eval_roofline()`.
+- [ ] Manifest `source` declares kernel, op, test, bench, and `source.kernel_map` when dispatching kernels.
+- [ ] Op constructor, `forward()`, and `default_kernel_map` match the manifest entry.
+- [ ] Tests use an independent reference implementation and cover relevant FP16/BF16 and edge cases.
+- [ ] Benchmarks consume manifest workloads and record at least one non-`tileops` baseline unless explicitly justified.
+- [ ] PR title and commits follow the current `[Feat][Scope]` / `[Perf][Scope]` / `[Fix][Scope]` convention.
