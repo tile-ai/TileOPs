@@ -45,10 +45,13 @@ MAX_ROUNDS=$(jq -r '.max_rounds' "$META")
 LAST_REVIEW_ID_PREV=$(jq -r '.last_processed_review_id' "$META")
 LAST_REVIEW_COMMENT_ID_PREV=$(jq -r '.last_processed_review_comment_id' "$META")
 # Stall safety net. Increment on idle (no progress this round), reset on
-# continue. Hitting max_idle terminates the loop so a dead counterpart
-# (e.g. review-loop crashed) doesn't leave us polling forever.
+# continue. Hitting MAX_IDLE terminates the loop so a dead counterpart
+# (e.g. review-loop crashed) doesn't leave us polling forever. Hardcoded
+# rather than read from meta.json so a state file from an older skill
+# version with a stricter threshold doesn't silently override the
+# current floor.
 CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
-MAX_IDLE=$(jq -r '.max_idle // 20' "$META")
+MAX_IDLE=20
 
 PR_JSON=$(gh pr view "$PR" --repo "$REPO" --json state,headRefOid,isDraft 2>/dev/null) \
   || { echo "round-pre: gh pr view failed" >&2; exit 1; }

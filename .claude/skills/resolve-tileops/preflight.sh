@@ -68,7 +68,7 @@ jq -n --arg pr "$PR" --arg repo "$REPO" '{
   last_processed_review_id:0,
   last_processed_review_comment_id:0,
   last_pushed_sha:null,
-  consecutive_idle:0, max_idle:20
+  consecutive_idle:0
 }' > "$META"
 
 echo "preflight: state initialized for PR #$PR at $META" >&2
