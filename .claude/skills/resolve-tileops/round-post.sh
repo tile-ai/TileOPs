@@ -50,7 +50,7 @@ PUSHED_SHA="none"
 
 # Paginate reviewThreads — same rationale as round-pre.sh.
 NEW_UNRESOLVED=0
-cursor='null'
+cursor=''
 while :; do
   page=$(gh api graphql -f query='
     query($owner:String!,$repo:String!,$pr:Int!,$after:String){

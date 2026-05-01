@@ -60,7 +60,7 @@ LATEST_REVIEW_COMMENT_ID=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/comm
 # Unresolved review thread count — paginate via cursor so PRs with
 # >100 threads don't undercount.
 count_unresolved() {
-  local cursor='null' total=0 page page_unresolved has_next
+  local cursor='' total=0 page page_unresolved has_next
   while :; do
     page=$(gh api graphql -f query='
       query($owner:String!,$repo:String!,$pr:Int!,$after:String){
@@ -99,11 +99,11 @@ fi
 if [[ -z "$ACTION" \
       && "$UNRESOLVED" -eq 0 \
       && "$LATEST_REVIEWER_STATE" == "APPROVED" \
+      && "$LATEST_REVIEW_ID" == "$LAST_REVIEW_ID_PREV" \
       && "$LATEST_REVIEW_COMMENT_ID" == "$LAST_REVIEW_COMMENT_ID_PREV" ]]; then
-  # Approve + nothing actionable left → exit immediately. The APPROVE
-  # review itself doesn't need "processing" — no threads, no inline
-  # comments to reply to. Symmetric with review-tileops/loop.sh's
-  # converge condition (state + sha + comment-id stable).
+  # Approve + everything processed → exit. Watermark equality on both
+  # review-id and comment-id ensures we don't skip a not-yet-processed
+  # APPROVE review body that has no inline comments.
   ACTION="terminate-success"
   MESSAGE="PR #$PR converged — all threads resolved, reviewer approved."
 fi
@@ -141,7 +141,7 @@ if [[ "$ACTION" == "continue" ]]; then
   # regardless of which reviewer raised them.
   : > "$SNAP_PREFIX.unresolved-threads.json"
   echo '[' > "$SNAP_PREFIX.unresolved-threads.json"
-  cursor='null'; first_page=1
+  cursor=''; first_page=1
   while :; do
     page=$(gh api graphql -f query='
       query($owner:String!,$repo:String!,$pr:Int!,$after:String){
