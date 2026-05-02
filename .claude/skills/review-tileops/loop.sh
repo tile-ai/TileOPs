@@ -39,7 +39,15 @@ MAX_IDLE=20
 # lifetime (hours), low enough that a runaway is bounded to a day.
 MAX_WALL_CLOCK_HOURS=24
 LOOP_START_EPOCH=$(date +%s)
-REPO_PATH="$(git rev-parse --show-toplevel)"
+# Anchor state to the main checkout, not cwd. When invoked from a
+# linked worktree (e.g. via foundry pipeline HANDOFF), `--show-toplevel`
+# returns the worktree path; using it would scatter `.foundry/runs/`
+# state across worktrees. The shared `.git`'s parent is the main
+# checkout regardless of which worktree we run from.
+_gcd="$(git rev-parse --git-common-dir)"
+[[ "$_gcd" = /* ]] || _gcd="$(pwd)/$_gcd"
+REPO_PATH="$(cd "$(dirname "$_gcd")" && pwd)"
+unset _gcd
 
 CRITERIA_PATH="$SKILL_DIR/criteria.md"
 PROCEDURE_PATH="$SKILL_DIR/procedure.md"

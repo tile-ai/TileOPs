@@ -23,8 +23,12 @@ command -v jq >/dev/null 2>&1 || { echo "round-pre: missing jq" >&2; exit 1; }
 
 REPO="tile-ai/TileOPs"
 REVIEWER_LOGIN="${RESOLVE_REVIEWER_LOGIN:-Ibuki-wind}"
-REPO_PATH="$(git rev-parse --show-toplevel 2>/dev/null)" \
+# Anchor state lookup to the main checkout (see preflight.sh).
+_gcd="$(git rev-parse --git-common-dir 2>/dev/null)" \
   || { echo "round-pre: not in a git repo" >&2; exit 1; }
+[[ "$_gcd" = /* ]] || _gcd="$(pwd)/$_gcd"
+REPO_PATH="$(cd "$(dirname "$_gcd")" && pwd)"
+unset _gcd
 
 # Locate state. preflight.sh must have created it.
 META=""
