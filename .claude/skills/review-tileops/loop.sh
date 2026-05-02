@@ -43,7 +43,7 @@ LOOP_START_EPOCH=$(date +%s)
 #
 # - REPO_PATH is the *state root* — main checkout. Used for `.foundry/
 #   runs/`, fetches, refs, and managed worktrees so state is shared
-#   across all worktrees of one repo. `git worktree list --porcelain`
+#   across all worktrees of one repo. `git worktree list --porcelain 2>/dev/null`
 #   always lists the main worktree first.
 # - SOURCE_ROOT is the *source/policy root* — the repo that contains
 #   this script. Used for `loading.yaml`, `criteria.md`, `procedure.md`,
@@ -52,7 +52,7 @@ LOOP_START_EPOCH=$(date +%s)
 #   a loop launched from a linked worktree would mix policy files
 #   (criteria/procedure/loading from worktree branch via SKILL_DIR,
 #   checklists from main branch via REPO_PATH).
-REPO_PATH="$(git worktree list --porcelain | head -n 1 | sed 's/^worktree //')" \
+REPO_PATH="$(git worktree list --porcelain 2>/dev/null | head -n 1 | sed 's/^worktree //')" \
   || { echo "loop.sh: not in a git repo" >&2; exit 1; }
 SOURCE_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
 
