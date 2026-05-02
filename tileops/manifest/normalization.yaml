@@ -7,7 +7,7 @@
 RMSNormFwdOp:
   ref_api: "torch.nn.functional.rms_norm"
   family: normalization
-  status: spec-only  # impl __init__ takes (M, N) instead of normalized_shape; align in follow-up PR
+  status: spec-only  # impl ctor takes (N, dim, eps=1e-6) instead of normalized_shape/eps=None; align in follow-up PR
 
   signature:
     inputs:
