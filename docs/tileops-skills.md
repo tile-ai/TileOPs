@@ -27,13 +27,13 @@ Orchestrators are the day-to-day entry points. Atomics are their sub-skills — 
 | Patch `kernel_map` or `static_dims` on an existing manifest entry  | `/fix-manifest <op_name>`                  |
 | Scaffold a fresh op file, bypassing the orchestrator               | `/scaffold-op <op_name>`                   |
 | Debug one atomic phase by hand                                     | `/test-op` · `/implement-op` · `/bench-op` |
-| Run the review loop on a TileOPs PR until APPROVE                  | `/review-tileops <PR>`                     |
-| Resolve reviewer feedback on a TileOPs PR (per-round driver)       | `/resolve-tileops <PR>`                    |
-| Generate follow-up issues for deferred work after a PR             | `/follow-up <PR>`                          |
+| Run the review loop on a TileOPs PR until APPROVE                  | `/review-tileops <PR_NUMBER>`              |
+| Resolve reviewer feedback on a TileOPs PR (per-round driver)       | `/resolve-tileops <PR_NUMBER>`             |
+| Generate follow-up issues for deferred work after a PR             | `/follow-up <PR_NUMBER>`                   |
 
 ## Skills in detail
 
-Each block names the skill, its one-line purpose, clear **use when** / **don't use when** guidance, and a link to the authoritative `SKILL.md`. Skills are grouped by scope: per-op, per-op-family, manifest, and workflow.
+Skills are grouped by scope: per-op, per-op-family, manifest, and workflow. Op-, family-, and manifest-scoped skills are documented as full blocks — each block names the skill, its one-line purpose, clear **use when** / **don't use when** guidance, and a link to the authoritative `SKILL.md`. Workflow skills are documented as a summary table at the end of this section, since their detailed contracts are PR-loop oriented and live in each `SKILL.md`.
 
 ### per-op
 
@@ -115,7 +115,7 @@ Surgical patch of an existing manifest entry for fields **derived from on-disk o
 
 ### workflow
 
-Workflow skills operate on PRs and sessions, not on ops. They never write `tileops/manifest/` outside the standard manifest skills (see the [trust-model table](#trust-model--who-may-write-what)). See each skill's contract for its full write scope.
+Workflow skills operate on PRs and sessions, not on ops. They may edit in-scope PR / session files (code, tests, docs, follow-up issue drafts) as part of their loop. The only manifest-write reservation is that `tileops/manifest/` itself is written by the dedicated manifest skills (`add-manifest`, `fix-manifest`, `align-op@FLIP_STATUS`) — see the [trust-model table](#trust-model--who-may-write-what). See each workflow skill's contract for its full write scope.
 
 | Skill               | What it does                                                                               | Contract                                               |
 | ------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
@@ -164,7 +164,7 @@ align-op <op_name>                       ← per-op orchestrator
 
 ## Maintenance
 
-- **Per-skill blocks above** mirror each skill's `description` frontmatter. Edit the frontmatter first; update the matching block here to stay consistent.
+- **Per-skill blocks above** (op / family / manifest scopes) mirror each skill's `description` frontmatter. Edit the frontmatter first; update the matching block here to stay consistent. The workflow summary table mirrors the same frontmatter at row granularity — keep its "What it does" column in sync.
 - **At-a-glance matrix, intent table, use/don't-use rules, composition diagram, trust-model table**: hand-maintained. Add entries when a new skill lands; remove when one is retired.
-- **Authoritative skill list**: this guide covers every skill in `.claude/skills/`. Each skill must appear in the at-a-glance matrix under its scope row (per op / per op family / manifest / workflow) and have a block in "Skills in detail" under the matching H3 category.
+- **Authoritative skill list**: this guide covers every skill in `.claude/skills/`. Each skill must appear in the at-a-glance matrix under its scope row (per op / per op family / manifest / workflow) and be documented in "Skills in detail" under the matching H3 category — op / family / manifest skills as a full block, workflow skills as a row in the workflow summary table.
 - **Lint automation**: none at the current scale. Revisit if drift becomes observable or the count passes ~15.

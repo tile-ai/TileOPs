@@ -6,7 +6,7 @@
 # matches contributes its checklists. Multi-match across the two tokens
 # unions; no-match in either contributes nothing. If both miss, the
 # review runs without any domain-specific checklist (the external
-# reviewer applies its general judgment).
+# reviewer applies their general judgment).
 #
 # Add a new entry here when a new type or scope earns a dedicated
 # checklist; do NOT add path-based triggers — keep title-driven matching
