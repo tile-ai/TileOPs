@@ -54,7 +54,7 @@ RMSNormFwdOp:
 LayerNormFwdOp:
   ref_api: "torch.nn.functional.layer_norm"
   family: normalization
-  status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
+  status: spec-only  # impl __init__ takes M in addition to N; align in follow-up PR
 
   signature:
     inputs:
@@ -103,7 +103,7 @@ LayerNormFwdOp:
 AdaLayerNormFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
+  status: spec-only  # impl __init__ takes M in addition to N; align in follow-up PR
 
   signature:
     inputs:
@@ -148,7 +148,7 @@ AdaLayerNormFwdOp:
 AdaLayerNormZeroFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
+  status: spec-only  # impl __init__ takes M in addition to N; align in follow-up PR
 
   signature:
     inputs:
@@ -195,7 +195,7 @@ AdaLayerNormZeroFwdOp:
 FusedAddLayerNormFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
+  status: spec-only  # impl __init__ takes M in addition to N; align in follow-up PR
 
   signature:
     inputs:
@@ -245,7 +245,7 @@ FusedAddLayerNormFwdOp:
 FusedAddRMSNormFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only  # impl __init__ takes M in addition to N; align with static_dims in follow-up PR
+  status: spec-only  # impl __init__ takes M in addition to N; align in follow-up PR
 
   signature:
     inputs:
@@ -455,7 +455,7 @@ GroupNormFwdOp:
 InstanceNormFwdOp:
   ref_api: "torch.nn.functional.instance_norm"
   family: normalization
-  status: spec-only  # impl __init__ takes N and spatial in addition to C; align with static_dims in follow-up PR
+  status: spec-only  # impl __init__ takes N and spatial in addition to C; align in follow-up PR
 
   signature:
     inputs:
