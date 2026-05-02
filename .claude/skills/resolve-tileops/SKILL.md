@@ -1,6 +1,6 @@
 ---
 name: resolve-tileops
-description: Per-round driver of stateful Claude-driven review-resolution on a tile-ai/TileOPs PR (developer side). Designed for /loop dynamic mode — re-fires until a terminal action. Outer caller must run preflight.sh once before starting the loop. State persists in `.foundry/runs/{issue-<N> | pr-<PR>}/resolve/`.
+description: Per-round driver of stateful agent-driven review-resolution on a tile-ai/TileOPs PR (developer side). Designed for /loop dynamic mode — re-fires until a terminal action. Outer caller must run preflight.sh once before starting the loop. State persists in `.foundry/runs/{issue-<N> | pr-<PR>}/resolve/`.
 ---
 
 ## Arguments
@@ -9,7 +9,7 @@ description: Per-round driver of stateful Claude-driven review-resolution on a t
 | ------------- | -------- | -------------------------------- |
 | `<PR_NUMBER>` | Yes      | TileOPs PR number (e.g. `1133`). |
 
-Resolution work runs in **this Claude session** — no external subagent.
+Resolution work runs in **this agent session** — no external subagent.
 
 ## Step 1: Pre-round
 

@@ -5,8 +5,8 @@
 # review checks BOTH bracket tokens against `match` below; any token that
 # matches contributes its checklists. Multi-match across the two tokens
 # unions; no-match in either contributes nothing. If both miss, the
-# review runs without any domain-specific checklist (Codex applies its
-# general judgment).
+# review runs without any domain-specific checklist (the reviewer
+# applies general judgment).
 #
 # Add a new entry here when a new type or scope earns a dedicated
 # checklist; do NOT add path-based triggers — keep title-driven matching
