@@ -23,7 +23,8 @@ command -v jq >/dev/null 2>&1 || { echo "round-pre: missing jq" >&2; exit 1; }
 
 REPO="tile-ai/TileOPs"
 REVIEWER_LOGIN="${RESOLVE_REVIEWER_LOGIN:-Ibuki-wind}"
-REPO_PATH="$(git rev-parse --show-toplevel 2>/dev/null)" \
+# Anchor state lookup to the main checkout (see preflight.sh).
+REPO_PATH="$(git worktree list --porcelain 2>/dev/null | head -n 1 | sed 's/^worktree //')" \
   || { echo "round-pre: not in a git repo" >&2; exit 1; }
 
 # Locate state. preflight.sh must have created it.
