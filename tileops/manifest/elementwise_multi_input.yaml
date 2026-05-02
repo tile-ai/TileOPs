@@ -13,7 +13,7 @@ WhereFwdOp:
   # constrains them to ``same_as(input)``; once the kernel grows an input
   # cast path, relax ``other`` to the full float union and document the
   # promotion contract here.
-  status: implemented
+  status: spec-only
 
   signature:
     inputs:

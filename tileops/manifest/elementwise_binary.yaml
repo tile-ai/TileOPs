@@ -60,7 +60,7 @@ MaskedFillFwdOp:
   # value form lands as MaskedFillScalarFwdOp below per the
   # "No Optional[Tensor]" manifest rule for variant splits.
   family: elementwise
-  status: implemented
+  status: spec-only
 
   signature:
     inputs:
@@ -100,7 +100,7 @@ MaskedFillScalarFwdOp:
   # Per the "No Optional[Tensor]" manifest rule, this is split from the
   # 0-dim-Tensor-value primary entry above.
   family: elementwise
-  status: implemented
+  status: spec-only
   variant_of: MaskedFillFwdOp
 
   signature:
