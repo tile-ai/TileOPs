@@ -39,20 +39,27 @@ MAX_IDLE=20
 # lifetime (hours), low enough that a runaway is bounded to a day.
 MAX_WALL_CLOCK_HOURS=24
 LOOP_START_EPOCH=$(date +%s)
-# Anchor state to the main checkout, not cwd. When invoked from a
-# linked worktree (e.g. via foundry pipeline HANDOFF), `--show-toplevel`
-# returns the worktree path; using it would scatter `.foundry/runs/`
-# state across worktrees. The shared `.git`'s parent is the main
-# checkout regardless of which worktree we run from.
-_gcd="$(git rev-parse --git-common-dir)"
-[[ "$_gcd" = /* ]] || _gcd="$(pwd)/$_gcd"
-REPO_PATH="$(cd "$(dirname "$_gcd")" && pwd)"
-unset _gcd
+# State root vs source root are distinct (Ibuki review on PR #1139):
+#
+# - REPO_PATH is the *state root* — main checkout. Used for `.foundry/
+#   runs/`, fetches, refs, and managed worktrees so state is shared
+#   across all worktrees of one repo. `git worktree list --porcelain`
+#   always lists the main worktree first.
+# - SOURCE_ROOT is the *source/policy root* — the repo that contains
+#   this script. Used for `loading.yaml`, `criteria.md`, `procedure.md`,
+#   and `.claude/review-checklists/` so the loop reads policy files
+#   from the same branch that ships this script. Without the split,
+#   a loop launched from a linked worktree would mix policy files
+#   (criteria/procedure/loading from worktree branch via SKILL_DIR,
+#   checklists from main branch via REPO_PATH).
+REPO_PATH="$(git worktree list --porcelain | head -n 1 | sed 's/^worktree //')" \
+  || { echo "loop.sh: not in a git repo" >&2; exit 1; }
+SOURCE_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
 
 CRITERIA_PATH="$SKILL_DIR/criteria.md"
 PROCEDURE_PATH="$SKILL_DIR/procedure.md"
 LOADING_YAML="$SKILL_DIR/loading.yaml"
-CHECKLISTS_DIR="$REPO_PATH/.claude/review-checklists"
+CHECKLISTS_DIR="$SOURCE_ROOT/.claude/review-checklists"
 
 # Discover the local remote that points at tile-ai/TileOPs. Different clones
 # use different remote names (origin in clones, upstream in forks, anything

@@ -23,13 +23,11 @@ command -v jq >/dev/null 2>&1 || { echo "preflight: missing jq" >&2; exit 1; }
 # Anchor state to the main checkout's `.foundry/runs/`, not cwd. When
 # invoked from a linked worktree (e.g. via foundry pipeline HANDOFF),
 # `--show-toplevel` returns the worktree path; using it would scatter
-# resolve state across worktrees. The shared `.git`'s parent is the
+# resolve state across worktrees. `git worktree list --porcelain`
+# always emits the main worktree first, so its leading entry is the
 # main checkout regardless of which worktree we run from.
-_gcd="$(git rev-parse --git-common-dir 2>/dev/null)" \
+REPO_PATH="$(git worktree list --porcelain | head -n 1 | sed 's/^worktree //')" \
   || { echo "preflight: not in a git repo" >&2; exit 1; }
-[[ "$_gcd" = /* ]] || _gcd="$(pwd)/$_gcd"
-REPO_PATH="$(cd "$(dirname "$_gcd")" && pwd)"
-unset _gcd
 
 # Round 2+ fast path: an existing run dir's meta.json already pins this PR.
 META=""
