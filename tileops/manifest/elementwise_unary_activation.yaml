@@ -459,8 +459,11 @@ ClampScalarFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # At most one max + one min per element
-    flops: "2 * N"
+    # min(max(x, lo), hi): 2 compares + 2 selects per element = 4 fp ops.
+    # When only one bound is provided (min=None or max=None) the actual
+    # cost halves to 2*N, but 4*N is the upper bound used as the roofline
+    # figure (matches HardtanhFwdOp's two-sided clamp convention).
+    flops: "4 * N"
     bytes: "2 * N * elem_bytes"
 
   source:
