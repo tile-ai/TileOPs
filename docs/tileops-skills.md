@@ -17,19 +17,20 @@ Orchestrators are the day-to-day entry points for op work. Atomics are their sub
 
 ## What do I want to do?
 
-| Intent                                                                | Run                                        |
-| --------------------------------------------------------------------- | ------------------------------------------ |
-| Align / add a single op to its manifest entry (the common case)       | `/align-op <op_name>`                      |
-| Find out which case an op is in, without touching anything            | `/align-op <op_name> --classify-only`      |
-| Migrate every spec-only op in a whole family (historical backlog)     | `/align-family <family>`                   |
-| Read-only audit of a family's spec gaps                               | `/audit-family <family>`                   |
-| Generate / re-align a manifest entry from a reference-API docs URL    | `/add-manifest <op_name> <ref_url>`        |
-| Patch `kernel_map` or `static_dims` on an existing manifest entry     | `/fix-manifest <op_name>`                  |
-| Scaffold a fresh op file, bypassing the orchestrator                  | `/scaffold-op <op_name>`                   |
-| Debug one atomic phase by hand                                        | `/test-op` · `/implement-op` · `/bench-op` |
-| Review a TileOPs PR (single-shot or autonomous loop)                  | `/review-tileops <PR>`                     |
-| Resolve reviewer feedback on a TileOPs PR (per-round driver)          | `/resolve-tileops <PR>`                    |
-| Generate follow-up issues for a PR (using current session as context) | `/follow-up <PR>`                          |
+| Intent                                                                | Run                                               |
+| --------------------------------------------------------------------- | ------------------------------------------------- |
+| Align / add a single op to its manifest entry (the common case)       | `/align-op <op_name>`                             |
+| Find out which case an op is in, without touching anything            | `/align-op <op_name> --classify-only`             |
+| Migrate every spec-only op in a whole family (historical backlog)     | `/align-family <family>`                          |
+| Read-only audit of a family's spec gaps                               | `/audit-family <family>`                          |
+| Generate / re-align a manifest entry from a reference-API docs URL    | `/add-manifest <op_name> <ref_url>`               |
+| Patch `kernel_map` or `static_dims` on an existing manifest entry     | `/fix-manifest <op_name>`                         |
+| Scaffold a fresh op file, bypassing the orchestrator                  | `/scaffold-op <op_name>`                          |
+| Debug one atomic phase by hand                                        | `/test-op` · `/implement-op` · `/bench-op`        |
+| Review a TileOPs PR (single-shot)                                     | `/review-tileops <PR>`                            |
+| Review a TileOPs PR (autonomous loop until APPROVE)                   | `bash .claude/skills/review-tileops/loop.sh <PR>` |
+| Resolve reviewer feedback on a TileOPs PR (per-round driver)          | `/resolve-tileops <PR>`                           |
+| Generate follow-up issues for a PR (using current session as context) | `/follow-up <PR>`                                 |
 
 ## Skills in detail
 
@@ -132,7 +133,7 @@ align-op <op_name>                       ← per-op orchestrator
     └─ [orchestrator] REPORT
 ```
 
-`align-family`'s per-op loop is a single `align-op` invocation — the family orchestrator does not call `test-op` / `implement-op` / `bench-op` directly, and it never writes the manifest. Among the op- and family-scoped skills, `align-op`'s `FLIP_STATUS` is the only manifest writer (and writes only the `status` field). Manifest-scoped skills (`add-manifest`, `fix-manifest`) write disjoint slices — see the trust-model table below. Workflow skills never write `tileops/manifest/` regardless of what files the PR diff includes (manifest changes are reserved for the manifest skills above); `resolve-tileops` and `follow-up` may commit fixes to other files (op / kernel / tests / docs) on the PR branch when triaging review comments. Their primary surface remains PR review state, session retrospectives, and follow-up issues.
+`align-family`'s per-op loop is a single `align-op` invocation — the family orchestrator does not call `test-op` / `implement-op` / `bench-op` directly, and it never writes the manifest. Among the op- and family-scoped skills, `align-op`'s `FLIP_STATUS` is the only manifest writer (and writes only the `status` field). Manifest-scoped skills (`add-manifest`, `fix-manifest`) write disjoint slices — see the trust-model table below. By convention, workflow skills do not write `tileops/manifest/` — manifest changes are reserved for the manifest skills above and are enforced at the project-rule level (see `.claude/rules/manifest-trust-model.md`), not by the workflow skill contracts themselves; `resolve-tileops` and `follow-up` may commit fixes to other files (op / kernel / tests / docs) on the PR branch when triaging review comments. Their primary surface remains PR review state, session retrospectives, and follow-up issues.
 
 ## Trust model — who may write what
 
