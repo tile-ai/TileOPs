@@ -13,6 +13,9 @@ WhereFwdOp:
   # constrains them to ``same_as(input)``; once the kernel grows an input
   # cast path, relax ``other`` to the full float union and document the
   # promotion contract here.
+  # impl accepts float8_e4m3fn / float8_e5m2 dtypes that are not in the
+  # PyTorch public API for torch.where; align by trimming impl in a
+  # follow-up PR (manifest is authoritative).
   status: spec-only
 
   signature:
@@ -69,11 +72,16 @@ LerpTensorFwdOp:
   workloads: []
 
   roofline:
+    # Spec-only — assumes no broadcast (input/end/weight same shape).
+    # When impl lands, switch to func-mode for the broadcast case
+    # (broadcast_shapes is not a vars-layer builtin per
+    # docs/design/roofline.md §4.4.4).
     vars:
-      N: "product(broadcast_shapes(input.shape, end.shape, weight.shape))"
+      N: "product(input.shape)"
     # sub + mul + add per element
     flops: "3 * N"
-    bytes: "(product(input.shape) + product(end.shape) + product(weight.shape) + N) * elem_bytes"
+    # 3 reads + 1 write per element
+    bytes: "4 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
