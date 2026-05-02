@@ -400,7 +400,7 @@ ClampFwdOp:
   # single-bound min-only form, and the single-bound max-only form each
   # land as their own variant_of entries below.
   family: elementwise
-  status: implemented
+  status: spec-only
 
   signature:
     inputs:
@@ -438,7 +438,7 @@ ClampScalarFwdOp:
   # with Number (or None) bounds. Per the "No Optional[Tensor]" manifest
   # rule, this is split from the Tensor-bound primary entry above.
   family: elementwise
-  status: implemented
+  status: spec-only
   variant_of: ClampFwdOp
 
   signature:
@@ -480,7 +480,7 @@ ClampMinFwdOp:
   # Single-bound Tensor variant: torch.clamp_min(input, min: Tensor) —
   # equivalent to torch.clamp with only the lower bound provided.
   family: elementwise
-  status: implemented
+  status: spec-only
   variant_of: ClampFwdOp
 
   signature:
@@ -515,7 +515,7 @@ ClampMaxFwdOp:
   # Single-bound Tensor variant: torch.clamp_max(input, max: Tensor) —
   # equivalent to torch.clamp with only the upper bound provided.
   family: elementwise
-  status: implemented
+  status: spec-only
   variant_of: ClampFwdOp
 
   signature:
