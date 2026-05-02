@@ -35,7 +35,7 @@ Orchestrators are the day-to-day entry points for op work. Atomics are their sub
 
 Each block names the skill, its one-line purpose, clear use-when / don't-use-when guidance, and a link to the authoritative `SKILL.md`. Op-, family-, and manifest-scoped skills get full per-block detail. Workflow skills are summarized in a single table at the end of this section; their per-block detail lives in their own `SKILL.md`.
 
-### per op
+### per-op
 
 **align-op** — per-op orchestrator. Brings a single op into alignment with its manifest entry. Classifies into one of three cases and dispatches internally; runs the shared downstream (test → bench → validate → flip status → report).
 
@@ -67,7 +67,7 @@ Each block names the skill, its one-line purpose, clear use-when / don't-use-whe
 - **Use when.** Called by orchestrators.
 - **Contract:** [SKILL.md](../.claude/skills/bench-op/SKILL.md)
 
-### per op family
+### per-op-family
 
 **align-family** — per-op-family orchestrator. Drives the historical migration of an entire op family. Audits, delegates each per-op alignment to `align-op`, then handles family-scoped concerns: cross-op cleanup (dual-path removal) and PR creation. The family orchestrator never calls `test-op` / `implement-op` / `bench-op` directly and never writes `tileops/manifest/`.
 
