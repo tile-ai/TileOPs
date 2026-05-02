@@ -16,11 +16,11 @@ ExpFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -28,9 +28,9 @@ ExpFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -46,11 +46,11 @@ LogFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -58,9 +58,9 @@ LogFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -76,11 +76,11 @@ SqrtFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -88,9 +88,9 @@ SqrtFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -106,11 +106,11 @@ RsqrtFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -118,9 +118,9 @@ RsqrtFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -136,11 +136,11 @@ AbsFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -148,9 +148,9 @@ AbsFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -166,11 +166,11 @@ NegFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -178,9 +178,9 @@ NegFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -192,15 +192,22 @@ NegFwdOp:
 ReciprocalFwdOp:
   ref_api: "torch.reciprocal"
   family: elementwise
+  # PyTorch's torch.reciprocal supports integral inputs and automatically
+  # promotes them to the default scalar type (typically float32). The dtype
+  # union below lists every accepted input dtype per the public docs; the
+  # output dtype expression cannot encode conditional promotion, so it is
+  # kept as same_as(input) for the floating cases. Integral-input promotion
+  # is a known modeling gap tracked separately and does not change the
+  # accepted-input contract documented here.
   status: spec-only
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -208,9 +215,9 @@ ReciprocalFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -226,11 +233,11 @@ SignFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -238,10 +245,10 @@ SignFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
+      N: "product(input.shape)"
     # 2 comparisons per element (sign uses two compares + selects)
-    flops: "2 * N_total"
-    bytes: "2 * N_total * elem_bytes"
+    flops: "2 * N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -257,11 +264,11 @@ SinFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -269,9 +276,9 @@ SinFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -287,11 +294,11 @@ CosFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -299,9 +306,9 @@ CosFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -317,11 +324,11 @@ FloorFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -329,9 +336,9 @@ FloorFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -347,11 +354,11 @@ CeilFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -359,9 +366,9 @@ CeilFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -377,13 +384,13 @@ RoundFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     params:
       decimals: {type: int, default: 0}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -391,9 +398,9 @@ RoundFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -409,11 +416,11 @@ TruncFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -421,9 +428,9 @@ TruncFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -439,11 +446,11 @@ ErfFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -451,9 +458,9 @@ ErfFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -469,11 +476,11 @@ Log1pFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -481,10 +488,10 @@ Log1pFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
+      N: "product(input.shape)"
     # log(1 + x): 1 add + 1 log
-    flops: "2 * N_total"
-    bytes: "2 * N_total * elem_bytes"
+    flops: "2 * N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -500,11 +507,11 @@ Expm1FwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -512,10 +519,10 @@ Expm1FwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
+      N: "product(input.shape)"
     # exp(x) - 1: 1 exp + 1 sub
-    flops: "2 * N_total"
-    bytes: "2 * N_total * elem_bytes"
+    flops: "2 * N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -531,11 +538,11 @@ SigmoidFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -543,10 +550,10 @@ SigmoidFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
+      N: "product(input.shape)"
     # sigmoid(x) = 1 / (1 + exp(-x)): ~4 ops/elem
-    flops: "4 * N_total"
-    bytes: "2 * N_total * elem_bytes"
+    flops: "4 * N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -562,11 +569,11 @@ TanhFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -574,10 +581,10 @@ TanhFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    # tanh(x) = 2 * sigmoid(2x) - 1: ~5 ops/elem (1 mul for 2x + 4 sigmoid ops)
-    flops: "5 * N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    # tanh(x) = 2 * sigmoid(2x) - 1: ~5 ops/elem
+    flops: "5 * N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -593,11 +600,11 @@ LogicalNotFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [bool, float16, float32], label: "elementwise-16M"}
@@ -605,10 +612,10 @@ LogicalNotFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    # Read x (elem_bytes) + write y (1 byte for bool)
-    bytes: "N_total * elem_bytes + N_total"
+      N: "product(input.shape)"
+    flops: "N"
+    # Read input (elem_bytes) + write output (1 byte for bool)
+    bytes: "N * elem_bytes + N"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -624,11 +631,11 @@ BitwiseNotFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [int32, int64], label: "elementwise-16M"}
@@ -636,9 +643,9 @@ BitwiseNotFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    bytes: "2 * N_total * elem_bytes"
+      N: "product(input.shape)"
+    flops: "N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -654,11 +661,11 @@ IsnanFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -666,10 +673,10 @@ IsnanFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    # Read x (elem_bytes) + write y (1 byte for bool)
-    bytes: "N_total * elem_bytes + N_total"
+      N: "product(input.shape)"
+    flops: "N"
+    # Read input (elem_bytes) + write output (1 byte for bool)
+    bytes: "N * elem_bytes + N"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -685,11 +692,11 @@ IsinfFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -697,10 +704,10 @@ IsinfFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    # Read x (elem_bytes) + write y (1 byte for bool)
-    bytes: "N_total * elem_bytes + N_total"
+      N: "product(input.shape)"
+    flops: "N"
+    # Read input (elem_bytes) + write output (1 byte for bool)
+    bytes: "N * elem_bytes + N"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -716,11 +723,11 @@ IsfiniteFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
-      y: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "y.shape == x.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -728,10 +735,10 @@ IsfiniteFwdOp:
 
   roofline:
     vars:
-      N_total: "product(x.shape)"
-    flops: "N_total"
-    # Read x (elem_bytes) + write y (1 byte for bool)
-    bytes: "N_total * elem_bytes + N_total"
+      N: "product(input.shape)"
+    flops: "N"
+    # Read input (elem_bytes) + write output (1 byte for bool)
+    bytes: "N * elem_bytes + N"
 
   source:
     kernel: tileops/kernels/elementwise.py
