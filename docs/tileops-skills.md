@@ -69,13 +69,13 @@ Each block names the skill, its one-line purpose, clear use-when / don't-use-whe
 
 ### per op family
 
-**align-family** — per-family orchestrator. Drives the historical migration of an entire op family. Audits, delegates each per-op alignment to `align-op`, then handles family-scoped concerns: cross-op cleanup (dual-path removal) and PR creation. The family orchestrator never calls `test-op` / `implement-op` / `bench-op` directly and never writes `tileops/manifest/`.
+**align-family** — per-op-family orchestrator. Drives the historical migration of an entire op family. Audits, delegates each per-op alignment to `align-op`, then handles family-scoped concerns: cross-op cleanup (dual-path removal) and PR creation. The family orchestrator never calls `test-op` / `implement-op` / `bench-op` directly and never writes `tileops/manifest/`.
 
 - Use when. You have a whole family of spec-only ops to migrate.
 - Don't use when. Only one op needs attention — use `align-op`.
 - Contract: [SKILL.md](../.claude/skills/align-family/SKILL.md)
 
-**audit-family** — per-family atomic. Compares each op's code signature against its manifest spec, classifies gaps (`ready` / `semantic_gap` / `blocked`), writes `.foundry/migrations/<family>.json`.
+**audit-family** — per-op-family atomic. Compares each op's code signature against its manifest spec, classifies gaps (`ready` / `semantic_gap` / `blocked`), writes `.foundry/migrations/<family>.json`.
 
 - Use when. You want read-only inspection of a family's current conformance. Also called internally by `align-family`.
 - Contract: [SKILL.md](../.claude/skills/audit-family/SKILL.md)
@@ -110,7 +110,7 @@ Workflow skills operate on PRs and sessions, not on ops. They are concise on thi
 How orchestrators delegate. Note that orchestrators may delegate to other orchestrators (e.g., `align-family` → `align-op`) as well as to atomic skills.
 
 ```text
-align-family <family>                    ← per-family orchestrator
+align-family <family>                    ← per-op-family orchestrator
 ├─ audit-family
 ├─ per op: align-op <op_name>            ← full per-op pipeline delegated
 └─ [orchestrator] CLEANUP_GATE + CLEANUP + CREATE_PR
@@ -132,7 +132,7 @@ align-op <op_name>                       ← per-op orchestrator
     └─ [orchestrator] REPORT
 ```
 
-`align-family`'s per-op loop is a single `align-op` invocation — the family orchestrator does not call `test-op` / `implement-op` / `bench-op` directly, and it never writes the manifest. Among the op- and family-scoped skills, `align-op`'s `FLIP_STATUS` is the only manifest writer (and writes only the `status` field). Manifest-scoped skills (`add-manifest`, `fix-manifest`) write disjoint slices — see the trust-model table below. Workflow skills do not write op / kernel / manifest sources; they operate on PR review state, session retrospectives, and follow-up issues.
+`align-family`'s per-op loop is a single `align-op` invocation — the family orchestrator does not call `test-op` / `implement-op` / `bench-op` directly, and it never writes the manifest. Among the op- and family-scoped skills, `align-op`'s `FLIP_STATUS` is the only manifest writer (and writes only the `status` field). Manifest-scoped skills (`add-manifest`, `fix-manifest`) write disjoint slices — see the trust-model table below. Workflow skills never write `tileops/manifest/` (which is reserved for the manifest skills above), but `follow-up` may commit applied-fix patches to other files (op / kernel / tests / docs) on the PR branch when triaging review comments. Their primary surface remains PR review state, session retrospectives, and follow-up issues.
 
 ## Trust model — who may write what
 
