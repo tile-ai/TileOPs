@@ -95,6 +95,10 @@ Reduce to **max 3 issues**:
 
 **`--nightshift` mode**: skip the candidate presentation and the `Actions: confirm all / drop by number / edit / move <item> to out-of-scope` interaction entirely. Treat every candidate (and every in-scope suggestion) as confirmed — equivalent to the user typing `confirm all` — and proceed straight to Step 6. The auto-accept branch is conditional on the flag; default-mode behavior is unchanged when the flag is absent.
 
+#### Default mode (no `--nightshift`)
+
+The presentation template below applies only to default mode. Render it to stdout and wait on the `Actions:` line.
+
 ```
 Follow-up candidates from PR #<number>: <title>
 ──────────────────────────────────────────────────
@@ -118,6 +122,10 @@ Out-of-scope suggestions (deferred — printed in step 8, not committed):
 Actions: confirm all / drop by number / edit / move <item> to out-of-scope
 ```
 
+#### `--nightshift` mode (auto-accept)
+
+Do not render the template above. Auto-accept all candidates and proceed directly to Step 6.
+
 ### 6. CREATE
 
 Ensure label exists:
@@ -127,26 +135,21 @@ gh label list --search "follow-up" --json name --jq '.[].name' | grep -qx "follo
   || gh label create "follow-up" --description "Generated from dev session introspection" --color "c5def5"
 ```
 
+**Nightshift label guard** — only when `--nightshift` was passed. The `nightshift` label is human-curated in the canonical setup (specific color and description); do not auto-create it with arbitrary metadata. Instead, fail fast with a clear error if it is missing:
+
+```bash
+# Only when --nightshift was passed:
+gh label list --search "nightshift" --json name --jq '.[].name' | grep -qx "nightshift" \
+  || { echo "nightshift label missing in $OWNER_REPO — see foundry nightshift docs" >&2; exit 1; }
+```
+
+If `--nightshift` was passed and the `nightshift` label does not exist, terminate with: `nightshift label missing in $OWNER_REPO — see foundry nightshift docs`. Do not create the label automatically.
+
 For each confirmed item, invoke `foundry:creating-issue` with `--from-draft <tmpfile>`.
 
-The `labels:` block in the frontmatter depends on whether `--nightshift` was passed:
+Pick exactly one of the two frontmatter + body templates below based on whether `--nightshift` was passed. The body sections after the frontmatter are byte-identical between the two; only the `labels:` block differs.
 
-- **Default mode** — single `follow-up` label:
-
-  ```yaml
-  labels:
-    - follow-up
-  ```
-
-- **`--nightshift` mode** — both labels, `nightshift` appended:
-
-  ```yaml
-  labels:
-    - follow-up
-    - nightshift
-  ```
-
-Full frontmatter + body template (use the appropriate `labels:` block above):
+**Default invocation** (no `--nightshift`) — emits only the `follow-up` label. Use this template verbatim:
 
 ```markdown
 ---
@@ -154,7 +157,44 @@ type: <FEAT|BUG|PERF|REFACTOR|DOCS|TEST>
 component: <affected module>
 labels:
   - follow-up
-  # - nightshift   # add this line only when invoked with --nightshift
+target_repo: <OWNER_REPO>
+---
+
+# Description
+## Symptom / Motivation
+Discovered during PR #<PR_NUMBER> (<PR_TITLE>).
+<what was observed, why it matters>
+
+## Root Cause Analysis
+<why not addressed in source PR — scope, complexity, risk>
+
+## Related Files
+- <paths from diff or session>
+
+# Goal
+<one sentence>
+
+# Plan
+<!-- type: proposal -->
+1. <step>
+2. <step>
+
+# Constraints
+- Must not regress PR #<PR_NUMBER>
+
+# Acceptance Criteria
+- [ ] AC-1: Modified files pass unit tests
+```
+
+**With `--nightshift`** — emits both `follow-up` and `nightshift` labels. Use this template verbatim:
+
+```markdown
+---
+type: <FEAT|BUG|PERF|REFACTOR|DOCS|TEST>
+component: <affected module>
+labels:
+  - follow-up
+  - nightshift
 target_repo: <OWNER_REPO>
 ---
 
