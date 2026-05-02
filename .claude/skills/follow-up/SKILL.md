@@ -31,13 +31,20 @@ Parse arguments and resolve PR:
 
 ```bash
 # Parse positional + flag arguments. Set NIGHTSHIFT=1 iff --nightshift is present; 0 otherwise.
+# Reject unknown flags so typos like --nightshfit do not silently fall through to PR_NUMBER.
 NIGHTSHIFT=0
 for arg in "$@"; do
   case "$arg" in
     --nightshift) NIGHTSHIFT=1 ;;
+    -*) echo "Unknown flag: $arg. Usage: /follow-up <PR_NUMBER> [--nightshift]" >&2; exit 1 ;;
     *) PR_NUMBER="${PR_NUMBER:-$arg}" ;;
   esac
 done
+
+if [[ -z "${PR_NUMBER:-}" ]]; then
+  echo "Missing PR number. Usage: /follow-up <PR_NUMBER>" >&2
+  exit 1
+fi
 
 gh pr view "$PR_NUMBER" --json number,title,url,body
 OWNER_REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner')
