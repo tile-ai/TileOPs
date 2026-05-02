@@ -18,14 +18,14 @@ WhereFwdOp:
   signature:
     inputs:
       condition: {dtype: "bool"}
-      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
       # PyTorch's torch.where broadcasts condition/input/other together;
       # the output shape is the broadcast of all three.
-      - "out.shape == broadcast_shapes(condition.shape, input.shape, other.shape)"
+      - "output.shape == broadcast_shapes(condition.shape, input.shape, other.shape)"
 
   workloads:
     - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -62,15 +62,15 @@ LerpTensorFwdOp:
       end: {dtype: "same_as(input)"}
       weight: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
+      - "output.shape == broadcast_shapes(input.shape, end.shape, weight.shape)"
 
   workloads: []
 
   roofline:
     vars:
-      N: "product(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
+      N: "product(broadcast_shapes(input.shape, end.shape, weight.shape))"
     # sub + mul + add per element
     flops: "3 * N"
     bytes: "(product(input.shape) + product(end.shape) + product(weight.shape) + N) * elem_bytes"
