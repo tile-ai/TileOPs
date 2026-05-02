@@ -17,19 +17,20 @@ Orchestrators are the day-to-day entry points. Atomics are their sub-skills — 
 
 ## What do I want to do?
 
-| Intent                                                             | Run                                        |
-| ------------------------------------------------------------------ | ------------------------------------------ |
-| Align / add a single op to its manifest entry (the common case)    | `/align-op <op_name>`                      |
-| Find out which case an op is in, without touching anything         | `/align-op <op_name> --classify-only`      |
-| Migrate every spec-only op in a whole family (historical backlog)  | `/align-family <family>`                   |
-| Read-only audit of a family's spec gaps                            | `/audit-family <family>`                   |
-| Generate / re-align a manifest entry from a reference-API docs URL | `/add-manifest <op_name> <ref_url>`        |
-| Patch `kernel_map` or `static_dims` on an existing manifest entry  | `/fix-manifest <op_name>`                  |
-| Scaffold a fresh op file, bypassing the orchestrator               | `/scaffold-op <op_name>`                   |
-| Debug one atomic phase by hand                                     | `/test-op` · `/implement-op` · `/bench-op` |
-| Run the review loop on a TileOPs PR until APPROVE                  | `/review-tileops <PR_NUMBER>`              |
-| Resolve reviewer feedback on a TileOPs PR (per-round driver)       | `/resolve-tileops <PR_NUMBER>`             |
-| Generate follow-up issues for deferred work after a PR             | `/follow-up <PR_NUMBER>`                   |
+| Intent                                                             | Run                                                      |
+| ------------------------------------------------------------------ | -------------------------------------------------------- |
+| Align / add a single op to its manifest entry (the common case)    | `/align-op <op_name>`                                    |
+| Find out which case an op is in, without touching anything         | `/align-op <op_name> --classify-only`                    |
+| Migrate every spec-only op in a whole family (historical backlog)  | `/align-family <family>`                                 |
+| Read-only audit of a family's spec gaps                            | `/audit-family <family>`                                 |
+| Generate / re-align a manifest entry from a reference-API docs URL | `/add-manifest <op_name> <ref_url>`                      |
+| Patch `kernel_map` or `static_dims` on an existing manifest entry  | `/fix-manifest <op_name>`                                |
+| Scaffold a fresh op file, bypassing the orchestrator               | `/scaffold-op <op_name>`                                 |
+| Debug one atomic phase by hand                                     | `/test-op` · `/implement-op` · `/bench-op`               |
+| Single-shot review of a TileOPs PR                                 | `/review-tileops <PR_NUMBER>`                            |
+| Multi-round review loop until APPROVE                              | `bash .claude/skills/review-tileops/loop.sh <PR_NUMBER>` |
+| Resolve reviewer feedback on a TileOPs PR (per-round driver)       | `/resolve-tileops <PR_NUMBER>`                           |
+| Generate follow-up issues for deferred work after a PR             | `/follow-up <PR_NUMBER>`                                 |
 
 ## Skills in detail
 
