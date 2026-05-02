@@ -317,7 +317,7 @@ FloorFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(input)"}
     shape_rules:
@@ -347,7 +347,7 @@ CeilFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(input)"}
     shape_rules:
@@ -377,7 +377,7 @@ RoundFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
@@ -409,7 +409,7 @@ TruncFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "same_as(input)"}
     shape_rules:
@@ -654,7 +654,7 @@ IsnanFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "bool"}
     shape_rules:
@@ -685,7 +685,7 @@ IsinfFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "bool"}
     shape_rules:
@@ -716,7 +716,7 @@ IsfiniteFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
     outputs:
       output: {dtype: "bool"}
     shape_rules:
