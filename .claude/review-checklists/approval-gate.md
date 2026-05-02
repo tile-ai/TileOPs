@@ -1,23 +1,35 @@
-Run before approving any PR. Apply each item below if its scope matches the diff. If any applicable check fails, request changes; do not approve until the developer pushes a triage commit.
+Run before approving any PR. Apply each item if its scope matches the diff. If any applicable check fails, REQUEST_CHANGES until the developer pushes a triage commit.
 
-- [ ] **Per-case verdict (blocker default).** Triage every test case added or modified in this PR as one of `keep` / `shrink` / `delete`. Inline comments are required only for blocker verdicts; clean test PRs stay clean (no per-case inline noise) — consistent with `criteria.md §3` (`Clean — no issues.`).
+## Tests
 
-  - `keep — guards <distinct code path or dtype>` (no action required) — per `docs/design/testing.md §Test case policy`. **Do not** post inline.
-  - `shrink — fold to <axis>` (**BLOCKER, inline required**) — Cartesian expansion; fold to "boundary + one representative interior point".
-  - `delete — duplicate of <node ID>` (**BLOCKER, inline required**) — same-failure-mode duplicate of a kept case.
+- [ ] **Per-case verdict.** Triage every added/modified test case as `keep` / `shrink` / `delete`. Inline only on blockers; clean test PRs stay clean (`criteria.md §3`).
 
-  Cases the reviewer cannot classify with confidence count as untriaged → **BLOCKER, inline required** asking the developer for the rationale. Every blocker must be resolved (case shrunk / deleted, or verdict downgraded to `keep` with rationale) before APPROVE.
+  | Verdict                        | When                                                                         | Inline?     |
+  | ------------------------------ | ---------------------------------------------------------------------------- | ----------- |
+  | `keep — guards <path/dtype>`   | distinct code path or dtype (per `docs/design/testing.md §Test case policy`) | no          |
+  | `shrink — fold to <axis>`      | Cartesian expansion; fold to "boundary + one representative interior point"  | **blocker** |
+  | `delete — duplicate of <node>` | same-failure-mode duplicate of a kept case                                   | **blocker** |
 
-- [ ] **Numerical floor.** Run `python scripts/test_node_delta.py --base upstream/main` (prereq: `upstream` remote points to tile-ai/TileOPs and is fresh — `git fetch upstream` first). If existing-file growth > 25% AND any case carries an unresolved blocker verdict (`shrink` / `delete`) or remains untriaged, REQUEST_CHANGES with the full list of affected node IDs in the summary. (Absence of an inline comment is not a blocker on its own — silent `keep` is the default.)
+  Cases the reviewer cannot classify with confidence count as untriaged → **blocker inline** asking the developer for rationale. Every blocker must be resolved (shrink / delete, or downgrade to `keep` with rationale) before APPROVE.
 
-- [ ] Reject "AC-N required this matrix" as a defense — AC text does not bind the merged suite.
+- [ ] **Numerical floor.** Run `python scripts/test_node_delta.py --base upstream/main` (prereq: `upstream` points to tile-ai/TileOPs and is fresh — `git fetch upstream` first). REQUEST_CHANGES with the full node-ID list if existing-file growth > 25% AND any case carries an unresolved `shrink`/`delete` blocker or is untriaged. Absence of an inline is not itself a blocker — silent `keep` is the default.
 
-- [ ] Critical-path floor: never remove the last guarding case for tile boundary, vectorization alignment, degenerate dimension (size = 1), or dispatch branch.
+- [ ] **Critical-path floor.** Never remove the last guarding case for tile boundary, vectorization alignment, degenerate dimension (size = 1), or dispatch branch.
 
-- [ ] **PR body discipline.** Body must conform to `.foundry/mold/pr-body-template.md` and record only the final state: what the PR does (Summary, scoped to the merged diff) + verification facts (test plan, pre-commit, structural readiness, test node delta). Strip dev-process narration — per-round fix history, tally IDs (`T001–T0NN`), "Driven by review iteration", reviewer-by-reviewer changelogs, abandoned approaches. Those belong in commit history / review threads. If found in the body, REQUEST_CHANGES.
+- [ ] **No AC defense.** Reject "AC-N required this matrix" — AC text does not bind the merged suite.
 
-- [ ] **Batch-once.** If the only remaining issues are cleanup-class (keep / shrink / delete / rename / dedupe) with no correctness blockers left, surface every such item from the full diff in this single review pass. Do not defer to a later round. If you find yourself wanting to "leave it for next time", either include it now or demote it to advisory (no longer gates APPROVE).
+## Authoring discipline
 
-- [ ] **Skill edits (`.claude/skills/**`) — tightening pass before APPROVE.** Require the developer to condense the skill's wording without changing what it instructs. Verify: semantics preserved, every step has exactly one valid execution path, no example included unless it is load-bearing, and any retained example references durable concepts rather than implementation details that age out.
+- [ ] **PR body.** Conforms to `.foundry/mold/pr-body-template.md`; records final state only — what the PR does (Summary, scoped to the merged diff) + verification facts (test plan, pre-commit, structural readiness, test node delta). Strip dev-process narration: per-round fix history, tally IDs (`T001–T0NN`), "Driven by review iteration", reviewer-by-reviewer changelogs, abandoned approaches. Those belong in commit history / review threads. REQUEST_CHANGES if found.
 
-- [ ] On the triage commit, re-run every check above before approving.
+- [ ] **Replies.** Outcome only — `Done in <sha>.`, `Won't-fix: <one-line reason>.` No commit-by-commit narration, "what I tried", thread/tally IDs, root-cause essays, or design restatements. Process detail ages out and clutters the thread. REQUEST_CHANGES asking the developer to edit the comment to a one-liner if found.
+
+## Review process
+
+- [ ] **Batch-once.** If only cleanup-class issues (keep / shrink / delete / rename / dedupe) remain with no correctness blockers, surface every such item from the full diff in this single pass. Don't defer — either include now or demote to advisory (no longer gates APPROVE).
+
+- [ ] **Re-run on triage.** Re-run every applicable check above on the developer's triage commit before approving.
+
+## Scope-specific
+
+- [ ] **Skill edits (`.claude/skills/**`).** Require a tightening pass before APPROVE — condense wording without changing what the skill instructs. Verify: semantics preserved, every step has exactly one valid execution path, no example included unless load-bearing, retained examples reference durable concepts rather than implementation details that age out.
