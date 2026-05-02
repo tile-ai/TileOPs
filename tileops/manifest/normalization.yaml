@@ -19,20 +19,21 @@ RMSNormFwdOp:
       normalized_shape: {type: "list[int] | tuple[int, ...]"}
       eps: {type: "float | None", default: null}
     shape_rules:
+      - "len(normalized_shape) > 0"
       - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
       - "weight.shape == tuple(normalized_shape)"
       - "output.shape == x.shape"
 
   workloads:
     # Llama-3.1-8B (hidden_dim=4096)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
     # Llama-3.1-70B (hidden_dim=8192)
-    - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
-    - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+    - {x_shape: [2048, 8192], normalized_shape: [8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
+    - {x_shape: [1, 8192], normalized_shape: [8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
     # Llama-3.1-405B (hidden_dim=16384)
-    - {x_shape: [2048, 16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
-    - {x_shape: [1, 16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
+    - {x_shape: [2048, 16384], normalized_shape: [16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
+    - {x_shape: [1, 16384], normalized_shape: [16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
 
   roofline:
     vars:
@@ -67,6 +68,7 @@ LayerNormFwdOp:
       normalized_shape: {type: "list[int] | tuple[int, ...]"}
       eps: {type: float, default: 1.0e-5}
     shape_rules:
+      - "len(normalized_shape) > 0"
       - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
       - "weight.shape == tuple(normalized_shape)"
       - "bias.shape == tuple(normalized_shape)"
@@ -74,14 +76,14 @@ LayerNormFwdOp:
 
   workloads:
     # Llama-3.1-8B (hidden_dim=4096)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
     # Llama-3.1-70B (hidden_dim=8192)
-    - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
-    - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+    - {x_shape: [2048, 8192], normalized_shape: [8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
+    - {x_shape: [1, 8192], normalized_shape: [8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
     # Llama-3.1-405B (hidden_dim=16384)
-    - {x_shape: [2048, 16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
-    - {x_shape: [1, 16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
+    - {x_shape: [2048, 16384], normalized_shape: [16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
+    - {x_shape: [1, 16384], normalized_shape: [16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
 
   roofline:
     vars:
@@ -460,8 +462,6 @@ InstanceNormFwdOp:
   signature:
     inputs:
       x: {dtype: "float32 | float16 | bfloat16"}
-      running_mean: {dtype: "float32"}
-      running_var: {dtype: "float32"}
       weight: {dtype: "same_as(x)"}
       bias: {dtype: "same_as(x)"}
     outputs:
@@ -473,8 +473,6 @@ InstanceNormFwdOp:
     static_dims:
       C: "x.shape[1]"
     shape_rules:
-      - "running_mean.shape == (x.shape[1],)"
-      - "running_var.shape == (x.shape[1],)"
       - "weight.shape == (x.shape[1],)"
       - "bias.shape == (x.shape[1],)"
       - "output.shape == x.shape"
@@ -492,9 +490,8 @@ InstanceNormFwdOp:
       spatial_size: "product(x.shape[2:])"
     # Same as GroupNorm (InstanceNorm = GroupNorm with G=C)
     flops: "5 * N * C * spatial_size"
-    # Read x + write output + read weight (C) + read bias (C) in elem_bytes,
-    # plus float32 running_mean (C) + running_var (C)
-    bytes: "(2 * N * C * spatial_size + 2 * C) * elem_bytes + 2 * C * 4"
+    # Read x + write output + read weight (C) + read bias (C)
+    bytes: "(2 * N * C * spatial_size + 2 * C) * elem_bytes"
 
   source:
     kernel: tileops/kernels/norm/group_norm.py
