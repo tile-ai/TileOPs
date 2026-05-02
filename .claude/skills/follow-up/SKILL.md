@@ -5,9 +5,10 @@ description: Introspect a development session and generate follow-up issues for 
 
 ## Arguments
 
-| Argument      | Required | Description                      |
-| ------------- | -------- | -------------------------------- |
-| `<PR_NUMBER>` | Yes      | TileOPs PR number (e.g. `1131`). |
+| Argument       | Required | Description                                                                                                                                                 |
+| -------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<PR_NUMBER>`  | Yes      | TileOPs PR number (e.g. `1131`).                                                                                                                            |
+| `--nightshift` | No       | Boolean flag. Skip the interactive presentation gate (auto-accept all candidates) and inject the `nightshift` label into every created issue's frontmatter. |
 
 ## Contract
 
@@ -90,7 +91,9 @@ Reduce to **max 3 issues**:
 
 ### 5. PRESENT
 
-Show candidates in **dependency order** (prerequisites first). Wait for user confirmation.
+**Default mode** (no `--nightshift`): show candidates in **dependency order** (prerequisites first). Wait for user confirmation via the `Actions:` line below.
+
+**`--nightshift` mode**: skip the candidate presentation and the `Actions: confirm all / drop by number / edit / move <item> to out-of-scope` interaction entirely. Treat every candidate (and every in-scope suggestion) as confirmed — equivalent to the user typing `confirm all` — and proceed straight to Step 6. The auto-accept branch is conditional on the flag; default-mode behavior is unchanged when the flag is absent.
 
 ```
 Follow-up candidates from PR #<number>: <title>
@@ -124,7 +127,26 @@ gh label list --search "follow-up" --json name --jq '.[].name' | grep -qx "follo
   || gh label create "follow-up" --description "Generated from dev session introspection" --color "c5def5"
 ```
 
-For each confirmed item, invoke `foundry:creating-issue` with `--from-draft <tmpfile>`:
+For each confirmed item, invoke `foundry:creating-issue` with `--from-draft <tmpfile>`.
+
+The `labels:` block in the frontmatter depends on whether `--nightshift` was passed:
+
+- **Default mode** — single `follow-up` label:
+
+  ```yaml
+  labels:
+    - follow-up
+  ```
+
+- **`--nightshift` mode** — both labels, `nightshift` appended:
+
+  ```yaml
+  labels:
+    - follow-up
+    - nightshift
+  ```
+
+Full frontmatter + body template (use the appropriate `labels:` block above):
 
 ```markdown
 ---
@@ -132,6 +154,7 @@ type: <FEAT|BUG|PERF|REFACTOR|DOCS|TEST>
 component: <affected module>
 labels:
   - follow-up
+  # - nightshift   # add this line only when invoked with --nightshift
 target_repo: <OWNER_REPO>
 ---
 
