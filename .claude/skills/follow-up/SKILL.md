@@ -27,14 +27,23 @@ description: Introspect a development session and generate follow-up issues for 
 
 `<PR_NUMBER>` is required. If missing, terminate immediately: `Missing PR number. Usage: /follow-up <PR_NUMBER>`.
 
-Resolve PR:
+Parse arguments and resolve PR:
 
 ```bash
-gh pr view <PR_NUMBER> --json number,title,url,body
+# Parse positional + flag arguments. Set NIGHTSHIFT=1 iff --nightshift is present; 0 otherwise.
+NIGHTSHIFT=0
+for arg in "$@"; do
+  case "$arg" in
+    --nightshift) NIGHTSHIFT=1 ;;
+    *) PR_NUMBER="${PR_NUMBER:-$arg}" ;;
+  esac
+done
+
+gh pr view "$PR_NUMBER" --json number,title,url,body
 OWNER_REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner')
 ```
 
-Extract: `PR_NUMBER`, `PR_TITLE`, `PR_URL`, `PR_BODY`, `OWNER_REPO`.
+Extract: `PR_NUMBER`, `PR_TITLE`, `PR_URL`, `PR_BODY`, `OWNER_REPO`. `NIGHTSHIFT` is now bound (`0` or `1`) and gates step 5 mode selection, the step 6 label guard, and the step 6 frontmatter template.
 
 **Fail** (PR not found) → terminate: `PR #<PR_NUMBER> not found in $OWNER_REPO.`
 
@@ -137,10 +146,10 @@ gh label list --search "follow-up" --json name --jq '.[].name' | grep -qx "follo
 
 **Nightshift label guard** — only when `--nightshift` was passed. The `nightshift` label is human-curated in the canonical setup (specific color and description); do not auto-create it with arbitrary metadata. Instead, fail fast with a clear error if it is missing:
 
-Set `NIGHTSHIFT=1` when the flag is parsed in step 1; leave it unset (or `0`) otherwise. The guard below is a no-op in default mode:
+`NIGHTSHIFT` was bound in Step 1 (`1` if `--nightshift` was passed, else `0`). The guard below is a no-op in default mode:
 
 ```bash
-if [[ "${NIGHTSHIFT:-0}" == "1" ]]; then
+if [[ "$NIGHTSHIFT" == "1" ]]; then
   gh label list --search "nightshift" --json name --jq '.[].name' | grep -qx "nightshift" \
     || { echo "nightshift label missing in $OWNER_REPO — see foundry nightshift docs" >&2; exit 1; }
 fi
