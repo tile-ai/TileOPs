@@ -137,10 +137,13 @@ gh label list --search "follow-up" --json name --jq '.[].name' | grep -qx "follo
 
 **Nightshift label guard** — only when `--nightshift` was passed. The `nightshift` label is human-curated in the canonical setup (specific color and description); do not auto-create it with arbitrary metadata. Instead, fail fast with a clear error if it is missing:
 
+Set `NIGHTSHIFT=1` when the flag is parsed in step 1; leave it unset (or `0`) otherwise. The guard below is a no-op in default mode:
+
 ```bash
-# Only when --nightshift was passed:
-gh label list --search "nightshift" --json name --jq '.[].name' | grep -qx "nightshift" \
-  || { echo "nightshift label missing in $OWNER_REPO — see foundry nightshift docs" >&2; exit 1; }
+if [[ "${NIGHTSHIFT:-0}" == "1" ]]; then
+  gh label list --search "nightshift" --json name --jq '.[].name' | grep -qx "nightshift" \
+    || { echo "nightshift label missing in $OWNER_REPO — see foundry nightshift docs" >&2; exit 1; }
+fi
 ```
 
 If `--nightshift` was passed and the `nightshift` label does not exist, terminate with: `nightshift label missing in $OWNER_REPO — see foundry nightshift docs`. Do not create the label automatically.
