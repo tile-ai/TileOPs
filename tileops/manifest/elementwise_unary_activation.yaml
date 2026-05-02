@@ -404,14 +404,14 @@ ClampFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
       min: {dtype: "same_as(input)"}
       max: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
       # PyTorch broadcasts input/min/max together for tensor-bound clamp.
-      - "out.shape == broadcast_shapes(input.shape, min.shape, max.shape)"
+      - "output.shape == broadcast_shapes(input.shape, min.shape, max.shape)"
 
   workloads:
     - {input_shape: [4096, 4096], min_shape: [4096, 4096], max_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -443,14 +443,14 @@ ClampScalarFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     params:
       min: {type: "Number | None", default: null}
       max: {type: "Number | None", default: null}
     shape_rules:
-      - "out.shape == input.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -458,10 +458,10 @@ ClampScalarFwdOp:
 
   roofline:
     vars:
-      N_total: "product(input.shape)"
+      N: "product(input.shape)"
     # At most one max + one min per element
-    flops: "2 * N_total"
-    bytes: "2 * N_total * elem_bytes"
+    flops: "2 * N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -482,12 +482,12 @@ ClampMinFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
       min: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == broadcast_shapes(input.shape, min.shape)"
+      - "output.shape == broadcast_shapes(input.shape, min.shape)"
 
   workloads:
     - {input_shape: [4096, 4096], min_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -517,12 +517,12 @@ ClampMaxFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
       max: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == broadcast_shapes(input.shape, max.shape)"
+      - "output.shape == broadcast_shapes(input.shape, max.shape)"
 
   workloads:
     - {input_shape: [4096, 4096], max_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -560,15 +560,15 @@ NanToNumFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     params:
       nan: {type: float, default: 0.0}
       posinf: {type: "float | None", default: null}
       neginf: {type: "float | None", default: null}
     shape_rules:
-      - "out.shape == input.shape"
+      - "output.shape == input.shape"
 
   workloads:
     - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -576,10 +576,10 @@ NanToNumFwdOp:
 
   roofline:
     vars:
-      N_total: "product(input.shape)"
+      N: "product(input.shape)"
     # isnan + isposinf + isneginf + 3 conditional selects per element
-    flops: "6 * N_total"
-    bytes: "2 * N_total * elem_bytes"
+    flops: "6 * N"
+    bytes: "2 * N * elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise.py
