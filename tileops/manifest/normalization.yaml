@@ -460,6 +460,8 @@ InstanceNormFwdOp:
   signature:
     inputs:
       x: {dtype: "float32 | float16 | bfloat16"}
+      running_mean: {dtype: "float32"}
+      running_var: {dtype: "float32"}
       weight: {dtype: "same_as(x)"}
       bias: {dtype: "same_as(x)"}
     outputs:
@@ -471,6 +473,8 @@ InstanceNormFwdOp:
     static_dims:
       C: "x.shape[1]"
     shape_rules:
+      - "running_mean.shape == (x.shape[1],)"
+      - "running_var.shape == (x.shape[1],)"
       - "weight.shape == (x.shape[1],)"
       - "bias.shape == (x.shape[1],)"
       - "output.shape == x.shape"
@@ -488,8 +492,9 @@ InstanceNormFwdOp:
       spatial_size: "product(x.shape[2:])"
     # Same as GroupNorm (InstanceNorm = GroupNorm with G=C)
     flops: "5 * N * C * spatial_size"
-    # Read x + write output + read weight (C) + read bias (C)
-    bytes: "(2 * N * C * spatial_size + 2 * C) * elem_bytes"
+    # Read x + write output + read weight (C) + read bias (C) in elem_bytes,
+    # plus float32 running_mean (C) + running_var (C)
+    bytes: "(2 * N * C * spatial_size + 2 * C) * elem_bytes + 2 * C * 4"
 
   source:
     kernel: tileops/kernels/norm/group_norm.py
