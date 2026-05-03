@@ -64,25 +64,22 @@ MaskedFillFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       mask: {dtype: "bool"}
       value: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
       # Out-of-place masked_fill returns the bidirectional broadcast of
       # input and mask; value is 0-dim.
       - "value.shape == ()"
-      - "out.shape == broadcast_shapes(input.shape, mask.shape)"
+      - "output.shape == broadcast_shapes(input.shape, mask.shape)"
 
   workloads:
     - {input_shape: [4096, 4096], mask_shape: [4096, 4096], value_shape: [], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
     - {input_shape: [16384, 16384], mask_shape: [16384, 16384], value_shape: [], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
-    # Func mode: post-broadcast N_total uses broadcast_shapes which is
-    # not in the inline-roofline vars-layer namespace per
-    # docs/design/roofline.md §4.4.4. Broadcast logic lives in Python.
     func: "tileops.perf.formulas.masked_fill_fwd_roofline"
 
   source:
@@ -105,17 +102,17 @@ MaskedFillScalarFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       mask: {dtype: "bool"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     params:
       value: {type: Number, default: 0.0}
     shape_rules:
       # Out-of-place masked_fill returns the bidirectional broadcast of
       # input and mask; out shape follows that broadcast (verified against
       # ``torch.Tensor.masked_fill`` — input may also be expanded up).
-      - "out.shape == broadcast_shapes(input.shape, mask.shape)"
+      - "output.shape == broadcast_shapes(input.shape, mask.shape)"
 
   workloads:
     - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -146,22 +143,17 @@ AddFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     params:
       alpha: {type: "int | float", default: 1}
     shape_rules:
       # Output follows PyTorch broadcasting; numel uses the broadcast shape.
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    # 1 multiply (alpha * other) + 1 add per output element
-    flops: "2 * N"
-    # Read input + read other + write out
-    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.add_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -180,20 +172,16 @@ SubFwdOp:
       input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     params:
       alpha: {type: "int | float", default: 1}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    # 1 multiply (alpha * other) + 1 subtract per output element
-    flops: "2 * N"
-    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.sub_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -212,17 +200,14 @@ MulFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.mul_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -241,20 +226,17 @@ DivFwdOp:
       input: {dtype: "float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     params:
       rounding_mode: {type: "str | None", default: null}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
       - "rounding_mode is None or rounding_mode in ('trunc', 'floor')"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.div_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -273,18 +255,14 @@ RemainderFwdOp:
       input: {dtype: "float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    # remainder ~= div + floor + mul + sub per element
-    flops: "4 * N"
-    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.remainder_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -303,18 +281,14 @@ PowFwdOp:
       input: {dtype: "float16 | bfloat16 | float32"}
       exponent: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, exponent.shape))"
+      - "output.shape == broadcast_shapes(input.shape, exponent.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, exponent.shape))"
-    # pow ~= exp(exponent * log(input)) ~= 3 ops per element
-    flops: "3 * N"
-    bytes: "(product(input.shape) + product(exponent.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.pow_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -333,18 +307,14 @@ FloorDivideFwdOp:
       input: {dtype: "float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    # div + floor per element
-    flops: "2 * N"
-    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.floor_divide_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -366,20 +336,16 @@ LerpFwdOp:
       input: {dtype: "float16 | bfloat16 | float32"}
       end: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     params:
       weight: {type: float, default: 0.5}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, end.shape))"
+      - "output.shape == broadcast_shapes(input.shape, end.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, end.shape))"
-    # sub + mul + add per element
-    flops: "3 * N"
-    bytes: "(product(input.shape) + product(end.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.lerp_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -398,18 +364,14 @@ MaximumFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    # one comparison-and-select per element
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.maximum_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -428,17 +390,14 @@ MinimumFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.minimum_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -461,18 +420,14 @@ EqFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    # 1 byte per bool output
-    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+    func: "tileops.perf.formulas.eq_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -491,17 +446,14 @@ NeFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+    func: "tileops.perf.formulas.ne_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -520,17 +472,14 @@ GtFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+    func: "tileops.perf.formulas.gt_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -549,17 +498,14 @@ LtFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+    func: "tileops.perf.formulas.lt_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -578,17 +524,14 @@ GeFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+    func: "tileops.perf.formulas.ge_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -607,17 +550,14 @@ LeFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+    func: "tileops.perf.formulas.le_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -640,18 +580,14 @@ LogicalAndFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    # 2 nonzero comparisons + 1 logical-and per element
-    flops: "3 * N"
-    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+    func: "tileops.perf.formulas.logical_and_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -670,17 +606,14 @@ LogicalOrFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "bool"}
+      output: {dtype: "bool"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "3 * N"
-    bytes: "(product(input.shape) + product(other.shape)) * elem_bytes + N"
+    func: "tileops.perf.formulas.logical_or_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -703,17 +636,14 @@ BitwiseAndFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.bitwise_and_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -732,17 +662,14 @@ BitwiseOrFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.bitwise_or_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
@@ -761,17 +688,14 @@ BitwiseXorFwdOp:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, other.shape))"
+      - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, other.shape))"
-    flops: "N"
-    bytes: "(product(input.shape) + product(other.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.bitwise_xor_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
