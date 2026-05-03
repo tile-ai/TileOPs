@@ -569,6 +569,167 @@ def test_rule1_proceeds_when_next_round_non_numeric(tmp_path: Path) -> None:
     assert not (rounds / "round-abc.json").exists()
 
 
+def test_rule1_skips_when_any_prior_approve_matches_watermark(tmp_path: Path) -> None:
+    """Bug-1 fix: with multiple same-SHA APPROVEs, the candidate whose
+    ``last_human_comment_id`` matches the current watermark wins, even
+    if an earlier APPROVE recorded a stale watermark.
+
+    Concrete failure mode: round 5 APPROVE on sha=X with watermark=100;
+    human comments arrive (watermark→200); round 6 re-APPROVE on sha=X
+    with watermark=200; round 7 must skip codex by reusing round 6.
+    Old code broke on the first SHA match (round 5), saw stale 100 vs
+    current 200, and incorrectly returned ``proceed``.
+    """
+    run_dir = tmp_path / "review"
+    rounds = run_dir / "rounds"
+    sha = "1" * 40
+    # Round 5: APPROVE with stale watermark.
+    _write_round(rounds, 5, sha, "APPROVE", blockers=0, last_human_comment_id=100)
+    # Round 6: APPROVE on same SHA, fresh watermark.
+    _write_round(rounds, 6, sha, "APPROVE", blockers=0, last_human_comment_id=200)
+
+    result = _run(
+        ROUND_PRE,
+        {
+            "RUN_DIR": str(run_dir),
+            "NEXT_ROUND": "7",
+            "HEAD_SHA": sha,
+            "LATEST_HUMAN_ID": "200",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "skip", result.stdout
+    marker = rounds / "round-07.json"
+    assert marker.exists()
+    payload = json.loads(marker.read_text())
+    # Marker must reference the matching round, not the stale one.
+    assert payload["approve_reused_from"] == 6
+    assert payload["last_human_comment_id"] == 200
+
+
+def test_rule1_proceeds_when_no_prior_approve_matches_watermark(tmp_path: Path) -> None:
+    """Bug-1 fix: with multiple same-SHA APPROVEs, all stale relative to
+    the current watermark → no candidate is reusable; codex must
+    re-review.
+    """
+    run_dir = tmp_path / "review"
+    rounds = run_dir / "rounds"
+    sha = "2" * 40
+    _write_round(rounds, 5, sha, "APPROVE", blockers=0, last_human_comment_id=100)
+    _write_round(rounds, 6, sha, "APPROVE", blockers=0, last_human_comment_id=150)
+
+    result = _run(
+        ROUND_PRE,
+        {
+            "RUN_DIR": str(run_dir),
+            "NEXT_ROUND": "7",
+            "HEAD_SHA": sha,
+            "LATEST_HUMAN_ID": "200",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "proceed", result.stdout
+    assert not (rounds / "round-07.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Bug-2 fix: Rule 2 must filter CODEX_BLOCKERS_JSON to inline comments
+# tied to a REQUEST_CHANGES review only. Non-blocker review states
+# (APPROVE, COMMENT) emit zero blockers, so nits and suggestions never
+# advance the agent-stuck counter.
+# ---------------------------------------------------------------------------
+
+
+def test_rule2_loop_filters_to_request_changes_review(tmp_path: Path) -> None:
+    """loop.sh must consult the latest REVIEWER_LOGIN review's state
+    before populating CODEX_BLOCKERS_JSON.
+
+    Contract (verified by source inspection):
+      * The Rule-2 block fetches the latest reviewer review and reads
+        ``.state``.
+      * It only includes inline comments tied to that review's id when
+        state is REQUEST_CHANGES (or the GitHub spelling
+        CHANGES_REQUESTED).
+      * Otherwise CODEX_BLOCKERS_JSON is written as ``[]``.
+    """
+    src = LOOP_SH.read_text()
+    # The Rule-2 block must read latest review state.
+    assert "LATEST_REVIEW_STATE" in src
+    assert "LATEST_REVIEW_ID" in src
+    # Fetch reviews endpoint, sorted by submitted_at, filtered to
+    # REVIEWER_LOGIN.
+    assert "/pulls/$PR/reviews" in src
+    assert "sort_by(.submitted_at)|last" in src
+    # Gate must require a REQUEST_CHANGES-style state.
+    assert "REQUEST_CHANGES" in src or "CHANGES_REQUESTED" in src
+    # Only inline comments tied to that specific review id count.
+    assert "/reviews/$LATEST_REVIEW_ID/comments" in src
+    # Non-REQUEST_CHANGES branch must emit an empty array.
+    assert "echo '[]' > \"$CODEX_BLOCKERS_JSON\"" in src
+
+
+def test_rule2_ignores_non_request_changes_comments(tmp_path: Path) -> None:
+    """Bug-2 regression at the round-post.sh layer: an empty
+    CODEX_BLOCKERS_JSON (the shape loop.sh produces for
+    APPROVE/COMMENT review states) must NOT advance any counter,
+    confirming non-blocker codex comments never trigger agent-stuck.
+    """
+    run_dir = tmp_path / "review"
+    run_dir.mkdir()
+
+    # Simulate three consecutive rounds where the codex review state was
+    # APPROVE or COMMENT (i.e. CODEX_BLOCKERS_JSON is `[]`).
+    for r in (1, 2, 3):
+        empty = run_dir / f"round-{r:02d}.codex-blockers.json"
+        empty.write_text("[]")
+        result = _run(ROUND_POST, _post_env(run_dir, r, empty))
+        assert result.returncode == 0, result.stderr
+
+    history = json.loads((run_dir / "region-history.json").read_text())
+    assert history["counters"] == {}, (
+        "non-REQUEST_CHANGES rounds must not advance any per-path counter"
+    )
+    assert history["events"] == []
+
+
+def test_rule2_counts_request_changes_comments(tmp_path: Path) -> None:
+    """Bug-2: when the codex review state IS REQUEST_CHANGES, inline
+    comments tied to that review populate CODEX_BLOCKERS_JSON and the
+    monitor counts them as blockers.
+
+    This is the round-post.sh side of the contract: given the artifact
+    shape that loop.sh now writes (a list of comment objects with
+    ``path``), counters must increment.
+    """
+    run_dir = tmp_path / "review"
+    run_dir.mkdir()
+    target = "tileops/manifest/elementwise_binary.yaml"
+
+    for r in (1, 2, 3):
+        codex_blockers = run_dir / f"round-{r:02d}.codex-blockers.json"
+        codex_blockers.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": 6000 + r,
+                        "user": "tileops-reviewer-bot",
+                        "path": target,
+                        "line": 10,
+                        "body": "blocker",
+                    }
+                ]
+            )
+        )
+        result = _run(ROUND_POST, _post_env(run_dir, r, codex_blockers))
+        assert result.returncode == 0, result.stderr
+
+    history = json.loads((run_dir / "region-history.json").read_text())
+    assert history["counters"][target] == 3
+    triggered = [e for e in history["events"] if e["path"] == target]
+    assert len(triggered) == 1
+    assert triggered[0]["round"] == 3
+
+
 def test_rule2_object_shaped_artifact_treated_as_empty(tmp_path: Path) -> None:
     """A non-array (object-shaped) comments artifact must NOT be
     iterated with ``.[]``.

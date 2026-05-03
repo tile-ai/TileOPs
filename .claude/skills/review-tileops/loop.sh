@@ -762,19 +762,39 @@ while true; do
   # path has produced a blocker for >= 3 consecutive rounds.
   # Monitoring-only: must not mutate blockers, threads, or PR title.
   #
-  # Source artifact contract: $SNAP.new-review-comments.json is a *pre-
-  # codex* snapshot that explicitly filters out REVIEWER_LOGIN — i.e. it
-  # contains human comments, not this round's codex blockers. Feeding
-  # that to round-post would track the wrong paths. After codex
-  # finishes, re-fetch the PR's review comments and keep only those
-  # authored by REVIEWER_LOGIN with id > LAST_REVIEWER_COMMENT_ID
-  # (anything new posted in this round). Best-effort: empty list on
-  # failure keeps Rule 2 monitor-only.
+  # Source artifact contract (bug-2 fix): only inline comments tied to
+  # codex's *latest* review count as blockers, and only when that
+  # review's top-level state is REQUEST_CHANGES. This is the most
+  # reliable native signal that codex itself flagged the comment as a
+  # blocker — non-blocker review states (APPROVE, COMMENT) emit zero
+  # blocker paths so nits, suggestions, and "no-action" remarks never
+  # advance the agent-stuck counter.
+  #
+  # Algorithm:
+  #   1. Fetch the latest REVIEWER_LOGIN review by submitted_at.
+  #   2. If state == REQUEST_CHANGES → fetch its inline comments via
+  #      /reviews/<id>/comments and extract path/line/id.
+  #   3. Otherwise (APPROVE / COMMENT / DISMISSED / NONE) → write [].
+  # Best-effort: any gh failure degrades to an empty list so Rule 2
+  # stays monitor-only.
   CODEX_BLOCKERS_JSON="$SNAP.codex-blockers.json"
   LAST_REVIEWER_COMMENT_ID=$(jq -r '.last_reviewer_comment_id // 0' "$META")
-  gh api "repos/$REPO/pulls/$PR/comments" --paginate \
-    --jq "[.[]|select(.user.login==\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEWER_COMMENT_ID)|{id,user:.user.login,path,line,body,created_at}]" \
-    > "$CODEX_BLOCKERS_JSON" 2>/dev/null || echo '[]' > "$CODEX_BLOCKERS_JSON"
+  LATEST_REVIEW_JSON=$(gh api "repos/$REPO/pulls/$PR/reviews" \
+    --jq "[.[]|select(.user.login==\"$REVIEWER_LOGIN\")]|sort_by(.submitted_at)|last // {}" \
+    2>/dev/null || echo '{}')
+  LATEST_REVIEW_STATE=$(printf '%s' "$LATEST_REVIEW_JSON" \
+    | jq -r '.state // "NONE"' 2>/dev/null || echo NONE)
+  LATEST_REVIEW_ID=$(printf '%s' "$LATEST_REVIEW_JSON" \
+    | jq -r '.id // empty' 2>/dev/null || echo "")
+  if [[ "$LATEST_REVIEW_STATE" == "CHANGES_REQUESTED" \
+        || "$LATEST_REVIEW_STATE" == "REQUEST_CHANGES" ]] \
+        && [[ -n "$LATEST_REVIEW_ID" ]]; then
+    gh api "repos/$REPO/pulls/$PR/reviews/$LATEST_REVIEW_ID/comments" --paginate \
+      --jq "[.[]|{id,user:.user.login,path,line,body,created_at}]" \
+      > "$CODEX_BLOCKERS_JSON" 2>/dev/null || echo '[]' > "$CODEX_BLOCKERS_JSON"
+  else
+    echo '[]' > "$CODEX_BLOCKERS_JSON"
+  fi
   # Advance the reviewer-comment watermark so the next round only sees
   # comments newly posted by codex.
   NEW_REVIEWER_MAX=$(jq -r '[.[].id // 0]|max // 0' "$CODEX_BLOCKERS_JSON" 2>/dev/null || echo 0)
