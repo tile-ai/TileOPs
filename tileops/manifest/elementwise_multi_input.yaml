@@ -72,16 +72,11 @@ LerpTensorFwdOp:
   workloads: []
 
   roofline:
-    # Spec-only — assumes no broadcast (input/end/weight same shape).
-    # When impl lands, switch to func-mode for the broadcast case
-    # (broadcast_shapes is not a vars-layer builtin per
-    # docs/design/roofline.md §4.4.4).
-    vars:
-      N: "product(input.shape)"
-    # sub + mul + add per element
-    flops: "3 * N"
-    # 3 reads + 1 write per element
-    bytes: "4 * N * elem_bytes"
+    # Func mode: shape_rules broadcast input/end/weight together, so
+    # N_total is the post-broadcast element count. broadcast_shapes is
+    # not in the inline vars-layer namespace (docs/design/roofline.md
+    # §4.4.4), so inline mode cannot express this op's true workload.
+    func: "tileops.perf.formulas.lerp_tensor_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
