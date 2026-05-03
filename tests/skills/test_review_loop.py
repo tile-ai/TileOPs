@@ -499,3 +499,108 @@ def test_round_post_counts_codex_authored_blockers(tmp_path: Path) -> None:
         "the codex-blocker counter forward — this is exactly the bug-2 "
         "failure mode the loop wiring must avoid"
     )
+
+
+# ---------------------------------------------------------------------------
+# Edge-case hardening for round-pre.sh and round-post.sh (review-round 3
+# follow-up on PR #1168). Both hooks must degrade safely on malformed
+# inputs rather than crash the loop or silently mis-track state.
+# ---------------------------------------------------------------------------
+
+
+def test_rule1_proceeds_on_non_numeric_blockers_after(tmp_path: Path) -> None:
+    """A corrupt prior-round file with non-numeric ``blockers_after``
+    must not crash marker generation.
+
+    Defensive contract: round-pre.sh reads ``.blockers_after`` and
+    ``.round`` from a prior round file and passes them through
+    ``jq --argjson``, which rejects non-numeric input. A garbage value
+    (e.g. ``"many"``) must be coerced to a safe default so the marker
+    still writes and the loop can legitimately reuse the prior APPROVE.
+    """
+    run_dir = tmp_path / "review"
+    rounds = run_dir / "rounds"
+    rounds.mkdir(parents=True)
+    sha = "deadbeef" * 5
+    # Hand-craft a prior round whose blockers_after is a string and
+    # whose round number is null — both would normally break --argjson.
+    (rounds / "round-01.json").write_text(
+        json.dumps(
+            {
+                "round": None,
+                "finished_at": "2026-01-01T00:00:00Z",
+                "head_sha_before": sha,
+                "head_sha_after": sha,
+                "codex_event": "APPROVE",
+                "blockers_after": "many",
+            }
+        )
+    )
+
+    result = _run(
+        ROUND_PRE,
+        {"RUN_DIR": str(run_dir), "NEXT_ROUND": "2", "HEAD_SHA": sha},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "skip", result.stdout
+    marker = rounds / "round-02.json"
+    assert marker.exists(), "marker must still be written despite garbage prior values"
+    payload = json.loads(marker.read_text())
+    assert payload["blockers_after"] == 0
+    assert payload["approve_reused_from"] == 0
+
+
+def test_rule1_proceeds_when_next_round_non_numeric(tmp_path: Path) -> None:
+    """Caller-supplied NEXT_ROUND that is not numeric must force a
+    real codex re-run (``proceed``), never a silent ``skip`` without
+    a marker."""
+    run_dir = tmp_path / "review"
+    rounds = run_dir / "rounds"
+    sha = "cafebabe" * 5
+    _write_round(rounds, 1, sha, "APPROVE")
+
+    result = _run(
+        ROUND_PRE,
+        {"RUN_DIR": str(run_dir), "NEXT_ROUND": "abc", "HEAD_SHA": sha},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "proceed", result.stdout
+    # No marker may be written when proceeding.
+    assert not (rounds / "round-abc.json").exists()
+
+
+def test_rule2_object_shaped_artifact_treated_as_empty(tmp_path: Path) -> None:
+    """A non-array (object-shaped) comments artifact must NOT be
+    iterated with ``.[]``.
+
+    ``jq empty`` accepts any valid JSON, so a stray ``{path: "x"}``
+    payload (e.g. an error envelope from a failed gh call) would pass
+    the early validity check and then ``.[]`` on it would yield the
+    object's *values* — counting them as blocker paths. The hook must
+    require ``type == "array"`` before iterating; non-array input
+    contributes no blocker paths this round.
+    """
+    run_dir = tmp_path / "review"
+    run_dir.mkdir()
+
+    # Object-shaped artifact: a single comment as a top-level object,
+    # not wrapped in an array.
+    comments = run_dir / "round-01.codex-blockers.json"
+    comments.write_text(
+        json.dumps(
+            {
+                "id": 9001,
+                "path": "should/not/count.py",
+                "severity": "blocker",
+                "body": "x",
+            }
+        )
+    )
+    result = _run(ROUND_POST, _post_env(run_dir, 1, comments))
+    assert result.returncode == 0, result.stderr
+
+    history = json.loads((run_dir / "region-history.json").read_text())
+    assert history["counters"] == {}, (
+        "object-shaped artifact must contribute zero blocker paths; got "
+        f"{history['counters']}"
+    )

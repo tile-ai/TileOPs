@@ -73,6 +73,14 @@ if [[ -f "$COMMENTS_JSON" ]]; then
   # tolerate empty / malformed file by falling back to []
   if ! jq empty "$COMMENTS_JSON" >/dev/null 2>&1; then
     echo "round-post.sh: $COMMENTS_JSON is not valid JSON; treating as empty" >&2
+  elif ! jq -e 'type == "array"' "$COMMENTS_JSON" >/dev/null 2>&1; then
+    # `jq empty` accepts ANY valid JSON, including objects. If the
+    # artifact is e.g. `{path:"x"}` (a single comment object, or an
+    # error-wrapper produced by a failed gh call), `.[]` would extract
+    # its values and miscount them as blocker paths. Require an array
+    # before iterating; non-array input is treated as no blockers this
+    # round (counters will reset, label stays unchanged).
+    echo "round-post.sh: $COMMENTS_JSON is not a JSON array; treating as empty" >&2
   else
     while IFS= read -r p; do
       [[ -n "$p" && "$p" != "null" ]] && PATHS_THIS_ROUND+=("$p")
@@ -139,7 +147,9 @@ if [[ "${#TRIGGERED_PATHS[@]}" -gt 0 ]]; then
   # collect comment ids (best-effort) so the event log carries enough
   # info to triangulate which findings drove the strike.
   for path in "${TRIGGERED_PATHS[@]}"; do
-    if [[ -f "$COMMENTS_JSON" ]] && jq empty "$COMMENTS_JSON" >/dev/null 2>&1; then
+    if [[ -f "$COMMENTS_JSON" ]] \
+        && jq empty "$COMMENTS_JSON" >/dev/null 2>&1 \
+        && jq -e 'type == "array"' "$COMMENTS_JSON" >/dev/null 2>&1; then
       IDS_JSON=$(jq --arg p "$path" '[.[]|select(.path==$p)|.id // empty]' "$COMMENTS_JSON" 2>/dev/null || echo '[]')
     else
       IDS_JSON='[]'

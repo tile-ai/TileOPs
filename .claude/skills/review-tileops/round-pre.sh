@@ -90,6 +90,15 @@ while IFS= read -r -d '' f; do
     PRIOR_ROUND=$(jq -r '.round // empty' "$f" 2>/dev/null) || PRIOR_ROUND=""
     PRIOR_BLOCKERS=$(jq -r '.blockers_after // 0' "$f" 2>/dev/null) || PRIOR_BLOCKERS=0
     PRIOR_HUMAN_ID=$(jq -r '.last_human_comment_id // empty' "$f" 2>/dev/null) || PRIOR_HUMAN_ID=""
+    # Defensive numeric validation: --argjson rejects non-JSON-numeric
+    # values, which would crash marker generation below. A corrupt prior
+    # round file (e.g. blockers_after: "many", round: null) must not
+    # break the monitor — coerce to safe defaults so the marker still
+    # writes and reuse can proceed. Empty strings from `// empty` above
+    # are normalized here too.
+    [[ "$PRIOR_ROUND" =~ ^[0-9]+$ ]] || PRIOR_ROUND=0
+    [[ "$PRIOR_BLOCKERS" =~ ^[0-9]+$ ]] || PRIOR_BLOCKERS=0
+    [[ "$PRIOR_HUMAN_ID" =~ ^[0-9]+$ ]] || PRIOR_HUMAN_ID=""
     break
   fi
 done < <(find "$ROUNDS_DIR" -maxdepth 1 -type f -name 'round-*.json' -print0 2>/dev/null | sort -z)
@@ -126,13 +135,23 @@ NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 MARKER_HUMAN_ID="${LATEST_HUMAN_ID:-${PRIOR_HUMAN_ID:-0}}"
 [[ -z "$MARKER_HUMAN_ID" ]] && MARKER_HUMAN_ID=0
 
-jq -n \
+# Final numeric validation before --argjson. Any of the four values
+# below could still be non-numeric here (e.g. caller-supplied
+# NEXT_ROUND or LATEST_HUMAN_ID came in malformed). Coerce or bail to
+# "proceed" so the loop falls back to a real codex run rather than
+# silently emitting "skip" without writing a marker.
+[[ "$NEXT_ROUND" =~ ^[0-9]+$ ]] || { echo "round-pre.sh: NEXT_ROUND not numeric ($NEXT_ROUND); proceeding" >&2; echo "proceed"; exit 0; }
+[[ "$PRIOR_BLOCKERS" =~ ^[0-9]+$ ]] || PRIOR_BLOCKERS=0
+[[ "$PRIOR_ROUND" =~ ^[0-9]+$ ]] || PRIOR_ROUND=0
+[[ "$MARKER_HUMAN_ID" =~ ^[0-9]+$ ]] || MARKER_HUMAN_ID=0
+
+if ! jq -n \
   --argjson r "$NEXT_ROUND" \
   --arg now "$NOW" \
   --arg sha "$HEAD_SHA" \
   --arg ev "APPROVE" \
   --argjson bl "$PRIOR_BLOCKERS" \
-  --argjson prior_round "${PRIOR_ROUND:-0}" \
+  --argjson prior_round "$PRIOR_ROUND" \
   --argjson hid "$MARKER_HUMAN_ID" \
   '{round:$r, finished_at:$now,
     head_sha_before:$sha, head_sha_after:$sha,
@@ -140,7 +159,25 @@ jq -n \
     last_human_comment_id:$hid,
     approve_reused_from: $prior_round,
     skipped_codex: true}' \
-  > "$MARKER"
+  > "$MARKER" 2>/dev/null; then
+  # Marker generation failed (jq error, disk full, etc.). Without a
+  # marker we MUST NOT emit "skip" — the loop would skip codex *and*
+  # have no recorded round file, leaving the postmortem trail broken.
+  # Force a real codex re-run instead.
+  rm -f "$MARKER" 2>/dev/null || true
+  echo "round-pre.sh: marker generation failed; forcing codex re-run" >&2
+  echo "proceed"
+  exit 0
+fi
+
+# Defensive: if jq exited 0 but the marker is missing or empty, also
+# fall back to "proceed" (e.g. redirection failure on a read-only FS).
+if [[ ! -s "$MARKER" ]]; then
+  rm -f "$MARKER" 2>/dev/null || true
+  echo "round-pre.sh: marker missing/empty after jq; forcing codex re-run" >&2
+  echo "proceed"
+  exit 0
+fi
 
 echo "skip"
 exit 0
