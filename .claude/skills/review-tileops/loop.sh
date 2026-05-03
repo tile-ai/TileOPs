@@ -678,6 +678,40 @@ while true; do
     "$DIFF_FILE" "$PR_STATE" "$HEAD_SHA" "$LAST_SHA" "$LAST_EVENT" "$INBOX_BLOCK" \
     "$CONSECUTIVE_RC"
 
+  # Convergence Rule 1 — same-SHA APPROVE skip. If a prior round in
+  # this loop run already APPROVED the current HEAD, reuse that
+  # outcome verbatim and skip codex (deterministic, file-only).
+  RULE1_DECISION=$(RUN_DIR="$RUN_DIR" NEXT_ROUND="$NEXT_ROUND" HEAD_SHA="$HEAD_SHA" \
+    bash "$SKILL_DIR/round-pre.sh" || echo "proceed")
+  if [[ "$RULE1_DECISION" == "skip" ]]; then
+    log "round $NEXT_ROUND — Rule 1: prior APPROVE on $HEAD_SHA found; skipping codex"
+    EVENT="APPROVE"
+    BLOCKERS=$(jq -r '.blockers_after // 0' "$SNAP.json")
+    NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq --argjson r "$NEXT_ROUND" --arg sha "$HEAD_SHA" --arg now "$NOW" \
+       --argjson hid "$LATEST_HUMAN_ID" --arg ev "$EVENT" \
+       --argjson cm "$CRITERIA_MTIME" \
+       '.round=$r | .last_reviewed_sha=$sha | .last_human_comment_id=$hid
+        | .last_codex_event=$ev | .last_criteria_mtime=$cm
+        | .consecutive_request_changes=0
+        | .consecutive_codex_failures=0
+        | .consecutive_idle=0
+        | .last_reviewed_at=$now' \
+       "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+    set_task_review_rounds "$NEXT_ROUND"
+    set_task_review_event "$EVENT"
+    log "round $NEXT_ROUND done (codex skipped) — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
+    if [[ "$EVENT" == "APPROVE" ]]; then
+      POST_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+      POST_HUMAN_ID=$(latest_human_comment_id)
+      if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" && "$POST_HUMAN_ID" == "$LATEST_HUMAN_ID" ]]; then
+        converge_and_exit
+      fi
+    fi
+    sleep "$POLL_INTERVAL"
+    continue
+  fi
+
   log "round $NEXT_ROUND — invoking codex"
   if ! run_codex_round "$SNAP"; then
     exit 1
@@ -718,6 +752,16 @@ while true; do
 
   set_task_review_rounds "$NEXT_ROUND"
   set_task_review_event "$EVENT"
+
+  # Convergence Rule 2 — same-path 3-strike monitor. Updates
+  # region-history.json and labels the PR `agent-stuck` once any
+  # path has produced a blocker for >= 3 consecutive rounds.
+  # Monitoring-only: must not mutate blockers, threads, or PR title.
+  RUN_DIR="$RUN_DIR" ROUND="$NEXT_ROUND" \
+    COMMENTS_JSON="$SNAP.new-review-comments.json" \
+    REPO="$REPO" PR="$PR" \
+    bash "$SKILL_DIR/round-post.sh" || \
+      log "round-post.sh: non-fatal failure (monitor-only); continuing"
 
   log "round $NEXT_ROUND done — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
 
