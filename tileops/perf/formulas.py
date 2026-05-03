@@ -19,12 +19,20 @@ if TYPE_CHECKING:
     from tileops.ops.op_base import Op
 
 __all__ = [
+    "add_fwd_roofline",
+    "bitwise_and_fwd_roofline",
+    "bitwise_or_fwd_roofline",
+    "bitwise_xor_fwd_roofline",
     "clamp_fwd_roofline",
     "clamp_max_fwd_roofline",
     "clamp_min_fwd_roofline",
     "deepseek_dsa_decode_roofline",
     "deepseek_mla_decode_roofline",
+    "div_fwd_roofline",
+    "eq_fwd_roofline",
+    "floor_divide_fwd_roofline",
     "fused_moe_fwd_bytes",
+    "ge_fwd_roofline",
     "gqa_bwd_roofline",
     "gqa_decode_paged_roofline",
     "gqa_decode_roofline",
@@ -33,12 +41,25 @@ __all__ = [
     "gqa_prefill_with_kv_cache_fwd_roofline",
     "gqa_sliding_window_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
+    "gt_fwd_roofline",
+    "le_fwd_roofline",
+    "lerp_fwd_roofline",
     "lerp_tensor_fwd_roofline",
+    "logical_and_fwd_roofline",
+    "logical_or_fwd_roofline",
+    "lt_fwd_roofline",
     "masked_fill_fwd_roofline",
+    "maximum_fwd_roofline",
     "mha_bwd_roofline",
     "mha_decode_paged_roofline",
     "mha_decode_roofline",
     "mha_fwd_roofline",
+    "minimum_fwd_roofline",
+    "mul_fwd_roofline",
+    "ne_fwd_roofline",
+    "pow_fwd_roofline",
+    "remainder_fwd_roofline",
+    "sub_fwd_roofline",
     "where_fwd_roofline",
 ]
 
@@ -423,6 +444,104 @@ def masked_fill_fwd_roofline(op: "Op") -> tuple[int, int]:
     flops = n_total
     nbytes = n_total + 2 * n_total * elem_bytes
     return flops, nbytes
+
+
+def _binary_broadcast_roofline(
+    op: "Op", *, flops_per_elem: int, bool_output: bool
+) -> tuple[int, int]:
+    """Shared core for the broadcast-binary roofline family."""
+    a_numel = int(op.a_numel)
+    b_numel = int(op.b_numel)
+    n_total = int(op.N_total)
+    elem_bytes = op.dtype.itemsize
+    out_elem_bytes = 1 if bool_output else elem_bytes
+    flops = flops_per_elem * n_total
+    nbytes = (a_numel + b_numel) * elem_bytes + n_total * out_elem_bytes
+    return flops, nbytes
+
+
+def add_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=2, bool_output=False)
+
+
+def sub_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=2, bool_output=False)
+
+
+def mul_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
+
+
+def div_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
+
+
+def remainder_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=4, bool_output=False)
+
+
+def pow_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=3, bool_output=False)
+
+
+def floor_divide_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=2, bool_output=False)
+
+
+def lerp_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=3, bool_output=False)
+
+
+def maximum_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
+
+
+def minimum_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
+
+
+def eq_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
+
+
+def ne_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
+
+
+def gt_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
+
+
+def lt_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
+
+
+def ge_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
+
+
+def le_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
+
+
+def logical_and_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=3, bool_output=True)
+
+
+def logical_or_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=3, bool_output=True)
+
+
+def bitwise_and_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
+
+
+def bitwise_or_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
+
+
+def bitwise_xor_fwd_roofline(op: "Op") -> tuple[int, int]:
+    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
 
 
 # ---------------------------------------------------------------------------
