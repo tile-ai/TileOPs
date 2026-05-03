@@ -33,23 +33,30 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "review-tileops"
 ROUND_PRE = SKILL_DIR / "round-pre.sh"
 ROUND_POST = SKILL_DIR / "round-post.sh"
+LOOP_SH = SKILL_DIR / "loop.sh"
 
 
-def _write_round(rounds_dir: Path, n: int, sha: str, event: str, blockers: int = 0) -> Path:
+def _write_round(
+    rounds_dir: Path,
+    n: int,
+    sha: str,
+    event: str,
+    blockers: int = 0,
+    last_human_comment_id: int | None = None,
+) -> Path:
     rounds_dir.mkdir(parents=True, exist_ok=True)
     p = rounds_dir / f"round-{n:02d}.json"
-    p.write_text(
-        json.dumps(
-            {
-                "round": n,
-                "finished_at": "2026-01-01T00:00:00Z",
-                "head_sha_before": sha,
-                "head_sha_after": sha,
-                "codex_event": event,
-                "blockers_after": blockers,
-            }
-        )
-    )
+    payload: dict[str, object] = {
+        "round": n,
+        "finished_at": "2026-01-01T00:00:00Z",
+        "head_sha_before": sha,
+        "head_sha_after": sha,
+        "codex_event": event,
+        "blockers_after": blockers,
+    }
+    if last_human_comment_id is not None:
+        payload["last_human_comment_id"] = last_human_comment_id
+    p.write_text(json.dumps(payload))
     return p
 
 
@@ -146,6 +153,64 @@ def test_rule1_handles_missing_rounds_dir(tmp_path: Path) -> None:
     assert result.stdout.strip() == "proceed"
 
 
+def test_rule1_no_skip_when_new_human_comment_on_same_sha(tmp_path: Path) -> None:
+    """Bug-1 regression: same SHA + new human comment must NOT skip codex.
+
+    If a human posts a fresh comment after the prior APPROVE on the same
+    HEAD sha, the loop is contractually obligated to ingest it. Rule 1
+    must therefore bypass the SHA-only reuse and force codex to run.
+    """
+    run_dir = tmp_path / "review"
+    rounds = run_dir / "rounds"
+    sha = "e" * 40
+    # Prior APPROVE was issued when the latest human-comment id was 100.
+    _write_round(rounds, 1, sha, "APPROVE", blockers=0, last_human_comment_id=100)
+
+    # A new human comment with id 101 has since landed.
+    result = _run(
+        ROUND_PRE,
+        {
+            "RUN_DIR": str(run_dir),
+            "NEXT_ROUND": "2",
+            "HEAD_SHA": sha,
+            "LATEST_HUMAN_ID": "101",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "proceed", (
+        "new human comment on the approved SHA must force codex to re-review"
+    )
+    # No marker — the loop must run codex.
+    assert not (rounds / "round-02.json").exists()
+
+
+def test_rule1_skip_when_human_watermark_unchanged(tmp_path: Path) -> None:
+    """Same SHA + same human-comment watermark → skip is still safe."""
+    run_dir = tmp_path / "review"
+    rounds = run_dir / "rounds"
+    sha = "f" * 40
+    _write_round(rounds, 1, sha, "APPROVE", blockers=0, last_human_comment_id=100)
+
+    result = _run(
+        ROUND_PRE,
+        {
+            "RUN_DIR": str(run_dir),
+            "NEXT_ROUND": "2",
+            "HEAD_SHA": sha,
+            "LATEST_HUMAN_ID": "100",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "skip"
+    marker = rounds / "round-02.json"
+    assert marker.exists()
+    payload = json.loads(marker.read_text())
+    # The marker must carry the watermark forward so a subsequent reuse
+    # decision can compare against the *current* loop state, not the
+    # original approving round.
+    assert payload["last_human_comment_id"] == 100
+
+
 # ---------------------------------------------------------------------------
 # Rule 2 — round-post.sh
 # ---------------------------------------------------------------------------
@@ -198,6 +263,43 @@ def test_rule2_label_after_three_strikes(tmp_path: Path) -> None:
     # Only round 3 should attempt label ops; rounds 1 and 2 are below threshold.
     assert any("pr edit 1234" in line and "agent-stuck" in line for line in log_lines)
     assert any("label create agent-stuck" in line for line in log_lines)
+
+
+def test_rule2_event_fires_only_on_threshold_transition(tmp_path: Path) -> None:
+    """Event must append exactly once per streak (round 3 only, not 4 or 5)."""
+    run_dir = tmp_path / "review"
+    run_dir.mkdir()
+    stub, log = _make_gh_stub(tmp_path)
+
+    target = "tileops/manifest/elementwise_binary.yaml"
+    # Five consecutive rounds with the same blocker. Counter goes 1→2→3→4→5;
+    # only the 2→3 transition (round 3) should emit an events[] entry, and
+    # the agent-stuck label should be added at most once across the streak.
+    for r in (1, 2, 3, 4, 5):
+        comments = run_dir / f"round-{r:02d}.new-review-comments.json"
+        _write_comments(comments, [target])
+        result = _run(ROUND_POST, _post_env(run_dir, r, comments, gh_bin=stub))
+        assert result.returncode == 0, result.stderr
+
+    history = json.loads((run_dir / "region-history.json").read_text())
+    assert history["counters"][target] == 5
+
+    triggered_events = [e for e in history["events"] if e["path"] == target]
+    assert len(triggered_events) == 1, (
+        f"event must fire only on threshold transition, got {triggered_events}"
+    )
+    assert triggered_events[0]["round"] == 3
+
+    # Label application is idempotent on the gh side, but we should see the
+    # add-label call invoked at most once for this streak (i.e. only on
+    # round 3 when TRIGGERED_PATHS becomes non-empty for the first time).
+    log_lines = log.read_text().splitlines()
+    add_label_lines = [
+        line for line in log_lines if "pr edit 1234" in line and "agent-stuck" in line
+    ]
+    assert len(add_label_lines) == 1, (
+        f"expected exactly one add-label invocation, got {add_label_lines}"
+    )
 
 
 def test_rule2_counter_resets_on_break(tmp_path: Path) -> None:
@@ -305,4 +407,95 @@ def test_rule2_no_label_below_threshold(tmp_path: Path) -> None:
 
     assert not log.exists() or log.read_text() == "", (
         "gh must not be invoked before the 3rd consecutive blocker round"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bug-2 regression: loop wires the post-codex reviewer-authored artifact
+# (codex-blockers.json) into round-post.sh, NOT the pre-codex
+# new-review-comments.json that explicitly excludes the reviewer login.
+# ---------------------------------------------------------------------------
+
+
+def test_loop_passes_codex_blockers_to_round_post(tmp_path: Path) -> None:
+    """Bug-2 regression: round-post.sh must be fed codex-blockers.json.
+
+    The pre-codex ``round-NN.new-review-comments.json`` artifact filters
+    OUT REVIEWER_LOGIN, so it never contains this round's codex
+    blockers. Rule 2 (per-path 3-strike monitor) is contractually
+    supposed to track codex-authored blocker paths, so loop.sh must
+    invoke round-post.sh against ``round-NN.codex-blockers.json``,
+    which is gathered AFTER codex finishes and filtered to
+    REVIEWER_LOGIN.
+    """
+    src = LOOP_SH.read_text()
+    # The Rule 2 invocation block must hand round-post.sh the post-codex
+    # artifact, not the pre-codex one.
+    assert "COMMENTS_JSON=\"$CODEX_BLOCKERS_JSON\"" in src, (
+        "loop.sh must pass the post-codex codex-blockers artifact to round-post.sh"
+    )
+    # And the artifact itself must be derived from the reviewer-login
+    # filter on /pulls/<pr>/comments AFTER codex runs.
+    assert "CODEX_BLOCKERS_JSON=\"$SNAP.codex-blockers.json\"" in src
+    assert ".user.login==\\\"$REVIEWER_LOGIN\\\"" in src, (
+        "codex-blockers artifact must filter to comments authored by REVIEWER_LOGIN"
+    )
+    # The pre-codex artifact (which excludes REVIEWER_LOGIN) must NOT be
+    # the file passed to round-post.sh.
+    assert "COMMENTS_JSON=\"$SNAP.new-review-comments.json\"" not in src, (
+        "loop.sh must not feed round-post.sh the pre-codex new-review-comments.json "
+        "(it explicitly filters OUT the reviewer login)"
+    )
+
+
+def test_round_post_counts_codex_authored_blockers(tmp_path: Path) -> None:
+    """Bug-2 regression: when fed a reviewer-authored blocker file, the
+    monitor tracks those paths. When fed an empty file (the shape that
+    new-review-comments.json would have for a PR with no human chatter),
+    no codex paths are tracked — illustrating that wiring the wrong file
+    silently disables Rule 2.
+    """
+    run_dir = tmp_path / "review"
+    run_dir.mkdir()
+    stub, _log = _make_gh_stub(tmp_path)
+
+    target = "tileops/manifest/elementwise_binary.yaml"
+
+    # Round 1: post-codex artifact contains the codex blocker.
+    codex_blockers = run_dir / "round-01.codex-blockers.json"
+    codex_blockers.write_text(
+        json.dumps(
+            [
+                {
+                    "id": 5001,
+                    "user": "tileops-reviewer-bot",
+                    "path": target,
+                    "severity": "blocker",
+                    "body": "x",
+                }
+            ]
+        )
+    )
+    result = _run(ROUND_POST, _post_env(run_dir, 1, codex_blockers, gh_bin=stub))
+    assert result.returncode == 0, result.stderr
+    history = json.loads((run_dir / "region-history.json").read_text())
+    assert history["counters"].get(target) == 1, (
+        "codex-authored blocker on a path must increment its counter"
+    )
+
+    # Round 2: simulate the buggy wiring — feed the pre-codex
+    # new-review-comments.json artifact, which excludes REVIEWER_LOGIN
+    # and is therefore empty for a PR with no human chatter. The bug
+    # would manifest as Rule 2 silently never tracking codex blockers
+    # at all. This assertion documents that behavior so a future
+    # regression can be diagnosed quickly.
+    pre_codex = run_dir / "round-02.new-review-comments.json"
+    pre_codex.write_text("[]")
+    result = _run(ROUND_POST, _post_env(run_dir, 2, pre_codex, gh_bin=stub))
+    assert result.returncode == 0, result.stderr
+    history = json.loads((run_dir / "region-history.json").read_text())
+    assert target not in history["counters"], (
+        "feeding round-post the pre-codex (empty) artifact must NOT carry "
+        "the codex-blocker counter forward — this is exactly the bug-2 "
+        "failure mode the loop wiring must avoid"
     )

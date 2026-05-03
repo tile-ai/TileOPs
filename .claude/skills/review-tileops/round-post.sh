@@ -15,9 +15,13 @@
 # Inputs (env or positional, env wins):
 #   RUN_DIR        — review/ root for this loop run.
 #   ROUND          — integer round number that just finished.
-#   COMMENTS_JSON  — path to round-NN.new-review-comments.json (the
-#                    snapshot of new review comments produced this
-#                    round; used as the source of blocker paths).
+#   COMMENTS_JSON  — path to round-NN.codex-blockers.json (the post-
+#                    codex snapshot of review comments authored by
+#                    REVIEWER_LOGIN this round; used as the source of
+#                    blocker paths). The pre-codex
+#                    round-NN.new-review-comments.json is the WRONG
+#                    artifact — it explicitly filters out the reviewer
+#                    and contains human comments instead.
 #   REPO           — "owner/repo" string for `gh` operations.
 #                    Default: tile-ai/TileOPs.
 #   PR             — PR number for `gh pr edit`.
@@ -53,13 +57,14 @@ LABEL_COLOR="FBCA04"
 
 # --- 1. Extract blocker paths from this round's review comments ---
 #
-# Source-of-truth contract: this round's new-review-comments.json is the
-# round artifact the loop already writes; entries with severity=blocker
-# (or category=blocker) carry the .path the reviewer flagged. We treat
-# any entry whose .severity or .category is "blocker" as a blocker. If
-# neither field exists (older format), every entry counts — round-post
-# is monitoring-only, so over-counting just delays a label, never an
-# unsafe action.
+# Source-of-truth contract: this round's codex-blockers.json is the
+# post-codex snapshot of review comments authored by the reviewer login
+# (i.e. comments codex itself just posted as part of this review).
+# Entries with severity=blocker (or category=blocker) carry the .path
+# the reviewer flagged. We treat any entry whose .severity or .category
+# is "blocker" as a blocker. If neither field exists (older format or
+# free-form review), every entry counts — round-post is monitoring-only,
+# so over-counting just delays a label, never an unsafe action.
 PATHS_THIS_ROUND=()
 if [[ -f "$COMMENTS_JSON" ]]; then
   # tolerate empty / malformed file by falling back to []
@@ -123,7 +128,7 @@ while IFS= read -r p; do
 done < <(jq -r --argjson t "$THRESHOLD" '
   .counters
   | to_entries
-  | map(select(.value >= $t))
+  | map(select(.value == $t))
   | .[].key' "$HISTORY")
 
 # --- 4. Append events for triggered paths (postmortem trail) ---

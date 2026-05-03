@@ -236,6 +236,7 @@ if [[ ! -f "$META" ]]; then
     round: 0,
     last_reviewed_sha: null,
     last_human_comment_id: 0,
+    last_reviewer_comment_id: 0,
     last_codex_event: null,
     last_criteria_mtime: 0,
     consecutive_codex_failures: 0,
@@ -682,6 +683,7 @@ while true; do
   # this loop run already APPROVED the current HEAD, reuse that
   # outcome verbatim and skip codex (deterministic, file-only).
   RULE1_DECISION=$(RUN_DIR="$RUN_DIR" NEXT_ROUND="$NEXT_ROUND" HEAD_SHA="$HEAD_SHA" \
+    LATEST_HUMAN_ID="$LATEST_HUMAN_ID" \
     bash "$SKILL_DIR/round-pre.sh" || echo "proceed")
   if [[ "$RULE1_DECISION" == "skip" ]]; then
     log "round $NEXT_ROUND — Rule 1: prior APPROVE on $HEAD_SHA found; skipping codex"
@@ -747,8 +749,10 @@ while true; do
   jq -n --argjson r "$NEXT_ROUND" --arg now "$NOW" \
     --arg sha_b "${LAST_SHA:-null}" --arg sha_a "$HEAD_SHA" \
     --arg ev "$EVENT" --argjson bl "$BLOCKERS" \
+    --argjson hid "$LATEST_HUMAN_ID" \
     '{round:$r, finished_at:$now, head_sha_before:$sha_b, head_sha_after:$sha_a,
-      codex_event:$ev, blockers_after:$bl}' > "$SNAP.json"
+      codex_event:$ev, blockers_after:$bl,
+      last_human_comment_id:$hid}' > "$SNAP.json"
 
   set_task_review_rounds "$NEXT_ROUND"
   set_task_review_event "$EVENT"
@@ -757,8 +761,30 @@ while true; do
   # region-history.json and labels the PR `agent-stuck` once any
   # path has produced a blocker for >= 3 consecutive rounds.
   # Monitoring-only: must not mutate blockers, threads, or PR title.
+  #
+  # Source artifact contract: $SNAP.new-review-comments.json is a *pre-
+  # codex* snapshot that explicitly filters out REVIEWER_LOGIN — i.e. it
+  # contains human comments, not this round's codex blockers. Feeding
+  # that to round-post would track the wrong paths. After codex
+  # finishes, re-fetch the PR's review comments and keep only those
+  # authored by REVIEWER_LOGIN with id > LAST_REVIEWER_COMMENT_ID
+  # (anything new posted in this round). Best-effort: empty list on
+  # failure keeps Rule 2 monitor-only.
+  CODEX_BLOCKERS_JSON="$SNAP.codex-blockers.json"
+  LAST_REVIEWER_COMMENT_ID=$(jq -r '.last_reviewer_comment_id // 0' "$META")
+  gh api "repos/$REPO/pulls/$PR/comments" --paginate \
+    --jq "[.[]|select(.user.login==\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEWER_COMMENT_ID)|{id,user:.user.login,path,line,body,created_at}]" \
+    > "$CODEX_BLOCKERS_JSON" 2>/dev/null || echo '[]' > "$CODEX_BLOCKERS_JSON"
+  # Advance the reviewer-comment watermark so the next round only sees
+  # comments newly posted by codex.
+  NEW_REVIEWER_MAX=$(jq -r '[.[].id // 0]|max // 0' "$CODEX_BLOCKERS_JSON" 2>/dev/null || echo 0)
+  if [[ "$NEW_REVIEWER_MAX" -gt "$LAST_REVIEWER_COMMENT_ID" ]]; then
+    jq --argjson n "$NEW_REVIEWER_MAX" '.last_reviewer_comment_id=$n' \
+      "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+  fi
+
   RUN_DIR="$RUN_DIR" ROUND="$NEXT_ROUND" \
-    COMMENTS_JSON="$SNAP.new-review-comments.json" \
+    COMMENTS_JSON="$CODEX_BLOCKERS_JSON" \
     REPO="$REPO" PR="$PR" \
     bash "$SKILL_DIR/round-post.sh" || \
       log "round-post.sh: non-fatal failure (monitor-only); continuing"
