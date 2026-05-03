@@ -27,12 +27,22 @@
 # Output:
 #   - exit 0 + stdout "skip"     → loop should skip codex; round-NN.json is
 #                                  already written by this script.
-#   - exit 0 + stdout "proceed"  → no prior APPROVE on this SHA; loop runs
-#                                  codex normally.
-#   - non-zero exit              → unexpected error; loop should fail-fast.
+#   - exit 0 + stdout "proceed"  → no prior APPROVE on this SHA, OR a
+#                                  recoverable condition was hit (missing
+#                                  args, missing rounds dir, malformed
+#                                  prior round file, etc.). The loop's
+#                                  ``|| echo "proceed"`` fallback expects
+#                                  this contract: round-pre.sh is a
+#                                  monitor and MUST NOT exit non-zero on
+#                                  recoverable conditions, otherwise
+#                                  corrupt state would be silently
+#                                  re-mapped to "proceed" and could
+#                                  re-enable a same-SHA re-review.
+#   - non-zero exit              → reserved for truly unexpected errors
+#                                  (e.g. jq missing). Currently unused.
 #
 # Determinism: pure file scan. No gh / git / network. No LLM.
-set -euo pipefail
+set -uo pipefail
 
 RUN_DIR="${RUN_DIR:-${1:-}}"
 NEXT_ROUND="${NEXT_ROUND:-${2:-}}"
@@ -40,8 +50,12 @@ HEAD_SHA="${HEAD_SHA:-${3:-}}"
 LATEST_HUMAN_ID="${LATEST_HUMAN_ID:-${4:-}}"
 
 if [[ -z "$RUN_DIR" || -z "$NEXT_ROUND" || -z "$HEAD_SHA" ]]; then
+  # Missing args is a recoverable misconfiguration: emit "proceed" so the
+  # loop continues with codex rather than failing fast. (See contract
+  # note above.)
   echo "round-pre.sh: missing args; usage: RUN_DIR=... NEXT_ROUND=... HEAD_SHA=... round-pre.sh" >&2
-  exit 2
+  echo "proceed"
+  exit 0
 fi
 
 ROUNDS_DIR="$RUN_DIR/rounds"
@@ -60,19 +74,25 @@ PRIOR_BLOCKERS=0
 PRIOR_HUMAN_ID=""
 
 # Use a sorted glob so iteration order is stable across filesystems.
+# Iterate via while-read against a NUL-safe stream so paths with spaces
+# or other shell-meta characters survive intact (paths come from the
+# RUN_DIR caller-supplied root). Malformed JSON in any candidate file is
+# treated as "not an approval" and skipped silently — corrupt round
+# files must never crash the monitor; downstream consumers are
+# responsible for surfacing them.
 shopt -s nullglob
-for f in $(printf '%s\n' "$ROUNDS_DIR"/round-*.json | sort); do
+while IFS= read -r -d '' f; do
   [[ -f "$f" ]] || continue
-  ev=$(jq -r '.codex_event // empty' "$f" 2>/dev/null || echo "")
-  sha=$(jq -r '.head_sha_after // empty' "$f" 2>/dev/null || echo "")
+  ev=$(jq -r '.codex_event // empty' "$f" 2>/dev/null) || ev=""
+  sha=$(jq -r '.head_sha_after // empty' "$f" 2>/dev/null) || sha=""
   if [[ "$ev" == "APPROVE" && "$sha" == "$HEAD_SHA" ]]; then
     PRIOR_FILE="$f"
-    PRIOR_ROUND=$(jq -r '.round // empty' "$f")
-    PRIOR_BLOCKERS=$(jq -r '.blockers_after // 0' "$f")
-    PRIOR_HUMAN_ID=$(jq -r '.last_human_comment_id // empty' "$f")
+    PRIOR_ROUND=$(jq -r '.round // empty' "$f" 2>/dev/null) || PRIOR_ROUND=""
+    PRIOR_BLOCKERS=$(jq -r '.blockers_after // 0' "$f" 2>/dev/null) || PRIOR_BLOCKERS=0
+    PRIOR_HUMAN_ID=$(jq -r '.last_human_comment_id // empty' "$f" 2>/dev/null) || PRIOR_HUMAN_ID=""
     break
   fi
-done
+done < <(find "$ROUNDS_DIR" -maxdepth 1 -type f -name 'round-*.json' -print0 2>/dev/null | sort -z)
 
 if [[ -z "$PRIOR_FILE" ]]; then
   echo "proceed"

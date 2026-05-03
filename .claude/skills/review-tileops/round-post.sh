@@ -63,8 +63,11 @@ LABEL_COLOR="FBCA04"
 # Entries with severity=blocker (or category=blocker) carry the .path
 # the reviewer flagged. We treat any entry whose .severity or .category
 # is "blocker" as a blocker. If neither field exists (older format or
-# free-form review), every entry counts — round-post is monitoring-only,
-# so over-counting just delays a label, never an unsafe action.
+# free-form review), every entry counts. Round-post is monitoring-only:
+# the only side-effect is the `agent-stuck` label, which is itself
+# idempotent and safe to apply early. Over-counting accelerates the
+# threshold (i.e. the label may land sooner than a strict-blocker count
+# would warrant); it never produces an unsafe action.
 PATHS_THIS_ROUND=()
 if [[ -f "$COMMENTS_JSON" ]]; then
   # tolerate empty / malformed file by falling back to []
