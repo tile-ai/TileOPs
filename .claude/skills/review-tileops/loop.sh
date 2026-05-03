@@ -764,9 +764,9 @@ while true; do
   set_task_review_rounds "$NEXT_ROUND"
   set_task_review_event "$EVENT"
 
-  # Convergence Rule 2 — same-path 3-strike monitor. Updates
+  # Convergence Rule 2 — same-path 5-strike monitor. Updates
   # region-history.json and labels the PR `agent-stuck` once any
-  # path has produced a blocker for >= 3 consecutive rounds.
+  # path has produced a blocker for >= 5 consecutive rounds.
   # Monitoring-only: must not mutate blockers, threads, or PR title.
   #
   # Source artifact contract: codex itself writes

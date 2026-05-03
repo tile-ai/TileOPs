@@ -7,9 +7,9 @@ review-tileops loop (issue #1161):
   in the same loop run already produced ``codex_event == "APPROVE"`` on
   the current HEAD sha, the loop must skip the codex invocation and
   emit a marker ``round-NN.json`` that points back at the prior round.
-* Rule 2 — same-path 3-strike monitor (``round-post.sh``): track per-
+* Rule 2 — same-path 5-strike monitor (``round-post.sh``): track per-
   path consecutive-blocker streaks across rounds; when any path's
-  counter hits >= 3, ensure the PR carries the ``agent-stuck`` GitHub
+  counter hits >= 5, ensure the PR carries the ``agent-stuck`` GitHub
   label. The hook MUST NOT mutate any blocker, comment, PR title, or
   thread.
 
@@ -240,41 +240,13 @@ def _post_env(
     }
 
 
-def test_rule2_label_after_three_strikes(tmp_path: Path) -> None:
-    """Three consecutive rounds with a blocker on the same path → label applied."""
+def test_rule2_label_after_five_strikes(tmp_path: Path) -> None:
+    """Five consecutive rounds with a blocker on the same path → label applied."""
     run_dir = tmp_path / "review"
     run_dir.mkdir()
     stub, log = _make_gh_stub(tmp_path)
 
     target = "tileops/manifest/elementwise_binary.yaml"
-    for r in (1, 2, 3):
-        comments = run_dir / f"round-{r:02d}.new-review-comments.json"
-        _write_comments(comments, [target])
-        result = _run(ROUND_POST, _post_env(run_dir, r, comments, gh_bin=stub))
-        assert result.returncode == 0, result.stderr
-
-    history = json.loads((run_dir / "region-history.json").read_text())
-    assert history["counters"][target] == 3
-    triggered_events = [e for e in history["events"] if e["path"] == target]
-    assert triggered_events, "expected at least one triggered event entry"
-    assert triggered_events[-1]["round"] == 3
-
-    log_lines = log.read_text().splitlines()
-    # Only round 3 should attempt label ops; rounds 1 and 2 are below threshold.
-    assert any("pr edit 1234" in line and "agent-stuck" in line for line in log_lines)
-    assert any("label create agent-stuck" in line for line in log_lines)
-
-
-def test_rule2_event_fires_only_on_threshold_transition(tmp_path: Path) -> None:
-    """Event must append exactly once per streak (round 3 only, not 4 or 5)."""
-    run_dir = tmp_path / "review"
-    run_dir.mkdir()
-    stub, log = _make_gh_stub(tmp_path)
-
-    target = "tileops/manifest/elementwise_binary.yaml"
-    # Five consecutive rounds with the same blocker. Counter goes 1→2→3→4→5;
-    # only the 2→3 transition (round 3) should emit an events[] entry, and
-    # the agent-stuck label should be added at most once across the streak.
     for r in (1, 2, 3, 4, 5):
         comments = run_dir / f"round-{r:02d}.new-review-comments.json"
         _write_comments(comments, [target])
@@ -283,16 +255,44 @@ def test_rule2_event_fires_only_on_threshold_transition(tmp_path: Path) -> None:
 
     history = json.loads((run_dir / "region-history.json").read_text())
     assert history["counters"][target] == 5
+    triggered_events = [e for e in history["events"] if e["path"] == target]
+    assert triggered_events, "expected at least one triggered event entry"
+    assert triggered_events[-1]["round"] == 5
+
+    log_lines = log.read_text().splitlines()
+    # Only round 5 should attempt label ops; rounds 1-4 are below threshold.
+    assert any("pr edit 1234" in line and "agent-stuck" in line for line in log_lines)
+    assert any("label create agent-stuck" in line for line in log_lines)
+
+
+def test_rule2_event_fires_only_on_threshold_transition(tmp_path: Path) -> None:
+    """Event must append exactly once per streak (round 5 only, not 6 or 7)."""
+    run_dir = tmp_path / "review"
+    run_dir.mkdir()
+    stub, log = _make_gh_stub(tmp_path)
+
+    target = "tileops/manifest/elementwise_binary.yaml"
+    # Seven consecutive rounds with the same blocker. Counter goes 1→2→3→4→5→6→7;
+    # only the 4→5 transition (round 5) should emit an events[] entry, and
+    # the agent-stuck label should be added at most once across the streak.
+    for r in (1, 2, 3, 4, 5, 6, 7):
+        comments = run_dir / f"round-{r:02d}.new-review-comments.json"
+        _write_comments(comments, [target])
+        result = _run(ROUND_POST, _post_env(run_dir, r, comments, gh_bin=stub))
+        assert result.returncode == 0, result.stderr
+
+    history = json.loads((run_dir / "region-history.json").read_text())
+    assert history["counters"][target] == 7
 
     triggered_events = [e for e in history["events"] if e["path"] == target]
     assert len(triggered_events) == 1, (
         f"event must fire only on threshold transition, got {triggered_events}"
     )
-    assert triggered_events[0]["round"] == 3
+    assert triggered_events[0]["round"] == 5
 
     # Label application is idempotent on the gh side, but we should see the
     # add-label call invoked at most once for this streak (i.e. only on
-    # round 3 when TRIGGERED_PATHS becomes non-empty for the first time).
+    # round 5 when TRIGGERED_PATHS becomes non-empty for the first time).
     log_lines = log.read_text().splitlines()
     add_label_lines = [
         line for line in log_lines if "pr edit 1234" in line and "agent-stuck" in line
@@ -345,11 +345,11 @@ def test_rule2_no_blocker_mutation(tmp_path: Path) -> None:
     stub, _log = _make_gh_stub(tmp_path)
     target = "x.py"
 
-    # Drive three rounds so the threshold fires (which is exactly when a
+    # Drive five rounds so the threshold fires (which is exactly when a
     # buggy implementation might be tempted to "downgrade" or rewrite a
     # blocker). Compare bytes of the comments file before and after each
     # call.
-    for r in (1, 2, 3):
+    for r in (1, 2, 3, 4, 5):
         comments = run_dir / f"round-{r:02d}.new-review-comments.json"
         original = _write_comments(comments, [target])
         before = comments.read_bytes()
@@ -399,14 +399,14 @@ def test_rule2_no_label_below_threshold(tmp_path: Path) -> None:
     run_dir.mkdir()
     stub, log = _make_gh_stub(tmp_path)
 
-    for r in (1, 2):
+    for r in (1, 2, 3, 4):
         comments = run_dir / f"round-{r:02d}.new-review-comments.json"
         _write_comments(comments, ["one.py"])
         result = _run(ROUND_POST, _post_env(run_dir, r, comments, gh_bin=stub))
         assert result.returncode == 0, result.stderr
 
     assert not log.exists() or log.read_text() == "", (
-        "gh must not be invoked before the 3rd consecutive blocker round"
+        "gh must not be invoked before the 5th consecutive blocker round"
     )
 
 
@@ -683,9 +683,9 @@ def test_rule2_ignores_non_request_changes_comments(tmp_path: Path) -> None:
     run_dir = tmp_path / "review"
     run_dir.mkdir()
 
-    # Simulate three consecutive rounds where the codex review state was
+    # Simulate five consecutive rounds where the codex review state was
     # APPROVE or COMMENT (i.e. CODEX_BLOCKERS_JSON is `[]`).
-    for r in (1, 2, 3):
+    for r in (1, 2, 3, 4, 5):
         empty = run_dir / f"round-{r:02d}.codex-blockers.json"
         empty.write_text("[]")
         result = _run(ROUND_POST, _post_env(run_dir, r, empty))
@@ -711,7 +711,7 @@ def test_rule2_counts_request_changes_comments(tmp_path: Path) -> None:
     run_dir.mkdir()
     target = "tileops/manifest/elementwise_binary.yaml"
 
-    for r in (1, 2, 3):
+    for r in (1, 2, 3, 4, 5):
         codex_blockers = run_dir / f"round-{r:02d}.codex-blockers.json"
         codex_blockers.write_text(
             json.dumps(
@@ -730,10 +730,10 @@ def test_rule2_counts_request_changes_comments(tmp_path: Path) -> None:
         assert result.returncode == 0, result.stderr
 
     history = json.loads((run_dir / "region-history.json").read_text())
-    assert history["counters"][target] == 3
+    assert history["counters"][target] == 5
     triggered = [e for e in history["events"] if e["path"] == target]
     assert len(triggered) == 1
-    assert triggered[0]["round"] == 3
+    assert triggered[0]["round"] == 5
 
 
 def test_rule2_object_shaped_artifact_treated_as_empty(tmp_path: Path) -> None:

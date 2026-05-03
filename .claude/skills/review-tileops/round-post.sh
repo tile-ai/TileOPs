@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # round-post.sh — post-codex hook for the review loop.
 #
-# Implements Rule 2 (same-path 3-strike monitor): track per-path
+# Implements Rule 2 (same-path 5-strike monitor): track per-path
 # consecutive-blocker streaks across rounds. When any path's streak
-# reaches >= 3 consecutive rounds with at least one blocker on it,
+# reaches >= 5 consecutive rounds with at least one blocker on it,
 # ensure the PR carries the GitHub label "agent-stuck" so a human
 # can take a look.
 #
@@ -50,7 +50,7 @@ if [[ -z "$RUN_DIR" || -z "$ROUND" || -z "$COMMENTS_JSON" ]]; then
 fi
 
 HISTORY="$RUN_DIR/region-history.json"
-THRESHOLD=3
+THRESHOLD=5
 LABEL="agent-stuck"
 LABEL_DESC="Autonomous loop appears stuck and needs human attention"
 LABEL_COLOR="FBCA04"
