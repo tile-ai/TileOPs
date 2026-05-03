@@ -370,39 +370,11 @@ def clamp_max_fwd_roofline(op: "Op") -> tuple[int, int]:
     return n_total, 3 * n_total * elem_bytes
 
 
-# ---------------------------------------------------------------------------
-# Lerp (Tensor-weight variant)
-# ---------------------------------------------------------------------------
-#
-# Func mode is required because ``LerpTensorFwdOp.shape_rules`` broadcast
-# ``input``, ``end``, and ``weight`` together, so ``N_total`` is the
-# post-broadcast element count
-# ``product(broadcast_shapes(input.shape, end.shape, weight.shape))``.
-# ``broadcast_shapes`` is not in the inline-roofline vars-layer namespace
-# (``docs/design/roofline.md`` §4.4.4), so the inline approximation
-# ``product(input.shape)`` would undercount any broadcasted workload and
-# disagree with the declared output shape.
-
-
 def lerp_tensor_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for ``LerpTensorFwdOp`` (Tensor-weight ``torch.lerp``).
 
-    Models ``torch.lerp(input, end, weight: Tensor) = input + weight *
-    (end - input)`` with broadcasting across all three operands. Reads
-    ``op.N_total`` (post-broadcast element count) and
-    ``op.dtype.itemsize``.
-
-    Per output element: ``sub`` + ``mul`` + ``add`` → ``flops = 3 *
-    N_total``. Bytes: read input + read end + read weight + write out,
-    all post-broadcast at ``elem_bytes`` each →
-    ``bytes = 4 * N_total * elem_bytes``.
-
-    Args:
-        op: bound ``LerpTensorFwdOp`` instance exposing ``N_total`` and
-            ``dtype``.
-
-    Returns:
-        ``(flops, bytes)`` ints.
+    Per output element: 3 flops (sub + mul + add); 3 reads + 1 write at
+    post-broadcast ``N_total``.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize

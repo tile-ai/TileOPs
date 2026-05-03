@@ -72,10 +72,6 @@ LerpTensorFwdOp:
   workloads: []
 
   roofline:
-    # Func mode: shape_rules broadcast input/end/weight together, so
-    # N_total is the post-broadcast element count. broadcast_shapes is
-    # not in the inline vars-layer namespace (docs/design/roofline.md
-    # §4.4.4), so inline mode cannot express this op's true workload.
     func: "tileops.perf.formulas.lerp_tensor_fwd_roofline"
 
   source:
