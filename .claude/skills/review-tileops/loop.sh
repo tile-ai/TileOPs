@@ -236,7 +236,6 @@ if [[ ! -f "$META" ]]; then
     round: 0,
     last_reviewed_sha: null,
     last_human_comment_id: 0,
-    last_reviewer_comment_id: 0,
     last_codex_event: null,
     last_criteria_mtime: 0,
     consecutive_codex_failures: 0,
@@ -386,6 +385,14 @@ ANCHOR
     echo '```'
     echo ""
     echo "\`<N>\` = unresolved blockers (0 for APPROVE)."
+    echo ""
+    echo "## Local artifact (mandatory after submitting review)"
+    echo ""
+    echo "After submitting the review via \`gh api\`, write the inline blocker comments you just submitted to:"
+    echo ""
+    echo "    $snap.codex-blockers.json"
+    echo ""
+    echo "Format: a JSON array; each entry is \`{path, line, body}\`. If \`event=APPROVE\` or \`event=COMMENT\`, write \`[]\`. This MUST be the LAST step of your run — the loop driver reads this file (no GitHub API fetch)."
   } > "$out"
 }
 
@@ -762,45 +769,20 @@ while true; do
   # path has produced a blocker for >= 3 consecutive rounds.
   # Monitoring-only: must not mutate blockers, threads, or PR title.
   #
-  # Source artifact contract (bug-2 fix): only inline comments tied to
-  # codex's *latest* review count as blockers, and only when that
-  # review's top-level state is REQUEST_CHANGES. This is the most
-  # reliable native signal that codex itself flagged the comment as a
-  # blocker — non-blocker review states (APPROVE, COMMENT) emit zero
-  # blocker paths so nits, suggestions, and "no-action" remarks never
-  # advance the agent-stuck counter.
-  #
-  # Algorithm:
-  #   1. Fetch the latest REVIEWER_LOGIN review by submitted_at.
-  #   2. If state == REQUEST_CHANGES → fetch its inline comments via
-  #      /reviews/<id>/comments and extract path/line/id.
-  #   3. Otherwise (APPROVE / COMMENT / DISMISSED / NONE) → write [].
-  # Best-effort: any gh failure degrades to an empty list so Rule 2
-  # stays monitor-only.
+  # Source artifact contract: codex itself writes
+  # ``$SNAP.codex-blockers.json`` as the LAST step of its run (see the
+  # "Local artifact (mandatory after submitting review)" section in
+  # ``compose_prompt``). The file is a JSON array of
+  # ``{path, line, body}`` for inline blocker comments codex just
+  # submitted, or ``[]`` when the review event is APPROVE / COMMENT.
+  # This replaces the prior network fetch (gh api .../reviews/<id>
+  # /comments) and eliminates the pagination-correctness concern: codex
+  # is the sole authoritative writer of its own blocker set for the
+  # round. If the file is missing (codex skipped the step), default to
+  # ``[]`` so Rule 2 stays monitor-only.
   CODEX_BLOCKERS_JSON="$SNAP.codex-blockers.json"
-  LAST_REVIEWER_COMMENT_ID=$(jq -r '.last_reviewer_comment_id // 0' "$META")
-  LATEST_REVIEW_JSON=$(gh api "repos/$REPO/pulls/$PR/reviews" \
-    --jq "[.[]|select(.user.login==\"$REVIEWER_LOGIN\")]|sort_by(.submitted_at)|last // {}" \
-    2>/dev/null || echo '{}')
-  LATEST_REVIEW_STATE=$(printf '%s' "$LATEST_REVIEW_JSON" \
-    | jq -r '.state // "NONE"' 2>/dev/null || echo NONE)
-  LATEST_REVIEW_ID=$(printf '%s' "$LATEST_REVIEW_JSON" \
-    | jq -r '.id // empty' 2>/dev/null || echo "")
-  if [[ "$LATEST_REVIEW_STATE" == "CHANGES_REQUESTED" \
-        || "$LATEST_REVIEW_STATE" == "REQUEST_CHANGES" ]] \
-        && [[ -n "$LATEST_REVIEW_ID" ]]; then
-    gh api "repos/$REPO/pulls/$PR/reviews/$LATEST_REVIEW_ID/comments" --paginate \
-      --jq "[.[]|{id,user:.user.login,path,line,body,created_at}]" \
-      > "$CODEX_BLOCKERS_JSON" 2>/dev/null || echo '[]' > "$CODEX_BLOCKERS_JSON"
-  else
+  if [[ ! -s "$CODEX_BLOCKERS_JSON" ]]; then
     echo '[]' > "$CODEX_BLOCKERS_JSON"
-  fi
-  # Advance the reviewer-comment watermark so the next round only sees
-  # comments newly posted by codex.
-  NEW_REVIEWER_MAX=$(jq -r '[.[].id // 0]|max // 0' "$CODEX_BLOCKERS_JSON" 2>/dev/null || echo 0)
-  if [[ "$NEW_REVIEWER_MAX" -gt "$LAST_REVIEWER_COMMENT_ID" ]]; then
-    jq --argjson n "$NEW_REVIEWER_MAX" '.last_reviewer_comment_id=$n' \
-      "$META" > "$META.tmp" && mv "$META.tmp" "$META"
   fi
 
   RUN_DIR="$RUN_DIR" ROUND="$NEXT_ROUND" \

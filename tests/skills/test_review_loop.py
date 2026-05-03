@@ -418,34 +418,70 @@ def test_rule2_no_label_below_threshold(tmp_path: Path) -> None:
 
 
 def test_loop_passes_codex_blockers_to_round_post(tmp_path: Path) -> None:
-    """Bug-2 regression: round-post.sh must be fed codex-blockers.json.
-
-    The pre-codex ``round-NN.new-review-comments.json`` artifact filters
-    OUT REVIEWER_LOGIN, so it never contains this round's codex
-    blockers. Rule 2 (per-path 3-strike monitor) is contractually
-    supposed to track codex-authored blocker paths, so loop.sh must
-    invoke round-post.sh against ``round-NN.codex-blockers.json``,
-    which is gathered AFTER codex finishes and filtered to
-    REVIEWER_LOGIN.
+    """The Rule 2 invocation must feed round-post.sh the codex-written
+    blockers artifact, not the pre-codex new-review-comments.json
+    (which explicitly filters OUT the reviewer login).
     """
     src = LOOP_SH.read_text()
-    # The Rule 2 invocation block must hand round-post.sh the post-codex
-    # artifact, not the pre-codex one.
     assert "COMMENTS_JSON=\"$CODEX_BLOCKERS_JSON\"" in src, (
-        "loop.sh must pass the post-codex codex-blockers artifact to round-post.sh"
+        "loop.sh must pass the codex-written blockers artifact to round-post.sh"
     )
-    # And the artifact itself must be derived from the reviewer-login
-    # filter on /pulls/<pr>/comments AFTER codex runs.
     assert "CODEX_BLOCKERS_JSON=\"$SNAP.codex-blockers.json\"" in src
-    assert ".user.login==\\\"$REVIEWER_LOGIN\\\"" in src, (
-        "codex-blockers artifact must filter to comments authored by REVIEWER_LOGIN"
-    )
-    # The pre-codex artifact (which excludes REVIEWER_LOGIN) must NOT be
-    # the file passed to round-post.sh.
     assert "COMMENTS_JSON=\"$SNAP.new-review-comments.json\"" not in src, (
         "loop.sh must not feed round-post.sh the pre-codex new-review-comments.json "
         "(it explicitly filters OUT the reviewer login)"
     )
+
+
+def test_loop_reads_codex_written_blockers_artifact(tmp_path: Path) -> None:
+    """The Rule 2 source-of-truth contract is now a local-write file
+    produced by codex, not a GitHub API fetch.
+
+    Verified by source inspection of loop.sh:
+
+    * The compose_prompt template instructs codex to write
+      ``$SNAP.codex-blockers.json`` AFTER submitting its review.
+    * The Rule 2 block reads that file, defaulting to ``[]`` if absent
+      or empty — there is NO ``gh api .../reviews/<id>/comments``
+      pagination, no ``last_reviewer_comment_id`` watermark.
+    """
+    src = LOOP_SH.read_text()
+    # Prompt instruction
+    assert "Local artifact (mandatory after submitting review)" in src
+    assert "$snap.codex-blockers.json" in src
+    # Read-with-fallback block
+    assert "if [[ ! -s \"$CODEX_BLOCKERS_JSON\" ]]; then" in src
+    assert "echo '[]' > \"$CODEX_BLOCKERS_JSON\"" in src
+    # The dropped network-fetch / watermark machinery must not return
+    assert "/reviews/$LATEST_REVIEW_ID/comments" not in src, (
+        "Rule 2 must not fetch reviewer-authored inline comments via gh api"
+    )
+    assert "last_reviewer_comment_id" not in src, (
+        "the reviewer-comment watermark machinery must be fully removed"
+    )
+    assert "LATEST_REVIEW_JSON" not in src
+    assert "LATEST_REVIEW_STATE" not in src
+    assert "LATEST_REVIEW_ID" not in src
+    assert "--paginate" not in src or "/reviews/" not in src.split("--paginate")[0][-200:]
+
+
+def test_loop_handles_missing_codex_blockers_artifact(tmp_path: Path) -> None:
+    """If codex didn't write codex-blockers.json (skipped the step or
+    crashed mid-run), the loop must default to an empty array and the
+    monitor must continue without crashing.
+
+    Tested by simulating round-post.sh against a missing/empty file:
+    counters stay empty, no events recorded, exit 0.
+    """
+    run_dir = tmp_path / "review"
+    run_dir.mkdir()
+    missing = run_dir / "round-01.codex-blockers.json"  # never created
+    result = _run(ROUND_POST, _post_env(run_dir, 1, missing))
+    assert result.returncode == 0, result.stderr
+
+    history = json.loads((run_dir / "region-history.json").read_text())
+    assert history["counters"] == {}
+    assert history["events"] == []
 
 
 def test_round_post_counts_codex_authored_blockers(tmp_path: Path) -> None:
@@ -633,46 +669,16 @@ def test_rule1_proceeds_when_no_prior_approve_matches_watermark(tmp_path: Path) 
 
 
 # ---------------------------------------------------------------------------
-# Bug-2 fix: Rule 2 must filter CODEX_BLOCKERS_JSON to inline comments
-# tied to a REQUEST_CHANGES review only. Non-blocker review states
-# (APPROVE, COMMENT) emit zero blockers, so nits and suggestions never
-# advance the agent-stuck counter.
+# Codex-written-artifact contract: when the codex review event is
+# APPROVE/COMMENT, codex writes ``[]`` to ``codex-blockers.json``.
+# Round-post must treat such files as a clean no-blocker round so nits
+# and suggestions never advance the agent-stuck counter.
 # ---------------------------------------------------------------------------
 
 
-def test_rule2_loop_filters_to_request_changes_review(tmp_path: Path) -> None:
-    """loop.sh must consult the latest REVIEWER_LOGIN review's state
-    before populating CODEX_BLOCKERS_JSON.
-
-    Contract (verified by source inspection):
-      * The Rule-2 block fetches the latest reviewer review and reads
-        ``.state``.
-      * It only includes inline comments tied to that review's id when
-        state is REQUEST_CHANGES (or the GitHub spelling
-        CHANGES_REQUESTED).
-      * Otherwise CODEX_BLOCKERS_JSON is written as ``[]``.
-    """
-    src = LOOP_SH.read_text()
-    # The Rule-2 block must read latest review state.
-    assert "LATEST_REVIEW_STATE" in src
-    assert "LATEST_REVIEW_ID" in src
-    # Fetch reviews endpoint, sorted by submitted_at, filtered to
-    # REVIEWER_LOGIN.
-    assert "/pulls/$PR/reviews" in src
-    assert "sort_by(.submitted_at)|last" in src
-    # Gate must require a REQUEST_CHANGES-style state.
-    assert "REQUEST_CHANGES" in src or "CHANGES_REQUESTED" in src
-    # Only inline comments tied to that specific review id count.
-    assert "/reviews/$LATEST_REVIEW_ID/comments" in src
-    # Non-REQUEST_CHANGES branch must emit an empty array.
-    assert "echo '[]' > \"$CODEX_BLOCKERS_JSON\"" in src
-
-
 def test_rule2_ignores_non_request_changes_comments(tmp_path: Path) -> None:
-    """Bug-2 regression at the round-post.sh layer: an empty
-    CODEX_BLOCKERS_JSON (the shape loop.sh produces for
-    APPROVE/COMMENT review states) must NOT advance any counter,
-    confirming non-blocker codex comments never trigger agent-stuck.
+    """Empty CODEX_BLOCKERS_JSON (shape codex writes for APPROVE/COMMENT)
+    must NOT advance any counter.
     """
     run_dir = tmp_path / "review"
     run_dir.mkdir()
