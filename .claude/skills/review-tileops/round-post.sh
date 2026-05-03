@@ -108,7 +108,9 @@ fi
 #   }
 #
 # Backward compat: missing file → start from empty state.
-if [[ ! -f "$HISTORY" ]]; then
+# Malformed file → also reset to empty state (don't let bad JSON kill
+# the monitor; counters are best-effort).
+if [[ ! -f "$HISTORY" ]] || ! jq empty "$HISTORY" 2>/dev/null; then
   echo '{"counters":{},"events":[]}' > "$HISTORY"
 fi
 

@@ -709,6 +709,11 @@ while true; do
        "$META" > "$META.tmp" && mv "$META.tmp" "$META"
     set_task_review_rounds "$NEXT_ROUND"
     set_task_review_event "$EVENT"
+    # Rule 2 reset: feed an empty blocker list so per-path streaks
+    # reset on this APPROVED-by-skip round.
+    echo '[]' > "$SNAP.codex-blockers.json"
+    RUN_DIR="$RUN_DIR" SNAP="$SNAP" NEXT_ROUND="$NEXT_ROUND" \
+      bash "$SKILL_DIR/round-post.sh" 2>&1 || true
     log "round $NEXT_ROUND done (codex skipped) — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
     if [[ "$EVENT" == "APPROVE" ]]; then
       POST_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
