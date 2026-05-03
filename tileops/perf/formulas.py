@@ -33,6 +33,7 @@ __all__ = [
     "gqa_prefill_with_kv_cache_fwd_roofline",
     "gqa_sliding_window_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
+    "lerp_tensor_fwd_roofline",
     "masked_fill_fwd_roofline",
     "mha_bwd_roofline",
     "mha_decode_paged_roofline",
@@ -367,6 +368,17 @@ def clamp_max_fwd_roofline(op: "Op") -> tuple[int, int]:
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
     return n_total, 3 * n_total * elem_bytes
+
+
+def lerp_tensor_fwd_roofline(op: "Op") -> tuple[int, int]:
+    """Roofline for ``LerpTensorFwdOp`` (Tensor-weight ``torch.lerp``).
+
+    Per output element: 3 flops (sub + mul + add); 3 reads + 1 write at
+    post-broadcast ``N_total``.
+    """
+    n_total = int(op.N_total)
+    elem_bytes = op.dtype.itemsize
+    return 3 * n_total, 4 * n_total * elem_bytes
 
 
 # ---------------------------------------------------------------------------

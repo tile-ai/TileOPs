@@ -13,19 +13,22 @@ WhereFwdOp:
   # constrains them to ``same_as(input)``; once the kernel grows an input
   # cast path, relax ``other`` to the full float union and document the
   # promotion contract here.
+  # impl accepts float8_e4m3fn / float8_e5m2 dtypes that are not in the
+  # PyTorch public API for torch.where; align by trimming impl in a
+  # follow-up PR (manifest is authoritative).
   status: spec-only
 
   signature:
     inputs:
       condition: {dtype: "bool"}
-      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
       # PyTorch's torch.where broadcasts condition/input/other together;
       # the output shape is the broadcast of all three.
-      - "out.shape == broadcast_shapes(condition.shape, input.shape, other.shape)"
+      - "output.shape == broadcast_shapes(condition.shape, input.shape, other.shape)"
 
   workloads:
     - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
@@ -62,18 +65,14 @@ LerpTensorFwdOp:
       end: {dtype: "same_as(input)"}
       weight: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
+      - "output.shape == broadcast_shapes(input.shape, end.shape, weight.shape)"
 
   workloads: []
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
-    # sub + mul + add per element
-    flops: "3 * N"
-    bytes: "(product(input.shape) + product(end.shape) + product(weight.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.lerp_tensor_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
