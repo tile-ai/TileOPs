@@ -385,6 +385,14 @@ ANCHOR
     echo '```'
     echo ""
     echo "\`<N>\` = unresolved blockers (0 for APPROVE)."
+    echo ""
+    echo "## Local artifact (mandatory after submitting review)"
+    echo ""
+    echo "After submitting the review via \`gh api\`, write the inline blocker comments you just submitted to:"
+    echo ""
+    echo "    $snap.codex-blockers.json"
+    echo ""
+    echo "Format: a JSON array; each entry is \`{path, line, body}\`. If \`event=APPROVE\` or \`event=COMMENT\`, write \`[]\`. This MUST be the LAST step of your run — the loop driver reads this file (no GitHub API fetch)."
   } > "$out"
 }
 
@@ -678,6 +686,46 @@ while true; do
     "$DIFF_FILE" "$PR_STATE" "$HEAD_SHA" "$LAST_SHA" "$LAST_EVENT" "$INBOX_BLOCK" \
     "$CONSECUTIVE_RC"
 
+  # Convergence Rule 1 — same-SHA APPROVE skip. If a prior round in
+  # this loop run already APPROVED the current HEAD, reuse that
+  # outcome verbatim and skip codex (deterministic, file-only).
+  RULE1_DECISION=$(RUN_DIR="$RUN_DIR" NEXT_ROUND="$NEXT_ROUND" HEAD_SHA="$HEAD_SHA" \
+    LATEST_HUMAN_ID="$LATEST_HUMAN_ID" \
+    bash "$SKILL_DIR/round-pre.sh" || echo "proceed")
+  if [[ "$RULE1_DECISION" == "skip" ]]; then
+    log "round $NEXT_ROUND — Rule 1: prior APPROVE on $HEAD_SHA found; skipping codex"
+    EVENT="APPROVE"
+    BLOCKERS=$(jq -r '.blockers_after // 0' "$SNAP.json")
+    NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq --argjson r "$NEXT_ROUND" --arg sha "$HEAD_SHA" --arg now "$NOW" \
+       --argjson hid "$LATEST_HUMAN_ID" --arg ev "$EVENT" \
+       --argjson cm "$CRITERIA_MTIME" \
+       '.round=$r | .last_reviewed_sha=$sha | .last_human_comment_id=$hid
+        | .last_codex_event=$ev | .last_criteria_mtime=$cm
+        | .consecutive_request_changes=0
+        | .consecutive_codex_failures=0
+        | .consecutive_idle=0
+        | .last_reviewed_at=$now' \
+       "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+    set_task_review_rounds "$NEXT_ROUND"
+    set_task_review_event "$EVENT"
+    # Rule 2 reset: feed an empty blocker list so per-path streaks
+    # reset on this APPROVED-by-skip round.
+    echo '[]' > "$SNAP.codex-blockers.json"
+    RUN_DIR="$RUN_DIR" SNAP="$SNAP" NEXT_ROUND="$NEXT_ROUND" \
+      bash "$SKILL_DIR/round-post.sh" 2>&1 || true
+    log "round $NEXT_ROUND done (codex skipped) — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
+    if [[ "$EVENT" == "APPROVE" ]]; then
+      POST_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+      POST_HUMAN_ID=$(latest_human_comment_id)
+      if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" && "$POST_HUMAN_ID" == "$LATEST_HUMAN_ID" ]]; then
+        converge_and_exit
+      fi
+    fi
+    sleep "$POLL_INTERVAL"
+    continue
+  fi
+
   log "round $NEXT_ROUND — invoking codex"
   if ! run_codex_round "$SNAP"; then
     exit 1
@@ -713,11 +761,40 @@ while true; do
   jq -n --argjson r "$NEXT_ROUND" --arg now "$NOW" \
     --arg sha_b "${LAST_SHA:-null}" --arg sha_a "$HEAD_SHA" \
     --arg ev "$EVENT" --argjson bl "$BLOCKERS" \
+    --argjson hid "$LATEST_HUMAN_ID" \
     '{round:$r, finished_at:$now, head_sha_before:$sha_b, head_sha_after:$sha_a,
-      codex_event:$ev, blockers_after:$bl}' > "$SNAP.json"
+      codex_event:$ev, blockers_after:$bl,
+      last_human_comment_id:$hid}' > "$SNAP.json"
 
   set_task_review_rounds "$NEXT_ROUND"
   set_task_review_event "$EVENT"
+
+  # Convergence Rule 2 — same-path 5-strike monitor. Updates
+  # region-history.json and labels the PR `agent-stuck` once any
+  # path has produced a blocker for >= 5 consecutive rounds.
+  # Monitoring-only: must not mutate blockers, threads, or PR title.
+  #
+  # Source artifact contract: codex itself writes
+  # ``$SNAP.codex-blockers.json`` as the LAST step of its run (see the
+  # "Local artifact (mandatory after submitting review)" section in
+  # ``compose_prompt``). The file is a JSON array of
+  # ``{path, line, body}`` for inline blocker comments codex just
+  # submitted, or ``[]`` when the review event is APPROVE / COMMENT.
+  # This replaces the prior network fetch (gh api .../reviews/<id>
+  # /comments) and eliminates the pagination-correctness concern: codex
+  # is the sole authoritative writer of its own blocker set for the
+  # round. If the file is missing (codex skipped the step), default to
+  # ``[]`` so Rule 2 stays monitor-only.
+  CODEX_BLOCKERS_JSON="$SNAP.codex-blockers.json"
+  if [[ ! -s "$CODEX_BLOCKERS_JSON" ]]; then
+    echo '[]' > "$CODEX_BLOCKERS_JSON"
+  fi
+
+  RUN_DIR="$RUN_DIR" ROUND="$NEXT_ROUND" \
+    COMMENTS_JSON="$CODEX_BLOCKERS_JSON" \
+    REPO="$REPO" PR="$PR" \
+    bash "$SKILL_DIR/round-post.sh" || \
+      log "round-post.sh: non-fatal failure (monitor-only); continuing"
 
   log "round $NEXT_ROUND done — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
 
