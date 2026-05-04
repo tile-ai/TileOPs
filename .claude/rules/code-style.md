@@ -52,4 +52,4 @@
 
   Same rule for docstrings — docstrings describe what the code does, not which issue authorized it. Auditing "which issue caused this change" is `git blame` + commit message territory.
 
-  Scan: `grep -rnE '#[0-9]{3,}|AC-[0-9]|round-[0-9]+ review|follow-up: #' tileops/ tests/ benchmarks/ scripts/` should return nothing.
+  Scan (case-insensitive; word-boundary on `#N` to avoid false-positives on inline numeric constants like `# 1024 elements`): `grep -rniE '(^|[[:space:]])#[0-9]{3,}\b|AC-[0-9]+|round-[0-9]+ review|follow-up:[[:space:]]*#' tileops/ tests/ benchmarks/ scripts/` should return nothing. The regex is a heuristic — a hit is a prompt to inspect, not an automatic blocker.
