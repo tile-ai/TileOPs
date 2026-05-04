@@ -261,6 +261,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         is_causal: bool = True,
         dtype: torch.dtype = torch.float16,
         sm_scale: Optional[float] = None,
+        validate_inputs: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -280,6 +281,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         self.is_causal = is_causal
         self.dtype = dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
+        self.validate_inputs = validate_inputs
         self._roofline_kwargs = None
 
         self.dispatch_kernel(kernel_map)
@@ -298,6 +300,11 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"gqa_prefill_varlen_fwd_kernel": _select_gqa_prefill_varlen_fwd_kernel_cls()}
 
+    @staticmethod
+    def _lengths_from_cu_seqlens(cu_seqlens: torch.Tensor) -> list[int]:
+        values = [int(x) for x in cu_seqlens.detach().cpu().tolist()]
+        return [values[idx + 1] - values[idx] for idx in range(len(values) - 1)]
+
     def _validate_forward_inputs(
         self,
         q: torch.Tensor,
@@ -305,7 +312,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
-    ) -> tuple[list[int], list[int]]:
+    ) -> None:
         tensors = {
             "q": q,
             "k": k,
@@ -342,6 +349,11 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             if tensor.dtype != torch.int32:
                 raise ValueError(f"Expected {name}.dtype torch.int32, got {tensor.dtype}")
 
+        if v.shape[0] != k.shape[0]:
+            raise ValueError(f"v.shape[0] ({v.shape[0]}) must equal k.shape[0] ({k.shape[0]})")
+        if not self.validate_inputs:
+            return
+
         cu_q = [int(x) for x in cu_seqlens_q.detach().cpu().tolist()]
         cu_kv = [int(x) for x in cu_seqlens_kv.detach().cpu().tolist()]
         if cu_q[0] != 0:
@@ -354,8 +366,6 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         if cu_kv[-1] != k.shape[0]:
             raise ValueError(
                 f"cu_seqlens_kv[-1] ({cu_kv[-1]}) must equal k.shape[0] ({k.shape[0]})")
-        if v.shape[0] != k.shape[0]:
-            raise ValueError(f"v.shape[0] ({v.shape[0]}) must equal k.shape[0] ({k.shape[0]})")
         if any(cu_q[i + 1] < cu_q[i] for i in range(self.batch)):
             raise ValueError("cu_seqlens_q must be non-decreasing")
         if any(cu_kv[i + 1] < cu_kv[i] for i in range(self.batch)):
@@ -384,7 +394,6 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             raise ValueError(
                 f"max_seqlen_kv ({self.max_seqlen_kv}) must be >= actual max KV "
                 f"sequence length ({actual_max_kv})")
-        return q_lens, kv_lens
 
     def forward(
         self,
@@ -394,7 +403,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
     ) -> torch.Tensor:
-        q_lens, kv_lens = self._validate_forward_inputs(q, k, v, cu_seqlens_q, cu_seqlens_kv)
+        self._validate_forward_inputs(q, k, v, cu_seqlens_q, cu_seqlens_kv)
         output, _ = self.kernel(
             q, k, v, cu_seqlens_q, cu_seqlens_kv, self.max_seqlen_q, self.max_seqlen_kv)
         self._roofline_kwargs = {
@@ -403,8 +412,8 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             "batch": self.batch,
             "max_seqlen_q": self.max_seqlen_q,
             "max_seqlen_kv": self.max_seqlen_kv,
-            "q_lens": q_lens,
-            "kv_lens": kv_lens,
+            "cu_seqlens_q": cu_seqlens_q,
+            "cu_seqlens_kv": cu_seqlens_kv,
             "is_causal": self.is_causal,
             "dtype": self.dtype,
         }
@@ -416,7 +425,10 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
                 f"{type(self).__name__}.eval_roofline() requires a prior forward() call")
         from tileops.perf.formulas import gqa_prefill_varlen_fwd_roofline
 
-        result = gqa_prefill_varlen_fwd_roofline(**self._roofline_kwargs)
+        kwargs = dict(self._roofline_kwargs)
+        kwargs["q_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_q"))
+        kwargs["kv_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_kv"))
+        result = gqa_prefill_varlen_fwd_roofline(**kwargs)
         return result["flops"], result["bytes"]
 
 

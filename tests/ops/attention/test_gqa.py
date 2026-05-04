@@ -277,8 +277,12 @@ def test_gqa_prefill_fwd_respects_sm_scale() -> None:
                  marks=pytest.mark.smoke, id="mixed-tail-causal-fp16"),
     pytest.param([64, 96], [128, 160], 8, 2, 64, False, torch.float16,
                  marks=pytest.mark.smoke, id="mixed-noncausal-fp16"),
+    pytest.param([33, 65], [33, 65], 8, 2, 64, False, torch.float16,
+                 marks=pytest.mark.smoke, id="equal-tail-noncausal-fp16"),
     pytest.param([64, 96], [128, 160], 8, 1, 64, True, torch.float16,
                  marks=pytest.mark.smoke, id="mqa-causal-fp16"),
+    pytest.param([96], [160], 8, 2, 64, True, torch.float16,
+                 marks=pytest.mark.smoke, id="batch1-causal-fp16"),
     pytest.param([64, 128], [128, 256], 8, 2, 64, True, torch.bfloat16,
                  marks=pytest.mark.smoke, id="mixed-causal-bf16"),
 ])
@@ -354,7 +358,8 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
         [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
 
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True, torch.float16)
+        batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True, torch.float16,
+        validate_inputs=True)
     with pytest.raises(ValueError, match="Expected k shape"):
         op(q, k[:, :, :-1].contiguous(), v, cu_q, cu_kv)
     with pytest.raises(ValueError, match="cu_seqlens_q\\[-1\\].*must equal"):
@@ -362,7 +367,7 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
     with pytest.raises(ValueError, match="max_seqlen_q"):
         bad_op = GroupedQueryAttentionPrefillVarlenFwdOp(
             batch, heads, heads_kv, dim, max(q_lens) - 1, max(kv_lens), True,
-            torch.float16)
+            torch.float16, validate_inputs=True)
         bad_op(q, k, v, cu_q, cu_kv)
     bad_cu = torch.tensor([0, 128, 96], device="cuda", dtype=torch.int32)
     with pytest.raises(ValueError, match="cu_seqlens_q must be non-decreasing"):

@@ -195,6 +195,7 @@ GroupedQueryAttentionPrefillVarlenFwdOp:
       max_seqlen_kv: {type: int}
       is_causal: {type: bool, default: true}
       sm_scale: {type: float, default: null}
+      validate_inputs: {type: bool, default: false}
     shape_rules:
       - "q.shape == (T_q, H, D)"
       - "k.shape == (T_kv, H_kv, D)"
