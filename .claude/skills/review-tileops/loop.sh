@@ -662,12 +662,21 @@ while true; do
   # Idle path: HEAD unchanged AND no inbox prompt. Absorb any comment-id
   # advances and sleep. ROUND==0 (first poll, never reviewed) always
   # falls through to a fresh round.
+  #
+  # Comment activity does NOT count toward the stall counter — an active
+  # discussion (replies flowing back and forth without a push) is engaged
+  # work, not a dead PR. The stall counter is meant to catch a truly
+  # quiet counterpart, so reset it whenever comments advance even though
+  # we're not running codex this poll.
   if [[ "$ROUND" -gt 0 && "$HEAD_UNCHANGED" -eq 1 && "$INBOX_PRESENT" -eq 0 ]]; then
     if [[ "$COMMENTS_CHANGED" -eq 1 ]]; then
       jq --argjson iid "$LATEST_ISSUE_ID" --argjson rid "$LATEST_REVIEW_ID" \
-         '.last_issue_comment_id=$iid | .last_review_comment_id=$rid' \
+         '.last_issue_comment_id=$iid | .last_review_comment_id=$rid
+          | .consecutive_idle=0' \
          "$META" > "$META.tmp" && mv "$META.tmp" "$META"
       log "comment-only update on unchanged HEAD ${HEAD_SHA:0:7} — absorbed; not re-reviewing (write inbox.md to force a round)"
+      sleep "$POLL_INTERVAL"
+      continue
     fi
     CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
     NEW_IDLE=$((CONSECUTIVE_IDLE + 1))
@@ -797,7 +806,8 @@ while true; do
       POST_REVIEW_ID=$(latest_review_comment_id)
       if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" \
             && "$POST_ISSUE_ID" == "$LATEST_ISSUE_ID" \
-            && "$POST_REVIEW_ID" == "$LATEST_REVIEW_ID" ]]; then
+            && "$POST_REVIEW_ID" == "$LATEST_REVIEW_ID" \
+            && ! -s "$RUN_DIR/inbox.md" ]]; then
         converge_and_exit
       fi
     fi
