@@ -1,26 +1,51 @@
-"""Benchmarks for representative unary elementwise ops.
+"""Benchmarks for unary elementwise math ops in the elementwise_unary_math family.
 
-Profiles TileOPs vs PyTorch baselines for each new elementwise category using
-small, medium, and large 1D shapes with the default op configuration.
+Profiles TileOPs vs PyTorch baselines for each op routed to this bench file by
+``tileops/manifest/elementwise_unary_math.yaml``. Coverage spans the 22 ops in
+the family that point ``source.bench`` at this file (the remaining two ops,
+``SigmoidFwdOp`` and ``TanhFwdOp``, are benched in
+``benchmarks/ops/bench_activation.py``).
+
+Each op is parametrized at one representative bandwidth-bound shape and dtype
+to keep wall-clock cost bounded while still emitting numeric rows in
+``profile_run.log`` for every implemented op (AC-4 of issue #1162).
 """
 
 from typing import Callable, Optional
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import (
+    AbsFwdOp,
     BitwiseNotFwdOp,
+    CeilFwdOp,
+    CosFwdOp,
+    ErfFwdOp,
     ExpFwdOp,
+    Expm1FwdOp,
+    FloorFwdOp,
     GeluFwdOp,
+    IsfiniteFwdOp,
+    IsinfFwdOp,
     IsnanFwdOp,
+    Log1pFwdOp,
+    LogFwdOp,
     LogicalNotFwdOp,
+    NegFwdOp,
+    ReciprocalFwdOp,
+    RoundFwdOp,
+    RsqrtFwdOp,
+    SignFwdOp,
+    SinFwdOp,
+    SqrtFwdOp,
+    TruncFwdOp,
 )
 from workloads.workload_base import FixtureBase
 
 _SHAPES = (262_144, 1_048_576, 4_000_000)
+_BENCH_N = _SHAPES[1]
 
 
 class UnaryElementwiseBenchCase:
@@ -54,11 +79,30 @@ class UnaryElementwiseBenchmark(BenchmarkBase[UnaryElementwiseBenchCase]):
         )
 
 
+# ---------------------------------------------------------------------------
+# Input generators
+# ---------------------------------------------------------------------------
+
+
 def _randn(n_total: int, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    """Standard normal input."""
     return (torch.randn(n_total, device="cuda", dtype=dtype),)
 
 
+def _positive(n_total: int, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    """Strictly positive input for log/sqrt/rsqrt/log1p."""
+    x = torch.rand(n_total, device="cuda", dtype=dtype).clamp(min=0.01) + 0.01
+    return (x,)
+
+
+def _nonzero(n_total: int, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    """Nonzero input for reciprocal."""
+    x = torch.randn(n_total, device="cuda", dtype=dtype)
+    return (x + torch.sign(x) * 0.01,)
+
+
 def _logical_inputs(n_total: int, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    """Half-zero / half-nonzero input for logical_not."""
     x = torch.randn(n_total, device="cuda", dtype=dtype)
     mask = torch.rand(n_total, device="cuda") > 0.5
     x[mask] = 0
@@ -66,11 +110,13 @@ def _logical_inputs(n_total: int, dtype: torch.dtype) -> tuple[torch.Tensor]:
 
 
 def _bitwise_inputs(n_total: int, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    """Integer input for bitwise_not."""
     x = torch.randint(-128, 128, (n_total,), device="cuda", dtype=dtype)
     return (x,)
 
 
 def _special_inputs(n_total: int, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    """Mix of NaN, +inf, -inf, finite for isnan/isinf/isfinite."""
     x = torch.randn(n_total, device="cuda", dtype=dtype)
     quarter = n_total // 4
     x[:quarter] = float("nan")
@@ -79,94 +125,97 @@ def _special_inputs(n_total: int, dtype: torch.dtype) -> tuple[torch.Tensor]:
     return (x,)
 
 
+# ---------------------------------------------------------------------------
+# Baselines that need dtype upcast (fp16 floor/ceil/round/trunc are not native)
+# ---------------------------------------------------------------------------
+
+
+def _baseline_floor(x: torch.Tensor) -> torch.Tensor:
+    return torch.floor(x.float()).to(x.dtype)
+
+
+def _baseline_ceil(x: torch.Tensor) -> torch.Tensor:
+    return torch.ceil(x.float()).to(x.dtype)
+
+
+def _baseline_round(x: torch.Tensor) -> torch.Tensor:
+    return torch.round(x.float()).to(x.dtype)
+
+
+def _baseline_trunc(x: torch.Tensor) -> torch.Tensor:
+    return torch.trunc(x.float()).to(x.dtype)
+
+
+# ---------------------------------------------------------------------------
+# Per-op parametrization. One representative shape/dtype per op so each
+# implemented op in the family produces numeric rows in profile_run.log.
+# ---------------------------------------------------------------------------
+
+
+_FLOAT_OP_CASES = [
+    # (op_name, op_cls, baseline_fn, gen_inputs, dtype, output_dtype)
+    ("exp", ExpFwdOp, torch.exp, _randn, torch.float16, torch.float16),
+    ("log", LogFwdOp, torch.log, _positive, torch.float16, torch.float16),
+    ("sqrt", SqrtFwdOp, torch.sqrt, _positive, torch.float16, torch.float16),
+    ("rsqrt", RsqrtFwdOp, torch.rsqrt, _positive, torch.float16, torch.float16),
+    ("abs", AbsFwdOp, torch.abs, _randn, torch.float16, torch.float16),
+    ("neg", NegFwdOp, torch.neg, _randn, torch.float16, torch.float16),
+    ("reciprocal", ReciprocalFwdOp, torch.reciprocal, _nonzero,
+     torch.float16, torch.float16),
+    ("sign", SignFwdOp, torch.sign, _randn, torch.float16, torch.float16),
+    ("sin", SinFwdOp, torch.sin, _randn, torch.float16, torch.float16),
+    ("cos", CosFwdOp, torch.cos, _randn, torch.float16, torch.float16),
+    ("floor", FloorFwdOp, _baseline_floor, _randn, torch.float16, torch.float16),
+    ("ceil", CeilFwdOp, _baseline_ceil, _randn, torch.float16, torch.float16),
+    ("round", RoundFwdOp, _baseline_round, _randn, torch.float16, torch.float16),
+    ("trunc", TruncFwdOp, _baseline_trunc, _randn, torch.float16, torch.float16),
+    ("erf", ErfFwdOp, torch.erf, _randn, torch.float16, torch.float16),
+    ("log1p", Log1pFwdOp, torch.log1p, _positive, torch.float16, torch.float16),
+    ("expm1", Expm1FwdOp, torch.expm1, _randn, torch.float16, torch.float16),
+    # gelu retained here as a reference activation spot-check; full strategy
+    # sweep lives in bench_activation.py.
+    ("gelu", GeluFwdOp, torch.nn.functional.gelu, _randn,
+     torch.float16, torch.float16),
+]
+
+_LOGICAL_OP_CASES = [
+    ("logical_not", LogicalNotFwdOp, torch.logical_not, _logical_inputs,
+     torch.float16, torch.bool),
+]
+
+_BITWISE_OP_CASES = [
+    ("bitwise_not", BitwiseNotFwdOp, torch.bitwise_not, _bitwise_inputs,
+     torch.int32, torch.int32),
+]
+
+_SPECIAL_OP_CASES = [
+    ("isnan", IsnanFwdOp, torch.isnan, _special_inputs,
+     torch.float16, torch.bool),
+    ("isinf", IsinfFwdOp, torch.isinf, _special_inputs,
+     torch.float16, torch.bool),
+    ("isfinite", IsfiniteFwdOp, torch.isfinite, _special_inputs,
+     torch.float16, torch.bool),
+]
+
+
+_ALL_CASES = (
+    _FLOAT_OP_CASES + _LOGICAL_OP_CASES + _BITWISE_OP_CASES + _SPECIAL_OP_CASES
+)
+
+
+_BENCH_PARAMS = [
+    pytest.param(
+        op_name, _BENCH_N, dtype, output_dtype, op_cls, baseline_fn, gen_inputs,
+        id=f"{op_name}-{str(dtype).replace('torch.', '')}",
+    )
+    for op_name, op_cls, baseline_fn, gen_inputs, dtype, output_dtype in _ALL_CASES
+]
+
+
 class UnaryElementwiseBenchFixture(FixtureBase):
     PARAMS = [
-        ("op_name, n_total, dtype, output_dtype, op_cls, baseline_fn, gen_inputs", [
-            pytest.param(
-                "exp", _SHAPES[0], torch.float16, torch.float16,
-                ExpFwdOp, torch.exp, _randn,
-            ),
-            pytest.param(
-                "exp", _SHAPES[1], torch.float16, torch.float16,
-                ExpFwdOp, torch.exp, _randn,
-            ),
-            pytest.param(
-                "exp", _SHAPES[2], torch.float16, torch.float16,
-                ExpFwdOp, torch.exp, _randn,
-            ),
-            pytest.param(
-                "exp", _SHAPES[0], torch.bfloat16, torch.bfloat16,
-                ExpFwdOp, torch.exp, _randn,
-            ),
-            pytest.param(
-                "exp", _SHAPES[1], torch.bfloat16, torch.bfloat16,
-                ExpFwdOp, torch.exp, _randn,
-            ),
-            pytest.param(
-                "exp", _SHAPES[2], torch.bfloat16, torch.bfloat16,
-                ExpFwdOp, torch.exp, _randn,
-            ),
-            pytest.param(
-                "gelu", _SHAPES[0], torch.float16, torch.float16,
-                GeluFwdOp, F.gelu, _randn,
-            ),
-            pytest.param(
-                "gelu", _SHAPES[1], torch.float16, torch.float16,
-                GeluFwdOp, F.gelu, _randn,
-            ),
-            pytest.param(
-                "gelu", _SHAPES[2], torch.float16, torch.float16,
-                GeluFwdOp, F.gelu, _randn,
-            ),
-            pytest.param(
-                "gelu", _SHAPES[0], torch.bfloat16, torch.bfloat16,
-                GeluFwdOp, F.gelu, _randn,
-            ),
-            pytest.param(
-                "gelu", _SHAPES[1], torch.bfloat16, torch.bfloat16,
-                GeluFwdOp, F.gelu, _randn,
-            ),
-            pytest.param(
-                "gelu", _SHAPES[2], torch.bfloat16, torch.bfloat16,
-                GeluFwdOp, F.gelu, _randn,
-            ),
-            pytest.param(
-                "logical_not", _SHAPES[0], torch.float16, torch.bool,
-                LogicalNotFwdOp, torch.logical_not, _logical_inputs,
-            ),
-            pytest.param(
-                "logical_not", _SHAPES[1], torch.float16, torch.bool,
-                LogicalNotFwdOp, torch.logical_not, _logical_inputs,
-            ),
-            pytest.param(
-                "logical_not", _SHAPES[2], torch.float16, torch.bool,
-                LogicalNotFwdOp, torch.logical_not, _logical_inputs,
-            ),
-            pytest.param(
-                "bitwise_not", _SHAPES[0], torch.int32, torch.int32,
-                BitwiseNotFwdOp, torch.bitwise_not, _bitwise_inputs,
-            ),
-            pytest.param(
-                "bitwise_not", _SHAPES[1], torch.int32, torch.int32,
-                BitwiseNotFwdOp, torch.bitwise_not, _bitwise_inputs,
-            ),
-            pytest.param(
-                "bitwise_not", _SHAPES[2], torch.int32, torch.int32,
-                BitwiseNotFwdOp, torch.bitwise_not, _bitwise_inputs,
-            ),
-            pytest.param(
-                "isnan", _SHAPES[0], torch.float16, torch.bool,
-                IsnanFwdOp, torch.isnan, _special_inputs,
-            ),
-            pytest.param(
-                "isnan", _SHAPES[1], torch.float16, torch.bool,
-                IsnanFwdOp, torch.isnan, _special_inputs,
-            ),
-            pytest.param(
-                "isnan", _SHAPES[2], torch.float16, torch.bool,
-                IsnanFwdOp, torch.isnan, _special_inputs,
-            ),
-        ]),
+        ("op_name, n_total, dtype, output_dtype, op_cls, baseline_fn, gen_inputs",
+         _BENCH_PARAMS),
     ]
 
 
@@ -180,6 +229,7 @@ def test_unary_elementwise_bench(
     baseline_fn,
     gen_inputs,
 ) -> None:
+    """Profile one op from elementwise_unary_math at a representative shape."""
     test = UnaryElementwiseBenchCase(
         n_total=n_total,
         dtype=dtype,

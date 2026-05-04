@@ -25,7 +25,14 @@ from tileops.kernels.elementwise import (
     ReluFwdKernel,
     _make_unary_explicit,
 )
-from tileops.ops.elementwise import ErfFwdOp, GeluFwdOp, MishFwdOp, ReluFwdOp
+from tileops.ops.elementwise import (
+    ErfFwdOp,
+    GeluFwdOp,
+    MishFwdOp,
+    ReluFwdOp,
+    SigmoidFwdOp,
+    TanhFwdOp,
+)
 from workloads.activation import ReluTest
 from workloads.workload_base import FixtureBase
 
@@ -470,6 +477,61 @@ def test_relu_bench(n_total: int, dtype: torch.dtype) -> None:
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ---------------------------------------------------------------------------
+# Per-op coverage for activation ops routed here by elementwise_unary_math
+# manifest (SigmoidFwdOp, TanhFwdOp). Issue #1162 AC-4: every implemented op
+# in the family must produce numeric rows in profile_run.log.
+# ---------------------------------------------------------------------------
+
+
+_UNARY_MATH_ACTIVATION_PARAMS = [
+    pytest.param(
+        "sigmoid", prod(_SHAPES_2D[1]), torch.float16, SigmoidFwdOp, torch.sigmoid,
+        id="sigmoid-fp16",
+    ),
+    pytest.param(
+        "sigmoid", prod(_SHAPES_2D[1]), torch.bfloat16, SigmoidFwdOp, torch.sigmoid,
+        id="sigmoid-bf16",
+    ),
+    pytest.param(
+        "tanh", prod(_SHAPES_2D[1]), torch.float16, TanhFwdOp, torch.tanh,
+        id="tanh-fp16",
+    ),
+    pytest.param(
+        "tanh", prod(_SHAPES_2D[1]), torch.bfloat16, TanhFwdOp, torch.tanh,
+        id="tanh-bf16",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "op_name, n_total, dtype, op_cls, baseline_fn",
+    _UNARY_MATH_ACTIVATION_PARAMS,
+)
+def test_unary_math_activation_bench(
+    op_name: str,
+    n_total: int,
+    dtype: torch.dtype,
+    op_cls,
+    baseline_fn,
+) -> None:
+    """Per-op bench for unary_math activation ops (sigmoid, tanh).
+
+    Provides numeric rows in profile_run.log for the two ops in the
+    elementwise_unary_math family whose manifest source.bench points here.
+    """
+    test = UnaryBenchCase(n_total, dtype)
+    bm = UnaryBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = op_cls(N_total=n_total, dtype=dtype)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op_name, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":
