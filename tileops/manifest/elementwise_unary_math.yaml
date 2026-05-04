@@ -132,7 +132,11 @@ RsqrtFwdOp:
 AbsFwdOp:
   ref_api: "torch.abs"
   family: elementwise
-  status: implemented
+  # Manifest signature accepts integer/uint8 dtypes per torch.abs, but the
+  # current impl routes through FloatUnaryKernel (float-only). Trust model
+  # requires status: spec-only until the kernel covers the full dtype set.
+  # Follow-up: #1171
+  status: spec-only
 
   signature:
     inputs:
@@ -162,7 +166,11 @@ AbsFwdOp:
 NegFwdOp:
   ref_api: "torch.neg"
   family: elementwise
-  status: implemented
+  # Manifest signature accepts integer/uint8 dtypes per torch.neg, but the
+  # current impl routes through FloatUnaryKernel (float-only). Trust model
+  # requires status: spec-only until the kernel covers the full dtype set.
+  # Follow-up: #1171
+  status: spec-only
 
   signature:
     inputs:
@@ -199,7 +207,8 @@ ReciprocalFwdOp:
   # kept as same_as(input) for the floating cases. Integral-input promotion
   # is a known modeling gap tracked separately and does not change the
   # accepted-input contract documented here.
-  status: implemented
+  # Follow-up tracker for FloatUnaryKernel dtype gap: #1171
+  status: spec-only
 
   signature:
     inputs:
