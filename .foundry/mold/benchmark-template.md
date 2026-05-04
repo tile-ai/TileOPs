@@ -1,13 +1,26 @@
 <!--
 INSTRUCTIONS FOR THE AGENT (do not copy into the PR body).
 
+Layout principle: one section per op, one table per section, TileOPs and
+baseline side-by-side on the same row so readers can compare without
+mentally joining two tables.
+
 Filling in the template below:
 
-- One row per measurement (op × shape × dtype). Don't aggregate multiple
-  measurements into a single cell.
-- Don't include the bench file path as a column — it's noise. If multiple
-  bench files contribute, group with sub-headers per bench.
-- TFLOPS not meaningful (pure data movement) → use "—".
+- One row per measurement (shape × dtype) within an op's table.
+- Baseline column header names the baseline (`torch (ms)`, `FA3 (ms)`,
+  `triton (ms)`). Don't write a generic "Baseline". Multiple baselines →
+  add more columns and more Speedup columns (`vs torch`, `vs FA3`).
+- Speedup is always present — it's the first number readers look for.
+  Format `4.96×`, two decimals, computed as baseline_ms / tileops_ms.
+- Throughput column: show ONE — TFLOPS for compute-bound ops (matmul,
+  attention), BW (TB/s) for memory-bound ops (reductions, elementwise,
+  norms). Pure data movement → BW only. Don't list both.
+- Show throughput for TileOPs only; baseline's absolute throughput is
+  noise once Speedup is given.
+- Drop the Shape column if the op only varies dtype. Never put autotune
+  config (`block_m`, `threads`) in the table — implementation detail.
+- Environment block goes once at the top, not per op.
 - Takeaways = conclusions, not data repetition. Wins, losses with a brief
   reason (not blocking), dtype/shape patterns.
 
@@ -32,8 +45,13 @@ copied into the PR body):
 
 **Environment**: \{GPU}, CUDA \{ver}, PyTorch \{ver}, TileLang \{ver}
 
-| Op  | Shape | dtype | TileOPs (ms) | Baseline (ms) | Speedup | TFLOPS | BW (TB/s) |
-| --- | ----- | ----- | ------------ | ------------- | ------- | ------ | --------- |
+### \{OpName}
+
+| dtype | TileOPs (ms) | \{baseline} (ms) | Speedup | BW (TB/s) |
+| ----- | ------------ | ---------------- | ------- | --------- |
+
+<!-- Repeat one ### section per op. Add a Shape column on the left when
+the op varies shape. Swap `BW (TB/s)` for `TFLOPS` on compute-bound ops. -->
 
 **Takeaways:** {wins · losses with brief reason · dtype/shape patterns}
 
