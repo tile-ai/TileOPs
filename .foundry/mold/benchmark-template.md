@@ -20,6 +20,13 @@ Filling in the template below:
   noise once Speedup is given.
 - Drop the Shape column if the op only varies dtype. Never put autotune
   config (`block_m`, `threads`) in the table — implementation detail.
+- **Preserve the original shape tuple — never flatten to a single
+  element count.** Write `(4096, 4096)` for a 2D input, `(2, 4096, 128)`
+  for a 3D one, and `(4194304,)` (or `(4M,)`) for a genuinely 1D op.
+  A bare `4M` loses dimensionality: readers can't tell `(4M,)` from
+  `(2K, 2K)` from `(64, 64K)`, yet those have very different access
+  patterns. Use `K`/`M` only inside a tuple to keep large numbers
+  readable, never to replace it.
 - Environment block goes once at the top, not per op.
 - Takeaways = conclusions, not data repetition. Wins, losses with a brief
   reason (not blocking), dtype/shape patterns.
@@ -47,11 +54,12 @@ copied into the PR body):
 
 ### \{OpName}
 
-| dtype | TileOPs (ms) | \{baseline} (ms) | Speedup | BW (TB/s) |
-| ----- | ------------ | ---------------- | ------- | --------- |
+| Shape | dtype | TileOPs (ms) | \{baseline} (ms) | Speedup | BW (TB/s) |
+| ----- | ----- | ------------ | ---------------- | ------- | --------- |
 
-<!-- Repeat one ### section per op. Add a Shape column on the left when
-the op varies shape. Swap `BW (TB/s)` for `TFLOPS` on compute-bound ops. -->
+<!-- Repeat one ### section per op. Drop the Shape column if the op only
+varies dtype. Swap `BW (TB/s)` for `TFLOPS` on compute-bound ops.
+Shape values are tuples: `(4096, 4096)`, `(2, 4096, 128)`, `(4M,)`. -->
 
 **Takeaways:** {wins · losses with brief reason · dtype/shape patterns}
 
