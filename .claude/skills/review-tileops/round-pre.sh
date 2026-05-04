@@ -16,15 +16,18 @@
 #                       (issue) comment.
 #   LATEST_REVIEW_ID  — current max id of any non-reviewer review/inline
 #                       comment (incl. thread replies).
-#                       Optional; when provided, the reuse decision requires
-#                       BOTH the prior approving round's recorded
-#                       ``last_issue_comment_id`` and ``last_review_comment_id``
-#                       to match. If a NEW human comment of either kind
-#                       landed on the same SHA after the prior APPROVE, this
-#                       hook returns "proceed" so codex re-reviews and
-#                       ingests the comment. When absent or empty, this
-#                       guard is skipped (legacy behavior, used by tests
-#                       that pre-date the watermark fields).
+#                       Each is independent. When supplied, the reuse
+#                       decision requires the prior approving round's
+#                       counterpart watermark to match. A caller may
+#                       supply only one — the unsupplied dimension is
+#                       not constrained. If a NEW human comment of
+#                       either kind landed on the same SHA after the
+#                       prior APPROVE, the matched watermark mismatches
+#                       and this hook returns "proceed" so codex re-
+#                       reviews and ingests the comment. When BOTH are
+#                       absent or empty, the watermark guard is skipped
+#                       entirely (legacy behavior, used by tests that
+#                       pre-date the watermark fields).
 #
 # Positional fallback:
 #   round-pre.sh <RUN_DIR> <NEXT_ROUND> <HEAD_SHA> [LATEST_ISSUE_ID] [LATEST_REVIEW_ID]
