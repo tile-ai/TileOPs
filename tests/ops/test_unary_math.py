@@ -332,5 +332,43 @@ def test_sign_edge(n_total: int, dtype: torch.dtype) -> None:
     )
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("decimals", [0, 2, -1])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_round_decimals(dtype: torch.dtype, decimals: int) -> None:
+    """RoundFwdOp must honour the manifest 'decimals' parameter end-to-end.
+
+    Uses ``torch.round(x, decimals=k)`` as the reference and the standard
+    decomposition under the hood: ``round(x * 10**k) / 10**k``.
+    """
+    n_total = 4096
+    # Bound the inputs so |x * 10**decimals| stays well within fp16 range
+    # (max ~65504) — relevant for decimals=2 with fp16/bf16.
+    x = torch.randn(n_total, device="cuda", dtype=dtype) * 10.0
+    op = RoundFwdOp(N_total=n_total, dtype=dtype)
+    out = op(x, decimals=decimals)
+    ref = torch.round(x.float(), decimals=decimals).to(dtype)
+    # Non-zero decimals widens the working magnitude by 10**decimals before
+    # rounding; the round-trip cast to the storage dtype between the scale
+    # and unscale steps is unavoidable for a kernel that consumes self.dtype,
+    # so we relax atol/rtol by 10**|decimals| for low-bit dtypes.
+    tol = dict(_get_tolerances(dtype))
+    if dtype in (torch.float16, torch.bfloat16) and decimals != 0:
+        slack = 10.0 ** abs(decimals)
+        tol = {"atol": tol["atol"] * slack, "rtol": tol["rtol"] * slack}
+    torch.testing.assert_close(out, ref, **tol)
+
+
+@pytest.mark.smoke
+def test_round_decimals_default_is_zero() -> None:
+    """Calling RoundFwdOp without ``decimals`` must round to nearest integer."""
+    n_total = 1024
+    x = torch.randn(n_total, device="cuda", dtype=torch.float32) * 5.0
+    op = RoundFwdOp(N_total=n_total, dtype=torch.float32)
+    out = op(x)
+    ref = torch.round(x)
+    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

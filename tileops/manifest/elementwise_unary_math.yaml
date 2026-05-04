@@ -404,7 +404,7 @@ CeilFwdOp:
 RoundFwdOp:
   ref_api: "torch.round"
   family: elementwise
-  status: spec-only  # op-layer does not yet expose 'decimals'; kernel only supports decimals=0, fix in follow-up
+  status: implemented
 
   signature:
     inputs:

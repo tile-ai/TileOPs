@@ -1286,10 +1286,37 @@ class CeilFwdOp(UnaryOp):
 
 
 class RoundFwdOp(UnaryOp):
-    """Element-wise round(x)."""
+    """Element-wise round(x) to ``decimals`` decimal places.
+
+    The underlying kernel performs banker's round-to-nearest-integer, matching
+    ``torch.round`` for ``decimals=0``. Non-zero ``decimals`` is supported at
+    the op layer via the standard decomposition:
+    ``round(x, decimals=k) == round(x * 10**k) / 10**k``.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        strategy: Kernel strategy override.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune.
+    """
 
     _op_name = "round"
     kernel_cls = RoundFwdKernel
+
+    def forward(  # noqa: A002
+        self, input: torch.Tensor, decimals: int = 0,
+    ) -> torch.Tensor:
+        if decimals == 0:
+            return super().forward(input)
+        # Non-zero decimals: scale, round-to-integer, unscale at the op layer.
+        # Scaling in fp32 then casting back avoids the precision loss that
+        # multiplying by 10**k incurs for fp16/bf16 inputs — matches the
+        # behaviour of ``torch.round(x, decimals=k)``.
+        scale = 10.0 ** decimals
+        scaled = (input.float() * scale).to(self.dtype).contiguous()
+        rounded = super().forward(scaled)
+        return (rounded.float() / scale).to(self.dtype)
 
 
 class TruncFwdOp(UnaryOp):
