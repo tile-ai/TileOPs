@@ -164,9 +164,16 @@ fi
 
 If `--nightshift` was passed and the `nightshift` label does not exist, terminate with: `nightshift label missing in $OWNER_REPO — see foundry nightshift docs`. Do not create the label automatically.
 
-For each confirmed item, invoke `foundry:creating-issue` with `--from-draft <tmpfile>`.
+**MANDATORY ROUTE — no exceptions.** For each confirmed item:
 
-Pick exactly one of the two frontmatter + body templates below based on whether `--nightshift` was passed. The body sections after the frontmatter are byte-identical between the two; only the `labels:` block differs.
+1. Write the draft below to a temp file (frontmatter + body).
+1. Invoke `foundry:creating-issue` with `--from-draft <tmpfile>`.
+
+Do NOT call `gh issue create` directly from this skill. `creating-issue` is the ONLY sanctioned path: it runs the 5-section HARD GATE (`## Description` / `## Goal` / `## Plan` / `## Constraints` / `## Acceptance Criteria`), which is the same gate `foundry:pipeline` Phase A re-validates when it later picks the issue up. A direct `gh issue create` would produce a body that the pipeline cannot consume — exactly the failure mode that produced malformed sibling follow-ups in past nightshift runs.
+
+The body template uses `##` (H2) for the five top-level sections to match the validation gate. `**Plan type: proposal**` is the literal marker the gate matches via regex `^\*\*Plan type:[[:space:]]*(proposal|fixed)\*\*$` — do not replace it with an HTML comment.
+
+Pick exactly one of the two templates based on `--nightshift`. Body sections after the frontmatter are byte-identical between the two; only the `labels:` block differs.
 
 **Default invocation** (no `--nightshift`) — emits only the `follow-up` label. Use this template verbatim:
 
@@ -179,29 +186,32 @@ labels:
 target_repo: <OWNER_REPO>
 ---
 
-# Description
-## Symptom / Motivation
+# <[TYPE][COMPONENT] short title>
+
+## Description
+
+### Symptom / Motivation
 Discovered during PR #<PR_NUMBER> (<PR_TITLE>).
 <what was observed, why it matters>
 
-## Root Cause Analysis
+### Root Cause Analysis
 <why not addressed in source PR — scope, complexity, risk>
 
-## Related Files
+### Related Files
 - <paths from diff or session>
 
-# Goal
+## Goal
 <one sentence>
 
-# Plan
-<!-- type: proposal -->
+## Plan
+**Plan type: proposal**
 1. <step>
 2. <step>
 
-# Constraints
+## Constraints
 - Must not regress PR #<PR_NUMBER>
 
-# Acceptance Criteria
+## Acceptance Criteria
 - [ ] AC-1: Modified files pass unit tests
 ```
 
@@ -217,29 +227,32 @@ labels:
 target_repo: <OWNER_REPO>
 ---
 
-# Description
-## Symptom / Motivation
+# <[TYPE][COMPONENT] short title>
+
+## Description
+
+### Symptom / Motivation
 Discovered during PR #<PR_NUMBER> (<PR_TITLE>).
 <what was observed, why it matters>
 
-## Root Cause Analysis
+### Root Cause Analysis
 <why not addressed in source PR — scope, complexity, risk>
 
-## Related Files
+### Related Files
 - <paths from diff or session>
 
-# Goal
+## Goal
 <one sentence>
 
-# Plan
-<!-- type: proposal -->
+## Plan
+**Plan type: proposal**
 1. <step>
 2. <step>
 
-# Constraints
+## Constraints
 - Must not regress PR #<PR_NUMBER>
 
-# Acceptance Criteria
+## Acceptance Criteria
 - [ ] AC-1: Modified files pass unit tests
 ```
 
