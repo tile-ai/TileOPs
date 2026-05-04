@@ -18,7 +18,7 @@ Utility:
 import math
 import weakref
 from math import prod
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import torch
 
@@ -683,6 +683,11 @@ class UnaryOp(Op):
     kernel_cls: type
     _op_name: str
     _wrapped = None  # Set by _register_unary_custom_op at class definition
+    # Per-element FLOP count, matching the manifest's ``roofline.flops``
+    # coefficient on ``N``. Subclasses override when the op is more than one
+    # arithmetic op per element (e.g. ``sigmoid`` ≈ 4, ``tanh`` ≈ 5). The
+    # base class default of 1 covers the common ``flops: "N"`` entries.
+    FLOPS_PER_ELEM: int = 1
 
     def __init__(
         self,
@@ -716,28 +721,49 @@ class UnaryOp(Op):
         """Read x + write y."""
         return self.N_total * (self.dtype.itemsize + self.output_dtype.itemsize)
 
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this unary elementwise op instance.
+
+        Mirrors the elementwise_unary_math manifest roofline:
+        ``flops = FLOPS_PER_ELEM * N`` and
+        ``bytes = N * input_elem_bytes + N * output_elem_bytes``. Subclasses
+        whose manifest entry uses a higher coefficient (e.g. ``sigmoid`` →
+        ``4 * N``, ``tanh`` → ``5 * N``) override ``FLOPS_PER_ELEM``. For ops
+        whose output dtype matches the input (e.g. ``neg``, ``abs``), bytes
+        collapse to ``2 * N * elem_bytes``; for ops with a smaller output
+        dtype (e.g. ``isnan`` / ``isinf`` / ``isfinite`` / ``logical_not`` →
+        bool), ``self.output_dtype.itemsize`` already captures the difference.
+        """
+        return self.FLOPS_PER_ELEM * self.N_total, int(self.total_memory)
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
         """Direct kernel call for use inside custom_op implementation."""
-        orig_shape = x.shape
-        x = x.contiguous().reshape(-1)
-        result = self.kernel(x).reshape(orig_shape)
+        orig_shape = input.shape
+        flat = input.contiguous().reshape(-1)
+        result = self.kernel(flat).reshape(orig_shape)
         # For e5m2: kernel produces fp16 to preserve Inf/NaN;
         # cast to e5m2 here using PyTorch's non-saturating conversion.
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
+    def _validate_input(self, input: torch.Tensor) -> None:  # noqa: A002
+        """Validate input tensor against the op's dtype / numel contract."""
+        if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.numel() != self.N_total:
+        if input.dtype != self.dtype:
             raise ValueError(
-                f"Expected {self.N_total} elements, got {x.numel()}"
+                f"Expected input.dtype {self.dtype}, got {input.dtype}"
             )
+        if input.numel() != self.N_total:
+            raise ValueError(
+                f"Expected {self.N_total} elements, got {input.numel()}"
+            )
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        self._validate_input(input)
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, self._instance_key)
-        return self._eager_forward(x)
+            return wrapped(input, self._instance_key)
+        return self._eager_forward(input)
 
 
 class BinaryOp(Op):
@@ -1227,32 +1253,119 @@ class RsqrtFwdOp(UnaryOp):
     kernel_cls = RsqrtFwdKernel
 
 
-class AbsFwdOp(UnaryOp):
+_MANIFEST_INT_DTYPES = (
+    torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
+)
+
+
+def _int_identity(input: torch.Tensor) -> torch.Tensor:
+    return input.clone()
+
+
+class _IntIdentityUnaryOp(UnaryOp):
+    """Base for unary ops whose manifest declares integer dtypes but whose
+    kernel is float-only.
+
+    Several manifest entries (floor / ceil / round / trunc, abs / neg / sign,
+    isnan / isinf / isfinite) declare both integer and floating-point input
+    dtypes, while the underlying ``*FwdKernel`` classes are float-only
+    (``FloatUnaryKernel``). For integer inputs we short-circuit at the op
+    layer: skip kernel construction in ``__init__`` and route through
+    ``_int_handler`` in ``_eager_forward``.
+
+    Subclasses override ``_int_handler`` (default = identity = ``input.clone()``)
+    and ``_int_output_dtype`` (default = same as input) to express the
+    appropriate integer semantics — e.g. ``torch.abs`` for ``AbsFwdOp``,
+    constant-False ``torch.bool`` for ``IsnanFwdOp``.
+
+    The short-circuit is restricted to the integer dtypes declared in the
+    manifest. Other non-float dtypes (bool, complex) are not in the
+    contract and fall through to ``UnaryOp.__init__``, which raises via the
+    kernel's dtype check.
+    """
+
+    _int_handler: Callable[[torch.Tensor], torch.Tensor] = staticmethod(
+        _int_identity)
+    _int_output_dtype: Optional[torch.dtype] = None
+    # Subclasses may extend the fallback dtype set when the manifest
+    # signature includes additional non-float dtypes (e.g. torch.bool for
+    # the is{nan,inf,finite} predicates).
+    _fallback_dtypes: tuple = _MANIFEST_INT_DTYPES
+
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        if dtype in type(self)._fallback_dtypes:
+            self.N_total = N_total
+            self.dtype = dtype
+            self.strategy = strategy
+            # Skip dispatch_kernel: the float-only kernel cannot be
+            # instantiated for an integer dtype. Expose a kernel_map shape
+            # consistent with the float path for any introspection that
+            # iterates it, but leave the kernel itself unconstructed.
+            self.kernel_map = kernel_map or self.default_kernel_map
+            self.kernel = None
+            self.output_dtype = (
+                type(self)._int_output_dtype
+                if type(self)._int_output_dtype is not None
+                else dtype
+            )
+            self._instance_key = id(self)
+            _OP_REGISTRY[self._instance_key] = self
+            return
+        super().__init__(
+            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if self.kernel is None:
+            return type(self)._int_handler(input)
+        return super()._eager_forward(input)
+
+
+class AbsFwdOp(_IntIdentityUnaryOp):
     """Element-wise |x|."""
 
     _op_name = "abs"
     kernel_cls = AbsFwdKernel
+    _int_handler = staticmethod(torch.abs)
 
 
-class NegFwdOp(UnaryOp):
+class NegFwdOp(_IntIdentityUnaryOp):
     """Element-wise -x."""
 
     _op_name = "neg"
     kernel_cls = NegFwdKernel
+    _int_handler = staticmethod(torch.neg)
 
 
 class ReciprocalFwdOp(UnaryOp):
-    """Element-wise 1/x."""
+    """Element-wise 1/x.
+
+    The manifest's int-dtype declaration is a known gap: ``torch.reciprocal``
+    promotes int input to float32, which does not match the manifest's
+    ``same_as(input)`` output rule. The op layer here only supports the
+    float dtypes the kernel implements; int input falls through to the
+    kernel's dtype check and raises.
+    """
 
     _op_name = "reciprocal"
     kernel_cls = ReciprocalFwdKernel
 
 
-class SignFwdOp(UnaryOp):
+class SignFwdOp(_IntIdentityUnaryOp):
     """Element-wise sign(x): -1, 0, or +1."""
 
     _op_name = "sign"
     kernel_cls = SignFwdKernel
+    # Manifest: flops = "2 * N" (two compares + selects per element).
+    FLOPS_PER_ELEM = 2
+    _int_handler = staticmethod(torch.sign)
 
 
 class SinFwdOp(UnaryOp):
@@ -1269,28 +1382,63 @@ class CosFwdOp(UnaryOp):
     kernel_cls = CosFwdKernel
 
 
-class FloorFwdOp(UnaryOp):
+class FloorFwdOp(_IntIdentityUnaryOp):
     """Element-wise floor(x)."""
 
     _op_name = "floor"
     kernel_cls = FloorFwdKernel
 
 
-class CeilFwdOp(UnaryOp):
+class CeilFwdOp(_IntIdentityUnaryOp):
     """Element-wise ceil(x)."""
 
     _op_name = "ceil"
     kernel_cls = CeilFwdKernel
 
 
-class RoundFwdOp(UnaryOp):
-    """Element-wise round(x)."""
+class RoundFwdOp(_IntIdentityUnaryOp):
+    """Element-wise round(x) to ``decimals`` decimal places.
+
+    The underlying kernel performs banker's round-to-nearest-integer, matching
+    ``torch.round`` for ``decimals=0``. Non-zero ``decimals`` is supported at
+    the op layer via the standard decomposition:
+    ``round(x, decimals=k) == round(x * 10**k) / 10**k``.
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        strategy: Kernel strategy override.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune.
+    """
 
     _op_name = "round"
     kernel_cls = RoundFwdKernel
 
+    def forward(  # noqa: A002
+        self, input: torch.Tensor, decimals: int = 0,
+    ) -> torch.Tensor:
+        if decimals == 0:
+            return super().forward(input)
+        # Non-zero decimals path still owes the same input contract as the
+        # ``decimals=0`` fast path (UnaryOp.forward). Run the shared validator
+        # before any fp32 arithmetic so a CPU tensor / wrong dtype / wrong
+        # numel cannot silently bypass the checks.
+        self._validate_input(input)
+        # Integer dtypes are no-ops regardless of decimals (rounding an int
+        # produces the same int). Match the float-path identity contract.
+        if self.dtype in _MANIFEST_INT_DTYPES:
+            return input.clone()
+        # Run through fp32 so low-precision inputs (fp16/bf16) cannot overflow
+        # when ``torch.round`` internally scales by ``10**decimals`` — e.g.
+        # ``100 * 10**4 = 1e6`` exceeds fp16 max (~65504). The single down-cast
+        # at the end restores the op's contract dtype. The manifest's
+        # ``kernel_map`` continues to describe the round-to-nearest-integer
+        # kernel that handles the ``decimals=0`` fast path above.
+        return torch.round(input.float(), decimals=decimals).to(self.dtype)
 
-class TruncFwdOp(UnaryOp):
+
+class TruncFwdOp(_IntIdentityUnaryOp):
     """Element-wise trunc(x)."""
 
     _op_name = "trunc"
@@ -1309,6 +1457,8 @@ class Log1pFwdOp(UnaryOp):
 
     _op_name = "log1p"
     kernel_cls = Log1pFwdKernel
+    # Manifest: flops = "2 * N" (1 add + 1 log).
+    FLOPS_PER_ELEM = 2
 
 
 class Expm1FwdOp(UnaryOp):
@@ -1316,6 +1466,8 @@ class Expm1FwdOp(UnaryOp):
 
     _op_name = "expm1"
     kernel_cls = Expm1FwdKernel
+    # Manifest: flops = "2 * N" (1 exp + 1 sub).
+    FLOPS_PER_ELEM = 2
 
 
 # ---------------------------------------------------------------------------
@@ -1342,6 +1494,8 @@ class SigmoidFwdOp(UnaryOp):
 
     _op_name = "sigmoid"
     kernel_cls = SigmoidFwdKernel
+    # Manifest: flops = "4 * N" (sigmoid(x) = 1 / (1 + exp(-x)) ≈ 4 ops/elem).
+    FLOPS_PER_ELEM = 4
 
 
 class TanhFwdOp(UnaryOp):
@@ -1349,6 +1503,8 @@ class TanhFwdOp(UnaryOp):
 
     _op_name = "tanh"
     kernel_cls = TanhFwdKernel
+    # Manifest: flops = "5 * N" (tanh(x) = 2 * sigmoid(2x) - 1 ≈ 5 ops/elem).
+    FLOPS_PER_ELEM = 5
 
 
 class HardswishFwdOp(UnaryOp):
@@ -1408,25 +1564,57 @@ class BitwiseNotFwdOp(UnaryOp):
 # ---------------------------------------------------------------------------
 
 
-class IsnanFwdOp(UnaryOp):
-    """Element-wise isnan with bool output."""
+def _int_all_false(input: torch.Tensor) -> torch.Tensor:
+    return torch.zeros(input.shape, dtype=torch.bool, device=input.device)
+
+
+def _int_all_true(input: torch.Tensor) -> torch.Tensor:
+    return torch.ones(input.shape, dtype=torch.bool, device=input.device)
+
+
+_PREDICATE_FALLBACK_DTYPES = _MANIFEST_INT_DTYPES + (torch.bool,)
+
+
+class IsnanFwdOp(_IntIdentityUnaryOp):
+    """Element-wise isnan with bool output.
+
+    Always False on integer / bool input (no NaN representation in those
+    dtypes).
+    """
 
     _op_name = "isnan"
     kernel_cls = IsnanFwdKernel
+    _int_handler = staticmethod(_int_all_false)
+    _int_output_dtype = torch.bool
+    _fallback_dtypes = _PREDICATE_FALLBACK_DTYPES
 
 
-class IsinfFwdOp(UnaryOp):
-    """Element-wise isinf with bool output."""
+class IsinfFwdOp(_IntIdentityUnaryOp):
+    """Element-wise isinf with bool output.
+
+    Always False on integer / bool input (no Inf representation in those
+    dtypes).
+    """
 
     _op_name = "isinf"
     kernel_cls = IsinfFwdKernel
+    _int_handler = staticmethod(_int_all_false)
+    _int_output_dtype = torch.bool
+    _fallback_dtypes = _PREDICATE_FALLBACK_DTYPES
 
 
-class IsfiniteFwdOp(UnaryOp):
-    """Element-wise isfinite with bool output."""
+class IsfiniteFwdOp(_IntIdentityUnaryOp):
+    """Element-wise isfinite with bool output.
+
+    Always True on integer / bool input (every value in those dtypes is
+    finite).
+    """
 
     _op_name = "isfinite"
     kernel_cls = IsfiniteFwdKernel
+    _int_handler = staticmethod(_int_all_true)
+    _int_output_dtype = torch.bool
+    _fallback_dtypes = _PREDICATE_FALLBACK_DTYPES
 
 
 # ---------------------------------------------------------------------------

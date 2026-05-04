@@ -12,7 +12,7 @@
 ExpFwdOp:
   ref_api: "torch.exp"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -34,6 +34,8 @@ ExpFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      exp: ExpFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -42,7 +44,7 @@ ExpFwdOp:
 LogFwdOp:
   ref_api: "torch.log"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -64,6 +66,8 @@ LogFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      log: LogFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -72,7 +76,7 @@ LogFwdOp:
 SqrtFwdOp:
   ref_api: "torch.sqrt"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -94,6 +98,8 @@ SqrtFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      sqrt: SqrtFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -102,7 +108,7 @@ SqrtFwdOp:
 RsqrtFwdOp:
   ref_api: "torch.rsqrt"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -124,6 +130,8 @@ RsqrtFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      rsqrt: RsqrtFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -132,7 +140,7 @@ RsqrtFwdOp:
 AbsFwdOp:
   ref_api: "torch.abs"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -154,6 +162,8 @@ AbsFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      abs: AbsFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -162,7 +172,7 @@ AbsFwdOp:
 NegFwdOp:
   ref_api: "torch.neg"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -184,6 +194,8 @@ NegFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      neg: NegFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -199,7 +211,7 @@ ReciprocalFwdOp:
   # kept as same_as(input) for the floating cases. Integral-input promotion
   # is a known modeling gap tracked separately and does not change the
   # accepted-input contract documented here.
-  status: spec-only
+  status: spec-only  # int-input promotion (int -> float32) cannot be expressed by same_as(input); op layer covers float dtypes only
 
   signature:
     inputs:
@@ -221,6 +233,8 @@ ReciprocalFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      reciprocal: ReciprocalFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -229,7 +243,7 @@ ReciprocalFwdOp:
 SignFwdOp:
   ref_api: "torch.sign"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -252,6 +266,8 @@ SignFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      sign: SignFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -260,7 +276,7 @@ SignFwdOp:
 SinFwdOp:
   ref_api: "torch.sin"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -282,6 +298,8 @@ SinFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      sin: SinFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -290,7 +308,7 @@ SinFwdOp:
 CosFwdOp:
   ref_api: "torch.cos"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -312,6 +330,8 @@ CosFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      cos: CosFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -320,7 +340,7 @@ CosFwdOp:
 FloorFwdOp:
   ref_api: "torch.floor"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -342,6 +362,8 @@ FloorFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      floor: FloorFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -350,7 +372,7 @@ FloorFwdOp:
 CeilFwdOp:
   ref_api: "torch.ceil"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -372,6 +394,8 @@ CeilFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      ceil: CeilFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -380,7 +404,7 @@ CeilFwdOp:
 RoundFwdOp:
   ref_api: "torch.round"
   family: elementwise
-  status: spec-only  # impl ignores 'decimals' param (kernel only supports decimals=0); fix in follow-up
+  status: implemented
 
   signature:
     inputs:
@@ -404,6 +428,8 @@ RoundFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      round: RoundFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -412,7 +438,7 @@ RoundFwdOp:
 TruncFwdOp:
   ref_api: "torch.trunc"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -434,6 +460,8 @@ TruncFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      trunc: TruncFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -442,7 +470,7 @@ TruncFwdOp:
 ErfFwdOp:
   ref_api: "torch.erf"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -464,6 +492,8 @@ ErfFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      erf: ErfFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -472,7 +502,7 @@ ErfFwdOp:
 Log1pFwdOp:
   ref_api: "torch.log1p"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -495,6 +525,8 @@ Log1pFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      log1p: Log1pFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -503,7 +535,7 @@ Log1pFwdOp:
 Expm1FwdOp:
   ref_api: "torch.expm1"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -526,6 +558,8 @@ Expm1FwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      expm1: Expm1FwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -534,7 +568,7 @@ Expm1FwdOp:
 SigmoidFwdOp:
   ref_api: "torch.sigmoid"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -557,6 +591,8 @@ SigmoidFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      sigmoid: SigmoidFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
@@ -565,7 +601,7 @@ SigmoidFwdOp:
 TanhFwdOp:
   ref_api: "torch.tanh"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -588,6 +624,8 @@ TanhFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      tanh: TanhFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
@@ -596,7 +634,7 @@ TanhFwdOp:
 LogicalNotFwdOp:
   ref_api: "torch.logical_not"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -619,6 +657,8 @@ LogicalNotFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      logical_not: LogicalNotFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_logical.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -627,7 +667,7 @@ LogicalNotFwdOp:
 BitwiseNotFwdOp:
   ref_api: "torch.bitwise_not"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -649,6 +689,8 @@ BitwiseNotFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      bitwise_not: BitwiseNotFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_bitwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -657,7 +699,7 @@ BitwiseNotFwdOp:
 IsnanFwdOp:
   ref_api: "torch.isnan"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -680,6 +722,8 @@ IsnanFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      isnan: IsnanFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -688,7 +732,7 @@ IsnanFwdOp:
 IsinfFwdOp:
   ref_api: "torch.isinf"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -711,6 +755,8 @@ IsinfFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      isinf: IsinfFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
@@ -719,7 +765,7 @@ IsinfFwdOp:
 IsfiniteFwdOp:
   ref_api: "torch.isfinite"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -742,6 +788,8 @@ IsfiniteFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      isfinite: IsfiniteFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py

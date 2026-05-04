@@ -16,6 +16,9 @@ from tileops.ops.elementwise import (
     ExpFwdOp,
     Expm1FwdOp,
     FloorFwdOp,
+    IsfiniteFwdOp,
+    IsinfFwdOp,
+    IsnanFwdOp,
     Log1pFwdOp,
     LogFwdOp,
     NegFwdOp,
@@ -229,6 +232,111 @@ def test_math_ops_reject_non_float_dtype() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Integer-dtype identity short-circuit for floor / ceil / round / trunc.
+#
+# The manifest declares these ops over both integer and float dtypes; the
+# underlying kernels are float-only. ``torch.{floor,ceil,round,trunc}`` are
+# no-ops on integer tensors, so the op layer short-circuits and returns a
+# clone of the input unchanged.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls",
+    [FloorFwdOp, CeilFwdOp, RoundFwdOp, TruncFwdOp],
+)
+@pytest.mark.parametrize(
+    "int_dtype",
+    [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8],
+)
+def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
+    n_total = 1024
+    op = op_cls(N_total=n_total, dtype=int_dtype)
+    if int_dtype == torch.uint8:
+        x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
+    else:
+        x = torch.randint(-50, 50, (n_total,), device="cuda", dtype=int_dtype)
+    y = op.forward(x)
+    assert y.dtype == int_dtype
+    assert y.shape == x.shape
+    assert torch.equal(y, x)
+
+
+@pytest.mark.smoke
+def test_round_int_identity_with_decimals() -> None:
+    """RoundFwdOp's decimals!=0 path also short-circuits on integer inputs."""
+    n_total = 256
+    op = RoundFwdOp(N_total=n_total, dtype=torch.int32)
+    x = torch.randint(-100, 100, (n_total,), device="cuda", dtype=torch.int32)
+    y = op.forward(x, decimals=2)
+    assert torch.equal(y, x)
+
+
+# ---------------------------------------------------------------------------
+# Integer-dtype op-layer fallbacks for abs / neg / sign and the
+# is{nan,inf,finite} predicates. Their manifest entries declare integer
+# input dtypes alongside floats; the underlying kernels are float-only,
+# so the op layer routes int input through a torch primitive (or the
+# constant-bool result, for the predicates).
+# ---------------------------------------------------------------------------
+
+
+_INT_DTYPES = [
+    torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8,
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls, torch_fn",
+    [
+        (AbsFwdOp, torch.abs),
+        (NegFwdOp, torch.neg),
+        (SignFwdOp, torch.sign),
+    ],
+)
+@pytest.mark.parametrize("int_dtype", _INT_DTYPES)
+def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
+    n_total = 1024
+    op = op_cls(N_total=n_total, dtype=int_dtype)
+    if int_dtype == torch.uint8:
+        x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
+    else:
+        x = torch.randint(-50, 50, (n_total,), device="cuda", dtype=int_dtype)
+    y = op.forward(x)
+    assert y.dtype == int_dtype
+    assert torch.equal(y, torch_fn(x))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls, expected",
+    [
+        (IsnanFwdOp, False),
+        (IsinfFwdOp, False),
+        (IsfiniteFwdOp, True),
+    ],
+)
+@pytest.mark.parametrize("non_float_dtype", _INT_DTYPES + [torch.bool])
+def test_predicate_non_float_constant(op_cls, expected, non_float_dtype) -> None:
+    """Predicate ops return constant bool on every non-float dtype the
+    manifest declares (integer dtypes plus ``torch.bool``)."""
+    n_total = 256
+    op = op_cls(N_total=n_total, dtype=non_float_dtype)
+    if non_float_dtype == torch.bool:
+        x = torch.randint(0, 2, (n_total,), device="cuda", dtype=torch.bool)
+    elif non_float_dtype == torch.uint8:
+        x = torch.randint(0, 100, (n_total,), device="cuda", dtype=non_float_dtype)
+    else:
+        x = torch.randint(-50, 50, (n_total,), device="cuda", dtype=non_float_dtype)
+    y = op.forward(x)
+    assert y.dtype == torch.bool
+    assert y.shape == x.shape
+    assert (y == expected).all()
+
+
+# ---------------------------------------------------------------------------
 # L4 edge-case tests (fp32, 4K)
 # ---------------------------------------------------------------------------
 
@@ -330,6 +438,78 @@ def test_sign_edge(n_total: int, dtype: torch.dtype) -> None:
         torch.sign,
         SignFwdOp,
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("decimals", [0, 2, -1])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_round_decimals(dtype: torch.dtype, decimals: int) -> None:
+    """RoundFwdOp must honour the manifest 'decimals' parameter end-to-end.
+
+    Uses ``torch.round(x, decimals=k)`` as the reference and the standard
+    decomposition under the hood: ``round(x * 10**k) / 10**k``.
+    """
+    n_total = 4096
+    x = torch.randn(n_total, device="cuda", dtype=dtype) * 10.0
+    op = RoundFwdOp(N_total=n_total, dtype=dtype)
+    out = op(x, decimals=decimals)
+    ref = torch.round(x.float(), decimals=decimals).to(dtype)
+    # The decimals path runs entirely in fp32 internally and only down-casts
+    # once at the end, so the standard per-dtype tolerances apply.
+    torch.testing.assert_close(out, ref, **_get_tolerances(dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_round_decimals_no_overflow_low_precision(dtype: torch.dtype) -> None:
+    """Decimals path must not overflow fp16/bf16 when ``|x| * 10**decimals`` exceeds dtype max.
+
+    Regression: previously the op cast ``x.float() * 10**decimals`` back to
+    ``self.dtype`` before rounding, so e.g. ``100 * 10**4 = 1e6`` overflowed
+    fp16's ~65504 max and produced ``inf``. The reference is
+    ``torch.round(x.float(), decimals=k).to(dtype)`` which is just ``100.0``.
+    """
+    n_total = 1
+    x = torch.tensor([100.0], device="cuda", dtype=dtype)
+    op = RoundFwdOp(N_total=n_total, dtype=dtype)
+    out = op(x, decimals=4)
+    ref = torch.round(x.float(), decimals=4).to(dtype)
+    assert torch.isfinite(out).all(), f"output contains non-finite values: {out}"
+    torch.testing.assert_close(out, ref, **_get_tolerances(dtype))
+
+
+@pytest.mark.smoke
+def test_round_decimals_default_is_zero() -> None:
+    """Calling RoundFwdOp without ``decimals`` must round to nearest integer."""
+    n_total = 1024
+    x = torch.randn(n_total, device="cuda", dtype=torch.float32) * 5.0
+    op = RoundFwdOp(N_total=n_total, dtype=torch.float32)
+    out = op(x)
+    ref = torch.round(x)
+    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_round_decimals_validates_input() -> None:
+    """Non-zero decimals path must enforce the same input contract as decimals=0.
+
+    Regression: a CPU tensor / wrong-dtype / wrong-numel input would silently
+    short-circuit through the op-layer fp32 decomposition because the path
+    bypassed ``UnaryOp.forward``'s validation.
+    """
+    op = RoundFwdOp(N_total=2, dtype=torch.float32)
+    # CPU tensor must raise (matches decimals=0 path).
+    cpu_x = torch.ones(2, dtype=torch.float32)
+    with pytest.raises(ValueError, match="CUDA tensor"):
+        op(cpu_x, decimals=2)
+    # Wrong dtype must raise.
+    wrong_dtype = torch.ones(2, device="cuda", dtype=torch.float16)
+    with pytest.raises(ValueError, match="dtype"):
+        op(wrong_dtype, decimals=2)
+    # Wrong numel must raise.
+    wrong_numel = torch.ones(4, device="cuda", dtype=torch.float32)
+    with pytest.raises(ValueError, match="elements"):
+        op(wrong_numel, decimals=2)
 
 
 if __name__ == "__main__":
