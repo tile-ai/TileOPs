@@ -318,14 +318,18 @@ def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
         (IsfiniteFwdOp, True),
     ],
 )
-@pytest.mark.parametrize("int_dtype", _INT_DTYPES)
-def test_predicate_int_constant(op_cls, expected, int_dtype) -> None:
+@pytest.mark.parametrize("non_float_dtype", _INT_DTYPES + [torch.bool])
+def test_predicate_non_float_constant(op_cls, expected, non_float_dtype) -> None:
+    """Predicate ops return constant bool on every non-float dtype the
+    manifest declares (integer dtypes plus ``torch.bool``)."""
     n_total = 256
-    op = op_cls(N_total=n_total, dtype=int_dtype)
-    if int_dtype == torch.uint8:
-        x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
+    op = op_cls(N_total=n_total, dtype=non_float_dtype)
+    if non_float_dtype == torch.bool:
+        x = torch.randint(0, 2, (n_total,), device="cuda", dtype=torch.bool)
+    elif non_float_dtype == torch.uint8:
+        x = torch.randint(0, 100, (n_total,), device="cuda", dtype=non_float_dtype)
     else:
-        x = torch.randint(-50, 50, (n_total,), device="cuda", dtype=int_dtype)
+        x = torch.randint(-50, 50, (n_total,), device="cuda", dtype=non_float_dtype)
     y = op.forward(x)
     assert y.dtype == torch.bool
     assert y.shape == x.shape

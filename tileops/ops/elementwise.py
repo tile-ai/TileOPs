@@ -1287,6 +1287,10 @@ class _IntIdentityUnaryOp(UnaryOp):
     _int_handler: Callable[[torch.Tensor], torch.Tensor] = staticmethod(
         _int_identity)
     _int_output_dtype: Optional[torch.dtype] = None
+    # Subclasses may extend the fallback dtype set when the manifest
+    # signature includes additional non-float dtypes (e.g. torch.bool for
+    # the is{nan,inf,finite} predicates).
+    _fallback_dtypes: tuple = _MANIFEST_INT_DTYPES
 
     def __init__(
         self,
@@ -1296,7 +1300,7 @@ class _IntIdentityUnaryOp(UnaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if dtype in _MANIFEST_INT_DTYPES:
+        if dtype in type(self)._fallback_dtypes:
             self.N_total = N_total
             self.dtype = dtype
             self.strategy = strategy
@@ -1568,31 +1572,49 @@ def _int_all_true(input: torch.Tensor) -> torch.Tensor:
     return torch.ones(input.shape, dtype=torch.bool, device=input.device)
 
 
+_PREDICATE_FALLBACK_DTYPES = _MANIFEST_INT_DTYPES + (torch.bool,)
+
+
 class IsnanFwdOp(_IntIdentityUnaryOp):
-    """Element-wise isnan with bool output. Always False on integer input."""
+    """Element-wise isnan with bool output.
+
+    Always False on integer / bool input (no NaN representation in those
+    dtypes).
+    """
 
     _op_name = "isnan"
     kernel_cls = IsnanFwdKernel
     _int_handler = staticmethod(_int_all_false)
     _int_output_dtype = torch.bool
+    _fallback_dtypes = _PREDICATE_FALLBACK_DTYPES
 
 
 class IsinfFwdOp(_IntIdentityUnaryOp):
-    """Element-wise isinf with bool output. Always False on integer input."""
+    """Element-wise isinf with bool output.
+
+    Always False on integer / bool input (no Inf representation in those
+    dtypes).
+    """
 
     _op_name = "isinf"
     kernel_cls = IsinfFwdKernel
     _int_handler = staticmethod(_int_all_false)
     _int_output_dtype = torch.bool
+    _fallback_dtypes = _PREDICATE_FALLBACK_DTYPES
 
 
 class IsfiniteFwdOp(_IntIdentityUnaryOp):
-    """Element-wise isfinite with bool output. Always True on integer input."""
+    """Element-wise isfinite with bool output.
+
+    Always True on integer / bool input (every value in those dtypes is
+    finite).
+    """
 
     _op_name = "isfinite"
     kernel_cls = IsfiniteFwdKernel
     _int_handler = staticmethod(_int_all_true)
     _int_output_dtype = torch.bool
+    _fallback_dtypes = _PREDICATE_FALLBACK_DTYPES
 
 
 # ---------------------------------------------------------------------------
