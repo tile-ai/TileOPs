@@ -1297,6 +1297,11 @@ class CosFwdOp(UnaryOp):
     kernel_cls = CosFwdKernel
 
 
+_MANIFEST_INT_DTYPES = (
+    torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
+)
+
+
 class _IntIdentityUnaryOp(UnaryOp):
     """Base for unary rounding ops with integer-dtype identity short-circuit.
 
@@ -1306,6 +1311,11 @@ class _IntIdentityUnaryOp(UnaryOp):
     ceil / round / trunc`` are no-ops — the value is already integral — so
     we short-circuit at the op layer: skip kernel construction in
     ``__init__`` and have ``_eager_forward`` return a clone of the input.
+
+    The short-circuit is restricted to the integer dtypes declared in the
+    manifest. Other non-float dtypes (bool, complex) are not in the
+    contract and fall through to ``UnaryOp.__init__``, which raises via the
+    kernel's dtype check.
     """
 
     def __init__(
@@ -1316,7 +1326,7 @@ class _IntIdentityUnaryOp(UnaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if not dtype.is_floating_point:
+        if dtype in _MANIFEST_INT_DTYPES:
             self.N_total = N_total
             self.dtype = dtype
             self.strategy = strategy
@@ -1385,7 +1395,7 @@ class RoundFwdOp(_IntIdentityUnaryOp):
         self._validate_input(input)
         # Integer dtypes are no-ops regardless of decimals (rounding an int
         # produces the same int). Match the float-path identity contract.
-        if not self.dtype.is_floating_point:
+        if self.dtype in _MANIFEST_INT_DTYPES:
             return input.clone()
         # Run through fp32 so low-precision inputs (fp16/bf16) cannot overflow
         # when ``torch.round`` internally scales by ``10**decimals`` — e.g.
