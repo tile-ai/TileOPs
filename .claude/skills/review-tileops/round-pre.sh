@@ -9,20 +9,28 @@
 # via the "approve_reused_from" field.
 #
 # Inputs (env or positional, env wins):
-#   RUN_DIR          — review/ root for this loop run; must contain rounds/.
-#   NEXT_ROUND       — integer round number about to run (e.g. 5).
-#   HEAD_SHA         — full git sha of the PR HEAD this round would review.
-#   LATEST_HUMAN_ID  — current max id of any non-reviewer comment on the PR.
-#                      Optional; when provided, the reuse decision also
-#                      requires the prior approving round's recorded
-#                      ``last_human_comment_id`` to match. If a NEW human
-#                      comment landed on the same SHA after the prior
-#                      APPROVE, this hook returns "proceed" so codex re-
-#                      reviews and ingests the comment. When absent or
-#                      empty, this guard is skipped (legacy behavior, used
-#                      by tests that pre-date the watermark field).
+#   RUN_DIR           — review/ root for this loop run; must contain rounds/.
+#   NEXT_ROUND        — integer round number about to run (e.g. 5).
+#   HEAD_SHA          — full git sha of the PR HEAD this round would review.
+#   LATEST_ISSUE_ID   — current max id of any non-reviewer top-level PR
+#                       (issue) comment.
+#   LATEST_REVIEW_ID  — current max id of any non-reviewer review/inline
+#                       comment (incl. thread replies).
+#                       Each is independent. When supplied, the reuse
+#                       decision requires the prior approving round's
+#                       counterpart watermark to match. A caller may
+#                       supply only one — the unsupplied dimension is
+#                       not constrained. If a NEW human comment of
+#                       either kind landed on the same SHA after the
+#                       prior APPROVE, the matched watermark mismatches
+#                       and this hook returns "proceed" so codex re-
+#                       reviews and ingests the comment. When BOTH are
+#                       absent or empty, the watermark guard is skipped
+#                       entirely (legacy behavior, used by tests that
+#                       pre-date the watermark fields).
 #
-# Positional fallback: round-pre.sh <RUN_DIR> <NEXT_ROUND> <HEAD_SHA> [LATEST_HUMAN_ID]
+# Positional fallback:
+#   round-pre.sh <RUN_DIR> <NEXT_ROUND> <HEAD_SHA> [LATEST_ISSUE_ID] [LATEST_REVIEW_ID]
 #
 # Output:
 #   - exit 0 + stdout "skip"     → loop should skip codex; round-NN.json is
@@ -47,7 +55,8 @@ set -uo pipefail
 RUN_DIR="${RUN_DIR:-${1:-}}"
 NEXT_ROUND="${NEXT_ROUND:-${2:-}}"
 HEAD_SHA="${HEAD_SHA:-${3:-}}"
-LATEST_HUMAN_ID="${LATEST_HUMAN_ID:-${4:-}}"
+LATEST_ISSUE_ID="${LATEST_ISSUE_ID:-${4:-}}"
+LATEST_REVIEW_ID="${LATEST_REVIEW_ID:-${5:-}}"
 
 if [[ -z "$RUN_DIR" || -z "$NEXT_ROUND" || -z "$HEAD_SHA" ]]; then
   # Missing args is a recoverable misconfiguration: emit "proceed" so the
@@ -68,33 +77,36 @@ fi
 # Scan prior round-*.json files for an APPROVE on the same head_sha_after.
 # Pure jq filter; oldest-first sort iterates rounds chronologically.
 #
-# Selection contract (bug-1 fix): when LATEST_HUMAN_ID is provided, we
-# MUST iterate ALL same-SHA APPROVE candidates and reuse the one whose
-# recorded ``last_human_comment_id`` matches the current watermark.
-# Breaking on the first SHA match (the prior behavior) caused this
-# failure mode:
+# Selection contract: when LATEST_ISSUE_ID and/or LATEST_REVIEW_ID are
+# provided, we MUST iterate ALL same-SHA APPROVE candidates and reuse
+# the one whose recorded watermarks match every supplied LATEST_*_ID
+# (per-dimension; unsupplied dimensions are unconstrained). Breaking
+# on the first SHA match would cause this failure mode:
 #
-#   round 5: APPROVE on sha=X, watermark=100
-#   <human comments land; watermark → 200>
-#   round 6: re-APPROVE on sha=X, watermark=200
+#   round 5: APPROVE on sha=X, issue_wm=100, review_wm=50
+#   <human comments land; watermarks → 200, 60>
+#   round 6: re-APPROVE on sha=X, issue_wm=200, review_wm=60
 #   round 7: must skip, but old code found round 5 first, saw stale
 #            watermark=100 != 200, returned "proceed" — re-running codex
 #            even though round 6 is a perfectly reusable APPROVE.
 #
-# So: keep scanning. Prefer a same-SHA APPROVE whose watermark matches
-# LATEST_HUMAN_ID; otherwise (no LATEST_HUMAN_ID supplied, or no prior
-# round recorded a watermark) fall back to legacy SHA-only reuse using
-# the earliest APPROVE.
+# So: keep scanning. Each watermark dimension is independent — only the
+# LATEST_*_ID values the caller actually supplied are required to match;
+# unsupplied dimensions are unconstrained. If no watermarks are supplied
+# (or no prior round recorded them) fall back to legacy SHA-only reuse
+# using the earliest APPROVE.
 PRIOR_FILE=""
 PRIOR_ROUND=""
 PRIOR_BLOCKERS=0
-PRIOR_HUMAN_ID=""
+PRIOR_ISSUE_ID=""
+PRIOR_REVIEW_ID=""
 # Track the earliest same-SHA APPROVE as a fallback for the legacy
 # (no-watermark) path so pre-watermark round files keep skipping.
 FALLBACK_FILE=""
 FALLBACK_ROUND=""
 FALLBACK_BLOCKERS=0
-FALLBACK_HUMAN_ID=""
+FALLBACK_ISSUE_ID=""
+FALLBACK_REVIEW_ID=""
 
 # Use a sorted glob so iteration order is stable across filesystems.
 # Iterate via while-read against a NUL-safe stream so paths with spaces
@@ -112,7 +124,11 @@ while IFS= read -r -d '' f; do
 
   cand_round=$(jq -r '.round // empty' "$f" 2>/dev/null) || cand_round=""
   cand_blockers=$(jq -r '.blockers_after // 0' "$f" 2>/dev/null) || cand_blockers=0
-  cand_human_id=$(jq -r '.last_human_comment_id // empty' "$f" 2>/dev/null) || cand_human_id=""
+  # Backward-compat: pre-namespace-split round files only carry
+  # last_human_comment_id; treat it as the issue-comment seed (the legacy
+  # max() across both endpoints was dominated by issue ids in practice).
+  cand_issue_id=$(jq -r '.last_issue_comment_id // .last_human_comment_id // empty' "$f" 2>/dev/null) || cand_issue_id=""
+  cand_review_id=$(jq -r '.last_review_comment_id // empty' "$f" 2>/dev/null) || cand_review_id=""
   # Defensive numeric validation: --argjson rejects non-JSON-numeric
   # values, which would crash marker generation below. A corrupt prior
   # round file (e.g. blockers_after: "many", round: null) must not
@@ -121,25 +137,40 @@ while IFS= read -r -d '' f; do
   # are normalized here too.
   [[ "$cand_round" =~ ^[0-9]+$ ]] || cand_round=0
   [[ "$cand_blockers" =~ ^[0-9]+$ ]] || cand_blockers=0
-  [[ "$cand_human_id" =~ ^[0-9]+$ ]] || cand_human_id=""
+  [[ "$cand_issue_id" =~ ^[0-9]+$ ]] || cand_issue_id=""
+  [[ "$cand_review_id" =~ ^[0-9]+$ ]] || cand_review_id=""
 
   # Remember the earliest same-SHA APPROVE for the legacy fallback.
   if [[ -z "$FALLBACK_FILE" ]]; then
     FALLBACK_FILE="$f"
     FALLBACK_ROUND="$cand_round"
     FALLBACK_BLOCKERS="$cand_blockers"
-    FALLBACK_HUMAN_ID="$cand_human_id"
+    FALLBACK_ISSUE_ID="$cand_issue_id"
+    FALLBACK_REVIEW_ID="$cand_review_id"
   fi
 
-  # Watermark-aware reuse: pick this candidate if its recorded watermark
-  # matches the current LATEST_HUMAN_ID. Continue scanning otherwise so
-  # a later same-SHA APPROVE with a fresher watermark can still win.
-  if [[ -n "$LATEST_HUMAN_ID" && -n "$cand_human_id" \
-        && "$cand_human_id" == "$LATEST_HUMAN_ID" ]]; then
+  # Watermark-aware reuse: pick this candidate only if every watermark
+  # the caller actually supplied matches its recorded counterpart. A
+  # caller that provides only LATEST_ISSUE_ID does not constrain the
+  # review-id dimension, so we must NOT silently require the recorded
+  # review id to be 0. Continue scanning otherwise so a later same-SHA
+  # APPROVE with fresher watermarks can still win.
+  ok=true
+  if [[ -n "$LATEST_ISSUE_ID" \
+        && "${cand_issue_id:-0}" != "$LATEST_ISSUE_ID" ]]; then
+    ok=false
+  fi
+  if [[ -n "$LATEST_REVIEW_ID" \
+        && "${cand_review_id:-0}" != "$LATEST_REVIEW_ID" ]]; then
+    ok=false
+  fi
+  if [[ ( -n "$LATEST_ISSUE_ID" || -n "$LATEST_REVIEW_ID" ) \
+        && "$ok" == "true" ]]; then
     PRIOR_FILE="$f"
     PRIOR_ROUND="$cand_round"
     PRIOR_BLOCKERS="$cand_blockers"
-    PRIOR_HUMAN_ID="$cand_human_id"
+    PRIOR_ISSUE_ID="$cand_issue_id"
+    PRIOR_REVIEW_ID="$cand_review_id"
     break
   fi
 done < <(find "$ROUNDS_DIR" -maxdepth 1 -type f -name 'round-*.json' -print0 2>/dev/null | sort -z)
@@ -151,18 +182,19 @@ if [[ -z "$PRIOR_FILE" ]]; then
     echo "proceed"
     exit 0
   fi
-  if [[ -n "$LATEST_HUMAN_ID" ]]; then
-    # Caller supplied a watermark and NO same-SHA APPROVE matched it.
-    # That means a fresh human comment has landed since every prior
-    # APPROVE on this SHA — codex must re-review.
+  if [[ -n "$LATEST_ISSUE_ID" || -n "$LATEST_REVIEW_ID" ]]; then
+    # Caller supplied watermarks and NO same-SHA APPROVE matched them.
+    # That means a fresh human comment (issue or review) has landed
+    # since every prior APPROVE on this SHA — codex must re-review.
     echo "proceed"
     exit 0
   fi
-  # Legacy path: no watermark from caller → reuse the earliest match.
+  # Legacy path: no watermarks from caller → reuse the earliest match.
   PRIOR_FILE="$FALLBACK_FILE"
   PRIOR_ROUND="$FALLBACK_ROUND"
   PRIOR_BLOCKERS="$FALLBACK_BLOCKERS"
-  PRIOR_HUMAN_ID="$FALLBACK_HUMAN_ID"
+  PRIOR_ISSUE_ID="$FALLBACK_ISSUE_ID"
+  PRIOR_REVIEW_ID="$FALLBACK_REVIEW_ID"
 fi
 
 # Found a prior APPROVE on this SHA. Emit a marker round-NN.json that
@@ -172,22 +204,25 @@ N=$(printf '%02d' "$NEXT_ROUND")
 MARKER="$ROUNDS_DIR/round-$N.json"
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# Carry the human watermark forward so a downstream reuse decision (or
+# Carry the watermarks forward so a downstream reuse decision (or
 # postmortem) can tell whether new human comments have landed since the
-# *original* approving round. Use the caller-provided LATEST_HUMAN_ID
-# when present; otherwise inherit the prior round's recorded watermark.
-MARKER_HUMAN_ID="${LATEST_HUMAN_ID:-${PRIOR_HUMAN_ID:-0}}"
-[[ -z "$MARKER_HUMAN_ID" ]] && MARKER_HUMAN_ID=0
+# *original* approving round. Use the caller-provided LATEST_*_ID when
+# present; otherwise inherit the prior round's recorded watermark.
+MARKER_ISSUE_ID="${LATEST_ISSUE_ID:-${PRIOR_ISSUE_ID:-0}}"
+MARKER_REVIEW_ID="${LATEST_REVIEW_ID:-${PRIOR_REVIEW_ID:-0}}"
+[[ -z "$MARKER_ISSUE_ID" ]] && MARKER_ISSUE_ID=0
+[[ -z "$MARKER_REVIEW_ID" ]] && MARKER_REVIEW_ID=0
 
-# Final numeric validation before --argjson. Any of the four values
-# below could still be non-numeric here (e.g. caller-supplied
-# NEXT_ROUND or LATEST_HUMAN_ID came in malformed). Coerce or bail to
-# "proceed" so the loop falls back to a real codex run rather than
-# silently emitting "skip" without writing a marker.
+# Final numeric validation before --argjson. Any of the values below
+# could still be non-numeric here (e.g. caller-supplied NEXT_ROUND or
+# LATEST_*_ID came in malformed). Coerce or bail to "proceed" so the
+# loop falls back to a real codex run rather than silently emitting
+# "skip" without writing a marker.
 [[ "$NEXT_ROUND" =~ ^[0-9]+$ ]] || { echo "round-pre.sh: NEXT_ROUND not numeric ($NEXT_ROUND); proceeding" >&2; echo "proceed"; exit 0; }
 [[ "$PRIOR_BLOCKERS" =~ ^[0-9]+$ ]] || PRIOR_BLOCKERS=0
 [[ "$PRIOR_ROUND" =~ ^[0-9]+$ ]] || PRIOR_ROUND=0
-[[ "$MARKER_HUMAN_ID" =~ ^[0-9]+$ ]] || MARKER_HUMAN_ID=0
+[[ "$MARKER_ISSUE_ID" =~ ^[0-9]+$ ]] || MARKER_ISSUE_ID=0
+[[ "$MARKER_REVIEW_ID" =~ ^[0-9]+$ ]] || MARKER_REVIEW_ID=0
 
 if ! jq -n \
   --argjson r "$NEXT_ROUND" \
@@ -196,11 +231,13 @@ if ! jq -n \
   --arg ev "APPROVE" \
   --argjson bl "$PRIOR_BLOCKERS" \
   --argjson prior_round "$PRIOR_ROUND" \
-  --argjson hid "$MARKER_HUMAN_ID" \
+  --argjson iid "$MARKER_ISSUE_ID" \
+  --argjson rid "$MARKER_REVIEW_ID" \
   '{round:$r, finished_at:$now,
     head_sha_before:$sha, head_sha_after:$sha,
     codex_event:$ev, blockers_after:$bl,
-    last_human_comment_id:$hid,
+    last_issue_comment_id:$iid,
+    last_review_comment_id:$rid,
     approve_reused_from: $prior_round,
     skipped_codex: true}' \
   > "$MARKER" 2>/dev/null; then

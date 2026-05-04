@@ -3,296 +3,164 @@ name: follow-up
 description: Introspect a development session and generate follow-up issues for deferred work, discovered problems, and coverage gaps. Max 3 issues per invocation.
 ---
 
-## Arguments
+## Args
 
-| Argument       | Required | Description                                                                                                                                                 |
-| -------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<PR_NUMBER>`  | Yes      | TileOPs PR number (e.g. `1131`).                                                                                                                            |
-| `--nightshift` | No       | Boolean flag. Skip the interactive presentation gate (auto-accept all candidates) and inject the `nightshift` label into every created issue's frontmatter. |
+| Argument       | Description                                                                               |
+| -------------- | ----------------------------------------------------------------------------------------- |
+| `<PR_NUMBER>`  | Required. TileOPs PR number.                                                              |
+| `--nightshift` | Skip the interactive presentation; auto-accept all candidates; inject `nightshift` label. |
 
 ## Contract
 
-- **Input**: PR reference + conversation history (if available)
-- **Output**: up to 3 follow-up issues + in-scope suggestions committed into the PR + remaining out-of-scope suggestions printed to stdout for the developer to fold into the PR body at the reviewer's approval gate
-- **Termination**: issues created (if any) + applied-fix commit pushed (if any) + a stdout report listing what was created/applied/deferred. **Never edit the PR body** — the review skill owns body updates.
+Input: PR ref + conversation (if available). Output: ≤3 follow-up issues, in-scope fixes committed, out-of-scope suggestions printed to stdout. **Never edit the PR body** — the review skill owns it.
 
 ## Modes
 
-- **Session-rich**: conversation history available. Introspection is primary signal; PR supplements.
-- **Session-poor**: no session context. Use PR diff + human reviewer comments.
+- **Session-rich**: introspection is primary signal; PR supplements.
+- **Session-poor**: PR diff + human reviewer comments only.
 
 ## Steps
 
-### 1. GATE
-
-`<PR_NUMBER>` is required. If missing, terminate immediately: `Missing PR number. Usage: /follow-up <PR_NUMBER>`.
-
-Parse arguments and resolve PR:
+### 1. Resolve PR
 
 ```bash
-# Parse positional + flag arguments. Set NIGHTSHIFT=1 iff --nightshift is present; 0 otherwise.
-# Reject unknown flags so typos like --nightshfit do not silently fall through to PR_NUMBER.
 NIGHTSHIFT=0
 for arg in "$@"; do
   case "$arg" in
     --nightshift) NIGHTSHIFT=1 ;;
-    -*) echo "Unknown flag: $arg. Usage: /follow-up <PR_NUMBER> [--nightshift]" >&2; exit 1 ;;
+    -*) echo "Unknown flag: $arg" >&2; exit 1 ;;
     *) PR_NUMBER="${PR_NUMBER:-$arg}" ;;
   esac
 done
-
-if [[ -z "${PR_NUMBER:-}" ]]; then
-  echo "Missing PR number. Usage: /follow-up <PR_NUMBER>" >&2
-  exit 1
-fi
+[[ -z "${PR_NUMBER:-}" ]] && { echo "Usage: /follow-up <PR_NUMBER>" >&2; exit 1; }
 
 gh pr view "$PR_NUMBER" --json number,title,url,body
 OWNER_REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner')
 ```
 
-Extract: `PR_NUMBER`, `PR_TITLE`, `PR_URL`, `PR_BODY`, `OWNER_REPO`. `NIGHTSHIFT` is now bound (`0` or `1`) and gates step 5 mode selection, the step 6 label guard, and the step 6 frontmatter template.
+PR not found → terminate.
 
-**Fail** (PR not found) → terminate: `PR #<PR_NUMBER> not found in $OWNER_REPO.`
+### 2. Collect
 
-### 2. COLLECT (parallel)
-
-| Source                  | How                                                                    |
-| ----------------------- | ---------------------------------------------------------------------- |
-| Code diff               | `gh pr diff "$PR_NUMBER"`                                              |
-| Session history         | Scan conversation for deferrals, workarounds, surprises, blocked items |
-| In-code markers         | Grep changed files for `TODO`, `FIXME`, `HACK`, `XXX`                  |
-| Human reviewer comments | `gh api` — see below                                                   |
-
-**Reviewer comment extraction** (excludes PR author and bots). Apply the same filter to both endpoints — inline review comments and general PR comments:
+| Source            | How                                                   |
+| ----------------- | ----------------------------------------------------- |
+| Diff              | `gh pr diff "$PR_NUMBER"`                             |
+| Session           | Scan for deferrals, workarounds, blocked items        |
+| In-code markers   | Grep changed files for `TODO`, `FIXME`, `HACK`, `XXX` |
+| Reviewer comments | Both endpoints below, filtered to non-author non-bot  |
 
 ```bash
-export PR_AUTHOR=$(gh pr view $PR_NUMBER --json author -q '.author.login')
+export PR_AUTHOR=$(gh pr view "$PR_NUMBER" --json author -q '.author.login')
 FILTER='[.[] | select(.user.login != env.PR_AUTHOR and .user.type != "Bot"
         and (.user.login | test("copilot|gemini|github-actions"; "i") | not))]'
-
 gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER/comments"  --paginate --jq "$FILTER"
 gh api "repos/$OWNER_REPO/issues/$PR_NUMBER/comments" --paginate --jq "$FILTER"
 ```
 
-### 3. CLASSIFY
+### 3. Classify
 
 **Issue-worthy** (→ follow-up issue):
 
-| Category             | Signal                                                                                                             |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Scope deferral**   | "not in this PR", "follow-up needed", explicitly deferred                                                          |
-| **Fragile coupling** | Workarounds, monkey-patches, breakable assumptions                                                                 |
-| **Coverage gap**     | Untested cases, missing edge cases, skipped benchmarks                                                             |
-| **Consistency gap**  | *Doc drift*: implementation changed, docs/manifest not updated. *Spec drift*: same problem exists in other modules |
+| Category         | Signal                                                 |
+| ---------------- | ------------------------------------------------------ |
+| Scope deferral   | "not in this PR", explicit defer                       |
+| Fragile coupling | Workarounds, monkey-patches                            |
+| Coverage gap     | Untested cases, missing edge cases, skipped benchmarks |
+| Consistency gap  | Doc drift; same problem in other modules               |
 
-**Suggestion** (→ no issue). Split by scope:
+**Suggestion** (no issue):
 
-| Sub-tier         | Signal                                                                                                                          | Disposition                        |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **In-scope**     | Touches only files in this PR's diff; fix is small, mechanical, low-risk; does not expand the PR's observable behavior          | Apply directly in this PR (step 7) |
-| **Out-of-scope** | Touches files outside this PR's diff, OR expands the PR's behavioral surface, OR is judgment-dependent (subjective design call) | Print in stdout report (step 8)    |
+| Tier         | Signal                                          | Action |
+| ------------ | ----------------------------------------------- | ------ |
+| In-scope     | Touches only this PR's files; small, mechanical | Step 7 |
+| Out-of-scope | Outside diff, expands behavior, or subjective   | Step 8 |
 
-When uncertain, classify as out-of-scope — do not silently enlarge the PR's diff.
+Uncertain → out-of-scope. Nothing in either bucket → step 8 (empty report). Do not manufacture follow-ups.
 
-**Termination gate:** Zero issue-worthy items AND zero in-scope suggestions → skip to step 8 (print empty report). Do not manufacture follow-ups.
+### 4. Merge → max 3 issues
 
-### 4. MERGE
+Same module / root cause → merge. Different + independent → keep separate.
 
-Reduce to **max 3 issues**:
+### 5. Present
 
-- Same module + multiple problems → merge
-- Same root cause + multiple locations → merge
-- Different modules, independent → keep separate
-- Still >3 after merging → force-merge smallest into most related candidate
+`--nightshift`: skip; auto-accept; → step 6.
 
-### 5. PRESENT
-
-**Default mode** (no `--nightshift`): show candidates in **dependency order** (prerequisites first). Wait for user confirmation via the `Actions:` line below.
-
-**`--nightshift` mode**: skip the candidate presentation and the `Actions: confirm all / drop by number / edit / move <item> to out-of-scope` interaction entirely. Treat every candidate (and every in-scope suggestion) as confirmed — equivalent to the user typing `confirm all` — and proceed straight to Step 6. The auto-accept branch is conditional on the flag; default-mode behavior is unchanged when the flag is absent.
-
-#### Default mode (no `--nightshift`)
-
-The presentation template below applies only to default mode. Render it to stdout and wait on the `Actions:` line.
+Default — render in dependency order, wait on `Actions:`:
 
 ```
-Follow-up candidates from PR #<number>: <title>
-──────────────────────────────────────────────────
-1. [TYPE][SCOPE] <title>
-   Category: <category> | Summary: <1-2 sentences>
-
+Follow-up candidates from PR #<N>: <title>
+1. [TYPE][SCOPE] <title>          Category: <…> | <1–2 sentences>
 2. [TYPE][SCOPE] <title>          ← parallel with #1
-   Category: <category> | Summary: <1-2 sentences>
-
 3. [TYPE][SCOPE] <title>          ← depends on #1
-   Category: <category> | Summary: <1-2 sentences>
 
 Execution order: {#1, #2} → #3
 
-In-scope fixes (apply directly in this PR):
+In-scope fixes:
   - <file:line> — <nit>
-
-Out-of-scope suggestions (deferred — printed in step 8, not committed):
+Out-of-scope suggestions:
   - <nit>
 
-Actions: confirm all / drop by number / edit / move <item> to out-of-scope
+Actions: confirm all / drop by N / edit / move <item> to out-of-scope
 ```
 
-#### `--nightshift` mode (auto-accept)
+### 6. Create — delegate to `creating-issue`
 
-Do not render the template above. Auto-accept all candidates and proceed directly to Step 6.
+For each confirmed item: write a draft to a tmpfile, then invoke `foundry:creating-issue --from-draft <tmpfile>`. **Never `gh issue create` directly** — that bypasses the 5-section HARD GATE which `foundry:pipeline` Phase A re-validates downstream.
 
-### 6. CREATE
+Draft body must conform to the canonical template at `foundry/skills/creating-issue/SKILL.md` Step 4 — `creating-issue` is the single owner; do not duplicate or paraphrase its section names here.
 
-Ensure label exists:
+Frontmatter:
 
-```bash
-gh label list --search "follow-up" --json name --jq '.[].name' | grep -qx "follow-up" \
-  || gh label create "follow-up" --description "Generated from dev session introspection" --color "c5def5"
+```yaml
+---
+type: <FEAT|BUG|PERF|REFACTOR|DOCS|TEST>
+component: <affected module>
+labels: [follow-up]   # add `nightshift` only when --nightshift was passed
+target_repo: <OWNER_REPO>
+---
 ```
 
-**Nightshift label guard** — only when `--nightshift` was passed. The `nightshift` label is human-curated in the canonical setup (specific color and description); do not auto-create it with arbitrary metadata. Instead, fail fast with a clear error if it is missing:
-
-`NIGHTSHIFT` was bound in Step 1 (`1` if `--nightshift` was passed, else `0`). The guard below is a no-op in default mode:
+Labels (the `nightshift` label is human-curated — fail fast, do not auto-create):
 
 ```bash
+gh label list --search follow-up --json name --jq '.[].name' | grep -qx follow-up \
+  || gh label create follow-up --color c5def5 --description "Generated from dev session introspection"
+
 if [[ "$NIGHTSHIFT" == "1" ]]; then
-  gh label list --search "nightshift" --json name --jq '.[].name' | grep -qx "nightshift" \
-    || { echo "nightshift label missing in $OWNER_REPO — see foundry nightshift docs" >&2; exit 1; }
+  gh label list --search nightshift --json name --jq '.[].name' | grep -qx nightshift \
+    || { echo "nightshift label missing in $OWNER_REPO" >&2; exit 1; }
 fi
 ```
 
-If `--nightshift` was passed and the `nightshift` label does not exist, terminate with: `nightshift label missing in $OWNER_REPO — see foundry nightshift docs`. Do not create the label automatically.
+### 7. Apply in-scope fixes
 
-For each confirmed item, invoke `foundry:creating-issue` with `--from-draft <tmpfile>`.
+For each: verify file is in `gh pr diff --name-only "$PR_NUMBER"` (else demote); Edit; run a fast check (`pre-commit run --files <paths>` or module-scoped unit tests). Commit the batch:
 
-Pick exactly one of the two frontmatter + body templates below based on whether `--nightshift` was passed. The body sections after the frontmatter are byte-identical between the two; only the `labels:` block differs.
+```
+[Chore] apply in-scope follow-up suggestions from PR #$PR_NUMBER review
 
-**Default invocation** (no `--nightshift`) — emits only the `follow-up` label. Use this template verbatim:
-
-```markdown
----
-type: <FEAT|BUG|PERF|REFACTOR|DOCS|TEST>
-component: <affected module>
-labels:
-  - follow-up
-target_repo: <OWNER_REPO>
----
-
-# Description
-## Symptom / Motivation
-Discovered during PR #<PR_NUMBER> (<PR_TITLE>).
-<what was observed, why it matters>
-
-## Root Cause Analysis
-<why not addressed in source PR — scope, complexity, risk>
-
-## Related Files
-- <paths from diff or session>
-
-# Goal
-<one sentence>
-
-# Plan
-<!-- type: proposal -->
-1. <step>
-2. <step>
-
-# Constraints
-- Must not regress PR #<PR_NUMBER>
-
-# Acceptance Criteria
-- [ ] AC-1: Modified files pass unit tests
+- <file:line> — <what changed>
 ```
 
-**With `--nightshift`** — emits both `follow-up` and `nightshift` labels. Use this template verbatim:
+Fix fails its check or adds unrelated diff → `git restore`, demote. Never force-push or amend.
 
-```markdown
----
-type: <FEAT|BUG|PERF|REFACTOR|DOCS|TEST>
-component: <affected module>
-labels:
-  - follow-up
-  - nightshift
-target_repo: <OWNER_REPO>
----
+### 8. Report
 
-# Description
-## Symptom / Motivation
-Discovered during PR #<PR_NUMBER> (<PR_TITLE>).
-<what was observed, why it matters>
-
-## Root Cause Analysis
-<why not addressed in source PR — scope, complexity, risk>
-
-## Related Files
-- <paths from diff or session>
-
-# Goal
-<one sentence>
-
-# Plan
-<!-- type: proposal -->
-1. <step>
-2. <step>
-
-# Constraints
-- Must not regress PR #<PR_NUMBER>
-
-# Acceptance Criteria
-- [ ] AC-1: Modified files pass unit tests
-```
-
-### 7. APPLY IN-SCOPE FIXES
-
-For each confirmed in-scope suggestion:
-
-1. Verify the file is in the PR diff with `gh pr diff --name-only "$PR_NUMBER"`. If not, demote to out-of-scope and skip.
-1. Apply edit with the Edit tool.
-1. Run the most relevant fast check for the file type (e.g., `pre-commit run --files <paths>`, or unit tests for the touched module). Not the full suite.
-
-Commit the batch as a single commit on the current branch:
-
-```bash
-git add <files>
-git commit -m "[Chore] apply in-scope follow-up suggestions from PR #$PR_NUMBER review
-
-- <one line per applied fix: file:line — what changed>
-"
-git push
-```
-
-Constraints:
-
-- If a fix fails its check or adds unrelated diff noise → `git restore` that file and demote to out-of-scope before committing the rest.
-- Never force-push. Never amend existing commits.
-
-Record `APPLIED_FIXES` (file:line + one-line summary per fix) for step 8.
-
-### 8. REPORT
-
-**Do not edit the PR body.** The review skill owns body updates at its approval gate; this skill prints a stdout report only.
-
-Omit empty sections entirely — do not write "none" inside a section, just drop the heading.
+Stdout only. Omit empty sections.
 
 ```
 PR #<PR_NUMBER> follow-up complete.
 
 Issues created:
-- #<N> — <one-line summary>
-- #<N> — <one-line summary> (depends on #<N>)
+- #<N> — <summary>
 
-Applied in this PR (commit <sha>):
-- <file:line> — <one-line summary>
+Applied (commit <sha>):
+- <file:line> — <summary>
 
-Out-of-scope suggestions (fold into PR body at the reviewer's approval gate):
+Out-of-scope suggestions:
 - <nit>
 
-Execution order: {#1, #2} → #3
+Execution order: {#A, #B} → #C
 ```
 
-**Clean close** (nothing in any bucket):
-
-```
-PR #<PR_NUMBER>: no follow-up issues or suggestions.
-```
+Nothing in any bucket: `PR #<PR_NUMBER>: no follow-up issues or suggestions.`
