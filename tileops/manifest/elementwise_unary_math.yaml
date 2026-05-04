@@ -12,7 +12,7 @@
 ExpFwdOp:
   ref_api: "torch.exp"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -42,7 +42,7 @@ ExpFwdOp:
 LogFwdOp:
   ref_api: "torch.log"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -72,7 +72,7 @@ LogFwdOp:
 SqrtFwdOp:
   ref_api: "torch.sqrt"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -102,7 +102,7 @@ SqrtFwdOp:
 RsqrtFwdOp:
   ref_api: "torch.rsqrt"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -132,7 +132,7 @@ RsqrtFwdOp:
 AbsFwdOp:
   ref_api: "torch.abs"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -162,7 +162,7 @@ AbsFwdOp:
 NegFwdOp:
   ref_api: "torch.neg"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -199,7 +199,7 @@ ReciprocalFwdOp:
   # kept as same_as(input) for the floating cases. Integral-input promotion
   # is a known modeling gap tracked separately and does not change the
   # accepted-input contract documented here.
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -229,7 +229,7 @@ ReciprocalFwdOp:
 SignFwdOp:
   ref_api: "torch.sign"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -260,7 +260,7 @@ SignFwdOp:
 SinFwdOp:
   ref_api: "torch.sin"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -290,7 +290,7 @@ SinFwdOp:
 CosFwdOp:
   ref_api: "torch.cos"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -320,7 +320,7 @@ CosFwdOp:
 FloorFwdOp:
   ref_api: "torch.floor"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -350,7 +350,7 @@ FloorFwdOp:
 CeilFwdOp:
   ref_api: "torch.ceil"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -380,7 +380,7 @@ CeilFwdOp:
 RoundFwdOp:
   ref_api: "torch.round"
   family: elementwise
-  status: spec-only  # impl ignores 'decimals' param (kernel only supports decimals=0); fix in follow-up
+  status: implemented # op accepts 'decimals' for signature parity but raises NotImplementedError on non-zero (kernel only supports decimals=0); kernel-layer support tracked as follow-up
 
   signature:
     inputs:
@@ -412,7 +412,7 @@ RoundFwdOp:
 TruncFwdOp:
   ref_api: "torch.trunc"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -442,7 +442,7 @@ TruncFwdOp:
 ErfFwdOp:
   ref_api: "torch.erf"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -472,7 +472,7 @@ ErfFwdOp:
 Log1pFwdOp:
   ref_api: "torch.log1p"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -503,7 +503,7 @@ Log1pFwdOp:
 Expm1FwdOp:
   ref_api: "torch.expm1"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -534,7 +534,7 @@ Expm1FwdOp:
 SigmoidFwdOp:
   ref_api: "torch.sigmoid"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -565,7 +565,7 @@ SigmoidFwdOp:
 TanhFwdOp:
   ref_api: "torch.tanh"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -596,7 +596,7 @@ TanhFwdOp:
 LogicalNotFwdOp:
   ref_api: "torch.logical_not"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -627,7 +627,7 @@ LogicalNotFwdOp:
 BitwiseNotFwdOp:
   ref_api: "torch.bitwise_not"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -657,7 +657,7 @@ BitwiseNotFwdOp:
 IsnanFwdOp:
   ref_api: "torch.isnan"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -688,7 +688,7 @@ IsnanFwdOp:
 IsinfFwdOp:
   ref_api: "torch.isinf"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -719,7 +719,7 @@ IsinfFwdOp:
 IsfiniteFwdOp:
   ref_api: "torch.isfinite"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
