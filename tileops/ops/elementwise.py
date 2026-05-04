@@ -1286,47 +1286,10 @@ class CeilFwdOp(UnaryOp):
 
 
 class RoundFwdOp(UnaryOp):
-    """Element-wise round(x).
-
-    Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
-        decimals: Number of decimal places to round to. Only ``0`` is
-            currently supported by the kernel; non-zero values raise
-            ``NotImplementedError`` (kernel-layer follow-up tracked in the
-            manifest entry's ``status: spec-only`` comment).
-        strategy: Kernel strategy override.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune.
-    """
+    """Element-wise round(x)."""
 
     _op_name = "round"
     kernel_cls = RoundFwdKernel
-
-    def __init__(
-        self,
-        N_total: int,
-        dtype: torch.dtype,
-        decimals: int = 0,
-        strategy: Optional[str] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ):
-        if decimals != 0:
-            raise NotImplementedError(
-                f"RoundFwdOp currently only supports decimals=0, got {decimals}. "
-                f"Kernel-layer support for non-zero decimals is tracked as a "
-                f"follow-up; the manifest still declares the param to keep the "
-                f"signature contract aligned with torch.round."
-            )
-        self.decimals = decimals
-        super().__init__(
-            N_total=N_total,
-            dtype=dtype,
-            strategy=strategy,
-            kernel_map=kernel_map,
-            tune=tune,
-        )
 
 
 class TruncFwdOp(UnaryOp):
