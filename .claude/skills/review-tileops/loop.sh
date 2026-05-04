@@ -269,8 +269,8 @@ REVIEWER_LOGIN=$(gh api user --jq .login)
 latest_issue_comment_id() {
   # Max id of any non-reviewer top-level PR comment. --paginate is required:
   # the default page size is 30, so on PRs with longer comment threads a
-  # single-page max() silently undercounts and reintroduces idle misclassifi-
-  # cation. Stream items via --jq, slurp, then take max.
+  # single-page max() silently undercounts and reintroduces idle
+  # misclassification. Stream items via --jq, slurp, then take max.
   gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[]' 2>/dev/null \
     | jq -s "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\")|.id]|max // 0" \
     2>/dev/null || echo 0

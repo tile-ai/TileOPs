@@ -89,9 +89,10 @@ fi
 #            watermark=100 != 200, returned "proceed" — re-running codex
 #            even though round 6 is a perfectly reusable APPROVE.
 #
-# So: keep scanning. Prefer a same-SHA APPROVE whose BOTH watermarks
-# match the supplied LATEST_*_ID values; otherwise (none supplied, or no
-# prior round recorded watermarks) fall back to legacy SHA-only reuse
+# So: keep scanning. Each watermark dimension is independent — only the
+# LATEST_*_ID values the caller actually supplied are required to match;
+# unsupplied dimensions are unconstrained. If no watermarks are supplied
+# (or no prior round recorded them) fall back to legacy SHA-only reuse
 # using the earliest APPROVE.
 PRIOR_FILE=""
 PRIOR_ROUND=""
