@@ -16,6 +16,7 @@ from tileops.kernels.attention import (
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
     GQAPrefillFwdKernel,
+    GQAPrefillVarlenFwdKernel,
     GQAPrefillWithKVCacheFwdKernel,
     GQASlidingWindowFwdKernel,
     GQASlidingWindowFwdWgmmaPipelinedKernel,
@@ -33,6 +34,7 @@ __all__ = [
     "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionFwdOp",
     "GroupedQueryAttentionPrefillFwdOp",
+    "GroupedQueryAttentionPrefillVarlenFwdOp",
     "GroupedQueryAttentionPrefillWithKVCacheFwdOp",
     "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
@@ -52,6 +54,11 @@ def _gqa_ws_causal_total_work_items(batch: int, heads: int, heads_kv: int, seq_l
     groups = heads // heads_kv
     m_blocks = math.ceil(seq_len / _WS_BLOCK_M)
     return batch * heads_kv * (m_blocks // 2) * groups
+
+
+def _validate_attention_dtype(dtype: torch.dtype) -> None:
+    if dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Expected dtype torch.float16 or torch.bfloat16, got {dtype}")
 
 
 def _supports_gqa_ws_noncausal(
@@ -118,6 +125,10 @@ def _select_gqa_fwd_kernel_cls(
 
 def _select_gqa_prefill_fwd_kernel_cls() -> Type[Kernel]:
     return GQAPrefillFwdKernel
+
+
+def _select_gqa_prefill_varlen_fwd_kernel_cls() -> Type[Kernel]:
+    return GQAPrefillVarlenFwdKernel
 
 
 def _select_gqa_prefill_with_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
@@ -233,6 +244,198 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return _attention_output(self.kernel(q, k, v))
+
+
+class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
+    """Packed variable-length GQA prefill. Layout: THD.
+
+    ``cu_seqlens_q`` and ``cu_seqlens_kv`` describe packed per-request ranges.
+    Causal prefill uses bottom-right alignment for each request independently:
+    key position ``j`` is visible to query position ``i`` iff
+    ``j <= i + (kv_len - q_len)``.
+    """
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        dim: int,
+        max_seqlen_q: int,
+        max_seqlen_kv: int,
+        is_causal: bool = True,
+        dtype: torch.dtype = torch.float16,
+        sm_scale: Optional[float] = None,
+        validate_inputs: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        _validate_gqa_dims(heads, heads_kv, dim)
+        if batch <= 0:
+            raise ValueError("batch must be positive")
+        if max_seqlen_q <= 0:
+            raise ValueError("max_seqlen_q must be positive")
+        if max_seqlen_kv <= 0:
+            raise ValueError("max_seqlen_kv must be positive")
+        _validate_attention_dtype(dtype)
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.dim = dim
+        self.max_seqlen_q = max_seqlen_q
+        self.max_seqlen_kv = max_seqlen_kv
+        self.is_causal = is_causal
+        self.dtype = dtype
+        self.sm_scale = _attention_scale(dim, sm_scale)
+        self.validate_inputs = validate_inputs
+        self._roofline_kwargs = None
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["gqa_prefill_varlen_fwd_kernel"](
+            batch=batch,
+            heads=heads,
+            heads_kv=heads_kv,
+            dim=dim,
+            is_causal=is_causal,
+            dtype=dtype,
+            sm_scale=self.sm_scale,
+            tune=tune,
+        )
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {"gqa_prefill_varlen_fwd_kernel": _select_gqa_prefill_varlen_fwd_kernel_cls()}
+
+    @staticmethod
+    def _lengths_from_cu_seqlens(cu_seqlens: torch.Tensor) -> list[int]:
+        values = [int(x) for x in cu_seqlens.detach().cpu().tolist()]
+        return [values[idx + 1] - values[idx] for idx in range(len(values) - 1)]
+
+    def _validate_forward_inputs(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+    ) -> None:
+        tensors = {
+            "q": q,
+            "k": k,
+            "v": v,
+            "cu_seqlens_q": cu_seqlens_q,
+            "cu_seqlens_kv": cu_seqlens_kv,
+        }
+        for name, tensor in tensors.items():
+            if not tensor.is_cuda:
+                raise ValueError(f"{name} must be a CUDA tensor")
+            if not tensor.is_contiguous():
+                raise ValueError(f"{name} must be contiguous")
+
+        expected_tail_shapes = {
+            "q": (self.heads, self.dim),
+            "k": (self.heads_kv, self.dim),
+            "v": (self.heads_kv, self.dim),
+        }
+        for name, expected_tail in expected_tail_shapes.items():
+            tensor = tensors[name]
+            if tensor.ndim != 3 or tuple(tensor.shape[1:]) != expected_tail:
+                raise ValueError(
+                    f"Expected {name} shape [T, {expected_tail[0]}, {expected_tail[1]}], "
+                    f"got {tuple(tensor.shape)}")
+            if tensor.dtype != self.dtype:
+                raise ValueError(f"Expected {name}.dtype {self.dtype}, got {tensor.dtype}")
+
+        for name in ("cu_seqlens_q", "cu_seqlens_kv"):
+            tensor = tensors[name]
+            expected_shape = (self.batch + 1,)
+            if tuple(tensor.shape) != expected_shape:
+                raise ValueError(
+                    f"Expected {name} shape {expected_shape}, got {tuple(tensor.shape)}")
+            if tensor.dtype != torch.int32:
+                raise ValueError(f"Expected {name}.dtype torch.int32, got {tensor.dtype}")
+
+        if v.shape[0] != k.shape[0]:
+            raise ValueError(f"v.shape[0] ({v.shape[0]}) must equal k.shape[0] ({k.shape[0]})")
+        if not self.validate_inputs:
+            return
+
+        cu_q = [int(x) for x in cu_seqlens_q.detach().cpu().tolist()]
+        cu_kv = [int(x) for x in cu_seqlens_kv.detach().cpu().tolist()]
+        if cu_q[0] != 0:
+            raise ValueError(f"cu_seqlens_q[0] must be 0, got {cu_q[0]}")
+        if cu_kv[0] != 0:
+            raise ValueError(f"cu_seqlens_kv[0] must be 0, got {cu_kv[0]}")
+        if cu_q[-1] != q.shape[0]:
+            raise ValueError(
+                f"cu_seqlens_q[-1] ({cu_q[-1]}) must equal q.shape[0] ({q.shape[0]})")
+        if cu_kv[-1] != k.shape[0]:
+            raise ValueError(
+                f"cu_seqlens_kv[-1] ({cu_kv[-1]}) must equal k.shape[0] ({k.shape[0]})")
+        if any(cu_q[i + 1] < cu_q[i] for i in range(self.batch)):
+            raise ValueError("cu_seqlens_q must be non-decreasing")
+        if any(cu_kv[i + 1] < cu_kv[i] for i in range(self.batch)):
+            raise ValueError("cu_seqlens_kv must be non-decreasing")
+
+        q_lens = []
+        kv_lens = []
+        for idx in range(self.batch):
+            q_len = cu_q[idx + 1] - cu_q[idx]
+            kv_len = cu_kv[idx + 1] - cu_kv[idx]
+            q_lens.append(q_len)
+            kv_lens.append(kv_len)
+            if q_len <= 0:
+                raise ValueError("all q sequence lengths must be positive")
+            if kv_len <= 0:
+                raise ValueError("all kv sequence lengths must be positive")
+            if self.is_causal and q_len > kv_len:
+                raise ValueError("causal varlen prefill requires every q_len <= kv_len")
+        actual_max_q = max(q_lens)
+        actual_max_kv = max(kv_lens)
+        if self.max_seqlen_q < actual_max_q:
+            raise ValueError(
+                f"max_seqlen_q ({self.max_seqlen_q}) must be >= actual max Q "
+                f"sequence length ({actual_max_q})")
+        if self.max_seqlen_kv < actual_max_kv:
+            raise ValueError(
+                f"max_seqlen_kv ({self.max_seqlen_kv}) must be >= actual max KV "
+                f"sequence length ({actual_max_kv})")
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+    ) -> torch.Tensor:
+        self._validate_forward_inputs(q, k, v, cu_seqlens_q, cu_seqlens_kv)
+        output, _ = self.kernel(
+            q, k, v, cu_seqlens_q, cu_seqlens_kv, self.max_seqlen_q, self.max_seqlen_kv)
+        self._roofline_kwargs = {
+            "q_shape": tuple(q.shape),
+            "k_shape": tuple(k.shape),
+            "batch": self.batch,
+            "max_seqlen_q": self.max_seqlen_q,
+            "max_seqlen_kv": self.max_seqlen_kv,
+            "cu_seqlens_q": cu_seqlens_q,
+            "cu_seqlens_kv": cu_seqlens_kv,
+            "is_causal": self.is_causal,
+            "dtype": self.dtype,
+        }
+        return output
+
+    def eval_roofline(self) -> tuple[int, int]:
+        if self._roofline_kwargs is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.eval_roofline() requires a prior forward() call")
+        from tileops.perf.formulas import gqa_prefill_varlen_fwd_roofline
+
+        kwargs = dict(self._roofline_kwargs)
+        kwargs["q_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_q"))
+        kwargs["kv_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_kv"))
+        result = gqa_prefill_varlen_fwd_roofline(**kwargs)
+        return result["flops"], result["bytes"]
 
 
 class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
