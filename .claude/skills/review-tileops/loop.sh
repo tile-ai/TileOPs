@@ -669,12 +669,15 @@ while true; do
     > "$SNAP.unresolved-threads.json" 2>/dev/null || echo '[]' > "$SNAP.unresolved-threads.json"
 
   # New comments since last round (each endpoint filtered by its own prev id —
-  # issue and review comment ids come from independent counters).
-  gh api "repos/$REPO/issues/$PR/comments" \
-    --jq "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\" and .id>$LAST_ISSUE_ID_PREV)|{id,user:.user.login,body,created_at}]" \
+  # issue and review comment ids come from independent counters). --paginate
+  # is required: GitHub returns oldest-first by default, so the newest
+  # comments live on the LAST page once a PR crosses 30 comments. Without
+  # pagination the snapshot would silently drop them.
+  gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[]' 2>/dev/null \
+    | jq -s "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\" and .id>$LAST_ISSUE_ID_PREV)|{id,user:.user.login,body,created_at}]" \
     > "$SNAP.new-issue-comments.json" 2>/dev/null || echo '[]' > "$SNAP.new-issue-comments.json"
-  gh api "repos/$REPO/pulls/$PR/comments" \
-    --jq "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_ID_PREV)|{id,user:.user.login,path,line,body,created_at}]" \
+  gh api --paginate "repos/$REPO/pulls/$PR/comments" --jq '.[]' 2>/dev/null \
+    | jq -s "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_ID_PREV)|{id,user:.user.login,path,line,body,created_at}]" \
     > "$SNAP.new-review-comments.json" 2>/dev/null || echo '[]' > "$SNAP.new-review-comments.json"
 
   # CI

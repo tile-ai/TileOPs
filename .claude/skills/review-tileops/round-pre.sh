@@ -144,18 +144,23 @@ while IFS= read -r -d '' f; do
     FALLBACK_REVIEW_ID="$cand_review_id"
   fi
 
-  # Watermark-aware reuse: pick this candidate only if BOTH recorded
-  # watermarks match the current values. Continue scanning otherwise so
-  # a later same-SHA APPROVE with fresher watermarks can still win.
-  # Empty cand_review_id (legacy round file) treated as 0 for comparison
-  # — caller's LATEST_REVIEW_ID must also be 0/empty to match.
-  cand_issue_cmp="${cand_issue_id:-0}"
-  cand_review_cmp="${cand_review_id:-0}"
-  want_issue_cmp="${LATEST_ISSUE_ID:-0}"
-  want_review_cmp="${LATEST_REVIEW_ID:-0}"
+  # Watermark-aware reuse: pick this candidate only if every watermark
+  # the caller actually supplied matches its recorded counterpart. A
+  # caller that provides only LATEST_ISSUE_ID does not constrain the
+  # review-id dimension, so we must NOT silently require the recorded
+  # review id to be 0. Continue scanning otherwise so a later same-SHA
+  # APPROVE with fresher watermarks can still win.
+  ok=true
+  if [[ -n "$LATEST_ISSUE_ID" \
+        && "${cand_issue_id:-0}" != "$LATEST_ISSUE_ID" ]]; then
+    ok=false
+  fi
+  if [[ -n "$LATEST_REVIEW_ID" \
+        && "${cand_review_id:-0}" != "$LATEST_REVIEW_ID" ]]; then
+    ok=false
+  fi
   if [[ ( -n "$LATEST_ISSUE_ID" || -n "$LATEST_REVIEW_ID" ) \
-        && "$cand_issue_cmp" == "$want_issue_cmp" \
-        && "$cand_review_cmp" == "$want_review_cmp" ]]; then
+        && "$ok" == "true" ]]; then
     PRIOR_FILE="$f"
     PRIOR_ROUND="$cand_round"
     PRIOR_BLOCKERS="$cand_blockers"
