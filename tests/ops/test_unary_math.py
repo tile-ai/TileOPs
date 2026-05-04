@@ -381,5 +381,28 @@ def test_round_decimals_default_is_zero() -> None:
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
 
+@pytest.mark.smoke
+def test_round_decimals_validates_input() -> None:
+    """Non-zero decimals path must enforce the same input contract as decimals=0.
+
+    Regression: a CPU tensor / wrong-dtype / wrong-numel input would silently
+    short-circuit through the op-layer fp32 decomposition because the path
+    bypassed ``UnaryOp.forward``'s validation.
+    """
+    op = RoundFwdOp(N_total=2, dtype=torch.float32)
+    # CPU tensor must raise (matches decimals=0 path).
+    cpu_x = torch.ones(2, dtype=torch.float32)
+    with pytest.raises(ValueError, match="CUDA tensor"):
+        op(cpu_x, decimals=2)
+    # Wrong dtype must raise.
+    wrong_dtype = torch.ones(2, device="cuda", dtype=torch.float16)
+    with pytest.raises(ValueError, match="dtype"):
+        op(wrong_dtype, decimals=2)
+    # Wrong numel must raise.
+    wrong_numel = torch.ones(4, device="cuda", dtype=torch.float32)
+    with pytest.raises(ValueError, match="elements"):
+        op(wrong_numel, decimals=2)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

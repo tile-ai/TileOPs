@@ -716,6 +716,18 @@ class UnaryOp(Op):
         """Read x + write y."""
         return self.N_total * (self.dtype.itemsize + self.output_dtype.itemsize)
 
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this unary elementwise op instance.
+
+        Mirrors the elementwise_unary_math manifest roofline:
+        ``flops = N`` and ``bytes = N * input_elem_bytes + N * output_elem_bytes``.
+        For ops whose output dtype matches the input (e.g. ``neg``, ``abs``),
+        this collapses to ``2 * N * elem_bytes``; for ops with a smaller output
+        dtype (e.g. ``isnan`` / ``isinf`` / ``isfinite`` / ``logical_not`` →
+        bool), ``self.output_dtype.itemsize`` already captures the difference.
+        """
+        return self.N_total, int(self.total_memory)
+
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
         """Direct kernel call for use inside custom_op implementation."""
         orig_shape = input.shape
@@ -725,7 +737,8 @@ class UnaryOp(Op):
         # cast to e5m2 here using PyTorch's non-saturating conversion.
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def _validate_input(self, input: torch.Tensor) -> None:  # noqa: A002
+        """Validate input tensor against the op's dtype / numel contract."""
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
         if input.dtype != self.dtype:
@@ -736,6 +749,9 @@ class UnaryOp(Op):
             raise ValueError(
                 f"Expected {self.N_total} elements, got {input.numel()}"
             )
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        self._validate_input(input)
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(input, self._instance_key)
@@ -1309,6 +1325,11 @@ class RoundFwdOp(UnaryOp):
     ) -> torch.Tensor:
         if decimals == 0:
             return super().forward(input)
+        # Non-zero decimals path still owes the same input contract as the
+        # ``decimals=0`` fast path (UnaryOp.forward). Run the shared validator
+        # before any fp32 arithmetic so a CPU tensor / wrong dtype / wrong
+        # numel cannot silently bypass the checks.
+        self._validate_input(input)
         # Non-zero decimals: scale, round-to-integer, unscale at the op layer.
         # The whole decimals path runs in fp32 so that low-precision inputs
         # (fp16/bf16) do not overflow when multiplied by ``10**decimals`` —
