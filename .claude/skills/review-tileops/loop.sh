@@ -116,11 +116,26 @@ mkdir -p "$RUN_DIR/rounds" "$RUN_DIR/inbox-history"
 # source files from there; the user's main worktree is never disturbed.
 # Worktree is on detached HEAD; advance each round via reset --hard.
 sync_pr_worktree() {
-  git -C "$REPO_PATH" fetch "$TILEOPS_REMOTE" "+pull/$PR/head:$PR_REF" \
-    >/dev/null 2>&1 || {
-      echo "loop.sh: failed to fetch pull/$PR/head from $TILEOPS_REMOTE" >&2
+  # Retry the fetch on transient failure. Causes seen in the wild:
+  # ref-update lock contention with a concurrent git process in the
+  # same .git/, GitHub 5xx, or pack-refs lock held briefly while the
+  # remote-tracking ref updates after a recent push. Capture stderr
+  # so the final-failure log shows git's actual error, not a generic
+  # "failed to fetch" message that hides the cause.
+  local attempt=0 err=""
+  local -i max_attempts=3
+  while (( attempt < max_attempts )); do
+    if err=$(git -C "$REPO_PATH" fetch "$TILEOPS_REMOTE" "+pull/$PR/head:$PR_REF" 2>&1); then
+      break
+    fi
+    attempt=$((attempt + 1))
+    if (( attempt >= max_attempts )); then
+      echo "loop.sh: failed to fetch pull/$PR/head from $TILEOPS_REMOTE after $attempt attempts:" >&2
+      printf '  | %s\n' "$err" >&2
       return 1
-    }
+    fi
+    sleep 2
+  done
   local target
   target=$(git -C "$REPO_PATH" rev-parse "$PR_REF")
   if [[ ! -d "$WORKTREE_DIR/.git" && ! -e "$WORKTREE_DIR/.git" ]]; then
