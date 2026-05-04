@@ -33,23 +33,4 @@
 
 - **Underscore-separated naming for norm files**: All norm-related filenames use underscore separation — `rms_norm`, `layer_norm`, `batch_norm`, `fused_add_rms_norm`. Do not contract (e.g. `rmsnorm`, `layernorm`, `batchnorm`).
 
-- **No development-process metadata in shipped source.** Code, YAML manifests, and docstrings must NOT reference: issue numbers (`#1170`), PR numbers (`PR #1169`), acceptance criteria identifiers (`AC-4`), pipeline rounds (`round-5`), reviewer names, or "follow-up" pointers. Merge code is read by future maintainers with no context on this PR's lifecycle — issue numbers go stale, AC labels mean nothing outside one run, reviewer-driven rationale rots. The right homes for that metadata:
-
-  - **Long-form rationale** → commit message body
-  - **Cross-cutting context, audit links** → PR description
-  - **Gap detail / tracker** → the follow-up issue itself (don't sprinkle pointers to it across N manifest entries)
-  - **Why a `status: spec-only` entry stays spec-only** → a short *technical* reason on that line is acceptable (`# kernel only supports float`); never an issue/PR number
-
-  Specific patterns that must NOT appear in shipped source:
-
-  ```
-  # Follow-up: #N
-  # Tracked in #N
-  # AC-X of issue #N
-  # Per round-N review / Per reviewer X
-  # Added in PR #N / Reverted in commit abc1234
-  ```
-
-  Same rule for docstrings — docstrings describe what the code does, not which issue authorized it. Auditing "which issue caused this change" is `git blame` + commit message territory.
-
-  Scan (case-insensitive; word-boundary on `#N` to avoid false-positives on inline numeric constants like `# 1024 elements`): `grep -rniE '(^|[[:space:]])#[0-9]{3,}\b|AC-[0-9]+|round-[0-9]+ review|follow-up:[[:space:]]*#' tileops/ tests/ benchmarks/ scripts/` should return nothing. The regex is a heuristic — a hit is a prompt to inspect, not an automatic blocker.
+- **No development-process metadata in shipped source.** Code, YAML manifests, and docstrings must not reference issue/PR numbers, AC labels (e.g. `AC-4`), round numbers, reviewer names, or `Follow-up: #N` pointers — that context belongs in the commit message, PR description, and the follow-up issue itself. A short technical reason on a `status: spec-only` line (e.g. `# kernel only supports float`) is fine; an issue number on it is not. Heuristic scan: `grep -rniE '(^|[[:space:]])#[0-9]{3,}\b|AC-[0-9]+|round-[0-9]+ review|follow-up:[[:space:]]*#' tileops/ tests/ benchmarks/ scripts/`.
