@@ -374,6 +374,20 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
         op(q, k, v, bad_cu, cu_kv)
 
 
+@pytest.mark.smoke
+def test_gqa_prefill_varlen_rejects_unsupported_dtype() -> None:
+    with pytest.raises(ValueError, match="Expected dtype torch.float16 or torch.bfloat16"):
+        GroupedQueryAttentionPrefillVarlenFwdOp(
+            batch=1,
+            heads=8,
+            heads_kv=2,
+            dim=64,
+            max_seqlen_q=64,
+            max_seqlen_kv=128,
+            dtype=torch.float32,
+        )
+
+
 @pytest.mark.parametrize("batch, seq_len_new, seqlen_kv, heads, heads_kv, dim, causal, dtype", [
     pytest.param(1, 64, 256, 8, 2, 64, True, torch.float16, marks=pytest.mark.smoke,
                  id="gqa_ratio4_fp16"),

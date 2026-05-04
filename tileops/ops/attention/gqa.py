@@ -56,6 +56,11 @@ def _gqa_ws_causal_total_work_items(batch: int, heads: int, heads_kv: int, seq_l
     return batch * heads_kv * (m_blocks // 2) * groups
 
 
+def _validate_attention_dtype(dtype: torch.dtype) -> None:
+    if dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Expected dtype torch.float16 or torch.bfloat16, got {dtype}")
+
+
 def _supports_gqa_ws_noncausal(
     batch: int,
     heads: int,
@@ -272,6 +277,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             raise ValueError("max_seqlen_q must be positive")
         if max_seqlen_kv <= 0:
             raise ValueError("max_seqlen_kv must be positive")
+        _validate_attention_dtype(dtype)
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
