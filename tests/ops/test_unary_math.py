@@ -342,21 +342,32 @@ def test_round_decimals(dtype: torch.dtype, decimals: int) -> None:
     decomposition under the hood: ``round(x * 10**k) / 10**k``.
     """
     n_total = 4096
-    # Bound the inputs so |x * 10**decimals| stays well within fp16 range
-    # (max ~65504) — relevant for decimals=2 with fp16/bf16.
     x = torch.randn(n_total, device="cuda", dtype=dtype) * 10.0
     op = RoundFwdOp(N_total=n_total, dtype=dtype)
     out = op(x, decimals=decimals)
     ref = torch.round(x.float(), decimals=decimals).to(dtype)
-    # Non-zero decimals widens the working magnitude by 10**decimals before
-    # rounding; the round-trip cast to the storage dtype between the scale
-    # and unscale steps is unavoidable for a kernel that consumes self.dtype,
-    # so we relax atol/rtol by 10**|decimals| for low-bit dtypes.
-    tol = dict(_get_tolerances(dtype))
-    if dtype in (torch.float16, torch.bfloat16) and decimals != 0:
-        slack = 10.0 ** abs(decimals)
-        tol = {"atol": tol["atol"] * slack, "rtol": tol["rtol"] * slack}
-    torch.testing.assert_close(out, ref, **tol)
+    # The decimals path runs entirely in fp32 internally and only down-casts
+    # once at the end, so the standard per-dtype tolerances apply.
+    torch.testing.assert_close(out, ref, **_get_tolerances(dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_round_decimals_no_overflow_low_precision(dtype: torch.dtype) -> None:
+    """Decimals path must not overflow fp16/bf16 when ``|x| * 10**decimals`` exceeds dtype max.
+
+    Regression: previously the op cast ``x.float() * 10**decimals`` back to
+    ``self.dtype`` before rounding, so e.g. ``100 * 10**4 = 1e6`` overflowed
+    fp16's ~65504 max and produced ``inf``. The reference is
+    ``torch.round(x.float(), decimals=k).to(dtype)`` which is just ``100.0``.
+    """
+    n_total = 1
+    x = torch.tensor([100.0], device="cuda", dtype=dtype)
+    op = RoundFwdOp(N_total=n_total, dtype=dtype)
+    out = op(x, decimals=4)
+    ref = torch.round(x.float(), decimals=4).to(dtype)
+    assert torch.isfinite(out).all(), f"output contains non-finite values: {out}"
+    torch.testing.assert_close(out, ref, **_get_tolerances(dtype))
 
 
 @pytest.mark.smoke

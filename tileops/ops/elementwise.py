@@ -1310,13 +1310,19 @@ class RoundFwdOp(UnaryOp):
         if decimals == 0:
             return super().forward(input)
         # Non-zero decimals: scale, round-to-integer, unscale at the op layer.
-        # Scaling in fp32 then casting back avoids the precision loss that
-        # multiplying by 10**k incurs for fp16/bf16 inputs — matches the
-        # behaviour of ``torch.round(x, decimals=k)``.
+        # The whole decimals path runs in fp32 so that low-precision inputs
+        # (fp16/bf16) do not overflow when multiplied by ``10**decimals`` —
+        # e.g. ``100 * 10**4 = 1e6`` exceeds fp16 max (~65504). Down-casting
+        # only happens once at the end, matching ``torch.round(x.float(),
+        # decimals=k).to(orig_dtype)``. ``torch.round`` is used directly here
+        # because the kernel signature is fixed to ``self.dtype``; this is op-
+        # layer composition and the manifest's ``kernel_map`` continues to
+        # describe the round-to-nearest-integer kernel that handles the
+        # ``decimals=0`` fast path above.
         scale = 10.0 ** decimals
-        scaled = (input.float() * scale).to(self.dtype).contiguous()
-        rounded = super().forward(scaled)
-        return (rounded.float() / scale).to(self.dtype)
+        scaled_fp32 = input.float() * scale
+        rounded_fp32 = torch.round(scaled_fp32)
+        return (rounded_fp32 / scale).to(self.dtype)
 
 
 class TruncFwdOp(UnaryOp):
