@@ -683,6 +683,11 @@ class UnaryOp(Op):
     kernel_cls: type
     _op_name: str
     _wrapped = None  # Set by _register_unary_custom_op at class definition
+    # Per-element FLOP count, matching the manifest's ``roofline.flops``
+    # coefficient on ``N``. Subclasses override when the op is more than one
+    # arithmetic op per element (e.g. ``sigmoid`` ≈ 4, ``tanh`` ≈ 5). The
+    # base class default of 1 covers the common ``flops: "N"`` entries.
+    FLOPS_PER_ELEM: int = 1
 
     def __init__(
         self,
@@ -720,13 +725,16 @@ class UnaryOp(Op):
         """Return ``(flops, bytes)`` for this unary elementwise op instance.
 
         Mirrors the elementwise_unary_math manifest roofline:
-        ``flops = N`` and ``bytes = N * input_elem_bytes + N * output_elem_bytes``.
-        For ops whose output dtype matches the input (e.g. ``neg``, ``abs``),
-        this collapses to ``2 * N * elem_bytes``; for ops with a smaller output
+        ``flops = FLOPS_PER_ELEM * N`` and
+        ``bytes = N * input_elem_bytes + N * output_elem_bytes``. Subclasses
+        whose manifest entry uses a higher coefficient (e.g. ``sigmoid`` →
+        ``4 * N``, ``tanh`` → ``5 * N``) override ``FLOPS_PER_ELEM``. For ops
+        whose output dtype matches the input (e.g. ``neg``, ``abs``), bytes
+        collapse to ``2 * N * elem_bytes``; for ops with a smaller output
         dtype (e.g. ``isnan`` / ``isinf`` / ``isfinite`` / ``logical_not`` →
         bool), ``self.output_dtype.itemsize`` already captures the difference.
         """
-        return self.N_total, int(self.total_memory)
+        return self.FLOPS_PER_ELEM * self.N_total, int(self.total_memory)
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
         """Direct kernel call for use inside custom_op implementation."""
@@ -1271,6 +1279,8 @@ class SignFwdOp(UnaryOp):
 
     _op_name = "sign"
     kernel_cls = SignFwdKernel
+    # Manifest: flops = "2 * N" (two compares + selects per element).
+    FLOPS_PER_ELEM = 2
 
 
 class SinFwdOp(UnaryOp):
@@ -1330,20 +1340,13 @@ class RoundFwdOp(UnaryOp):
         # before any fp32 arithmetic so a CPU tensor / wrong dtype / wrong
         # numel cannot silently bypass the checks.
         self._validate_input(input)
-        # Non-zero decimals: scale, round-to-integer, unscale at the op layer.
-        # The whole decimals path runs in fp32 so that low-precision inputs
-        # (fp16/bf16) do not overflow when multiplied by ``10**decimals`` —
-        # e.g. ``100 * 10**4 = 1e6`` exceeds fp16 max (~65504). Down-casting
-        # only happens once at the end, matching ``torch.round(x.float(),
-        # decimals=k).to(orig_dtype)``. ``torch.round`` is used directly here
-        # because the kernel signature is fixed to ``self.dtype``; this is op-
-        # layer composition and the manifest's ``kernel_map`` continues to
-        # describe the round-to-nearest-integer kernel that handles the
-        # ``decimals=0`` fast path above.
-        scale = 10.0 ** decimals
-        scaled_fp32 = input.float() * scale
-        rounded_fp32 = torch.round(scaled_fp32)
-        return (rounded_fp32 / scale).to(self.dtype)
+        # Run through fp32 so low-precision inputs (fp16/bf16) cannot overflow
+        # when ``torch.round`` internally scales by ``10**decimals`` — e.g.
+        # ``100 * 10**4 = 1e6`` exceeds fp16 max (~65504). The single down-cast
+        # at the end restores the op's contract dtype. The manifest's
+        # ``kernel_map`` continues to describe the round-to-nearest-integer
+        # kernel that handles the ``decimals=0`` fast path above.
+        return torch.round(input.float(), decimals=decimals).to(self.dtype)
 
 
 class TruncFwdOp(UnaryOp):
@@ -1365,6 +1368,8 @@ class Log1pFwdOp(UnaryOp):
 
     _op_name = "log1p"
     kernel_cls = Log1pFwdKernel
+    # Manifest: flops = "2 * N" (1 add + 1 log).
+    FLOPS_PER_ELEM = 2
 
 
 class Expm1FwdOp(UnaryOp):
@@ -1372,6 +1377,8 @@ class Expm1FwdOp(UnaryOp):
 
     _op_name = "expm1"
     kernel_cls = Expm1FwdKernel
+    # Manifest: flops = "2 * N" (1 exp + 1 sub).
+    FLOPS_PER_ELEM = 2
 
 
 # ---------------------------------------------------------------------------
@@ -1398,6 +1405,8 @@ class SigmoidFwdOp(UnaryOp):
 
     _op_name = "sigmoid"
     kernel_cls = SigmoidFwdKernel
+    # Manifest: flops = "4 * N" (sigmoid(x) = 1 / (1 + exp(-x)) ≈ 4 ops/elem).
+    FLOPS_PER_ELEM = 4
 
 
 class TanhFwdOp(UnaryOp):
@@ -1405,6 +1414,8 @@ class TanhFwdOp(UnaryOp):
 
     _op_name = "tanh"
     kernel_cls = TanhFwdKernel
+    # Manifest: flops = "5 * N" (tanh(x) = 2 * sigmoid(2x) - 1 ≈ 5 ops/elem).
+    FLOPS_PER_ELEM = 5
 
 
 class HardswishFwdOp(UnaryOp):
