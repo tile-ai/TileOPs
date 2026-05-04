@@ -15,6 +15,7 @@ from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
+    GroupedQueryAttentionPrefillVarlenFwdOp,
     GroupedQueryAttentionPrefillWithKVCacheFwdOp,
 )
 from workloads.attention.gqa import (
@@ -23,6 +24,7 @@ from workloads.attention.gqa import (
 )
 from workloads.attention.gqa_prefill import (
     GQAPrefillFwdTest,
+    GQAPrefillVarlenFwdTest,
     GQAPrefillWithKVCacheFwdTest,
 )
 
@@ -71,6 +73,29 @@ class GQAPrefillFwdBenchmark(BenchmarkBase[GQAPrefillFwdTest]):
         kv_size = t.batch * t.seq_len_kv * t.heads_kv * t.dim
         output_size = query_size
         return (query_size + 2 * kv_size + output_size) * t.dtype.itemsize
+
+
+class GQAPrefillVarlenFwdBenchmark(BenchmarkBase[GQAPrefillVarlenFwdTest]):
+
+    def calculate_flops(self) -> Optional[float]:
+        t = self.workload
+        visible = 0
+        for q_len, kv_len in zip(t.q_lens, t.kv_lens, strict=True):
+            visible += (
+                q_len * kv_len - q_len * (q_len - 1) / 2
+                if t.is_causal else q_len * kv_len)
+        return 4.0 * t.heads * visible * t.dim
+
+    def calculate_memory(self) -> Optional[float]:
+        t = self.workload
+        query_size = sum(t.q_lens) * t.heads * t.dim
+        kv_size = sum(t.kv_lens) * t.heads_kv * t.dim
+        output_size = query_size
+        cu_seqlens_size = 2 * (t.batch + 1)
+        return (
+            (query_size + 2 * kv_size + output_size) * t.dtype.itemsize
+            + cu_seqlens_size * torch.int32.itemsize
+        )
 
 
 class GQAPrefillWithKVCacheFwdBenchmark(BenchmarkBase[GQAPrefillWithKVCacheFwdTest]):
@@ -203,6 +228,34 @@ def _torch_gqa_prefill_ref(test: GQAPrefillFwdTest):
                 ~mask.view(1, 1, test.seq_len_q, test.seq_len_kv), float("-inf"))
         probs = torch.softmax(scores, dim=-1)
         return torch.matmul(probs, v_bhsd).transpose(1, 2).to(q.dtype).contiguous()
+    return fn
+
+
+def _torch_gqa_prefill_varlen_ref(test: GQAPrefillVarlenFwdTest):
+    """Materialized torch reference for packed-varlen prefill."""
+    def fn(q, k, v, cu_seqlens_q, cu_seqlens_kv):
+        groups = test.heads // test.heads_kv
+        outputs = []
+        for b in range(test.batch):
+            q_start = int(cu_seqlens_q[b].item())
+            q_end = int(cu_seqlens_q[b + 1].item())
+            kv_start = int(cu_seqlens_kv[b].item())
+            kv_end = int(cu_seqlens_kv[b + 1].item())
+            q_i = q[q_start:q_end].transpose(0, 1).float()
+            k_i = k[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+            v_i = v[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+            q_len = q_end - q_start
+            kv_len = kv_end - kv_start
+            scores = torch.matmul(q_i, k_i.transpose(-2, -1)) * (test.dim**-0.5)
+            if test.is_causal:
+                offset = kv_len - q_len
+                q_pos = torch.arange(q_len, device=q.device)[:, None] + offset
+                kv_pos = torch.arange(kv_len, device=q.device)[None, :]
+                mask = kv_pos <= q_pos
+                scores = scores.masked_fill(~mask.view(1, q_len, kv_len), float("-inf"))
+            probs = torch.softmax(scores, dim=-1)
+            outputs.append(torch.matmul(probs, v_i).transpose(0, 1).to(q.dtype).contiguous())
+        return torch.cat(outputs, dim=0)
     return fn
 
 
@@ -383,6 +436,37 @@ def test_gqa_prefill_fwd_bench(batch: int, seq_len_q: int, seq_len_kv: int, head
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(_torch_gqa_prefill_ref(test), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+
+_GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = [
+    pytest.param(4, [512, 512, 512, 512], [1024, 1024, 1024, 1024], 32, 8, 128, True,
+                 torch.float16, False, id="llama-3.1-8b-prefill-varlen-uniform-fp16"),
+    pytest.param(4, [128, 256, 640, 512], [512, 768, 1280, 1024], 32, 8, 128, True,
+                 torch.float16, False, id="llama-3.1-8b-prefill-varlen-mixed-fp16"),
+    pytest.param(2, [512, 512], [1024, 2048], 64, 8, 128, True, torch.bfloat16, False,
+                 id="llama-3.1-70b-prefill-varlen-q-lt-kv-bf16"),
+]
+
+
+@pytest.mark.parametrize(
+    "batch, q_lens, kv_lens, heads, heads_kv, dim, causal, dtype, tune",
+    _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS,
+)
+def test_gqa_prefill_varlen_fwd_bench(batch: int, q_lens: list[int], kv_lens: list[int],
+                                      heads: int, heads_kv: int, dim: int, causal: bool,
+                                      dtype: torch.dtype, tune: bool) -> None:
+    test = GQAPrefillVarlenFwdTest(batch, heads, heads_kv, q_lens, kv_lens, dim, causal, dtype)
+    inputs = test.gen_inputs()
+
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(
+        batch, heads, heads_kv, dim, test.max_seqlen_q, test.max_seqlen_kv, causal, dtype,
+        tune=tune)
+    bm = GQAPrefillVarlenFwdBenchmark(test)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(_torch_gqa_prefill_varlen_ref(test), *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 

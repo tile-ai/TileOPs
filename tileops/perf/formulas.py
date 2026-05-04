@@ -38,6 +38,7 @@ __all__ = [
     "gqa_decode_roofline",
     "gqa_fwd_roofline",
     "gqa_prefill_fwd_roofline",
+    "gqa_prefill_varlen_fwd_roofline",
     "gqa_prefill_with_kv_cache_fwd_roofline",
     "gqa_sliding_window_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
@@ -139,6 +140,57 @@ def gqa_prefill_fwd_roofline(**kwargs: Any) -> dict[str, int]:
     kv_elems = batch * seq_len_kv * heads_kv * dim
     o_elems = q_elems
     nbytes = (q_elems + 2 * kv_elems + o_elems) * elem_bytes
+    return {"flops": int(flops), "bytes": int(nbytes)}
+
+
+def _distribute_total(total: int, batch: int, max_len: int) -> list[int]:
+    lengths = [0] * batch
+    remaining = total
+    for idx in range(batch):
+        slots_left = batch - idx - 1
+        value = min(max_len, remaining - slots_left)
+        lengths[idx] = value
+        remaining -= value
+    return lengths
+
+
+def gqa_prefill_varlen_fwd_roofline(**kwargs: Any) -> dict[str, int]:
+    """Conservative roofline for packed-varlen GQA prefill.
+
+    Preferred workload binding supplies explicit ``q_lens`` and ``kv_lens``.
+    If they are absent, this falls back to a deterministic fill from aggregate
+    totals and ``max_seqlen_*`` so benchmark metadata remains reproducible.
+    Causal mode uses bottom-right alignment independently per request.
+    """
+    q_shape = kwargs["q_shape"]
+    k_shape = kwargs["k_shape"]
+    total_q, heads, dim = q_shape
+    total_kv, heads_kv, _ = k_shape
+    batch = int(kwargs["batch"])
+    max_seqlen_q = int(kwargs["max_seqlen_q"])
+    max_seqlen_kv = int(kwargs["max_seqlen_kv"])
+    is_causal = bool(kwargs.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(kwargs.get("dtype", kwargs.get("dtypes", "float16")))
+
+    q_lens = kwargs.get("q_lens")
+    kv_lens = kwargs.get("kv_lens")
+    if q_lens is None:
+        q_lens = _distribute_total(total_q, batch, max_seqlen_q)
+    if kv_lens is None:
+        kv_lens = _distribute_total(total_kv, batch, max_seqlen_kv)
+
+    visible = 0
+    for q_len, kv_len in zip(q_lens, kv_lens, strict=True):
+        visible += (
+            _causal_prefill_visible_scores(int(q_len), int(kv_len))
+            if is_causal else int(q_len) * int(kv_len))
+    flops = 4 * heads * visible * dim
+
+    q_elems = total_q * heads * dim
+    kv_elems = total_kv * heads_kv * dim
+    o_elems = q_elems
+    cu_bytes = 2 * (batch + 1) * 4
+    nbytes = (q_elems + 2 * kv_elems + o_elems) * elem_bytes + cu_bytes
     return {"flops": int(flops), "bytes": int(nbytes)}
 
 

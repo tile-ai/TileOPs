@@ -17,6 +17,7 @@ from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
+    GroupedQueryAttentionPrefillVarlenFwdOp,
     GroupedQueryAttentionPrefillWithKVCacheFwdOp,
 )
 from tileops.ops.attention.gqa import _select_gqa_fwd_kernel_cls
@@ -129,6 +130,45 @@ def _gqa_prefill_with_kv_cache_ref(
     return torch.stack(outputs, dim=0)
 
 
+def _gqa_prefill_varlen_ref(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_kv: torch.Tensor,
+    *,
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    is_causal: bool,
+    sm_scale: Optional[float] = None,
+) -> torch.Tensor:
+    groups = heads // heads_kv
+    dim = q.shape[-1]
+    scale = dim**-0.5 if sm_scale is None else sm_scale
+    outputs = []
+    for b in range(batch):
+        q_start = int(cu_seqlens_q[b].item())
+        q_end = int(cu_seqlens_q[b + 1].item())
+        kv_start = int(cu_seqlens_kv[b].item())
+        kv_end = int(cu_seqlens_kv[b + 1].item())
+        q_bhsd = q[q_start:q_end].transpose(0, 1).float()
+        k_i = k[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+        v_i = v[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+        q_len = q_end - q_start
+        kv_len = kv_end - kv_start
+        scores = torch.matmul(q_bhsd, k_i.transpose(-2, -1)) * scale
+        if is_causal:
+            offset = kv_len - q_len
+            q_pos = torch.arange(q_len, device=q.device)[:, None] + offset
+            kv_pos = torch.arange(kv_len, device=q.device)[None, :]
+            mask = kv_pos <= q_pos
+            scores = scores.masked_fill(~mask.view(1, q_len, kv_len), float("-inf"))
+        probs = torch.softmax(scores, dim=-1)
+        outputs.append(torch.matmul(probs, v_i).transpose(0, 1).to(q.dtype).contiguous())
+    return torch.cat(outputs, dim=0)
+
+
 class GroupedQueryAttentionFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, heads_kv, dim, causal, dtype, tune", [
@@ -228,6 +268,124 @@ def test_gqa_prefill_fwd_respects_sm_scale() -> None:
     output = op(q, k, v)
 
     torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.parametrize("q_lens, kv_lens, heads, heads_kv, dim, causal, dtype", [
+    pytest.param([64, 128], [64, 128], 8, 2, 64, True, torch.float16,
+                 marks=pytest.mark.smoke, id="uniform-causal-fp16"),
+    pytest.param([33, 96, 129], [64, 128, 256], 8, 2, 64, True, torch.float16,
+                 marks=pytest.mark.smoke, id="mixed-tail-causal-fp16"),
+    pytest.param([64, 96], [128, 160], 8, 2, 64, False, torch.float16,
+                 marks=pytest.mark.smoke, id="mixed-noncausal-fp16"),
+    pytest.param([33, 65], [33, 65], 8, 2, 64, False, torch.float16,
+                 marks=pytest.mark.smoke, id="equal-tail-noncausal-fp16"),
+    pytest.param([64, 96], [128, 160], 8, 1, 64, True, torch.float16,
+                 marks=pytest.mark.smoke, id="mqa-causal-fp16"),
+    pytest.param([96], [160], 8, 2, 64, True, torch.float16,
+                 marks=pytest.mark.smoke, id="batch1-causal-fp16"),
+    pytest.param([64, 128], [128, 256], 8, 2, 64, True, torch.bfloat16,
+                 marks=pytest.mark.smoke, id="mixed-causal-bf16"),
+])
+def test_gqa_prefill_varlen_fwd(q_lens: list[int], kv_lens: list[int], heads: int,
+                                heads_kv: int, dim: int, causal: bool,
+                                dtype: torch.dtype) -> None:
+    batch = len(q_lens)
+    total_q = sum(q_lens)
+    total_kv = sum(kv_lens)
+    q = torch.randn(total_q, heads, dim, device="cuda", dtype=dtype).contiguous()
+    k = torch.randn(total_kv, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    v = torch.randn(total_kv, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    cu_q = torch.tensor(
+        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+    cu_kv = torch.tensor(
+        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+    ref = _gqa_prefill_varlen_ref(
+        q, k, v, cu_q, cu_kv, batch=batch, heads=heads, heads_kv=heads_kv,
+        is_causal=causal)
+
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(
+        batch,
+        heads,
+        heads_kv,
+        dim,
+        max(q_lens),
+        max(kv_lens),
+        causal,
+        dtype,
+    )
+    output = op(q, k, v, cu_q, cu_kv)
+
+    atol, rtol = _PREFILL_TOLERANCE[dtype]
+    torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_varlen_respects_sm_scale() -> None:
+    q_lens, kv_lens = [64, 96], [128, 160]
+    batch, heads, heads_kv, dim = len(q_lens), 8, 2, 64
+    sm_scale = 0.125
+    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
+    k = torch.randn(sum(kv_lens), heads_kv, dim, device="cuda",
+                    dtype=torch.float16).contiguous()
+    v = torch.randn_like(k)
+    cu_q = torch.tensor(
+        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+    cu_kv = torch.tensor(
+        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+    ref = _gqa_prefill_varlen_ref(
+        q, k, v, cu_q, cu_kv, batch=batch, heads=heads, heads_kv=heads_kv,
+        is_causal=True, sm_scale=sm_scale)
+
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(
+        batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True, torch.float16,
+        sm_scale=sm_scale)
+    output = op(q, k, v, cu_q, cu_kv)
+
+    torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
+    q_lens, kv_lens = [64, 32], [128, 96]
+    batch, heads, heads_kv, dim = len(q_lens), 8, 2, 64
+    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
+    k = torch.randn(sum(kv_lens), heads_kv, dim, device="cuda",
+                    dtype=torch.float16).contiguous()
+    v = torch.randn_like(k)
+    cu_q = torch.tensor(
+        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+    cu_kv = torch.tensor(
+        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(
+        batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True, torch.float16,
+        validate_inputs=True)
+    with pytest.raises(ValueError, match="Expected k shape"):
+        op(q, k[:, :, :-1].contiguous(), v, cu_q, cu_kv)
+    with pytest.raises(ValueError, match="cu_seqlens_q\\[-1\\].*must equal"):
+        op(q[:-1], k, v, cu_q, cu_kv)
+    with pytest.raises(ValueError, match="max_seqlen_q"):
+        bad_op = GroupedQueryAttentionPrefillVarlenFwdOp(
+            batch, heads, heads_kv, dim, max(q_lens) - 1, max(kv_lens), True,
+            torch.float16, validate_inputs=True)
+        bad_op(q, k, v, cu_q, cu_kv)
+    bad_cu = torch.tensor([0, 128, 96], device="cuda", dtype=torch.int32)
+    with pytest.raises(ValueError, match="cu_seqlens_q must be non-decreasing"):
+        op(q, k, v, bad_cu, cu_kv)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_varlen_rejects_unsupported_dtype() -> None:
+    with pytest.raises(ValueError, match="Expected dtype torch.float16 or torch.bfloat16"):
+        GroupedQueryAttentionPrefillVarlenFwdOp(
+            batch=1,
+            heads=8,
+            heads_kv=2,
+            dim=64,
+            max_seqlen_q=64,
+            max_seqlen_kv=128,
+            dtype=torch.float32,
+        )
 
 
 @pytest.mark.parametrize("batch, seq_len_new, seqlen_kv, heads, heads_kv, dim, causal, dtype", [
