@@ -235,7 +235,8 @@ if [[ ! -f "$META" ]]; then
     codex_session_id: null,
     round: 0,
     last_reviewed_sha: null,
-    last_human_comment_id: 0,
+    last_issue_comment_id: 0,
+    last_review_comment_id: 0,
     last_codex_event: null,
     last_criteria_mtime: 0,
     consecutive_codex_failures: 0,
@@ -250,17 +251,26 @@ REVIEWER_LOGIN=$(gh api user --jq .login)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-latest_human_comment_id() {
-  # Max id of any non-reviewer comment (issue thread + PR review thread).
-  local issue_max review_max
-  issue_max=$(gh api "repos/$REPO/issues/$PR/comments" \
+latest_issue_comment_id() {
+  # Max id of any non-reviewer top-level PR comment.
+  gh api "repos/$REPO/issues/$PR/comments" \
     --jq "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\")|.id]|max // 0" \
-    2>/dev/null || echo 0)
-  review_max=$(gh api "repos/$REPO/pulls/$PR/comments" \
-    --jq "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\")|.id]|max // 0" \
-    2>/dev/null || echo 0)
-  echo $(( issue_max > review_max ? issue_max : review_max ))
+    2>/dev/null || echo 0
 }
+
+latest_review_comment_id() {
+  # Max id of any non-reviewer review/inline comment (incl. thread replies).
+  gh api "repos/$REPO/pulls/$PR/comments" \
+    --jq "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\")|.id]|max // 0" \
+    2>/dev/null || echo 0
+}
+
+# Note: issue-comment ids and review-comment ids come from independent
+# auto-increment counters in GitHub. A single max() across both namespaces
+# would be dominated by whichever counter is currently larger and silently
+# mask updates in the other — e.g. a thread reply landing while an issue
+# comment with a larger id already exists never re-triggers the loop.
+# Track the two ids separately and trigger when either advances.
 
 set_meta_status() {
   local status="$1"
@@ -571,8 +581,14 @@ while true; do
 
   LAST_SHA=$(jq -r .last_reviewed_sha "$META")
   LAST_EVENT=$(jq -r .last_codex_event "$META")
-  LAST_HUMAN_ID_PREV=$(jq -r .last_human_comment_id "$META")
-  LATEST_HUMAN_ID=$(latest_human_comment_id)
+  # Backward-compat: older meta.json carried a single .last_human_comment_id
+  # max() across two namespaces; fall back to it as the issue-comment seed
+  # so resumed loops don't refire on already-seen issue comments. Review
+  # comments default to 0 since the legacy field never tracked them.
+  LAST_ISSUE_ID_PREV=$(jq -r '.last_issue_comment_id // .last_human_comment_id // 0' "$META")
+  LAST_REVIEW_ID_PREV=$(jq -r '.last_review_comment_id // 0' "$META")
+  LATEST_ISSUE_ID=$(latest_issue_comment_id)
+  LATEST_REVIEW_ID=$(latest_review_comment_id)
 
   # Resume / restart: if local meta says we approved last time, converge
   # only if GitHub still shows APPROVED *and* nothing has changed since
@@ -585,10 +601,11 @@ while true; do
     GH_REVIEW_STATE=$(latest_reviewer_review_state)
     if [[ "$GH_REVIEW_STATE" == "APPROVED" \
           && "$HEAD_SHA" == "$LAST_SHA" \
-          && "$LATEST_HUMAN_ID" == "$LAST_HUMAN_ID_PREV" ]]; then
+          && "$LATEST_ISSUE_ID" == "$LAST_ISSUE_ID_PREV" \
+          && "$LATEST_REVIEW_ID" == "$LAST_REVIEW_ID_PREV" ]]; then
       converge_and_exit
     fi
-    log "prior APPROVE no longer current (gh=$GH_REVIEW_STATE, head_changed=$([[ "$HEAD_SHA" != "$LAST_SHA" ]] && echo y || echo n), comments_changed=$([[ "$LATEST_HUMAN_ID" != "$LAST_HUMAN_ID_PREV" ]] && echo y || echo n)) — re-reviewing current head"
+    log "prior APPROVE no longer current (gh=$GH_REVIEW_STATE, head_changed=$([[ "$HEAD_SHA" != "$LAST_SHA" ]] && echo y || echo n), issue_comments_changed=$([[ "$LATEST_ISSUE_ID" != "$LAST_ISSUE_ID_PREV" ]] && echo y || echo n), review_comments_changed=$([[ "$LATEST_REVIEW_ID" != "$LAST_REVIEW_ID_PREV" ]] && echo y || echo n)) — re-reviewing current head"
     jq '.last_codex_event="DISMISSED" | .last_reviewed_sha=null' \
       "$META" > "$META.tmp" && mv "$META.tmp" "$META"
     LAST_EVENT="DISMISSED"
@@ -598,7 +615,8 @@ while true; do
   # Anything new since last round?
   if [[ "$ROUND" -gt 0 \
         && "$HEAD_SHA" == "$LAST_SHA" \
-        && "$LATEST_HUMAN_ID" == "$LAST_HUMAN_ID_PREV" ]]; then
+        && "$LATEST_ISSUE_ID" == "$LAST_ISSUE_ID_PREV" \
+        && "$LATEST_REVIEW_ID" == "$LAST_REVIEW_ID_PREV" ]]; then
     CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
     NEW_IDLE=$((CONSECUTIVE_IDLE + 1))
     jq --argjson n "$NEW_IDLE" '.consecutive_idle=$n' "$META" \
@@ -646,12 +664,13 @@ while true; do
     --jq '.data.repository.pullRequest.reviewThreads.nodes|map(select(.isResolved==false))' \
     > "$SNAP.unresolved-threads.json" 2>/dev/null || echo '[]' > "$SNAP.unresolved-threads.json"
 
-  # New comments since last round
+  # New comments since last round (each endpoint filtered by its own prev id —
+  # issue and review comment ids come from independent counters).
   gh api "repos/$REPO/issues/$PR/comments" \
-    --jq "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\" and .id>$LAST_HUMAN_ID_PREV)|{id,user:.user.login,body,created_at}]" \
+    --jq "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\" and .id>$LAST_ISSUE_ID_PREV)|{id,user:.user.login,body,created_at}]" \
     > "$SNAP.new-issue-comments.json" 2>/dev/null || echo '[]' > "$SNAP.new-issue-comments.json"
   gh api "repos/$REPO/pulls/$PR/comments" \
-    --jq "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\" and .id>$LAST_HUMAN_ID_PREV)|{id,user:.user.login,path,line,body,created_at}]" \
+    --jq "[.[]|select(.user.type==\"User\" and .user.login!=\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_ID_PREV)|{id,user:.user.login,path,line,body,created_at}]" \
     > "$SNAP.new-review-comments.json" 2>/dev/null || echo '[]' > "$SNAP.new-review-comments.json"
 
   # CI
@@ -690,7 +709,7 @@ while true; do
   # this loop run already APPROVED the current HEAD, reuse that
   # outcome verbatim and skip codex (deterministic, file-only).
   RULE1_DECISION=$(RUN_DIR="$RUN_DIR" NEXT_ROUND="$NEXT_ROUND" HEAD_SHA="$HEAD_SHA" \
-    LATEST_HUMAN_ID="$LATEST_HUMAN_ID" \
+    LATEST_ISSUE_ID="$LATEST_ISSUE_ID" LATEST_REVIEW_ID="$LATEST_REVIEW_ID" \
     bash "$SKILL_DIR/round-pre.sh" || echo "proceed")
   if [[ "$RULE1_DECISION" == "skip" ]]; then
     log "round $NEXT_ROUND — Rule 1: prior APPROVE on $HEAD_SHA found; skipping codex"
@@ -698,9 +717,11 @@ while true; do
     BLOCKERS=$(jq -r '.blockers_after // 0' "$SNAP.json")
     NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     jq --argjson r "$NEXT_ROUND" --arg sha "$HEAD_SHA" --arg now "$NOW" \
-       --argjson hid "$LATEST_HUMAN_ID" --arg ev "$EVENT" \
+       --argjson iid "$LATEST_ISSUE_ID" --argjson rid "$LATEST_REVIEW_ID" \
+       --arg ev "$EVENT" \
        --argjson cm "$CRITERIA_MTIME" \
-       '.round=$r | .last_reviewed_sha=$sha | .last_human_comment_id=$hid
+       '.round=$r | .last_reviewed_sha=$sha
+        | .last_issue_comment_id=$iid | .last_review_comment_id=$rid
         | .last_codex_event=$ev | .last_criteria_mtime=$cm
         | .consecutive_request_changes=0
         | .consecutive_codex_failures=0
@@ -717,8 +738,11 @@ while true; do
     log "round $NEXT_ROUND done (codex skipped) — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
     if [[ "$EVENT" == "APPROVE" ]]; then
       POST_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-      POST_HUMAN_ID=$(latest_human_comment_id)
-      if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" && "$POST_HUMAN_ID" == "$LATEST_HUMAN_ID" ]]; then
+      POST_ISSUE_ID=$(latest_issue_comment_id)
+      POST_REVIEW_ID=$(latest_review_comment_id)
+      if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" \
+            && "$POST_ISSUE_ID" == "$LATEST_ISSUE_ID" \
+            && "$POST_REVIEW_ID" == "$LATEST_REVIEW_ID" ]]; then
         converge_and_exit
       fi
     fi
@@ -748,9 +772,11 @@ while true; do
     NEW_RC=0
   fi
   jq --argjson r "$NEXT_ROUND" --arg sha "$HEAD_SHA" --arg now "$NOW" \
-     --argjson hid "$LATEST_HUMAN_ID" --arg ev "$EVENT" \
+     --argjson iid "$LATEST_ISSUE_ID" --argjson rid "$LATEST_REVIEW_ID" \
+     --arg ev "$EVENT" \
      --argjson cm "$CRITERIA_MTIME" --argjson rc "$NEW_RC" \
-     '.round=$r | .last_reviewed_sha=$sha | .last_human_comment_id=$hid
+     '.round=$r | .last_reviewed_sha=$sha
+      | .last_issue_comment_id=$iid | .last_review_comment_id=$rid
       | .last_codex_event=$ev | .last_criteria_mtime=$cm
       | .consecutive_request_changes=$rc
       | .consecutive_codex_failures=0
@@ -761,10 +787,10 @@ while true; do
   jq -n --argjson r "$NEXT_ROUND" --arg now "$NOW" \
     --arg sha_b "${LAST_SHA:-null}" --arg sha_a "$HEAD_SHA" \
     --arg ev "$EVENT" --argjson bl "$BLOCKERS" \
-    --argjson hid "$LATEST_HUMAN_ID" \
+    --argjson iid "$LATEST_ISSUE_ID" --argjson rid "$LATEST_REVIEW_ID" \
     '{round:$r, finished_at:$now, head_sha_before:$sha_b, head_sha_after:$sha_a,
       codex_event:$ev, blockers_after:$bl,
-      last_human_comment_id:$hid}' > "$SNAP.json"
+      last_issue_comment_id:$iid, last_review_comment_id:$rid}' > "$SNAP.json"
 
   set_task_review_rounds "$NEXT_ROUND"
   set_task_review_event "$EVENT"
@@ -799,17 +825,20 @@ while true; do
   log "round $NEXT_ROUND done — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
 
   # APPROVE this round → exit, but re-check stability first. HEAD_SHA
-  # and LATEST_HUMAN_ID were snapshotted before Codex ran (potentially
+  # and the comment ids were snapshotted before Codex ran (potentially
   # minutes ago); a push or non-reviewer comment arriving during the
   # review must not be silently skipped. If anything moved, fall
   # through to sleep + next iteration, which will pick up the change.
   if [[ "$EVENT" == "APPROVE" ]]; then
     POST_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-    POST_HUMAN_ID=$(latest_human_comment_id)
-    if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" && "$POST_HUMAN_ID" == "$LATEST_HUMAN_ID" ]]; then
+    POST_ISSUE_ID=$(latest_issue_comment_id)
+    POST_REVIEW_ID=$(latest_review_comment_id)
+    if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" \
+          && "$POST_ISSUE_ID" == "$LATEST_ISSUE_ID" \
+          && "$POST_REVIEW_ID" == "$LATEST_REVIEW_ID" ]]; then
       converge_and_exit
     fi
-    log "APPROVE produced but state moved during review (head_changed=$([[ "$POST_HEAD_SHA" != "$HEAD_SHA" ]] && echo y || echo n), comments_changed=$([[ "$POST_HUMAN_ID" != "$LATEST_HUMAN_ID" ]] && echo y || echo n)) — falling through"
+    log "APPROVE produced but state moved during review (head_changed=$([[ "$POST_HEAD_SHA" != "$HEAD_SHA" ]] && echo y || echo n), issue_comments_changed=$([[ "$POST_ISSUE_ID" != "$LATEST_ISSUE_ID" ]] && echo y || echo n), review_comments_changed=$([[ "$POST_REVIEW_ID" != "$LATEST_REVIEW_ID" ]] && echo y || echo n)) — falling through"
   fi
 
   sleep "$POLL_INTERVAL"
