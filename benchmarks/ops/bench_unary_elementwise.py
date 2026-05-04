@@ -1,10 +1,12 @@
 """Benchmarks for unary elementwise math ops in the elementwise_unary_math family.
 
 Profiles TileOPs vs PyTorch baselines for each op routed to this bench file by
-``tileops/manifest/elementwise_unary_math.yaml``. Coverage spans the 22 ops in
-the family that point ``source.bench`` at this file (the remaining two ops,
-``SigmoidFwdOp`` and ``TanhFwdOp``, are benched in
-``benchmarks/ops/bench_activation.py``).
+``tileops/manifest/elementwise_unary_math.yaml``. Coverage spans the
+``status: implemented`` ops in the family that point ``source.bench`` at this
+file: ``SigmoidFwdOp`` and ``TanhFwdOp`` are benched in
+``benchmarks/ops/bench_activation.py`` instead, and ``RoundFwdOp`` is currently
+``status: spec-only`` (kernel only supports ``decimals=0``; full
+``torch.round`` semantics tracked in #1170) so it is excluded here.
 
 Each op is parametrized at one representative bandwidth-bound shape and dtype
 to keep wall-clock cost bounded while still emitting numeric rows in
@@ -26,7 +28,6 @@ from tileops.ops.elementwise import (
     ExpFwdOp,
     Expm1FwdOp,
     FloorFwdOp,
-    GeluFwdOp,
     IsfiniteFwdOp,
     IsinfFwdOp,
     IsnanFwdOp,
@@ -35,7 +36,6 @@ from tileops.ops.elementwise import (
     LogicalNotFwdOp,
     NegFwdOp,
     ReciprocalFwdOp,
-    RoundFwdOp,
     RsqrtFwdOp,
     SignFwdOp,
     SinFwdOp,
@@ -96,9 +96,20 @@ def _positive(n_total: int, dtype: torch.dtype) -> tuple[torch.Tensor]:
 
 
 def _nonzero(n_total: int, dtype: torch.dtype) -> tuple[torch.Tensor]:
-    """Nonzero input for reciprocal."""
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
-    return (x + torch.sign(x) * 0.01,)
+    """Nonzero input for reciprocal.
+
+    Generates samples in fp32 so the magnitude floor is enforced before any
+    fp16/bf16 quantization, then casts to the target dtype. The floor is
+    chosen relative to ``finfo(dtype).tiny`` so that even after rounding to
+    the lower-precision dtype the value is guaranteed nonzero, avoiding
+    ``inf`` outputs from ``reciprocal`` skewing the benchmark.
+    """
+    finfo = torch.finfo(dtype)
+    floor_mag = max(1e-2, finfo.tiny * 1024)
+    x = torch.randn(n_total, device="cuda", dtype=torch.float32)
+    sign = torch.where(x >= 0, 1.0, -1.0)
+    x = sign * x.abs().clamp(min=floor_mag)
+    return (x.to(dtype),)
 
 
 def _logical_inputs(n_total: int, dtype: torch.dtype) -> tuple[torch.Tensor]:
@@ -138,10 +149,6 @@ def _baseline_ceil(x: torch.Tensor) -> torch.Tensor:
     return torch.ceil(x.float()).to(x.dtype)
 
 
-def _baseline_round(x: torch.Tensor) -> torch.Tensor:
-    return torch.round(x.float()).to(x.dtype)
-
-
 def _baseline_trunc(x: torch.Tensor) -> torch.Tensor:
     return torch.trunc(x.float()).to(x.dtype)
 
@@ -167,15 +174,10 @@ _FLOAT_OP_CASES = [
     ("cos", CosFwdOp, torch.cos, _randn, torch.float16, torch.float16),
     ("floor", FloorFwdOp, _baseline_floor, _randn, torch.float16, torch.float16),
     ("ceil", CeilFwdOp, _baseline_ceil, _randn, torch.float16, torch.float16),
-    ("round", RoundFwdOp, _baseline_round, _randn, torch.float16, torch.float16),
     ("trunc", TruncFwdOp, _baseline_trunc, _randn, torch.float16, torch.float16),
     ("erf", ErfFwdOp, torch.erf, _randn, torch.float16, torch.float16),
     ("log1p", Log1pFwdOp, torch.log1p, _positive, torch.float16, torch.float16),
     ("expm1", Expm1FwdOp, torch.expm1, _randn, torch.float16, torch.float16),
-    # gelu retained here as a reference activation spot-check; full strategy
-    # sweep lives in bench_activation.py.
-    ("gelu", GeluFwdOp, torch.nn.functional.gelu, _randn,
-     torch.float16, torch.float16),
 ]
 
 _LOGICAL_OP_CASES = [

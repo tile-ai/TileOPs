@@ -380,7 +380,7 @@ CeilFwdOp:
 RoundFwdOp:
   ref_api: "torch.round"
   family: elementwise
-  status: implemented # op accepts 'decimals' for signature parity but raises NotImplementedError on non-zero (kernel only supports decimals=0); kernel-layer support tracked as follow-up
+  status: spec-only # op only supports decimals=0; non-zero decimals raises NotImplementedError, so per the trust model the manifest stays spec-only until the kernel supports the full torch.round contract (follow-up: #1170)
 
   signature:
     inputs:
