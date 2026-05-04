@@ -632,26 +632,26 @@ while true; do
   fi
 
   # Resume / restart: if local meta says we approved last time, converge
-  # only if GitHub still shows APPROVED *and* HEAD has not moved. New
-  # commits auto-dismiss approvals (state goes DISMISSED). Comment-only
-  # changes do not warrant retracting an APPROVE — see policy above; a
-  # human who wants the bot to re-engage on unchanged code writes to
-  # inbox.md.
+  # only if GitHub still shows APPROVED, HEAD has not moved, *and* no new
+  # human comments have arrived since the approval. New commits auto-
+  # dismiss approvals (state goes DISMISSED), but comments do not — and
+  # at the convergence boundary the loop is about to exit, so a comment
+  # that landed during the prior round's codex window would be silently
+  # lost forever if we converged without checking. The trigger policy in
+  # the idle path (HEAD-only, no comment trigger) does NOT apply here:
+  # idle keeps the loop alive so a future commit can still be reviewed,
+  # whereas convergence is terminal. Falling through on comment changes
+  # gives the human's late-arriving feedback exactly one re-review pass
+  # before the loop exits.
   if [[ "$LAST_EVENT" == "APPROVE" ]]; then
     GH_REVIEW_STATE=$(latest_reviewer_review_state)
     if [[ "$GH_REVIEW_STATE" == "APPROVED" \
           && "$HEAD_UNCHANGED" -eq 1 \
+          && "$COMMENTS_CHANGED" -eq 0 \
           && "$INBOX_PRESENT" -eq 0 ]]; then
-      # Absorb any new comment ids so we don't keep re-querying GitHub
-      # for the same comments on every poll.
-      if [[ "$COMMENTS_CHANGED" -eq 1 ]]; then
-        jq --argjson iid "$LATEST_ISSUE_ID" --argjson rid "$LATEST_REVIEW_ID" \
-           '.last_issue_comment_id=$iid | .last_review_comment_id=$rid' \
-           "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-      fi
       converge_and_exit
     fi
-    log "prior APPROVE no longer current (gh=$GH_REVIEW_STATE, head_changed=$([[ "$HEAD_UNCHANGED" -eq 0 ]] && echo y || echo n), inbox=$([[ "$INBOX_PRESENT" -eq 1 ]] && echo y || echo n)) — re-reviewing current head"
+    log "prior APPROVE no longer current (gh=$GH_REVIEW_STATE, head_changed=$([[ "$HEAD_UNCHANGED" -eq 0 ]] && echo y || echo n), comments_changed=$([[ "$COMMENTS_CHANGED" -eq 1 ]] && echo y || echo n), inbox=$([[ "$INBOX_PRESENT" -eq 1 ]] && echo y || echo n)) — re-reviewing current head"
     jq '.last_codex_event="DISMISSED" | .last_reviewed_sha=null' \
       "$META" > "$META.tmp" && mv "$META.tmp" "$META"
     LAST_EVENT="DISMISSED"
@@ -879,27 +879,25 @@ while true; do
 
   log "round $NEXT_ROUND done — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
 
-  # APPROVE this round → exit, but re-check stability first. HEAD_SHA was
-  # snapshotted before Codex ran (potentially minutes ago); a push that
-  # arrived during the review must not be silently skipped. Comment-only
-  # changes during the review do NOT retract the APPROVE — same rationale
-  # as the top-of-loop trigger policy: a human who wants the bot to
-  # re-engage on unchanged code uses inbox.md.
+  # APPROVE this round → exit, but re-check stability first. HEAD_SHA and
+  # the comment ids were snapshotted before Codex ran (potentially
+  # minutes ago). A push or non-reviewer comment arriving during the
+  # review must not be silently skipped: at convergence the loop is
+  # about to exit, so a late-arriving human reply that we drop here is
+  # lost forever. The asymmetry vs. the idle path is intentional — idle
+  # keeps the loop alive (a future commit will trigger), convergence is
+  # terminal (one re-review pass to absorb late feedback before exit).
   if [[ "$EVENT" == "APPROVE" ]]; then
     POST_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
     POST_ISSUE_ID=$(latest_issue_comment_id)
     POST_REVIEW_ID=$(latest_review_comment_id)
-    if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" && ! -s "$RUN_DIR/inbox.md" ]]; then
-      # Absorb any comment-id advances that landed during the round so
-      # the next idle iteration doesn't see a stale prev-id mismatch.
-      if [[ "$POST_ISSUE_ID" != "$LATEST_ISSUE_ID" || "$POST_REVIEW_ID" != "$LATEST_REVIEW_ID" ]]; then
-        jq --argjson iid "$POST_ISSUE_ID" --argjson rid "$POST_REVIEW_ID" \
-           '.last_issue_comment_id=$iid | .last_review_comment_id=$rid' \
-           "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-      fi
+    if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" \
+          && "$POST_ISSUE_ID" == "$LATEST_ISSUE_ID" \
+          && "$POST_REVIEW_ID" == "$LATEST_REVIEW_ID" \
+          && ! -s "$RUN_DIR/inbox.md" ]]; then
       converge_and_exit
     fi
-    log "APPROVE produced but state moved during review (head_changed=$([[ "$POST_HEAD_SHA" != "$HEAD_SHA" ]] && echo y || echo n), inbox=$([[ -s "$RUN_DIR/inbox.md" ]] && echo y || echo n)) — falling through"
+    log "APPROVE produced but state moved during review (head_changed=$([[ "$POST_HEAD_SHA" != "$HEAD_SHA" ]] && echo y || echo n), issue_comments_changed=$([[ "$POST_ISSUE_ID" != "$LATEST_ISSUE_ID" ]] && echo y || echo n), review_comments_changed=$([[ "$POST_REVIEW_ID" != "$LATEST_REVIEW_ID" ]] && echo y || echo n), inbox=$([[ -s "$RUN_DIR/inbox.md" ]] && echo y || echo n)) — falling through"
   fi
 
   sleep "$POLL_INTERVAL"
