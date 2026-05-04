@@ -30,11 +30,11 @@ copied into the PR body):
 
 ## Benchmark
 
-**Environment**: <GPU>, CUDA <ver>, PyTorch <ver>, TileLang <ver>
+**Environment**: \{GPU}, CUDA \{ver}, PyTorch \{ver}, TileLang \{ver}
 
 | Op  | Shape | dtype | TileOPs (ms) | Baseline (ms) | Speedup | TFLOPS | BW (TB/s) |
 | --- | ----- | ----- | ------------ | ------------- | ------- | ------ | --------- |
 
-**Takeaways:** \<wins · losses with brief reason · dtype/shape patterns>
+**Takeaways:** {wins · losses with brief reason · dtype/shape patterns}
 
-**Command:** `PYTHONPATH="$PWD" python -m pytest benchmarks/ops/bench_<op>.py -v`
+**Command:** `PYTHONPATH="$PWD" python -m pytest benchmarks/ops/bench_{op}.py -v`

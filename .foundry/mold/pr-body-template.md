@@ -8,12 +8,12 @@ KEEP IT SHORT. Reviewers read PRs to learn WHAT changed and HOW to verify it.
 - If a section doesn't apply, delete the header — never leave empty sections.
 -->
 
-Closes #<issue-number>
+Closes #\{issue-number}
 
 ## Summary
 
-- \<what was added/fixed/changed>
-- \<what was removed/replaced>
+- {what was added/fixed/changed}
+- {what was removed/replaced}
 
 ## Test plan
 
