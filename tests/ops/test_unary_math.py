@@ -16,6 +16,9 @@ from tileops.ops.elementwise import (
     ExpFwdOp,
     Expm1FwdOp,
     FloorFwdOp,
+    IsfiniteFwdOp,
+    IsinfFwdOp,
+    IsnanFwdOp,
     Log1pFwdOp,
     LogFwdOp,
     NegFwdOp,
@@ -268,6 +271,65 @@ def test_round_int_identity_with_decimals() -> None:
     x = torch.randint(-100, 100, (n_total,), device="cuda", dtype=torch.int32)
     y = op.forward(x, decimals=2)
     assert torch.equal(y, x)
+
+
+# ---------------------------------------------------------------------------
+# Integer-dtype op-layer fallbacks for abs / neg / sign and the
+# is{nan,inf,finite} predicates. Their manifest entries declare integer
+# input dtypes alongside floats; the underlying kernels are float-only,
+# so the op layer routes int input through a torch primitive (or the
+# constant-bool result, for the predicates).
+# ---------------------------------------------------------------------------
+
+
+_INT_DTYPES = [
+    torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8,
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls, torch_fn",
+    [
+        (AbsFwdOp, torch.abs),
+        (NegFwdOp, torch.neg),
+        (SignFwdOp, torch.sign),
+    ],
+)
+@pytest.mark.parametrize("int_dtype", _INT_DTYPES)
+def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
+    n_total = 1024
+    op = op_cls(N_total=n_total, dtype=int_dtype)
+    if int_dtype == torch.uint8:
+        x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
+    else:
+        x = torch.randint(-50, 50, (n_total,), device="cuda", dtype=int_dtype)
+    y = op.forward(x)
+    assert y.dtype == int_dtype
+    assert torch.equal(y, torch_fn(x))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls, expected",
+    [
+        (IsnanFwdOp, False),
+        (IsinfFwdOp, False),
+        (IsfiniteFwdOp, True),
+    ],
+)
+@pytest.mark.parametrize("int_dtype", _INT_DTYPES)
+def test_predicate_int_constant(op_cls, expected, int_dtype) -> None:
+    n_total = 256
+    op = op_cls(N_total=n_total, dtype=int_dtype)
+    if int_dtype == torch.uint8:
+        x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
+    else:
+        x = torch.randint(-50, 50, (n_total,), device="cuda", dtype=int_dtype)
+    y = op.forward(x)
+    assert y.dtype == torch.bool
+    assert y.shape == x.shape
+    assert (y == expected).all()
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ Utility:
 import math
 import weakref
 from math import prod
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import torch
 
@@ -1253,70 +1253,40 @@ class RsqrtFwdOp(UnaryOp):
     kernel_cls = RsqrtFwdKernel
 
 
-class AbsFwdOp(UnaryOp):
-    """Element-wise |x|."""
-
-    _op_name = "abs"
-    kernel_cls = AbsFwdKernel
-
-
-class NegFwdOp(UnaryOp):
-    """Element-wise -x."""
-
-    _op_name = "neg"
-    kernel_cls = NegFwdKernel
-
-
-class ReciprocalFwdOp(UnaryOp):
-    """Element-wise 1/x."""
-
-    _op_name = "reciprocal"
-    kernel_cls = ReciprocalFwdKernel
-
-
-class SignFwdOp(UnaryOp):
-    """Element-wise sign(x): -1, 0, or +1."""
-
-    _op_name = "sign"
-    kernel_cls = SignFwdKernel
-    # Manifest: flops = "2 * N" (two compares + selects per element).
-    FLOPS_PER_ELEM = 2
-
-
-class SinFwdOp(UnaryOp):
-    """Element-wise sin(x)."""
-
-    _op_name = "sin"
-    kernel_cls = SinFwdKernel
-
-
-class CosFwdOp(UnaryOp):
-    """Element-wise cos(x)."""
-
-    _op_name = "cos"
-    kernel_cls = CosFwdKernel
-
-
 _MANIFEST_INT_DTYPES = (
     torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
 )
 
 
-class _IntIdentityUnaryOp(UnaryOp):
-    """Base for unary rounding ops with integer-dtype identity short-circuit.
+def _int_identity(input: torch.Tensor) -> torch.Tensor:
+    return input.clone()
 
-    The manifest declares floor / ceil / round / trunc over both integer and
-    floating-point dtypes, while the underlying ``*FwdKernel`` classes are
-    float-only (``FloatUnaryKernel``). For integer inputs, ``torch.floor /
-    ceil / round / trunc`` are no-ops — the value is already integral — so
-    we short-circuit at the op layer: skip kernel construction in
-    ``__init__`` and have ``_eager_forward`` return a clone of the input.
+
+class _IntIdentityUnaryOp(UnaryOp):
+    """Base for unary ops whose manifest declares integer dtypes but whose
+    kernel is float-only.
+
+    Several manifest entries (floor / ceil / round / trunc, abs / neg / sign,
+    isnan / isinf / isfinite) declare both integer and floating-point input
+    dtypes, while the underlying ``*FwdKernel`` classes are float-only
+    (``FloatUnaryKernel``). For integer inputs we short-circuit at the op
+    layer: skip kernel construction in ``__init__`` and route through
+    ``_int_handler`` in ``_eager_forward``.
+
+    Subclasses override ``_int_handler`` (default = identity = ``input.clone()``)
+    and ``_int_output_dtype`` (default = same as input) to express the
+    appropriate integer semantics — e.g. ``torch.abs`` for ``AbsFwdOp``,
+    constant-False ``torch.bool`` for ``IsnanFwdOp``.
 
     The short-circuit is restricted to the integer dtypes declared in the
     manifest. Other non-float dtypes (bool, complex) are not in the
     contract and fall through to ``UnaryOp.__init__``, which raises via the
     kernel's dtype check.
     """
+
+    _int_handler: Callable[[torch.Tensor], torch.Tensor] = staticmethod(
+        _int_identity)
+    _int_output_dtype: Optional[torch.dtype] = None
 
     def __init__(
         self,
@@ -1336,7 +1306,11 @@ class _IntIdentityUnaryOp(UnaryOp):
             # iterates it, but leave the kernel itself unconstructed.
             self.kernel_map = kernel_map or self.default_kernel_map
             self.kernel = None
-            self.output_dtype = dtype
+            self.output_dtype = (
+                type(self)._int_output_dtype
+                if type(self)._int_output_dtype is not None
+                else dtype
+            )
             self._instance_key = id(self)
             _OP_REGISTRY[self._instance_key] = self
             return
@@ -1346,8 +1320,62 @@ class _IntIdentityUnaryOp(UnaryOp):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
         if self.kernel is None:
-            return input.clone()
+            return type(self)._int_handler(input)
         return super()._eager_forward(input)
+
+
+class AbsFwdOp(_IntIdentityUnaryOp):
+    """Element-wise |x|."""
+
+    _op_name = "abs"
+    kernel_cls = AbsFwdKernel
+    _int_handler = staticmethod(torch.abs)
+
+
+class NegFwdOp(_IntIdentityUnaryOp):
+    """Element-wise -x."""
+
+    _op_name = "neg"
+    kernel_cls = NegFwdKernel
+    _int_handler = staticmethod(torch.neg)
+
+
+class ReciprocalFwdOp(UnaryOp):
+    """Element-wise 1/x.
+
+    The manifest's int-dtype declaration is a known gap: ``torch.reciprocal``
+    promotes int input to float32, which does not match the manifest's
+    ``same_as(input)`` output rule. The op layer here only supports the
+    float dtypes the kernel implements; int input falls through to the
+    kernel's dtype check and raises.
+    """
+
+    _op_name = "reciprocal"
+    kernel_cls = ReciprocalFwdKernel
+
+
+class SignFwdOp(_IntIdentityUnaryOp):
+    """Element-wise sign(x): -1, 0, or +1."""
+
+    _op_name = "sign"
+    kernel_cls = SignFwdKernel
+    # Manifest: flops = "2 * N" (two compares + selects per element).
+    FLOPS_PER_ELEM = 2
+    _int_handler = staticmethod(torch.sign)
+
+
+class SinFwdOp(UnaryOp):
+    """Element-wise sin(x)."""
+
+    _op_name = "sin"
+    kernel_cls = SinFwdKernel
+
+
+class CosFwdOp(UnaryOp):
+    """Element-wise cos(x)."""
+
+    _op_name = "cos"
+    kernel_cls = CosFwdKernel
 
 
 class FloorFwdOp(_IntIdentityUnaryOp):
@@ -1532,25 +1560,39 @@ class BitwiseNotFwdOp(UnaryOp):
 # ---------------------------------------------------------------------------
 
 
-class IsnanFwdOp(UnaryOp):
-    """Element-wise isnan with bool output."""
+def _int_all_false(input: torch.Tensor) -> torch.Tensor:
+    return torch.zeros(input.shape, dtype=torch.bool, device=input.device)
+
+
+def _int_all_true(input: torch.Tensor) -> torch.Tensor:
+    return torch.ones(input.shape, dtype=torch.bool, device=input.device)
+
+
+class IsnanFwdOp(_IntIdentityUnaryOp):
+    """Element-wise isnan with bool output. Always False on integer input."""
 
     _op_name = "isnan"
     kernel_cls = IsnanFwdKernel
+    _int_handler = staticmethod(_int_all_false)
+    _int_output_dtype = torch.bool
 
 
-class IsinfFwdOp(UnaryOp):
-    """Element-wise isinf with bool output."""
+class IsinfFwdOp(_IntIdentityUnaryOp):
+    """Element-wise isinf with bool output. Always False on integer input."""
 
     _op_name = "isinf"
     kernel_cls = IsinfFwdKernel
+    _int_handler = staticmethod(_int_all_false)
+    _int_output_dtype = torch.bool
 
 
-class IsfiniteFwdOp(UnaryOp):
-    """Element-wise isfinite with bool output."""
+class IsfiniteFwdOp(_IntIdentityUnaryOp):
+    """Element-wise isfinite with bool output. Always True on integer input."""
 
     _op_name = "isfinite"
     kernel_cls = IsfiniteFwdKernel
+    _int_handler = staticmethod(_int_all_true)
+    _int_output_dtype = torch.bool
 
 
 # ---------------------------------------------------------------------------
