@@ -23,6 +23,7 @@ from .gqa_fwd import (
     MHAFwdWgmmaPipelinedKernel,
 )
 from .gqa_fwd_ws import GQAFwdWsPersistentCausalKernel, GQAFwdWsPersistentKernel
+from .gqa_prefill_varlen_fwd import GQAPrefillVarlenFwdKernel
 from .gqa_sliding_window_fwd import (
     GQASlidingWindowFwdKernel,
     GQASlidingWindowFwdWgmmaPipelinedKernel,
@@ -46,6 +47,7 @@ __all__ = [
     "GQAFwdWsPersistentCausalKernel",
     "GQAFwdWsPersistentKernel",
     "GQAPrefillFwdKernel",
+    "GQAPrefillVarlenFwdKernel",
     "GQAPrefillWithKVCacheFwdKernel",
     "GQASlidingWindowFwdKernel",
     "GQASlidingWindowFwdWgmmaPipelinedKernel",

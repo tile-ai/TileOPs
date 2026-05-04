@@ -4,17 +4,19 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
 from tileops.kernels.attention import (
     GQAFwdKernel,
     GQAFwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
 )
+from tileops.manifest import load_workloads
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
+    GroupedQueryAttentionPrefillVarlenFwdOp,
     GroupedQueryAttentionPrefillWithKVCacheFwdOp,
 )
 from workloads.attention.gqa import (
@@ -23,6 +25,7 @@ from workloads.attention.gqa import (
 )
 from workloads.attention.gqa_prefill import (
     GQAPrefillFwdTest,
+    GQAPrefillVarlenFwdTest,
     GQAPrefillWithKVCacheFwdTest,
 )
 
@@ -206,6 +209,34 @@ def _torch_gqa_prefill_ref(test: GQAPrefillFwdTest):
     return fn
 
 
+def _torch_gqa_prefill_varlen_ref(test: GQAPrefillVarlenFwdTest):
+    """Materialized torch reference for packed-varlen prefill."""
+    def fn(q, k, v, cu_seqlens_q, cu_seqlens_kv):
+        groups = test.heads // test.heads_kv
+        outputs = []
+        for b in range(test.batch):
+            q_start = int(cu_seqlens_q[b].item())
+            q_end = int(cu_seqlens_q[b + 1].item())
+            kv_start = int(cu_seqlens_kv[b].item())
+            kv_end = int(cu_seqlens_kv[b + 1].item())
+            q_i = q[q_start:q_end].transpose(0, 1).float()
+            k_i = k[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+            v_i = v[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+            q_len = q_end - q_start
+            kv_len = kv_end - kv_start
+            scores = torch.matmul(q_i, k_i.transpose(-2, -1)) * (test.dim**-0.5)
+            if test.is_causal:
+                offset = kv_len - q_len
+                q_pos = torch.arange(q_len, device=q.device)[:, None] + offset
+                kv_pos = torch.arange(kv_len, device=q.device)[None, :]
+                mask = kv_pos <= q_pos
+                scores = scores.masked_fill(~mask.view(1, q_len, kv_len), float("-inf"))
+            probs = torch.softmax(scores, dim=-1)
+            outputs.append(torch.matmul(probs, v_i).transpose(0, 1).to(q.dtype).contiguous())
+        return torch.cat(outputs, dim=0)
+    return fn
+
+
 def _torch_gqa_prefill_with_kv_cache_ref(test: GQAPrefillWithKVCacheFwdTest):
     """Materialized torch reference for contiguous-cache prefill."""
     def fn(q, k_new, v_new, k_cache, v_cache, cache_seqlens):
@@ -383,6 +414,62 @@ def test_gqa_prefill_fwd_bench(batch: int, seq_len_q: int, seq_len_kv: int, head
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(_torch_gqa_prefill_ref(test), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+
+_GQA_PREFILL_VARLEN_OP_NAME = "GroupedQueryAttentionPrefillVarlenFwdOp"
+
+
+def _gqa_prefill_varlen_manifest_params() -> list:
+    params = []
+    for workload in load_workloads(_GQA_PREFILL_VARLEN_OP_NAME):
+        q_shape = workload["q_shape"]
+        k_shape = workload["k_shape"]
+        batch = workload["batch"]
+        heads = q_shape[1]
+        heads_kv = k_shape[1]
+        dim = q_shape[2]
+        q_lens = workload["q_lens"]
+        kv_lens = workload["kv_lens"]
+        is_causal = workload.get("is_causal", True)
+        label = workload.get("label", "prefill-varlen")
+        for dtype_name in workload["dtypes"]:
+            dtype = getattr(torch, dtype_name)
+            params.append(
+                pytest.param(
+                    batch,
+                    q_lens,
+                    kv_lens,
+                    heads,
+                    heads_kv,
+                    dim,
+                    is_causal,
+                    dtype,
+                    False,
+                    id=f"{label}-{dtype_name}",
+                )
+            )
+    return params
+
+
+@pytest.mark.parametrize(
+    "batch, q_lens, kv_lens, heads, heads_kv, dim, causal, dtype, tune",
+    _gqa_prefill_varlen_manifest_params(),
+)
+def test_gqa_prefill_varlen_fwd_bench(batch: int, q_lens: list[int], kv_lens: list[int],
+                                      heads: int, heads_kv: int, dim: int, causal: bool,
+                                      dtype: torch.dtype, tune: bool) -> None:
+    test = GQAPrefillVarlenFwdTest(batch, heads, heads_kv, q_lens, kv_lens, dim, causal, dtype)
+    inputs = test.gen_inputs()
+
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(
+        batch, heads, heads_kv, dim, test.max_seqlen_q, test.max_seqlen_kv, causal, dtype,
+        tune=tune)
+    bm = ManifestBenchmark(_GQA_PREFILL_VARLEN_OP_NAME, op, test)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(_torch_gqa_prefill_varlen_ref(test), *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 

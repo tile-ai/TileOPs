@@ -175,6 +175,54 @@ GroupedQueryAttentionPrefillFwdOp:
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
 
+GroupedQueryAttentionPrefillVarlenFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+      cu_seqlens_q: {dtype: "int32"}
+      cu_seqlens_kv: {dtype: "int32"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      batch: {type: int}
+      max_seqlen_q: {type: int}
+      max_seqlen_kv: {type: int}
+      is_causal: {type: bool, default: true}
+      sm_scale: {type: float, default: null}
+    shape_rules:
+      - "q.shape == (T_q, H, D)"
+      - "k.shape == (T_kv, H_kv, D)"
+      - "v.shape == (T_kv, H_kv, D)"
+      - "cu_seqlens_q.shape == (N_cu,)"
+      - "cu_seqlens_kv.shape == (N_cu,)"
+      - "N_cu == batch + 1"
+      - "o.shape == (T_q, H, D)"
+      - "H % H_kv == 0"
+
+  workloads:
+    # Llama-3.1-8B (H=32, H_kv=8, D=128)
+    - {q_shape: [2048, 32, 128], k_shape: [4096, 8, 128], v_shape: [4096, 8, 128], cu_seqlens_q_shape: [5], cu_seqlens_kv_shape: [5], batch: 4, max_seqlen_q: 512, max_seqlen_kv: 1024, q_lens: [512, 512, 512, 512], kv_lens: [1024, 1024, 1024, 1024], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-varlen-uniform"}
+    - {q_shape: [1536, 32, 128], k_shape: [3584, 8, 128], v_shape: [3584, 8, 128], cu_seqlens_q_shape: [5], cu_seqlens_kv_shape: [5], batch: 4, max_seqlen_q: 640, max_seqlen_kv: 1280, q_lens: [128, 256, 640, 512], kv_lens: [512, 768, 1280, 1024], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-varlen-mixed"}
+    # Llama-3.1-70B (H=64, H_kv=8, D=128)
+    - {q_shape: [1024, 64, 128], k_shape: [3072, 8, 128], v_shape: [3072, 8, 128], cu_seqlens_q_shape: [3], cu_seqlens_kv_shape: [3], batch: 2, max_seqlen_q: 512, max_seqlen_kv: 2048, q_lens: [512, 512], kv_lens: [1024, 2048], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-varlen-q-lt-kv"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_prefill_varlen_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_prefill_varlen_fwd.py
+    kernel_map:
+      gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa.py
+    bench: benchmarks/ops/attention/bench_gqa.py
+
 GroupedQueryAttentionPrefillWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
