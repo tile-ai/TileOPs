@@ -609,33 +609,75 @@ while true; do
   LATEST_ISSUE_ID=$(latest_issue_comment_id)
   LATEST_REVIEW_ID=$(latest_review_comment_id)
 
+  # Trigger policy: a fresh codex round fires only on a HEAD change or an
+  # explicit human prompt in inbox.md. Comment-only deltas (replies,
+  # discussion on a previous blocker) are absorbed — the tracked comment
+  # ids advance so the loop stops re-firing, but no new review runs.
+  #
+  # Why not re-review on comment changes: when a human pushes back on a
+  # blocker without changing code, re-running the full review on the same
+  # SHA tends to mine *new* nits the prior round didn't flag, drifting
+  # away from the original disagreement and looking to the developer like
+  # the bot is hunting for something to complain about. If the human
+  # genuinely wants a fresh pass on unchanged code, they write to
+  # inbox.md (the existing per-round guidance channel).
+  INBOX_PRESENT=0
+  [[ -s "$RUN_DIR/inbox.md" ]] && INBOX_PRESENT=1
+  HEAD_UNCHANGED=0
+  [[ "$HEAD_SHA" == "$LAST_SHA" ]] && HEAD_UNCHANGED=1
+  COMMENTS_CHANGED=0
+  if [[ "$LATEST_ISSUE_ID" != "$LAST_ISSUE_ID_PREV" \
+        || "$LATEST_REVIEW_ID" != "$LAST_REVIEW_ID_PREV" ]]; then
+    COMMENTS_CHANGED=1
+  fi
+
   # Resume / restart: if local meta says we approved last time, converge
-  # only if GitHub still shows APPROVED *and* nothing has changed since
-  # the approval. New commits auto-dismiss approvals (state goes
-  # DISMISSED), but new issue/review comments do not — so a comments-
-  # changed check is still required to avoid silently skipping unread
-  # human feedback. Any miss → fall through to a fresh round on the
-  # current head.
+  # only if GitHub still shows APPROVED, HEAD has not moved, *and* no new
+  # human comments have arrived since the approval. New commits auto-
+  # dismiss approvals (state goes DISMISSED), but comments do not — and
+  # at the convergence boundary the loop is about to exit, so a comment
+  # that landed during the prior round's codex window would be silently
+  # lost forever if we converged without checking. The trigger policy in
+  # the idle path (HEAD-only, no comment trigger) does NOT apply here:
+  # idle keeps the loop alive so a future commit can still be reviewed,
+  # whereas convergence is terminal. Falling through on comment changes
+  # gives the human's late-arriving feedback exactly one re-review pass
+  # before the loop exits.
   if [[ "$LAST_EVENT" == "APPROVE" ]]; then
     GH_REVIEW_STATE=$(latest_reviewer_review_state)
     if [[ "$GH_REVIEW_STATE" == "APPROVED" \
-          && "$HEAD_SHA" == "$LAST_SHA" \
-          && "$LATEST_ISSUE_ID" == "$LAST_ISSUE_ID_PREV" \
-          && "$LATEST_REVIEW_ID" == "$LAST_REVIEW_ID_PREV" ]]; then
+          && "$HEAD_UNCHANGED" -eq 1 \
+          && "$COMMENTS_CHANGED" -eq 0 \
+          && "$INBOX_PRESENT" -eq 0 ]]; then
       converge_and_exit
     fi
-    log "prior APPROVE no longer current (gh=$GH_REVIEW_STATE, head_changed=$([[ "$HEAD_SHA" != "$LAST_SHA" ]] && echo y || echo n), issue_comments_changed=$([[ "$LATEST_ISSUE_ID" != "$LAST_ISSUE_ID_PREV" ]] && echo y || echo n), review_comments_changed=$([[ "$LATEST_REVIEW_ID" != "$LAST_REVIEW_ID_PREV" ]] && echo y || echo n)) — re-reviewing current head"
+    log "prior APPROVE no longer current (gh=$GH_REVIEW_STATE, head_changed=$([[ "$HEAD_UNCHANGED" -eq 0 ]] && echo y || echo n), comments_changed=$([[ "$COMMENTS_CHANGED" -eq 1 ]] && echo y || echo n), inbox=$([[ "$INBOX_PRESENT" -eq 1 ]] && echo y || echo n)) — re-reviewing current head"
     jq '.last_codex_event="DISMISSED" | .last_reviewed_sha=null' \
       "$META" > "$META.tmp" && mv "$META.tmp" "$META"
     LAST_EVENT="DISMISSED"
     LAST_SHA="null"
+    HEAD_UNCHANGED=0
   fi
 
-  # Anything new since last round?
-  if [[ "$ROUND" -gt 0 \
-        && "$HEAD_SHA" == "$LAST_SHA" \
-        && "$LATEST_ISSUE_ID" == "$LAST_ISSUE_ID_PREV" \
-        && "$LATEST_REVIEW_ID" == "$LAST_REVIEW_ID_PREV" ]]; then
+  # Idle path: HEAD unchanged AND no inbox prompt. Absorb any comment-id
+  # advances and sleep. ROUND==0 (first poll, never reviewed) always
+  # falls through to a fresh round.
+  #
+  # Comment activity does NOT count toward the stall counter — an active
+  # discussion (replies flowing back and forth without a push) is engaged
+  # work, not a dead PR. The stall counter is meant to catch a truly
+  # quiet counterpart, so reset it whenever comments advance even though
+  # we're not running codex this poll.
+  if [[ "$ROUND" -gt 0 && "$HEAD_UNCHANGED" -eq 1 && "$INBOX_PRESENT" -eq 0 ]]; then
+    if [[ "$COMMENTS_CHANGED" -eq 1 ]]; then
+      jq --argjson iid "$LATEST_ISSUE_ID" --argjson rid "$LATEST_REVIEW_ID" \
+         '.last_issue_comment_id=$iid | .last_review_comment_id=$rid
+          | .consecutive_idle=0' \
+         "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+      log "comment-only update on unchanged HEAD ${HEAD_SHA:0:7} — absorbed; not re-reviewing (write inbox.md to force a round)"
+      sleep "$POLL_INTERVAL"
+      continue
+    fi
     CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
     NEW_IDLE=$((CONSECUTIVE_IDLE + 1))
     jq --argjson n "$NEW_IDLE" '.consecutive_idle=$n' "$META" \
@@ -645,7 +687,7 @@ while true; do
       set_meta_status "stalled"
       exit 5
     fi
-    log "no new commits / comments — idle $NEW_IDLE/$MAX_IDLE, sleeping ${POLL_INTERVAL}s"
+    log "no new commits — idle $NEW_IDLE/$MAX_IDLE, sleeping ${POLL_INTERVAL}s"
     sleep "$POLL_INTERVAL"
     continue
   fi
@@ -764,7 +806,8 @@ while true; do
       POST_REVIEW_ID=$(latest_review_comment_id)
       if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" \
             && "$POST_ISSUE_ID" == "$LATEST_ISSUE_ID" \
-            && "$POST_REVIEW_ID" == "$LATEST_REVIEW_ID" ]]; then
+            && "$POST_REVIEW_ID" == "$LATEST_REVIEW_ID" \
+            && ! -s "$RUN_DIR/inbox.md" ]]; then
         converge_and_exit
       fi
     fi
@@ -846,21 +889,25 @@ while true; do
 
   log "round $NEXT_ROUND done — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
 
-  # APPROVE this round → exit, but re-check stability first. HEAD_SHA
-  # and the comment ids were snapshotted before Codex ran (potentially
-  # minutes ago); a push or non-reviewer comment arriving during the
-  # review must not be silently skipped. If anything moved, fall
-  # through to sleep + next iteration, which will pick up the change.
+  # APPROVE this round → exit, but re-check stability first. HEAD_SHA and
+  # the comment ids were snapshotted before Codex ran (potentially
+  # minutes ago). A push or non-reviewer comment arriving during the
+  # review must not be silently skipped: at convergence the loop is
+  # about to exit, so a late-arriving human reply that we drop here is
+  # lost forever. The asymmetry vs. the idle path is intentional — idle
+  # keeps the loop alive (a future commit will trigger), convergence is
+  # terminal (one re-review pass to absorb late feedback before exit).
   if [[ "$EVENT" == "APPROVE" ]]; then
     POST_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
     POST_ISSUE_ID=$(latest_issue_comment_id)
     POST_REVIEW_ID=$(latest_review_comment_id)
     if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" \
           && "$POST_ISSUE_ID" == "$LATEST_ISSUE_ID" \
-          && "$POST_REVIEW_ID" == "$LATEST_REVIEW_ID" ]]; then
+          && "$POST_REVIEW_ID" == "$LATEST_REVIEW_ID" \
+          && ! -s "$RUN_DIR/inbox.md" ]]; then
       converge_and_exit
     fi
-    log "APPROVE produced but state moved during review (head_changed=$([[ "$POST_HEAD_SHA" != "$HEAD_SHA" ]] && echo y || echo n), issue_comments_changed=$([[ "$POST_ISSUE_ID" != "$LATEST_ISSUE_ID" ]] && echo y || echo n), review_comments_changed=$([[ "$POST_REVIEW_ID" != "$LATEST_REVIEW_ID" ]] && echo y || echo n)) — falling through"
+    log "APPROVE produced but state moved during review (head_changed=$([[ "$POST_HEAD_SHA" != "$HEAD_SHA" ]] && echo y || echo n), issue_comments_changed=$([[ "$POST_ISSUE_ID" != "$LATEST_ISSUE_ID" ]] && echo y || echo n), review_comments_changed=$([[ "$POST_REVIEW_ID" != "$LATEST_REVIEW_ID" ]] && echo y || echo n), inbox=$([[ -s "$RUN_DIR/inbox.md" ]] && echo y || echo n)) — falling through"
   fi
 
   sleep "$POLL_INTERVAL"
