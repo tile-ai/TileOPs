@@ -716,28 +716,30 @@ class UnaryOp(Op):
         """Read x + write y."""
         return self.N_total * (self.dtype.itemsize + self.output_dtype.itemsize)
 
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
         """Direct kernel call for use inside custom_op implementation."""
-        orig_shape = x.shape
-        x = x.contiguous().reshape(-1)
-        result = self.kernel(x).reshape(orig_shape)
+        orig_shape = input.shape
+        flat = input.contiguous().reshape(-1)
+        result = self.kernel(flat).reshape(orig_shape)
         # For e5m2: kernel produces fp16 to preserve Inf/NaN;
         # cast to e5m2 here using PyTorch's non-saturating conversion.
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.numel() != self.N_total:
+        if input.dtype != self.dtype:
             raise ValueError(
-                f"Expected {self.N_total} elements, got {x.numel()}"
+                f"Expected input.dtype {self.dtype}, got {input.dtype}"
+            )
+        if input.numel() != self.N_total:
+            raise ValueError(
+                f"Expected {self.N_total} elements, got {input.numel()}"
             )
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, self._instance_key)
-        return self._eager_forward(x)
+            return wrapped(input, self._instance_key)
+        return self._eager_forward(input)
 
 
 class BinaryOp(Op):
@@ -1284,10 +1286,47 @@ class CeilFwdOp(UnaryOp):
 
 
 class RoundFwdOp(UnaryOp):
-    """Element-wise round(x)."""
+    """Element-wise round(x).
+
+    Args:
+        N_total: Total number of elements (flattened).
+        dtype: Torch dtype.
+        decimals: Number of decimal places to round to. Only ``0`` is
+            currently supported by the kernel; non-zero values raise
+            ``NotImplementedError`` (kernel-layer follow-up tracked in the
+            manifest entry's ``status: spec-only`` comment).
+        strategy: Kernel strategy override.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune.
+    """
 
     _op_name = "round"
     kernel_cls = RoundFwdKernel
+
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        decimals: int = 0,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        if decimals != 0:
+            raise NotImplementedError(
+                f"RoundFwdOp currently only supports decimals=0, got {decimals}. "
+                f"Kernel-layer support for non-zero decimals is tracked as a "
+                f"follow-up; the manifest still declares the param to keep the "
+                f"signature contract aligned with torch.round."
+            )
+        self.decimals = decimals
+        super().__init__(
+            N_total=N_total,
+            dtype=dtype,
+            strategy=strategy,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
 
 
 class TruncFwdOp(UnaryOp):
