@@ -18,8 +18,10 @@ Filling in the template below:
   norms). Pure data movement → BW only. Don't list both.
 - Show throughput for TileOPs only; baseline's absolute throughput is
   noise once Speedup is given.
-- Drop the Shape column if the op only varies dtype. Never put autotune
-  config (`block_m`, `threads`) in the table — implementation detail.
+- Drop the Shape column if the op only varies dtype; in that case put
+  the fixed shape in the section header (e.g. `### {OpName} (4096, 4096)`)
+  so the benchmark's scale stays visible. Never put autotune config
+  (`block_m`, `threads`) in the table — implementation detail.
 - **Preserve the original shape tuple — never flatten to a single
   element count.** Write `(4096, 4096)` for a 2D input, `(2, 4096, 128)`
   for a 3D one, and `(4194304,)` (or `(4M,)`) for a genuinely 1D op.
