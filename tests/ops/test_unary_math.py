@@ -229,6 +229,48 @@ def test_math_ops_reject_non_float_dtype() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Integer-dtype identity short-circuit for floor / ceil / round / trunc.
+#
+# The manifest declares these ops over both integer and float dtypes; the
+# underlying kernels are float-only. ``torch.{floor,ceil,round,trunc}`` are
+# no-ops on integer tensors, so the op layer short-circuits and returns a
+# clone of the input unchanged.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls",
+    [FloorFwdOp, CeilFwdOp, RoundFwdOp, TruncFwdOp],
+)
+@pytest.mark.parametrize(
+    "int_dtype",
+    [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8],
+)
+def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
+    n_total = 1024
+    op = op_cls(N_total=n_total, dtype=int_dtype)
+    if int_dtype == torch.uint8:
+        x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
+    else:
+        x = torch.randint(-50, 50, (n_total,), device="cuda", dtype=int_dtype)
+    y = op.forward(x)
+    assert y.dtype == int_dtype
+    assert y.shape == x.shape
+    assert torch.equal(y, x)
+
+
+@pytest.mark.smoke
+def test_round_int_identity_with_decimals() -> None:
+    """RoundFwdOp's decimals!=0 path also short-circuits on integer inputs."""
+    n_total = 256
+    op = RoundFwdOp(N_total=n_total, dtype=torch.int32)
+    x = torch.randint(-100, 100, (n_total,), device="cuda", dtype=torch.int32)
+    y = op.forward(x, decimals=2)
+    assert torch.equal(y, x)
+
+
+# ---------------------------------------------------------------------------
 # L4 edge-case tests (fp32, 4K)
 # ---------------------------------------------------------------------------
 

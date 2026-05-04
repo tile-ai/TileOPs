@@ -1297,21 +1297,64 @@ class CosFwdOp(UnaryOp):
     kernel_cls = CosFwdKernel
 
 
-class FloorFwdOp(UnaryOp):
+class _IntIdentityUnaryOp(UnaryOp):
+    """Base for unary rounding ops with integer-dtype identity short-circuit.
+
+    The manifest declares floor / ceil / round / trunc over both integer and
+    floating-point dtypes, while the underlying ``*FwdKernel`` classes are
+    float-only (``FloatUnaryKernel``). For integer inputs, ``torch.floor /
+    ceil / round / trunc`` are no-ops — the value is already integral — so
+    we short-circuit at the op layer: skip kernel construction in
+    ``__init__`` and have ``_eager_forward`` return a clone of the input.
+    """
+
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        if not dtype.is_floating_point:
+            self.N_total = N_total
+            self.dtype = dtype
+            self.strategy = strategy
+            # Skip dispatch_kernel: the float-only kernel cannot be
+            # instantiated for an integer dtype. Expose a kernel_map shape
+            # consistent with the float path for any introspection that
+            # iterates it, but leave the kernel itself unconstructed.
+            self.kernel_map = kernel_map or self.default_kernel_map
+            self.kernel = None
+            self.output_dtype = dtype
+            self._instance_key = id(self)
+            _OP_REGISTRY[self._instance_key] = self
+            return
+        super().__init__(
+            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if self.kernel is None:
+            return input.clone()
+        return super()._eager_forward(input)
+
+
+class FloorFwdOp(_IntIdentityUnaryOp):
     """Element-wise floor(x)."""
 
     _op_name = "floor"
     kernel_cls = FloorFwdKernel
 
 
-class CeilFwdOp(UnaryOp):
+class CeilFwdOp(_IntIdentityUnaryOp):
     """Element-wise ceil(x)."""
 
     _op_name = "ceil"
     kernel_cls = CeilFwdKernel
 
 
-class RoundFwdOp(UnaryOp):
+class RoundFwdOp(_IntIdentityUnaryOp):
     """Element-wise round(x) to ``decimals`` decimal places.
 
     The underlying kernel performs banker's round-to-nearest-integer, matching
@@ -1340,6 +1383,10 @@ class RoundFwdOp(UnaryOp):
         # before any fp32 arithmetic so a CPU tensor / wrong dtype / wrong
         # numel cannot silently bypass the checks.
         self._validate_input(input)
+        # Integer dtypes are no-ops regardless of decimals (rounding an int
+        # produces the same int). Match the float-path identity contract.
+        if not self.dtype.is_floating_point:
+            return input.clone()
         # Run through fp32 so low-precision inputs (fp16/bf16) cannot overflow
         # when ``torch.round`` internally scales by ``10**decimals`` — e.g.
         # ``100 * 10**4 = 1e6`` exceeds fp16 max (~65504). The single down-cast
@@ -1349,7 +1396,7 @@ class RoundFwdOp(UnaryOp):
         return torch.round(input.float(), decimals=decimals).to(self.dtype)
 
 
-class TruncFwdOp(UnaryOp):
+class TruncFwdOp(_IntIdentityUnaryOp):
     """Element-wise trunc(x)."""
 
     _op_name = "trunc"
