@@ -9,31 +9,10 @@
 
 ## Tag convention
 
-| Tag                      | Meaning                                                                                                                |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `tileops`                | TileOPs implementation (required, exactly once per config). Variants like `tileops-lut` also count as TileOPs entries. |
-| `torch`                  | PyTorch reference                                                                                                      |
-| `FA3` / `fla` / `triton` | External baselines                                                                                                     |
-
-## Code skeleton
-
-```python
-# benchmarks/ops/bench_<op>.py
-
-class MyOpBenchmark(BenchmarkBase):
-    def calculate_flops(self): ...   # MUST return non-None
-    def calculate_memory(self): ...  # MUST return non-None
-
-def test_my_op_bench(...):
-    op = MyOp(...)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-    baseline_fn = _external_baseline(test)
-    if baseline_fn is not None:
-        BenchmarkReport.record(op, locals(), bm.profile(baseline_fn, *inputs), tag="FA3")
-    else:
-        BenchmarkReport.record(op, locals(), bm.profile(test.ref_program, *inputs), tag="torch")
-```
+| Tag                                | Meaning                                                                                             |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `tileops`                          | TileOPs implementation (required, exactly once per config). Variants like `tileops-lut` also count. |
+| `torch` / `FA3` / `fla` / `triton` | Baselines for comparison.                                                                           |
 
 ## PR body format
 
