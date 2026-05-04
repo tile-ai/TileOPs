@@ -1,16 +1,28 @@
 """Benchmarks for unary elementwise math ops in the elementwise_unary_math family.
 
 Profiles TileOPs vs PyTorch baselines for each op routed to this bench file by
-``tileops/manifest/elementwise_unary_math.yaml``. Coverage spans the
-``status: implemented`` ops in the family that point ``source.bench`` at this
-file: ``SigmoidFwdOp`` and ``TanhFwdOp`` are benched in
-``benchmarks/ops/bench_activation.py`` instead, and ``RoundFwdOp`` is currently
-``status: spec-only`` (kernel only supports ``decimals=0``; full
-``torch.round`` semantics tracked in #1170) so it is excluded here.
+``tileops/manifest/elementwise_unary_math.yaml``. Coverage spans the manifest-
+routed unary_math ops that point ``source.bench`` at this file, including
+several entries currently flagged ``status: spec-only`` because the
+implementation is reachable via the float code path even though the manifest
+declares additional dtypes the kernel does not yet support. Specifically:
+
+* ``AbsFwdOp``, ``NegFwdOp``, ``ReciprocalFwdOp``, ``SignFwdOp``,
+  ``FloorFwdOp``, ``CeilFwdOp``, ``TruncFwdOp``, ``IsnanFwdOp``,
+  ``IsinfFwdOp``, and ``IsfiniteFwdOp`` route through ``FloatUnaryKernel`` /
+  ``FloatPredicateKernel``. They are benched at float16/bfloat16/float32
+  inputs (the supported subset). The declared int/uint8 dtype gap is tracked
+  in #1171 and is the reason these ops are ``spec-only``; it does not affect
+  bench reachability.
+* ``SigmoidFwdOp`` and ``TanhFwdOp`` are benched in
+  ``benchmarks/ops/bench_activation.py`` instead.
+* ``RoundFwdOp`` is ``status: spec-only`` because the kernel only supports
+  ``decimals=0`` (full ``torch.round`` semantics tracked in #1170) and is
+  excluded here.
 
 Each op is parametrized at one representative bandwidth-bound shape and dtype
 to keep wall-clock cost bounded while still emitting numeric rows in
-``profile_run.log`` for every implemented op (AC-4 of issue #1162).
+``profile_run.log`` for every benched op (AC-4 of issue #1162).
 """
 
 from typing import Callable, Optional

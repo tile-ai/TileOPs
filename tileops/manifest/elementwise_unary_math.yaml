@@ -238,7 +238,11 @@ ReciprocalFwdOp:
 SignFwdOp:
   ref_api: "torch.sign"
   family: elementwise
-  status: implemented
+  # Manifest signature accepts integer/uint8 dtypes per torch.sign, but the
+  # current impl routes through FloatUnaryKernel (float-only). Trust model
+  # requires status: spec-only until the kernel covers the full dtype set.
+  # Follow-up: #1171
+  status: spec-only
 
   signature:
     inputs:
@@ -329,7 +333,11 @@ CosFwdOp:
 FloorFwdOp:
   ref_api: "torch.floor"
   family: elementwise
-  status: implemented
+  # Manifest signature accepts integer/uint8 dtypes per torch.floor, but the
+  # current impl routes through FloatUnaryKernel (float-only). Trust model
+  # requires status: spec-only until the kernel covers the full dtype set.
+  # Follow-up: #1171
+  status: spec-only
 
   signature:
     inputs:
@@ -359,7 +367,11 @@ FloorFwdOp:
 CeilFwdOp:
   ref_api: "torch.ceil"
   family: elementwise
-  status: implemented
+  # Manifest signature accepts integer/uint8 dtypes per torch.ceil, but the
+  # current impl routes through FloatUnaryKernel (float-only). Trust model
+  # requires status: spec-only until the kernel covers the full dtype set.
+  # Follow-up: #1171
+  status: spec-only
 
   signature:
     inputs:
@@ -421,7 +433,11 @@ RoundFwdOp:
 TruncFwdOp:
   ref_api: "torch.trunc"
   family: elementwise
-  status: implemented
+  # Manifest signature accepts integer/uint8 dtypes per torch.trunc, but the
+  # current impl routes through FloatUnaryKernel (float-only). Trust model
+  # requires status: spec-only until the kernel covers the full dtype set.
+  # Follow-up: #1171
+  status: spec-only
 
   signature:
     inputs:
@@ -666,7 +682,11 @@ BitwiseNotFwdOp:
 IsnanFwdOp:
   ref_api: "torch.isnan"
   family: elementwise
-  status: implemented
+  # Manifest signature accepts bool/integer/uint8 dtypes per torch.isnan, but
+  # the current impl routes through FloatPredicateKernel (float-only). Trust
+  # model requires status: spec-only until the kernel covers the full dtype
+  # set. Follow-up: #1171
+  status: spec-only
 
   signature:
     inputs:
@@ -697,7 +717,11 @@ IsnanFwdOp:
 IsinfFwdOp:
   ref_api: "torch.isinf"
   family: elementwise
-  status: implemented
+  # Manifest signature accepts bool/integer/uint8 dtypes per torch.isinf, but
+  # the current impl routes through FloatPredicateKernel (float-only). Trust
+  # model requires status: spec-only until the kernel covers the full dtype
+  # set. Follow-up: #1171
+  status: spec-only
 
   signature:
     inputs:
@@ -728,7 +752,11 @@ IsinfFwdOp:
 IsfiniteFwdOp:
   ref_api: "torch.isfinite"
   family: elementwise
-  status: implemented
+  # Manifest signature accepts bool/integer/uint8 dtypes per torch.isfinite,
+  # but the current impl routes through FloatPredicateKernel (float-only).
+  # Trust model requires status: spec-only until the kernel covers the full
+  # dtype set. Follow-up: #1171
+  status: spec-only
 
   signature:
     inputs:
