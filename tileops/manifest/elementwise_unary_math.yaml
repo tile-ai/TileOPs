@@ -211,7 +211,7 @@ ReciprocalFwdOp:
   # kept as same_as(input) for the floating cases. Integral-input promotion
   # is a known modeling gap tracked separately and does not change the
   # accepted-input contract documented here.
-  status: implemented
+  status: spec-only  # int-input promotion (int -> float32) cannot be expressed by same_as(input); op layer covers float dtypes only
 
   signature:
     inputs:
