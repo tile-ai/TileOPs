@@ -78,8 +78,9 @@ fi
 # Pure jq filter; oldest-first sort iterates rounds chronologically.
 #
 # Selection contract: when LATEST_ISSUE_ID and/or LATEST_REVIEW_ID are
-# provided, we MUST iterate ALL same-SHA APPROVE candidates and reuse the
-# one whose recorded watermarks BOTH match the current values. Breaking
+# provided, we MUST iterate ALL same-SHA APPROVE candidates and reuse
+# the one whose recorded watermarks match every supplied LATEST_*_ID
+# (per-dimension; unsupplied dimensions are unconstrained). Breaking
 # on the first SHA match would cause this failure mode:
 #
 #   round 5: APPROVE on sha=X, issue_wm=100, review_wm=50
