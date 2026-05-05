@@ -25,7 +25,16 @@ from tileops.kernels.elementwise import (
     ReluFwdKernel,
     _make_unary_explicit,
 )
-from tileops.ops.elementwise import ErfFwdOp, GeluFwdOp, MishFwdOp, ReluFwdOp
+from tileops.ops.elementwise import (
+    ErfFwdOp,
+    GeluFwdOp,
+    HardsigmoidFwdOp,
+    HardswishFwdOp,
+    MishFwdOp,
+    ReluFwdOp,
+    SeluFwdOp,
+    SiluFwdOp,
+)
 from workloads.activation import ReluTest
 from workloads.workload_base import FixtureBase
 
@@ -501,6 +510,43 @@ def test_relu_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ---------------------------------------------------------------------------
+# Throughput coverage for the param-free unary activations declared in
+# tileops/manifest/elementwise_unary_activation.yaml. Each op gets a single
+# fp16 case at the LLaMA hidden-dim shape so the bench file produces a
+# number for downstream perf tracking without inflating CI runtime.
+# ---------------------------------------------------------------------------
+
+
+_PARAM_FREE_ACTIVATION_OPS = [
+    pytest.param(SiluFwdOp, "silu", id="silu"),
+    pytest.param(HardswishFwdOp, "hardswish", id="hardswish"),
+    pytest.param(HardsigmoidFwdOp, "hardsigmoid", id="hardsigmoid"),
+    pytest.param(MishFwdOp, "mish", id="mish"),
+    pytest.param(SeluFwdOp, "selu", id="selu"),
+]
+
+
+@pytest.mark.parametrize("op_cls, op_label", _PARAM_FREE_ACTIVATION_OPS)
+@pytest.mark.parametrize("dtype", [torch.float16])
+def test_param_free_unary_bench(op_cls, op_label: str, dtype: torch.dtype) -> None:
+    """Throughput bench for param-free unary activations (manifest-aligned).
+
+    One representative shape × fp16 keeps each op covered for AC-5
+    ("each touched bench file produces numbers; no correctness
+    assertions") without expanding the matrix.
+    """
+    shape = _SHAPES_2D[1]  # (1024, 4096), LLaMA hidden dim
+    n_total = prod(shape)
+    test = UnaryBenchCase(shape, dtype)
+    bm = UnaryBenchmark(test)
+    inputs = test.gen_inputs()
+
+    op = op_cls(N_total=n_total, dtype=dtype)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
 
 if __name__ == "__main__":

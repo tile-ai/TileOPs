@@ -952,11 +952,44 @@ class FusedGatedOp(Op):
 # ---------------------------------------------------------------------------
 
 
-class ReluFwdOp(UnaryOp):
+class _InplaceMixin:
+    """Reject ``inplace=True`` for activation ops that don't support it.
+
+    The manifest declares ``inplace: bool = False`` on every PyTorch
+    activation, so we accept the kwarg to satisfy the L1 signature
+    contract; the underlying kernels write to a fresh output buffer, so
+    a non-default value is rejected rather than silently ignored.
+    """
+
+    @staticmethod
+    def _reject_inplace(inplace: bool, op_name: str) -> None:
+        if inplace:
+            raise NotImplementedError(
+                f"{op_name}: in-place execution is not supported; pass inplace=False"
+            )
+
+
+class ReluFwdOp(UnaryOp, _InplaceMixin):
     """ReLU activation: y = max(x, 0)."""
 
     _op_name = "relu"
     kernel_cls = ReluFwdKernel
+
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        *,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        inplace: bool = False,
+    ):
+        self._reject_inplace(inplace, self._op_name)
+        super().__init__(
+            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+        self.inplace = inplace
 
 
 class AddFwdOp(BinaryOp):
@@ -1476,17 +1509,69 @@ class Expm1FwdOp(UnaryOp):
 
 
 class GeluFwdOp(UnaryOp):
-    """Element-wise GELU using the standard erf formulation."""
+    """Element-wise GELU using the standard erf formulation.
+
+    Args:
+        N_total: Number of elements (flattened input).
+        dtype: Torch dtype.
+        approximate: Approximation mode, ``'none'`` (default) for the exact
+            erf-based formulation. Only ``'none'`` is currently implemented;
+            ``'tanh'`` is accepted by the manifest spec but not yet routed
+            to a kernel and will raise ``NotImplementedError``.
+        strategy: Optional kernel strategy override.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune the kernel.
+    """
 
     _op_name = "gelu"
     kernel_cls = GeluFwdKernel
 
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        *,
+        approximate: str = "none",
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        if approximate not in ("none", "tanh"):
+            raise ValueError(
+                f"GeluFwdOp: approximate must be 'none' or 'tanh', got {approximate!r}"
+            )
+        if approximate == "tanh":
+            raise NotImplementedError(
+                "GeluFwdOp: approximate='tanh' is declared by the manifest "
+                "but not yet routed to a kernel; only 'none' is supported."
+            )
+        super().__init__(
+            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+        self.approximate = approximate
 
-class SiluFwdOp(UnaryOp):
-    """Element-wise SiLU (Swish): x * sigmoid(x)."""
+
+class SiluFwdOp(UnaryOp, _InplaceMixin):
+    """Element-wise SiLU (Swish): y = x * sigmoid(x)."""
 
     _op_name = "silu"
     kernel_cls = SiluFwdKernel
+
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        *,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        inplace: bool = False,
+    ):
+        self._reject_inplace(inplace, self._op_name)
+        super().__init__(
+            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+        self.inplace = inplace
 
 
 class SigmoidFwdOp(UnaryOp):
@@ -1507,32 +1592,96 @@ class TanhFwdOp(UnaryOp):
     FLOPS_PER_ELEM = 5
 
 
-class HardswishFwdOp(UnaryOp):
-    """Element-wise HardSwish: x * clamp(x + 3, 0, 6) / 6."""
+class HardswishFwdOp(UnaryOp, _InplaceMixin):
+    """Element-wise HardSwish: y = x * clamp(x + 3, 0, 6) / 6."""
 
     _op_name = "hardswish"
     kernel_cls = HardswishFwdKernel
 
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        *,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        inplace: bool = False,
+    ):
+        self._reject_inplace(inplace, self._op_name)
+        super().__init__(
+            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+        self.inplace = inplace
 
-class HardsigmoidFwdOp(UnaryOp):
-    """Element-wise HardSigmoid: clamp(x + 3, 0, 6) / 6."""
+
+class HardsigmoidFwdOp(UnaryOp, _InplaceMixin):
+    """Element-wise HardSigmoid: y = clamp(x + 3, 0, 6) / 6."""
 
     _op_name = "hardsigmoid"
     kernel_cls = HardsigmoidFwdKernel
 
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        *,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        inplace: bool = False,
+    ):
+        self._reject_inplace(inplace, self._op_name)
+        super().__init__(
+            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+        self.inplace = inplace
 
-class MishFwdOp(UnaryOp):
-    """Element-wise Mish: x * tanh(softplus(x))."""
+
+class MishFwdOp(UnaryOp, _InplaceMixin):
+    """Element-wise Mish: y = x * tanh(softplus(x))."""
 
     _op_name = "mish"
     kernel_cls = MishFwdKernel
 
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        *,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        inplace: bool = False,
+    ):
+        self._reject_inplace(inplace, self._op_name)
+        super().__init__(
+            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+        self.inplace = inplace
 
-class SeluFwdOp(UnaryOp):
-    """Element-wise SELU."""
+
+class SeluFwdOp(UnaryOp, _InplaceMixin):
+    """Element-wise SELU activation."""
 
     _op_name = "selu"
     kernel_cls = SeluFwdKernel
+
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        *,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        inplace: bool = False,
+    ):
+        self._reject_inplace(inplace, self._op_name)
+        super().__init__(
+            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+        self.inplace = inplace
 
 
 # ---------------------------------------------------------------------------
@@ -1622,24 +1771,43 @@ class IsfiniteFwdOp(_IntIdentityUnaryOp):
 # ---------------------------------------------------------------------------
 
 
-class LeakyReluFwdOp(Op):
+class LeakyReluFwdOp(Op, _InplaceMixin):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x.
 
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype.
         negative_slope: Slope for negative inputs (default 0.01).
+        inplace: Manifest-declared kwarg; in-place execution is not
+            supported by the kernel and ``inplace=True`` raises
+            ``NotImplementedError``.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune the kernel.
     """
 
     _op_name = "leaky_relu"
     _wrapped = None
 
-    def __init__(self, N_total: int, dtype: torch.dtype, negative_slope: float = 0.01):
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        negative_slope: float = 0.01,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        inplace: bool = False,
+    ):
+        self._reject_inplace(inplace, self._op_name)
         _validate_scalar_param_repr("negative_slope", negative_slope, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
         self.negative_slope = negative_slope
-        self.kernel = LeakyReluFwdKernel(N_total, dtype, negative_slope=negative_slope)
+        self.inplace = inplace
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["leaky_relu"](
+            N_total, dtype, negative_slope=negative_slope, tune=tune,
+        )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -1647,42 +1815,58 @@ class LeakyReluFwdOp(Op):
     def default_kernel_map(self):
         return {"leaky_relu": LeakyReluFwdKernel}
 
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        orig_shape = x.shape
-        result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        orig_shape = input.shape
+        result = self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.numel() != self.N_total:
-            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
+        if input.dtype != self.dtype:
+            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        if input.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, self._instance_key)
-        return self._eager_forward(x)
+            return wrapped(input, self._instance_key)
+        return self._eager_forward(input)
 
 
-class EluFwdOp(Op):
+class EluFwdOp(Op, _InplaceMixin):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1).
 
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype.
         alpha: Scale for the negative part (default 1.0).
+        inplace: Manifest-declared kwarg; in-place execution is not
+            supported and ``inplace=True`` raises ``NotImplementedError``.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune the kernel.
     """
 
     _op_name = "elu"
     _wrapped = None
 
-    def __init__(self, N_total: int, dtype: torch.dtype, alpha: float = 1.0):
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        alpha: float = 1.0,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        inplace: bool = False,
+    ):
+        self._reject_inplace(inplace, self._op_name)
         _validate_scalar_param_repr("alpha", alpha, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
         self.alpha = alpha
-        self.kernel = EluFwdKernel(N_total, dtype, alpha=alpha)
+        self.inplace = inplace
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["elu"](N_total, dtype, alpha=alpha, tune=tune)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -1690,25 +1874,25 @@ class EluFwdOp(Op):
     def default_kernel_map(self):
         return {"elu": EluFwdKernel}
 
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        orig_shape = x.shape
-        result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        orig_shape = input.shape
+        result = self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.numel() != self.N_total:
-            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
+        if input.dtype != self.dtype:
+            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        if input.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, self._instance_key)
-        return self._eager_forward(x)
+            return wrapped(input, self._instance_key)
+        return self._eager_forward(input)
 
 
-class HardtanhFwdOp(Op):
+class HardtanhFwdOp(Op, _InplaceMixin):
     """Hardtanh: y = clamp(x, min_val, max_val).
 
     Args:
@@ -1716,20 +1900,38 @@ class HardtanhFwdOp(Op):
         dtype: Torch dtype.
         min_val: Lower bound (default -1.0).
         max_val: Upper bound (default 1.0).
+        inplace: Manifest-declared kwarg; in-place execution is not
+            supported and ``inplace=True`` raises ``NotImplementedError``.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune the kernel.
     """
 
     _op_name = "hardtanh"
     _wrapped = None
 
-    def __init__(self, N_total: int, dtype: torch.dtype,
-                 min_val: float = -1.0, max_val: float = 1.0):
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        min_val: float = -1.0,
+        max_val: float = 1.0,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        inplace: bool = False,
+    ):
+        self._reject_inplace(inplace, self._op_name)
         _validate_scalar_param_repr("min_val", min_val, dtype, self._op_name)
         _validate_scalar_param_repr("max_val", max_val, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
         self.min_val = min_val
         self.max_val = max_val
-        self.kernel = HardtanhFwdKernel(N_total, dtype, min_val=min_val, max_val=max_val)
+        self.inplace = inplace
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["hardtanh"](
+            N_total, dtype, min_val=min_val, max_val=max_val, tune=tune,
+        )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -1737,22 +1939,22 @@ class HardtanhFwdOp(Op):
     def default_kernel_map(self):
         return {"hardtanh": HardtanhFwdKernel}
 
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        orig_shape = x.shape
-        result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        orig_shape = input.shape
+        result = self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.numel() != self.N_total:
-            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
+        if input.dtype != self.dtype:
+            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        if input.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, self._instance_key)
-        return self._eager_forward(x)
+            return wrapped(input, self._instance_key)
+        return self._eager_forward(input)
 
 
 class SoftplusFwdOp(Op):
@@ -1763,20 +1965,33 @@ class SoftplusFwdOp(Op):
         dtype: Torch dtype.
         beta: Scaling factor (default 1.0).
         threshold: Linear regime threshold (default 20.0).
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune the kernel.
     """
 
     _op_name = "softplus"
     _wrapped = None
 
-    def __init__(self, N_total: int, dtype: torch.dtype,
-                 beta: float = 1.0, threshold: float = 20.0):
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        beta: float = 1.0,
+        threshold: float = 20.0,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
         _validate_scalar_param_repr("beta", beta, dtype, self._op_name)
         _validate_scalar_param_repr("threshold", threshold, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
         self.beta = beta
         self.threshold = threshold
-        self.kernel = SoftplusFwdKernel(N_total, dtype, beta=beta, threshold=threshold)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["softplus"](
+            N_total, dtype, beta=beta, threshold=threshold, tune=tune,
+        )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -1784,22 +1999,22 @@ class SoftplusFwdOp(Op):
     def default_kernel_map(self):
         return {"softplus": SoftplusFwdKernel}
 
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        orig_shape = x.shape
-        result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        orig_shape = input.shape
+        result = self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.numel() != self.N_total:
-            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
+        if input.dtype != self.dtype:
+            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        if input.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, self._instance_key)
-        return self._eager_forward(x)
+            return wrapped(input, self._instance_key)
+        return self._eager_forward(input)
 
 
 class PreluFwdOp(Op):
@@ -1988,6 +2203,9 @@ class ClampFwdOp(_ClampTensorBase):
         min: Optional[tuple] = None,  # noqa: A002 — manifest-aligned PyTorch param name
         max: Optional[tuple] = None,  # noqa: A002 — manifest-aligned PyTorch param name
         dtype: torch.dtype = torch.float32,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         if min is None and max is None:
             raise ValueError(
@@ -2005,10 +2223,12 @@ class ClampFwdOp(_ClampTensorBase):
             broadcast_args.append(self.max_shape)
         self.out_shape = tuple(torch.broadcast_shapes(*broadcast_args))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
-        self.kernel = ClampTensorFwdKernel(
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["clamp_tensor"](
             self.N_total, dtype,
             has_min=self.min_shape is not None,
             has_max=self.max_shape is not None,
+            tune=tune,
         )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -2091,14 +2311,18 @@ class ClampMinFwdOp(_ClampTensorBase):
         input: tuple,  # noqa: A002
         min: tuple,    # noqa: A002
         dtype: torch.dtype,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         self.input_shape = tuple(input)
         self.min_shape = tuple(min)
         self.dtype = dtype
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.min_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
-        self.kernel = ClampTensorFwdKernel(
-            self.N_total, dtype, has_min=True, has_max=False,
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["clamp_tensor"](
+            self.N_total, dtype, has_min=True, has_max=False, tune=tune,
         )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -2156,14 +2380,18 @@ class ClampMaxFwdOp(_ClampTensorBase):
         input: tuple,  # noqa: A002
         max: tuple,    # noqa: A002
         dtype: torch.dtype,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         self.input_shape = tuple(input)
         self.max_shape = tuple(max)
         self.dtype = dtype
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.max_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
-        self.kernel = ClampTensorFwdKernel(
-            self.N_total, dtype, has_min=False, has_max=True,
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["clamp_tensor"](
+            self.N_total, dtype, has_min=False, has_max=True, tune=tune,
         )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -2223,6 +2451,9 @@ class ClampScalarFwdOp(Op):
         min: Optional[float] = None,  # noqa: A002
         max: Optional[float] = None,  # noqa: A002
         dtype: torch.dtype = torch.float32,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         if min is None and max is None:
             raise ValueError(
@@ -2241,7 +2472,10 @@ class ClampScalarFwdOp(Op):
         # Backwards-compat aliases for legacy callers.
         self.min_val = min
         self.max_val = max
-        self.kernel = ClampFwdKernel(self.N_total, dtype, min_val=min, max_val=max)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["clamp"](
+            self.N_total, dtype, min_val=min, max_val=max, tune=tune,
+        )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -2444,32 +2678,79 @@ class MaskedFillScalarFwdOp(Op):
         return self._eager_forward(input, mask)
 
 
+_NAN_TO_NUM_SENTINEL = object()
+
+
 class NanToNumFwdOp(Op):
     """NanToNum: replace NaN, +Inf, -Inf with specified values.
 
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype.
-        nan_val: Replacement for NaN (default 0.0).
-        posinf_val: Replacement for +Inf (default 1e4).
-        neginf_val: Replacement for -Inf (default -1e4).
+        nan: Replacement for NaN (default 0.0). Manifest-aligned name.
+        posinf: Replacement for +Inf. Manifest default ``None`` maps to
+            the kernel sentinel (``1e4``); pass an explicit float to
+            override.
+        neginf: Replacement for -Inf. Manifest default ``None`` maps to
+            the kernel sentinel (``-1e4``); pass an explicit float to
+            override.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune the kernel.
+
+    Note:
+        ``nan_val`` / ``posinf_val`` / ``neginf_val`` remain accepted as
+        legacy aliases for ``nan`` / ``posinf`` / ``neginf`` to keep
+        existing call sites working during the manifest-alignment
+        migration.
     """
 
     _op_name = "nan_to_num"
     _wrapped = None
 
-    def __init__(self, N_total: int, dtype: torch.dtype,
-                 nan_val: float = 0.0, posinf_val: float = 1e4, neginf_val: float = -1e4):
-        _validate_scalar_param_repr("nan_val", nan_val, dtype, self._op_name)
-        _validate_scalar_param_repr("posinf_val", posinf_val, dtype, self._op_name)
-        _validate_scalar_param_repr("neginf_val", neginf_val, dtype, self._op_name)
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        nan: float = 0.0,
+        posinf: Optional[float] = None,
+        neginf: Optional[float] = None,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        # Legacy aliases kept for back-compat with existing tests / benches.
+        nan_val: object = _NAN_TO_NUM_SENTINEL,
+        posinf_val: object = _NAN_TO_NUM_SENTINEL,
+        neginf_val: object = _NAN_TO_NUM_SENTINEL,
+    ):
+        if nan_val is not _NAN_TO_NUM_SENTINEL:
+            nan = nan_val  # type: ignore[assignment]
+        if posinf_val is not _NAN_TO_NUM_SENTINEL:
+            posinf = posinf_val  # type: ignore[assignment]
+        if neginf_val is not _NAN_TO_NUM_SENTINEL:
+            neginf = neginf_val  # type: ignore[assignment]
+        # Default-None mapping mirrors torch.nan_to_num: when posinf /
+        # neginf are not supplied, fall back to the kernel's stable
+        # finite sentinels so this constructor is a drop-in for the
+        # legacy positional / keyword call sites.
+        kernel_posinf = 1e4 if posinf is None else posinf
+        kernel_neginf = -1e4 if neginf is None else neginf
+        _validate_scalar_param_repr("nan_val", nan, dtype, self._op_name)
+        _validate_scalar_param_repr("posinf_val", kernel_posinf, dtype, self._op_name)
+        _validate_scalar_param_repr("neginf_val", kernel_neginf, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
-        self.nan_val = nan_val
-        self.posinf_val = posinf_val
-        self.neginf_val = neginf_val
-        self.kernel = NanToNumFwdKernel(
-            N_total, dtype, nan_val=nan_val, posinf_val=posinf_val, neginf_val=neginf_val,
+        self.nan = nan
+        self.posinf = posinf
+        self.neginf = neginf
+        # Legacy attribute aliases retained so callers reading the
+        # original names keep working.
+        self.nan_val = nan
+        self.posinf_val = kernel_posinf
+        self.neginf_val = kernel_neginf
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["nan_to_num"](
+            N_total, dtype, nan_val=nan, posinf_val=kernel_posinf,
+            neginf_val=kernel_neginf, tune=tune,
         )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -2478,22 +2759,22 @@ class NanToNumFwdOp(Op):
     def default_kernel_map(self):
         return {"nan_to_num": NanToNumFwdKernel}
 
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        orig_shape = x.shape
-        result = self.kernel(x.contiguous().reshape(-1)).reshape(orig_shape)
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        orig_shape = input.shape
+        result = self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.numel() != self.N_total:
-            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
+        if input.dtype != self.dtype:
+            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        if input.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, self._instance_key)
-        return self._eager_forward(x)
+            return wrapped(input, self._instance_key)
+        return self._eager_forward(input)
 
 
 class AlibiFwdOp(Op):
