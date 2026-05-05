@@ -521,22 +521,31 @@ def test_relu_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
 
 
 _PARAM_FREE_ACTIVATION_OPS = [
-    pytest.param(SiluFwdOp, "silu", id="silu"),
-    pytest.param(HardswishFwdOp, "hardswish", id="hardswish"),
-    pytest.param(HardsigmoidFwdOp, "hardsigmoid", id="hardsigmoid"),
-    pytest.param(MishFwdOp, "mish", id="mish"),
-    pytest.param(SeluFwdOp, "selu", id="selu"),
+    pytest.param(SiluFwdOp, "silu", torch.nn.functional.silu, id="silu"),
+    pytest.param(
+        HardswishFwdOp, "hardswish", torch.nn.functional.hardswish, id="hardswish",
+    ),
+    pytest.param(
+        HardsigmoidFwdOp, "hardsigmoid", torch.nn.functional.hardsigmoid,
+        id="hardsigmoid",
+    ),
+    pytest.param(MishFwdOp, "mish", torch.nn.functional.mish, id="mish"),
+    pytest.param(SeluFwdOp, "selu", torch.nn.functional.selu, id="selu"),
 ]
 
 
-@pytest.mark.parametrize("op_cls, op_label", _PARAM_FREE_ACTIVATION_OPS)
+@pytest.mark.parametrize("op_cls, op_label, torch_ref", _PARAM_FREE_ACTIVATION_OPS)
 @pytest.mark.parametrize("dtype", [torch.float16])
-def test_param_free_unary_bench(op_cls, op_label: str, dtype: torch.dtype) -> None:
+def test_param_free_unary_bench(
+    op_cls, op_label: str, torch_ref, dtype: torch.dtype,
+) -> None:
     """Throughput bench for param-free unary activations (manifest-aligned).
 
     One representative shape × fp16 keeps each op covered for AC-5
     ("each touched bench file produces numbers; no correctness
-    assertions") without expanding the matrix.
+    assertions") without expanding the matrix. Records both the TileOps
+    op and the matching ``torch.nn.functional`` reference so each row
+    has an external baseline per the benchmark contract.
     """
     shape = _SHAPES_2D[1]  # (1024, 4096), LLaMA hidden dim
     n_total = prod(shape)
@@ -547,6 +556,12 @@ def test_param_free_unary_bench(op_cls, op_label: str, dtype: torch.dtype) -> No
     op = op_cls(N_total=n_total, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x):
+        return torch_ref(x)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

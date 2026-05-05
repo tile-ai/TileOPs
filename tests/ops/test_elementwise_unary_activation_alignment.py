@@ -171,6 +171,14 @@ def test_gelu_approximate_modes_accepted() -> None:
     with pytest.raises(ValueError, match="approximate"):
         mod.GeluFwdOp(N_total=8, dtype=torch.float16, approximate="invalid")
 
+    # The manifest-allowed ``'tanh'`` value must be accepted by the
+    # constructor rather than rejected. The tanh path skips kernel
+    # construction (no CUDA build) and routes through a torch fallback in
+    # ``_eager_forward``, so this assertion is safe on CPU-only hosts.
+    op_tanh = mod.GeluFwdOp(N_total=8, dtype=torch.float16, approximate="tanh")
+    assert op_tanh.approximate == "tanh"
+    assert op_tanh.kernel is None
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

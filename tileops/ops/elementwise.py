@@ -1509,15 +1509,16 @@ class Expm1FwdOp(UnaryOp):
 
 
 class GeluFwdOp(UnaryOp):
-    """Element-wise GELU using the standard erf formulation.
+    """Element-wise GELU honoring the manifest ``approximate`` contract.
 
     Args:
         N_total: Number of elements (flattened input).
         dtype: Torch dtype.
-        approximate: Approximation mode, ``'none'`` (default) for the exact
-            erf-based formulation. Only ``'none'`` is currently implemented;
-            ``'tanh'`` is accepted by the manifest spec but not yet routed
-            to a kernel and will raise ``NotImplementedError``.
+        approximate: Approximation mode. ``'none'`` (default) routes to the
+            erf-based ``GeluFwdKernel``; ``'tanh'`` routes through a torch
+            reference path (``torch.nn.functional.gelu(..., approximate='tanh')``)
+            because no fused tanh-GELU kernel is exposed for the unary op
+            yet. Both values are honored end-to-end.
         strategy: Optional kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
@@ -1540,15 +1541,33 @@ class GeluFwdOp(UnaryOp):
             raise ValueError(
                 f"GeluFwdOp: approximate must be 'none' or 'tanh', got {approximate!r}"
             )
+        self.approximate = approximate
         if approximate == "tanh":
-            raise NotImplementedError(
-                "GeluFwdOp: approximate='tanh' is declared by the manifest "
-                "but not yet routed to a kernel; only 'none' is supported."
-            )
+            # No fused tanh-GELU unary kernel is exposed to the op layer
+            # yet; honor the manifest contract by routing through torch
+            # so callers passing the manifest-allowed value still get a
+            # correct result rather than an error.
+            self.N_total = N_total
+            self.dtype = dtype
+            self.strategy = strategy
+            self.kernel_map = kernel_map or self.default_kernel_map
+            self.kernel = None
+            self.output_dtype = dtype
+            self._instance_key = id(self)
+            _OP_REGISTRY[self._instance_key] = self
+            return
         super().__init__(
             N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
         )
-        self.approximate = approximate
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if self.kernel is None:
+            # approximate='tanh' fallback path — see __init__.
+            orig_shape = input.shape
+            flat = input.contiguous().reshape(-1)
+            out = torch.nn.functional.gelu(flat, approximate="tanh")
+            return out.reshape(orig_shape)
+        return super()._eager_forward(input)
 
 
 class SiluFwdOp(UnaryOp, _InplaceMixin):
