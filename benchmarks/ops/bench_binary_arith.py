@@ -26,10 +26,13 @@ from workloads.workload_base import FixtureBase
 # LLM-realistic shapes (LLaMA-family defaults)
 # ---------------------------------------------------------------------------
 
-_SIZES = {
-    "4K": 4096,
-    "1M": 1_048_576,        # 1024 * 1024
-    "16M": 16_777_216,      # 1024 * 16384
+# Per-strategy/broadcast matrix sizes. Each label maps to a 2D shape that
+# both the same-shape and broadcast patterns can derive from. The third
+# entry is non-pow2 in the hidden dim to exercise tail handling.
+_SHAPE_BY_LABEL: dict[str, tuple[int, int]] = {
+    "4K": (1, 4096),
+    "1M": (1024, 1024),
+    "11M": (1024, 11008),
 }
 
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
@@ -52,14 +55,12 @@ def _make_interleaved_3d(n: int) -> tuple[tuple, tuple]:
     return (a_dim, 1, c_dim), (1, b_dim, 1)
 
 
-# Broadcast patterns for binary ops
+# Broadcast patterns for binary ops. Each pattern derives a (a_shape,
+# b_shape) pair from a 2D output shape (M, N), preserving model geometry.
 _BROADCAST_PATTERNS = {
-    "same_shape": lambda n: ((n,), (n,)),
-    "bias_add_2d": lambda n: (
-        (1024, n // 1024) if n >= 1024 else (1, n),
-        (1, n // 1024) if n >= 1024 else (1, n),
-    ),
-    "interleaved_3d": lambda n: _make_interleaved_3d(n),
+    "same_shape": lambda mn: (mn, mn),
+    "bias_add_2d": lambda mn: (mn, (1, mn[1])),
+    "interleaved_3d": lambda mn: _make_interleaved_3d(mn[0] * mn[1]),
 }
 
 
@@ -117,14 +118,15 @@ class BinaryBenchmark(BenchmarkBase[BinaryWorkload]):
 class WhereBenchCase:
     """Test harness for where op benchmarks."""
 
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
+    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
+        self.shape = shape
+        self.n_total = prod(shape)
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        cond = torch.randint(0, 2, (self.n_total,), device="cuda", dtype=torch.bool)
-        x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
-        y = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
+        cond = torch.randint(0, 2, self.shape, device="cuda", dtype=torch.bool)
+        x = torch.randn(*self.shape, device="cuda", dtype=self.dtype)
+        y = torch.randn(*self.shape, device="cuda", dtype=self.dtype)
         return cond, x, y
 
 
@@ -187,7 +189,7 @@ def test_r1_vectorization(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r1_vectorization",
-        {"pattern_name": pattern_name, "n_total": test.n_total},
+        {"pattern_name": pattern_name, "a_shape": a_shape, "b_shape": b_shape},
         result,
         tag=f"add_{pattern_name}",
     )
@@ -201,7 +203,7 @@ def test_r1_vectorization(
     result_bl = bm.profile(baseline_fn, a, b)
     BenchmarkReport.record(
         "r1_vectorization",
-        {"pattern_name": pattern_name, "n_total": test.n_total},
+        {"pattern_name": pattern_name, "a_shape": a_shape, "b_shape": b_shape},
         result_bl,
         tag=f"torch-{pattern_name}",
     )
@@ -240,7 +242,7 @@ def test_r2_small_tensor_binary(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r2_small_tensor_binary",
-        {"pattern_name": pattern_name, "n_total": test.n_total},
+        {"pattern_name": pattern_name, "a_shape": a_shape, "b_shape": b_shape},
         result,
         tag=f"add_{pattern_name}",
     )
@@ -253,7 +255,7 @@ def test_r2_small_tensor_binary(
     result_bl = bm.profile(baseline_fn, a, b)
     BenchmarkReport.record(
         "r2_small_tensor_binary",
-        {"pattern_name": pattern_name, "n_total": test.n_total},
+        {"pattern_name": pattern_name, "a_shape": a_shape, "b_shape": b_shape},
         result_bl,
         tag=f"torch-{pattern_name}",
     )
@@ -265,11 +267,11 @@ def test_r2_small_tensor_binary(
 
 
 _R4_BINARY_PARAMS = []
-for size_label, n in _SIZES.items():
+for size_label, _shape_2d in _SHAPE_BY_LABEL.items():
     for dt in _DTYPES:
         for strategy in _BINARY_STRATEGIES:
             for pat_name, pat_fn in _BROADCAST_PATTERNS.items():
-                a_shape, b_shape = pat_fn(n)
+                a_shape, b_shape = pat_fn(_shape_2d)
                 mark = pytest.mark.smoke if (
                     size_label == "1M" and dt == torch.float16
                     and strategy == "explicit_parallel"
@@ -318,8 +320,10 @@ def test_r4_default_strategy_binary(
         {
             "size_label": size_label,
             "pattern_name": pattern_name,
+            "a_shape": a_shape,
+            "b_shape": b_shape,
+            "dtype": dtype,
             "strategy": strategy,
-            "n_total": test.n_total,
         },
         result,
         tag=f"add_{strategy}_{pattern_name}",
@@ -332,10 +336,10 @@ def test_r4_default_strategy_binary(
 
 
 _R4_WHERE_PARAMS = []
-for size_label, n in _SIZES.items():
+for size_label, _shape_2d in _SHAPE_BY_LABEL.items():
     _R4_WHERE_PARAMS.append(
         pytest.param(
-            n, size_label, torch.float16,
+            _shape_2d, size_label, torch.float16,
             id=f"where-{size_label}-fp16",
             marks=pytest.mark.full,
         )
@@ -344,26 +348,26 @@ for size_label, n in _SIZES.items():
 
 class R4WhereFixture(FixtureBase):
     PARAMS = [
-        ("n_total, size_label, dtype", _R4_WHERE_PARAMS),
+        ("shape, size_label, dtype", _R4_WHERE_PARAMS),
     ]
 
 
 @R4WhereFixture
 def test_r4_where_bench(
-    n_total: int,
+    shape: tuple[int, ...],
     size_label: str,
     dtype: torch.dtype,
 ) -> None:
     """R4: Benchmark where op across sizes."""
-    test = WhereBenchCase(n_total, dtype)
+    test = WhereBenchCase(shape, dtype)
     bm = WhereBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
+    op = WhereFwdOp(condition=shape, input=shape, other=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_where",
-        {"n_total": n_total, "size_label": size_label},
+        {"shape": shape, "size_label": size_label, "dtype": dtype},
         result,
         tag="tileops-where",
     )
@@ -376,7 +380,7 @@ def test_r4_where_bench(
     result_bl = bm.profile(baseline_fn, cond, x, y)
     BenchmarkReport.record(
         "r4_where",
-        {"n_total": n_total, "size_label": size_label},
+        {"shape": shape, "size_label": size_label, "dtype": dtype},
         result_bl,
         tag="torch",
     )
@@ -388,19 +392,22 @@ def test_r4_where_bench(
 
 
 _ADD_BENCH_PARAMS = [
-    pytest.param(prod((1024, 4096)), torch.float16, id="throughput-fp16"),
-    pytest.param(prod((1024, 4096)), torch.bfloat16, id="throughput-bf16"),
-    pytest.param(prod((1024, 4096)), torch.float32, id="baseline-fp32"),
+    pytest.param((1024, 4096), torch.float16, id="throughput-fp16"),
+    pytest.param((1024, 4096), torch.bfloat16, id="throughput-bf16"),
+    pytest.param((1024, 4096), torch.float32, id="baseline-fp32"),
 ]
 
 
-@pytest.mark.parametrize("n_total, dtype", _ADD_BENCH_PARAMS)
-def test_add_bench(n_total: int, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize("shape, dtype", _ADD_BENCH_PARAMS)
+def test_add_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
+    n_total = prod(shape)
+    # ``AddSameShapeTest`` (workloads) accepts a flat element count; the
+    # bench harness still records the original shape tuple via
+    # ``record(...)`` so the report carries the input geometry verbatim.
     test = AddSameShapeTest(n_total, dtype)
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    shape = (n_total,)
     op = AddFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
