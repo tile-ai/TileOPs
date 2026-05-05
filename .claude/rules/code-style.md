@@ -35,6 +35,8 @@
 
 - **No development-process metadata in shipped source.** Code and docstrings must not reference issue/PR numbers, AC labels (e.g. `AC-4`), round numbers, reviewer names, or `Follow-up: #N` pointers — that context belongs in the commit message, PR description, and the follow-up issue itself.
 
+  Heuristic scan (discovery tool — flags candidates for review; pre-existing matches under TileLang migration tracking and AC-labelled test docstrings are tracked separately, but new code must not add to the matches): `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up:[[:space:]]*#' tileops/ tests/ benchmarks/ scripts/`
+
 - **Manifest YAML comment policy.** Manifest YAML may carry **technical narratives** that explain schema choices the manifest DSL cannot express structurally — PyTorch overload / API quirk notes, manifest-DSL limitation notes (`NOTE:` blocks), `variant_of` split rationale, broadcasting / `shape_rules` / `dtype` edge cases, and FLOP / byte-counting conventions. These belong inside the relevant op entry where the next reader needs them, and may use either `# ...` or `# NOTE: ...` form. File-level header comments documenting family, file purpose, or schema reference are permitted as-is.
 
   Manifest YAML must **not** carry development-process metadata at any nesting level: drift narratives ("impl currently does X instead of Y"), follow-up promises ("fix in follow-up PR", "address in #NNNN"), status explanations beyond the bare `status` field, issue / PR numbers, AC labels, round numbers, or reviewer names. Process metadata belongs in commit messages, PR descriptions, or follow-up issues — never in the spec file.

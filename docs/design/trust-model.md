@@ -10,11 +10,11 @@ Manifest → Test → Implementation → Benchmark
 
 Each stage declares its trust contract using a fixed heading taxonomy:
 
-- **OWNS** — write authority: data and files this stage authors. Required on every stage.
-- **MUST NOT WRITE** — write restrictions: state this stage must not mutate, to prevent corrupting another stage's invariants. Required on every stage.
-- **MUST NOT** — non-write coupling restriction: a cross-stage linkage rule that is not about writes (e.g. forbidden imports that would create a shared oracle surface). Optional — appears only on stages that have such a rule (currently only Benchmark).
+- **OWNS** — write authority: the artifacts (data, files, content categories) this stage is responsible for authoring. Required on every stage.
+- **MUST NOT WRITE** — write restrictions: artifact or content categories this stage must not author, to prevent corrupting another stage's invariants. Required on every stage. Items here name content scope, not raw filesystem mutation — e.g. "the manifest stage must not author kernel internals" applies whether the proposed prose lives in a manifest file, a docstring, or anywhere else this stage might write.
+- **MUST NOT** — structural coupling restriction: a cross-stage linkage rule that is not about writes — typically a forbidden import that would collapse independent verification surfaces (e.g. benchmark importing tests' oracle/ref code). Optional — appears only on stages that have such a rule (currently only Benchmark).
 
-Reads are not part of the trust model: any stage may read any file when its job calls for it. A `MUST NOT` heading therefore never restricts reading; it forbids structural coupling on a separate axis from writes. Per-stage rules live in each [domain rule file](../../.claude/domain-rules/).
+Mere reading is not policed by the trust model: any stage may read any file when its job calls for it. The `MUST NOT` heading does not forbid reading per se; it forbids specific structural couplings — typically import-level dependencies — that would defeat the purpose of having independent stages. Per-stage rules live in each [domain rule file](../../.claude/domain-rules/).
 
 ## Manifest
 
