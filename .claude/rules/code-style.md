@@ -37,11 +37,6 @@
 
   Heuristic scan (discovery tool — flags candidates for review; pre-existing matches under TileLang migration tracking and AC-labelled test docstrings are tracked separately, but new code must not add to the matches): `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up:[[:space:]]*#' tileops/ tests/ benchmarks/ scripts/`
 
-- **Manifest YAML comment policy.** Manifest YAML may carry **technical narratives** that explain schema choices the manifest DSL cannot express structurally — PyTorch overload / API quirk notes, manifest-DSL limitation notes (`NOTE:` blocks), `variant_of` split rationale, broadcasting / `shape_rules` / `dtype` edge cases, and FLOP / byte-counting conventions. These belong inside the relevant op entry where the next reader needs them, and may use either `# ...` or `# NOTE: ...` form. File-level header comments documenting family, file purpose, or schema reference are permitted as-is.
+- **Manifest YAML comment policy.** Manifest YAML carries technical content the DSL cannot express structurally (schema clarifications, edge cases, conventions, file-level headers). It does **not** carry development-process metadata — anything bound to a specific issue, PR, commit, or development round. Test: would this comment still be meaningful if every issue / PR had different numbers and every milestone was renamed? Yes → keep. No → move to commit message, PR description, or follow-up issue.
 
-  Manifest YAML must **not** carry development-process metadata at any nesting level: drift narratives ("impl currently does X instead of Y"), follow-up promises ("fix in follow-up PR", "address in #NNNN"), status explanations beyond the bare `status` field, issue / PR numbers, AC labels, round numbers, or reviewer names. Process metadata belongs in commit messages, PR descriptions, or follow-up issues — never in the spec file.
-
-  Heuristic scans (each must return zero matches):
-
-  - `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up' tileops/manifest/*.yaml`
-  - `grep -rniE '#.*(drift|fix in follow|follow-?up|spec-only because|to be addressed|will be fixed)' tileops/manifest/*.yaml`
+  Discovery scan (flags candidates, not a hard gate): `grep -rnE '#[0-9]{3,}|[Ff]ollow.?up|AC-[0-9]+' tileops/manifest/*.yaml`

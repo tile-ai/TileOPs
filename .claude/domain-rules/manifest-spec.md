@@ -44,21 +44,4 @@ ______________________________________________________________________
 
 - Never modify manifest to match non-conforming code. If code doesn't match spec: set `status: spec-only` and fix implementation in a follow-up PR. Never remove params, vars, or shape_rules to silence validator errors.
 
-- **Manifest comment policy.** Manifest YAML may carry **technical narratives** that explain schema choices the DSL cannot express structurally:
-
-  - PyTorch overload / API quirk notes (e.g. why `torch.prod` rejects `dim=None` at runtime)
-  - manifest-DSL limitation notes (`NOTE:` blocks)
-  - `variant_of` split rationale (e.g. why `clamp` splits into multiple entries under "no `Optional[Tensor]`")
-  - `shape_rules` / broadcasting / `dtype` edge cases
-  - FLOP / byte-counting conventions inside `roofline`
-
-  These belong inside the relevant op entry where the next reader needs them. File-level header comments documenting family, file purpose, or schema reference are permitted.
-
-  Manifest YAML must **not** carry development-process metadata at any nesting level:
-
-  - drift narratives ("impl currently does X instead of Y")
-  - follow-up promises ("fix in follow-up PR", "address in #NNNN")
-  - status explanations beyond the bare `status` field
-  - issue / PR numbers, AC labels, round numbers, reviewer names
-
-  Process context belongs in commit messages, PR descriptions, or follow-up issues — never in the spec file. Heuristic scans (each must return zero matches): `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up' tileops/manifest/*.yaml` and `grep -rniE '#.*(drift|fix in follow|follow-?up|spec-only because|to be addressed|will be fixed)' tileops/manifest/*.yaml`.
+- **Manifest comment policy.** See [code-style.md §Manifest YAML comment policy](../rules/code-style.md). Summary: technical content the DSL cannot express structurally is permitted; project-management metadata (issue/PR numbers, follow-up promises, drift narratives) is not.
