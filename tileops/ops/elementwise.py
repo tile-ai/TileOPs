@@ -2763,20 +2763,25 @@ class NanToNumFwdOp(Op):
             posinf = posinf_val  # type: ignore[assignment]
         if neginf_val is not _NAN_TO_NUM_SENTINEL:
             neginf = neginf_val  # type: ignore[assignment]
-        # User-supplied scalars must be representable in the effective
-        # kernel dtype. ``None`` is the manifest default and resolves to
-        # +/-inf below so that the kernel's _clamp_to_dtype_range maps
-        # them to the dtype's finite max / min — that path keeps
-        # narrow-range dtypes (e.g. float8_e4m3fn whose max is 448) from
-        # rejecting their own defaults before the kernel can clamp them.
+        # User-supplied scalars must be representable in the user-facing
+        # dtype, so they go through the standard validation path below.
+        # The manifest default ``None`` resolves to the *final*
+        # user-facing dtype's max / min, not ``+/-inf``: the kernel runs
+        # in ``output_dtype`` (fp16 for e5m2 to preserve Inf/NaN) and
+        # _clamp_to_dtype_range targets that intermediate, so forwarding
+        # ``+inf`` would resolve to fp16's 65504.0 and then surface as
+        # ``+Inf`` after the e5m2 post-cast (e5m2 max is 57344.0).
+        # Picking ``torch.finfo(dtype).max`` here keeps the replacement
+        # value finite end-to-end and matches ``torch.nan_to_num``
+        # semantics (replace Inf with the dtype's max finite value).
         _validate_scalar_param_repr("nan", nan, dtype, self._op_name)
         if posinf is None:
-            kernel_posinf = math.inf
+            kernel_posinf = torch.finfo(dtype).max
         else:
             _validate_scalar_param_repr("posinf", posinf, dtype, self._op_name)
             kernel_posinf = posinf
         if neginf is None:
-            kernel_neginf = -math.inf
+            kernel_neginf = torch.finfo(dtype).min
         else:
             _validate_scalar_param_repr("neginf", neginf, dtype, self._op_name)
             kernel_neginf = neginf
