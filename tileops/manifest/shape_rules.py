@@ -21,146 +21,102 @@ inline-string rules. The helpers themselves are exposed to that context
 via :data:`HELPERS`. Inline-string rules continue to work unchanged so
 ops can migrate one at a time.
 
-Each helper accepts the primitive forms its caller has on hand
-(``tensor`` objects with a ``.ndim`` attribute, plus the raw ``dim``
-value). The helpers never raise: an out-of-range or malformed ``dim`` is
-reported as ``False`` so the validator's normal failure path surfaces it
-as a shape-rule violation.
+Helper semantics intentionally mirror the inline reduction expressions
+that previously lived in the manifest, so a malformed ``dim`` (e.g. a
+list whose elements are not ints) propagates the same ``TypeError`` the
+inline expression would have raised. The validator already classifies
+such eval errors as warnings (the rule is treated as un-evaluatable
+under mock inputs and the parity check is skipped), so behavioural
+parity with the pre-migration manifest is preserved end-to-end.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any
 
 
-def _ndim_of(x: Any) -> int | None:
-    """Return ``x.ndim`` if available, else ``None``.
-
-    The validator's mock shape context exposes ``ndim`` on tensor stand-ins,
-    matching torch's tensor surface. Returning ``None`` for malformed
-    inputs lets callers surface the issue as a rule failure rather than a
-    Python exception that would be classified as an eval skip.
-    """
-    try:
-        ndim = int(x.ndim)
-    except (AttributeError, TypeError, ValueError):
-        return None
-    return ndim
-
-
-def _iter_dims(dim: Any) -> tuple[int, ...] | None:
-    """Coerce ``dim`` to a tuple of ints.
-
-    Returns:
-        - ``None`` when ``dim is None`` (caller decides how to interpret).
-        - A single-element tuple when ``dim`` is an int.
-        - A tuple of ints for list / tuple inputs whose every element is
-          an int.
-        - ``None`` for any other shape, signalling a malformed value.
-    """
-    if dim is None:
-        return None
-    if isinstance(dim, bool):  # bool is a subclass of int; reject explicitly
-        return None
-    if isinstance(dim, int):
-        return (dim,)
-    if isinstance(dim, Sequence):
-        out: list[int] = []
-        for d in dim:
-            if isinstance(d, bool) or not isinstance(d, int):
-                return None
-            out.append(d)
-        return tuple(out)
-    return None
-
-
 def dim_range_validity(x: Any, dim: Any) -> bool:
-    """Return True iff ``dim`` lies within ``[-x.ndim, x.ndim)``.
+    """Return True iff every requested axis lies within ``[-x.ndim, x.ndim)``.
 
-    Implements the reduction-family contract: ``dim is None`` is always
-    valid (callers fall back to a default axis); a single int must satisfy
-    ``-x.ndim <= dim < x.ndim``; a sequence must have every element
-    satisfy the same bound. An empty sequence is treated as valid by this
-    predicate (use :func:`dim_uniqueness` to enforce non-emptiness when
-    the op requires it; PyTorch's reduction semantics for an empty ``dim``
-    list reduce over all axes).
+    Mirrors the inline reduction-dim expression
+    ``dim is None or all(-x.ndim <= d < x.ndim for d in
+    ([dim] if isinstance(dim, int) else dim))`` exactly. ``dim is None``
+    short-circuits to True (callers fall back to "all axes"); a single
+    int wraps into a one-element list before the bounds check; any other
+    value is iterated directly. Non-iterable values, or sequences whose
+    elements cannot be compared to ``int``, propagate the same exception
+    the inline form would raise — the validator classifies that as an
+    eval error and surfaces it as a warning (parity check skipped).
 
     Args:
         x: A tensor-like object exposing ``.ndim``.
-        dim: An int, ``None``, or a sequence of ints.
+        dim: An int, ``None``, or an iterable of ints.
 
     Returns:
-        True when every requested axis is in range. False on any
-        out-of-range index, on a malformed ``dim`` value, or when
-        ``x.ndim`` cannot be read.
+        True when every requested axis is in range, False otherwise.
+
+    Raises:
+        TypeError: For malformed ``dim`` values (e.g. a list whose
+            elements are strings); the validator handles this as a
+            warning, matching the pre-migration inline behaviour.
     """
-    ndim = _ndim_of(x)
-    if ndim is None:
-        return False
     if dim is None:
         return True
-    dims = _iter_dims(dim)
-    if dims is None:
-        return False
-    return all(-ndim <= d < ndim for d in dims)
+    iterable = [dim] if isinstance(dim, int) else dim
+    return all(-x.ndim <= d < x.ndim for d in iterable)
 
 
 def dim_uniqueness(x: Any, dim: Any) -> bool:
     """Return True iff the normalized indices in ``dim`` are unique.
 
-    For sequence-valued ``dim``, every entry is normalized via ``d %
-    x.ndim`` and the resulting set must have the same length as the
-    original sequence (no duplicates after sign normalization). A single
-    int and ``None`` always pass (one axis, or "all axes" — neither can
-    duplicate).
-
-    The predicate is independent of :func:`dim_range_validity`; callers
-    typically pair the two so range failures are reported separately
-    from uniqueness failures.
+    Mirrors the inline reduction-dim expression
+    ``isinstance(dim, (int, type(None))) or
+    len({d % x.ndim for d in dim}) == len(dim)`` exactly. ``None`` and
+    ``int`` short-circuit to True (a single axis cannot duplicate);
+    sequence inputs normalize each entry via ``d % x.ndim`` and require
+    the resulting set to retain the original cardinality. Non-iterable
+    values, or sequences whose elements cannot be reduced modulo an int,
+    propagate the same exception the inline form would raise — the
+    validator classifies that as an eval error and surfaces it as a
+    warning (parity check skipped).
 
     Args:
         x: A tensor-like object exposing ``.ndim``.
-        dim: An int, ``None``, or a sequence of ints. A sequence may be
-            empty; an empty sequence is trivially unique.
+        dim: An int, ``None``, or a sequence of ints. An empty sequence
+            is trivially unique.
 
     Returns:
         True when no two requested axes collapse to the same normalized
-        index. False on duplicates, on a malformed ``dim`` value, or
-        when ``x.ndim`` cannot be read.
+        index, False otherwise.
+
+    Raises:
+        TypeError: For malformed ``dim`` values (e.g. a list of strings);
+            the validator handles this as a warning, matching the pre-
+            migration inline behaviour.
     """
-    ndim = _ndim_of(x)
-    if ndim is None:
-        return False
-    if dim is None or isinstance(dim, int) and not isinstance(dim, bool):
+    if isinstance(dim, (int, type(None))):
         return True
-    dims = _iter_dims(dim)
-    if dims is None:
-        return False
-    if not dims:
-        return True
-    normalized = {d % ndim for d in dims}
-    return len(normalized) == len(dims)
+    return len({d % x.ndim for d in dim}) == len(dim)
 
 
 def reduced_axes(x: Any, dim: Any) -> frozenset[int]:
     """Return the set of normalized axis indices reduced over.
 
-    Encodes PyTorch's reduction-axis convention so output-shape rules can
-    avoid pasting the case analysis inline. The mapping is:
+    Mirrors the inline reduction-axes expression
+    ``{dim % x.ndim} if isinstance(dim, int) else
+    {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and
+    len(dim) > 0 else set(range(x.ndim))`` exactly. ``isinstance(dim, int)``
+    accepts ``bool`` too (bool subclasses int); that quirk is intentional
+    parity. A list/tuple with elements that cannot be reduced modulo an
+    int propagates the same exception the inline form would raise — the
+    validator classifies that as an eval error and surfaces it as a
+    warning (parity check skipped). Anything else (``None``, a set, a
+    string, etc.) falls through to the "all axes" branch, matching the
+    inline expression's else clause.
 
-    * ``dim`` is a single int -> reduce over ``{dim % x.ndim}``.
-    * ``dim`` is a non-empty list/tuple of ints -> reduce over the set of
-      normalized indices ``{d % x.ndim for d in dim}``.
-    * ``dim is None`` or an empty list/tuple -> reduce over all axes
-      (``range(x.ndim)``); matches PyTorch's ``torch.sum(x, dim=())``
-      semantics.
-
-    A malformed ``dim`` value (string, set, mixed-type sequence) falls
-    into the "all axes" branch so this helper returns a deterministic
-    set in every case. Pair it with :func:`dim_range_validity` /
-    :func:`dim_uniqueness` so malformed inputs surface as validation
-    failures before the output-shape rules consult :func:`reduced_axes`.
+    Pair this helper with :func:`dim_range_validity` and
+    :func:`dim_uniqueness` so range / uniqueness violations surface
+    before the output-shape rules consult :func:`reduced_axes`.
 
     Args:
         x: A tensor-like object exposing ``.ndim``.
@@ -168,25 +124,17 @@ def reduced_axes(x: Any, dim: Any) -> frozenset[int]:
 
     Returns:
         A ``frozenset`` of normalized axis indices in ``[0, x.ndim)``.
+
+    Raises:
+        TypeError: For a list/tuple whose elements cannot be reduced
+            modulo ``x.ndim``; the validator handles this as a warning,
+            matching the pre-migration inline behaviour.
     """
-    ndim = _ndim_of(x)
-    if ndim is None:
-        return frozenset()
-    # Mirror the inline reduction expression
-    # ``{dim % x.ndim} if isinstance(dim, int) else
-    #  {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0
-    #  else set(range(x.ndim))``
-    # so migrated ops are bit-identical to unmigrated ones once dim validity
-    # has been confirmed elsewhere. ``isinstance(dim, int)`` accepts bool
-    # too (bool subclasses int in Python); keep that quirk here.
     if isinstance(dim, int):
-        return frozenset({dim % ndim})
+        return frozenset({dim % x.ndim})
     if isinstance(dim, (list, tuple)) and len(dim) > 0:
-        try:
-            return frozenset(d % ndim for d in dim)
-        except TypeError:
-            return frozenset(range(ndim))
-    return frozenset(range(ndim))
+        return frozenset(d % x.ndim for d in dim)
+    return frozenset(range(x.ndim))
 
 
 HELPERS: dict[str, Any] = {

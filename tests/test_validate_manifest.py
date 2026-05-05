@@ -3757,14 +3757,43 @@ class TestShapeRuleHelpers:
         x = type("X", (), {"ndim": 3})()
         assert dim_range_validity(x, [0, 5]) is False
 
-    def test_dim_range_validity_malformed_dim_fails(self):
+    def test_dim_range_validity_malformed_dim_propagates_inline_error(self):
+        """Malformed sequence dims propagate the same TypeError the inline form raises.
+
+        The validator classifies eval errors as warnings (parity check
+        skipped), so behaviour matches the pre-migration inline form
+        end-to-end. Helper unit tests only need to confirm the exception
+        propagates rather than being silenced.
+        """
+        import pytest
+
         from tileops.manifest.shape_rules import dim_range_validity
 
         x = type("X", (), {"ndim": 3})()
-        # Strings, dicts, bools must be rejected (not silently accepted).
-        assert dim_range_validity(x, "0") is False
-        assert dim_range_validity(x, {0}) is False
-        assert dim_range_validity(x, True) is False
+        # Iterating a string yields characters; ``-3 <= "0"`` raises
+        # TypeError, matching the inline ``all(... for d in dim)`` form.
+        with pytest.raises(TypeError):
+            dim_range_validity(x, "0")
+        # A list element that cannot be ordered against int raises the
+        # same TypeError the inline expression would.
+        with pytest.raises(TypeError):
+            dim_range_validity(x, ["2"])
+
+    def test_dim_range_validity_inline_quirks_preserved(self):
+        """Exact parity with inline ``isinstance(dim, int)`` semantics.
+
+        ``bool`` subclasses ``int``, so the inline expression treats
+        ``True`` as a one-element axis list — and so must the helper.
+        A non-list, non-tuple iterable (e.g. ``set``) was iterated
+        directly by the inline form; the helper preserves that quirk.
+        """
+        from tileops.manifest.shape_rules import dim_range_validity
+
+        x = type("X", (), {"ndim": 3})()
+        # bool path: True -> [True] -> -3 <= 1 < 3 -> True.
+        assert dim_range_validity(x, True) is True
+        # set path: -3 <= 0 < 3 -> True.
+        assert dim_range_validity(x, {0}) is True
 
     def test_dim_uniqueness_int_or_none_passes(self):
         from tileops.manifest.shape_rules import dim_uniqueness
@@ -3847,6 +3876,156 @@ class TestShapeRuleHelpers:
         cases = [None, 0, -1, 2, [0, 2], (-1, -2), [], ()]
         for d in cases:
             assert reduced_axes(x, d) == inline(x, d), d
+
+    def test_helpers_match_inline_expressions_over_full_case_matrix(self):
+        """Helpers and inline expressions agree on results AND raised exceptions.
+
+        Drives every helper against the literal inline expression that
+        was migrated out of the manifest, over a case matrix that
+        includes well-formed *and* malformed inputs. For each input, both
+        forms must either return the same value or raise the same
+        exception type — anything else is a behavioural drift.
+
+        Covers the malformed cases the validator previously surfaced as
+        eval-error warnings (``dim=["2"]``, ``dim=[1.5]``), as well as
+        the contract-spec edge cases (``dim=None`` for "all axes" and an
+        empty tuple).
+        """
+        from tileops.manifest.shape_rules import (
+            dim_range_validity,
+            dim_uniqueness,
+            reduced_axes,
+        )
+
+        def inline_range(x, dim):
+            return dim is None or all(
+                -x.ndim <= d < x.ndim
+                for d in ([dim] if isinstance(dim, int) else dim)
+            )
+
+        def inline_uniqueness(x, dim):
+            return isinstance(dim, (int, type(None))) or (
+                len({d % x.ndim for d in dim}) == len(dim)
+            )
+
+        def inline_axes(x, dim):
+            if isinstance(dim, int):
+                return frozenset({dim % x.ndim})
+            if isinstance(dim, (list, tuple)) and len(dim) > 0:
+                return frozenset(d % x.ndim for d in dim)
+            return frozenset(range(x.ndim))
+
+        x = type("X", (), {"ndim": 3})()
+        cases = [
+            None,
+            0,
+            -1,
+            2,
+            [0, 2],
+            (-1, -2),
+            [],
+            (),
+            # Reviewer reproducer: a string element triggers TypeError in
+            # both ``-3 <= "2"`` and ``"2" % 3``; the helper must
+            # propagate so the validator's eval-error path keeps treating
+            # this as a warning, not a hard shape mismatch.
+            ["2"],
+            # A float element survives ordering and modulo; both forms
+            # return the same set.
+            [1.5],
+            # ``dim=None`` is the contract-spec "all axes" sentinel.
+            None,
+            # Empty tuple: explicit "all axes" per the inline else clause.
+            (),
+        ]
+        pairs = [
+            (dim_range_validity, inline_range),
+            (dim_uniqueness, inline_uniqueness),
+            (reduced_axes, inline_axes),
+        ]
+        for helper, inline in pairs:
+            for d in cases:
+                helper_exc: type[BaseException] | None = None
+                inline_exc: type[BaseException] | None = None
+                helper_val = inline_val = None
+                try:
+                    helper_val = helper(x, d)
+                except Exception as exc:  # noqa: BLE001
+                    helper_exc = type(exc)
+                try:
+                    inline_val = inline(x, d)
+                except Exception as exc:  # noqa: BLE001
+                    inline_exc = type(exc)
+                assert helper_exc is inline_exc, (
+                    helper.__name__, d, helper_exc, inline_exc,
+                )
+                if helper_exc is None:
+                    assert helper_val == inline_val, (
+                        helper.__name__, d, helper_val, inline_val,
+                    )
+
+    def test_helper_rule_validator_warns_on_malformed_dim(self, validator):
+        """Validator integration: helper rules surface malformed dims as warnings.
+
+        The reviewer's reproducer (``dim=["2"]``) raised TypeError under
+        the inline expression, which the validator classified as an
+        eval-error warning ("could not be evaluated"). The helper-based
+        rule must hit the same path: the parity check is skipped with a
+        warning, not turned into a hard shape error.
+        """
+        def infer(self, x_shape, *, dim=None, keepdim=False):  # noqa: ARG001
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer, name="HelperMalformedDimOp")
+        sig_common = {
+            "inputs": {"x": {"dtype": "float16"}},
+            "outputs": {"y": {"dtype": "same_as(x)"}},
+            "params": {
+                "dim": {
+                    "type": "int | list[int] | tuple[int, ...] | None",
+                    "default": ["2"],
+                },
+                "keepdim": {"type": "bool", "default": False},
+            },
+        }
+        entry_inline = {
+            "signature": {
+                **sig_common,
+                "shape_rules": [
+                    "dim is None or all(-x.ndim <= d < x.ndim for d in "
+                    "([dim] if isinstance(dim, int) else dim))",
+                    "isinstance(dim, (int, type(None))) or "
+                    "len({d % x.ndim for d in dim}) == len(dim)",
+                ],
+            },
+        }
+        entry_helper = {
+            "signature": {
+                **sig_common,
+                "shape_rules": [
+                    "helper:dim_range_validity(x, dim)",
+                    "helper:dim_uniqueness(x, dim)",
+                ],
+            },
+        }
+        warn_inline: list[str] = []
+        warn_helper: list[str] = []
+        errs_inline = validator.check_l2_infer_parity(
+            "HelperMalformedDimOp", entry_inline, cls, warnings=warn_inline,
+        )
+        errs_helper = validator.check_l2_infer_parity(
+            "HelperMalformedDimOp", entry_helper, cls, warnings=warn_helper,
+        )
+        # Both forms classify the malformed dim as an eval error and
+        # emit a "could not be evaluated" warning; neither raises a hard
+        # parity error.
+        assert errs_inline == [] == errs_helper, (errs_inline, errs_helper)
+        assert any("could not be evaluated" in w for w in warn_inline), (
+            warn_inline
+        )
+        assert any("could not be evaluated" in w for w in warn_helper), (
+            warn_helper
+        )
 
     def test_helpers_registry_exposes_all_helpers(self):
         from tileops.manifest.shape_rules import (
