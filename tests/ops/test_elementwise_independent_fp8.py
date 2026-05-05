@@ -291,9 +291,11 @@ def test_nan_to_num_e5m2_overflow_scalar_params_rejected():
 
     n = 1024
     dtype = torch.float8_e5m2
-    with pytest.raises(ValueError, match="posinf_val=.*not representable"):
+    # Validation messages use the canonical manifest-aligned names
+    # (``posinf`` / ``neginf``) regardless of which alias the user passes.
+    with pytest.raises(ValueError, match=r"posinf=.*not representable"):
         NanToNumFwdOp(N_total=n, dtype=dtype, nan_val=0.0, posinf_val=1e5, neginf_val=-1.0)
-    with pytest.raises(ValueError, match="neginf_val=.*not representable"):
+    with pytest.raises(ValueError, match=r"neginf=.*not representable"):
         NanToNumFwdOp(N_total=n, dtype=dtype, nan_val=0.0, posinf_val=1.0, neginf_val=-1e5)
 
 
@@ -312,16 +314,64 @@ def test_nan_to_num_fp8_default_ctor_accepts_dtype_sentinels(dtype):
     manifest default ``None``, the op must NOT validate the legacy
     fp16-shaped sentinels (1e4 / -1e4) against the narrow fp8 range.
     Instead, it forwards +/-inf to the kernel, which clamps to the
-    effective output dtype's finite range.
+    *final* user-facing dtype's finite range — i.e. the dtype the caller
+    actually sees after the Op-layer post-cast, not the kernel's fp16
+    intermediate. For e5m2 that is 57344.0; clamping to fp16's 65504.0
+    would round to +Inf on the cast back to e5m2.
     """
     from tileops.ops.elementwise import NanToNumFwdOp
 
     op = NanToNumFwdOp(N_total=8, dtype=dtype)
     assert op.posinf is None
     assert op.neginf is None
-    out_finfo = torch.finfo(op.kernel.output_dtype)
-    assert op.kernel.posinf_val == out_finfo.max
-    assert op.kernel.neginf_val == out_finfo.min
+    # The clamp targets the final user-facing dtype.
+    final_dtype = op.kernel._fp8_output_dtype or op.kernel.output_dtype
+    assert final_dtype == dtype
+    final_finfo = torch.finfo(final_dtype)
+    assert op.kernel.posinf_val == final_finfo.max
+    assert op.kernel.neginf_val == final_finfo.min
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param(torch.float8_e4m3fn, id="e4m3fn"),
+        pytest.param(torch.float8_e5m2, id="e5m2"),
+    ],
+)
+def test_nan_to_num_fp8_default_replaces_inf_with_finite(dtype):
+    """End-to-end: default ``+/-inf`` sentinels produce finite outputs.
+
+    Constructs the op with the manifest default (``posinf=None`` /
+    ``neginf=None``), feeds an input containing ``+/-inf`` and ``NaN``,
+    and asserts the *final* op output is entirely finite. This catches
+    the regression where the e5m2 path round-tripped through fp16's
+    65504.0 sentinel and then overflowed to ``Inf`` on the cast back to
+    e5m2 (whose max is 57344.0).
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    from tileops.ops.elementwise import NanToNumFwdOp
+
+    n = 1024
+    op = NanToNumFwdOp(N_total=n, dtype=dtype)
+    x_fp16 = torch.empty(n, dtype=torch.float16, device="cuda")
+    x_fp16.fill_(0.0)
+    x_fp16[0] = float("inf")
+    x_fp16[1] = float("-inf")
+    x_fp16[2] = float("nan")
+    x = x_fp16.to(dtype)
+
+    out = op(x)
+    assert out.dtype == dtype
+    # Every replaced position must be finite in the final dtype.
+    finite_mask = torch.isfinite(out.to(torch.float32))
+    assert finite_mask.all(), (
+        f"NanToNum default sentinels surfaced non-finite output for {dtype}: "
+        f"out[0]={out[0].item()}, out[1]={out[1].item()}, out[2]={out[2].item()}"
+    )
 
 
 @pytest.mark.smoke

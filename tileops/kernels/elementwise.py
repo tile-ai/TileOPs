@@ -3061,9 +3061,17 @@ class NanToNumFwdKernel(ParametricUnaryKernel):
         super().__init__(N_total, dtype, config=config, tune=tune)
 
     def _post_init_params(self):
-        self.nan_val = _clamp_to_dtype_range(self._raw_nan_val, self.output_dtype)
-        self.posinf_val = _clamp_to_dtype_range(self._raw_posinf_val, self.output_dtype)
-        self.neginf_val = _clamp_to_dtype_range(self._raw_neginf_val, self.output_dtype)
+        # Clamp to the *final* user-facing dtype, not the kernel's
+        # intermediate output_dtype. For e5m2 the kernel writes fp16 and
+        # the Op layer post-casts to e5m2; clamping to fp16's max
+        # (65504.0) would round up to +Inf in e5m2 (max 57344.0), so the
+        # default ``+/-inf`` sentinels would surface as Inf instead of
+        # finite max/min. Using ``_fp8_output_dtype or output_dtype``
+        # picks the dtype the caller actually sees.
+        final_dtype = self._fp8_output_dtype or self.output_dtype
+        self.nan_val = _clamp_to_dtype_range(self._raw_nan_val, final_dtype)
+        self.posinf_val = _clamp_to_dtype_range(self._raw_posinf_val, final_dtype)
+        self.neginf_val = _clamp_to_dtype_range(self._raw_neginf_val, final_dtype)
 
     @staticmethod
     def _builder_fn():

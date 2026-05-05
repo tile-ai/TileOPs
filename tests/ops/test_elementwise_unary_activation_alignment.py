@@ -111,9 +111,21 @@ def test_clamp_family_accepts_canonical_kwargs(op_name: str) -> None:
     assert "tune" in init_keys, (
         f"{op_name}.__init__ missing canonical 'tune' kwarg; got {init_keys}"
     )
-    # Both must be keyword-only with the canonical defaults.
-    assert init_sig.parameters["kernel_map"].default is None
-    assert init_sig.parameters["tune"].default is False
+    # Both must be keyword-only with the canonical defaults. Assert
+    # ``Parameter.kind`` so a positional-or-keyword regression also
+    # fails the gate, not just a renamed-default regression.
+    kernel_map_param = init_sig.parameters["kernel_map"]
+    tune_param = init_sig.parameters["tune"]
+    assert kernel_map_param.default is None
+    assert tune_param.default is False
+    assert kernel_map_param.kind is inspect.Parameter.KEYWORD_ONLY, (
+        f"{op_name}.__init__ 'kernel_map' must be keyword-only, "
+        f"got kind={kernel_map_param.kind}"
+    )
+    assert tune_param.kind is inspect.Parameter.KEYWORD_ONLY, (
+        f"{op_name}.__init__ 'tune' must be keyword-only, "
+        f"got kind={tune_param.kind}"
+    )
 
 
 @pytest.mark.smoke
@@ -175,9 +187,36 @@ def test_gelu_approximate_modes_accepted() -> None:
     # constructor rather than rejected. The tanh path skips kernel
     # construction (no CUDA build) and routes through a torch fallback in
     # ``_eager_forward``, so this assertion is safe on CPU-only hosts.
-    op_tanh = mod.GeluFwdOp(N_total=8, dtype=torch.float16, approximate="tanh")
+    op_tanh = mod.GeluFwdOp(N_total=8, dtype=torch.float32, approximate="tanh")
     assert op_tanh.approximate == "tanh"
     assert op_tanh.kernel is None
+
+    # Exercise the fallback path end-to-end via _eager_forward so a
+    # regression in the tanh routing is actually caught (not just a
+    # constructor smoke check). _eager_forward bypasses the .is_cuda
+    # input gate in forward(), letting this run on CPU-only hosts.
+    x = torch.randn(8, dtype=torch.float32)
+    out = op_tanh._eager_forward(x)
+    expected = torch.nn.functional.gelu(x, approximate="tanh")
+    assert out.shape == x.shape
+    assert torch.allclose(out, expected, rtol=0, atol=0), (
+        "GeluFwdOp tanh fallback must match torch.nn.functional.gelu(approximate='tanh')"
+    )
+
+
+@pytest.mark.smoke
+def test_gelu_tanh_rejects_unsupported_dtype() -> None:
+    """tanh fallback must enforce the same dtype gate as the kernel path.
+
+    The 'none' branch rejects unsupported dtypes via GeluFwdKernel's
+    SUPPORTED_DTYPES check inside ``super().__init__``. The tanh branch
+    must mirror that contract so a caller doesn't construct a broken op
+    and only learn at forward() time that the dtype is unsupported.
+    """
+    import tileops.ops.elementwise as mod
+
+    with pytest.raises(ValueError, match=r"gelu does not support dtype"):
+        mod.GeluFwdOp(N_total=8, dtype=torch.int32, approximate="tanh")
 
 
 if __name__ == "__main__":

@@ -955,8 +955,11 @@ class FusedGatedOp(Op):
 class _InplaceMixin:
     """Reject ``inplace=True`` for activation ops that don't support it.
 
-    The manifest declares ``inplace: bool = False`` on every PyTorch
-    activation, so we accept the kwarg to satisfy the L1 signature
+    Used by activation ops whose manifest entry declares ``inplace:
+    bool = False`` (e.g. ReLU, SiLU, HardSwish, HardSigmoid, Mish, SELU,
+    LeakyReLU, ELU, Hardtanh). Activations whose manifest does not
+    declare ``inplace`` (e.g. GELU, Softplus) intentionally do not mix
+    this in. The kwarg is accepted purely to satisfy the L1 signature
     contract; the underlying kernels write to a fresh output buffer, so
     a non-default value is rejected rather than silently ignored.
     """
@@ -1540,6 +1543,19 @@ class GeluFwdOp(UnaryOp):
         if approximate not in ("none", "tanh"):
             raise ValueError(
                 f"GeluFwdOp: approximate must be 'none' or 'tanh', got {approximate!r}"
+            )
+        # Apply the same dtype gate both branches share so the tanh
+        # fallback rejects unsupported dtypes (e.g. integer / fp8) up
+        # front instead of deferring the failure to forward(). The
+        # ``approximate='none'`` branch enforces this implicitly via
+        # GeluFwdKernel's SUPPORTED_DTYPES check inside super().__init__;
+        # mirror that contract here so both branches behave consistently.
+        supported = self.kernel_cls.SUPPORTED_DTYPES
+        if supported is not None and dtype not in supported:
+            names = ", ".join(str(dt) for dt in supported)
+            raise ValueError(
+                f"{self._op_name} does not support dtype {dtype}. "
+                f"Supported: [{names}]"
             )
         self.approximate = approximate
         if approximate == "tanh":
@@ -2753,16 +2769,16 @@ class NanToNumFwdOp(Op):
         # them to the dtype's finite max / min — that path keeps
         # narrow-range dtypes (e.g. float8_e4m3fn whose max is 448) from
         # rejecting their own defaults before the kernel can clamp them.
-        _validate_scalar_param_repr("nan_val", nan, dtype, self._op_name)
+        _validate_scalar_param_repr("nan", nan, dtype, self._op_name)
         if posinf is None:
             kernel_posinf = math.inf
         else:
-            _validate_scalar_param_repr("posinf_val", posinf, dtype, self._op_name)
+            _validate_scalar_param_repr("posinf", posinf, dtype, self._op_name)
             kernel_posinf = posinf
         if neginf is None:
             kernel_neginf = -math.inf
         else:
-            _validate_scalar_param_repr("neginf_val", neginf, dtype, self._op_name)
+            _validate_scalar_param_repr("neginf", neginf, dtype, self._op_name)
             kernel_neginf = neginf
         self.N_total = N_total
         self.dtype = dtype
