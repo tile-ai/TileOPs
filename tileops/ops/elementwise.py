@@ -93,6 +93,7 @@ from tileops.kernels.elementwise import (
     WhereFwdKernel,
 )
 from tileops.kernels.kernel_base import Kernel
+from tileops.perf import formulas as _perf_formulas
 
 from .op_base import Op
 
@@ -2025,10 +2026,6 @@ class ClampFwdOp(_ClampTensorBase):
 
     _op_name = "clamp"
     _wrapped = None
-    # Conservative roofline upper bound: 4 fp ops per element (2 compares
-    # + 2 selects). When only one bound is provided the actual cost halves
-    # to 2*N, but 4*N matches the manifest's two-sided clamp convention.
-    FLOPS_PER_ELEM = 4
 
     def __init__(
         self,
@@ -2063,6 +2060,7 @@ class ClampFwdOp(_ClampTensorBase):
             self.N_total, dtype,
             has_min=self.min_shape is not None,
             has_max=self.max_shape is not None,
+            tune=tune,
         )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -2073,8 +2071,7 @@ class ClampFwdOp(_ClampTensorBase):
 
     def eval_roofline(self) -> tuple[int, int]:
         """Return ``(flops, bytes)`` for this op instance."""
-        elem = self.dtype.itemsize
-        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
+        return _perf_formulas.clamp_fwd_roofline(self)
 
     def _eager_forward(
         self,
@@ -2146,8 +2143,6 @@ class ClampMinFwdOp(_ClampTensorBase):
 
     _op_name = "clamp_min"
     _wrapped = None
-    # Single-sided clamp: 1 compare + 1 select per element.
-    FLOPS_PER_ELEM = 2
 
     def __init__(
         self,
@@ -2167,7 +2162,7 @@ class ClampMinFwdOp(_ClampTensorBase):
         self.dispatch_kernel(kernel_map)
         clamp_tensor_cls = self.kernel_map["clamp_tensor"]
         self.kernel = clamp_tensor_cls(
-            self.N_total, dtype, has_min=True, has_max=False,
+            self.N_total, dtype, has_min=True, has_max=False, tune=tune,
         )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -2178,8 +2173,7 @@ class ClampMinFwdOp(_ClampTensorBase):
 
     def eval_roofline(self) -> tuple[int, int]:
         """Return ``(flops, bytes)`` for this op instance."""
-        elem = self.dtype.itemsize
-        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
+        return _perf_formulas.clamp_min_fwd_roofline(self)
 
     def _eager_forward(
         self, input: torch.Tensor, min: torch.Tensor,  # noqa: A002
@@ -2226,8 +2220,6 @@ class ClampMaxFwdOp(_ClampTensorBase):
 
     _op_name = "clamp_max"
     _wrapped = None
-    # Single-sided clamp: 1 compare + 1 select per element.
-    FLOPS_PER_ELEM = 2
 
     def __init__(
         self,
@@ -2247,7 +2239,7 @@ class ClampMaxFwdOp(_ClampTensorBase):
         self.dispatch_kernel(kernel_map)
         clamp_tensor_cls = self.kernel_map["clamp_tensor"]
         self.kernel = clamp_tensor_cls(
-            self.N_total, dtype, has_min=False, has_max=True,
+            self.N_total, dtype, has_min=False, has_max=True, tune=tune,
         )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -2258,8 +2250,7 @@ class ClampMaxFwdOp(_ClampTensorBase):
 
     def eval_roofline(self) -> tuple[int, int]:
         """Return ``(flops, bytes)`` for this op instance."""
-        elem = self.dtype.itemsize
-        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
+        return _perf_formulas.clamp_max_fwd_roofline(self)
 
     def _eager_forward(
         self, input: torch.Tensor, max: torch.Tensor,  # noqa: A002
@@ -2342,7 +2333,9 @@ class ClampScalarFwdOp(Op):
         self.max_val = max
         self.dispatch_kernel(kernel_map)
         clamp_cls = self.kernel_map["clamp"]
-        self.kernel = clamp_cls(self.N_total, dtype, min_val=min, max_val=max)
+        self.kernel = clamp_cls(
+            self.N_total, dtype, min_val=min, max_val=max, tune=tune,
+        )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
