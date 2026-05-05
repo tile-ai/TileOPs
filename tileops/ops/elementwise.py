@@ -2707,12 +2707,12 @@ class NanToNumFwdOp(Op):
         N_total: Total number of elements (flattened).
         dtype: Torch dtype.
         nan: Replacement for NaN (default 0.0). Manifest-aligned name.
-        posinf: Replacement for +Inf. Manifest default ``None`` maps to
-            the kernel sentinel (``1e4``); pass an explicit float to
-            override.
-        neginf: Replacement for -Inf. Manifest default ``None`` maps to
-            the kernel sentinel (``-1e4``); pass an explicit float to
-            override.
+        posinf: Replacement for +Inf. Manifest default ``None`` resolves
+            to the largest finite value representable in the kernel's
+            effective output dtype (matches ``torch.nan_to_num``).
+        neginf: Replacement for -Inf. Manifest default ``None`` resolves
+            to the smallest (most negative) finite value representable
+            in the kernel's effective output dtype.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
 
@@ -2747,15 +2747,23 @@ class NanToNumFwdOp(Op):
             posinf = posinf_val  # type: ignore[assignment]
         if neginf_val is not _NAN_TO_NUM_SENTINEL:
             neginf = neginf_val  # type: ignore[assignment]
-        # Default-None mapping mirrors torch.nan_to_num: when posinf /
-        # neginf are not supplied, fall back to the kernel's stable
-        # finite sentinels so this constructor is a drop-in for the
-        # legacy positional / keyword call sites.
-        kernel_posinf = 1e4 if posinf is None else posinf
-        kernel_neginf = -1e4 if neginf is None else neginf
+        # User-supplied scalars must be representable in the effective
+        # kernel dtype. ``None`` is the manifest default and resolves to
+        # +/-inf below so that the kernel's _clamp_to_dtype_range maps
+        # them to the dtype's finite max / min — that path keeps
+        # narrow-range dtypes (e.g. float8_e4m3fn whose max is 448) from
+        # rejecting their own defaults before the kernel can clamp them.
         _validate_scalar_param_repr("nan_val", nan, dtype, self._op_name)
-        _validate_scalar_param_repr("posinf_val", kernel_posinf, dtype, self._op_name)
-        _validate_scalar_param_repr("neginf_val", kernel_neginf, dtype, self._op_name)
+        if posinf is None:
+            kernel_posinf = math.inf
+        else:
+            _validate_scalar_param_repr("posinf_val", posinf, dtype, self._op_name)
+            kernel_posinf = posinf
+        if neginf is None:
+            kernel_neginf = -math.inf
+        else:
+            _validate_scalar_param_repr("neginf_val", neginf, dtype, self._op_name)
+            kernel_neginf = neginf
         self.N_total = N_total
         self.dtype = dtype
         self.nan = nan

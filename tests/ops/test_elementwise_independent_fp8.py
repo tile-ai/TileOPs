@@ -298,6 +298,33 @@ def test_nan_to_num_e5m2_overflow_scalar_params_rejected():
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param(torch.float8_e4m3fn, id="e4m3fn"),
+        pytest.param(torch.float8_e5m2, id="e5m2"),
+    ],
+)
+def test_nan_to_num_fp8_default_ctor_accepts_dtype_sentinels(dtype):
+    """NanToNumFwdOp default ctor must succeed for fp8 dtypes.
+
+    Regression guard: when ``posinf`` / ``neginf`` are left at their
+    manifest default ``None``, the op must NOT validate the legacy
+    fp16-shaped sentinels (1e4 / -1e4) against the narrow fp8 range.
+    Instead, it forwards +/-inf to the kernel, which clamps to the
+    effective output dtype's finite range.
+    """
+    from tileops.ops.elementwise import NanToNumFwdOp
+
+    op = NanToNumFwdOp(N_total=8, dtype=dtype)
+    assert op.posinf is None
+    assert op.neginf is None
+    out_finfo = torch.finfo(op.kernel.output_dtype)
+    assert op.kernel.posinf_val == out_finfo.max
+    assert op.kernel.neginf_val == out_finfo.min
+
+
+@pytest.mark.smoke
 def test_leaky_relu_e5m2_overflow_negative_slope_rejected():
     """LeakyReLU rejects negative_slope that exceeds effective kernel dtype range."""
     from tileops.ops.elementwise import LeakyReluFwdOp
