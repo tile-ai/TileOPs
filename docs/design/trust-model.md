@@ -8,13 +8,13 @@ Each development stage owns a specific concern. Boundaries prevent one stage fro
 Manifest → Test → Implementation → Benchmark
 ```
 
-Each stage declares its trust contract using a fixed heading taxonomy:
+Each stage declares its trust contract using these headings:
 
-- **OWNS** — write authority: the artifacts (data, files, content categories) this stage is responsible for authoring. Required on every stage.
-- **MUST NOT WRITE** — write restrictions: artifact or content categories this stage must not author, to prevent corrupting another stage's invariants. Required on every stage. Items here name content scope, not raw filesystem mutation — e.g. "the manifest stage must not author kernel internals" applies whether the proposed prose lives in a manifest file, a docstring, or anywhere else this stage might write.
-- **MUST NOT** — structural coupling restriction: a cross-stage linkage rule that is not about writes — typically a forbidden import that would collapse independent verification surfaces (e.g. benchmark importing tests' oracle/ref code). Optional — appears only on stages that have such a rule (currently only Benchmark).
+- **OWNS** — what this stage authors. Required.
+- **MUST NOT WRITE** — content this stage must not author, in any file. Required.
+- **MUST NOT** — structural couplings (typically forbidden imports) that would defeat stage independence. Optional.
 
-Mere reading is not policed by the trust model: any stage may read any file when its job calls for it. The `MUST NOT` heading does not forbid reading per se; it forbids specific structural couplings — typically import-level dependencies — that would defeat the purpose of having independent stages. Per-stage rules live in each [domain rule file](../../.claude/domain-rules/).
+Reads are not policed; the trust model controls writes and import-level coupling, not file access. Per-stage rules live in each [domain rule file](../../.claude/domain-rules/).
 
 ## Manifest
 
