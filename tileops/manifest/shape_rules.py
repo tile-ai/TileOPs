@@ -99,7 +99,7 @@ def dim_uniqueness(x: Any, dim: Any) -> bool:
     return len({d % x.ndim for d in dim}) == len(dim)
 
 
-def reduced_axes(x: Any, dim: Any) -> frozenset[int]:
+def reduced_axes(x: Any, dim: Any) -> frozenset:
     """Return the set of normalized axis indices reduced over.
 
     Mirrors the inline reduction-axes expression
@@ -123,7 +123,14 @@ def reduced_axes(x: Any, dim: Any) -> frozenset[int]:
         dim: An int, ``None``, or a list/tuple of ints.
 
     Returns:
-        A ``frozenset`` of normalized axis indices in ``[0, x.ndim)``.
+        A ``frozenset`` of normalized axis indices. The typical case
+        returns ``frozenset[int]`` with members in ``[0, x.ndim)``; the
+        return type is intentionally left unparameterised because
+        malformed list/tuple elements pass through ``d % x.ndim`` and
+        whatever that operation produces (e.g. ``float`` for ``1.5``)
+        appears verbatim in the result. The helper preserves inline
+        semantics, so callers that supply non-int sequence elements get
+        the same return as the pre-migration inline expression.
 
     Raises:
         TypeError: For a list/tuple whose elements cannot be reduced
