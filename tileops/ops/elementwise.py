@@ -2335,6 +2335,7 @@ class ClampScalarFwdOp(Op):
         if max is not None:
             _validate_scalar_param_repr("max", max, dtype, self._op_name)
         self.input_shape = tuple(input)
+        self.out_shape = self.input_shape
         self.N_total = prod(self.input_shape) if self.input_shape else 1
         self.dtype = dtype
         self.tune = tune
