@@ -128,6 +128,71 @@ def test_clamp_family_accepts_canonical_kwargs(op_name: str) -> None:
     )
 
 
+def _clamp_construct_kwargs(op_name: str) -> tuple[tuple, dict]:
+    """Return ``(positional, keyword)`` args needed to construct ``op_name``.
+
+    Each Clamp variant has a distinct positional signature:
+
+    +----------------------+--------------------------------------------------+
+    | ``ClampFwdOp``       | ``(input_shape, min_shape, max_shape, dtype)``.  |
+    +----------------------+--------------------------------------------------+
+    | ``ClampScalarFwdOp`` | ``(input_shape,)`` + ``min``/``max`` kwargs.     |
+    +----------------------+--------------------------------------------------+
+    | ``ClampMinFwdOp``    | ``(input_shape, min_shape, dtype)``.             |
+    +----------------------+--------------------------------------------------+
+    | ``ClampMaxFwdOp``    | ``(input_shape, max_shape, dtype)``.             |
+    +----------------------+--------------------------------------------------+
+    """
+    shape = (2, 4)
+    if op_name == "ClampFwdOp":
+        return ((shape, shape, shape, torch.float16), {})
+    if op_name == "ClampScalarFwdOp":
+        return ((shape,), {"min": -1.0, "max": 1.0, "dtype": torch.float16})
+    # ClampMin / ClampMax
+    return ((shape, shape, torch.float16), {})
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("op_name", [op[0] for op in _CLAMP_OPS])
+def test_clamp_family_kernel_map_override_is_dispatched(op_name: str) -> None:
+    """A user-supplied ``kernel_map`` value must reach the kernel build.
+
+    A regression that accepts ``kernel_map=`` in the constructor but
+    silently ignores the override would still pass the signature
+    metadata check above. Construct each Clamp op with a ``kernel_map``
+    whose value is a *subclass* of the default kernel and assert the
+    constructed ``self.kernel`` is an instance of that subclass —
+    ``dispatch_kernel`` always rebuilds the dict, so identity checks
+    on the dict itself are not load-bearing; the load-bearing
+    invariant is that the override class is the one actually used to
+    build ``self.kernel``. Skipped without CUDA because constructors
+    JIT-compile the kernel.
+    """
+    import tileops.ops.elementwise as mod
+
+    cls = getattr(mod, op_name)
+    pos, kw = _clamp_construct_kwargs(op_name)
+    # Read ``default_kernel_map`` from a baseline instance so we know
+    # which key/class pair to override with a marker subclass.
+    inst = cls(*pos, **kw)
+    (key, default_kernel_cls), = inst.default_kernel_map.items()
+
+    class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
+        """Subclass marker; identical behavior, distinct identity."""
+
+    override = {key: MarkerKernel}
+    inst2 = cls(*pos, **kw, kernel_map=override)
+    assert inst2.kernel_map[key] is MarkerKernel, (
+        f"{op_name}: kernel_map override entry was not stored on "
+        f"self.kernel_map (got {inst2.kernel_map[key]!r})"
+    )
+    assert isinstance(inst2.kernel, MarkerKernel), (
+        f"{op_name}: kernel_map override class was not used to build "
+        f"self.kernel (kernel type: {type(inst2.kernel).__name__})"
+    )
+
+
 @pytest.mark.smoke
 def test_nan_to_num_param_aliases_back_compat() -> None:
     """NanToNumFwdOp must keep ``nan_val`` / ``posinf_val`` / ``neginf_val``
@@ -143,29 +208,104 @@ def test_nan_to_num_param_aliases_back_compat() -> None:
         assert name in keys, f"NanToNumFwdOp.__init__ missing '{name}'; got {keys}"
 
 
-@pytest.mark.smoke
-def test_unary_activation_inplace_default_false() -> None:
-    """Param-free unary activations expose ``inplace=False`` per the manifest.
+_INPLACE_PARAM_FREE_OPS = (
+    "ReluFwdOp", "SiluFwdOp", "HardswishFwdOp",
+    "HardsigmoidFwdOp", "MishFwdOp", "SeluFwdOp",
+)
+_INPLACE_PARAMETRIC_OPS = (
+    "LeakyReluFwdOp", "EluFwdOp", "HardtanhFwdOp",
+)
 
-    The op layer does not implement in-place execution; the kwarg is
-    accepted purely to satisfy the manifest signature contract. Calling
-    with ``inplace=True`` must therefore raise rather than silently
-    return out-of-place output.
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_name", _INPLACE_PARAM_FREE_OPS + _INPLACE_PARAMETRIC_OPS,
+)
+def test_unary_activation_inplace_default_false(op_name: str) -> None:
+    """Activations declaring ``inplace`` expose ``inplace=False`` by default.
+
+    Covers every unary activation whose manifest entry declares an
+    ``inplace`` param (param-free ReLU/SiLU/HardSwish/HardSigmoid/Mish/SELU
+    plus the parametric LeakyReLU/ELU/Hardtanh). The op-level
+    ``inplace=True`` semantics are exercised by
+    ``test_unary_activation_inplace_true_aliases_input`` below; this
+    test covers the signature contract and is safe on CPU-only hosts
+    because it only inspects metadata.
     """
     import tileops.ops.elementwise as mod
 
-    for op_name in (
-        "ReluFwdOp", "SiluFwdOp", "HardswishFwdOp",
-        "HardsigmoidFwdOp", "MishFwdOp", "SeluFwdOp",
-    ):
-        cls = getattr(mod, op_name)
-        init_sig = inspect.signature(cls.__init__)
-        assert "inplace" in init_sig.parameters
-        assert init_sig.parameters["inplace"].default is False
-        # Constructing with inplace=True is rejected (not silently ignored)
-        # because the kernels do not support in-place writes.
-        with pytest.raises(NotImplementedError, match="in-place"):
-            cls(N_total=8, dtype=torch.float16, inplace=True)
+    cls = getattr(mod, op_name)
+    init_sig = inspect.signature(cls.__init__)
+    assert "inplace" in init_sig.parameters, (
+        f"{op_name}.__init__ missing 'inplace' kwarg; got {list(init_sig.parameters)}"
+    )
+    inplace_param = init_sig.parameters["inplace"]
+    assert inplace_param.default is False
+    assert inplace_param.kind is inspect.Parameter.KEYWORD_ONLY, (
+        f"{op_name}.__init__ 'inplace' must be keyword-only, "
+        f"got kind={inplace_param.kind}"
+    )
+
+
+def _construct_inplace_op(mod, op_name: str, n_total: int, dtype: torch.dtype, inplace: bool):
+    """Build an instance with the manifest-spec construction signature."""
+    cls = getattr(mod, op_name)
+    if op_name in _INPLACE_PARAM_FREE_OPS:
+        return cls(N_total=n_total, dtype=dtype, inplace=inplace)
+    if op_name == "LeakyReluFwdOp":
+        return cls(n_total, dtype, inplace=inplace)
+    if op_name == "EluFwdOp":
+        return cls(n_total, dtype, inplace=inplace)
+    if op_name == "HardtanhFwdOp":
+        return cls(n_total, dtype, inplace=inplace)
+    raise AssertionError(f"unexpected op_name {op_name!r}")
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    "op_name", _INPLACE_PARAM_FREE_OPS + _INPLACE_PARAMETRIC_OPS,
+)
+def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
+    """``inplace=True`` must mutate ``input`` and return the same tensor.
+
+    PyTorch's contract for ``functional.relu(x, inplace=True)`` (and the
+    other activations declaring ``inplace`` in their manifest entry) is
+    that the returned tensor *is* ``x`` and that ``x`` now holds the
+    activation output. Verify both invariants for every activation
+    covered by ``_InplaceMixin``.
+    """
+    import tileops.ops.elementwise as mod
+
+    n_total = 64
+    dtype = torch.float16
+    op = _construct_inplace_op(mod, op_name, n_total, dtype, inplace=True)
+    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    expected = _torch_reference(op_name)(x.clone())
+    y = op(x)
+    assert y is x, (
+        f"{op_name}: inplace=True must return the input tensor (identity); "
+        f"got id(y)={id(y)} id(x)={id(x)}"
+    )
+    assert torch.allclose(x, expected, rtol=1e-2, atol=1e-2), (
+        f"{op_name}: inplace=True did not mutate input to the activation output"
+    )
+
+
+def _torch_reference(op_name: str):
+    """Map an activation op class to its ``torch.nn.functional`` reference."""
+    refs = {
+        "ReluFwdOp": torch.nn.functional.relu,
+        "SiluFwdOp": torch.nn.functional.silu,
+        "HardswishFwdOp": torch.nn.functional.hardswish,
+        "HardsigmoidFwdOp": torch.nn.functional.hardsigmoid,
+        "MishFwdOp": torch.nn.functional.mish,
+        "SeluFwdOp": torch.nn.functional.selu,
+        "LeakyReluFwdOp": torch.nn.functional.leaky_relu,
+        "EluFwdOp": torch.nn.functional.elu,
+        "HardtanhFwdOp": torch.nn.functional.hardtanh,
+    }
+    return refs[op_name]
 
 
 @pytest.mark.smoke
@@ -205,6 +345,33 @@ def test_gelu_approximate_modes_accepted() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_gelu_approximate_tanh_runs_through_forward() -> None:
+    """GeluFwdOp(approximate='tanh') must dispatch through ``forward()``.
+
+    The earlier signature/metadata check covers ``__init__``; this test
+    closes the gap by exercising the public forward path on CUDA so a
+    regression that breaks ``forward()`` (e.g. routes the tanh op
+    through a kernel that doesn't exist) is caught instead of only
+    surfacing in eager-only callers.
+    """
+    import tileops.ops.elementwise as mod
+
+    n_total = 128
+    dtype = torch.float16
+    op = mod.GeluFwdOp(N_total=n_total, dtype=dtype, approximate="tanh")
+    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    y = op(x)
+    expected = torch.nn.functional.gelu(x, approximate="tanh")
+    assert y.shape == x.shape
+    assert y.dtype == x.dtype
+    assert torch.allclose(y, expected, rtol=1e-2, atol=1e-2), (
+        "GeluFwdOp(approximate='tanh').forward must match "
+        "torch.nn.functional.gelu(approximate='tanh') on CUDA"
+    )
+
+
+@pytest.mark.smoke
 def test_gelu_tanh_rejects_unsupported_dtype() -> None:
     """tanh fallback must enforce the same dtype gate as the kernel path.
 
@@ -217,6 +384,43 @@ def test_gelu_tanh_rejects_unsupported_dtype() -> None:
 
     with pytest.raises(ValueError, match=r"gelu does not support dtype"):
         mod.GeluFwdOp(N_total=8, dtype=torch.int32, approximate="tanh")
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_name, expected_per_elem",
+    [
+        ("ReluFwdOp", 2),
+        ("SiluFwdOp", 4),
+        ("HardswishFwdOp", 7),
+        ("HardsigmoidFwdOp", 6),
+        ("MishFwdOp", 7),
+        ("SeluFwdOp", 5),
+    ],
+)
+def test_activation_flops_per_elem_matches_manifest(
+    op_name: str, expected_per_elem: int,
+) -> None:
+    """Activation ``FLOPS_PER_ELEM`` must match the manifest roofline coefficient.
+
+    The bench reads ``op.eval_roofline()`` (or ``FLOPS_PER_ELEM`` as a
+    fallback) to report manifest-aligned TFLOPs. This test pins the
+    per-element FLOP coefficient against the manifest's
+    ``roofline.flops`` column for each unary activation, so a regression
+    that silently reverts to the bandwidth-only ``1*N`` default surfaces
+    here instead of producing under-reported TFLOPs in the bench.
+
+    The ``eval_roofline`` return is only inspected for the FLOPs slot
+    (first element); the ``bytes`` slot is covered by the existing
+    elementwise total_memory tests.
+    """
+    import tileops.ops.elementwise as mod
+
+    cls = getattr(mod, op_name)
+    assert getattr(cls, "FLOPS_PER_ELEM", None) == expected_per_elem, (
+        f"{op_name}.FLOPS_PER_ELEM = {getattr(cls, 'FLOPS_PER_ELEM', None)!r}, "
+        f"expected {expected_per_elem} per the manifest roofline.flops"
+    )
 
 
 if __name__ == "__main__":

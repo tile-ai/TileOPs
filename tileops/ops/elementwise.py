@@ -121,24 +121,31 @@ def _effective_scalar_kernel_dtype(dtype: torch.dtype) -> torch.dtype:
 def _validate_scalar_param_repr(
     param_name: str, value: float, dtype: torch.dtype, op_name: str,
 ) -> None:
-    """Reject scalar params that cannot be represented in the kernel dtype."""
+    """Reject scalar params that cannot be represented in the user dtype.
+
+    Validation targets the *user-facing* ``dtype`` rather than the
+    intermediate ``_effective_scalar_kernel_dtype(dtype)``.  For fp8
+    dtypes the kernel runs in fp16 to preserve Inf/NaN, but a value that
+    only fits in fp16 would surface as ``+/-Inf`` after the final fp8
+    post-cast. Validating against the user dtype keeps explicit
+    replacements finite end-to-end.
+    """
     if not isinstance(value, (int, float)):
         raise TypeError(f"{op_name} expected scalar {param_name} to be int/float, got {type(value)}")
 
-    kernel_dtype = _effective_scalar_kernel_dtype(dtype)
-    finfo = torch.finfo(kernel_dtype)
+    finfo = torch.finfo(dtype)
     value_f64 = float(value)
     if math.isnan(value_f64):
         return
     if math.isinf(value_f64):
         raise ValueError(
             f"{op_name} received {param_name}={value!r}, but {param_name} must be finite and "
-            f"representable in effective kernel dtype {kernel_dtype}"
+            f"representable in dtype {dtype}"
         )
     if not (finfo.min <= value_f64 <= finfo.max):
         raise ValueError(
             f"{op_name} received {param_name}={value!r}, which is not representable in "
-            f"effective kernel dtype {kernel_dtype} (valid finite range: "
+            f"dtype {dtype} (valid finite range: "
             f"[{finfo.min}, {finfo.max}])"
         )
 
@@ -953,23 +960,53 @@ class FusedGatedOp(Op):
 
 
 class _InplaceMixin:
-    """Reject ``inplace=True`` for activation ops that don't support it.
+    """Implement out-of-kernel ``inplace=True`` for activation ops.
 
     Used by activation ops whose manifest entry declares ``inplace:
     bool = False`` (e.g. ReLU, SiLU, HardSwish, HardSigmoid, Mish, SELU,
     LeakyReLU, ELU, Hardtanh). Activations whose manifest does not
     declare ``inplace`` (e.g. GELU, Softplus) intentionally do not mix
-    this in. The kwarg is accepted purely to satisfy the L1 signature
-    contract; the underlying kernels write to a fresh output buffer, so
-    a non-default value is rejected rather than silently ignored.
+    this in.
+
+    The underlying kernels always write to a fresh output buffer, but
+    PyTorch's activation contract for ``inplace=True`` requires the
+    *user-visible* tensor identity to be preserved (``y is x``).  We
+    honor the manifest contract by computing into a fresh buffer and
+    then copying the result back into the input tensor when
+    ``inplace=True``; the returned tensor is the original input. The
+    op-level ``inplace`` mutation is intentionally only honored on the
+    eager ``forward()`` path: the ``torch.compile`` ``_wrapped`` route
+    is registered with ``mutates_args=()`` and would mis-trace under
+    aliasing, so we route inplace=True around the custom-op dispatch.
     """
 
     @staticmethod
-    def _reject_inplace(inplace: bool, op_name: str) -> None:
-        if inplace:
-            raise NotImplementedError(
-                f"{op_name}: in-place execution is not supported; pass inplace=False"
+    def _apply_inplace(
+        inplace: bool, input_tensor: torch.Tensor, output: torch.Tensor,
+    ) -> torch.Tensor:
+        """Materialize ``output`` back into ``input_tensor`` when inplace=True.
+
+        Returns ``input_tensor`` (preserving identity) if ``inplace`` is
+        True, otherwise returns ``output`` unchanged.
+
+        Raises:
+            ValueError: if ``output.shape`` is not broadcast-compatible
+                with ``input_tensor.shape`` or if ``output.dtype`` does
+                not match ``input_tensor.dtype`` (an inplace write must
+                not change the storage dtype).
+        """
+        if not inplace:
+            return output
+        if output.dtype != input_tensor.dtype:
+            raise ValueError(
+                f"inplace=True requires output.dtype ({output.dtype}) to "
+                f"match input.dtype ({input_tensor.dtype}); they differ"
             )
+        # ``copy_`` broadcasts as needed; reshape to the input layout
+        # to handle the contiguous/flatten round-trip used by the kernel
+        # path without forcing the caller to think about it.
+        input_tensor.copy_(output.reshape(input_tensor.shape))
+        return input_tensor
 
 
 class ReluFwdOp(UnaryOp, _InplaceMixin):
@@ -977,6 +1014,8 @@ class ReluFwdOp(UnaryOp, _InplaceMixin):
 
     _op_name = "relu"
     kernel_cls = ReluFwdKernel
+    # Manifest: flops = "2 * N" (compare + select per element).
+    FLOPS_PER_ELEM = 2
 
     def __init__(
         self,
@@ -988,11 +1027,14 @@ class ReluFwdOp(UnaryOp, _InplaceMixin):
         tune: bool = False,
         inplace: bool = False,
     ):
-        self._reject_inplace(inplace, self._op_name)
         super().__init__(
             N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
         )
         self.inplace = inplace
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        result = super().forward(input)
+        return self._apply_inplace(self.inplace, input, result)
 
 
 class AddFwdOp(BinaryOp):
@@ -1529,6 +1571,8 @@ class GeluFwdOp(UnaryOp):
 
     _op_name = "gelu"
     kernel_cls = GeluFwdKernel
+    # Manifest: flops = "8 * N" (erf-based: mul + erf + add + mul + mul ≈ 8).
+    FLOPS_PER_ELEM = 8
 
     def __init__(
         self,
@@ -1591,6 +1635,8 @@ class SiluFwdOp(UnaryOp, _InplaceMixin):
 
     _op_name = "silu"
     kernel_cls = SiluFwdKernel
+    # Manifest: flops = "4 * N" (sigmoid + multiply).
+    FLOPS_PER_ELEM = 4
 
     def __init__(
         self,
@@ -1602,11 +1648,14 @@ class SiluFwdOp(UnaryOp, _InplaceMixin):
         tune: bool = False,
         inplace: bool = False,
     ):
-        self._reject_inplace(inplace, self._op_name)
         super().__init__(
             N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
         )
         self.inplace = inplace
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        result = super().forward(input)
+        return self._apply_inplace(self.inplace, input, result)
 
 
 class SigmoidFwdOp(UnaryOp):
@@ -1632,6 +1681,8 @@ class HardswishFwdOp(UnaryOp, _InplaceMixin):
 
     _op_name = "hardswish"
     kernel_cls = HardswishFwdKernel
+    # Manifest: flops = "7 * N" (add + clamp(2 cmp+2 sel) + mul + div).
+    FLOPS_PER_ELEM = 7
 
     def __init__(
         self,
@@ -1643,11 +1694,14 @@ class HardswishFwdOp(UnaryOp, _InplaceMixin):
         tune: bool = False,
         inplace: bool = False,
     ):
-        self._reject_inplace(inplace, self._op_name)
         super().__init__(
             N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
         )
         self.inplace = inplace
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        result = super().forward(input)
+        return self._apply_inplace(self.inplace, input, result)
 
 
 class HardsigmoidFwdOp(UnaryOp, _InplaceMixin):
@@ -1655,6 +1709,8 @@ class HardsigmoidFwdOp(UnaryOp, _InplaceMixin):
 
     _op_name = "hardsigmoid"
     kernel_cls = HardsigmoidFwdKernel
+    # Manifest: flops = "6 * N" (add + clamp(2 cmp+2 sel) + div).
+    FLOPS_PER_ELEM = 6
 
     def __init__(
         self,
@@ -1666,11 +1722,14 @@ class HardsigmoidFwdOp(UnaryOp, _InplaceMixin):
         tune: bool = False,
         inplace: bool = False,
     ):
-        self._reject_inplace(inplace, self._op_name)
         super().__init__(
             N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
         )
         self.inplace = inplace
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        result = super().forward(input)
+        return self._apply_inplace(self.inplace, input, result)
 
 
 class MishFwdOp(UnaryOp, _InplaceMixin):
@@ -1678,6 +1737,8 @@ class MishFwdOp(UnaryOp, _InplaceMixin):
 
     _op_name = "mish"
     kernel_cls = MishFwdKernel
+    # Manifest: flops = "7 * N" (softplus + tanh + mul).
+    FLOPS_PER_ELEM = 7
 
     def __init__(
         self,
@@ -1689,11 +1750,14 @@ class MishFwdOp(UnaryOp, _InplaceMixin):
         tune: bool = False,
         inplace: bool = False,
     ):
-        self._reject_inplace(inplace, self._op_name)
         super().__init__(
             N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
         )
         self.inplace = inplace
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        result = super().forward(input)
+        return self._apply_inplace(self.inplace, input, result)
 
 
 class SeluFwdOp(UnaryOp, _InplaceMixin):
@@ -1701,6 +1765,8 @@ class SeluFwdOp(UnaryOp, _InplaceMixin):
 
     _op_name = "selu"
     kernel_cls = SeluFwdKernel
+    # Manifest: flops = "5 * N" (branch + exp/sub/mul + lambda mul).
+    FLOPS_PER_ELEM = 5
 
     def __init__(
         self,
@@ -1712,11 +1778,14 @@ class SeluFwdOp(UnaryOp, _InplaceMixin):
         tune: bool = False,
         inplace: bool = False,
     ):
-        self._reject_inplace(inplace, self._op_name)
         super().__init__(
             N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
         )
         self.inplace = inplace
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        result = super().forward(input)
+        return self._apply_inplace(self.inplace, input, result)
 
 
 # ---------------------------------------------------------------------------
@@ -1813,15 +1882,18 @@ class LeakyReluFwdOp(Op, _InplaceMixin):
         N_total: Total number of elements (flattened).
         dtype: Torch dtype.
         negative_slope: Slope for negative inputs (default 0.01).
-        inplace: Manifest-declared kwarg; in-place execution is not
-            supported by the kernel and ``inplace=True`` raises
-            ``NotImplementedError``.
+        inplace: When True, copy the result back into ``input`` and
+            return ``input`` (preserving tensor identity). The kernel
+            still computes into a fresh buffer; only the user-visible
+            tensor is mutated, mirroring ``torch.nn.functional.leaky_relu``.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
     """
 
     _op_name = "leaky_relu"
     _wrapped = None
+    # Manifest: flops = "3 * N" (compare + mul + select).
+    FLOPS_PER_ELEM = 3
 
     def __init__(
         self,
@@ -1833,7 +1905,6 @@ class LeakyReluFwdOp(Op, _InplaceMixin):
         tune: bool = False,
         inplace: bool = False,
     ):
-        self._reject_inplace(inplace, self._op_name)
         _validate_scalar_param_repr("negative_slope", negative_slope, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
@@ -1863,9 +1934,12 @@ class LeakyReluFwdOp(Op, _InplaceMixin):
         if input.numel() != self.N_total:
             raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
         wrapped = type(self)._wrapped
-        if wrapped is not None:
+        # inplace=True bypasses the torch.compile route; the custom_op
+        # is registered with mutates_args=() and would mis-trace.
+        if wrapped is not None and not self.inplace:
             return wrapped(input, self._instance_key)
-        return self._eager_forward(input)
+        result = self._eager_forward(input)
+        return self._apply_inplace(self.inplace, input, result)
 
 
 class EluFwdOp(Op, _InplaceMixin):
@@ -1875,14 +1949,16 @@ class EluFwdOp(Op, _InplaceMixin):
         N_total: Total number of elements (flattened).
         dtype: Torch dtype.
         alpha: Scale for the negative part (default 1.0).
-        inplace: Manifest-declared kwarg; in-place execution is not
-            supported and ``inplace=True`` raises ``NotImplementedError``.
+        inplace: When True, copy the result back into ``input`` and
+            return ``input`` (preserving tensor identity).
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
     """
 
     _op_name = "elu"
     _wrapped = None
+    # Manifest: flops = "5 * N" (compare + (exp + sub + mul) + branch select).
+    FLOPS_PER_ELEM = 5
 
     def __init__(
         self,
@@ -1894,7 +1970,6 @@ class EluFwdOp(Op, _InplaceMixin):
         tune: bool = False,
         inplace: bool = False,
     ):
-        self._reject_inplace(inplace, self._op_name)
         _validate_scalar_param_repr("alpha", alpha, dtype, self._op_name)
         self.N_total = N_total
         self.dtype = dtype
@@ -1922,9 +1997,10 @@ class EluFwdOp(Op, _InplaceMixin):
         if input.numel() != self.N_total:
             raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
         wrapped = type(self)._wrapped
-        if wrapped is not None:
+        if wrapped is not None and not self.inplace:
             return wrapped(input, self._instance_key)
-        return self._eager_forward(input)
+        result = self._eager_forward(input)
+        return self._apply_inplace(self.inplace, input, result)
 
 
 class HardtanhFwdOp(Op, _InplaceMixin):
@@ -1935,14 +2011,16 @@ class HardtanhFwdOp(Op, _InplaceMixin):
         dtype: Torch dtype.
         min_val: Lower bound (default -1.0).
         max_val: Upper bound (default 1.0).
-        inplace: Manifest-declared kwarg; in-place execution is not
-            supported and ``inplace=True`` raises ``NotImplementedError``.
+        inplace: When True, copy the result back into ``input`` and
+            return ``input`` (preserving tensor identity).
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
     """
 
     _op_name = "hardtanh"
     _wrapped = None
+    # Manifest: flops = "4 * N" (2 compares + 2 selects per element).
+    FLOPS_PER_ELEM = 4
 
     def __init__(
         self,
@@ -1955,7 +2033,6 @@ class HardtanhFwdOp(Op, _InplaceMixin):
         tune: bool = False,
         inplace: bool = False,
     ):
-        self._reject_inplace(inplace, self._op_name)
         _validate_scalar_param_repr("min_val", min_val, dtype, self._op_name)
         _validate_scalar_param_repr("max_val", max_val, dtype, self._op_name)
         self.N_total = N_total
@@ -1987,9 +2064,10 @@ class HardtanhFwdOp(Op, _InplaceMixin):
         if input.numel() != self.N_total:
             raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
         wrapped = type(self)._wrapped
-        if wrapped is not None:
+        if wrapped is not None and not self.inplace:
             return wrapped(input, self._instance_key)
-        return self._eager_forward(input)
+        result = self._eager_forward(input)
+        return self._apply_inplace(self.inplace, input, result)
 
 
 class SoftplusFwdOp(Op):
@@ -2724,11 +2802,15 @@ class NanToNumFwdOp(Op):
         dtype: Torch dtype.
         nan: Replacement for NaN (default 0.0). Manifest-aligned name.
         posinf: Replacement for +Inf. Manifest default ``None`` resolves
-            to the largest finite value representable in the kernel's
-            effective output dtype (matches ``torch.nan_to_num``).
+            to the largest finite value representable in the user-facing
+            ``dtype`` (matches ``torch.nan_to_num``). Explicit values
+            must also be representable in ``dtype`` end-to-end; values
+            that fit only in the kernel's intermediate dtype (e.g. fp16
+            for fp8_e5m2) are rejected so the post-cast cannot resurface
+            them as Inf.
         neginf: Replacement for -Inf. Manifest default ``None`` resolves
             to the smallest (most negative) finite value representable
-            in the kernel's effective output dtype.
+            in the user-facing ``dtype``.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
 

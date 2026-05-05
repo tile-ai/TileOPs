@@ -286,7 +286,7 @@ def test_masked_fill_e5m2_overflow_fill_value():
 
 @pytest.mark.smoke
 def test_nan_to_num_e5m2_overflow_scalar_params_rejected():
-    """NanToNum rejects replacement values that exceed effective kernel dtype range."""
+    """NanToNum rejects replacement values that exceed user-facing dtype range."""
     from tileops.ops.elementwise import NanToNumFwdOp
 
     n = 1024
@@ -297,6 +297,34 @@ def test_nan_to_num_e5m2_overflow_scalar_params_rejected():
         NanToNumFwdOp(N_total=n, dtype=dtype, nan_val=0.0, posinf_val=1e5, neginf_val=-1.0)
     with pytest.raises(ValueError, match=r"neginf=.*not representable"):
         NanToNumFwdOp(N_total=n, dtype=dtype, nan_val=0.0, posinf_val=1.0, neginf_val=-1e5)
+
+
+@pytest.mark.smoke
+def test_nan_to_num_e5m2_rejects_value_above_fp8_max_but_within_fp16():
+    """fp8 explicit replacements must validate against the user-facing dtype.
+
+    ``torch.finfo(torch.float8_e5m2).max`` is 57344.0 while
+    ``torch.finfo(torch.float16).max`` is 65504.0. A replacement like
+    60000.0 fits in the kernel's intermediate fp16 buffer but overflows
+    on the fp8 post-cast and surfaces as ``+Inf``. Validation must
+    therefore target the *user-facing* dtype, not the intermediate, so
+    callers learn at construction time that the value is unsafe.
+    """
+    from tileops.ops.elementwise import NanToNumFwdOp
+
+    n = 1024
+    dtype = torch.float8_e5m2
+    fp8_max = torch.finfo(dtype).max  # 57344.0
+    fp16_max = torch.finfo(torch.float16).max  # 65504.0
+    above_fp8 = 60000.0
+    assert fp8_max < above_fp8 < fp16_max, (
+        "Test premise: 60000 must lie strictly between fp8_e5m2 max "
+        f"({fp8_max}) and fp16 max ({fp16_max})"
+    )
+    with pytest.raises(ValueError, match=r"posinf=.*not representable"):
+        NanToNumFwdOp(N_total=n, dtype=dtype, posinf=above_fp8)
+    with pytest.raises(ValueError, match=r"neginf=.*not representable"):
+        NanToNumFwdOp(N_total=n, dtype=dtype, neginf=-above_fp8)
 
 
 @pytest.mark.smoke

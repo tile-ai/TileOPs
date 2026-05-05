@@ -93,9 +93,39 @@ class UnaryBenchCase:
 
 
 class UnaryBenchmark(BenchmarkBase[_UnaryWorkload]):
-    """Bandwidth-oriented benchmark for unary elementwise ops."""
+    """Bandwidth-oriented benchmark for unary elementwise ops.
+
+    The default FLOP count is ``n_total`` (one fp op per element) which
+    matches the simplest manifest entries (``flops: "N"`` for ``neg``,
+    ``abs``, etc.). Activations and other transcendental ops declare
+    higher manifest coefficients (``sigmoid: 4*N``, ``mish: 7*N``) and
+    must construct the bench with ``flops_per_elem=`` (or pass
+    ``op=`` and let the bench read the op's ``eval_roofline()``) so the
+    TFLOPs column reflects the manifest contract.
+    """
+
+    def __init__(
+        self,
+        workload: _UnaryWorkload,
+        *,
+        flops_per_elem: Optional[int] = None,
+        op: Optional[object] = None,
+    ):
+        super().__init__(workload)
+        self._flops_per_elem = flops_per_elem
+        self._op = op
 
     def calculate_flops(self) -> Optional[float]:
+        if self._op is not None:
+            eval_fn = getattr(self._op, "eval_roofline", None)
+            if eval_fn is not None:
+                flops, _ = eval_fn()
+                return float(flops)
+            per_elem = getattr(self._op, "FLOPS_PER_ELEM", None)
+            if per_elem is not None:
+                return float(per_elem) * self.workload.n_total
+        if self._flops_per_elem is not None:
+            return float(self._flops_per_elem) * self.workload.n_total
         return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
@@ -121,11 +151,11 @@ class R2SmallTensorFixture(FixtureBase):
 def test_r2_small_tensor_unary(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     """R2: Benchmark divmod overhead on small tensors (unary relu, 4K)."""
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     n_total = prod(shape)
     op = ReluFwdOp(N_total=n_total, dtype=dtype)
+    bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -181,7 +211,7 @@ def test_r3_jit_compilation_cost(shape: tuple[int, ...]) -> None:
 
     # Warm: profile subsequent calls
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
+    bm = UnaryBenchmark(test, op=op)
     warm_result = bm.profile(op, x)
 
     BenchmarkReport.record(
@@ -229,11 +259,11 @@ def test_r4_default_strategy_unary(
 ) -> None:
     """R4: Benchmark all 3 unary strategies to confirm DEFAULT_STRATEGY."""
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     n_total = prod(shape)
     op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
+    bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_strategy_unary",
@@ -273,11 +303,11 @@ def test_r4_default_strategy_gelu(
 ) -> None:
     """R4: Benchmark gelu strategies (transcendental op) to confirm DEFAULT_STRATEGY."""
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     n_total = prod(shape)
     op = GeluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
+    bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_strategy_gelu",
@@ -320,11 +350,11 @@ def test_r5_boundary_guard(shape: tuple[int, ...], align_label: str) -> None:
     """
     dtype = torch.float16
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     n_total = prod(shape)
     op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy="explicit_parallel")
+    bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r5_boundary",
@@ -344,6 +374,15 @@ _R6_KERNEL_OPS = [
     ("erf", ErfFwdKernel),
     ("mish", MishFwdKernel),
 ]
+
+# Per-op FLOP coefficients drawn from the manifest roofline column. Used
+# by the kernel-direct benches (R6 / R7) where there is no Op instance
+# from which to read ``eval_roofline()``.
+_MANIFEST_FLOPS_PER_ELEM = {
+    "relu": 2,
+    "erf": 8,
+    "mish": 7,
+}
 
 _R6_THREADS = [128, 256]
 
@@ -391,7 +430,9 @@ def test_r6_threads_comparison(
     dtype = torch.float16
     dtype_str = "float16"
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
+    bm = UnaryBenchmark(
+        test, flops_per_elem=_MANIFEST_FLOPS_PER_ELEM[op_name],
+    )
     inputs = test.gen_inputs()
 
     n_total = prod(shape)
@@ -461,7 +502,9 @@ def test_r7_dtype_npt(
     threads = 256
     dtype_str = "float32" if dtype == torch.float32 else "float16"
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
+    bm = UnaryBenchmark(
+        test, flops_per_elem=_MANIFEST_FLOPS_PER_ELEM["relu"],
+    )
     inputs = test.gen_inputs()
 
     # Build kernel directly with the desired threads/npt so block_size is correct
@@ -498,10 +541,10 @@ def test_relu_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     # ``ReluTest`` (workloads) accepts a flat element count; the bench
     # harness still records the original shape tuple via ``record(...)``.
     test = ReluTest(n_total, dtype)
-    bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     op = ReluFwdOp(N_total=n_total, dtype=dtype)
+    bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -550,10 +593,15 @@ def test_param_free_unary_bench(
     shape = _SHAPES_2D[1]  # (1024, 4096), LLaMA hidden dim
     n_total = prod(shape)
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     op = op_cls(N_total=n_total, dtype=dtype)
+    # Pass ``op=`` so UnaryBenchmark reads ``op.eval_roofline()`` /
+    # ``FLOPS_PER_ELEM`` and reports manifest-aligned TFLOPs (e.g. SiLU
+    # 4*N, Mish 7*N, SELU 5*N) rather than the bandwidth-only 1*N
+    # default. The torch baseline is profiled with the same harness so
+    # both rows share the same FLOP normalization.
+    bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
