@@ -28,7 +28,7 @@ ______________________________________________________________________
 
 - `shape_rules` are Python expressions for shape relationships. `shape` and `shape_rules` fully specify output shape derivation.
 
-- For reduction ops whose `dim` accepts an integer or sequence: validate range → normalize negatives → enforce uniqueness, in that order; do NOT silently wrap out-of-range indices with `% x.ndim`. Concrete `shape_rules` expressions live in each op's manifest entry; lifting them into a shared helper module is tracked as a follow-up.
+- For reduction ops whose `dim` accepts an integer or sequence: validate range → normalize negatives → enforce uniqueness, in that order; do NOT silently wrap out-of-range indices with `% x.ndim`. Canonical predicates live in [`tileops/manifest/shape_rules.py`](../../tileops/manifest/shape_rules.py); manifest entries reference them via the `helper:` URI prefix (e.g. `"helper:dim_range_validity(x, dim)"`, `"helper:dim_uniqueness(x, dim)"`). Inline string expressions remain valid for ops that have not migrated, but new reduction ops MUST use the helper references — the inline form is a transitional fallback only.
 
 - `status` is required. `status: implemented` = all validator levels apply. `status: spec-only` = L0 only.
 

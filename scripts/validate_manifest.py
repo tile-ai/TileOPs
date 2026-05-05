@@ -36,6 +36,63 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
 
+# Add the repo root to sys.path so this script — which lives in scripts/
+# and is launched directly as ``python scripts/validate_manifest.py`` —
+# can import the helper registry from ``tileops.manifest.shape_rules``
+# without requiring the package to be installed in development mode.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tileops.manifest.shape_rules import HELPERS as _SHAPE_RULE_HELPERS  # noqa: E402
+
+# ``shape_rules`` entries that begin with this prefix are routed through
+# the named-helper registry rather than evaluated as free-form Python.
+# Unprefixed rules continue to behave exactly as before.
+_HELPER_RULE_PREFIX = "helper:"
+_HELPER_CALL_RE = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)\s*$", re.DOTALL,
+)
+
+
+def _strip_helper_prefix(rule: str) -> str | None:
+    """Return the bare call expression for a ``helper:`` rule, else ``None``.
+
+    A rule like ``"helper:dim_range_validity(x, dim)"`` becomes
+    ``"dim_range_validity(x, dim)"``. Callers that want the original
+    non-helper rule untouched simply check the return for ``None``.
+    """
+    if not isinstance(rule, str):
+        return None
+    if not rule.startswith(_HELPER_RULE_PREFIX):
+        return None
+    return rule[len(_HELPER_RULE_PREFIX):].strip()
+
+
+def _check_helper_rule(op_name: str, index: int, rule: str) -> list[str]:
+    """L0-time validation of a single ``helper:`` rule.
+
+    The body must parse as ``NAME(args)`` and ``NAME`` must be a key in
+    the helper registry. Argument expressions are not validated here;
+    L2 syntax check parses them, and L2 parity check evaluates them.
+    """
+    body = _strip_helper_prefix(rule)
+    if body is None:
+        return []
+    m = _HELPER_CALL_RE.match(body)
+    if m is None:
+        return [
+            f"[schema] {op_name}: shape_rules[{index}] helper rule "
+            f"{rule!r} must take the form 'helper:NAME(args)'"
+        ]
+    name = m.group(1)
+    if name not in _SHAPE_RULE_HELPERS:
+        known = ", ".join(sorted(_SHAPE_RULE_HELPERS)) or "none"
+        return [
+            f"[schema] {op_name}: shape_rules[{index}] references unknown "
+            f"helper {name!r} (known: {known})"
+        ]
+    return []
+
 # Valid torch dtype base names (without same_as references)
 _TORCH_DTYPES = {
     "float16", "float32", "float64", "bfloat16",
@@ -233,6 +290,12 @@ def check_l0(
                         errors.append(
                             f"[schema] {op_name}: shape_rules[{i}] must be a string"
                         )
+                        continue
+                    # Helper-prefixed rules: validate the registered name
+                    # and call shape at L0 so typos surface during schema
+                    # check rather than as a late ``NameError`` skip
+                    # warning at L2.
+                    errors.extend(_check_helper_rule(op_name, i, rule))
 
         # Reject the deprecated `init_dims` key explicitly (R20 rename).
         # L0 doesn't flag unknown signature keys, so without this check an
@@ -704,14 +767,24 @@ def check_l1(
 # ---------------------------------------------------------------------------
 
 def check_l2(op_name: str, entry: dict) -> list[str]:
-    """Validate shape_rules are parseable Python expressions."""
+    """Validate shape_rules are parseable Python expressions.
+
+    Rules tagged with the ``helper:`` URI prefix are stripped of the
+    prefix before parsing — the call body alone is checked for valid
+    Python syntax. The helper name itself is validated separately at L0
+    via :func:`_check_helper_rule`.
+    """
     errors: list[str] = []
     sig = entry.get("signature", {})
     rules = sig.get("shape_rules", [])
 
     for i, rule in enumerate(rules):
+        if not isinstance(rule, str):
+            continue
+        body = _strip_helper_prefix(rule)
+        target = body if body is not None else rule
         try:
-            ast.parse(rule, mode="eval")
+            ast.parse(target, mode="eval")
         except SyntaxError as exc:
             errors.append(
                 f"[shape] {op_name}: shape_rules[{i}] invalid syntax: {rule!r} ({exc})"
@@ -1507,6 +1580,11 @@ _SHAPE_RULE_BUILTINS: dict = {
     "max": max,
     "broadcast_shapes": _broadcast_shapes,
     "is_broadcastable_to": _is_broadcastable_to,
+    # Named-helper registry (``helper:NAME(args)`` URI scheme). Helpers
+    # become callable in the eval context once the prefix is stripped,
+    # so a rule body like ``dim_range_validity(x, dim)`` resolves the
+    # registered predicate.
+    **_SHAPE_RULE_HELPERS,
 }
 
 
@@ -1534,12 +1612,18 @@ def _eval_shape_rule(
     too lets rules like ``all(d % x.ndim in ... for d in dim)`` resolve
     ``x`` and ``dim`` inside the generator expression.
     """
+    # ``helper:NAME(args)`` rules: route through the registered helper
+    # by stripping the prefix and evaluating the call body. The helper
+    # functions themselves are exposed via ``_SHAPE_RULE_BUILTINS`` so
+    # the call resolves like any other builtin.
+    body = _strip_helper_prefix(rule)
+    eval_target = body if body is not None else rule
     # Defense-in-depth: even though manifest content is trusted (PR review
     # gates it), parse the rule first and reject any dunder attribute
     # access. This closes the classic ``().__class__.__mro__[1].
     # __subclasses__()`` sandbox-escape against the restricted builtins.
     try:
-        tree = ast.parse(rule, mode="eval")
+        tree = ast.parse(eval_target, mode="eval")
     except SyntaxError as exc:
         return False, f"eval error: SyntaxError: {exc}"
     for node in ast.walk(tree):
@@ -1564,7 +1648,7 @@ def _eval_shape_rule(
     eval_globals["__builtins__"] = _SHAPE_RULE_BUILTINS
     try:
         result = eval(  # noqa: S307 — manifest-controlled
-            rule, eval_globals, ctx,
+            eval_target, eval_globals, ctx,
         )
     except Exception as exc:  # noqa: BLE001
         return False, f"eval error: {exc.__class__.__name__}: {exc}"

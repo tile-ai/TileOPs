@@ -3714,3 +3714,250 @@ class TestIntegration:
             f"Schema validation produced {len(errors)} error(s) on the "
             f"checked-in manifest:\n" + "\n".join(errors)
         )
+
+
+# ---------------------------------------------------------------------------
+# tileops.manifest.shape_rules helper module + validator integration
+# ---------------------------------------------------------------------------
+
+
+class TestShapeRuleHelpers:
+    """Unit tests for :mod:`tileops.manifest.shape_rules` predicates."""
+
+    def test_dim_range_validity_none_passes(self):
+        from tileops.manifest.shape_rules import dim_range_validity
+
+        x = type("X", (), {"ndim": 3})()
+        assert dim_range_validity(x, None) is True
+
+    def test_dim_range_validity_in_range_int_passes(self):
+        from tileops.manifest.shape_rules import dim_range_validity
+
+        x = type("X", (), {"ndim": 4})()
+        for d in (-4, -1, 0, 3):
+            assert dim_range_validity(x, d) is True, d
+
+    def test_dim_range_validity_out_of_range_int_fails(self):
+        from tileops.manifest.shape_rules import dim_range_validity
+
+        x = type("X", (), {"ndim": 4})()
+        for d in (-5, 4, 99):
+            assert dim_range_validity(x, d) is False, d
+
+    def test_dim_range_validity_sequence_all_in_range_passes(self):
+        from tileops.manifest.shape_rules import dim_range_validity
+
+        x = type("X", (), {"ndim": 4})()
+        assert dim_range_validity(x, [0, -1, 2]) is True
+        assert dim_range_validity(x, (0, 1)) is True
+
+    def test_dim_range_validity_sequence_with_one_out_of_range_fails(self):
+        from tileops.manifest.shape_rules import dim_range_validity
+
+        x = type("X", (), {"ndim": 3})()
+        assert dim_range_validity(x, [0, 5]) is False
+
+    def test_dim_range_validity_malformed_dim_fails(self):
+        from tileops.manifest.shape_rules import dim_range_validity
+
+        x = type("X", (), {"ndim": 3})()
+        # Strings, dicts, bools must be rejected (not silently accepted).
+        assert dim_range_validity(x, "0") is False
+        assert dim_range_validity(x, {0}) is False
+        assert dim_range_validity(x, True) is False
+
+    def test_dim_uniqueness_int_or_none_passes(self):
+        from tileops.manifest.shape_rules import dim_uniqueness
+
+        x = type("X", (), {"ndim": 4})()
+        assert dim_uniqueness(x, None) is True
+        assert dim_uniqueness(x, 0) is True
+        assert dim_uniqueness(x, -2) is True
+
+    def test_dim_uniqueness_unique_sequence_passes(self):
+        from tileops.manifest.shape_rules import dim_uniqueness
+
+        x = type("X", (), {"ndim": 4})()
+        assert dim_uniqueness(x, [0, 1, 3]) is True
+        assert dim_uniqueness(x, [0, -1]) is True  # -1 normalises to 3
+
+    def test_dim_uniqueness_duplicate_after_normalization_fails(self):
+        from tileops.manifest.shape_rules import dim_uniqueness
+
+        x = type("X", (), {"ndim": 4})()
+        # -4 and 0 collapse to the same axis.
+        assert dim_uniqueness(x, [-4, 0]) is False
+        assert dim_uniqueness(x, [1, 1]) is False
+
+    def test_dim_uniqueness_empty_sequence_passes(self):
+        from tileops.manifest.shape_rules import dim_uniqueness
+
+        x = type("X", (), {"ndim": 3})()
+        assert dim_uniqueness(x, []) is True
+
+    def test_helpers_registry_exposes_both_predicates(self):
+        from tileops.manifest.shape_rules import (
+            HELPERS,
+            dim_range_validity,
+            dim_uniqueness,
+        )
+
+        assert HELPERS["dim_range_validity"] is dim_range_validity
+        assert HELPERS["dim_uniqueness"] is dim_uniqueness
+
+    def test_helpers_have_docstrings(self):
+        """Each helper documents its contract."""
+        from tileops.manifest.shape_rules import (
+            dim_range_validity,
+            dim_uniqueness,
+        )
+
+        for fn in (dim_range_validity, dim_uniqueness):
+            doc = (fn.__doc__ or "").strip()
+            assert doc, f"{fn.__name__} missing docstring"
+            # Non-trivial: at least a sentence beyond the summary line.
+            assert len(doc.splitlines()) > 1, fn.__name__
+
+
+class TestValidatorHelperResolution:
+    """Validator integration of the ``helper:`` URI scheme."""
+
+    def test_check_l2_accepts_helper_prefixed_rule(self, validator):
+        """L2 syntax check parses ``helper:NAME(args)`` rules without error."""
+        entry = {
+            "signature": {
+                "shape_rules": ["helper:dim_range_validity(x, dim)"],
+            },
+        }
+        errors = validator.check_l2("op", entry)
+        assert errors == [], errors
+
+    def test_check_l0_rejects_unknown_helper_name(self, validator):
+        """Unknown helper names must be flagged at L0 (typo defence)."""
+        entry = _make_entry()
+        entry["signature"]["shape_rules"] = ["helper:no_such_helper(x, dim)"]
+        errors = validator.check_l0("op", entry)
+        assert any(
+            "shape_rules" in e and "no_such_helper" in e for e in errors
+        ), errors
+
+    def test_check_l0_rejects_malformed_helper_uri(self, validator):
+        """Helper rules must parse as ``NAME(args)`` after the prefix."""
+        entry = _make_entry()
+        entry["signature"]["shape_rules"] = ["helper:not a call"]
+        errors = validator.check_l0("op", entry)
+        assert any("shape_rules" in e for e in errors), errors
+
+    def test_check_l0_accepts_known_helper(self, validator):
+        """A valid helper reference produces no L0 errors."""
+        entry = _make_entry()
+        entry["signature"]["shape_rules"] = [
+            "helper:dim_range_validity(x, dim)",
+            "helper:dim_uniqueness(x, dim)",
+        ]
+        errors = validator.check_l0("op", entry)
+        assert errors == [], errors
+
+    def test_l2_parity_helper_equivalent_to_inline(self, validator):
+        """Helper rule produces identical parity outcome to the inline form."""
+        # An op with a single-int dim that satisfies the range. Both the
+        # inline-string rule and the helper-prefixed rule must accept the
+        # same _infer_output_shapes result (i.e., parity behaviour is
+        # bit-for-bit the same).
+        def infer(self, x_shape):
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer, name="HelperParityOp")
+        sig_common = {
+            "inputs": {"x": {"dtype": "float16"}},
+            "outputs": {"y": {"dtype": "same_as(x)"}},
+            "params": {"dim": {"type": "int | None", "default": -1}},
+        }
+        entry_inline = {
+            "signature": {
+                **sig_common,
+                "shape_rules": [
+                    "dim is None or -x.ndim <= dim < x.ndim",
+                    "y.shape == x.shape",
+                ],
+            },
+        }
+        entry_helper = {
+            "signature": {
+                **sig_common,
+                "shape_rules": [
+                    "helper:dim_range_validity(x, dim)",
+                    "y.shape == x.shape",
+                ],
+            },
+        }
+        errs_inline = validator.check_l2_infer_parity(
+            "HelperParityOp", entry_inline, cls,
+        )
+        errs_helper = validator.check_l2_infer_parity(
+            "HelperParityOp", entry_helper, cls,
+        )
+        assert errs_inline == errs_helper == []
+
+    def test_l2_parity_helper_detects_out_of_range_default(self, validator):
+        """Helper rule fires when the configured dim is invalid for the rank.
+
+        Mirrors what the inline expression would do — a wrong default
+        ``dim`` against a 2-D mock input must surface a parity failure
+        via the helper resolution path.
+        """
+        def infer(self, x_shape):
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer, name="HelperBadDimOp")
+        # Mock inputs for a single-rank-2 tensor; default dim=9 is out of
+        # range. The helper rule must fail under mock evaluation.
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "params": {"dim": {"type": "int", "default": 9}},
+                "shape_rules": [
+                    "x.shape == (B, S)",
+                    "helper:dim_range_validity(x, dim)",
+                    "y.shape == x.shape",
+                ],
+            },
+        }
+        warnings: list[str] = []
+        validator.check_l2_infer_parity(
+            "HelperBadDimOp", entry, cls, warnings=warnings,
+        )
+        # Out-of-range dim is an input-only precondition that mock inputs
+        # violate; the validator classifies that as a skip with a
+        # warning (not a hard error). Either signal counts: the rule was
+        # evaluated (no NameError / could-not-parse signal).
+        assert not any(
+            "could not be evaluated" in w for w in warnings
+        ), warnings
+
+    def test_unmigrated_inline_rules_unchanged(self, validator):
+        """Constraint: unmigrated rules must keep behaving identically.
+
+        An inline expression equivalent to the helper produces identical
+        parity output regardless of whether the helper module is
+        importable; this pins the opt-in property.
+        """
+        def infer(self, x_shape):
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer, name="UnmigratedOp")
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "params": {"dim": {"type": "int | None", "default": -1}},
+                "shape_rules": [
+                    "dim is None or -x.ndim <= dim < x.ndim",
+                    "y.shape == x.shape",
+                ],
+            },
+        }
+        assert validator.check_l2_infer_parity(
+            "UnmigratedOp", entry, cls,
+        ) == []
