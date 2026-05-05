@@ -112,10 +112,26 @@ def test_clamp_tensor_bounds_parity(input_shape, min_shape, max_shape, dtype):
 
 @pytest.mark.smoke
 def test_clamp_init_signature_pytorch_aligned():
+    """Canonical UnaryOp ctor pattern: (input, dtype, *, kernel_map, tune, min, max).
+
+    PyTorch's ``torch.clamp`` keyword arguments ``min`` / ``max`` are exposed
+    as keyword-only after the ``*`` barrier so the manifest-aligned ctor
+    matches the ``(M_or_shape, dtype, *, kernel_map=None, tune=False,
+    **op_specific_params)`` family pattern. ``forward()`` keeps positional
+    PyTorch alignment ``(input, min, max)``.
+    """
     from tileops.ops.elementwise import ClampFwdOp
-    init_params = list(inspect.signature(ClampFwdOp.__init__).parameters.keys())
+    sig = inspect.signature(ClampFwdOp.__init__)
+    init_params = list(sig.parameters.keys())
     fwd_params = list(inspect.signature(ClampFwdOp.forward).parameters.keys())
-    assert init_params[1:5] == ["input", "min", "max", "dtype"], init_params
+    # __init__: self, input, dtype, *, kernel_map, tune, min, max
+    assert init_params[1:3] == ["input", "dtype"], init_params
+    kw_only = [
+        n for n, p in sig.parameters.items()
+        if p.kind == inspect.Parameter.KEYWORD_ONLY
+    ]
+    assert kw_only == ["kernel_map", "tune", "min", "max"], kw_only
+    # forward: self, input, min, max (positional PyTorch alignment).
     assert fwd_params[1:] == ["input", "min", "max"], fwd_params
 
 
@@ -283,10 +299,17 @@ def test_clamp_min_tensor(input_shape, min_shape):
 
 @pytest.mark.smoke
 def test_clamp_min_init_signature_pytorch_aligned():
+    """Canonical UnaryOp ctor: (input, dtype, *, kernel_map, tune, min)."""
     from tileops.ops.elementwise import ClampMinFwdOp
-    init_params = list(inspect.signature(ClampMinFwdOp.__init__).parameters.keys())
+    sig = inspect.signature(ClampMinFwdOp.__init__)
+    init_params = list(sig.parameters.keys())
     fwd_params = list(inspect.signature(ClampMinFwdOp.forward).parameters.keys())
-    assert init_params[1:4] == ["input", "min", "dtype"], init_params
+    assert init_params[1:3] == ["input", "dtype"], init_params
+    kw_only = [
+        n for n, p in sig.parameters.items()
+        if p.kind == inspect.Parameter.KEYWORD_ONLY
+    ]
+    assert kw_only == ["kernel_map", "tune", "min"], kw_only
     assert fwd_params[1:] == ["input", "min"], fwd_params
 
 
@@ -309,10 +332,17 @@ def test_clamp_max_tensor(input_shape, max_shape):
 
 @pytest.mark.smoke
 def test_clamp_max_init_signature_pytorch_aligned():
+    """Canonical UnaryOp ctor: (input, dtype, *, kernel_map, tune, max)."""
     from tileops.ops.elementwise import ClampMaxFwdOp
-    init_params = list(inspect.signature(ClampMaxFwdOp.__init__).parameters.keys())
+    sig = inspect.signature(ClampMaxFwdOp.__init__)
+    init_params = list(sig.parameters.keys())
     fwd_params = list(inspect.signature(ClampMaxFwdOp.forward).parameters.keys())
-    assert init_params[1:4] == ["input", "max", "dtype"], init_params
+    assert init_params[1:3] == ["input", "dtype"], init_params
+    kw_only = [
+        n for n, p in sig.parameters.items()
+        if p.kind == inspect.Parameter.KEYWORD_ONLY
+    ]
+    assert kw_only == ["kernel_map", "tune", "max"], kw_only
     assert fwd_params[1:] == ["input", "max"], fwd_params
 
 

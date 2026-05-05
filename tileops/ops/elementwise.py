@@ -957,6 +957,8 @@ class ReluFwdOp(UnaryOp):
 
     _op_name = "relu"
     kernel_cls = ReluFwdKernel
+    # Manifest: flops = "2 * N" (1 compare + 1 select per element).
+    FLOPS_PER_ELEM = 2
 
 
 class AddFwdOp(BinaryOp):
@@ -1480,6 +1482,8 @@ class GeluFwdOp(UnaryOp):
 
     _op_name = "gelu"
     kernel_cls = GeluFwdKernel
+    # Manifest: flops = "8 * N" (mul + erf + add + mul + mul ≈ 8 ops/elem).
+    FLOPS_PER_ELEM = 8
 
 
 class SiluFwdOp(UnaryOp):
@@ -1487,6 +1491,8 @@ class SiluFwdOp(UnaryOp):
 
     _op_name = "silu"
     kernel_cls = SiluFwdKernel
+    # Manifest: flops = "4 * N" (sigmoid ~3 + mul = 4 ops/elem).
+    FLOPS_PER_ELEM = 4
 
 
 class SigmoidFwdOp(UnaryOp):
@@ -1512,6 +1518,8 @@ class HardswishFwdOp(UnaryOp):
 
     _op_name = "hardswish"
     kernel_cls = HardswishFwdKernel
+    # Manifest: flops = "7 * N" (add + clamp(2 cmp + 2 sel) + mul + div).
+    FLOPS_PER_ELEM = 7
 
 
 class HardsigmoidFwdOp(UnaryOp):
@@ -1519,6 +1527,8 @@ class HardsigmoidFwdOp(UnaryOp):
 
     _op_name = "hardsigmoid"
     kernel_cls = HardsigmoidFwdKernel
+    # Manifest: flops = "6 * N" (add + clamp(2 cmp + 2 sel) + div).
+    FLOPS_PER_ELEM = 6
 
 
 class MishFwdOp(UnaryOp):
@@ -1526,6 +1536,8 @@ class MishFwdOp(UnaryOp):
 
     _op_name = "mish"
     kernel_cls = MishFwdKernel
+    # Manifest: flops = "7 * N" (softplus ~3 + tanh ~3 + mul).
+    FLOPS_PER_ELEM = 7
 
 
 class SeluFwdOp(UnaryOp):
@@ -1533,6 +1545,8 @@ class SeluFwdOp(UnaryOp):
 
     _op_name = "selu"
     kernel_cls = SeluFwdKernel
+    # Manifest: flops = "5 * N" (compare + (exp + sub + mul) + scale).
+    FLOPS_PER_ELEM = 5
 
 
 # ---------------------------------------------------------------------------
@@ -1633,6 +1647,8 @@ class LeakyReluFwdOp(Op):
 
     _op_name = "leaky_relu"
     _wrapped = None
+    # Manifest: flops = "3 * N" (compare + mul + select per element).
+    FLOPS_PER_ELEM = 3
 
     def __init__(self, N_total: int, dtype: torch.dtype, negative_slope: float = 0.01):
         _validate_scalar_param_repr("negative_slope", negative_slope, dtype, self._op_name)
@@ -1646,6 +1662,11 @@ class LeakyReluFwdOp(Op):
     @property
     def default_kernel_map(self):
         return {"leaky_relu": LeakyReluFwdKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this op instance."""
+        elem = self.dtype.itemsize
+        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1676,6 +1697,8 @@ class EluFwdOp(Op):
 
     _op_name = "elu"
     _wrapped = None
+    # Manifest: flops = "5 * N" (compare + (exp + sub + mul) + scale).
+    FLOPS_PER_ELEM = 5
 
     def __init__(self, N_total: int, dtype: torch.dtype, alpha: float = 1.0):
         _validate_scalar_param_repr("alpha", alpha, dtype, self._op_name)
@@ -1689,6 +1712,11 @@ class EluFwdOp(Op):
     @property
     def default_kernel_map(self):
         return {"elu": EluFwdKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this op instance."""
+        elem = self.dtype.itemsize
+        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1720,6 +1748,8 @@ class HardtanhFwdOp(Op):
 
     _op_name = "hardtanh"
     _wrapped = None
+    # Manifest: flops = "4 * N" (2 compares + 2 selects per element).
+    FLOPS_PER_ELEM = 4
 
     def __init__(self, N_total: int, dtype: torch.dtype,
                  min_val: float = -1.0, max_val: float = 1.0):
@@ -1736,6 +1766,11 @@ class HardtanhFwdOp(Op):
     @property
     def default_kernel_map(self):
         return {"hardtanh": HardtanhFwdKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this op instance."""
+        elem = self.dtype.itemsize
+        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1767,6 +1802,8 @@ class SoftplusFwdOp(Op):
 
     _op_name = "softplus"
     _wrapped = None
+    # Manifest: flops = "6 * N" (mul + threshold cmp + exp + log1p + div).
+    FLOPS_PER_ELEM = 6
 
     def __init__(self, N_total: int, dtype: torch.dtype,
                  beta: float = 1.0, threshold: float = 20.0):
@@ -1783,6 +1820,11 @@ class SoftplusFwdOp(Op):
     @property
     def default_kernel_map(self):
         return {"softplus": SoftplusFwdKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this op instance."""
+        elem = self.dtype.itemsize
+        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -1971,9 +2013,11 @@ class ClampFwdOp(_ClampTensorBase):
 
     Args:
         input: Shape of the input tensor.
+        dtype: Torch dtype for all operands.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune (forwarded to the underlying kernel).
         min: Shape of the lower-bound tensor, or ``None`` for no lower bound.
         max: Shape of the upper-bound tensor, or ``None`` for no upper bound.
-        dtype: Torch dtype for all operands.
 
     Raises:
         ValueError: If both ``min`` and ``max`` are ``None``.
@@ -1981,13 +2025,20 @@ class ClampFwdOp(_ClampTensorBase):
 
     _op_name = "clamp"
     _wrapped = None
+    # Conservative roofline upper bound: 4 fp ops per element (2 compares
+    # + 2 selects). When only one bound is provided the actual cost halves
+    # to 2*N, but 4*N matches the manifest's two-sided clamp convention.
+    FLOPS_PER_ELEM = 4
 
     def __init__(
         self,
         input: tuple,  # noqa: A002 — manifest-aligned PyTorch param name
+        dtype: torch.dtype = torch.float32,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
         min: Optional[tuple] = None,  # noqa: A002 — manifest-aligned PyTorch param name
         max: Optional[tuple] = None,  # noqa: A002 — manifest-aligned PyTorch param name
-        dtype: torch.dtype = torch.float32,
     ):
         if min is None and max is None:
             raise ValueError(
@@ -1998,6 +2049,7 @@ class ClampFwdOp(_ClampTensorBase):
         self.min_shape = None if min is None else tuple(min)
         self.max_shape = None if max is None else tuple(max)
         self.dtype = dtype
+        self.tune = tune
         broadcast_args = [self.input_shape]
         if self.min_shape is not None:
             broadcast_args.append(self.min_shape)
@@ -2005,7 +2057,9 @@ class ClampFwdOp(_ClampTensorBase):
             broadcast_args.append(self.max_shape)
         self.out_shape = tuple(torch.broadcast_shapes(*broadcast_args))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
-        self.kernel = ClampTensorFwdKernel(
+        self.dispatch_kernel(kernel_map)
+        clamp_tensor_cls = self.kernel_map["clamp_tensor"]
+        self.kernel = clamp_tensor_cls(
             self.N_total, dtype,
             has_min=self.min_shape is not None,
             has_max=self.max_shape is not None,
@@ -2016,6 +2070,11 @@ class ClampFwdOp(_ClampTensorBase):
     @property
     def default_kernel_map(self):
         return {"clamp_tensor": ClampTensorFwdKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this op instance."""
+        elem = self.dtype.itemsize
+        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
 
     def _eager_forward(
         self,
@@ -2079,25 +2138,35 @@ class ClampMinFwdOp(_ClampTensorBase):
 
     Args:
         input: Shape of the input tensor.
-        min: Shape of the lower-bound tensor.
         dtype: Torch dtype.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune.
+        min: Shape of the lower-bound tensor.
     """
 
     _op_name = "clamp_min"
     _wrapped = None
+    # Single-sided clamp: 1 compare + 1 select per element.
+    FLOPS_PER_ELEM = 2
 
     def __init__(
         self,
         input: tuple,  # noqa: A002
-        min: tuple,    # noqa: A002
         dtype: torch.dtype,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        min: tuple,    # noqa: A002
     ):
         self.input_shape = tuple(input)
         self.min_shape = tuple(min)
         self.dtype = dtype
+        self.tune = tune
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.min_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
-        self.kernel = ClampTensorFwdKernel(
+        self.dispatch_kernel(kernel_map)
+        clamp_tensor_cls = self.kernel_map["clamp_tensor"]
+        self.kernel = clamp_tensor_cls(
             self.N_total, dtype, has_min=True, has_max=False,
         )
         self._instance_key = id(self)
@@ -2106,6 +2175,11 @@ class ClampMinFwdOp(_ClampTensorBase):
     @property
     def default_kernel_map(self):
         return {"clamp_tensor": ClampTensorFwdKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this op instance."""
+        elem = self.dtype.itemsize
+        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
 
     def _eager_forward(
         self, input: torch.Tensor, min: torch.Tensor,  # noqa: A002
@@ -2144,25 +2218,35 @@ class ClampMaxFwdOp(_ClampTensorBase):
 
     Args:
         input: Shape of the input tensor.
-        max: Shape of the upper-bound tensor.
         dtype: Torch dtype.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune.
+        max: Shape of the upper-bound tensor.
     """
 
     _op_name = "clamp_max"
     _wrapped = None
+    # Single-sided clamp: 1 compare + 1 select per element.
+    FLOPS_PER_ELEM = 2
 
     def __init__(
         self,
         input: tuple,  # noqa: A002
-        max: tuple,    # noqa: A002
         dtype: torch.dtype,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        max: tuple,    # noqa: A002
     ):
         self.input_shape = tuple(input)
         self.max_shape = tuple(max)
         self.dtype = dtype
+        self.tune = tune
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.max_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
-        self.kernel = ClampTensorFwdKernel(
+        self.dispatch_kernel(kernel_map)
+        clamp_tensor_cls = self.kernel_map["clamp_tensor"]
+        self.kernel = clamp_tensor_cls(
             self.N_total, dtype, has_min=False, has_max=True,
         )
         self._instance_key = id(self)
@@ -2171,6 +2255,11 @@ class ClampMaxFwdOp(_ClampTensorBase):
     @property
     def default_kernel_map(self):
         return {"clamp_tensor": ClampTensorFwdKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this op instance."""
+        elem = self.dtype.itemsize
+        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
 
     def _eager_forward(
         self, input: torch.Tensor, max: torch.Tensor,  # noqa: A002
@@ -2209,20 +2298,29 @@ class ClampScalarFwdOp(Op):
 
     Args:
         input: Shape of the input tensor.
+        dtype: Torch dtype.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune.
         min: Lower bound (Number or None).
         max: Upper bound (Number or None).
-        dtype: Torch dtype.
     """
 
     _op_name = "clamp"
     _wrapped = None
+    # Manifest: flops = "4 * N" (2 compares + 2 selects per element). When
+    # only one bound is provided the actual cost halves to 2*N, but 4*N is
+    # the upper bound matching the manifest's two-sided clamp convention.
+    FLOPS_PER_ELEM = 4
 
     def __init__(
         self,
         input: tuple,  # noqa: A002
+        dtype: torch.dtype = torch.float32,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
         min: Optional[float] = None,  # noqa: A002
         max: Optional[float] = None,  # noqa: A002
-        dtype: torch.dtype = torch.float32,
     ):
         if min is None and max is None:
             raise ValueError(
@@ -2236,18 +2334,26 @@ class ClampScalarFwdOp(Op):
         self.input_shape = tuple(input)
         self.N_total = prod(self.input_shape) if self.input_shape else 1
         self.dtype = dtype
+        self.tune = tune
         self.min = min
         self.max = max
         # Backwards-compat aliases for legacy callers.
         self.min_val = min
         self.max_val = max
-        self.kernel = ClampFwdKernel(self.N_total, dtype, min_val=min, max_val=max)
+        self.dispatch_kernel(kernel_map)
+        clamp_cls = self.kernel_map["clamp"]
+        self.kernel = clamp_cls(self.N_total, dtype, min_val=min, max_val=max)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
         return {"clamp": ClampFwdKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this op instance."""
+        elem = self.dtype.itemsize
+        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
         orig_shape = input.shape
@@ -2457,6 +2563,8 @@ class NanToNumFwdOp(Op):
 
     _op_name = "nan_to_num"
     _wrapped = None
+    # Manifest: flops = "6 * N" (isnan + isposinf + isneginf + 3 selects).
+    FLOPS_PER_ELEM = 6
 
     def __init__(self, N_total: int, dtype: torch.dtype,
                  nan_val: float = 0.0, posinf_val: float = 1e4, neginf_val: float = -1e4):
@@ -2477,6 +2585,11 @@ class NanToNumFwdOp(Op):
     @property
     def default_kernel_map(self):
         return {"nan_to_num": NanToNumFwdKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return ``(flops, bytes)`` for this op instance."""
+        elem = self.dtype.itemsize
+        return self.FLOPS_PER_ELEM * self.N_total, 2 * self.N_total * elem
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape

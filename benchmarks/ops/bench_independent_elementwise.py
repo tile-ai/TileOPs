@@ -5,15 +5,19 @@ Profiles TileOPs vs PyTorch baselines using DNN-realistic 2-D shapes
 """
 
 from math import prod
-from typing import Optional
+from typing import Callable, Optional
 
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
+from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
     AlibiFwdOp,
+    ClampFwdOp,
+    ClampMaxFwdOp,
+    ClampMinFwdOp,
     ClampScalarFwdOp,
     EluFwdOp,
     HardtanhFwdOp,
@@ -537,6 +541,192 @@ def test_fp8_selection_bench(
 
         result_bl = bm.profile(baseline, x, mask)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+
+# ===========================================================================
+# Manifest-driven per-op benchmarks for the four Clamp variants and
+# NanToNumFwdOp. Each op gets its own ``test_*_manifest_bench`` function so
+# the manifest validator (``scripts/validate_manifest.py`` →
+# ``check_l4_benchmark``) can match each ``load_workloads("<OpName>FwdOp")``
+# / ``ManifestBenchmark("<OpName>FwdOp", ...)`` call one-to-one.
+# ===========================================================================
+
+
+class _ShapeDtypeWorkload:
+    """Minimal :class:`ShapeDtypeWorkload` adapter for ManifestBenchmark."""
+
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.dtype = dtype
+
+
+def _scalar_manifest_params(op_name: str) -> list:
+    """Pytest params for ops whose workload has a single ``input_shape`` field.
+
+    Used by the scalar-bound clamp and nan_to_num entries (no
+    ``min_shape`` / ``max_shape`` Tensor companions).
+    """
+    workloads = load_workloads(op_name)
+    params = []
+    for w in workloads:
+        shape = tuple(w["input_shape"])
+        label = w.get("label", "x".join(str(s) for s in shape))
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(shape, dtype, id=f"{label}-{dtype_str}"))
+    return params
+
+
+def _tensor_manifest_params(
+    op_name: str, bound_keys: tuple[str, ...],
+) -> list:
+    """Pytest params for Tensor-bound clamp variants.
+
+    ``bound_keys`` enumerates the workload-side shape fields that carry
+    Tensor bounds, e.g. ``("min_shape",)`` for ClampMinFwdOp or
+    ``("min_shape", "max_shape")`` for ClampFwdOp. Each manifest workload
+    contributes ``(input_shape, *bound_shapes, dtype)`` per dtype.
+    """
+    workloads = load_workloads(op_name)
+    params = []
+    for w in workloads:
+        input_shape = tuple(w["input_shape"])
+        bound_shapes = tuple(tuple(w[k]) for k in bound_keys)
+        label = w.get("label", "x".join(str(s) for s in input_shape))
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(
+                pytest.param(
+                    input_shape, bound_shapes, dtype,
+                    id=f"{label}-{dtype_str}",
+                ),
+            )
+    return params
+
+
+def _profile_and_record_manifest(
+    op,
+    bm: ManifestBenchmark,
+    inputs: tuple,
+    baseline_fn: Callable,
+    params: dict,
+) -> None:
+    """Profile op + torch baseline and record both rows."""
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
+    BenchmarkReport.record(op, params, result, tag="tileops")
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, params, result_bl, tag="torch")
+
+
+_CLAMP_OP = "ClampFwdOp"
+
+
+@pytest.mark.parametrize(
+    "input_shape, bound_shapes, dtype",
+    _tensor_manifest_params(_CLAMP_OP, ("min_shape", "max_shape")),
+)
+def test_clamp_manifest_bench(
+    input_shape: tuple, bound_shapes: tuple, dtype: torch.dtype,
+) -> None:
+    min_shape, max_shape = bound_shapes
+    inp = torch.randn(input_shape, device="cuda", dtype=dtype)
+    mn = torch.randn(min_shape, device="cuda", dtype=dtype) - 0.5
+    mx = torch.randn(max_shape, device="cuda", dtype=dtype) + 0.5
+    op = ClampFwdOp(input=input_shape, dtype=dtype, min=min_shape, max=max_shape)
+    bm = ManifestBenchmark(_CLAMP_OP, op, _ShapeDtypeWorkload(input_shape, dtype))
+    _profile_and_record_manifest(
+        op, bm, (inp, mn, mx),
+        lambda x, lo, hi: torch.clamp(x, lo, hi),
+        {"shape": input_shape, "dtype": dtype, "n_total": inp.numel()},
+    )
+
+
+_CLAMP_SCALAR_OP = "ClampScalarFwdOp"
+
+
+@pytest.mark.parametrize(
+    "shape, dtype", _scalar_manifest_params(_CLAMP_SCALAR_OP),
+)
+def test_clamp_scalar_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    inp = torch.randn(shape, device="cuda", dtype=dtype)
+    op = ClampScalarFwdOp(input=shape, dtype=dtype, min=-0.5, max=0.5)
+    bm = ManifestBenchmark(_CLAMP_SCALAR_OP, op, _ShapeDtypeWorkload(shape, dtype))
+    _profile_and_record_manifest(
+        op, bm, (inp,),
+        lambda x: torch.clamp(x, -0.5, 0.5),
+        {"shape": shape, "dtype": dtype, "n_total": inp.numel()},
+    )
+
+
+_CLAMP_MIN_OP = "ClampMinFwdOp"
+
+
+@pytest.mark.parametrize(
+    "input_shape, bound_shapes, dtype",
+    _tensor_manifest_params(_CLAMP_MIN_OP, ("min_shape",)),
+)
+def test_clamp_min_manifest_bench(
+    input_shape: tuple, bound_shapes: tuple, dtype: torch.dtype,
+) -> None:
+    (min_shape,) = bound_shapes
+    inp = torch.randn(input_shape, device="cuda", dtype=dtype)
+    mn = torch.randn(min_shape, device="cuda", dtype=dtype) - 0.5
+    op = ClampMinFwdOp(input=input_shape, dtype=dtype, min=min_shape)
+    bm = ManifestBenchmark(_CLAMP_MIN_OP, op, _ShapeDtypeWorkload(input_shape, dtype))
+    _profile_and_record_manifest(
+        op, bm, (inp, mn),
+        lambda x, lo: torch.clamp_min(x, lo),
+        {"shape": input_shape, "dtype": dtype, "n_total": inp.numel()},
+    )
+
+
+_CLAMP_MAX_OP = "ClampMaxFwdOp"
+
+
+@pytest.mark.parametrize(
+    "input_shape, bound_shapes, dtype",
+    _tensor_manifest_params(_CLAMP_MAX_OP, ("max_shape",)),
+)
+def test_clamp_max_manifest_bench(
+    input_shape: tuple, bound_shapes: tuple, dtype: torch.dtype,
+) -> None:
+    (max_shape,) = bound_shapes
+    inp = torch.randn(input_shape, device="cuda", dtype=dtype)
+    mx = torch.randn(max_shape, device="cuda", dtype=dtype) + 0.5
+    op = ClampMaxFwdOp(input=input_shape, dtype=dtype, max=max_shape)
+    bm = ManifestBenchmark(_CLAMP_MAX_OP, op, _ShapeDtypeWorkload(input_shape, dtype))
+    _profile_and_record_manifest(
+        op, bm, (inp, mx),
+        lambda x, hi: torch.clamp_max(x, hi),
+        {"shape": input_shape, "dtype": dtype, "n_total": inp.numel()},
+    )
+
+
+_NAN_TO_NUM_OP = "NanToNumFwdOp"
+
+
+@pytest.mark.parametrize(
+    "shape, dtype", _scalar_manifest_params(_NAN_TO_NUM_OP),
+)
+def test_nan_to_num_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    inp = torch.randn(shape, device="cuda", dtype=dtype)
+    flat = inp.view(-1)
+    quarter = flat.numel() // 4
+    flat[:quarter] = float("nan")
+    flat[quarter:2 * quarter] = float("inf")
+    flat[2 * quarter:3 * quarter] = float("-inf")
+    op = NanToNumFwdOp(N_total=inp.numel(), dtype=dtype)
+    bm = ManifestBenchmark(_NAN_TO_NUM_OP, op, _ShapeDtypeWorkload(shape, dtype))
+    _profile_and_record_manifest(
+        op, bm, (inp,),
+        lambda x: torch.nan_to_num(x, 0.0, 1e4, -1e4),
+        {"shape": shape, "dtype": dtype, "n_total": inp.numel()},
+    )
 
 
 if __name__ == "__main__":

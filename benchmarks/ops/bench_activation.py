@@ -13,19 +13,33 @@ compares against PyTorch baseline to determine optimal DEFAULT_STRATEGY.
 """
 
 from math import prod
-from typing import Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
 from tileops.kernels.elementwise import (
     ErfFwdKernel,
     MishFwdKernel,
     ReluFwdKernel,
     _make_unary_explicit,
 )
-from tileops.ops.elementwise import ErfFwdOp, GeluFwdOp, MishFwdOp, ReluFwdOp
+from tileops.manifest import load_workloads
+from tileops.ops.elementwise import (
+    EluFwdOp,
+    ErfFwdOp,
+    GeluFwdOp,
+    HardsigmoidFwdOp,
+    HardswishFwdOp,
+    HardtanhFwdOp,
+    LeakyReluFwdOp,
+    MishFwdOp,
+    ReluFwdOp,
+    SeluFwdOp,
+    SiluFwdOp,
+    SoftplusFwdOp,
+)
 from workloads.activation import ReluTest
 from workloads.workload_base import FixtureBase
 
@@ -501,6 +515,259 @@ def test_relu_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ===========================================================================
+# Manifest-driven per-op benchmarks for the elementwise_unary_activation
+# family. Each op has its own ``test_*_bench`` function so the validator
+# (``scripts/validate_manifest.py`` → ``check_l4_benchmark``) can match each
+# ``load_workloads("<OpName>FwdOp")`` /
+# ``ManifestBenchmark("<OpName>FwdOp", ...)`` call one-to-one. A shared
+# ``_activation_params_from_manifest`` helper expands the manifest's
+# ``input_shape`` / ``dtypes`` workload entries to pytest params; a shared
+# ``_profile_and_record`` helper handles the profile + record pair.
+# ===========================================================================
+
+
+class _ActivationWorkload:
+    """Minimal :class:`ShapeDtypeWorkload` adapter for activation ops."""
+
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.dtype = dtype
+
+
+def _activation_params_from_manifest(op_name: str) -> list:
+    """Convert ``input_shape`` / ``dtypes`` workload entries to pytest params.
+
+    The manifest's ``elementwise_unary_activation`` family declares its
+    tensor input as ``input`` (PyTorch alignment) so workload entries use
+    ``input_shape`` rather than ``x_shape``. The shared
+    ``workloads_to_params`` helper assumes ``x_shape``; this local helper
+    adapts ``load_workloads`` output for the activation family.
+    """
+    workloads = load_workloads(op_name)
+    params = []
+    for w in workloads:
+        shape = tuple(w["input_shape"])
+        label = w.get("label", "x".join(str(s) for s in shape))
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(shape, dtype, id=f"{label}-{dtype_str}"))
+    return params
+
+
+def _profile_and_record(
+    op,
+    bm: ManifestBenchmark,
+    inputs: tuple,
+    baseline_fn: Callable,
+    params: dict,
+) -> None:
+    """Profile op and torch baseline against the same inputs and record both."""
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
+    BenchmarkReport.record(op, params, result, tag="tileops")
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, params, result_bl, tag="torch")
+
+
+def _randn(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    return (torch.randn(shape, device="cuda", dtype=dtype),)
+
+
+# ---------------------------------------------------------------------------
+# Per-op manifest-driven benches (12 unary activation ops)
+# ---------------------------------------------------------------------------
+
+_RELU_OP = "ReluFwdOp"
+
+
+@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_RELU_OP))
+def test_relu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    inputs = _randn(shape, dtype)
+    n_total = inputs[0].numel()
+    op = ReluFwdOp(N_total=n_total, dtype=dtype)
+    bm = ManifestBenchmark(_RELU_OP, op, _ActivationWorkload(shape, dtype))
+    _profile_and_record(
+        op, bm, inputs, torch.relu,
+        {"shape": shape, "dtype": dtype, "n_total": n_total},
+    )
+
+
+_GELU_OP = "GeluFwdOp"
+
+
+@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_GELU_OP))
+def test_gelu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    import torch.nn.functional as F
+    inputs = _randn(shape, dtype)
+    n_total = inputs[0].numel()
+    op = GeluFwdOp(N_total=n_total, dtype=dtype)
+    bm = ManifestBenchmark(_GELU_OP, op, _ActivationWorkload(shape, dtype))
+    _profile_and_record(
+        op, bm, inputs, F.gelu,
+        {"shape": shape, "dtype": dtype, "n_total": n_total},
+    )
+
+
+_SILU_OP = "SiluFwdOp"
+
+
+@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_SILU_OP))
+def test_silu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    import torch.nn.functional as F
+    inputs = _randn(shape, dtype)
+    n_total = inputs[0].numel()
+    op = SiluFwdOp(N_total=n_total, dtype=dtype)
+    bm = ManifestBenchmark(_SILU_OP, op, _ActivationWorkload(shape, dtype))
+    _profile_and_record(
+        op, bm, inputs, F.silu,
+        {"shape": shape, "dtype": dtype, "n_total": n_total},
+    )
+
+
+_HARDSWISH_OP = "HardswishFwdOp"
+
+
+@pytest.mark.parametrize(
+    "shape, dtype", _activation_params_from_manifest(_HARDSWISH_OP),
+)
+def test_hardswish_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    import torch.nn.functional as F
+    inputs = _randn(shape, dtype)
+    n_total = inputs[0].numel()
+    op = HardswishFwdOp(N_total=n_total, dtype=dtype)
+    bm = ManifestBenchmark(_HARDSWISH_OP, op, _ActivationWorkload(shape, dtype))
+    _profile_and_record(
+        op, bm, inputs, F.hardswish,
+        {"shape": shape, "dtype": dtype, "n_total": n_total},
+    )
+
+
+_HARDSIGMOID_OP = "HardsigmoidFwdOp"
+
+
+@pytest.mark.parametrize(
+    "shape, dtype", _activation_params_from_manifest(_HARDSIGMOID_OP),
+)
+def test_hardsigmoid_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    import torch.nn.functional as F
+    inputs = _randn(shape, dtype)
+    n_total = inputs[0].numel()
+    op = HardsigmoidFwdOp(N_total=n_total, dtype=dtype)
+    bm = ManifestBenchmark(_HARDSIGMOID_OP, op, _ActivationWorkload(shape, dtype))
+    _profile_and_record(
+        op, bm, inputs, F.hardsigmoid,
+        {"shape": shape, "dtype": dtype, "n_total": n_total},
+    )
+
+
+_MISH_OP = "MishFwdOp"
+
+
+@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_MISH_OP))
+def test_mish_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    import torch.nn.functional as F
+    inputs = _randn(shape, dtype)
+    n_total = inputs[0].numel()
+    op = MishFwdOp(N_total=n_total, dtype=dtype)
+    bm = ManifestBenchmark(_MISH_OP, op, _ActivationWorkload(shape, dtype))
+    _profile_and_record(
+        op, bm, inputs, F.mish,
+        {"shape": shape, "dtype": dtype, "n_total": n_total},
+    )
+
+
+_SELU_OP = "SeluFwdOp"
+
+
+@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_SELU_OP))
+def test_selu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    import torch.nn.functional as F
+    inputs = _randn(shape, dtype)
+    n_total = inputs[0].numel()
+    op = SeluFwdOp(N_total=n_total, dtype=dtype)
+    bm = ManifestBenchmark(_SELU_OP, op, _ActivationWorkload(shape, dtype))
+    _profile_and_record(
+        op, bm, inputs, F.selu,
+        {"shape": shape, "dtype": dtype, "n_total": n_total},
+    )
+
+
+_LEAKY_RELU_OP = "LeakyReluFwdOp"
+
+
+@pytest.mark.parametrize(
+    "shape, dtype", _activation_params_from_manifest(_LEAKY_RELU_OP),
+)
+def test_leaky_relu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    import torch.nn.functional as F
+    inputs = _randn(shape, dtype)
+    n_total = inputs[0].numel()
+    op = LeakyReluFwdOp(N_total=n_total, dtype=dtype)
+    bm = ManifestBenchmark(_LEAKY_RELU_OP, op, _ActivationWorkload(shape, dtype))
+    _profile_and_record(
+        op, bm, inputs, lambda x: F.leaky_relu(x, 0.01),
+        {"shape": shape, "dtype": dtype, "n_total": n_total},
+    )
+
+
+_ELU_OP = "EluFwdOp"
+
+
+@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_ELU_OP))
+def test_elu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    import torch.nn.functional as F
+    inputs = _randn(shape, dtype)
+    n_total = inputs[0].numel()
+    op = EluFwdOp(N_total=n_total, dtype=dtype)
+    bm = ManifestBenchmark(_ELU_OP, op, _ActivationWorkload(shape, dtype))
+    _profile_and_record(
+        op, bm, inputs, F.elu,
+        {"shape": shape, "dtype": dtype, "n_total": n_total},
+    )
+
+
+_HARDTANH_OP = "HardtanhFwdOp"
+
+
+@pytest.mark.parametrize(
+    "shape, dtype", _activation_params_from_manifest(_HARDTANH_OP),
+)
+def test_hardtanh_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    import torch.nn.functional as F
+    inputs = _randn(shape, dtype)
+    n_total = inputs[0].numel()
+    op = HardtanhFwdOp(N_total=n_total, dtype=dtype)
+    bm = ManifestBenchmark(_HARDTANH_OP, op, _ActivationWorkload(shape, dtype))
+    _profile_and_record(
+        op, bm, inputs, F.hardtanh,
+        {"shape": shape, "dtype": dtype, "n_total": n_total},
+    )
+
+
+_SOFTPLUS_OP = "SoftplusFwdOp"
+
+
+@pytest.mark.parametrize(
+    "shape, dtype", _activation_params_from_manifest(_SOFTPLUS_OP),
+)
+def test_softplus_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
+    import torch.nn.functional as F
+    inputs = _randn(shape, dtype)
+    n_total = inputs[0].numel()
+    op = SoftplusFwdOp(N_total=n_total, dtype=dtype)
+    bm = ManifestBenchmark(_SOFTPLUS_OP, op, _ActivationWorkload(shape, dtype))
+    _profile_and_record(
+        op, bm, inputs, F.softplus,
+        {"shape": shape, "dtype": dtype, "n_total": n_total},
+    )
 
 
 if __name__ == "__main__":
