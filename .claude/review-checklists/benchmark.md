@@ -1,4 +1,4 @@
-For `[Bench]` and `[Benchmark]`. Benchmarks live downstream of every other layer and must never silently substitute for tests or for the manifest.
+For `[Bench]` PRs. Benchmarks live downstream of every other layer and must never silently substitute for tests or for the manifest.
 
 Load `.claude/domain-rules/benchmark.md` before reviewing.
 
