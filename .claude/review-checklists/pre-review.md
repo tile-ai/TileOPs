@@ -1,6 +1,6 @@
 Common rules for every checklist in this folder. Load this file before any specific checklist.
 
-**Load `docs/design/trust-model.md` first.** It defines the layered trust boundaries (manifest → test → implementation → benchmark) that every title-specific checklist enforces. Read it before any other checklist in this folder so cross-layer rules can be cited concretely rather than paraphrased.
+**Load `docs/design/trust-model.md` first.** It defines the layered trust boundaries (manifest → test (incl. `workloads/`) → implementation → benchmark) that every title-specific checklist enforces. Read it before any other checklist in this folder so cross-layer rules can be cited concretely rather than paraphrased.
 
 **Trust enforcement strictness by PR provenance.** The labels applied by foundry's `creating-pull-request` skill and gatekeeper agent — `automated`, `needs-review`, `nightshift` — mark a PR as agent-driven. The label set is fixed and matches foundry's PR-level taxonomy exactly; do not extend it with historical labels (e.g. `all-ai-powered`), project-local labels, or non-label heuristics (author identity, commit-message shape, branch name). If foundry changes its label set, update this directive in lockstep.
 
