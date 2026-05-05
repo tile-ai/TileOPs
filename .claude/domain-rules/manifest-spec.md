@@ -1,8 +1,7 @@
 ## Boundary
 
 - **OWNS**: `tileops/manifest/`
-- **MUST NOT modify**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `benchmarks/`
-- **MAY READ**: PyTorch public API (to match signatures)
+- **MUST NOT WRITE**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `benchmarks/`
 - Manifest changes require human review in a separate PR.
 
 → [trust-model.md §Manifest](../../docs/design/trust-model.md#manifest)
@@ -26,4 +25,5 @@ ______________________________________________________________________
 - No `Optional[Tensor]` in manifest. Ops with conditional inputs split into variant entries linked by `variant_of`, which is single-level (variant → primary, no chaining). Variants share `source.kernel` and `source.op`; each has its own `signature`, `workloads`, `roofline`.
 - Tensor layout defaults to contiguous row-major. When an op requires non-default layout (e.g., `channels_last`), add `layout` field to the tensor declaration. `shape` dimension names reflect actual memory order.
 - `source.kernel_map` is the Op→Kernel dispatch registration table (`dispatch_key: KernelClassName`). It declares which Kernels an Op uses so agents know what to implement. Required when `status: implemented`, optional when `status: spec-only`. Does not describe dispatch strategy.
-- Never modify manifest to match non-conforming code. If code doesn't match spec: set `status: spec-only` and add a comment explaining the discrepancy, then fix implementation in a follow-up PR. Never remove params, vars, or shape_rules to silence validator errors.
+- Never modify manifest to match non-conforming code. If code doesn't match spec: set `status: spec-only` and fix implementation in a follow-up PR. Never remove params, vars, or shape_rules to silence validator errors.
+- No descriptive comments in manifest YAML. Reasons for a particular spec choice belong in the commit message that introduced it; ongoing drift between spec and implementation is tracked by `follow-up`-labelled GitHub issues, not by inline YAML notes. Structured constraints (`status`, `dtype_combos`, `shape_rules`, `parity_opt_out`) carry the machine-readable signal.

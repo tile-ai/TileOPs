@@ -1,8 +1,7 @@
 ## Boundary
 
 - **OWNS**: `tileops/ops/`, `tileops/kernels/`
-- **MUST NOT modify**: `tests/`, `benchmarks/`, `workloads/`, `tileops/manifest/`
-- **MAY READ**: `tests/` (behavior understanding), `workloads/`, `tileops/manifest/`
+- **MUST NOT WRITE**: `tests/`, `benchmarks/`, `workloads/`, `tileops/manifest/`
 
 → [trust-model.md §Implementation](../../docs/design/trust-model.md#implementation) | [ops-design.md](../../docs/design/ops-design.md)
 

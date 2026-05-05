@@ -7,7 +7,7 @@
 RMSNormFwdOp:
   ref_api: "torch.nn.functional.rms_norm"
   family: normalization
-  status: spec-only  # impl ctor takes (N, dim, eps=1e-6) instead of normalized_shape/eps=None; align in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -55,7 +55,7 @@ RMSNormFwdOp:
 LayerNormFwdOp:
   ref_api: "torch.nn.functional.layer_norm"
   family: normalization
-  status: spec-only  # impl __init__ takes M in addition to N; align in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -105,7 +105,7 @@ LayerNormFwdOp:
 AdaLayerNormFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only  # impl __init__ takes M in addition to N; align in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -150,7 +150,7 @@ AdaLayerNormFwdOp:
 AdaLayerNormZeroFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only  # impl __init__ takes M in addition to N; align in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -197,7 +197,7 @@ AdaLayerNormZeroFwdOp:
 FusedAddLayerNormFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only  # impl __init__ takes M in addition to N; align in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -247,7 +247,7 @@ FusedAddLayerNormFwdOp:
 FusedAddRMSNormFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only  # impl __init__ takes M in addition to N; align in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -302,7 +302,7 @@ FusedAddRMSNormFwdOp:
 BatchNormFwdOp:
   ref_api: "torch.nn.functional.batch_norm"
   family: normalization
-  status: spec-only  # impl __init__ takes N and spatial in addition to C, and emits mean/rstd outputs not in PyTorch's public return; align in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -356,7 +356,7 @@ BatchNormFwdOp:
 BatchNormBwdOp:
   ref_api: "torch.nn.functional.batch_norm"
   family: normalization
-  status: spec-only  # impl __init__ takes N and spatial in addition to C; PyTorch does not expose a public functional bwd, signature is the TileOPs convention; align in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -410,7 +410,7 @@ BatchNormBwdOp:
 GroupNormFwdOp:
   ref_api: "torch.nn.functional.group_norm"
   family: normalization
-  status: spec-only  # impl uses G instead of num_groups; fix in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -457,7 +457,7 @@ GroupNormFwdOp:
 InstanceNormFwdOp:
   ref_api: "torch.nn.functional.instance_norm"
   family: normalization
-  status: spec-only  # impl __init__ takes N and spatial in addition to C; align in follow-up PR
+  status: spec-only
 
   signature:
     inputs:

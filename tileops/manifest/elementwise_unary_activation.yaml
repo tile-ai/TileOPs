@@ -548,17 +548,6 @@ ClampMaxFwdOp:
 NanToNumFwdOp:
   ref_api: "torch.nan_to_num"
   family: elementwise
-  # status: spec-only — current tileops/ops/elementwise.py:NanToNumFwdOp
-  # does not conform to this spec:
-  #   - __init__ takes (N_total, dtype, nan_val, posinf_val, neginf_val)
-  #     instead of the PyTorch-aligned (input, nan, posinf, neginf) form.
-  #   - param names are (nan_val, posinf_val, neginf_val) instead of
-  #     (nan, posinf, neginf).
-  #   - posinf/neginf default to 1e4/-1e4 instead of None (PyTorch's
-  #     default sentinel meaning "use dtype max/min").
-  #   - forward parameter is named `x` instead of `input`.
-  # Code conforms to this spec in a follow-up PR per the manifest trust
-  # model (.claude/rules/manifest-trust-model.md).
   status: spec-only
 
   signature:

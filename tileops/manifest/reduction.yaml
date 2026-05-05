@@ -55,7 +55,7 @@ SoftmaxFwdOp:
 LogSoftmaxFwdOp:
   ref_api: "torch.nn.functional.log_softmax"
   family: reduction
-  status: spec-only  # impl _softmax_base.py returns 6*M*N; manifest is authoritative at 5*M*N — align in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -107,7 +107,7 @@ LogSoftmaxFwdOp:
 LogSumExpFwdOp:
   ref_api: "torch.logsumexp"
   family: reduction
-  status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
+  status: spec-only
 
   signature:
     inputs:

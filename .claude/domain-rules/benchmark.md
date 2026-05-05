@@ -1,8 +1,8 @@
 ## Boundary
 
 - **OWNS**: `benchmarks/`
-- **MUST NOT modify**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `workloads/`, `tileops/manifest/`
-- **MAY READ**: `workloads/`, `tileops/ops/`
+- **MUST NOT WRITE**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `workloads/`, `tileops/manifest/`
+- **MUST NOT** (oracle-leakage rule): import oracle/ref functions from `tests/` or `workloads/`. Reads of any other file are unrestricted.
 
 → [trust-model.md §Benchmark](../../docs/design/trust-model.md#benchmark) | [testing.md §Benchmarks](../../docs/design/testing.md#benchmarks)
 

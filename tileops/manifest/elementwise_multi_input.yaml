@@ -8,14 +8,6 @@
 WhereFwdOp:
   ref_api: "torch.where"
   family: elementwise
-  # TODO(spec-followup): PyTorch's ``torch.where`` also performs implicit
-  # type promotion between ``input`` and ``other``. The manifest currently
-  # constrains them to ``same_as(input)``; once the kernel grows an input
-  # cast path, relax ``other`` to the full float union and document the
-  # promotion contract here.
-  # impl accepts float8_e4m3fn / float8_e5m2 dtypes that are not in the
-  # PyTorch public API for torch.where; align by trimming impl in a
-  # follow-up PR (manifest is authoritative).
   status: spec-only
 
   signature:
