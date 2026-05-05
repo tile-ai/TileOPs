@@ -2070,8 +2070,20 @@ class ClampFwdOp(_ClampTensorBase):
         return {"clamp_tensor": ClampTensorFwdKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
-        """Return ``(flops, bytes)`` for this op instance."""
-        return _perf_formulas.clamp_fwd_roofline(self)
+        """Return ``(flops, bytes)`` for this op instance.
+
+        Routes to the matching formula based on which bounds are bound:
+        double-sided ``clamp_fwd_roofline`` when both ``min`` and ``max``
+        are Tensors, otherwise the one-sided
+        ``clamp_min_fwd_roofline`` / ``clamp_max_fwd_roofline``.
+        """
+        has_min = self.min_shape is not None
+        has_max = self.max_shape is not None
+        if has_min and has_max:
+            return _perf_formulas.clamp_fwd_roofline(self)
+        if has_min:
+            return _perf_formulas.clamp_min_fwd_roofline(self)
+        return _perf_formulas.clamp_max_fwd_roofline(self)
 
     def _eager_forward(
         self,

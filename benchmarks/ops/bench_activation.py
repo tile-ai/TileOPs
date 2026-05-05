@@ -519,13 +519,15 @@ def test_relu_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
 
 # ===========================================================================
 # Manifest-driven per-op benchmarks for the elementwise_unary_activation
-# family. Each op has its own ``test_*_bench`` function so the validator
-# (``scripts/validate_manifest.py`` → ``check_l4_benchmark``) can match each
-# ``load_workloads("<OpName>FwdOp")`` /
-# ``ManifestBenchmark("<OpName>FwdOp", ...)`` call one-to-one. A shared
-# ``_activation_params_from_manifest`` helper expands the manifest's
-# ``input_shape`` / ``dtypes`` workload entries to pytest params; a shared
-# ``_profile_and_record`` helper handles the profile + record pair.
+# family. Each ``test_*_manifest_bench`` function calls
+# ``load_workloads("<OpName>")`` and ``ManifestBenchmark("<OpName>", ...)``
+# with the literal op name so the manifest validator
+# (``scripts/validate_manifest.py`` → ``check_l4_benchmark``) can match
+# each pair via AST inspection without tracing through helper indirection.
+# A shared ``_activation_params_from_workloads`` helper expands the
+# manifest's ``input_shape`` / ``dtypes`` workload entries to pytest
+# params; a shared ``_profile_and_record`` helper handles the profile +
+# record pair.
 # ===========================================================================
 
 
@@ -537,8 +539,8 @@ class _ActivationWorkload:
         self.dtype = dtype
 
 
-def _activation_params_from_manifest(op_name: str) -> list:
-    """Convert ``input_shape`` / ``dtypes`` workload entries to pytest params.
+def _activation_params_from_workloads(workloads: list) -> list:
+    """Convert resolved manifest workload entries to pytest params.
 
     The manifest's ``elementwise_unary_activation`` family declares its
     tensor input as ``input`` (PyTorch alignment) so workload entries use
@@ -546,7 +548,6 @@ def _activation_params_from_manifest(op_name: str) -> list:
     ``workloads_to_params`` helper assumes ``x_shape``; this local helper
     adapts ``load_workloads`` output for the activation family.
     """
-    workloads = load_workloads(op_name)
     params = []
     for w in workloads:
         shape = tuple(w["input_shape"])
@@ -585,185 +586,185 @@ def _randn(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
 # Per-op manifest-driven benches (12 unary activation ops)
 # ---------------------------------------------------------------------------
 
-_RELU_OP = "ReluFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_RELU_OP))
+@pytest.mark.parametrize(
+    "shape, dtype",
+    _activation_params_from_workloads(load_workloads("ReluFwdOp")),
+)
 def test_relu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
     inputs = _randn(shape, dtype)
     n_total = inputs[0].numel()
     op = ReluFwdOp(N_total=n_total, dtype=dtype)
-    bm = ManifestBenchmark(_RELU_OP, op, _ActivationWorkload(shape, dtype))
+    bm = ManifestBenchmark("ReluFwdOp", op, _ActivationWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, torch.relu,
         {"shape": shape, "dtype": dtype, "n_total": n_total},
     )
 
 
-_GELU_OP = "GeluFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_GELU_OP))
+@pytest.mark.parametrize(
+    "shape, dtype",
+    _activation_params_from_workloads(load_workloads("GeluFwdOp")),
+)
 def test_gelu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
     import torch.nn.functional as F
     inputs = _randn(shape, dtype)
     n_total = inputs[0].numel()
     op = GeluFwdOp(N_total=n_total, dtype=dtype)
-    bm = ManifestBenchmark(_GELU_OP, op, _ActivationWorkload(shape, dtype))
+    bm = ManifestBenchmark("GeluFwdOp", op, _ActivationWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, F.gelu,
         {"shape": shape, "dtype": dtype, "n_total": n_total},
     )
 
 
-_SILU_OP = "SiluFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_SILU_OP))
+@pytest.mark.parametrize(
+    "shape, dtype",
+    _activation_params_from_workloads(load_workloads("SiluFwdOp")),
+)
 def test_silu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
     import torch.nn.functional as F
     inputs = _randn(shape, dtype)
     n_total = inputs[0].numel()
     op = SiluFwdOp(N_total=n_total, dtype=dtype)
-    bm = ManifestBenchmark(_SILU_OP, op, _ActivationWorkload(shape, dtype))
+    bm = ManifestBenchmark("SiluFwdOp", op, _ActivationWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, F.silu,
         {"shape": shape, "dtype": dtype, "n_total": n_total},
     )
 
 
-_HARDSWISH_OP = "HardswishFwdOp"
-
-
 @pytest.mark.parametrize(
-    "shape, dtype", _activation_params_from_manifest(_HARDSWISH_OP),
+    "shape, dtype",
+    _activation_params_from_workloads(load_workloads("HardswishFwdOp")),
 )
 def test_hardswish_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
     import torch.nn.functional as F
     inputs = _randn(shape, dtype)
     n_total = inputs[0].numel()
     op = HardswishFwdOp(N_total=n_total, dtype=dtype)
-    bm = ManifestBenchmark(_HARDSWISH_OP, op, _ActivationWorkload(shape, dtype))
+    bm = ManifestBenchmark(
+        "HardswishFwdOp", op, _ActivationWorkload(shape, dtype),
+    )
     _profile_and_record(
         op, bm, inputs, F.hardswish,
         {"shape": shape, "dtype": dtype, "n_total": n_total},
     )
 
 
-_HARDSIGMOID_OP = "HardsigmoidFwdOp"
-
-
 @pytest.mark.parametrize(
-    "shape, dtype", _activation_params_from_manifest(_HARDSIGMOID_OP),
+    "shape, dtype",
+    _activation_params_from_workloads(load_workloads("HardsigmoidFwdOp")),
 )
 def test_hardsigmoid_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
     import torch.nn.functional as F
     inputs = _randn(shape, dtype)
     n_total = inputs[0].numel()
     op = HardsigmoidFwdOp(N_total=n_total, dtype=dtype)
-    bm = ManifestBenchmark(_HARDSIGMOID_OP, op, _ActivationWorkload(shape, dtype))
+    bm = ManifestBenchmark(
+        "HardsigmoidFwdOp", op, _ActivationWorkload(shape, dtype),
+    )
     _profile_and_record(
         op, bm, inputs, F.hardsigmoid,
         {"shape": shape, "dtype": dtype, "n_total": n_total},
     )
 
 
-_MISH_OP = "MishFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_MISH_OP))
+@pytest.mark.parametrize(
+    "shape, dtype",
+    _activation_params_from_workloads(load_workloads("MishFwdOp")),
+)
 def test_mish_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
     import torch.nn.functional as F
     inputs = _randn(shape, dtype)
     n_total = inputs[0].numel()
     op = MishFwdOp(N_total=n_total, dtype=dtype)
-    bm = ManifestBenchmark(_MISH_OP, op, _ActivationWorkload(shape, dtype))
+    bm = ManifestBenchmark("MishFwdOp", op, _ActivationWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, F.mish,
         {"shape": shape, "dtype": dtype, "n_total": n_total},
     )
 
 
-_SELU_OP = "SeluFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_SELU_OP))
+@pytest.mark.parametrize(
+    "shape, dtype",
+    _activation_params_from_workloads(load_workloads("SeluFwdOp")),
+)
 def test_selu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
     import torch.nn.functional as F
     inputs = _randn(shape, dtype)
     n_total = inputs[0].numel()
     op = SeluFwdOp(N_total=n_total, dtype=dtype)
-    bm = ManifestBenchmark(_SELU_OP, op, _ActivationWorkload(shape, dtype))
+    bm = ManifestBenchmark("SeluFwdOp", op, _ActivationWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, F.selu,
         {"shape": shape, "dtype": dtype, "n_total": n_total},
     )
 
 
-_LEAKY_RELU_OP = "LeakyReluFwdOp"
-
-
 @pytest.mark.parametrize(
-    "shape, dtype", _activation_params_from_manifest(_LEAKY_RELU_OP),
+    "shape, dtype",
+    _activation_params_from_workloads(load_workloads("LeakyReluFwdOp")),
 )
 def test_leaky_relu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
     import torch.nn.functional as F
     inputs = _randn(shape, dtype)
     n_total = inputs[0].numel()
     op = LeakyReluFwdOp(N_total=n_total, dtype=dtype)
-    bm = ManifestBenchmark(_LEAKY_RELU_OP, op, _ActivationWorkload(shape, dtype))
+    bm = ManifestBenchmark(
+        "LeakyReluFwdOp", op, _ActivationWorkload(shape, dtype),
+    )
     _profile_and_record(
         op, bm, inputs, lambda x: F.leaky_relu(x, 0.01),
         {"shape": shape, "dtype": dtype, "n_total": n_total},
     )
 
 
-_ELU_OP = "EluFwdOp"
-
-
-@pytest.mark.parametrize("shape, dtype", _activation_params_from_manifest(_ELU_OP))
+@pytest.mark.parametrize(
+    "shape, dtype",
+    _activation_params_from_workloads(load_workloads("EluFwdOp")),
+)
 def test_elu_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
     import torch.nn.functional as F
     inputs = _randn(shape, dtype)
     n_total = inputs[0].numel()
     op = EluFwdOp(N_total=n_total, dtype=dtype)
-    bm = ManifestBenchmark(_ELU_OP, op, _ActivationWorkload(shape, dtype))
+    bm = ManifestBenchmark("EluFwdOp", op, _ActivationWorkload(shape, dtype))
     _profile_and_record(
         op, bm, inputs, F.elu,
         {"shape": shape, "dtype": dtype, "n_total": n_total},
     )
 
 
-_HARDTANH_OP = "HardtanhFwdOp"
-
-
 @pytest.mark.parametrize(
-    "shape, dtype", _activation_params_from_manifest(_HARDTANH_OP),
+    "shape, dtype",
+    _activation_params_from_workloads(load_workloads("HardtanhFwdOp")),
 )
 def test_hardtanh_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
     import torch.nn.functional as F
     inputs = _randn(shape, dtype)
     n_total = inputs[0].numel()
     op = HardtanhFwdOp(N_total=n_total, dtype=dtype)
-    bm = ManifestBenchmark(_HARDTANH_OP, op, _ActivationWorkload(shape, dtype))
+    bm = ManifestBenchmark(
+        "HardtanhFwdOp", op, _ActivationWorkload(shape, dtype),
+    )
     _profile_and_record(
         op, bm, inputs, F.hardtanh,
         {"shape": shape, "dtype": dtype, "n_total": n_total},
     )
 
 
-_SOFTPLUS_OP = "SoftplusFwdOp"
-
-
 @pytest.mark.parametrize(
-    "shape, dtype", _activation_params_from_manifest(_SOFTPLUS_OP),
+    "shape, dtype",
+    _activation_params_from_workloads(load_workloads("SoftplusFwdOp")),
 )
 def test_softplus_manifest_bench(shape: tuple, dtype: torch.dtype) -> None:
     import torch.nn.functional as F
     inputs = _randn(shape, dtype)
     n_total = inputs[0].numel()
     op = SoftplusFwdOp(N_total=n_total, dtype=dtype)
-    bm = ManifestBenchmark(_SOFTPLUS_OP, op, _ActivationWorkload(shape, dtype))
+    bm = ManifestBenchmark(
+        "SoftplusFwdOp", op, _ActivationWorkload(shape, dtype),
+    )
     _profile_and_record(
         op, bm, inputs, F.softplus,
         {"shape": shape, "dtype": dtype, "n_total": n_total},
