@@ -7,5 +7,9 @@
       {"name": "gemini", "kind": "comment", "body": "/gemini review"},
       {"name": "copilot", "kind": "copilot"}
     ]
+  },
+  "knowledge": {
+    "creating_issue": ["docs/design/trust-model.md"],
+    "planning_issue": ["docs/design/trust-model.md"]
   }
 }
