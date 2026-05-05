@@ -34,15 +34,12 @@ from workloads.workload_base import FixtureBase
 # ---------------------------------------------------------------------------
 
 _SHAPES_2D = [
-    (1, 4096),       # 4K  -- single-token small
-    (1024, 4096),    # 4M  -- small transformer hidden dim
-    (1024, 16384),   # 16M -- large (LLaMA 7B intermediate ~11008, rounded)
+    (1, 4096),         # 4K  -- single-token small
+    (1024, 4096),      # 4M  -- small transformer hidden dim
+    (1024, 11008),     # ~11M -- non-pow2 LLaMA-7B intermediate
 ]
-_SIZES = {
-    "4K": prod(_SHAPES_2D[0]),
-    "4M": prod(_SHAPES_2D[1]),
-    "16M": prod(_SHAPES_2D[2]),
-}
+_SIZE_LABELS = ("4K", "4M", "11M")
+_SHAPE_BY_LABEL = dict(zip(_SIZE_LABELS, _SHAPES_2D, strict=True))
 
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 _UNARY_STRATEGIES = ("direct", "explicit_parallel", "register_copy")
@@ -56,6 +53,7 @@ _UNARY_STRATEGIES = ("direct", "explicit_parallel", "register_copy")
 class _UnaryWorkload(Protocol):
     """Structural type for unary benchmark workloads."""
 
+    shape: tuple[int, ...]
     n_total: int
     dtype: torch.dtype
 
@@ -63,15 +61,26 @@ class _UnaryWorkload(Protocol):
 
 
 class UnaryBenchCase:
-    """Minimal test harness for unary benchmarks."""
+    """Minimal test harness for unary benchmarks.
 
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
+    Accepts either a shape tuple or a scalar element count. The tuple form
+    is preferred so the original input geometry survives into the report.
+    """
+
+    def __init__(
+        self,
+        shape: int | tuple[int, ...],
+        dtype: torch.dtype,
+    ):
+        if isinstance(shape, int):
+            shape = (shape,)
+        self.shape = shape
+        self.n_total = prod(shape)
         self.dtype = dtype
         self.output_dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)
+        return (torch.randn(*self.shape, device="cuda", dtype=self.dtype),)
 
 
 class UnaryBenchmark(BenchmarkBase[_UnaryWorkload]):
@@ -93,19 +102,20 @@ class UnaryBenchmark(BenchmarkBase[_UnaryWorkload]):
 
 class R2SmallTensorFixture(FixtureBase):
     PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4096, torch.float16, marks=pytest.mark.smoke),
+        ("shape, dtype", [
+            pytest.param((1, 4096), torch.float16, marks=pytest.mark.smoke),
         ]),
     ]
 
 
 @R2SmallTensorFixture
-def test_r2_small_tensor_unary(n_total: int, dtype: torch.dtype) -> None:
+def test_r2_small_tensor_unary(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     """R2: Benchmark divmod overhead on small tensors (unary relu, 4K)."""
-    test = UnaryBenchCase(n_total, dtype)
+    test = UnaryBenchCase(shape, dtype)
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
+    n_total = prod(shape)
     op = ReluFwdOp(N_total=n_total, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -122,22 +132,25 @@ def test_r2_small_tensor_unary(n_total: int, dtype: torch.dtype) -> None:
 # ---------------------------------------------------------------------------
 
 
-_R3_SIZES = [
-    1_000, 2_000, 4_000, 8_000, 16_000,
-    32_000, 64_000, 128_000, 256_000, 512_000,
+# R3 uses 1D shapes whose total element count varies per case; the goal is
+# to measure JIT compile cost as a function of N, so we keep a 1D layout
+# but record the shape tuple so the report stays consistent.
+_R3_SHAPES = [
+    (1_000,), (2_000,), (4_000,), (8_000,), (16_000,),
+    (32_000,), (64_000,), (128_000,), (256_000,), (512_000,),
 ]
 
 
 class R3JitFixture(FixtureBase):
     PARAMS = [
-        ("n_total", [
-            pytest.param(n, marks=pytest.mark.full) for n in _R3_SIZES
+        ("shape", [
+            pytest.param(s, marks=pytest.mark.full) for s in _R3_SHAPES
         ]),
     ]
 
 
 @R3JitFixture
-def test_r3_jit_compilation_cost(n_total: int) -> None:
+def test_r3_jit_compilation_cost(shape: tuple[int, ...]) -> None:
     """R3: Benchmark JIT compilation cost — relu with 10 different N values.
 
     Each test case creates a new kernel (different N -> different codegen),
@@ -146,7 +159,8 @@ def test_r3_jit_compilation_cost(n_total: int) -> None:
     import time
 
     dtype = torch.float16
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
+    n_total = prod(shape)
+    x = torch.randn(*shape, device="cuda", dtype=dtype)
 
     # Cold: time the first call including JIT compilation
     torch.cuda.synchronize()
@@ -157,13 +171,13 @@ def test_r3_jit_compilation_cost(n_total: int) -> None:
     cold_ms = (time.perf_counter() - t0) * 1000.0
 
     # Warm: profile subsequent calls
-    test = UnaryBenchCase(n_total, dtype)
+    test = UnaryBenchCase(shape, dtype)
     bm = UnaryBenchmark(test)
     warm_result = bm.profile(op, x)
 
     BenchmarkReport.record(
         "r3_jit_cost",
-        {"n_total": n_total, "cold_ms": round(cold_ms, 2)},
+        {"shape": shape, "cold_ms": round(cold_ms, 2)},
         warm_result,
         tag="relu_jit",
     )
@@ -175,7 +189,7 @@ def test_r3_jit_compilation_cost(n_total: int) -> None:
 
 
 _R4_PARAMS = []
-for size_label, n in _SIZES.items():
+for size_label, _shape in _SHAPE_BY_LABEL.items():
     for dt in _DTYPES:
         for strategy in _UNARY_STRATEGIES:
             mark = pytest.mark.smoke if (
@@ -184,7 +198,7 @@ for size_label, n in _SIZES.items():
             ) else pytest.mark.full
             _R4_PARAMS.append(
                 pytest.param(
-                    n, size_label, dt, strategy,
+                    _shape, size_label, dt, strategy,
                     id=f"{size_label}-{dt}-{strategy}",
                     marks=mark,
                 )
@@ -193,27 +207,29 @@ for size_label, n in _SIZES.items():
 
 class R4StrategyFixture(FixtureBase):
     PARAMS = [
-        ("n_total, size_label, dtype, strategy", _R4_PARAMS),
+        ("shape, size_label, dtype, strategy", _R4_PARAMS),
     ]
 
 
 @R4StrategyFixture
 def test_r4_default_strategy_unary(
-    n_total: int,
+    shape: tuple[int, ...],
     size_label: str,
     dtype: torch.dtype,
     strategy: str,
 ) -> None:
     """R4: Benchmark all 3 unary strategies to confirm DEFAULT_STRATEGY."""
-    test = UnaryBenchCase(n_total, dtype)
+    test = UnaryBenchCase(shape, dtype)
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
+    n_total = prod(shape)
     op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_strategy_unary",
-        locals(),
+        {"shape": shape, "size_label": size_label,
+         "dtype": dtype, "strategy": strategy},
         result,
         tag=f"relu_{strategy}",
     )
@@ -221,12 +237,12 @@ def test_r4_default_strategy_unary(
 
 # Also benchmark gelu to verify strategy choice holds for transcendental ops
 _R4_GELU_PARAMS = []
-for size_label, n in _SIZES.items():
+for size_label, _shape in _SHAPE_BY_LABEL.items():
     for dt in _DTYPES:
         for strategy in _UNARY_STRATEGIES:
             _R4_GELU_PARAMS.append(
                 pytest.param(
-                    n, size_label, dt, strategy,
+                    _shape, size_label, dt, strategy,
                     id=f"gelu-{size_label}-{dt}-{strategy}",
                     marks=pytest.mark.full,
                 )
@@ -235,27 +251,29 @@ for size_label, n in _SIZES.items():
 
 class R4GeluStrategyFixture(FixtureBase):
     PARAMS = [
-        ("n_total, size_label, dtype, strategy", _R4_GELU_PARAMS),
+        ("shape, size_label, dtype, strategy", _R4_GELU_PARAMS),
     ]
 
 
 @R4GeluStrategyFixture
 def test_r4_default_strategy_gelu(
-    n_total: int,
+    shape: tuple[int, ...],
     size_label: str,
     dtype: torch.dtype,
     strategy: str,
 ) -> None:
     """R4: Benchmark gelu strategies (transcendental op) to confirm DEFAULT_STRATEGY."""
-    test = UnaryBenchCase(n_total, dtype)
+    test = UnaryBenchCase(shape, dtype)
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
+    n_total = prod(shape)
     op = GeluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_strategy_gelu",
-        locals(),
+        {"shape": shape, "size_label": size_label,
+         "dtype": dtype, "strategy": strategy},
         result,
         tag=f"gelu_{strategy}",
     )
@@ -268,39 +286,40 @@ def test_r4_default_strategy_gelu(
 
 # npt=8, threads=256 -> block_size=2048
 _BLOCK_SIZE = 256 * 8
-_R5_SIZES = [
-    (_BLOCK_SIZE * 1000, "aligned"),                   # perfectly aligned
-    (_BLOCK_SIZE * 1000 + 1, "unaligned_plus_1"),      # minimal tail
-    (_BLOCK_SIZE * 1000 + 127, "unaligned_plus_127"),  # large partial tail
+_R5_SHAPES = [
+    ((_BLOCK_SIZE * 1000,), "aligned"),                   # perfectly aligned
+    ((_BLOCK_SIZE * 1000 + 1,), "unaligned_plus_1"),      # minimal tail
+    ((_BLOCK_SIZE * 1000 + 127,), "unaligned_plus_127"),  # large partial tail
 ]
 
 
 class R5BoundaryFixture(FixtureBase):
     PARAMS = [
-        ("n_total, align_label", [
-            pytest.param(n, label, marks=pytest.mark.full)
-            for n, label in _R5_SIZES
+        ("shape, align_label", [
+            pytest.param(s, label, marks=pytest.mark.full)
+            for s, label in _R5_SHAPES
         ]),
     ]
 
 
 @R5BoundaryFixture
-def test_r5_boundary_guard(n_total: int, align_label: str) -> None:
+def test_r5_boundary_guard(shape: tuple[int, ...], align_label: str) -> None:
     """R5: Benchmark boundary auto-guard tail vectorization.
 
     Compares aligned vs unaligned sizes under explicit_parallel strategy
     to detect performance cliff from boundary guard overhead.
     """
     dtype = torch.float16
-    test = UnaryBenchCase(n_total, dtype)
+    test = UnaryBenchCase(shape, dtype)
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
+    n_total = prod(shape)
     op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy="explicit_parallel")
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r5_boundary",
-        {"n_total": n_total, "align_label": align_label},
+        {"shape": shape, "align_label": align_label},
         result,
         tag=f"relu_{align_label}",
     )
@@ -320,7 +339,7 @@ _R6_KERNEL_OPS = [
 _R6_THREADS = [128, 256]
 
 _R6_PARAMS = []
-for size_label, n in _SIZES.items():
+for size_label, _shape in _SHAPE_BY_LABEL.items():
     for op_name, _ in _R6_KERNEL_OPS:
         for threads in _R6_THREADS:
             mark = pytest.mark.smoke if (
@@ -328,7 +347,7 @@ for size_label, n in _SIZES.items():
             ) else pytest.mark.full
             _R6_PARAMS.append(
                 pytest.param(
-                    n, size_label, op_name, threads,
+                    _shape, size_label, op_name, threads,
                     id=f"{op_name}-{size_label}-t{threads}",
                     marks=mark,
                 )
@@ -337,7 +356,7 @@ for size_label, n in _SIZES.items():
 
 class R6ThreadsFixture(FixtureBase):
     PARAMS = [
-        ("n_total, size_label, op_name, threads", _R6_PARAMS),
+        ("shape, size_label, op_name, threads", _R6_PARAMS),
     ]
 
 
@@ -346,7 +365,7 @@ _R6_KERNEL_MAP = {name: cls for name, cls in _R6_KERNEL_OPS}
 
 @R6ThreadsFixture
 def test_r6_threads_comparison(
-    n_total: int,
+    shape: tuple[int, ...],
     size_label: str,
     op_name: str,
     threads: int,
@@ -362,22 +381,29 @@ def test_r6_threads_comparison(
     """
     dtype = torch.float16
     dtype_str = "float16"
-    test = UnaryBenchCase(n_total, dtype)
+    test = UnaryBenchCase(shape, dtype)
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
+    n_total = prod(shape)
     npt = 8  # default for fp16
     kernel_cls = _R6_KERNEL_MAP[op_name]
     # Build kernel directly with the desired threads/npt so block_size is correct
     kernel_fn = _make_unary_explicit(
         n_total, dtype_str, kernel_cls.op_func, threads=threads, num_per_thread=npt,
     )
+    # The explicit-parallel kernel expects a 1D contiguous tensor, so flatten
+    # the (possibly multi-dim) input here. The shape tuple is still recorded
+    # via ``BenchmarkReport.record(...)`` so the report carries the original
+    # input geometry.
+    flat_inputs = tuple(t.reshape(-1) for t in inputs)
     # Profile: call the JIT kernel with matching runtime args
     compiled = kernel_fn(threads, npt)
-    result = bm.profile(compiled, *inputs)
+    result = bm.profile(compiled, *flat_inputs)
     BenchmarkReport.record(
         "r6_threads",
-        {"n_total": n_total, "size_label": size_label, "op_name": op_name, "threads": threads},
+        {"shape": shape, "size_label": size_label,
+         "op_name": op_name, "threads": threads},
         result,
         tag=f"{op_name}_t{threads}",
     )
@@ -421,10 +447,11 @@ def test_r7_dtype_npt(
     Builds kernels directly via _make_unary_explicit to ensure block_size
     is baked with the requested npt at build time.
     """
-    n_total = 1_000_000
+    shape = (1_000_000,)
+    n_total = prod(shape)
     threads = 256
     dtype_str = "float32" if dtype == torch.float32 else "float16"
-    test = UnaryBenchCase(n_total, dtype)
+    test = UnaryBenchCase(shape, dtype)
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -437,7 +464,8 @@ def test_r7_dtype_npt(
     result = bm.profile(compiled, *inputs)
     BenchmarkReport.record(
         "r7_dtype_npt",
-        {"dtype_label": dtype_label, "num_per_thread": num_per_thread},
+        {"shape": shape, "dtype_label": dtype_label,
+         "num_per_thread": num_per_thread},
         result,
         tag=f"relu_{dtype_label}_npt{num_per_thread}",
     )
@@ -449,14 +477,17 @@ def test_r7_dtype_npt(
 
 
 _RELU_BENCH_PARAMS = [
-    pytest.param(prod(_SHAPES_2D[1]), torch.float16, id="throughput-fp16"),
-    pytest.param(prod(_SHAPES_2D[1]), torch.bfloat16, id="throughput-bf16"),
-    pytest.param(prod(_SHAPES_2D[1]), torch.float32, id="baseline-fp32"),
+    pytest.param(_SHAPES_2D[1], torch.float16, id="throughput-fp16"),
+    pytest.param(_SHAPES_2D[1], torch.bfloat16, id="throughput-bf16"),
+    pytest.param(_SHAPES_2D[1], torch.float32, id="baseline-fp32"),
 ]
 
 
-@pytest.mark.parametrize("n_total, dtype", _RELU_BENCH_PARAMS)
-def test_relu_bench(n_total: int, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize("shape, dtype", _RELU_BENCH_PARAMS)
+def test_relu_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
+    n_total = prod(shape)
+    # ``ReluTest`` (workloads) accepts a flat element count; the bench
+    # harness still records the original shape tuple via ``record(...)``.
     test = ReluTest(n_total, dtype)
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()

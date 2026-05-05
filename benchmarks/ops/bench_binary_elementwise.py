@@ -34,8 +34,9 @@ from tileops.ops.elementwise import (
 )
 from workloads.workload_base import FixtureBase
 
-# DNN-realistic shapes: (tokens, hidden_dim)
-_SHAPES = ((1024, 4096), (1024, 10240), (1024, 20480))
+# DNN-realistic shapes: (tokens, hidden_dim). The third entry is non-pow2
+# (LLaMA-7B intermediate=11008) so each op exercises a non-pow2 shape.
+_SHAPES = ((1024, 4096), (1024, 10240), (1024, 11008))
 
 
 # ---------------------------------------------------------------------------
@@ -330,10 +331,10 @@ class FusedGatedBenchFixture(FixtureBase):
         ("op_name, M, N, dtype, op_cls", [
             pytest.param("gelu_and_mul", 1024, 4096, torch.float16, GeluAndMulFwdOp, marks=pytest.mark.smoke),
             pytest.param("gelu_and_mul", 1024, 10240, torch.float16, GeluAndMulFwdOp, marks=pytest.mark.full),
-            pytest.param("gelu_and_mul", 1024, 20480, torch.float16, GeluAndMulFwdOp, marks=pytest.mark.full),
+            pytest.param("gelu_and_mul", 1024, 11008, torch.float16, GeluAndMulFwdOp, marks=pytest.mark.full),
             pytest.param("gelu_tanh_and_mul", 1024, 4096, torch.float16, GeluTanhAndMulFwdOp, marks=pytest.mark.smoke),
             pytest.param("gelu_tanh_and_mul", 1024, 10240, torch.float16, GeluTanhAndMulFwdOp, marks=pytest.mark.full),
-            pytest.param("gelu_tanh_and_mul", 1024, 20480, torch.float16, GeluTanhAndMulFwdOp, marks=pytest.mark.full),
+            pytest.param("gelu_tanh_and_mul", 1024, 11008, torch.float16, GeluTanhAndMulFwdOp, marks=pytest.mark.full),
         ]),
     ]
 
@@ -366,6 +367,9 @@ def test_fused_gated_bench(
     bm = FusedGatedBenchmark(test)
     inputs = test.gen_inputs()
 
+    # The output shape (M, N) is the model-relevant geometry; the input
+    # carries the gate/value-concatenated trailing axis (2*N).
+    shape = (M, N)
     op = op_cls(M=M, N=N, dtype=dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
@@ -380,7 +384,7 @@ def test_fused_gated_bench(
 # ---------------------------------------------------------------------------
 
 
-_STRATEGY_SHAPES = [(1024, 4096), (1024, 10240), (4096, 4096)]
+_STRATEGY_SHAPES = [(1024, 4096), (1024, 11008), (4096, 4096)]
 _STRATEGY_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 _STRATEGY_OPS = [
     ("silu_and_mul", SiluAndMulFwdOp),
@@ -420,6 +424,7 @@ def test_fused_gated_strategy_bench(
     bm = FusedGatedBenchmark(test)
     inputs = test.gen_inputs()
 
+    shape = (M, N)
     op = op_cls(M=M, N=N, dtype=dtype, strategy=strategy)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
@@ -431,11 +436,12 @@ def test_fused_gated_strategy_bench(
 # Broadcast benchmark (bias-add pattern)
 # ---------------------------------------------------------------------------
 
-# DNN bias-add: (tokens, hidden_dim) + (1, hidden_dim)
+# DNN bias-add: (tokens, hidden_dim) + (1, hidden_dim). Includes a non-pow2
+# hidden (LLaMA-7B intermediate=11008) to exercise tail handling.
 _BROADCAST_SHAPES = [
     ((1024, 4096), (1, 4096)),
     ((1024, 10240), (1, 10240)),
-    ((1024, 20480), (1, 20480)),
+    ((1024, 11008), (1, 11008)),
 ]
 
 

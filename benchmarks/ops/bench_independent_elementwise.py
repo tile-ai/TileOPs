@@ -27,9 +27,10 @@ from tileops.ops.elementwise import (
 )
 from workloads.workload_base import FixtureBase
 
-# DNN-realistic shapes: (tokens, hidden_dim)
-# small=4096, medium=10240, large=20480 (pow2 + non-pow2 mix)
-_UNARY_SHAPES = [(1024, 4096), (1024, 10240), (1024, 20480)]
+# DNN-realistic shapes: (tokens, hidden_dim).
+# small=4096 (pow2), medium=10240 (pow2), large=11008 (non-pow2,
+# LLaMA-7B intermediate) so each op exercises a non-pow2 shape.
+_UNARY_SHAPES = [(1024, 4096), (1024, 10240), (1024, 11008)]
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 
@@ -106,7 +107,7 @@ def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype)
 # prelu (2 inputs: x + weight)
 # ---------------------------------------------------------------------------
 
-_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 10240), (1024, 20480)]
+_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 10240), (1024, 11008)]
 
 
 class PreluBenchCase:
@@ -328,13 +329,16 @@ def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dty
     test = GenerativeBenchCase(seq_len, dim, dtype)
 
     if op_name == "alibi":
-        # ALiBi outputs (num_heads, seq_len, seq_len); override n_total
+        # ALiBi outputs (num_heads, seq_len, seq_len); override n_total.
         test.n_total = dim * seq_len * seq_len
+        shape = (dim, seq_len, seq_len)
         op = AlibiFwdOp(seq_len=seq_len, num_heads=dim, dtype=dtype)
 
         def baseline_fn():
             return _alibi_reference(seq_len, dim, dtype)
     else:
+        # Sinusoidal positional embedding: (seq_len, d_model).
+        shape = (seq_len, dim)
         op = SinusoidalFwdOp(seq_len=seq_len, d_model=dim, dtype=dtype)
 
         def baseline_fn():
