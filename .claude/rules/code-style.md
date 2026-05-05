@@ -33,4 +33,13 @@
 
 - **Underscore-separated naming for norm files**: All norm-related filenames use underscore separation — `rms_norm`, `layer_norm`, `batch_norm`, `fused_add_rms_norm`. Do not contract (e.g. `rmsnorm`, `layernorm`, `batchnorm`).
 
-- **No development-process metadata in shipped source.** Code and docstrings must not reference issue/PR numbers, AC labels (e.g. `AC-4`), round numbers, reviewer names, or `Follow-up: #N` pointers — that context belongs in the commit message, PR description, and the follow-up issue itself. Manifest YAML carries no **per-op descriptive comments** — drift narratives, follow-up promises, and status explanations belong in commit messages, follow-up issues, or structured schema fields (`status`, `dtype_combos`, `shape_rules`, `parity_opt_out`), not as inline comments inside an op entry. **File-level header comments** at the top of a manifest file (documenting the family, file purpose, or schema reference) remain permitted. Heuristic scan still applies: `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up:[[:space:]]*#' tileops/ tests/ benchmarks/ scripts/`, plus `grep -nE '^  #' tileops/manifest/*.yaml` to flag indented per-op comments.
+- **No development-process metadata in shipped source.** Code and docstrings must not reference issue/PR numbers, AC labels (e.g. `AC-4`), round numbers, reviewer names, or `Follow-up: #N` pointers — that context belongs in the commit message, PR description, and the follow-up issue itself.
+
+- **Manifest YAML comment policy.** Manifest YAML may carry **technical narratives** that explain schema choices the manifest DSL cannot express structurally — PyTorch overload / API quirk notes, manifest-DSL limitation notes (`NOTE:` blocks), `variant_of` split rationale, broadcasting / `shape_rules` / `dtype` edge cases, and FLOP / byte-counting conventions. These belong inside the relevant op entry where the next reader needs them, and may use either `# ...` or `# NOTE: ...` form. File-level header comments documenting family, file purpose, or schema reference are permitted as-is.
+
+  Manifest YAML must **not** carry development-process metadata at any nesting level: drift narratives ("impl currently does X instead of Y"), follow-up promises ("fix in follow-up PR", "address in #NNNN"), status explanations beyond the bare `status` field, issue / PR numbers, AC labels, round numbers, or reviewer names. Process metadata belongs in commit messages, PR descriptions, or follow-up issues — never in the spec file.
+
+  Heuristic scans (each must return zero matches):
+
+  - `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up' tileops/manifest/*.yaml`
+  - `grep -rniE '#.*(drift|fix in follow|follow-?up|spec-only because|to be addressed|will be fixed)' tileops/manifest/*.yaml`
