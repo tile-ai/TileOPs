@@ -4160,16 +4160,29 @@ class TestValidatorHelperResolution:
             },
         }
         warnings: list[str] = []
-        validator.check_l2_infer_parity(
+        errors = validator.check_l2_infer_parity(
             "HelperBadDimOp", entry, cls, warnings=warnings,
         )
         # Out-of-range dim is an input-only precondition that mock inputs
         # violate; the validator classifies that as a skip with a
-        # warning (not a hard error). Either signal counts: the rule was
-        # evaluated (no NameError / could-not-parse signal).
+        # warning (not a hard error). Concrete expected outcome:
+        #   - no parity errors (the helper rule must not blame a correct
+        #     ``_infer_output_shapes``),
+        #   - no "could not be evaluated" warning (the helper resolved and
+        #     ran — failure was a real predicate result, not an eval skip),
+        #   - exactly one "input-only precondition" warning citing the
+        #     helper rule itself, proving the helper-resolution path
+        #     produced the same classification as the inline form would.
+        assert errors == [], errors
         assert not any(
             "could not be evaluated" in w for w in warnings
         ), warnings
+        precondition_hits = [
+            w for w in warnings
+            if "input-only precondition" in w
+            and "helper:dim_range_validity(x, dim)" in w
+        ]
+        assert len(precondition_hits) == 1, warnings
 
     def test_unmigrated_inline_rules_unchanged(self, validator):
         """Constraint: unmigrated rules must keep behaving identically.

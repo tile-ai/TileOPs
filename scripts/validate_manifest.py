@@ -36,11 +36,13 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
 
-# Add the repo root to sys.path so this script — which lives in scripts/
-# and is launched directly as ``python scripts/validate_manifest.py`` —
-# can import the helper registry from ``tileops.manifest.shape_rules``
-# without requiring the package to be installed in development mode.
-if str(REPO_ROOT) not in sys.path:
+# Import the helper registry from ``tileops.manifest.shape_rules``.
+# When launched as ``python scripts/validate_manifest.py`` from a
+# checkout that has not been installed in development mode, ``tileops``
+# is not yet on ``sys.path`` — insert REPO_ROOT in that case only.
+# When this file is imported as a module the importer already has the
+# package on ``sys.path`` and we must not mutate global import resolution.
+if __name__ == "__main__" and str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tileops.manifest.shape_rules import HELPERS as _SHAPE_RULE_HELPERS  # noqa: E402
