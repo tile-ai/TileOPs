@@ -10,6 +10,24 @@
   },
   "knowledge": {
     "creating_issue": ["docs/design/trust-model.md"],
-    "planning_issue": ["docs/design/trust-model.md"]
+    "planning_issue": ["docs/design/trust-model.md"],
+    "developer": null,
+    "reviewer": [
+      ".claude/rules/manifest-trust-model.md",
+      ".claude/rules/code-style.md",
+      ".claude/rules/security.md",
+      ".claude/domain-rules/manifest-spec.md",
+      ".claude/domain-rules/manifest-validator.md",
+      ".claude/domain-rules/ops-design.md",
+      ".claude/domain-rules/benchmark.md",
+      ".claude/domain-rules/testing-budget.md",
+      ".claude/domain-rules/design-docs.md",
+      "docs/design/trust-model.md"
+    ],
+    "gatekeeper": [
+      ".claude/rules/manifest-trust-model.md",
+      ".claude/rules/security.md",
+      "docs/design/trust-model.md"
+    ]
   }
 }

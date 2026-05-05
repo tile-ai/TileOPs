@@ -1,8 +1,7 @@
 ## Boundary
 
 - **OWNS**: `tests/`, `workloads/` (test stage creates workload definitions first)
-- **MUST NOT modify**: `tileops/ops/`, `tileops/kernels/`, `benchmarks/`, `tileops/manifest/`
-- **MAY READ**: `workloads/`, `tileops/manifest/`
+- **MUST NOT WRITE**: `tileops/ops/`, `tileops/kernels/`, `benchmarks/`, `tileops/manifest/`
 
 → [trust-model.md §Test](../../docs/design/trust-model.md#test) | [testing.md §Tests](../../docs/design/testing.md#tests)
 

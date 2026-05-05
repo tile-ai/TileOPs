@@ -55,7 +55,7 @@ SoftmaxFwdOp:
 LogSoftmaxFwdOp:
   ref_api: "torch.nn.functional.log_softmax"
   family: reduction
-  status: spec-only  # impl _softmax_base.py returns 6*M*N; manifest is authoritative at 5*M*N — align in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -89,8 +89,8 @@ LogSoftmaxFwdOp:
       N: "x.shape[(dim if dim is not None else (0 if x.ndim in (0, 1, 3) else 1)) % x.ndim]"
     # log_softmax(x) = (x - max) - log(sum(exp(x - max))). Per row: max (N)
     # + sub (N) + exp (N) + sum (N) + log+sub (N) = 5N, matching SoftmaxFwdOp's
-    # convention where max and the broadcast sub each cost N. Convention
-    # (#1146): 1 cmp+sel = 1 fp op.
+    # convention where max and the broadcast sub each cost N. FLOP convention:
+    # 1 cmp+sel = 1 fp op.
     flops: "5 * M * N"
     # Read x + write output
     bytes: "2 * M * N * elem_bytes"
@@ -107,7 +107,7 @@ LogSoftmaxFwdOp:
 LogSumExpFwdOp:
   ref_api: "torch.logsumexp"
   family: reduction
-  status: spec-only  # impl __init__ omits N (derived at forward); align with static_dims in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -138,7 +138,7 @@ LogSumExpFwdOp:
       N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}))"
     # Per row: max (N) + sub (N) + exp (N) + sum (N) + log+add (≈1) ≈ 4N,
     # matching SoftmaxFwdOp's convention where max and the broadcast sub each
-    # cost N. Convention (#1146): 1 cmp+sel = 1 fp op.
+    # cost N. FLOP convention: 1 cmp+sel = 1 fp op.
     flops: "4 * M * N"
     # Read x (M*N) + write output (M)
     bytes: "(M * N + M) * elem_bytes"
