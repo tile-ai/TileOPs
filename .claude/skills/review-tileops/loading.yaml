@@ -27,3 +27,4 @@ match:
   Doc:         [doc.md]
   Design:      [doc.md]
   Test:        [testing.md]
+  Bench:       [benchmark.md]
