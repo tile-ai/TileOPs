@@ -33,10 +33,6 @@
 
 - **Underscore-separated naming for norm files**: All norm-related filenames use underscore separation — `rms_norm`, `layer_norm`, `batch_norm`, `fused_add_rms_norm`. Do not contract (e.g. `rmsnorm`, `layernorm`, `batchnorm`).
 
-- **No development-process metadata in shipped source.** Code and docstrings must not reference issue/PR numbers, AC labels (e.g. `AC-4`), round numbers, reviewer names, or `Follow-up: #N` pointers — that context belongs in the commit message, PR description, and the follow-up issue itself.
+- **No development-process metadata in shipped source.** Code and docstrings must not reference issue/PR numbers, AC labels (e.g. `AC-4`), round numbers, reviewer names, or `Follow-up: #N` pointers — that context belongs in the commit message, PR description, and the follow-up issue itself. Manifest YAML follows the same principle; see [domain-rules/manifest-spec.md §Manifest comment policy](../domain-rules/manifest-spec.md).
 
-  Heuristic scan (discovery tool — flags candidates for review; pre-existing matches under TileLang migration tracking and AC-labelled test docstrings are tracked separately, but new code must not add to the matches): `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up:[[:space:]]*#' tileops/ tests/ benchmarks/ scripts/`
-
-- **Manifest YAML comment policy.** Manifest YAML carries technical content the DSL cannot express structurally (schema clarifications, edge cases, conventions, file-level headers). It does **not** carry development-process metadata — anything bound to a specific issue, PR, commit, or development round. Test: would this comment still be meaningful if every issue / PR had different numbers and every milestone was renamed? Yes → keep. No → move to commit message, PR description, or follow-up issue.
-
-  Discovery scan (flags candidates, not a hard gate): `grep -rnE '#[0-9]{3,}|[Ff]ollow.?up|AC-[0-9]+' tileops/manifest/*.yaml`
+  Discovery scan (flags candidates; new code must not add new matches): `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up:[[:space:]]*#' tileops/ tests/ benchmarks/ scripts/`

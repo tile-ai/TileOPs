@@ -28,7 +28,7 @@ ______________________________________________________________________
 
 - `shape_rules` are Python expressions for shape relationships. `shape` and `shape_rules` fully specify output shape derivation.
 
-- For reduction ops whose `dim` accepts an integer or sequence (`list[int]` / `tuple[int, ...]`): encode the contract as `shape_rules` in the order **validate range → normalize negatives → enforce uniqueness**. (a) Range validity: `"dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"` — do NOT silently wrap out-of-range indices with `% x.ndim`; PyTorch rejects them. (b) Downstream shape_rules and roofline.vars apply `% x.ndim` only after range has been validated, using `{d % x.ndim for d in dim}` to deduplicate. (c) Uniqueness: `"isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"`. Empty sequence equals full reduction for ops accepting `dim=None`; ops that do not accept `None` (e.g. logsumexp) additionally declare `"isinstance(dim, int) or len(dim) > 0"`.
+- For reduction ops whose `dim` accepts an integer or sequence: validate range → normalize negatives → enforce uniqueness, in that order; do NOT silently wrap out-of-range indices with `% x.ndim`. Concrete `shape_rules` expressions live in each op's manifest entry; lifting them into a shared helper module is tracked as a follow-up.
 
 - `status` is required. `status: implemented` = all validator levels apply. `status: spec-only` = L0 only.
 
@@ -44,4 +44,6 @@ ______________________________________________________________________
 
 - Never modify manifest to match non-conforming code. If code doesn't match spec: set `status: spec-only` and fix implementation in a follow-up PR. Never remove params, vars, or shape_rules to silence validator errors.
 
-- **Manifest comment policy.** See [code-style.md §Manifest YAML comment policy](../rules/code-style.md). Summary: technical content the DSL cannot express structurally is permitted; project-management metadata (issue/PR numbers, follow-up promises, drift narratives) is not.
+- **Manifest comment policy.** Manifest YAML carries technical content the DSL cannot express structurally (schema clarifications, edge cases, conventions, file-level headers). It does **not** carry development-process metadata — anything bound to a specific issue, PR, commit, or development round. Test: would this comment still be meaningful if every issue / PR had different numbers and every milestone was renamed? Yes → keep. No → move to commit message, PR description, or follow-up issue.
+
+  Discovery scan (flags candidates, not a hard gate): `grep -rnE '#[0-9]{3,}|[Ff]ollow.?up|AC-[0-9]+' tileops/manifest/*.yaml`
