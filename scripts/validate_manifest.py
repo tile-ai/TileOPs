@@ -36,16 +36,24 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
 
-# Import the helper registry from ``tileops.manifest.shape_rules``.
-# When launched as ``python scripts/validate_manifest.py`` from a
-# checkout that has not been installed in development mode, ``tileops``
-# is not yet on ``sys.path`` — insert REPO_ROOT in that case only.
-# When this file is imported as a module the importer already has the
-# package on ``sys.path`` and we must not mutate global import resolution.
-if __name__ == "__main__" and str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+# Load ``tileops/manifest/shape_rules.py`` directly via importlib so the
+# validator does not pull in the full ``tileops`` package (which eagerly
+# imports ``tileops.ops`` at package init time). Loading the module file
+# in isolation keeps the validator's import surface minimal and avoids
+# coupling validator startup to runtime op infrastructure.
+import importlib.util as _importlib_util  # noqa: E402
 
-from tileops.manifest.shape_rules import HELPERS as _SHAPE_RULE_HELPERS  # noqa: E402
+_SHAPE_RULES_PATH = REPO_ROOT / "tileops" / "manifest" / "shape_rules.py"
+_shape_rules_spec = _importlib_util.spec_from_file_location(
+    "_tileops_validator_shape_rules", _SHAPE_RULES_PATH,
+)
+if _shape_rules_spec is None or _shape_rules_spec.loader is None:
+    raise ImportError(
+        f"could not load shape_rules helpers from {_SHAPE_RULES_PATH}",
+    )
+_shape_rules_module = _importlib_util.module_from_spec(_shape_rules_spec)
+_shape_rules_spec.loader.exec_module(_shape_rules_module)
+_SHAPE_RULE_HELPERS: dict = _shape_rules_module.HELPERS
 
 # ``shape_rules`` entries that begin with this prefix are routed through
 # the named-helper registry rather than evaluated as free-form Python.
@@ -1566,6 +1574,13 @@ def _is_broadcastable_to(src: object, dst: object) -> bool:
 # Broadcasting helpers (``broadcast_shapes`` / ``is_broadcastable_to``)
 # mirror PyTorch semantics but are pure-Python so the validator does
 # not require ``torch`` to evaluate L1 shape_rules.
+#
+# ``reduced_axes`` is a value extractor used as a sub-expression inside
+# larger output-shape rules (e.g. ``output.ndim == x.ndim - len(reduced_axes(x, dim))``)
+# rather than a top-level predicate, so it stays in the unconditional
+# builtin set. Predicate helpers (``dim_range_validity`` / ``dim_uniqueness``)
+# are opt-in via the ``helper:`` URI prefix and are NOT merged here; see
+# ``_eval_shape_rule`` for the conditional injection.
 _SHAPE_RULE_BUILTINS: dict = {
     "len": len,
     "isinstance": isinstance,
@@ -1582,11 +1597,19 @@ _SHAPE_RULE_BUILTINS: dict = {
     "max": max,
     "broadcast_shapes": _broadcast_shapes,
     "is_broadcastable_to": _is_broadcastable_to,
-    # Named-helper registry (``helper:NAME(args)`` URI scheme). Helpers
-    # become callable in the eval context once the prefix is stripped,
-    # so a rule body like ``dim_range_validity(x, dim)`` resolves the
-    # registered predicate.
-    **_SHAPE_RULE_HELPERS,
+    "reduced_axes": _SHAPE_RULE_HELPERS["reduced_axes"],
+}
+
+# Named-helper registry (``helper:NAME(args)`` URI scheme), exposed only
+# when evaluating a rule whose body was stripped of the ``helper:`` prefix.
+# Keeping these out of the unconditional builtins preserves the opt-in
+# property: an unprefixed ``dim_range_validity(x, dim)`` rule must raise
+# ``NameError`` rather than silently bypass ``_check_helper_rule``'s
+# helper-name validation at L0.
+_SHAPE_RULE_HELPER_ONLY: dict = {
+    name: fn
+    for name, fn in _SHAPE_RULE_HELPERS.items()
+    if name not in _SHAPE_RULE_BUILTINS
 }
 
 
@@ -1603,9 +1626,16 @@ def _eval_shape_rule(
     The eval globals expose the ``_SHAPE_RULE_BUILTINS`` helper set
     (``len``, ``isinstance``, ``int``, ``tuple``, ``list``, ``type``,
     ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``, ``max``,
-    ``broadcast_shapes``, ``is_broadcastable_to``) so R11 / R11a-style
-    rules that use these helpers can be evaluated against the mock
-    context instead of being silently skipped.
+    ``broadcast_shapes``, ``is_broadcastable_to``, ``reduced_axes``) so
+    R11 / R11a-style rules that use these helpers can be evaluated
+    against the mock context instead of being silently skipped.
+
+    Predicate helpers exposed via the ``helper:`` URI scheme
+    (``dim_range_validity``, ``dim_uniqueness``) are injected into the
+    eval scope only when the input rule carried the ``helper:`` prefix,
+    so an unprefixed rule that names a predicate helper raises
+    ``NameError`` (surfaced as an eval-error warning) rather than
+    silently bypassing the L0 helper-name validation.
 
     The context names (inputs / outputs / params) are injected into both
     eval globals and locals. Comprehensions (generator / set / list /
@@ -1615,11 +1645,15 @@ def _eval_shape_rule(
     ``x`` and ``dim`` inside the generator expression.
     """
     # ``helper:NAME(args)`` rules: route through the registered helper
-    # by stripping the prefix and evaluating the call body. The helper
-    # functions themselves are exposed via ``_SHAPE_RULE_BUILTINS`` so
-    # the call resolves like any other builtin.
+    # by stripping the prefix and evaluating the call body. Predicate
+    # helpers are injected into the eval scope only on the helper path
+    # (see ``_SHAPE_RULE_HELPER_ONLY``); unprefixed rules see only the
+    # base builtin set, so a rule body that names a helper without the
+    # ``helper:`` prefix must raise ``NameError`` instead of silently
+    # bypassing the L0 helper-name validation in ``_check_helper_rule``.
     body = _strip_helper_prefix(rule)
-    eval_target = body if body is not None else rule
+    is_helper_rule = body is not None
+    eval_target = body if is_helper_rule else rule
     # Defense-in-depth: even though manifest content is trusted (PR review
     # gates it), parse the rule first and reject any dunder attribute
     # access. This closes the classic ``().__class__.__mro__[1].
@@ -1637,7 +1671,16 @@ def _eval_shape_rule(
                 f"({node.attr!r})"
             )
 
-    eval_globals = {"__builtins__": _SHAPE_RULE_BUILTINS}
+    # Build the per-rule builtin set: the base sandboxed builtins
+    # always, plus the opt-in predicate helpers only when this rule
+    # came in through the ``helper:`` URI scheme. Constructing a fresh
+    # dict per call keeps the unconditional ``_SHAPE_RULE_BUILTINS``
+    # immune to leakage between helper and non-helper evaluations.
+    if is_helper_rule:
+        rule_builtins = {**_SHAPE_RULE_BUILTINS, **_SHAPE_RULE_HELPER_ONLY}
+    else:
+        rule_builtins = _SHAPE_RULE_BUILTINS
+    eval_globals = {"__builtins__": rule_builtins}
     # Ctx names must be visible inside comprehensions, which only see
     # globals. Merge ctx into globals while keeping locals=ctx so plain
     # (non-comprehension) lookups behave identically.
@@ -1647,7 +1690,7 @@ def _eval_shape_rule(
     # the sandboxed builtins mapping installed above and re-expose the
     # full unrestricted builtins set. Reinstate the sandbox after the
     # update so ctx cannot escape it.
-    eval_globals["__builtins__"] = _SHAPE_RULE_BUILTINS
+    eval_globals["__builtins__"] = rule_builtins
     try:
         result = eval(  # noqa: S307 — manifest-controlled
             eval_target, eval_globals, ctx,

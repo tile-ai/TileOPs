@@ -4210,6 +4210,65 @@ class TestValidatorHelperResolution:
             "UnmigratedOp", entry, cls,
         ) == []
 
+    def test_unprefixed_predicate_helper_raises_name_error(self, validator):
+        """Opt-in property: predicate helpers are NOT in the unprefixed eval scope.
+
+        An unprefixed shape_rule that names ``dim_range_validity(x, dim)``
+        must surface an eval-error warning (NameError) rather than
+        silently resolving the call. This pins the contract that
+        callers must go through ``helper:`` to access predicate helpers,
+        so the L0 helper-name validation in ``_check_helper_rule``
+        cannot be bypassed.
+        """
+        import types
+        ok, reason = validator._eval_shape_rule(
+            "dim_range_validity(x, dim)",
+            {"x": types.SimpleNamespace(ndim=4), "dim": 0},
+        )
+        assert ok is False
+        assert reason is not None
+        assert "NameError" in reason
+        assert "dim_range_validity" in reason
+
+    def test_unprefixed_dim_uniqueness_raises_name_error(self, validator):
+        """Same opt-in contract for ``dim_uniqueness``."""
+        import types
+        ok, reason = validator._eval_shape_rule(
+            "dim_uniqueness(x, dim)",
+            {"x": types.SimpleNamespace(ndim=4), "dim": [0, 1]},
+        )
+        assert ok is False
+        assert reason is not None
+        assert "NameError" in reason
+        assert "dim_uniqueness" in reason
+
+    def test_unprefixed_reduced_axes_remains_callable(self, validator):
+        """``reduced_axes`` is a value extractor, exposed as a regular builtin.
+
+        Unlike the predicate helpers, ``reduced_axes`` is referenced
+        unprefixed inside larger output-shape expressions
+        (e.g. ``output.ndim == x.ndim - len(reduced_axes(x, dim))``),
+        so it must remain callable in the unprefixed eval scope to
+        preserve pre-migration parity for SumFwdOp.
+        """
+        import types
+        ok, reason = validator._eval_shape_rule(
+            "len(reduced_axes(x, dim)) == 1",
+            {"x": types.SimpleNamespace(ndim=4), "dim": 0},
+        )
+        assert reason is None, reason
+        assert ok is True
+
+    def test_helper_prefixed_predicate_resolves(self, validator):
+        """Sanity: ``helper:`` prefix exposes predicate helpers as expected."""
+        import types
+        ok, reason = validator._eval_shape_rule(
+            "helper:dim_range_validity(x, dim)",
+            {"x": types.SimpleNamespace(ndim=4), "dim": 0},
+        )
+        assert reason is None, reason
+        assert ok is True
+
     def test_migrated_sum_rules_parity_with_pre_migration_inline(self, validator):
         """Regression: SumFwdOp's helper-based rules match the pre-migration inline form.
 
