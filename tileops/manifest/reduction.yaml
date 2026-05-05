@@ -174,11 +174,16 @@ SumFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+      # Reduction-dim contract lifted into tileops/manifest/shape_rules.py.
+      # Top-level predicate rules use the `helper:` URI scheme; output-shape
+      # rules call `reduced_axes(...)` directly — that name is registered in
+      # the validator's eval context via the same helper registry, so all
+      # three references resolve to the same module.
+      - "helper:dim_range_validity(x, dim)"
+      - "helper:dim_uniqueness(x, dim)"
+      - "output.ndim == (x.ndim if keepdim else x.ndim - len(reduced_axes(x, dim)))"
+      - "not keepdim or all(output.shape[i] == (1 if i in reduced_axes(x, dim) else x.shape[i]) for i in range(x.ndim))"
+      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in reduced_axes(x, dim)][k]] for k in range(output.ndim))"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)

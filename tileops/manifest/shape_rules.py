@@ -143,9 +143,56 @@ def dim_uniqueness(x: Any, dim: Any) -> bool:
     return len(normalized) == len(dims)
 
 
+def reduced_axes(x: Any, dim: Any) -> frozenset[int]:
+    """Return the set of normalized axis indices reduced over.
+
+    Encodes PyTorch's reduction-axis convention so output-shape rules can
+    avoid pasting the case analysis inline. The mapping is:
+
+    * ``dim`` is a single int -> reduce over ``{dim % x.ndim}``.
+    * ``dim`` is a non-empty list/tuple of ints -> reduce over the set of
+      normalized indices ``{d % x.ndim for d in dim}``.
+    * ``dim is None`` or an empty list/tuple -> reduce over all axes
+      (``range(x.ndim)``); matches PyTorch's ``torch.sum(x, dim=())``
+      semantics.
+
+    A malformed ``dim`` value (string, set, mixed-type sequence) falls
+    into the "all axes" branch so this helper returns a deterministic
+    set in every case. Pair it with :func:`dim_range_validity` /
+    :func:`dim_uniqueness` so malformed inputs surface as validation
+    failures before the output-shape rules consult :func:`reduced_axes`.
+
+    Args:
+        x: A tensor-like object exposing ``.ndim``.
+        dim: An int, ``None``, or a list/tuple of ints.
+
+    Returns:
+        A ``frozenset`` of normalized axis indices in ``[0, x.ndim)``.
+    """
+    ndim = _ndim_of(x)
+    if ndim is None:
+        return frozenset()
+    # Mirror the inline reduction expression
+    # ``{dim % x.ndim} if isinstance(dim, int) else
+    #  {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0
+    #  else set(range(x.ndim))``
+    # so migrated ops are bit-identical to unmigrated ones once dim validity
+    # has been confirmed elsewhere. ``isinstance(dim, int)`` accepts bool
+    # too (bool subclasses int in Python); keep that quirk here.
+    if isinstance(dim, int):
+        return frozenset({dim % ndim})
+    if isinstance(dim, (list, tuple)) and len(dim) > 0:
+        try:
+            return frozenset(d % ndim for d in dim)
+        except TypeError:
+            return frozenset(range(ndim))
+    return frozenset(range(ndim))
+
+
 HELPERS: dict[str, Any] = {
     "dim_range_validity": dim_range_validity,
     "dim_uniqueness": dim_uniqueness,
+    "reduced_axes": reduced_axes,
 }
 """Registry of helper names exposed to the manifest's ``helper:`` URI scheme.
 
@@ -159,4 +206,5 @@ __all__ = [
     "HELPERS",
     "dim_range_validity",
     "dim_uniqueness",
+    "reduced_axes",
 ]

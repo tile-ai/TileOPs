@@ -3795,24 +3795,80 @@ class TestShapeRuleHelpers:
         x = type("X", (), {"ndim": 3})()
         assert dim_uniqueness(x, []) is True
 
-    def test_helpers_registry_exposes_both_predicates(self):
+    def test_reduced_axes_none_returns_full_range(self):
+        from tileops.manifest.shape_rules import reduced_axes
+
+        x = type("X", (), {"ndim": 3})()
+        assert reduced_axes(x, None) == frozenset({0, 1, 2})
+
+    def test_reduced_axes_int_returns_single_normalized_axis(self):
+        from tileops.manifest.shape_rules import reduced_axes
+
+        x = type("X", (), {"ndim": 4})()
+        assert reduced_axes(x, 0) == frozenset({0})
+        assert reduced_axes(x, -1) == frozenset({3})
+        assert reduced_axes(x, -4) == frozenset({0})
+
+    def test_reduced_axes_non_empty_sequence_returns_normalized_set(self):
+        from tileops.manifest.shape_rules import reduced_axes
+
+        x = type("X", (), {"ndim": 4})()
+        assert reduced_axes(x, [0, 2]) == frozenset({0, 2})
+        assert reduced_axes(x, (-1, -2)) == frozenset({2, 3})
+
+    def test_reduced_axes_empty_sequence_returns_full_range(self):
+        from tileops.manifest.shape_rules import reduced_axes
+
+        x = type("X", (), {"ndim": 3})()
+        assert reduced_axes(x, []) == frozenset({0, 1, 2})
+        assert reduced_axes(x, ()) == frozenset({0, 1, 2})
+
+    def test_reduced_axes_matches_inline_expression_for_sum_cases(self):
+        """Bit-identical parity with the expression migrated out of SumFwdOp.
+
+        The inline form was
+        ``{dim % x.ndim} if isinstance(dim, int) else
+          {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0
+          else set(range(x.ndim))``.
+        Drive both forms with the same inputs and assert equality so any
+        future helper edit that drifts from the manifest's prior semantics
+        fails loudly.
+        """
+        from tileops.manifest.shape_rules import reduced_axes
+
+        def inline(x, dim):
+            if isinstance(dim, int):
+                return frozenset({dim % x.ndim})
+            if isinstance(dim, (list, tuple)) and len(dim) > 0:
+                return frozenset(d % x.ndim for d in dim)
+            return frozenset(range(x.ndim))
+
+        x = type("X", (), {"ndim": 4})()
+        cases = [None, 0, -1, 2, [0, 2], (-1, -2), [], ()]
+        for d in cases:
+            assert reduced_axes(x, d) == inline(x, d), d
+
+    def test_helpers_registry_exposes_all_helpers(self):
         from tileops.manifest.shape_rules import (
             HELPERS,
             dim_range_validity,
             dim_uniqueness,
+            reduced_axes,
         )
 
         assert HELPERS["dim_range_validity"] is dim_range_validity
         assert HELPERS["dim_uniqueness"] is dim_uniqueness
+        assert HELPERS["reduced_axes"] is reduced_axes
 
     def test_helpers_have_docstrings(self):
         """Each helper documents its contract."""
         from tileops.manifest.shape_rules import (
             dim_range_validity,
             dim_uniqueness,
+            reduced_axes,
         )
 
-        for fn in (dim_range_validity, dim_uniqueness):
+        for fn in (dim_range_validity, dim_uniqueness, reduced_axes):
             doc = (fn.__doc__ or "").strip()
             assert doc, f"{fn.__name__} missing docstring"
             # Non-trivial: at least a sentence beyond the summary line.
@@ -3961,3 +4017,93 @@ class TestValidatorHelperResolution:
         assert validator.check_l2_infer_parity(
             "UnmigratedOp", entry, cls,
         ) == []
+
+    def test_migrated_sum_rules_parity_with_pre_migration_inline(self, validator):
+        """Regression: SumFwdOp's helper-based rules match the pre-migration inline form.
+
+        Captures the proof-of-concept end-to-end migration. The pre-
+        migration manifest entry encoded the same five reduction-dim
+        rules as inline Python. The post-migration entry replaces the
+        first two with ``helper:`` predicates and lifts the shared
+        "set of normalized reduction axes" expression into
+        :func:`reduced_axes`. Driving both forms through
+        :func:`check_l2_infer_parity` against the same mock op class
+        must produce equal error lists; any future drift in helper
+        semantics will fail this test.
+        """
+        def infer(self, x_shape, *, dim=None, keepdim=False):  # noqa: ARG001
+            # Identity output is enough to exercise the rule eval path
+            # under mock inputs; the rules themselves don't reach this.
+            return {"output": x_shape}
+
+        cls = _make_op_cls_with_infer(infer, name="SumParityOp")
+        sig_common = {
+            "inputs": {"x": {"dtype": "float16"}},
+            "outputs": {"output": {"dtype": "same_as(x)"}},
+            "params": {
+                "dim": {
+                    "type": "int | list[int] | tuple[int, ...] | None",
+                    "default": None,
+                },
+                "keepdim": {"type": "bool", "default": False},
+            },
+        }
+        inline_axes = (
+            "({dim % x.ndim} if isinstance(dim, int) else "
+            "{d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) "
+            "and len(dim) > 0 else set(range(x.ndim)))"
+        )
+        entry_pre = {
+            "signature": {
+                **sig_common,
+                "shape_rules": [
+                    "dim is None or all(-x.ndim <= d < x.ndim for d in "
+                    "([dim] if isinstance(dim, int) else dim))",
+                    "isinstance(dim, (int, type(None))) or "
+                    "len({d % x.ndim for d in dim}) == len(dim)",
+                    f"output.ndim == (x.ndim if keepdim else x.ndim - "
+                    f"len({inline_axes}))",
+                ],
+            },
+        }
+        entry_post = {
+            "signature": {
+                **sig_common,
+                "shape_rules": [
+                    "helper:dim_range_validity(x, dim)",
+                    "helper:dim_uniqueness(x, dim)",
+                    "output.ndim == (x.ndim if keepdim else x.ndim - "
+                    "len(reduced_axes(x, dim)))",
+                ],
+            },
+        }
+        errs_pre = validator.check_l2_infer_parity(
+            "SumParityOp", entry_pre, cls,
+        )
+        errs_post = validator.check_l2_infer_parity(
+            "SumParityOp", entry_post, cls,
+        )
+        # Error strings quote the rule text verbatim, so post-migration
+        # entries naturally differ from pre-migration ones in the rule
+        # body. What must stay identical is the validator's classification
+        # at each rule index: the same number of errors, the same severity
+        # tags ("[shape]"), and the same indices flagged. That captures
+        # the AC-3 contract — bit-identical validator behaviour pre/post
+        # — without coupling the test to literal rule wording.
+        def _classify(errs: list[str]) -> list[str]:
+            tags = []
+            for e in errs:
+                if "shape_rules[0]" in e:
+                    tags.append("[shape] rule[0]")
+                elif "shape_rules[1]" in e:
+                    tags.append("[shape] rule[1]")
+                elif "shape_rules[2]" in e:
+                    tags.append("[shape] rule[2]")
+                else:
+                    tags.append(e.split(" ", 1)[0])
+            return tags
+
+        assert _classify(errs_pre) == _classify(errs_post), (
+            errs_pre, errs_post,
+        )
+        assert len(errs_pre) == len(errs_post), (errs_pre, errs_post)
