@@ -58,7 +58,7 @@ class LayerNormFwdOp(Op):
     def __init__(
         self,
         normalized_shape: Optional[Sequence[int]] = None,
-        eps: float = 1e-5,
+        eps: Optional[float] = 1e-5,
         *,
         dtype: torch.dtype,
         N: Optional[int] = None,
@@ -72,7 +72,10 @@ class LayerNormFwdOp(Op):
         )
         self.N = normalized_shape_to_n(normalized_shape, n_fallback=N)
         self.dtype = dtype
-        self.eps = float(eps)
+        # Manifest declares ``eps: float | None`` with PyTorch default 1e-5.
+        # Map None to the PyTorch default so callers passing the manifest
+        # default literally (None) get a working kernel.
+        self.eps = 1e-5 if eps is None else float(eps)
         self.tune = tune
         self.N_padded = _align_up(self.N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
