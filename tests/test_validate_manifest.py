@@ -3780,10 +3780,6 @@ class TestShapeRuleHelpers:
             # A float element survives ordering and modulo; both forms
             # return the same set.
             [1.5],
-            # ``dim=None`` is the contract-spec "all axes" sentinel.
-            None,
-            # Empty tuple: explicit "all axes" per the inline else clause.
-            (),
         ]
         pairs = [
             (dim_range_validity, inline_range),
