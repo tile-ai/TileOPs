@@ -93,6 +93,10 @@ def _gqa_prefill_paged_ref(
 @pytest.mark.parametrize("q_lens, old_lens, heads, heads_kv, dim, is_causal, dtype", [
     pytest.param([64, 96], [80, 128], 8, 2, 64, True, torch.float16,
                  marks=pytest.mark.smoke, id="gqa_ratio4_mixed_fp16"),
+    pytest.param([17, 33], [37, 100], 8, 2, 64, True, torch.float16,
+                 marks=pytest.mark.smoke, id="gqa_unaligned_old_len_fp16"),
+    pytest.param([1], [511], 8, 2, 64, True, torch.float16,
+                 marks=pytest.mark.smoke, id="gqa_decode_len_capacity_boundary_fp16"),
     pytest.param([64, 64], [64, 128], 8, 8, 64, True, torch.float16,
                  marks=pytest.mark.smoke, id="mha_fp16"),
     pytest.param([32, 64], [96, 160], 8, 1, 64, True, torch.float16,

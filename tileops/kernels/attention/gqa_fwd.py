@@ -1463,7 +1463,8 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(batch: int,
                     else:
                         for i, d in T.Parallel(block_m, dim):
                             new_pos = bx * block_m + i
-                            logical_pos = old_len + new_pos
+                            safe_new_pos = T.if_then_else(new_pos < q_len, new_pos, 0)
+                            logical_pos = old_len + safe_new_pos
                             page_idx = logical_pos >> T.int32(page_size_log2)
                             page_offset = logical_pos - page_idx * page_size
                             if new_pos < q_len:
@@ -1518,8 +1519,9 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(batch: int,
                         for j, d in T.Parallel(block_n, dim):
                             kv_pos = tile_start + j
                             new_pos = kv_pos - old_len
-                            page_idx = kv_pos >> T.int32(page_size_log2)
-                            page_offset = kv_pos - page_idx * page_size
+                            safe_kv_pos = T.if_then_else(kv_pos < old_len, kv_pos, 0)
+                            page_idx = safe_kv_pos >> T.int32(page_size_log2)
+                            page_offset = safe_kv_pos - page_idx * page_size
                             physical_pos = block_table[bz, page_idx] * page_size + page_offset
                             if kv_pos < old_len:
                                 k_shared[j, d] = k_pages[physical_pos, cur_kv_head, d]
