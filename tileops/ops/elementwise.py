@@ -930,19 +930,21 @@ class BinaryOp(Op):
         ``torch.add(..., alpha=2)``) so that error types and messages stay
         consistent regardless of which branch ``forward`` takes.
         """
+        a_name = getattr(self, "_input_name", "input")
+        b_name = getattr(self, "_other_name", "other")
         if not input.is_cuda or not other.is_cuda:
             raise ValueError("Inputs must be CUDA tensors")
         if input.dtype != self.dtype:
-            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+            raise ValueError(f"Expected {a_name}.dtype {self.dtype}, got {input.dtype}")
         if other.dtype != self.dtype:
-            raise ValueError(f"Expected other.dtype {self.dtype}, got {other.dtype}")
+            raise ValueError(f"Expected {b_name}.dtype {self.dtype}, got {other.dtype}")
         if input.numel() != self.a_numel:
             raise ValueError(
-                f"Expected input to have {self.a_numel} elements, got {input.numel()}"
+                f"Expected {a_name} to have {self.a_numel} elements, got {input.numel()}"
             )
         if other.numel() != self.b_numel:
             raise ValueError(
-                f"Expected other to have {self.b_numel} elements, got {other.numel()}"
+                f"Expected {b_name} to have {self.b_numel} elements, got {other.numel()}"
             )
 
     def forward(
@@ -1324,6 +1326,7 @@ class PowFwdOp(BinaryOp):
 
     _op_name = "pow"
     kernel_cls = PowFwdKernel
+    _other_name = "exponent"
 
     def _eager_forward(
         self,
@@ -1367,6 +1370,7 @@ class LerpFwdOp(BinaryOp):
 
     _op_name = "lerp"
     kernel_cls = LerpFwdKernel
+    _other_name = "end"
 
     def _eager_forward(
         self,
