@@ -1,0 +1,22 @@
+{
+  "head_sha": "deadbeef0000000000000000000000000000aaaa",
+  "threads": [
+    {
+      "id": "PRT_kwDO_missing_oid_bot",
+      "isResolved": false,
+      "comments": {
+        "nodes": [
+          {
+            "id": "PRRC_kwDO_missing_first",
+            "databaseId": 5555555555,
+            "author": { "login": "gemini-code-assist" },
+            "commit": { "oid": "" },
+            "body": "Bot comment with no commit anchor",
+            "path": "tileops/quux.py",
+            "line": 9
+          }
+        ]
+      }
+    }
+  ]
+}
