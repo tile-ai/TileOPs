@@ -294,9 +294,9 @@ def test_nan_to_num_e5m2_overflow_scalar_params_rejected():
     # Validation messages use the canonical manifest-aligned names
     # (``posinf`` / ``neginf``) regardless of which alias the user passes.
     with pytest.raises(ValueError, match=r"posinf=.*not representable"):
-        NanToNumFwdOp(N_total=n, dtype=dtype, nan_val=0.0, posinf_val=1e5, neginf_val=-1.0)
+        NanToNumFwdOp(N_total=n, dtype=dtype, nan=0.0, posinf=1e5, neginf=-1.0)
     with pytest.raises(ValueError, match=r"neginf=.*not representable"):
-        NanToNumFwdOp(N_total=n, dtype=dtype, nan_val=0.0, posinf_val=1.0, neginf_val=-1e5)
+        NanToNumFwdOp(N_total=n, dtype=dtype, nan=0.0, posinf=1.0, neginf=-1e5)
 
 
 @pytest.mark.smoke
@@ -340,26 +340,19 @@ def test_nan_to_num_fp8_default_ctor_accepts_dtype_sentinels(dtype):
 
     Regression guard: when ``posinf`` / ``neginf`` are left at their
     manifest default ``None``, the op must NOT validate the legacy
-    fp16-shaped sentinels (1e4 / -1e4) against the narrow fp8 range.
-    Instead, the Op layer resolves ``None`` to the *final* user-facing
-    dtype's finite extrema (``torch.finfo(dtype).max`` / ``.min``) and
-    passes those finite values to the kernel — i.e. clamping targets
-    the dtype the caller actually sees after the Op-layer post-cast,
-    not the kernel's fp16 intermediate. For e5m2 that is 57344.0;
-    clamping to fp16's 65504.0 would round to +Inf on the cast back to
-    e5m2.
+    fp16-shaped sentinels against the narrow fp8 range. Construction
+    must succeed with the manifest-default kwargs and the public Op
+    state must reflect that the user did not pin a finite override.
+    The end-to-end behavior — that ``+inf`` / ``-inf`` resolve to a
+    *finite* value in the final fp8 dtype — is exercised by
+    ``test_nan_to_num_fp8_default_replaces_inf_with_finite`` below.
     """
     from tileops.ops.elementwise import NanToNumFwdOp
 
     op = NanToNumFwdOp(N_total=8, dtype=dtype)
     assert op.posinf is None
     assert op.neginf is None
-    # The clamp targets the final user-facing dtype.
-    final_dtype = op.kernel._fp8_output_dtype or op.kernel.output_dtype
-    assert final_dtype == dtype
-    final_finfo = torch.finfo(final_dtype)
-    assert op.kernel.posinf_val == final_finfo.max
-    assert op.kernel.neginf_val == final_finfo.min
+    assert op.dtype == dtype
 
 
 @pytest.mark.smoke

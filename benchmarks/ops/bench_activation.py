@@ -25,7 +25,6 @@ from tileops.kernels.elementwise import (
     ReluFwdKernel,
     _make_unary_explicit,
 )
-from tileops.manifest import load_manifest
 from tileops.ops.elementwise import (
     EluFwdOp,
     ErfFwdOp,
@@ -100,45 +99,40 @@ class UnaryBenchCase:
 class UnaryBenchmark(BenchmarkBase[_UnaryWorkload]):
     """Bandwidth-oriented benchmark for unary elementwise ops.
 
-    The default FLOP count is ``n_total`` (one fp op per element) which
-    matches the simplest manifest entries (``flops: "N"`` for ``neg``,
-    ``abs``, etc.). Activations and other transcendental ops declare
-    higher manifest coefficients (``sigmoid: 4*N``, ``mish: 7*N``) and
-    must construct the bench with ``flops_per_elem=`` (or pass
-    ``op=`` and let the bench read the op's ``eval_roofline()``) so the
-    TFLOPs column reflects the manifest contract.
+    Constructed with the Op instance whose roofline drives the TFLOPs
+    column: the bench reads ``op.eval_roofline()`` (or
+    ``FLOPS_PER_ELEM`` as a fallback for ops that have not implemented
+    ``eval_roofline``) so the reported TFLOPs reflects the manifest
+    ``roofline.flops`` contract end-to-end. The R6 / R7 kernel-direct
+    benches build a transient Op of the corresponding family and pass
+    it here; there is no separate ``flops_per_elem`` override.
     """
 
     def __init__(
         self,
         workload: _UnaryWorkload,
         *,
-        flops_per_elem: Optional[int] = None,
-        op: Optional[object] = None,
+        op: object,
     ):
         super().__init__(workload)
-        self._flops_per_elem = flops_per_elem
         self._op = op
 
     def calculate_flops(self) -> Optional[float]:
-        if self._op is not None:
-            eval_fn = getattr(self._op, "eval_roofline", None)
-            if eval_fn is not None:
-                # The base ``Op.eval_roofline`` raises ``NotImplementedError``
-                # so subclasses must opt in. Fall through to the per-elem
-                # path when the op inherits the unimplemented stub rather
-                # than crashing the bench.
-                try:
-                    flops, _ = eval_fn()
-                except NotImplementedError:
-                    pass
-                else:
-                    return float(flops)
-            per_elem = getattr(self._op, "FLOPS_PER_ELEM", None)
-            if per_elem is not None:
-                return float(per_elem) * self.workload.n_total
-        if self._flops_per_elem is not None:
-            return float(self._flops_per_elem) * self.workload.n_total
+        eval_fn = getattr(self._op, "eval_roofline", None)
+        if eval_fn is not None:
+            # The base ``Op.eval_roofline`` raises ``NotImplementedError``
+            # so subclasses must opt in. Fall through to the per-elem
+            # path when the op inherits the unimplemented stub rather
+            # than crashing the bench.
+            try:
+                flops, _ = eval_fn()
+            except NotImplementedError:
+                pass
+            else:
+                return float(flops)
+        per_elem = getattr(self._op, "FLOPS_PER_ELEM", None)
+        if per_elem is not None:
+            return float(per_elem) * self.workload.n_total
         return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
@@ -389,43 +383,14 @@ _R6_KERNEL_OPS = [
 ]
 
 
-def _flops_per_elem_from_manifest(op_key: str) -> int:
-    """Read ``roofline.flops`` for *op_key* and return the per-element coefficient.
-
-    The kernel-direct benches (R6 / R7) build kernels without an Op
-    instance, so they cannot call ``op.eval_roofline()``. Reading the
-    coefficient from the manifest at import time keeps the bench column
-    aligned with the manifest contract and prevents drift from a
-    hand-maintained mirror table.
-
-    Supports the simple shapes used by the unary activation manifest:
-    ``"N"`` (-> 1) and ``"<int> * N"`` (-> the integer). Raises if the
-    expression uses a form this helper does not recognize so that any
-    future manifest extension fails loudly here rather than silently
-    drifting again.
-    """
-    flops_expr = load_manifest()[op_key]["roofline"]["flops"]
-    expr = flops_expr.replace(" ", "")
-    if expr == "N":
-        return 1
-    if expr.endswith("*N"):
-        coeff = expr[:-2]
-        if coeff.isdigit():
-            return int(coeff)
-    raise ValueError(
-        f"unsupported manifest roofline.flops form for {op_key!r}: "
-        f"{flops_expr!r}; extend _flops_per_elem_from_manifest to "
-        f"handle this shape."
-    )
-
-
-# Per-op FLOP coefficients derived from the manifest roofline column at
-# import time. Used by the kernel-direct benches (R6 / R7) where there
-# is no Op instance from which to read ``eval_roofline()``.
-_MANIFEST_FLOPS_PER_ELEM = {
-    "relu": _flops_per_elem_from_manifest("ReluFwdOp"),
-    "erf": _flops_per_elem_from_manifest("ErfFwdOp"),
-    "mish": _flops_per_elem_from_manifest("MishFwdOp"),
+# Op classes corresponding to the kernel-direct benches below. Each
+# R6 / R7 case constructs a transient instance and hands it to
+# ``UnaryBenchmark`` so the TFLOPs column reads ``op.eval_roofline()``
+# (or ``FLOPS_PER_ELEM``) — no manifest expression parsing in the bench.
+_R6_OP_BY_NAME = {
+    "relu": ReluFwdOp,
+    "erf": ErfFwdOp,
+    "mish": MishFwdOp,
 }
 
 _R6_THREADS = [128, 256]
@@ -474,12 +439,15 @@ def test_r6_threads_comparison(
     dtype = torch.float16
     dtype_str = "float16"
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(
-        test, flops_per_elem=_MANIFEST_FLOPS_PER_ELEM[op_name],
-    )
+    n_total = prod(shape)
+    # Build a transient Op of the same family; ``UnaryBenchmark`` reads
+    # ``op.eval_roofline()`` to drive the TFLOPs column so the kernel-
+    # direct R6 path stays aligned with the manifest coefficient
+    # without parsing roofline expressions in the bench file.
+    flops_op = _R6_OP_BY_NAME[op_name](N_total=n_total, dtype=dtype)
+    bm = UnaryBenchmark(test, op=flops_op)
     inputs = test.gen_inputs()
 
-    n_total = prod(shape)
     npt = 8  # default for fp16
     kernel_cls = _R6_KERNEL_MAP[op_name]
     # Build kernel directly with the desired threads/npt so block_size is correct
@@ -546,9 +514,9 @@ def test_r7_dtype_npt(
     threads = 256
     dtype_str = "float32" if dtype == torch.float32 else "float16"
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(
-        test, flops_per_elem=_MANIFEST_FLOPS_PER_ELEM["relu"],
-    )
+    # Transient Op carries the manifest roofline; bench reads it.
+    flops_op = ReluFwdOp(N_total=n_total, dtype=dtype)
+    bm = UnaryBenchmark(test, op=flops_op)
     inputs = test.gen_inputs()
 
     # Build kernel directly with the desired threads/npt so block_size is correct
