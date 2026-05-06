@@ -422,7 +422,13 @@ def _conv2d_kernel(
     out_w = (w + 2 * pad_w - kernel_w) // stride_w + 1
     k_total = kernel_h * kernel_w * c_in
 
-    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    # TODO(#1105): Re-enable automatic async copy after TileLang fixes scalar cp.async
+    # widening for vectorized manual data loads. Keep weight T.copy eligible for TMA.
+    @tilelang.jit(
+        out_idx=[2],
+        compile_flags=["-O3", "-DENABLE_BF16"],
+        pass_configs={"tl.enable_async_copy": False},
+    )
     def _conv2d_func(
         block_m: int,
         block_n: int,
@@ -940,7 +946,13 @@ def _conv3d_kernel(
     out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
     k_total = kernel_d * kernel_h * kernel_w * c_in
 
-    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    # TODO(#1105): Re-enable automatic async copy after TileLang fixes scalar cp.async
+    # widening for vectorized manual data loads. Keep weight T.copy eligible for TMA.
+    @tilelang.jit(
+        out_idx=[2],
+        compile_flags=["-O3", "-DENABLE_BF16"],
+        pass_configs={"tl.enable_async_copy": False},
+    )
     def _conv3d_func(
         block_m: int,
         block_n: int,
