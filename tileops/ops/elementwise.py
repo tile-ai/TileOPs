@@ -1363,14 +1363,14 @@ class LerpFwdOp(BinaryOp):
         input: torch.Tensor,  # noqa: A002
         end: torch.Tensor,
     ) -> torch.Tensor:
-        return BinaryOp._eager_forward(self, input, end)
+        return super()._eager_forward(input, end)
 
     def forward(
         self,
         input: torch.Tensor,  # noqa: A002
         end: torch.Tensor,
     ) -> torch.Tensor:
-        return BinaryOp.forward(self, input, end)
+        return super().forward(input, end)
 
     def __init__(
         self,
