@@ -45,7 +45,7 @@ def _manifest_params():
         label = w.get("label", f"{n}x{c}x{'x'.join(map(str, spatial))}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(n, c, spatial, num_groups, dtype, True,
+            params.append(pytest.param(n, c, spatial, num_groups, dtype, False,
                                        id=f"{label}-{dtype_str}"))
     return params
 
