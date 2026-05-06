@@ -12,8 +12,9 @@ BatchNorm uses spatial reduction (not a single axis), so it does NOT inherit
 from this.
 """
 
+import math
 from abc import abstractmethod
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -22,7 +23,35 @@ from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
 
-__all__ = ["ALIGNMENT", "RowNormOp"]
+__all__ = ["ALIGNMENT", "RowNormOp", "normalized_shape_to_n"]
+
+
+def normalized_shape_to_n(
+    normalized_shape: Optional[Sequence[int]],
+    n_fallback: Optional[int] = None,
+) -> int:
+    """Resolve manifest ``normalized_shape`` into a flat reduction size ``N``.
+
+    Args:
+        normalized_shape: Manifest-style normalized shape; ``None`` falls back
+            to ``n_fallback``.
+        n_fallback: Legacy ``N`` value used when ``normalized_shape`` is None.
+
+    Returns:
+        Product of ``normalized_shape`` (or ``n_fallback`` when supplied).
+
+    Raises:
+        ValueError: if neither ``normalized_shape`` nor ``n_fallback`` is set,
+            or if ``normalized_shape`` is empty.
+    """
+    if normalized_shape is None:
+        if n_fallback is None:
+            raise ValueError("Provide either normalized_shape or N")
+        return int(n_fallback)
+    shape = tuple(int(d) for d in normalized_shape)
+    if len(shape) == 0:
+        raise ValueError("normalized_shape must be non-empty")
+    return math.prod(shape)
 
 ALIGNMENT = 256
 

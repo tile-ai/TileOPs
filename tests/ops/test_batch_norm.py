@@ -115,8 +115,9 @@ def test_batch_norm_fwd(N, C, spatial, dtype, training):
     running_mean_ref = running_mean.clone()
     running_var_ref = running_var.clone()
 
-    op = BatchNormFwdOp(N, C, *spatial, dtype=dtype)
-    y, mean, rstd = op(x, weight, bias, running_mean, running_var, training=training)
+    op = BatchNormFwdOp(N, C, *spatial, dtype=dtype, training=training)
+    # Manifest input order: (x, running_mean, running_var, weight, bias).
+    y = op(x, running_mean, running_var, weight, bias, training=training)
 
     ref_y, ref_rm, ref_rv = _ref_fwd(x, weight, bias, running_mean_ref, running_var_ref,
                                       training=training)
