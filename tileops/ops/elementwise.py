@@ -279,6 +279,43 @@ def _register_where_custom_op(op_cls):
     op_cls._wrapped = _wrapped
 
 
+def _register_lerp_tensor_custom_op(op_cls):
+    """Register a Tensor-weight lerp op (input, end, weight -> out).
+
+    The fake function computes the broadcast output shape from ``input`` /
+    ``end`` / ``weight`` so that ``torch.compile(fullgraph=True)`` works
+    for both same-shape and broadcasting inputs. Registered under a
+    distinct ``_tensor`` namespace to avoid colliding with the scalar
+    ``LerpFwdOp`` (which bakes ``weight`` at construction time and uses
+    the binary registration path).
+    """
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(
+        f"top::elementwise_{op_name}", mutates_args=(),
+    )
+    def _wrapped(
+        input: torch.Tensor,  # noqa: A002
+        end: torch.Tensor,
+        weight: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(input, end, weight)
+
+    @_wrapped.register_fake
+    def _(
+        input: torch.Tensor,  # noqa: A002
+        end: torch.Tensor,
+        weight: torch.Tensor,
+        instance_key: int,
+    ) -> torch.Tensor:
+        out_shape = torch.broadcast_shapes(input.shape, end.shape, weight.shape)
+        return input.new_empty(out_shape)
+
+    op_cls._wrapped = _wrapped
+
+
 def _register_masked_fill_custom_op(op_cls):
     """Register a masked-fill-style op (x, mask -> y) for torch.compile.
 
@@ -3520,6 +3557,13 @@ _register_clamp_max_custom_op(ClampMaxFwdOp)
 # with the scalar variant's ``top::elementwise_masked_fill``.
 _register_masked_fill_custom_op(MaskedFillScalarFwdOp)
 _register_masked_fill_tensor_value_custom_op(MaskedFillFwdOp)
+
+# --- Tensor-weight lerp (1 op: input, end, weight -> out) ---
+# Registered under ``top::elementwise_lerp_tensor`` to avoid colliding with
+# the scalar ``LerpFwdOp``'s ``top::elementwise_lerp`` namespace. The fake
+# function is broadcast-aware so torch.compile(fullgraph=True) traces
+# correctly for both same-shape and broadcasting inputs.
+_register_lerp_tensor_custom_op(LerpTensorFwdOp)
 
 # --- Where op (1 op: cond, x, y -> out) ---
 # The fake function is broadcast-aware so torch.compile(fullgraph=True)

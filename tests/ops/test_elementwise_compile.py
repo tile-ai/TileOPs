@@ -45,6 +45,7 @@ from tileops.ops.elementwise import (
     IsnanFwdOp,
     LeFwdOp,
     LerpFwdOp,
+    LerpTensorFwdOp,
     Log1pFwdOp,
     LogFwdOp,
     LogicalAndFwdOp,
@@ -510,6 +511,23 @@ def test_lerp_compile():
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(a, b)
     ref = torch.lerp(a.float(), b.float(), 0.3).half()
+    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.full
+def test_lerp_tensor_compile():
+    """Compile-smoke for LerpTensorFwdOp (Tensor-weight overload)."""
+    shape = _SMALL
+    a = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    b = torch.randn(shape, dtype=_DTYPE, device="cuda")
+    w = torch.rand(shape, dtype=_DTYPE, device="cuda")
+    op = LerpTensorFwdOp(input=shape, end=shape, weight=shape, dtype=_DTYPE)
+    assert type(op)._wrapped is not None, (
+        "LerpTensorFwdOp._wrapped must be populated by registration"
+    )
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(a, b, w)
+    ref = torch.lerp(a, b, w)
     torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
 
 
