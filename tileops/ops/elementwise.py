@@ -989,11 +989,20 @@ class _InplaceMixin:
         Returns ``input_tensor`` (preserving identity) if ``inplace`` is
         True, otherwise returns ``output`` unchanged.
 
+        The kernel path frequently flattens the input before launch, so
+        ``output`` may differ from ``input_tensor`` in *layout* while
+        carrying the same number of elements. A ``reshape`` followed by
+        ``copy_`` recovers the caller's layout without broadcasting; any
+        true element-count mismatch is rejected up front with a
+        ``ValueError`` rather than letting ``reshape`` raise a downstream
+        ``RuntimeError``.
+
         Raises:
-            ValueError: if ``output.shape`` is not broadcast-compatible
-                with ``input_tensor.shape`` or if ``output.dtype`` does
-                not match ``input_tensor.dtype`` (an inplace write must
-                not change the storage dtype).
+            ValueError: if ``output.dtype`` does not match
+                ``input_tensor.dtype`` (an inplace write must not change
+                the storage dtype), or if ``output.numel()`` does not
+                equal ``input_tensor.numel()`` (broadcasting is not
+                supported here).
         """
         if not inplace:
             return output
@@ -1002,9 +1011,16 @@ class _InplaceMixin:
                 f"inplace=True requires output.dtype ({output.dtype}) to "
                 f"match input.dtype ({input_tensor.dtype}); they differ"
             )
-        # ``copy_`` broadcasts as needed; reshape to the input layout
-        # to handle the contiguous/flatten round-trip used by the kernel
-        # path without forcing the caller to think about it.
+        if output.numel() != input_tensor.numel():
+            raise ValueError(
+                f"inplace=True requires output.numel() ({output.numel()}) "
+                f"to match input.numel() ({input_tensor.numel()}); "
+                f"broadcasting is not supported on the inplace path"
+            )
+        # Reshape to the input layout to handle the contiguous/flatten
+        # round-trip used by the kernel path without forcing the caller
+        # to think about it. The numel guard above ensures reshape never
+        # raises here.
         input_tensor.copy_(output.reshape(input_tensor.shape))
         return input_tensor
 

@@ -341,11 +341,13 @@ def test_nan_to_num_fp8_default_ctor_accepts_dtype_sentinels(dtype):
     Regression guard: when ``posinf`` / ``neginf`` are left at their
     manifest default ``None``, the op must NOT validate the legacy
     fp16-shaped sentinels (1e4 / -1e4) against the narrow fp8 range.
-    Instead, it forwards +/-inf to the kernel, which clamps to the
-    *final* user-facing dtype's finite range — i.e. the dtype the caller
-    actually sees after the Op-layer post-cast, not the kernel's fp16
-    intermediate. For e5m2 that is 57344.0; clamping to fp16's 65504.0
-    would round to +Inf on the cast back to e5m2.
+    Instead, the Op layer resolves ``None`` to the *final* user-facing
+    dtype's finite extrema (``torch.finfo(dtype).max`` / ``.min``) and
+    passes those finite values to the kernel — i.e. clamping targets
+    the dtype the caller actually sees after the Op-layer post-cast,
+    not the kernel's fp16 intermediate. For e5m2 that is 57344.0;
+    clamping to fp16's 65504.0 would round to +Inf on the cast back to
+    e5m2.
     """
     from tileops.ops.elementwise import NanToNumFwdOp
 

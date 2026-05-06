@@ -25,6 +25,7 @@ from tileops.kernels.elementwise import (
     ReluFwdKernel,
     _make_unary_explicit,
 )
+from tileops.manifest import load_manifest
 from tileops.ops.elementwise import (
     ErfFwdOp,
     GeluFwdOp,
@@ -383,13 +384,44 @@ _R6_KERNEL_OPS = [
     ("mish", MishFwdKernel),
 ]
 
-# Per-op FLOP coefficients drawn from the manifest roofline column. Used
-# by the kernel-direct benches (R6 / R7) where there is no Op instance
-# from which to read ``eval_roofline()``.
+
+def _flops_per_elem_from_manifest(op_key: str) -> int:
+    """Read ``roofline.flops`` for *op_key* and return the per-element coefficient.
+
+    The kernel-direct benches (R6 / R7) build kernels without an Op
+    instance, so they cannot call ``op.eval_roofline()``. Reading the
+    coefficient from the manifest at import time keeps the bench column
+    aligned with the manifest contract and prevents drift from a
+    hand-maintained mirror table.
+
+    Supports the simple shapes used by the unary activation manifest:
+    ``"N"`` (-> 1) and ``"<int> * N"`` (-> the integer). Raises if the
+    expression uses a form this helper does not recognize so that any
+    future manifest extension fails loudly here rather than silently
+    drifting again.
+    """
+    flops_expr = load_manifest()[op_key]["roofline"]["flops"]
+    expr = flops_expr.replace(" ", "")
+    if expr == "N":
+        return 1
+    if expr.endswith("*N"):
+        coeff = expr[:-2]
+        if coeff.isdigit():
+            return int(coeff)
+    raise ValueError(
+        f"unsupported manifest roofline.flops form for {op_key!r}: "
+        f"{flops_expr!r}; extend _flops_per_elem_from_manifest to "
+        f"handle this shape."
+    )
+
+
+# Per-op FLOP coefficients derived from the manifest roofline column at
+# import time. Used by the kernel-direct benches (R6 / R7) where there
+# is no Op instance from which to read ``eval_roofline()``.
 _MANIFEST_FLOPS_PER_ELEM = {
-    "relu": 2,
-    "erf": 8,
-    "mish": 7,
+    "relu": _flops_per_elem_from_manifest("ReluFwdOp"),
+    "erf": _flops_per_elem_from_manifest("ErfFwdOp"),
+    "mish": _flops_per_elem_from_manifest("MishFwdOp"),
 }
 
 _R6_THREADS = [128, 256]

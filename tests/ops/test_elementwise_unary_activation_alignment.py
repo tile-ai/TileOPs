@@ -292,6 +292,28 @@ def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
     )
 
 
+@pytest.mark.smoke
+def test_apply_inplace_numel_mismatch_raises_value_error() -> None:
+    """``_InplaceMixin._apply_inplace`` rejects numel mismatches with a ValueError.
+
+    Locks the docstring contract: broadcasting is not supported on the
+    inplace path, and the failure surface is ``ValueError`` (not the
+    ``RuntimeError`` that would bubble up from a bare ``Tensor.reshape``
+    call).
+    """
+    import tileops.ops.elementwise as mod
+
+    apply_inplace = mod._InplaceMixin._apply_inplace
+    a = torch.empty(8, dtype=torch.float32)
+    b = torch.empty(7, dtype=torch.float32)
+    with pytest.raises(ValueError, match="numel"):
+        apply_inplace(True, a, b)
+    # dtype mismatch path (already a ValueError) — guard against regression.
+    c = torch.empty(8, dtype=torch.float16)
+    with pytest.raises(ValueError, match="dtype"):
+        apply_inplace(True, a, c)
+
+
 def _torch_reference(op_name: str):
     """Map an activation op class to its ``torch.nn.functional`` reference."""
     refs = {
