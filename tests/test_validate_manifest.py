@@ -1710,111 +1710,77 @@ class TestShapeRuleBroadcastBuiltins:
     shape_rules expressions.
     """
 
-    # -- broadcast_shapes -------------------------------------------------
+    def test_broadcast_shapes_value_matrix(self, validator):
+        """``broadcast_shapes`` produces the expected output across cases.
 
-    def test_broadcast_shapes_helper_registered(self, validator):
-        """``broadcast_shapes`` must be exposed in ``_SHAPE_RULE_BUILTINS``."""
-        assert "broadcast_shapes" in validator._SHAPE_RULE_BUILTINS
-
-    def test_broadcast_shapes_identical_shapes(self, validator):
+        Covers identical / scalar / size-1-expand / rank-promotion /
+        variadic (0, 1, 3+ args) / list-input forms in one matrix. Hand-
+        coded expectations (no torch dependency) so the test stays
+        consistent with the validator's pure-Python implementation.
+        """
         fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((2, 3), (2, 3)) == (2, 3)
-
-    def test_broadcast_shapes_scalar_with_tensor(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((), (4, 5)) == (4, 5)
-        assert fn((4, 5), ()) == (4, 5)
-
-    def test_broadcast_shapes_size_one_expands(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((1, 3), (2, 1)) == (2, 3)
-
-    def test_broadcast_shapes_rank_promotion(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((3,), (2, 4, 3)) == (2, 4, 3)
-
-    def test_broadcast_shapes_three_or_more_args(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((1, 3), (2, 1), (1, 1)) == (2, 3)
-
-    def test_broadcast_shapes_no_args_returns_empty(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn() == ()
-
-    def test_broadcast_shapes_single_arg(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((2, 3)) == (2, 3)
+        cases: list[tuple[tuple, tuple]] = [
+            (((2, 3), (2, 3)), (2, 3)),                  # identical
+            (((), (4, 5)), (4, 5)),                      # scalar left
+            (((4, 5), ()), (4, 5)),                      # scalar right
+            (((1, 3), (2, 1)), (2, 3)),                  # size-1 expands
+            (((3,), (2, 4, 3)), (2, 4, 3)),              # rank promotion
+            (((1, 3), (2, 1), (1, 1)), (2, 3)),          # 3+ args
+            ((), ()),                                    # no args
+            (((2, 3),), (2, 3)),                         # single arg
+            (([1, 3], [2, 1]), (2, 3)),                  # list inputs
+        ]
+        for args, expected in cases:
+            assert fn(*args) == expected, (args, fn(*args), expected)
 
     def test_broadcast_shapes_incompatible_raises(self, validator):
+        """Incompatible shapes raise ``ValueError`` (the only error path)."""
         fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
         with pytest.raises(ValueError, match="not broadcast-compatible"):
             fn((2, 3), (3, 3))
 
-    def test_broadcast_shapes_accepts_lists(self, validator):
-        """Tensor.shape may surface as list[int] depending on context."""
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn([1, 3], [2, 1]) == (2, 3)
+    def test_is_broadcastable_to_value_matrix(self, validator):
+        """``is_broadcastable_to(src, dst)`` returns True/False per cases.
 
-    # -- is_broadcastable_to ---------------------------------------------
-
-    def test_is_broadcastable_to_helper_registered(self, validator):
-        assert "is_broadcastable_to" in validator._SHAPE_RULE_BUILTINS
-
-    def test_is_broadcastable_to_equal_shapes(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
-        assert fn((2, 3), (2, 3)) is True
-
-    def test_is_broadcastable_to_size_one_expands(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
-        assert fn((1, 3), (2, 3)) is True
-        assert fn((3,), (2, 3)) is True
-        assert fn((), (2, 3)) is True
-
-    def test_is_broadcastable_to_unidirectional(self, validator):
-        """``is_broadcastable_to(src, dst)`` is asymmetric.
-
-        ``src`` may grow into ``dst`` but ``dst`` is fixed; expanding
-        ``dst`` into a larger shape is not allowed.
+        Pins the asymmetric semantics (src may grow into dst; dst is
+        fixed) including the equal-shape, size-1-expand, dst-smaller,
+        dst-shrink, dim-mismatch, and extra-leading-dim branches.
         """
         fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
-        # (2, 3) cannot broadcast *to* (3,) — dst is smaller.
-        assert fn((2, 3), (3,)) is False
-        # (2, 1) into (2, 3) — fine.
-        assert fn((2, 1), (2, 3)) is True
-        # (2, 3) into (2, 1) — would require shrinking dst dim 1.
-        assert fn((2, 3), (2, 1)) is False
+        cases: list[tuple[tuple, tuple, bool]] = [
+            ((2, 3), (2, 3), True),     # equal
+            ((1, 3), (2, 3), True),     # size-1 expand
+            ((3,), (2, 3), True),       # rank promotion
+            ((), (2, 3), True),         # scalar source
+            ((2, 3), (3,), False),      # dst smaller (asymmetry)
+            ((2, 1), (2, 3), True),     # one-dim expand
+            ((2, 3), (2, 1), False),    # would require shrinking dst
+            ((2, 4), (2, 3), False),    # dim mismatch
+            ((5, 2, 3), (2, 3), False), # extra leading dim
+        ]
+        for src, dst, expected in cases:
+            assert fn(src, dst) is expected, (src, dst, fn(src, dst), expected)
 
-    def test_is_broadcastable_to_mismatched_dim_returns_false(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
-        assert fn((2, 4), (2, 3)) is False
+    def test_broadcast_helpers_callable_from_shape_rule_eval(self, validator):
+        """Both helpers resolve from inside ``_eval_shape_rule`` rule bodies.
 
-    def test_is_broadcastable_to_extra_leading_dim_returns_false(self, validator):
-        """Source rank may not exceed destination rank."""
-        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
-        assert fn((5, 2, 3), (2, 3)) is False
-
-    # -- end-to-end via _eval_shape_rule ---------------------------------
-
-    def test_broadcast_shapes_in_shape_rule(self, validator):
-        ok, reason = validator._eval_shape_rule(
-            "broadcast_shapes((1, 3), (2, 1)) == (2, 3)", {},
-        )
-        assert reason is None
-        assert ok is True
-
-    def test_is_broadcastable_to_in_shape_rule_true(self, validator):
-        ok, reason = validator._eval_shape_rule(
-            "is_broadcastable_to((1, 3), (2, 3))", {},
-        )
-        assert reason is None
-        assert ok is True
-
-    def test_is_broadcastable_to_in_shape_rule_false(self, validator):
-        ok, reason = validator._eval_shape_rule(
-            "is_broadcastable_to((2, 3), (2, 1))", {},
-        )
-        assert reason is None
-        assert ok is False
+        Pins the validator-integration contract: the helpers in
+        ``_SHAPE_RULE_BUILTINS`` are reachable as bare names from rule
+        text, returning the same value as direct calls. Drives one true
+        and one false case for ``is_broadcastable_to`` (its bool return
+        flows through the ok/reason pair) plus one ``broadcast_shapes``
+        equality rule (its tuple return must support ``==`` comparison
+        in the rule body).
+        """
+        cases: list[tuple[str, bool]] = [
+            ("broadcast_shapes((1, 3), (2, 1)) == (2, 3)", True),
+            ("is_broadcastable_to((1, 3), (2, 3))", True),
+            ("is_broadcastable_to((2, 3), (2, 1))", False),
+        ]
+        for rule, expected_ok in cases:
+            ok, reason = validator._eval_shape_rule(rule, {})
+            assert reason is None, (rule, reason)
+            assert ok is expected_ok, (rule, ok, expected_ok)
 
 
 # ---------------------------------------------------------------------------
