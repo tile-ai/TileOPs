@@ -4,11 +4,13 @@ Wraps GroupNormKernel in the standard TileOPs Op interface.
 
 User-facing API mirrors torch.nn.functional.group_norm:
 
-    op = GroupNormFwdOp(N=batch, C=channels, spatial=(H, W), G=groups, dtype=dtype)
+    op = GroupNormFwdOp(
+        N=batch, C=channels, spatial=(H, W), num_groups=groups, dtype=dtype,
+    )
     y = op(x, weight, bias)
 
 Input tensors accept shape (N, C, *spatial); the op reshapes to
-(N*G, D_padded) internally where D = (C/G) * spatial_size.
+(N*num_groups, D_padded) internally where D = (C/num_groups) * spatial_size.
 """
 
 import math
@@ -56,10 +58,14 @@ class GroupNormFwdOp(Op):
         N: Batch size.
         C: Number of channels.
         spatial: Spatial dimensions tuple ``(H, W, ...)``.
-        G: Number of groups. Must divide *C* evenly.
+        num_groups: Number of groups (manifest ``params.num_groups``).
+            Must divide *C* evenly.
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
         eps: Epsilon for numerical stability.
+        G: Deprecated alias for ``num_groups``; kept for legacy callers
+            that have not migrated yet. Pass exactly one of ``num_groups``
+            or ``G``.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """
@@ -69,23 +75,37 @@ class GroupNormFwdOp(Op):
         N: int,
         C: int,
         spatial: tuple,
-        G: int,
-        dtype: torch.dtype,
+        num_groups: Optional[int] = None,
+        dtype: Optional[torch.dtype] = None,
         eps: float = 1e-5,
+        *,
+        G: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if C % G != 0:
-            raise ValueError(f"C={C} must be divisible by G={G}")
+        if num_groups is None and G is None:
+            raise TypeError("GroupNormFwdOp requires 'num_groups'")
+        if num_groups is not None and G is not None and num_groups != G:
+            raise ValueError(
+                f"Conflicting num_groups={num_groups} and legacy G={G}"
+            )
+        groups = num_groups if num_groups is not None else G
+        if dtype is None:
+            raise TypeError("GroupNormFwdOp requires 'dtype'")
+        if C % groups != 0:
+            raise ValueError(f"C={C} must be divisible by num_groups={groups}")
         self.N = N
         self.C = C
         self.spatial = spatial
-        self.G = G
+        self.num_groups = groups
+        # Keep the legacy attribute name pointing at the same value so
+        # downstream readers that still inspect ``op.G`` keep working.
+        self.G = groups
         self.dtype = dtype
         self.eps = eps
         self.spatial_size = math.prod(spatial)
-        self.D = (C // G) * self.spatial_size  # row length before padding
-        self.M = N * G  # number of rows
+        self.D = (C // groups) * self.spatial_size  # row length before padding
+        self.M = N * groups  # number of rows
         self.D_padded = _align_up(self.D, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["group_norm"](

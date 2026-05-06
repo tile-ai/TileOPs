@@ -34,21 +34,21 @@ class TestBatchNormFwdValidation:
         x_cpu = torch.randn(4, 8, 4, 4, dtype=torch.float16)
         _, weight, bias, rm, rv = self._make_inputs()
         with pytest.raises(ValueError, match="CUDA"):
-            op(x_cpu, weight, bias, rm, rv)
+            op(x_cpu, rm, rv, weight, bias)
 
     def test_rejects_wrong_dtype(self):
         op = self._make_op()
         x_wrong = torch.randn(4, 8, 4, 4, device="cuda", dtype=torch.float32)
         _, weight, bias, rm, rv = self._make_inputs()
         with pytest.raises(ValueError, match="dtype"):
-            op(x_wrong, weight, bias, rm, rv)
+            op(x_wrong, rm, rv, weight, bias)
 
     def test_rejects_wrong_shape(self):
         op = self._make_op()
         x_wrong = torch.randn(4, 16, 4, 4, device="cuda", dtype=torch.float16)
         _, weight, bias, rm, rv = self._make_inputs()
         with pytest.raises(ValueError, match="shape|channel|Channel"):
-            op(x_wrong, weight, bias, rm, rv)
+            op(x_wrong, rm, rv, weight, bias)
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ class TestBatchNormCustomOp:
 
     def test_fwd_torch_compile_smoke(self):
         from tileops.ops.norm.batch_norm import BatchNormFwdOp
-        op = BatchNormFwdOp(4, 8, 4, 4, dtype=torch.float16)
+        op = BatchNormFwdOp(4, 8, 4, 4, dtype=torch.float16, training=True)
         x = torch.randn(4, 8, 4, 4, device="cuda", dtype=torch.float16)
         weight = torch.randn(8, device="cuda", dtype=torch.float32)
         bias = torch.randn(8, device="cuda", dtype=torch.float32)
@@ -70,7 +70,8 @@ class TestBatchNormCustomOp:
         rv = torch.ones(8, device="cuda", dtype=torch.float32)
 
         compiled = torch.compile(op, fullgraph=False)
-        y, mean, rstd = compiled(x, weight, bias, rm, rv, training=True)
+        # Manifest input order: (x, running_mean, running_var, weight, bias).
+        y = compiled(x, rm, rv, weight, bias, training=True)
         assert y.shape == x.shape
 
     def test_bwd_torch_compile_smoke(self):
