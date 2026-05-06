@@ -76,6 +76,27 @@ def ref_rope_neox(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torc
         raise ValueError(f"Unsupported ndim={x.ndim}")
 
 
+def ref_rope_neox_position_ids(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    position_ids: torch.Tensor,
+    rotary_dim: int | None = None,
+) -> torch.Tensor:
+    """Reference neox RoPE for packed THD tensors with explicit positions."""
+    rotary_dim = x.shape[-1] if rotary_dim is None else rotary_dim
+    cos_full = torch.cat([cos, cos], dim=-1)[position_ids].unsqueeze(1)
+    sin_full = torch.cat([sin, sin], dim=-1)[position_ids].unsqueeze(1)
+    x_rot = x[..., :rotary_dim]
+    y_rot = (
+        x_rot.float() * cos_full.float()
+        + _rotate_half_neox(x_rot).float() * sin_full.float()
+    ).to(x.dtype)
+    if rotary_dim == x.shape[-1]:
+        return y_rot
+    return torch.cat([y_rot, x[..., rotary_dim:]], dim=-1)
+
+
 def ref_rope_non_neox(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     """Reference non-neox (RoFormer) RoPE: adjacent pair rotation."""
     cos_interleaved = cos.repeat_interleave(2, dim=-1)
@@ -350,6 +371,49 @@ def test_rope_neox_2d(batch: int, seq_len: int, num_heads: int,
                     batch=batch, num_heads=num_heads)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("rotary_dim", [None, 32])
+def test_rope_neox_position_ids_thd(rotary_dim: int | None) -> None:
+    from tileops.ops.rope import RopeNeoxPositionIdsOp
+
+    num_tokens, num_heads, head_dim, max_position = 96, 8, 64, 512
+    table_dim = head_dim if rotary_dim is None else rotary_dim
+    dtype = torch.float16
+    x = torch.randn(num_tokens, num_heads, head_dim, device="cuda", dtype=dtype)
+    position_ids = (
+        torch.arange(num_tokens, device="cuda", dtype=torch.int32) * 3 + 17
+    ) % max_position
+    cos, sin = _compute_freqs_cis_base(table_dim, max_position, dtype=dtype, device="cuda")
+    ref = ref_rope_neox_position_ids(x, cos, sin, position_ids.long(), rotary_dim=rotary_dim)
+
+    op = RopeNeoxPositionIdsOp(
+        num_tokens=num_tokens,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        max_position=max_position,
+        dtype=dtype,
+        rotary_dim=rotary_dim,
+    )
+    output = op(x, position_ids)
+    torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_rope_neox_position_ids_validates_range() -> None:
+    from tileops.ops.rope import RopeNeoxPositionIdsOp
+
+    op = RopeNeoxPositionIdsOp(
+        num_tokens=2,
+        num_heads=1,
+        head_dim=16,
+        max_position=8,
+        dtype=torch.float16,
+    )
+    x = torch.randn(2, 1, 16, device="cuda", dtype=torch.float16)
+    with pytest.raises(ValueError, match="position_ids"):
+        op(x, torch.tensor([0, 8], device="cuda", dtype=torch.int32))
 
 
 # ---------------------------------------------------------------------------

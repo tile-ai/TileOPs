@@ -86,6 +86,7 @@ from .rope import (
     RopeLlama31Op,
     RopeLongRopeOp,
     RopeNeoxOp,
+    RopeNeoxPositionIdsOp,
     RopeNonNeoxOp,
     RopeYarnOp,
 )
@@ -164,6 +165,7 @@ __all__ = [
     "RopeLlama31Op",
     "RopeLongRopeOp",
     "RopeNeoxOp",
+    "RopeNeoxPositionIdsOp",
     "RopeNonNeoxOp",
     "RopeYarnOp",
     "UnaryOp",

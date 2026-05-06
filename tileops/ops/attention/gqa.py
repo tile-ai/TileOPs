@@ -17,8 +17,10 @@ from tileops.kernels.attention import (
     GQAFwdWsPersistentKernel,
     GQAPrefillFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
+    GQAPrefillPagedWithKVCacheRopeFwdKernel,
     GQAPrefillVarlenFwdKernel,
     GQAPrefillWithKVCacheFwdKernel,
+    GQAPrefillWithKVCacheRopeFwdKernel,
     GQASlidingWindowFwdKernel,
     GQASlidingWindowFwdWgmmaPipelinedKernel,
     GQASlidingWindowVarlenFwdKernel,
@@ -28,6 +30,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.utils import is_h200, is_hopper
 
 from ..op_base import Op
+from ..rope import _base_freqs
 
 __all__ = [
     "GroupedQueryAttentionBwdOp",
@@ -137,8 +140,16 @@ def _select_gqa_prefill_with_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
     return GQAPrefillWithKVCacheFwdKernel
 
 
+def _select_gqa_prefill_with_kv_cache_rope_fwd_kernel_cls() -> Type[Kernel]:
+    return GQAPrefillWithKVCacheRopeFwdKernel
+
+
 def _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
     return GQAPrefillPagedWithKVCacheFwdKernel
+
+
+def _select_gqa_prefill_paged_with_kv_cache_rope_fwd_kernel_cls() -> Type[Kernel]:
+    return GQAPrefillPagedWithKVCacheRopeFwdKernel
 
 
 def _validate_gqa_dims(heads: int, heads_kv: int, dim: int) -> None:
@@ -154,6 +165,25 @@ def _validate_gqa_dims(heads: int, heads_kv: int, dim: int) -> None:
 
 def _attention_scale(dim: int, sm_scale: Optional[float]) -> float:
     return dim**-0.5 if sm_scale is None else sm_scale
+
+
+def _score_softcap(softcap: Optional[float]) -> float:
+    if softcap is None:
+        return 0.0
+    if softcap < 0:
+        raise ValueError("softcap must be non-negative")
+    return softcap
+
+
+def _rope_rotary_dim(dim: int, rotary_dim: Optional[int]) -> int:
+    rotary_dim = dim if rotary_dim is None else rotary_dim
+    if rotary_dim <= 0:
+        raise ValueError("rotary_dim must be positive")
+    if rotary_dim % 2 != 0:
+        raise ValueError("rotary_dim must be even")
+    if rotary_dim > dim:
+        raise ValueError("rotary_dim must not exceed dim")
+    return rotary_dim
 
 
 def _attention_output(result: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
@@ -224,6 +254,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
                  is_causal: bool = True,
                  dtype: torch.dtype = torch.float16,
                  sm_scale: Optional[float] = None,
+                 softcap: Optional[float] = None,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
@@ -238,11 +269,12 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         self.is_causal = is_causal
         self.dtype = dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
+        self.softcap = _score_softcap(softcap)
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["gqa_prefill_fwd_kernel"](
             batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, is_causal, self.dtype,
-            sm_scale=self.sm_scale, tune=tune)
+            sm_scale=self.sm_scale, softcap=self.softcap, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -272,6 +304,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         is_causal: bool = True,
         dtype: torch.dtype = torch.float16,
         sm_scale: Optional[float] = None,
+        softcap: Optional[float] = None,
         validate_inputs: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -293,6 +326,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         self.is_causal = is_causal
         self.dtype = dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
+        self.softcap = _score_softcap(softcap)
         self.validate_inputs = validate_inputs
         self._roofline_kwargs = None
 
@@ -305,6 +339,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             is_causal=is_causal,
             dtype=dtype,
             sm_scale=self.sm_scale,
+            softcap=self.softcap,
             tune=tune,
         )
 
@@ -462,9 +497,22 @@ class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
                  is_causal: bool = True,
                  dtype: torch.dtype = torch.float16,
                  sm_scale: Optional[float] = None,
+                 softcap: Optional[float] = None,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
-                 tune: bool = False) -> None:
+                 tune: bool = False,
+                 fuse_rope: bool = False,
+                 rope_base: float = 10000.0,
+                 max_position: Optional[int] = None,
+                 rotary_dim: Optional[int] = None) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
+        if fuse_rope:
+            rotary_dim = _rope_rotary_dim(dim, rotary_dim)
+            if max_position is None:
+                raise ValueError("max_position is required when fuse_rope=True")
+            if max_position <= 0:
+                raise ValueError("max_position must be positive")
+        elif rotary_dim is not None:
+            raise ValueError("rotary_dim requires fuse_rope=True")
         if seq_len_new > seqlen_kv:
             raise ValueError("seq_len_new must not exceed seqlen_kv")
         self.batch = batch
@@ -476,14 +524,33 @@ class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
         self.is_causal = is_causal
         self.dtype = dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
+        self.softcap = _score_softcap(softcap)
+        self.fuse_rope = fuse_rope
+        self.rope_base = rope_base
+        self.max_position = max_position
+        self.rotary_dim = rotary_dim
+        self._rope_cos_cache: Optional[torch.Tensor] = None
+        self._rope_sin_cache: Optional[torch.Tensor] = None
+        self._rope_cache_device: Optional[torch.device] = None
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_prefill_with_kv_cache_fwd_kernel"](
-            batch, heads, heads_kv, seq_len_new, seqlen_kv, dim, is_causal, self.dtype,
-            sm_scale=self.sm_scale, tune=tune)
+        if self.fuse_rope:
+            self.kernel = self.kernel_map["gqa_prefill_with_kv_cache_rope_fwd_kernel"](
+                batch, heads, heads_kv, seq_len_new, seqlen_kv, dim, self.max_position,
+                self.rotary_dim, is_causal, self.dtype, sm_scale=self.sm_scale,
+                softcap=self.softcap, tune=tune)
+        else:
+            self.kernel = self.kernel_map["gqa_prefill_with_kv_cache_fwd_kernel"](
+                batch, heads, heads_kv, seq_len_new, seqlen_kv, dim, is_causal, self.dtype,
+                sm_scale=self.sm_scale, softcap=self.softcap, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
+        if self.fuse_rope:
+            return {
+                "gqa_prefill_with_kv_cache_rope_fwd_kernel":
+                    _select_gqa_prefill_with_kv_cache_rope_fwd_kernel_cls()
+            }
         return {
             "gqa_prefill_with_kv_cache_fwd_kernel":
                 _select_gqa_prefill_with_kv_cache_fwd_kernel_cls()
@@ -537,11 +604,34 @@ class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
                 "cache_seqlens + seq_len_new exceeds KV cache capacity: "
                 f"max cache_seqlen {max_cache_len}, seq_len_new {self.seq_len_new}, "
                 f"seqlen_kv {self.seqlen_kv}")
+        if self.fuse_rope and max_cache_len + self.seq_len_new > self.max_position:
+            raise ValueError(
+                "cache_seqlens + seq_len_new exceeds RoPE max_position: "
+                f"max total length {max_cache_len + self.seq_len_new}, "
+                f"max_position {self.max_position}")
+
+    def _get_rope_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.max_position is None:
+            raise ValueError("max_position is required when fuse_rope=True")
+        if self._rope_cos_cache is None or self._rope_cache_device != device:
+            self._rope_cos_cache, self._rope_sin_cache = _base_freqs(
+                self.rotary_dim,
+                self.max_position,
+                base=self.rope_base,
+                dtype=self.dtype,
+                device=device,
+            )
+            self._rope_cache_device = device
+        return self._rope_cos_cache, self._rope_sin_cache
 
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
                 k_cache: torch.Tensor, v_cache: torch.Tensor,
                 cache_seqlens: torch.Tensor) -> torch.Tensor:
         self._validate_forward_inputs(q, k_new, v_new, k_cache, v_cache, cache_seqlens)
+        if self.fuse_rope:
+            cos, sin = self._get_rope_cos_sin(q.device)
+            return _attention_output(
+                self.kernel(q, k_new, v_new, k_cache, v_cache, cache_seqlens, cos, sin))
         return _attention_output(self.kernel(q, k_new, v_new, k_cache, v_cache, cache_seqlens))
 
 
@@ -564,10 +654,23 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         is_causal: bool = True,
         dtype: torch.dtype = torch.float16,
         sm_scale: Optional[float] = None,
+        softcap: Optional[float] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        fuse_rope: bool = False,
+        rope_base: float = 10000.0,
+        max_position: Optional[int] = None,
+        rotary_dim: Optional[int] = None,
     ) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
+        if fuse_rope:
+            rotary_dim = _rope_rotary_dim(dim, rotary_dim)
+            if max_position is None:
+                raise ValueError("max_position is required when fuse_rope=True")
+            if max_position <= 0:
+                raise ValueError("max_position must be positive")
+        elif rotary_dim is not None:
+            raise ValueError("rotary_dim requires fuse_rope=True")
         if batch <= 0:
             raise ValueError("batch must be positive")
         if max_pages_per_req <= 0:
@@ -587,25 +690,58 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         self.is_causal = is_causal
         self.dtype = dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
+        self.softcap = _score_softcap(softcap)
+        self.fuse_rope = fuse_rope
+        self.rope_base = rope_base
+        self.max_position = max_position
+        self.rotary_dim = rotary_dim
+        self._rope_cos_cache: Optional[torch.Tensor] = None
+        self._rope_sin_cache: Optional[torch.Tensor] = None
+        self._rope_cache_device: Optional[torch.device] = None
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_prefill_paged_with_kv_cache_fwd_kernel"](
-            batch=batch,
-            heads=heads,
-            heads_kv=heads_kv,
-            max_pages_per_req=max_pages_per_req,
-            page_size=page_size,
-            dim=dim,
-            is_causal=is_causal,
-            dtype=dtype,
-            sm_scale=self.sm_scale,
-            tune=tune,
-        )
+        if self.fuse_rope:
+            self.kernel = self.kernel_map["gqa_prefill_paged_with_kv_cache_rope_fwd_kernel"](
+                batch=batch,
+                heads=heads,
+                heads_kv=heads_kv,
+                max_pages_per_req=max_pages_per_req,
+                page_size=page_size,
+                dim=dim,
+                max_position=self.max_position,
+                rotary_dim=self.rotary_dim,
+                is_causal=is_causal,
+                dtype=dtype,
+                sm_scale=self.sm_scale,
+                softcap=self.softcap,
+                tune=tune,
+            )
+        else:
+            self.kernel = self.kernel_map["gqa_prefill_paged_with_kv_cache_fwd_kernel"](
+                batch=batch,
+                heads=heads,
+                heads_kv=heads_kv,
+                max_pages_per_req=max_pages_per_req,
+                page_size=page_size,
+                dim=dim,
+                is_causal=is_causal,
+                dtype=dtype,
+                sm_scale=self.sm_scale,
+                softcap=self.softcap,
+                tune=tune,
+            )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernel_cls = _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls()
-        return {"gqa_prefill_paged_with_kv_cache_fwd_kernel": kernel_cls}
+        if self.fuse_rope:
+            return {
+                "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel":
+                    _select_gqa_prefill_paged_with_kv_cache_rope_fwd_kernel_cls()
+            }
+        return {
+            "gqa_prefill_paged_with_kv_cache_fwd_kernel":
+                _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls()
+        }
 
     def _validate_forward_inputs(
         self,
@@ -707,6 +843,10 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             raise ValueError(
                 "cache_seqlens + q_len exceeds paged KV capacity: "
                 f"max total length {max_total_len}, capacity {self.max_cache_len}")
+        if self.fuse_rope and max_total_len > self.max_position:
+            raise ValueError(
+                "cache_seqlens + q_len exceeds RoPE max_position: "
+                f"max total length {max_total_len}, max_position {self.max_position}")
 
         num_pages = k_pages.shape[0] // self.page_size
         min_page = int(block_table.min().item())
@@ -716,6 +856,20 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         if max_page >= num_pages:
             raise ValueError(
                 f"block_table references page {max_page}, but only {num_pages} pages exist")
+
+    def _get_rope_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.max_position is None:
+            raise ValueError("max_position is required when fuse_rope=True")
+        if self._rope_cos_cache is None or self._rope_cache_device != device:
+            self._rope_cos_cache, self._rope_sin_cache = _base_freqs(
+                self.rotary_dim,
+                self.max_position,
+                base=self.rope_base,
+                dtype=self.dtype,
+                device=device,
+            )
+            self._rope_cache_device = device
+        return self._rope_cos_cache, self._rope_sin_cache
 
     def forward(
         self,
@@ -732,6 +886,11 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         self._validate_forward_inputs(
             q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens,
             block_table, max_seqlen_q)
+        if self.fuse_rope:
+            cos, sin = self._get_rope_cos_sin(q.device)
+            return _attention_output(
+                self.kernel(q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens,
+                            block_table, max_seqlen_q, cos, sin))
         return _attention_output(
             self.kernel(q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens,
                         block_table, max_seqlen_q))

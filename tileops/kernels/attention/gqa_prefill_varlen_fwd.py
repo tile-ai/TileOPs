@@ -20,6 +20,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import (
     LOG2E,
+    make_apply_softcap,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
@@ -37,9 +38,12 @@ def _gqa_prefill_varlen_fwd_kernel(
     dim: int,
     is_causal: bool,
     sm_scale: Optional[float] = None,
+    softcap: float = 0.0,
     dtype: str = "float16",
 ) -> Callable:
-    scale = (dim**-0.5 if sm_scale is None else sm_scale) * LOG2E
+    score_scale = dim**-0.5 if sm_scale is None else sm_scale
+    use_softcap = softcap > 0.0
+    scale = LOG2E if use_softcap else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
@@ -60,6 +64,9 @@ def _gqa_prefill_varlen_fwd_kernel(
         online_softmax = make_online_softmax_with_mask_guard(
             scale, accum_dtype, block_m, block_n
         )
+        apply_softcap = make_apply_softcap(
+            score_scale, softcap, accum_dtype, block_m, block_n
+        ) if use_softcap else None
         rescale = make_rescale(block_m, dim)
 
         @T.prim_func
@@ -169,6 +176,8 @@ def _gqa_prefill_varlen_fwd_kernel(
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullRow,
                     )
+                    if use_softcap:
+                        apply_softcap(acc_s)
                     online_softmax(
                         acc_s,
                         scores_max,
@@ -229,6 +238,7 @@ def _gqa_prefill_varlen_fwd_wrapped_kernel(
     dim: int,
     is_causal: bool,
     sm_scale: float,
+    softcap: float,
     dtype: str,
     block_m: int,
     block_n: int,
@@ -243,7 +253,7 @@ def _gqa_prefill_varlen_fwd_wrapped_kernel(
     cu_seqlens_kv: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     return _gqa_prefill_varlen_fwd_kernel(
-        batch, heads, heads_kv, total_q, total_kv, dim, is_causal, sm_scale, dtype
+        batch, heads, heads_kv, total_q, total_kv, dim, is_causal, sm_scale, softcap, dtype
     )(block_m, block_n, num_stages, threads)(
         q, k, v, cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv
     )
@@ -259,6 +269,7 @@ def _(
     dim: int,
     is_causal: bool,
     sm_scale: float,
+    softcap: float,
     dtype: str,
     block_m: int,
     block_n: int,
@@ -289,6 +300,7 @@ class GQAPrefillVarlenFwdKernel(Kernel):
         is_causal: bool,
         dtype: torch.dtype,
         sm_scale: Optional[float] = None,
+        softcap: float = 0.0,
         config: Optional[dict] = None,
         tune: bool = False,
     ) -> None:
@@ -302,6 +314,7 @@ class GQAPrefillVarlenFwdKernel(Kernel):
         self.is_causal = is_causal
         self.dtype = dtype
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
+        self.softcap = softcap
         self.init_config(config, tune)
 
     @property
@@ -343,6 +356,7 @@ class GQAPrefillVarlenFwdKernel(Kernel):
             self.dim,
             self.is_causal,
             self.sm_scale,
+            self.softcap,
             self.dtype_str,
             self.config["block_m"],
             self.config["block_n"],

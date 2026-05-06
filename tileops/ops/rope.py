@@ -33,6 +33,7 @@ from tileops.kernels.rope import (
     RopeLlama31Kernel,
     RopeLongRopeKernel,
     RopeNeoxKernel,
+    RopeNeoxPositionIdsKernel,
     RopeNonNeoxKernel,
     RopeYarnKernel,
 )
@@ -71,10 +72,28 @@ def _register_rope_custom_op(op_cls):
     op_cls._wrapped = _wrapped
 
 
+def _register_rope_position_ids_custom_op(op_cls):
+    """Register a RoPE op that consumes explicit packed position ids."""
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(f"top::rope_{op_name}", mutates_args=())
+    def _wrapped(x: torch.Tensor, position_ids: torch.Tensor,
+                 instance_key: int) -> torch.Tensor:
+        instance = _OP_REGISTRY[instance_key]
+        return instance._eager_forward(x, position_ids)
+
+    @_wrapped.register_fake
+    def _(x: torch.Tensor, position_ids: torch.Tensor, instance_key: int) -> torch.Tensor:
+        return torch.empty_like(x)
+
+    op_cls._wrapped = _wrapped
+
+
 __all__ = [
     "RopeLlama31Op",
     "RopeLongRopeOp",
     "RopeNeoxOp",
+    "RopeNeoxPositionIdsOp",
     "RopeNonNeoxOp",
     "RopeYarnOp",
 ]
@@ -494,6 +513,123 @@ class RopeNeoxOp(_RopeOpBase):
                            dtype=self.dtype, device=device)
 
 
+class RopeNeoxPositionIdsOp(Op):
+    """GPT-NeoX style RoPE for packed THD tensors with explicit positions."""
+
+    _op_name = "rope_neox_position_ids"
+    _wrapped = None
+
+    def __init__(
+        self,
+        num_tokens: int,
+        num_heads: int,
+        head_dim: int,
+        max_position: int,
+        dtype: torch.dtype,
+        base: float = 10000.0,
+        rotary_dim: Optional[int] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        rotary_dim = head_dim if rotary_dim is None else rotary_dim
+        if rotary_dim <= 0:
+            raise ValueError("rotary_dim must be positive")
+        if rotary_dim % 2 != 0:
+            raise ValueError("rotary_dim must be even")
+        if rotary_dim > head_dim:
+            raise ValueError("rotary_dim must not exceed head_dim")
+        self.num_tokens = num_tokens
+        self.num_heads = num_heads
+        self.head_dim = head_dim
+        self.rotary_dim = rotary_dim
+        self.max_position = max_position
+        self.dtype = dtype
+        self.base = base
+        self._cos_cache: Optional[torch.Tensor] = None
+        self._sin_cache: Optional[torch.Tensor] = None
+        self._cache_device: Optional[torch.device] = None
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map[self._op_name](
+            num_tokens=num_tokens,
+            num_heads=num_heads,
+            head_dim=head_dim,
+            rotary_dim=rotary_dim,
+            max_position=max_position,
+            dtype=dtype,
+            tune=tune,
+        )
+
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {self._op_name: RopeNeoxPositionIdsKernel}
+
+    @property
+    def total_memory(self) -> float:
+        half = self.rotary_dim // 2
+        elem = self.dtype.itemsize
+        x_elems = self.num_tokens * self.num_heads * self.head_dim
+        cos_sin_elems = self.max_position * half * 2
+        pos_elems = self.num_tokens
+        return (2 * x_elems + cos_sin_elems) * elem + pos_elems * torch.int32.itemsize
+
+    def _get_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        if self._cos_cache is None or self._cache_device != device:
+            self._cos_cache, self._sin_cache = _base_freqs(
+                self.rotary_dim,
+                self.max_position,
+                base=self.base,
+                dtype=self.dtype,
+                device=device,
+            )
+            self._cache_device = device
+        return self._cos_cache, self._sin_cache
+
+    def _validate_and_prepare(
+        self,
+        x: torch.Tensor,
+        position_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        expected = (self.num_tokens, self.num_heads, self.head_dim)
+        if tuple(x.shape) != expected:
+            raise ValueError(f"Expected input shape {expected}, got {tuple(x.shape)}")
+        if not position_ids.is_cuda:
+            raise ValueError("position_ids must be a CUDA tensor")
+        if tuple(position_ids.shape) != (self.num_tokens,):
+            raise ValueError(
+                f"Expected position_ids shape {(self.num_tokens,)}, "
+                f"got {tuple(position_ids.shape)}"
+            )
+        if position_ids.dtype not in (torch.int32, torch.int64):
+            raise ValueError(
+                f"Expected position_ids.dtype int32 or int64, got {position_ids.dtype}"
+            )
+        if position_ids.numel() and (
+            bool(torch.any(position_ids < 0).item())
+            or bool(torch.any(position_ids >= self.max_position).item())
+        ):
+            raise ValueError("position_ids must be in [0, max_position)")
+        return x.contiguous(), position_ids.to(torch.int32).contiguous()
+
+    def _eager_forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        cos, sin = self._get_cos_sin(x.device)
+        return self.kernel(x, cos, sin, position_ids)
+
+    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        x, position_ids = self._validate_and_prepare(x, position_ids)
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(x, position_ids, self._instance_key)
+        return self._eager_forward(x, position_ids)
+
+
 class RopeNonNeoxOp(_RopeOpBase):
     """Original RoFormer RoPE op with adjacent-pair rotation.
 
@@ -698,6 +834,8 @@ class RopeLongRopeOp(_RopeOpBase):
 
 for _cls in [RopeNeoxOp, RopeNonNeoxOp, RopeLlama31Op, RopeYarnOp, RopeLongRopeOp]:
     _register_rope_custom_op(_cls)
+
+_register_rope_position_ids_custom_op(RopeNeoxPositionIdsOp)
 
 # Clean up loop variable
 del _cls
