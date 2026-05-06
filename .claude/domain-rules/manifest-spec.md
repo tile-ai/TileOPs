@@ -30,7 +30,7 @@ ______________________________________________________________________
 
 - Reduction-dim validation: do NOT silently wrap out-of-range indices with `% x.ndim`. Canonical predicates are registered in `tileops.manifest.shape_rules.HELPERS` and referenced via the `helper:` URI prefix; new reduction ops MUST use the registry, inline string expressions are a transitional fallback only.
 
-- `status` is required. `status: implemented` = all validator levels apply. `status: spec-only` = L0 only.
+- `status` is required: one of `implemented` or `spec-only`.
 
 - Roofline `vars` maps variable names to Python expressions over tensor shapes and params. Required for arbitrary-rank ops.
 
@@ -40,7 +40,7 @@ ______________________________________________________________________
 
 - Tensor layout defaults to contiguous row-major. When an op requires non-default layout (e.g., `channels_last`), add `layout` field to the tensor declaration. `shape` dimension names reflect actual memory order.
 
-- `source.kernel_map` is the Op→Kernel dispatch registration table (`dispatch_key: KernelClassName`). It declares which Kernels an Op uses so agents know what to implement. Required when `status: implemented`, optional when `status: spec-only`. Does not describe dispatch strategy.
+- `source.kernel_map` is the Op→Kernel dispatch registration table (`dispatch_key: KernelClassName`). It declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy.
 
 - Never modify manifest to match non-conforming code. If code doesn't match spec: set `status: spec-only` and fix implementation in a follow-up PR. Never remove params, vars, or shape_rules to silence validator errors.
 
