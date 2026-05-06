@@ -51,12 +51,14 @@ PLAN=$(jq --slurpfile bots "$BOTS_FILE" '
   def is_known($known; $login):
     ($known | map(strip_bot) | index($login | strip_bot)) != null;
   # Bot-like pattern: unknown identities that look like a GitHub App.
-  # Only the literal "[bot]" suffix counts — that suffix is reserved for
-  # GitHub Apps. A bare "-reviewer" / "-bot" / "-code-assist" without the
-  # suffix is a regular user account (e.g. "alice-reviewer") and stays
-  # in the human bucket.
+  # Only the literal "[bot]" suffix counts — that suffix is reserved by
+  # GitHub for GitHub Apps and cannot appear in a human username. Any
+  # login ending in "[bot]" that is not on the whitelist is bucketed as
+  # an unknown bot-like identity for human triage, regardless of the
+  # prefix. A bare "-reviewer" / "-bot" without the suffix is a regular
+  # user account (e.g. "alice-reviewer") and stays in the human bucket.
   def is_bot_like($login):
-      $login | test("(-bot|-reviewer|-code-assist)\\[bot\\]$");
+      $login | test("\\[bot\\]$");
   . as $in
   | ($bots[0].review_bot_logins // []) as $known
   | ($in.head_sha) as $head
@@ -117,26 +119,50 @@ if (( DRY_RUN )); then
 fi
 
 # Execute mutations for each resolve entry: post a reply on the first
-# comment, then mark the thread resolved. Failures are logged; we
-# continue so one transient API hiccup doesn't strand other threads.
-command -v gh >/dev/null 2>&1 || { echo "auto-resolve-stale: missing gh" >&2; exit 2; }
+# comment, then — only if the reply succeeded — mark the thread resolved.
+# Skipping the resolve when the reply fails preserves the contract that
+# every auto-resolved thread carries the neutral reply, so a thread we
+# could not reply to is left unresolved for the next round / human
+# triage. Per-thread failures are logged but do not abort the loop, so
+# one transient API hiccup doesn't strand the rest of the batch.
+#
+# GH_BIN allows the test harness to inject a mock gh binary that
+# simulates reply / resolve failures without touching the network.
+GH_BIN="${GH_BIN:-gh}"
+command -v "$GH_BIN" >/dev/null 2>&1 || { echo "auto-resolve-stale: missing $GH_BIN" >&2; exit 2; }
 RESOLVE_COUNT=$(printf '%s' "$PLAN" | jq '.resolve | length')
+RESOLVED_IDS=()
+REPLY_FAILED_IDS=()
+RESOLVE_FAILED_IDS=()
 if (( RESOLVE_COUNT > 0 )); then
   while IFS= read -r tid; do
     [[ -n "$tid" ]] || continue
-    gh api graphql -f query='
+    if "$GH_BIN" api graphql -f query='
       mutation($tid:ID!,$body:String!){
         addPullRequestReviewThreadReply(input:{
           pullRequestReviewThreadId:$tid, body:$body
         }){ comment{ id } }
-      }' -F tid="$tid" -F body="$REPLY_TEXT" >/dev/null 2>&1 \
-        || echo "auto-resolve-stale: reply failed for $tid" >&2
-    gh api graphql -f query='
-      mutation($tid:ID!){
-        resolveReviewThread(input:{threadId:$tid}){ thread{ id isResolved } }
-      }' -F tid="$tid" >/dev/null 2>&1 \
-        || echo "auto-resolve-stale: resolve failed for $tid" >&2
+      }' -F tid="$tid" -F body="$REPLY_TEXT" >/dev/null 2>&1; then
+      if "$GH_BIN" api graphql -f query='
+        mutation($tid:ID!){
+          resolveReviewThread(input:{threadId:$tid}){ thread{ id isResolved } }
+        }' -F tid="$tid" >/dev/null 2>&1; then
+        RESOLVED_IDS+=("$tid")
+      else
+        echo "auto-resolve-stale: resolve failed for $tid" >&2
+        RESOLVE_FAILED_IDS+=("$tid")
+      fi
+    else
+      echo "auto-resolve-stale: reply failed for $tid; leaving thread unresolved" >&2
+      REPLY_FAILED_IDS+=("$tid")
+    fi
   done < <(printf '%s' "$PLAN" | jq -r '.resolve[].thread_id')
 fi
 
-printf '%s\n' "$PLAN"
+# Annotate the plan with execution outcomes so the caller (and the test
+# harness) can distinguish "resolved" from "reply failed, left open".
+printf '%s' "$PLAN" | jq \
+  --argjson resolved "$(printf '%s\n' "${RESOLVED_IDS[@]:-}" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson reply_failed "$(printf '%s\n' "${REPLY_FAILED_IDS[@]:-}" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson resolve_failed "$(printf '%s\n' "${RESOLVE_FAILED_IDS[@]:-}" | jq -R . | jq -s 'map(select(length>0))')" \
+  '. + {executed: {resolved: $resolved, reply_failed: $reply_failed, resolve_failed: $resolve_failed}}'

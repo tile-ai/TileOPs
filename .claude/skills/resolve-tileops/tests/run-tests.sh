@@ -138,6 +138,108 @@ run_case "current-head-bot-thread" \
 ]' \
   "none"
 
+# Case 5: GitHub App with a bare prefix (no -bot / -reviewer / -code-assist
+# before [bot]) is still classified as bot-like. The literal "[bot]"
+# suffix is reserved by GitHub for Apps and is sufficient on its own.
+run_case "unknown-bare-bot-thread" \
+  "$FIX/unknown-bare-bot-thread.json" "05" \
+  '[]' \
+  '[
+  "PRT_kwDO_unknown_bare_bot"
+]' \
+  '[]' \
+  '[
+  "random-app[bot]"
+]'
+
+# Case 6: live-mode reply failure → the thread must NOT be marked resolved.
+# Drives the classifier without --dry-run against an injected mock gh
+# that fails the addPullRequestReviewThreadReply mutation. The thread id
+# must show up in executed.reply_failed and must NOT show up in
+# executed.resolved.
+run_reply_failure_case() {
+  local name="reply-failure-leaves-thread-open"
+  local tmp; tmp=$(mktemp -d)
+  local mockbin="$tmp/bin"
+  mkdir -p "$mockbin"
+  cat > "$mockbin/gh" <<'MOCK'
+#!/usr/bin/env bash
+# Mock gh: fail any GraphQL mutation that posts a reply, succeed
+# everything else. Detect the reply mutation by scanning the args for
+# the addPullRequestReviewThreadReply marker.
+for a in "$@"; do
+  case "$a" in
+    *addPullRequestReviewThreadReply*) exit 1 ;;
+  esac
+done
+exit 0
+MOCK
+  chmod +x "$mockbin/gh"
+  local plan
+  if ! plan=$(GH_BIN="$mockbin/gh" "$CLASSIFIER" \
+        --threads "$FIX/stale-bot-thread.json" \
+        --bots "$BOTS" \
+        --run-dir "$tmp" \
+        --round "06" 2>/dev/null); then
+    echo "FAIL [$name]: classifier exited non-zero" >&2
+    FAIL=$((FAIL+1)); return
+  fi
+  local resolved reply_failed
+  resolved=$(printf '%s' "$plan" | jq -c '.executed.resolved')
+  reply_failed=$(printf '%s' "$plan" | jq -c '.executed.reply_failed')
+  if [[ "$resolved" != '[]' ]]; then
+    echo "FAIL [$name]: thread was resolved despite reply failure: $resolved" >&2
+    FAIL=$((FAIL+1)); return
+  fi
+  if [[ "$reply_failed" != '["PRT_kwDO_stale_bot"]' ]]; then
+    echo "FAIL [$name]: reply_failed list mismatch: $reply_failed" >&2
+    FAIL=$((FAIL+1)); return
+  fi
+  echo "PASS [$name]"
+  PASS=$((PASS+1))
+  rm -rf "$tmp"
+}
+run_reply_failure_case
+
+# Case 7: live-mode happy path with mock gh → thread ends up in
+# executed.resolved. Guards against regressions where the new gating
+# logic accidentally short-circuits the success path too.
+run_reply_success_case() {
+  local name="reply-success-resolves-thread"
+  local tmp; tmp=$(mktemp -d)
+  local mockbin="$tmp/bin"
+  mkdir -p "$mockbin"
+  cat > "$mockbin/gh" <<'MOCK'
+#!/usr/bin/env bash
+exit 0
+MOCK
+  chmod +x "$mockbin/gh"
+  local plan
+  if ! plan=$(GH_BIN="$mockbin/gh" "$CLASSIFIER" \
+        --threads "$FIX/stale-bot-thread.json" \
+        --bots "$BOTS" \
+        --run-dir "$tmp" \
+        --round "07" 2>/dev/null); then
+    echo "FAIL [$name]: classifier exited non-zero" >&2
+    FAIL=$((FAIL+1)); return
+  fi
+  local resolved reply_failed
+  resolved=$(printf '%s' "$plan" | jq -c '.executed.resolved')
+  reply_failed=$(printf '%s' "$plan" | jq -c '.executed.reply_failed')
+  if [[ "$resolved" != '["PRT_kwDO_stale_bot"]' ]]; then
+    echo "FAIL [$name]: resolved list mismatch: $resolved" >&2
+    FAIL=$((FAIL+1)); return
+  fi
+  if [[ "$reply_failed" != '[]' ]]; then
+    echo "FAIL [$name]: unexpected reply_failed: $reply_failed" >&2
+    FAIL=$((FAIL+1)); return
+  fi
+  echo "PASS [$name]"
+  PASS=$((PASS+1))
+  rm -rf "$tmp"
+}
+run_reply_success_case
+
 echo
 echo "Results: $PASS passed, $FAIL failed."
 [[ "$FAIL" -eq 0 ]] || exit 1
