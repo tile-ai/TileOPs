@@ -3870,18 +3870,6 @@ class TestShapeRuleHelpers:
             warn_helper
         )
 
-    def test_helpers_registry_exposes_all_helpers(self):
-        from tileops.manifest.shape_rules import (
-            HELPERS,
-            dim_range_validity,
-            dim_uniqueness,
-            reduced_axes,
-        )
-
-        assert HELPERS["dim_range_validity"] is dim_range_validity
-        assert HELPERS["dim_uniqueness"] is dim_uniqueness
-        assert HELPERS["reduced_axes"] is reduced_axes
-
 
 
 class TestValidatorHelperResolution:
@@ -3937,19 +3925,37 @@ class TestValidatorHelperResolution:
         ]
         assert len(precondition_hits) == 1, warnings
 
-    def test_helpers_callable_in_shape_rule_eval_scope(self, validator):
-        """All registered helpers are callable from shape_rules eval scope.
+    def test_shape_rule_builtin_pairs_have_unique_names(self, validator):
+        """Validator startup rejects a duplicate name in the builtin pairs list.
 
-        The contract: every helper exposed via :data:`HELPERS` is in the
-        validator's shape_rule builtin set, callable by bare name from
-        any rule body — no opt-in prefix, no special syntax. This pins
-        the public surface as the registry grows.
+        ``_SHAPE_RULE_BUILTIN_PAIRS`` is the editorial source: Python
+        primitives, broadcasting helpers, and reduction-dim helpers
+        share the same eval-scope namespace. If a future addition picks
+        a name that already exists, the eval scope would silently shadow
+        one with the other; the loop that builds ``_SHAPE_RULE_BUILTINS``
+        raises ``RuntimeError`` instead. Pin the contract so the guard
+        cannot regress to a silent dict-merge.
+        """
+        names = [name for name, _ in validator._SHAPE_RULE_BUILTIN_PAIRS]
+        assert len(names) == len(set(names)), (
+            f"duplicate name in _SHAPE_RULE_BUILTIN_PAIRS: {names}"
+        )
+
+    def test_shape_rules_helpers_callable_by_bare_name(self, validator):
+        """Reduction-dim helpers from shape_rules.py are in the eval scope.
+
+        Pin the public surface of ``tileops.manifest.shape_rules`` as
+        seen by manifest YAML: each function listed in :data:`__all__`
+        must be callable from a shape_rule body by bare name. Adding a
+        new helper requires updating both ``__all__`` and the validator's
+        ``_SHAPE_RULE_BUILTIN_PAIRS`` — this test fails loudly when one
+        side moves without the other.
         """
         import types
 
-        from tileops.manifest.shape_rules import HELPERS
+        from tileops.manifest import shape_rules
         ctx = {"x": types.SimpleNamespace(ndim=4), "dim": 0}
-        for name in sorted(HELPERS):
+        for name in shape_rules.__all__:
             ok, reason = validator._eval_shape_rule(f"{name}(x, dim)", ctx)
             assert reason is None, (name, reason)
             # Predicate helpers return bool; reduced_axes returns frozenset

@@ -53,7 +53,13 @@ if _shape_rules_spec is None or _shape_rules_spec.loader is None:
     )
 _shape_rules_module = _importlib_util.module_from_spec(_shape_rules_spec)
 _shape_rules_spec.loader.exec_module(_shape_rules_module)
-_SHAPE_RULE_HELPERS: dict = _shape_rules_module.HELPERS
+# Pull individual helpers off the isolated module by attribute. Keeping
+# the references narrow (no broader registry import) localises any
+# future shape_rules.py rename or removal to a single edit site here.
+_dim_range_validity = _shape_rules_module.dim_range_validity
+_dim_uniqueness = _shape_rules_module.dim_uniqueness
+_reduced_axes = _shape_rules_module.reduced_axes
+del _shape_rules_module
 
 # Valid torch dtype base names (without same_as references)
 _TORCH_DTYPES = {
@@ -1509,33 +1515,47 @@ def _is_broadcastable_to(src: object, dst: object) -> bool:
 # documented helper set (see docs/design/ops-design-reference.md). Keep this list
 # aligned with manifest spec; widening it changes the rule language.
 #
-# Broadcasting helpers (``broadcast_shapes`` / ``is_broadcastable_to``)
-# mirror PyTorch semantics but are pure-Python so the validator does
-# not require ``torch`` to evaluate L1 shape_rules.
+# Three name groups live here together: Python primitives (``len`` etc.),
+# broadcasting helpers (``broadcast_shapes`` / ``is_broadcastable_to``,
+# pure-Python so the validator does not require ``torch``), and
+# reduction-dim helpers from ``tileops.manifest.shape_rules``. All three
+# share the same eval-scope contract — callable by bare name from any
+# rule body. Group membership is editorial; the eval scope sees one
+# flat namespace.
 #
-# Reduction-dim helpers (``dim_range_validity`` / ``dim_uniqueness`` /
-# ``reduced_axes``) come from ``tileops.manifest.shape_rules`` and are
-# exposed unprefixed alongside the broadcasting helpers — both groups
-# are project-defined Python callables made available under the same
-# eval-scope contract.
-_SHAPE_RULE_BUILTINS: dict = {
-    "len": len,
-    "isinstance": isinstance,
-    "int": int,
-    "tuple": tuple,
-    "list": list,
-    "type": type,
-    "all": all,
-    "any": any,
-    "range": range,
-    "set": set,
-    "abs": abs,
-    "min": min,
-    "max": max,
-    "broadcast_shapes": _broadcast_shapes,
-    "is_broadcastable_to": _is_broadcastable_to,
-    **_SHAPE_RULE_HELPERS,
-}
+# The dict is built from an explicit (name, callable) list so a name
+# collision between groups raises at validator import time. Silent
+# dict-merge override would let a future helper shadow a Python primitive
+# (or an existing broadcasting helper) without surfacing the conflict.
+_SHAPE_RULE_BUILTIN_PAIRS = [
+    ("len", len),
+    ("isinstance", isinstance),
+    ("int", int),
+    ("tuple", tuple),
+    ("list", list),
+    ("type", type),
+    ("all", all),
+    ("any", any),
+    ("range", range),
+    ("set", set),
+    ("abs", abs),
+    ("min", min),
+    ("max", max),
+    ("broadcast_shapes", _broadcast_shapes),
+    ("is_broadcastable_to", _is_broadcastable_to),
+    ("dim_range_validity", _dim_range_validity),
+    ("dim_uniqueness", _dim_uniqueness),
+    ("reduced_axes", _reduced_axes),
+]
+_SHAPE_RULE_BUILTINS: dict = {}
+for _entry_name, _entry_fn in _SHAPE_RULE_BUILTIN_PAIRS:
+    if _entry_name in _SHAPE_RULE_BUILTINS:
+        raise RuntimeError(
+            f"shape_rule builtin name collision: {_entry_name!r} is "
+            f"registered twice. Two callables cannot share the same "
+            f"name in the rule eval scope; rename one or unify them."
+        )
+    _SHAPE_RULE_BUILTINS[_entry_name] = _entry_fn
 
 
 def _eval_shape_rule(

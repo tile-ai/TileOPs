@@ -1,25 +1,26 @@
 """Shared shape-rule helpers for reduction-style ops.
 
 Concrete `shape_rules` expressions for the reduction family follow a
-recurring pattern: validate the requested reduction dimension against the
-input rank, normalize negatives via modulo, and (for sequence-valued
+recurring pattern: validate the requested reduction dimension against
+the input rank, normalize negatives via modulo, and (for sequence-valued
 ``dim``) enforce uniqueness of the normalized indices. Pasting Python
 expressions into every manifest entry duplicates the contract and lets
 the wording drift between ops.
 
 This module exposes those patterns as named, individually testable
-predicates. Manifest entries opt in via the ``helper:`` URI prefix; for
-example::
+predicates and value extractors. Each is registered by name into the
+validator's shape_rule builtin set (``scripts/validate_manifest.py``)
+alongside the broadcasting helpers (``broadcast_shapes`` etc.) and the
+Python primitives (``len``, ``range``, …), so a manifest entry can call
+them by bare name::
 
     shape_rules:
-      - "helper:dim_range_validity(x, dim)"
-      - "helper:dim_uniqueness(x, dim)"
+      - "dim_range_validity(x, dim)"
+      - "dim_uniqueness(x, dim)"
+      - "output.ndim == x.ndim - len(reduced_axes(x, dim))"
 
-The validator resolves each ``helper:NAME(args)`` rule by stripping the
-prefix and evaluating the call against the same context used for
-inline-string rules. The helpers themselves are exposed to that context
-via :data:`HELPERS`. Inline-string rules continue to work unchanged so
-ops can migrate one at a time.
+Inline-string rules continue to work unchanged so ops can migrate one
+at a time.
 
 Helper semantics intentionally mirror the inline reduction expressions
 that previously lived in the manifest, so a malformed ``dim`` (e.g. a
@@ -144,21 +145,7 @@ def reduced_axes(x: Any, dim: Any) -> frozenset:
     return frozenset(range(x.ndim))
 
 
-HELPERS: dict[str, Any] = {
-    "dim_range_validity": dim_range_validity,
-    "dim_uniqueness": dim_uniqueness,
-    "reduced_axes": reduced_axes,
-}
-"""Registry of helper names exposed to the manifest's ``helper:`` URI scheme.
-
-The validator merges this mapping into the ``shape_rules`` evaluation
-context so a rule like ``helper:dim_range_validity(x, dim)`` resolves
-the call without any extra plumbing per op.
-"""
-
-
 __all__ = [
-    "HELPERS",
     "dim_range_validity",
     "dim_uniqueness",
     "reduced_axes",

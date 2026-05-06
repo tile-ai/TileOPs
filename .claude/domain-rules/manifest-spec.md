@@ -28,7 +28,7 @@ ______________________________________________________________________
 
 - `shape_rules` are Python expressions for shape relationships. `shape` and `shape_rules` fully specify output shape derivation.
 
-- Reduction-dim validation: do NOT silently wrap out-of-range indices with `% x.ndim`. Canonical predicates and value extractors are registered in `tileops.manifest.shape_rules.HELPERS` and exposed as shape_rule builtins (callable by bare name from any rule body, alongside `broadcast_shapes` etc.); new reduction ops MUST reference them, inline string expressions are a transitional fallback only.
+- Reduction-dim validation: do NOT silently wrap out-of-range indices with `% x.ndim`. Canonical predicates and value extractors live in `tileops.manifest.shape_rules` and are exposed as shape_rule builtins (callable by bare name from any rule body, alongside `broadcast_shapes` etc.); new reduction ops MUST reference them, inline string expressions are a transitional fallback only.
 
 - `status` is required: one of `implemented` or `spec-only`.
 
