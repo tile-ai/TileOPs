@@ -103,17 +103,24 @@ def dim_uniqueness(x: Any, dim: Any) -> bool:
 def reduced_axes(x: Any, dim: Any) -> frozenset:
     """Return the set of normalized axis indices reduced over.
 
-    Mirrors the inline reduction-axes expression
+    Mirrors the structure of the inline reduction-axes expression
     ``{dim % x.ndim} if isinstance(dim, int) else
     {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and
-    len(dim) > 0 else set(range(x.ndim))`` exactly. ``isinstance(dim, int)``
-    accepts ``bool`` too (bool subclasses int); that quirk is intentional
-    parity. A list/tuple with elements that cannot be reduced modulo an
-    int propagates the same exception the inline form would raise — the
-    validator classifies that as an eval error and surfaces it as a
-    warning (parity check skipped). Anything else (``None``, a set, a
-    string, etc.) falls through to the "all axes" branch, matching the
-    inline expression's else clause.
+    len(dim) > 0 else set(range(x.ndim))``. The branch selection and
+    per-element computation are identical; the only intentional change
+    is the return type — every branch returns ``frozenset`` rather than
+    ``set`` for immutability. Python treats ``frozenset == set`` of the
+    same elements as equal, so manifest expressions that compare via
+    ``==`` or use the result inside ``len(...)`` / ``in`` see no
+    behaviour change.
+
+    ``isinstance(dim, int)`` accepts ``bool`` too (bool subclasses int);
+    that quirk is intentional parity. A list/tuple with elements that
+    cannot be reduced modulo an int propagates the same exception the
+    inline form would raise — the validator classifies that as an eval
+    error and surfaces it as a warning (parity check skipped). Anything
+    else (``None``, a set, a string, etc.) falls through to the "all
+    axes" branch, matching the inline expression's else clause.
 
     Pair this helper with :func:`dim_range_validity` and
     :func:`dim_uniqueness` so range / uniqueness violations surface

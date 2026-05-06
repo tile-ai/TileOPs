@@ -3722,11 +3722,17 @@ class TestShapeRuleHelpers:
             )
 
         def inline_axes(x, dim):
+            # Mirrors the manifest's inline expression literally — every
+            # branch returns ``set`` (or a set-literal). The helper
+            # version intentionally returns ``frozenset`` for immutability;
+            # ``set == frozenset`` of the same elements is True in Python,
+            # so the parity ``==`` comparison below tolerates the
+            # type substitution without false negatives.
             if isinstance(dim, int):
-                return frozenset({dim % x.ndim})
+                return {dim % x.ndim}
             if isinstance(dim, (list, tuple)) and len(dim) > 0:
-                return frozenset(d % x.ndim for d in dim)
-            return frozenset(range(x.ndim))
+                return {d % x.ndim for d in dim}
+            return set(range(x.ndim))
 
         x = type("X", (), {"ndim": 3})()
         cases = [
@@ -3842,11 +3848,16 @@ class TestValidatorHelperResolution:
     """Validator integration of the shape_rules helper builtins."""
 
     def test_l2_parity_helper_detects_out_of_range_default(self, validator):
-        """Helper rule fires when the configured dim is invalid for the rank.
+        """Out-of-range default ``dim`` surfaces as an input-only precondition.
 
-        Mirrors what the inline expression would do — a wrong default
-        ``dim`` against a 2-D mock input must surface a parity failure
-        via the helper resolution path.
+        Mirrors what the inline expression would do: the predicate
+        evaluates to False under mock inputs, but the validator
+        classifies that as an *input* problem (the manifest's mock
+        default ``dim`` is out of range for the mock ``x.ndim``), not
+        as a parity failure of ``_infer_output_shapes``. The contract
+        pinned here: ``errors == []`` (no parity blame on infer) plus
+        exactly one ``"input-only precondition"`` warning citing the
+        helper rule itself.
         """
         def infer(self, x_shape):
             return {"y": x_shape}
