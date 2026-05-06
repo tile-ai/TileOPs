@@ -111,6 +111,28 @@ def make_online_softmax_with_mask_guard(scale, accum_dtype, block_rows, block_co
     return online_softmax
 
 
+def make_apply_softcap(score_scale, softcap, accum_dtype, block_rows, block_cols):
+    """Create a T.macro that applies score softcap before online softmax.
+
+    The input score fragment contains raw QK scores plus mask entries. Valid
+    scores are transformed as ``softcap * tanh((score * score_scale) / softcap)``.
+    Masked ``-inf`` entries are preserved so they remain invisible to softmax.
+    """
+
+    @T.macro
+    def apply_softcap(acc_s):
+        for i, j in T.Parallel(block_rows, block_cols):
+            capped = T.cast(softcap, accum_dtype) * T.tanh(
+                acc_s[i, j] * T.cast(score_scale / softcap, accum_dtype))
+            acc_s[i, j] = T.if_then_else(
+                acc_s[i, j] == -T.infinity(accum_dtype),
+                -T.infinity(accum_dtype),
+                capped,
+            )
+
+    return apply_softcap
+
+
 def make_rescale(block_rows, head_dim):
     """Create a reusable rescale T.macro for the output accumulator.
 

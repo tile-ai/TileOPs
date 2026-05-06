@@ -5,7 +5,7 @@ from itertools import accumulate
 import pytest
 import torch
 
-from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
+from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp, RopeNeoxPositionIdsOp
 
 _PREFILL_PAGED_TOLERANCE = {
     torch.float16: (5e-3, 1e-5),
@@ -49,6 +49,23 @@ def _fill_paged_cache_from_logical(
             v_pages[physical_pos].copy_(v_b[pos])
 
 
+def _apply_neox_rope_position_ids(
+    x: torch.Tensor,
+    position_ids: torch.Tensor,
+    max_position: int,
+    rotary_dim: int | None = None,
+) -> torch.Tensor:
+    op = RopeNeoxPositionIdsOp(
+        num_tokens=x.shape[0],
+        num_heads=x.shape[1],
+        head_dim=x.shape[2],
+        max_position=max_position,
+        dtype=x.dtype,
+        rotary_dim=rotary_dim,
+    )
+    return op(x, position_ids)
+
+
 def _gqa_prefill_paged_ref(
     q: torch.Tensor,
     k_new: torch.Tensor,
@@ -61,6 +78,7 @@ def _gqa_prefill_paged_ref(
     heads: int,
     heads_kv: int,
     is_causal: bool,
+    softcap: float | None = None,
 ) -> torch.Tensor:
     groups = heads // heads_kv
     dim = q.shape[-1]
@@ -80,6 +98,8 @@ def _gqa_prefill_paged_ref(
         k_bhsd = k_all.repeat_interleave(groups, dim=1).transpose(0, 1).float()
         v_bhsd = v_all.repeat_interleave(groups, dim=1).transpose(0, 1).float()
         scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * scale
+        if softcap is not None and softcap > 0:
+            scores = softcap * torch.tanh(scores / softcap)
         if is_causal:
             q_pos = torch.arange(q_len, device=q.device)[:, None] + old_len
             kv_pos = torch.arange(total_len, device=q.device)[None, :]
@@ -180,6 +200,113 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
             torch.testing.assert_close(v_pages[physical_pos], v_new[q_start + i])
 
     for b, old_len in enumerate(old_lens):
+        for pos in range(old_len):
+            physical_pos = _physical_pos(block_table, b, pos, page_size)
+            torch.testing.assert_close(k_pages[physical_pos], k_pages_before[physical_pos])
+            torch.testing.assert_close(v_pages[physical_pos], v_pages_before[physical_pos])
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("rotary_dim, is_causal, softcap", [
+    pytest.param(None, True, None, id="full-causal"),
+    pytest.param(32, True, None, id="partial-causal"),
+    pytest.param(32, False, None, id="partial-noncausal"),
+    pytest.param(32, True, 2.0, id="partial-causal-softcap"),
+])
+def test_gqa_prefill_paged_with_kv_cache_fused_rope(
+    rotary_dim: int | None,
+    is_causal: bool,
+    softcap: float | None,
+) -> None:
+    q_lens = [48, 33]
+    old_lens = [67, 100]
+    batch, heads, heads_kv, dim = 2, 8, 2, 64
+    dtype = torch.float16
+    page_size = 64
+    max_pages_per_req = 8
+    num_pages = batch * max_pages_per_req
+    total_q = sum(q_lens)
+    max_position = max(old + new for old, new in zip(old_lens, q_lens, strict=True)) + 1
+    block_table = _make_block_table(batch, max_pages_per_req)
+    cu_seqlens_q = _make_cu_seqlens(q_lens)
+    cache_seqlens = torch.tensor(old_lens, device="cuda", dtype=torch.int32)
+
+    q_raw = torch.randn(total_q, heads, dim, device="cuda", dtype=dtype).contiguous()
+    k_new_raw = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    v_new = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    k_pages = torch.zeros(num_pages * page_size, heads_kv, dim, device="cuda",
+                          dtype=dtype).contiguous()
+    v_pages = torch.zeros_like(k_pages)
+
+    new_positions = torch.cat([
+        torch.arange(old_len, old_len + q_len, device="cuda", dtype=torch.int32)
+        for old_len, q_len in zip(old_lens, q_lens, strict=True)
+    ])
+    old_positions = torch.cat([
+        torch.arange(old_len, device="cuda", dtype=torch.int32)
+        for old_len in old_lens
+    ])
+    q_rot = _apply_neox_rope_position_ids(
+        q_raw, new_positions, max_position, rotary_dim=rotary_dim)
+    k_new_rot = _apply_neox_rope_position_ids(
+        k_new_raw, new_positions, max_position, rotary_dim=rotary_dim)
+    k_old_raw = [
+        torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        for old_len in old_lens
+    ]
+    v_old = [
+        torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        for old_len in old_lens
+    ]
+    k_old = list(torch.split(
+        _apply_neox_rope_position_ids(
+            torch.cat(k_old_raw, dim=0), old_positions, max_position, rotary_dim=rotary_dim),
+        old_lens,
+        dim=0,
+    ))
+    _fill_paged_cache_from_logical(k_pages, v_pages, k_old, v_old, block_table, page_size)
+    k_pages_before = k_pages.clone()
+    v_pages_before = v_pages.clone()
+
+    ref = _gqa_prefill_paged_ref(
+        q_rot,
+        k_new_rot,
+        v_new,
+        k_old,
+        v_old,
+        cu_seqlens_q,
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        is_causal=is_causal,
+        softcap=softcap,
+    )
+    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        max_pages_per_req=max_pages_per_req,
+        page_size=page_size,
+        dim=dim,
+        is_causal=is_causal,
+        dtype=dtype,
+        softcap=softcap,
+        fuse_rope=True,
+        max_position=max_position,
+        rotary_dim=rotary_dim,
+    )
+
+    output = op(
+        q_raw, k_new_raw, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens,
+        block_table, max(q_lens))
+    torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+
+    for b, (q_len, old_len) in enumerate(zip(q_lens, old_lens, strict=True)):
+        q_start = int(cu_seqlens_q[b].item())
+        for i in range(q_len):
+            physical_pos = _physical_pos(block_table, b, old_len + i, page_size)
+            torch.testing.assert_close(k_pages[physical_pos], k_new_rot[q_start + i])
+            torch.testing.assert_close(v_pages[physical_pos], v_new[q_start + i])
         for pos in range(old_len):
             physical_pos = _physical_pos(block_table, b, pos, page_size)
             torch.testing.assert_close(k_pages[physical_pos], k_pages_before[physical_pos])
