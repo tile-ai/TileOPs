@@ -27,14 +27,18 @@ from tileops.kernels.elementwise import (
 )
 from tileops.manifest import load_manifest
 from tileops.ops.elementwise import (
+    EluFwdOp,
     ErfFwdOp,
     GeluFwdOp,
     HardsigmoidFwdOp,
     HardswishFwdOp,
+    HardtanhFwdOp,
+    LeakyReluFwdOp,
     MishFwdOp,
     ReluFwdOp,
     SeluFwdOp,
     SiluFwdOp,
+    SoftplusFwdOp,
 )
 from workloads.activation import ReluTest
 from workloads.workload_base import FixtureBase
@@ -624,11 +628,10 @@ def test_param_free_unary_bench(
 ) -> None:
     """Throughput bench for param-free unary activations (manifest-aligned).
 
-    One representative shape × fp16 keeps each op covered for AC-5
-    ("each touched bench file produces numbers; no correctness
-    assertions") without expanding the matrix. Records both the TileOps
-    op and the matching ``torch.nn.functional`` reference so each row
-    has an external baseline per the benchmark contract.
+    One representative shape x fp16 keeps each op covered without
+    expanding the matrix. Records both the TileOps op and the matching
+    ``torch.nn.functional`` reference so each row has an external
+    baseline per the benchmark contract.
     """
     shape = _SHAPES_2D[1]  # (1024, 4096), LLaMA hidden dim
     n_total = prod(shape)
@@ -641,6 +644,94 @@ def test_param_free_unary_bench(
     # 4*N, Mish 7*N, SELU 5*N) rather than the bandwidth-only 1*N
     # default. The torch baseline is profiled with the same harness so
     # both rows share the same FLOP normalization.
+    bm = UnaryBenchmark(test, op=op)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x):
+        return torch_ref(x)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ---------------------------------------------------------------------------
+# Throughput coverage for the parametric unary activations (leaky_relu, elu,
+# hardtanh, softplus). These ops take scalar constructor params and need
+# matching kwargs on the torch baseline so the two rows compute the same
+# function. Layout mirrors the param-free block: one fp16 case at the
+# LLaMA hidden-dim shape per op.
+# ---------------------------------------------------------------------------
+
+
+def _leaky_relu_baseline(x: torch.Tensor) -> torch.Tensor:
+    return torch.nn.functional.leaky_relu(x, negative_slope=0.01)
+
+
+def _elu_baseline(x: torch.Tensor) -> torch.Tensor:
+    return torch.nn.functional.elu(x, alpha=1.0)
+
+
+def _hardtanh_baseline(x: torch.Tensor) -> torch.Tensor:
+    return torch.nn.functional.hardtanh(x, min_val=-1.0, max_val=1.0)
+
+
+def _softplus_baseline(x: torch.Tensor) -> torch.Tensor:
+    return torch.nn.functional.softplus(x, beta=1.0, threshold=20.0)
+
+
+_PARAMETRIC_ACTIVATION_OPS = [
+    pytest.param(
+        LeakyReluFwdOp, "leaky_relu",
+        {"negative_slope": 0.01},
+        _leaky_relu_baseline,
+        id="leaky_relu",
+    ),
+    pytest.param(
+        EluFwdOp, "elu",
+        {"alpha": 1.0},
+        _elu_baseline,
+        id="elu",
+    ),
+    pytest.param(
+        HardtanhFwdOp, "hardtanh",
+        {"min_val": -1.0, "max_val": 1.0},
+        _hardtanh_baseline,
+        id="hardtanh",
+    ),
+    pytest.param(
+        SoftplusFwdOp, "softplus",
+        {"beta": 1.0, "threshold": 20.0},
+        _softplus_baseline,
+        id="softplus",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "op_cls, op_label, op_kwargs, torch_ref", _PARAMETRIC_ACTIVATION_OPS,
+)
+@pytest.mark.parametrize("dtype", [torch.float16])
+def test_parametric_unary_bench(
+    op_cls,
+    op_label: str,
+    op_kwargs: dict,
+    torch_ref,
+    dtype: torch.dtype,
+) -> None:
+    """Throughput bench for parametric unary activations (manifest-aligned).
+
+    Each op is constructed with its default scalar params and the torch
+    baseline is wrapped with the same kwargs so both rows compute the
+    same function. One representative shape x fp16 keeps the matrix
+    small while still producing a number per touched op.
+    """
+    shape = _SHAPES_2D[1]  # (1024, 4096), LLaMA hidden dim
+    n_total = prod(shape)
+    test = UnaryBenchCase(shape, dtype)
+    inputs = test.gen_inputs()
+
+    op = op_cls(N_total=n_total, dtype=dtype, **op_kwargs)
     bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
