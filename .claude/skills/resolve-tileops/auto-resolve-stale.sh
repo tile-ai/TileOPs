@@ -78,20 +78,22 @@ PLAN=$(jq --slurpfile bots "$BOTS_FILE" --arg reply "$REPLY_TEXT" '
       | ($t.comments.nodes[0]) as $first
       | ($first.author.login // "") as $login
       | ($first.commit.oid // "") as $oid
-      # Whole-thread author check: if ANY comment in the thread is
-      # authored by a human (i.e. a login that is neither whitelisted
-      # nor matches the GitHub-App "[bot]" suffix), treat the thread as
-      # having human discussion and never auto-resolve. Threads whose
-      # only authors are known bots — or known bots plus other bot-like
-      # apps — remain bot-only for classification purposes.
-      | ([ $t.comments.nodes[]
+      # Whole-thread author check. Collect every non-whitelisted login
+      # found anywhere in the thread, then split it into:
+      #   - human_repliers: login that is not bot-like (no [bot] suffix)
+      #   - unknown_bot_repliers: login that is bot-like but not on the
+      #     whitelist (e.g. a previously-unseen GitHub App)
+      # ANY non-whitelisted participant — human OR unknown bot — must
+      # disqualify the thread from auto-resolve. Recording them in
+      # unknown_bot_like surfaces them for human triage as the PR
+      # contract requires; resolving the thread anyway would silently
+      # swallow that signal.
+      | [ $t.comments.nodes[]
             | (.author.login // "")
-            | select(
-                . != ""
-                and (is_known($known; .) | not)
-                and (is_bot_like(.)       | not)
-              )
-         ] | length) as $human_repliers
+            | select(. != "" and (is_known($known; .) | not))
+        ] as $unknown_logins
+      | ($unknown_logins | map(select(is_bot_like(.) | not)) | length) as $human_repliers
+      | ($unknown_logins | map(select(is_bot_like(.))))            as $unknown_bot_logins
       | {
           thread_id: $t.id,
           comment_id: ($first.id // ""),
@@ -105,7 +107,8 @@ PLAN=$(jq --slurpfile bots "$BOTS_FILE" --arg reply "$REPLY_TEXT" '
           #   at_head: oid present and == head
           missing_oid: ($oid == ""),
           stale:       ($oid != $head and $oid != ""),
-          mixed:       ($human_repliers > 0)
+          mixed:       (($human_repliers > 0) or (($unknown_bot_logins | length) > 0)),
+          unknown_bot_logins: ($unknown_bot_logins | unique)
         }
     ] as $rows
   | {
@@ -113,15 +116,27 @@ PLAN=$(jq --slurpfile bots "$BOTS_FILE" --arg reply "$REPLY_TEXT" '
         $rows[] | select(.known_bot and .stale and (.mixed | not))
         | { thread_id, comment_id, login, reply: $reply }
       ],
+      # A thread enters unknown_bot_like if its root is a bot-like
+      # unknown identity OR if any non-root comment introduces an
+      # unknown bot-like login. Each (thread, login) pair is emitted
+      # once so the human-triage artifact captures every unrecognized
+      # GitHub App that touched the thread.
       unknown_bot_like: [
-        $rows[] | select((.known_bot|not) and .bot_like and (.mixed | not))
-        | { thread_id, login }
+        $rows[]
+        | . as $r
+        | (
+            ([ if ($r.bot_like and ($r.known_bot|not)) then $r.login else empty end ]
+             + $r.unknown_bot_logins)
+            | unique
+            | .[]
+            | { thread_id: $r.thread_id, login: . }
+          )
       ],
       skip: [
         $rows[]
         | select(
-            .mixed                                       # any human/unknown-bot replier in thread
-            or ((.known_bot|not) and (.bot_like|not))    # human-rooted
+            .mixed                                       # any non-whitelisted participant in thread
+            or ((.known_bot|not) and (.bot_like|not))    # human-rooted (no other comments)
             or (.known_bot and (.stale|not))             # bot not stale (at HEAD or missing oid)
           )
         | {

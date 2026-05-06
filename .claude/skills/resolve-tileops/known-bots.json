@@ -1,6 +1,7 @@
 {
   "review_bot_logins": [
     "copilot-pull-request-reviewer",
+    "Copilot",
     "gemini-code-assist",
     "github-actions"
   ],
