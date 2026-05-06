@@ -142,11 +142,11 @@ if (( RESOLVE_COUNT > 0 )); then
         addPullRequestReviewThreadReply(input:{
           pullRequestReviewThreadId:$tid, body:$body
         }){ comment{ id } }
-      }' -F tid="$tid" -F body="$REPLY_TEXT" >/dev/null 2>&1; then
+      }' -F tid="$tid" -F body="$REPLY_TEXT" >/dev/null; then
       if "$GH_BIN" api graphql -f query='
         mutation($tid:ID!){
           resolveReviewThread(input:{threadId:$tid}){ thread{ id isResolved } }
-        }' -F tid="$tid" >/dev/null 2>&1; then
+        }' -F tid="$tid" >/dev/null; then
         RESOLVED_IDS+=("$tid")
       else
         echo "auto-resolve-stale: resolve failed for $tid" >&2
