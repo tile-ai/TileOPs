@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -7,6 +7,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import LayerNormKernel
 
 from ..op_base import Op
+from .norm_base import normalized_shape_to_n
 
 __all__ = ["LayerNormFwdOp"]
 
@@ -20,14 +21,15 @@ def _align_up(n: int, alignment: int) -> int:
 class LayerNormFwdOp(Op):
     """Layer Normalization operator.
 
-    Computes layer normalization over the last dimension:
+    Computes layer normalization over the trailing ``normalized_shape``
+    axes:
 
     .. math::
 
         y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
             \\cdot w + b
 
-    where the mean and variance are computed over the last dimension.
+    Mirrors :func:`torch.nn.functional.layer_norm`.
 
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
@@ -35,49 +37,80 @@ class LayerNormFwdOp(Op):
     Note:
         Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
         Handles non-contiguous inputs and non-power-of-two hidden dims
-        by padding to 256-element alignment.
+        by padding to 256-element alignment. The leading-dims product
+        ``M`` is bound at forward time and kernels are cached per ``M``.
 
     Args:
-        M: Number of rows (product of all dims except the last).
-        N: Hidden dimension (last dim).
+        normalized_shape: Trailing-axis shape tuple over which the reduction
+            runs (manifest ``params.normalized_shape``). Either this or
+            legacy ``N`` must be set.
+        eps: Epsilon for numerical stability (manifest ``params.eps``).
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
-        eps: Epsilon for numerical stability.
+        N: Legacy single-axis reduction size; mutually exclusive with
+            ``normalized_shape``.
+        M: Optional pre-bound leading-dims product. When omitted, ``M`` is
+            derived from the input at forward time.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
         self,
-        M: int,
-        N: int,
-        dtype: torch.dtype,
+        normalized_shape: Optional[Sequence[int]] = None,
         eps: float = 1e-5,
+        *,
+        dtype: torch.dtype,
+        N: Optional[int] = None,
+        M: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
-        self.N = N
-        self.dtype = dtype
-        self.eps = eps
-        self.N_padded = _align_up(N, ALIGNMENT)
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["layer_norm"](
-            M, N, eps, dtype, tune=tune,
+        self.normalized_shape = (
+            tuple(int(d) for d in normalized_shape)
+            if normalized_shape is not None else None
         )
+        self.N = normalized_shape_to_n(normalized_shape, n_fallback=N)
+        self.dtype = dtype
+        self.eps = float(eps)
+        self.tune = tune
+        self.N_padded = _align_up(self.N, ALIGNMENT)
+        self.dispatch_kernel(kernel_map)
+        self.M: Optional[int] = M
+        self._kernel_cache: Dict[int, Kernel] = {}
+        if M is not None:
+            self._kernel_cache[M] = self.kernel_map["layer_norm"](
+                M, self.N, self.eps, dtype, tune=tune,
+            )
+        self._last_m: Optional[int] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"layer_norm": LayerNormKernel}
 
+    def _get_kernel(self, m: int) -> Kernel:
+        if m not in self._kernel_cache:
+            self._kernel_cache[m] = self.kernel_map["layer_norm"](
+                m, self.N, self.eps, self.dtype, tune=self.tune,
+            )
+        return self._kernel_cache[m]
+
     def eval_roofline(self) -> tuple[int, int]:
+        m = self._last_m if self._last_m is not None else self.M
+        if m is None:
+            raise RuntimeError(
+                "LayerNormFwdOp.eval_roofline() requires a prior "
+                "forward() call (or ctor M) to bind the leading-dims product."
+            )
         elem_bytes = self.dtype.itemsize
         return (
-            5 * self.M * self.N,
-            (2 * self.M * self.N + 2 * self.N) * elem_bytes,
+            5 * m * self.N,
+            (2 * m * self.N + 2 * self.N) * elem_bytes,
         )
 
-    def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor,
+    ) -> torch.Tensor:
         """Apply layer normalization.
 
         Args:
@@ -133,11 +166,13 @@ class LayerNormFwdOp(Op):
 
         orig_shape = x.shape
         x = x.contiguous().reshape(-1, self.N)
-        M_actual = x.shape[0]
-        if M_actual != self.M:
+        m_actual = x.shape[0]
+        if self.M is not None and m_actual != self.M:
             raise ValueError(
-                f"Expected M={self.M} (product of leading dims), got {M_actual}"
+                f"Expected M={self.M} (product of leading dims), "
+                f"got {m_actual}"
             )
+        self._last_m = m_actual
 
         # Pad hidden dim to 256-element alignment if needed
         if self.N_padded != self.N:
@@ -145,7 +180,7 @@ class LayerNormFwdOp(Op):
             weight = F.pad(weight, (0, self.N_padded - self.N))
             bias = F.pad(bias, (0, self.N_padded - self.N))
 
-        y = self.kernel(x, weight, bias)
+        y = self._get_kernel(m_actual)(x, weight, bias)
 
         # Trim padding
         if self.N_padded != self.N:

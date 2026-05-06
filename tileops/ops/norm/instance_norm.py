@@ -70,15 +70,24 @@ class InstanceNormFwdOp(Op):
         C: int,
         spatial: tuple,
         dtype: torch.dtype,
+        use_input_stats: bool = True,
+        momentum: float = 0.1,
         eps: float = 1e-5,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        if not use_input_stats:
+            raise NotImplementedError(
+                "InstanceNormFwdOp.use_input_stats=False (running-stats "
+                "variant) is out of scope for this op; track separately."
+            )
         self.N = N
         self.C = C
         self.spatial = spatial
         self.G = C  # InstanceNorm: each channel is its own group
         self.dtype = dtype
+        self.use_input_stats = use_input_stats
+        self.momentum = momentum
         self.eps = eps
         self.spatial_size = math.prod(spatial)
         # For InstanceNorm (G=C): D = (C/C) * spatial_size = spatial_size

@@ -61,7 +61,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 def test_group_norm_op(n: int, c: int, spatial: tuple, g: int,
                        dtype: torch.dtype, tune: bool) -> None:
     test = GroupNormTest(n, c, spatial, g, dtype)
-    op = GroupNormFwdOp(N=n, C=c, spatial=spatial, G=g, dtype=dtype)
+    op = GroupNormFwdOp(N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -85,7 +85,7 @@ def test_group_norm_non_contiguous(n: int, c: int, spatial: tuple, g: int,
     weight = torch.randn(c, dtype=dtype, device="cuda")
     bias = torch.randn(c, dtype=dtype, device="cuda")
 
-    op = GroupNormFwdOp(N=n, C=c, spatial=spatial, G=g, dtype=dtype)
+    op = GroupNormFwdOp(N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype)
 
     y_ref = F.group_norm(
         x.contiguous().float(), g,
