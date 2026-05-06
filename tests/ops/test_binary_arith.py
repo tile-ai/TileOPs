@@ -875,7 +875,7 @@ def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
     op = SubFwdOp(a_shape=(16,), b_shape=(16,), dtype=torch.float16)
     a = torch.randn(16, device="cuda", dtype=torch.float32)
     b = torch.randn(16, device="cuda", dtype=torch.float16)
-    with pytest.raises(ValueError, match="Expected a.dtype"):
+    with pytest.raises(ValueError, match="Expected input.dtype"):
         op(a, b)
 
 

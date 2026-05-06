@@ -842,32 +842,40 @@ class BinaryOp(Op):
         out_elem = fp8_out.itemsize if fp8_out is not None else in_elem
         return (self.a_numel + self.b_numel) * in_elem + self.N_total * out_elem
 
-    def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    def _eager_forward(
+        self,
+        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        other: torch.Tensor,
+    ) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
         result = self.kernel(
-            a.contiguous().view(-1), b.contiguous().view(-1),
+            input.contiguous().view(-1), other.contiguous().view(-1),
         ).reshape(self.out_shape)
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        if not a.is_cuda or not b.is_cuda:
+    def forward(
+        self,
+        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        other: torch.Tensor,
+    ) -> torch.Tensor:
+        if not input.is_cuda or not other.is_cuda:
             raise ValueError("Inputs must be CUDA tensors")
-        if a.dtype != self.dtype:
-            raise ValueError(f"Expected a.dtype {self.dtype}, got {a.dtype}")
-        if b.dtype != self.dtype:
-            raise ValueError(f"Expected b.dtype {self.dtype}, got {b.dtype}")
-        if a.numel() != self.a_numel:
+        if input.dtype != self.dtype:
+            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        if other.dtype != self.dtype:
+            raise ValueError(f"Expected other.dtype {self.dtype}, got {other.dtype}")
+        if input.numel() != self.a_numel:
             raise ValueError(
-                f"Expected a to have {self.a_numel} elements, got {a.numel()}"
+                f"Expected input to have {self.a_numel} elements, got {input.numel()}"
             )
-        if b.numel() != self.b_numel:
+        if other.numel() != self.b_numel:
             raise ValueError(
-                f"Expected b to have {self.b_numel} elements, got {b.numel()}"
+                f"Expected other to have {self.b_numel} elements, got {other.numel()}"
             )
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(a, b, self._out_shape_list, self._instance_key)
-        return self._eager_forward(a, b)
+            return wrapped(input, other, self._out_shape_list, self._instance_key)
+        return self._eager_forward(input, other)
 
 
 class FusedGatedOp(Op):
@@ -1068,32 +1076,126 @@ class ReluFwdOp(UnaryOp, _InplaceMixin):
         return self._inplace_aware_forward(input)
 
 
-class AddFwdOp(BinaryOp):
-    """Element-wise addition with broadcast: y = a + b."""
+class _AlphaScaledBinaryOp(BinaryOp):
+    """Shared base for ops that take a scalar ``alpha`` multiplier on ``other``.
+
+    PyTorch ``torch.add(input, other, alpha=1)`` and ``torch.sub(input,
+    other, alpha=1)`` scale ``other`` by ``alpha`` before the binary op.
+    The kernel does not bake ``alpha`` in, so ``alpha != 1`` is enforced
+    at the op layer by pre-scaling ``other`` before kernel dispatch.
+    Only the manifest-declared default (``alpha=1``) is wired through the
+    fast kernel path; non-default values fall through to a torch eager
+    op so the manifest contract is honored without a kernel rewrite.
+    """
+
+    _alpha_default: int | float = 1
+
+    def __init__(
+        self,
+        a_shape: tuple,
+        b_shape: tuple,
+        dtype: torch.dtype,
+        alpha: int | float = 1,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        super().__init__(
+            a_shape, b_shape, dtype, strategy=strategy,
+            kernel_map=kernel_map, tune=tune,
+        )
+        self.alpha = alpha
+
+
+class AddFwdOp(_AlphaScaledBinaryOp):
+    """Element-wise addition with broadcast: y = input + alpha * other.
+
+    Conforms to ``torch.add(input, other, *, alpha=1)``. ``alpha`` defaults
+    to ``1``; non-default values fall through to a torch fallback so the
+    manifest contract is honored end-to-end.
+    """
 
     _op_name = "add"
     kernel_cls = AddFwdKernel
 
+    def forward(
+        self,
+        input: torch.Tensor,  # noqa: A002
+        other: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.alpha != 1:
+            return torch.add(input, other, alpha=self.alpha)
+        return super().forward(input, other)
 
-class SubFwdOp(BinaryOp):
-    """Element-wise subtraction with broadcast: y = a - b."""
+
+class SubFwdOp(_AlphaScaledBinaryOp):
+    """Element-wise subtraction with broadcast: y = input - alpha * other.
+
+    Conforms to ``torch.sub(input, other, *, alpha=1)``.
+    """
 
     _op_name = "sub"
     kernel_cls = SubFwdKernel
 
+    def forward(
+        self,
+        input: torch.Tensor,  # noqa: A002
+        other: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.alpha != 1:
+            return torch.sub(input, other, alpha=self.alpha)
+        return super().forward(input, other)
+
 
 class MulFwdOp(BinaryOp):
-    """Element-wise multiplication with broadcast: y = a * b."""
+    """Element-wise multiplication with broadcast: y = input * other."""
 
     _op_name = "mul"
     kernel_cls = MulFwdKernel
 
 
 class DivFwdOp(BinaryOp):
-    """Element-wise division with broadcast: y = a / b."""
+    """Element-wise division with broadcast: y = input / other.
+
+    Conforms to ``torch.div(input, other, *, rounding_mode=None)``.
+    ``rounding_mode`` accepts ``None`` (true division), ``"trunc"``
+    (truncation toward zero), or ``"floor"`` (floor division). Non-None
+    rounding modes route through a torch fallback rather than a kernel
+    rewrite, honoring the manifest contract end-to-end.
+    """
 
     _op_name = "div"
     kernel_cls = DivFwdKernel
+
+    def __init__(
+        self,
+        a_shape: tuple,
+        b_shape: tuple,
+        dtype: torch.dtype,
+        rounding_mode: Optional[str] = None,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        if rounding_mode is not None and rounding_mode not in ("trunc", "floor"):
+            raise ValueError(
+                f"DivFwdOp received rounding_mode={rounding_mode!r}; "
+                "manifest allows None, 'trunc', or 'floor'"
+            )
+        super().__init__(
+            a_shape, b_shape, dtype, strategy=strategy,
+            kernel_map=kernel_map, tune=tune,
+        )
+        self.rounding_mode = rounding_mode
+
+    def forward(
+        self,
+        input: torch.Tensor,  # noqa: A002
+        other: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.rounding_mode is not None:
+            return torch.div(input, other, rounding_mode=self.rounding_mode)
+        return super().forward(input, other)
 
 
 class RemainderFwdOp(BinaryOp):
@@ -1104,10 +1206,29 @@ class RemainderFwdOp(BinaryOp):
 
 
 class PowFwdOp(BinaryOp):
-    """Element-wise power with broadcast: y = a ** b."""
+    """Element-wise power with broadcast: y = input ** exponent.
+
+    Conforms to ``torch.pow(input, exponent)``: the second operand carries
+    the manifest-declared name ``exponent`` rather than the generic
+    ``other`` so the L1 signature check matches the manifest.
+    """
 
     _op_name = "pow"
     kernel_cls = PowFwdKernel
+
+    def _eager_forward(
+        self,
+        input: torch.Tensor,  # noqa: A002
+        exponent: torch.Tensor,
+    ) -> torch.Tensor:
+        return super()._eager_forward(input, exponent)
+
+    def forward(
+        self,
+        input: torch.Tensor,  # noqa: A002
+        exponent: torch.Tensor,
+    ) -> torch.Tensor:
+        return super().forward(input, exponent)
 
 
 class FloorDivideFwdOp(BinaryOp):
@@ -1137,6 +1258,20 @@ class LerpFwdOp(BinaryOp):
 
     _op_name = "lerp"
     kernel_cls = LerpFwdKernel
+
+    def _eager_forward(
+        self,
+        input: torch.Tensor,  # noqa: A002
+        end: torch.Tensor,
+    ) -> torch.Tensor:
+        return BinaryOp._eager_forward(self, input, end)
+
+    def forward(
+        self,
+        input: torch.Tensor,  # noqa: A002
+        end: torch.Tensor,
+    ) -> torch.Tensor:
+        return BinaryOp.forward(self, input, end)
 
     def __init__(
         self,
@@ -1211,8 +1346,12 @@ class _BoolOutputBinaryOp(BinaryOp):
     _eager_forward (eager) or _wrapped (compile, where register_fake is correct).
     """
 
-    def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        result = super()._eager_forward(a, b)
+    def _eager_forward(
+        self,
+        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        other: torch.Tensor,
+    ) -> torch.Tensor:
+        result = super()._eager_forward(input, other)
         return result.to(torch.bool)
 
 
@@ -2188,24 +2327,32 @@ class PreluFwdOp(Op):
     def default_kernel_map(self):
         return {"prelu": PreluFwdKernel}
 
-    def _eager_forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        orig_shape = x.shape
+    def _eager_forward(
+        self,
+        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        weight: torch.Tensor,
+    ) -> torch.Tensor:
+        orig_shape = input.shape
         result = self.kernel(
-            x.contiguous().reshape(-1), weight.contiguous().reshape(-1),
+            input.contiguous().reshape(-1), weight.contiguous().reshape(-1),
         ).reshape(orig_shape)
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
+    def forward(
+        self,
+        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        weight: torch.Tensor,
+    ) -> torch.Tensor:
+        if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.numel() != self.N_total:
-            raise ValueError(f"Expected {self.N_total} elements, got {x.numel()}")
+        if input.dtype != self.dtype:
+            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        if input.numel() != self.N_total:
+            raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, weight, self._instance_key)
-        return self._eager_forward(x, weight)
+            return wrapped(input, weight, self._instance_key)
+        return self._eager_forward(input, weight)
 
 
 class WhereFwdOp(Op):
@@ -2734,11 +2881,27 @@ class MaskedFillFwdOp(Op):
         return self._eager_forward(input, mask, value)
 
 
+_MASKED_FILL_INT_DTYPES = (
+    torch.bool,
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+)
+
+
 class MaskedFillScalarFwdOp(Op):
     """MaskedFill with Number (scalar) value.
 
     Conforms to ``torch.Tensor.masked_fill(mask, value: Number)``. Output
     shape follows the bidirectional broadcast of ``input`` and ``mask``.
+
+    The manifest declares the full PyTorch dtype union (``bool | uint8 |
+    int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``). The
+    underlying TileLang kernel only supports float dtypes; integer and
+    bool dtypes route through a torch eager fallback at the op layer so
+    the manifest contract is honored end-to-end without a kernel rewrite.
 
     Args:
         input: Shape of the input tensor.
@@ -2757,7 +2920,6 @@ class MaskedFillScalarFwdOp(Op):
         value: float = 0.0,
         dtype: torch.dtype = torch.float32,
     ):
-        _validate_scalar_param_repr("value", value, dtype, self._op_name)
         self.input_shape = tuple(input)
         self.mask_shape = tuple(mask)
         self.dtype = dtype
@@ -2772,7 +2934,17 @@ class MaskedFillScalarFwdOp(Op):
         self._needs_broadcast = (
             self.input_shape != self.out_shape or self.mask_shape != self.out_shape
         )
-        self.kernel = MaskedFillFwdKernel(self.N_total, dtype, value)
+        # Integer / bool dtypes route through a torch fallback because the
+        # underlying float-only kernel cannot run them. Float dtypes go
+        # through the fast vectorized kernel as before, with the scalar
+        # representability validator gating against silent overflow into
+        # the user-facing dtype.
+        self._use_torch_fallback = dtype in _MASKED_FILL_INT_DTYPES
+        if self._use_torch_fallback:
+            self.kernel = None
+        else:
+            _validate_scalar_param_repr("value", value, dtype, self._op_name)
+            self.kernel = MaskedFillFwdKernel(self.N_total, dtype, value)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -2787,6 +2959,8 @@ class MaskedFillScalarFwdOp(Op):
         return t.contiguous().view(-1)
 
     def _eager_forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if self._use_torch_fallback:
+            return input.masked_fill(mask, self.value)
         out_shape = self.out_shape if self.out_shape else (1,)
         x_flat = self._expand_flat(input, out_shape)
         mask_b = mask if mask.dtype == torch.bool else mask.bool()
@@ -2812,7 +2986,7 @@ class MaskedFillScalarFwdOp(Op):
                 f"Expected mask.shape {self.mask_shape}, got {tuple(mask.shape)}"
             )
         wrapped = type(self)._wrapped
-        if wrapped is not None:
+        if wrapped is not None and not self._use_torch_fallback:
             return wrapped(input, mask, self._instance_key)
         return self._eager_forward(input, mask)
 
