@@ -3810,11 +3810,11 @@ class TestShapeRuleHelpers:
     def test_helper_rule_validator_warns_on_malformed_dim(self, validator):
         """Validator integration: helper rules surface malformed dims as warnings.
 
-        The reviewer's reproducer (``dim=["2"]``) raised TypeError under
-        the inline expression, which the validator classified as an
-        eval-error warning ("could not be evaluated"). The helper-based
-        rule must hit the same path: the parity check is skipped with a
-        warning, not turned into a hard shape error.
+        The reviewer's reproducer (``dim=["2"]``) raises TypeError from
+        the helper, which the validator classifies as an eval-error
+        warning ("could not be evaluated"). The contract: the parity
+        check is skipped with a warning, not turned into a hard shape
+        error — bit-identical to the pre-migration inline form.
         """
         def infer(self, x_shape, *, dim=None, keepdim=False):  # noqa: ARG001
             return {"y": x_shape}
@@ -3846,8 +3846,8 @@ class TestShapeRuleHelpers:
             "signature": {
                 **sig_common,
                 "shape_rules": [
-                    "helper:dim_range_validity(x, dim)",
-                    "helper:dim_uniqueness(x, dim)",
+                    "dim_range_validity(x, dim)",
+                    "dim_uniqueness(x, dim)",
                 ],
             },
         }
@@ -3885,33 +3885,7 @@ class TestShapeRuleHelpers:
 
 
 class TestValidatorHelperResolution:
-    """Validator integration of the ``helper:`` URI scheme."""
-
-    def test_check_l0_rejects_unknown_helper_name(self, validator):
-        """Unknown helper names must be flagged at L0 (typo defence)."""
-        entry = _make_entry()
-        entry["signature"]["shape_rules"] = ["helper:no_such_helper(x, dim)"]
-        errors = validator.check_l0("op", entry)
-        assert any(
-            "shape_rules" in e and "no_such_helper" in e for e in errors
-        ), errors
-
-    def test_check_l0_rejects_malformed_helper_uri(self, validator):
-        """Helper rules must parse as ``NAME(args)`` after the prefix."""
-        entry = _make_entry()
-        entry["signature"]["shape_rules"] = ["helper:not a call"]
-        errors = validator.check_l0("op", entry)
-        assert any("shape_rules" in e for e in errors), errors
-
-    def test_check_l0_accepts_known_helper(self, validator):
-        """A valid helper reference produces no L0 errors."""
-        entry = _make_entry()
-        entry["signature"]["shape_rules"] = [
-            "helper:dim_range_validity(x, dim)",
-            "helper:dim_uniqueness(x, dim)",
-        ]
-        errors = validator.check_l0("op", entry)
-        assert errors == [], errors
+    """Validator integration of the shape_rules helper builtins."""
 
     def test_l2_parity_helper_detects_out_of_range_default(self, validator):
         """Helper rule fires when the configured dim is invalid for the rank.
@@ -3933,7 +3907,7 @@ class TestValidatorHelperResolution:
                 "params": {"dim": {"type": "int", "default": 9}},
                 "shape_rules": [
                     "x.shape == (B, S)",
-                    "helper:dim_range_validity(x, dim)",
+                    "dim_range_validity(x, dim)",
                     "y.shape == x.shape",
                 ],
             },
@@ -3959,51 +3933,28 @@ class TestValidatorHelperResolution:
         precondition_hits = [
             w for w in warnings
             if "input-only precondition" in w
-            and "helper:dim_range_validity(x, dim)" in w
+            and "dim_range_validity(x, dim)" in w
         ]
         assert len(precondition_hits) == 1, warnings
 
-    def test_unprefixed_predicate_helpers_raise_name_error(self, validator):
-        """Opt-in property: predicate helpers are NOT in the unprefixed eval scope.
+    def test_helpers_callable_in_shape_rule_eval_scope(self, validator):
+        """All registered helpers are callable from shape_rules eval scope.
 
-        Callers must go through ``helper:`` to reach any predicate; if a
-        helper leaked into the global builtin, the L0 name-validation in
-        ``_check_helper_rule`` would be silently bypassed. Drives every
-        helper registered as opt-in to keep this gate honest as the
-        registry grows.
+        The contract: every helper exposed via :data:`HELPERS` is in the
+        validator's shape_rule builtin set, callable by bare name from
+        any rule body — no opt-in prefix, no special syntax. This pins
+        the public surface as the registry grows.
         """
         import types
 
         from tileops.manifest.shape_rules import HELPERS
-        # Mirrors the validator's `_SHAPE_RULE_HELPER_ONLY` partition.
-        # `reduced_axes` is exposed as a regular builtin (covered by
-        # `test_unprefixed_reduced_axes_remains_callable`).
-        opt_in = sorted(set(HELPERS) - {"reduced_axes"})
-        assert opt_in, "expected at least one opt-in predicate helper"
-        ctx = {"x": types.SimpleNamespace(ndim=4), "dim": [0, 1]}
-        for name in opt_in:
+        ctx = {"x": types.SimpleNamespace(ndim=4), "dim": 0}
+        for name in sorted(HELPERS):
             ok, reason = validator._eval_shape_rule(f"{name}(x, dim)", ctx)
-            assert ok is False, name
-            assert reason is not None, name
-            assert "NameError" in reason, (name, reason)
-            assert name in reason, (name, reason)
-
-    def test_unprefixed_reduced_axes_remains_callable(self, validator):
-        """``reduced_axes`` is a value extractor, exposed as a regular builtin.
-
-        Unlike the predicate helpers, ``reduced_axes`` is referenced
-        unprefixed inside larger output-shape expressions
-        (e.g. ``output.ndim == x.ndim - len(reduced_axes(x, dim))``),
-        so it must remain callable in the unprefixed eval scope to
-        preserve pre-migration parity for SumFwdOp.
-        """
-        import types
-        ok, reason = validator._eval_shape_rule(
-            "len(reduced_axes(x, dim)) == 1",
-            {"x": types.SimpleNamespace(ndim=4), "dim": 0},
-        )
-        assert reason is None, reason
-        assert ok is True
+            assert reason is None, (name, reason)
+            # Predicate helpers return bool; reduced_axes returns frozenset
+            # — both are truthy on the canonical (ndim=4, dim=0) input.
+            assert ok is True, name
 
     def test_sum_rules_helper_inline_classification_parity(self, validator):
         """Synthetic parity regression: helper form vs inline form via validator.
@@ -4057,8 +4008,8 @@ class TestValidatorHelperResolution:
             "signature": {
                 **sig_common,
                 "shape_rules": [
-                    "helper:dim_range_validity(x, dim)",
-                    "helper:dim_uniqueness(x, dim)",
+                    "dim_range_validity(x, dim)",
+                    "dim_uniqueness(x, dim)",
                     "output.ndim == (x.ndim if keepdim else x.ndim - "
                     "len(reduced_axes(x, dim)))",
                 ],

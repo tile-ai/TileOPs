@@ -55,54 +55,6 @@ _shape_rules_module = _importlib_util.module_from_spec(_shape_rules_spec)
 _shape_rules_spec.loader.exec_module(_shape_rules_module)
 _SHAPE_RULE_HELPERS: dict = _shape_rules_module.HELPERS
 
-# ``shape_rules`` entries that begin with this prefix are routed through
-# the named-helper registry rather than evaluated as free-form Python.
-# Unprefixed rules continue to behave exactly as before.
-_HELPER_RULE_PREFIX = "helper:"
-_HELPER_CALL_RE = re.compile(
-    r"^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)\s*$", re.DOTALL,
-)
-
-
-def _strip_helper_prefix(rule: str) -> str | None:
-    """Return the bare call expression for a ``helper:`` rule, else ``None``.
-
-    A rule like ``"helper:dim_range_validity(x, dim)"`` becomes
-    ``"dim_range_validity(x, dim)"``. Callers that want the original
-    non-helper rule untouched simply check the return for ``None``.
-    """
-    if not isinstance(rule, str):
-        return None
-    if not rule.startswith(_HELPER_RULE_PREFIX):
-        return None
-    return rule[len(_HELPER_RULE_PREFIX):].strip()
-
-
-def _check_helper_rule(op_name: str, index: int, rule: str) -> list[str]:
-    """L0-time validation of a single ``helper:`` rule.
-
-    The body must parse as ``NAME(args)`` and ``NAME`` must be a key in
-    the helper registry. Argument expressions are not validated here;
-    L2 syntax check parses them, and L2 parity check evaluates them.
-    """
-    body = _strip_helper_prefix(rule)
-    if body is None:
-        return []
-    m = _HELPER_CALL_RE.match(body)
-    if m is None:
-        return [
-            f"[schema] {op_name}: shape_rules[{index}] helper rule "
-            f"{rule!r} must take the form 'helper:NAME(args)'"
-        ]
-    name = m.group(1)
-    if name not in _SHAPE_RULE_HELPERS:
-        known = ", ".join(sorted(_SHAPE_RULE_HELPERS)) or "none"
-        return [
-            f"[schema] {op_name}: shape_rules[{index}] references unknown "
-            f"helper {name!r} (known: {known})"
-        ]
-    return []
-
 # Valid torch dtype base names (without same_as references)
 _TORCH_DTYPES = {
     "float16", "float32", "float64", "bfloat16",
@@ -300,12 +252,6 @@ def check_l0(
                         errors.append(
                             f"[schema] {op_name}: shape_rules[{i}] must be a string"
                         )
-                        continue
-                    # Helper-prefixed rules: validate the registered name
-                    # and call shape at L0 so typos surface during schema
-                    # check rather than as a late ``NameError`` skip
-                    # warning at L2.
-                    errors.extend(_check_helper_rule(op_name, i, rule))
 
         # Reject the deprecated `init_dims` key explicitly (R20 rename).
         # L0 doesn't flag unknown signature keys, so without this check an
@@ -777,13 +723,7 @@ def check_l1(
 # ---------------------------------------------------------------------------
 
 def check_l2(op_name: str, entry: dict) -> list[str]:
-    """Validate shape_rules are parseable Python expressions.
-
-    Rules tagged with the ``helper:`` URI prefix are stripped of the
-    prefix before parsing — the call body alone is checked for valid
-    Python syntax. The helper name itself is validated separately at L0
-    via :func:`_check_helper_rule`.
-    """
+    """Validate shape_rules are parseable Python expressions."""
     errors: list[str] = []
     sig = entry.get("signature", {})
     rules = sig.get("shape_rules", [])
@@ -791,10 +731,8 @@ def check_l2(op_name: str, entry: dict) -> list[str]:
     for i, rule in enumerate(rules):
         if not isinstance(rule, str):
             continue
-        body = _strip_helper_prefix(rule)
-        target = body if body is not None else rule
         try:
-            ast.parse(target, mode="eval")
+            ast.parse(rule, mode="eval")
         except SyntaxError as exc:
             errors.append(
                 f"[shape] {op_name}: shape_rules[{i}] invalid syntax: {rule!r} ({exc})"
@@ -1575,12 +1513,11 @@ def _is_broadcastable_to(src: object, dst: object) -> bool:
 # mirror PyTorch semantics but are pure-Python so the validator does
 # not require ``torch`` to evaluate L1 shape_rules.
 #
-# ``reduced_axes`` is a value extractor used as a sub-expression inside
-# larger output-shape rules (e.g. ``output.ndim == x.ndim - len(reduced_axes(x, dim))``)
-# rather than a top-level predicate, so it stays in the unconditional
-# builtin set. Predicate helpers (``dim_range_validity`` / ``dim_uniqueness``)
-# are opt-in via the ``helper:`` URI prefix and are NOT merged here; see
-# ``_eval_shape_rule`` for the conditional injection.
+# Reduction-dim helpers (``dim_range_validity`` / ``dim_uniqueness`` /
+# ``reduced_axes``) come from ``tileops.manifest.shape_rules`` and are
+# exposed unprefixed alongside the broadcasting helpers — both groups
+# are project-defined Python callables made available under the same
+# eval-scope contract.
 _SHAPE_RULE_BUILTINS: dict = {
     "len": len,
     "isinstance": isinstance,
@@ -1597,19 +1534,7 @@ _SHAPE_RULE_BUILTINS: dict = {
     "max": max,
     "broadcast_shapes": _broadcast_shapes,
     "is_broadcastable_to": _is_broadcastable_to,
-    "reduced_axes": _SHAPE_RULE_HELPERS["reduced_axes"],
-}
-
-# Named-helper registry (``helper:NAME(args)`` URI scheme), exposed only
-# when evaluating a rule whose body was stripped of the ``helper:`` prefix.
-# Keeping these out of the unconditional builtins preserves the opt-in
-# property: an unprefixed ``dim_range_validity(x, dim)`` rule must raise
-# ``NameError`` rather than silently bypass ``_check_helper_rule``'s
-# helper-name validation at L0.
-_SHAPE_RULE_HELPER_ONLY: dict = {
-    name: fn
-    for name, fn in _SHAPE_RULE_HELPERS.items()
-    if name not in _SHAPE_RULE_BUILTINS
+    **_SHAPE_RULE_HELPERS,
 }
 
 
@@ -1626,16 +1551,10 @@ def _eval_shape_rule(
     The eval globals expose the ``_SHAPE_RULE_BUILTINS`` helper set
     (``len``, ``isinstance``, ``int``, ``tuple``, ``list``, ``type``,
     ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``, ``max``,
-    ``broadcast_shapes``, ``is_broadcastable_to``, ``reduced_axes``) so
-    R11 / R11a-style rules that use these helpers can be evaluated
-    against the mock context instead of being silently skipped.
-
-    Predicate helpers exposed via the ``helper:`` URI scheme
-    (``dim_range_validity``, ``dim_uniqueness``) are injected into the
-    eval scope only when the input rule carried the ``helper:`` prefix,
-    so an unprefixed rule that names a predicate helper raises
-    ``NameError`` (surfaced as an eval-error warning) rather than
-    silently bypassing the L0 helper-name validation.
+    ``broadcast_shapes``, ``is_broadcastable_to``, ``dim_range_validity``,
+    ``dim_uniqueness``, ``reduced_axes``) so R11 / R11a-style rules that
+    use these helpers can be evaluated against the mock context instead
+    of being silently skipped.
 
     The context names (inputs / outputs / params) are injected into both
     eval globals and locals. Comprehensions (generator / set / list /
@@ -1644,22 +1563,12 @@ def _eval_shape_rule(
     too lets rules like ``all(d % x.ndim in ... for d in dim)`` resolve
     ``x`` and ``dim`` inside the generator expression.
     """
-    # ``helper:NAME(args)`` rules: route through the registered helper
-    # by stripping the prefix and evaluating the call body. Predicate
-    # helpers are injected into the eval scope only on the helper path
-    # (see ``_SHAPE_RULE_HELPER_ONLY``); unprefixed rules see only the
-    # base builtin set, so a rule body that names a helper without the
-    # ``helper:`` prefix must raise ``NameError`` instead of silently
-    # bypassing the L0 helper-name validation in ``_check_helper_rule``.
-    body = _strip_helper_prefix(rule)
-    is_helper_rule = body is not None
-    eval_target = body if is_helper_rule else rule
     # Defense-in-depth: even though manifest content is trusted (PR review
     # gates it), parse the rule first and reject any dunder attribute
     # access. This closes the classic ``().__class__.__mro__[1].
     # __subclasses__()`` sandbox-escape against the restricted builtins.
     try:
-        tree = ast.parse(eval_target, mode="eval")
+        tree = ast.parse(rule, mode="eval")
     except SyntaxError as exc:
         return False, f"eval error: SyntaxError: {exc}"
     for node in ast.walk(tree):
@@ -1671,16 +1580,7 @@ def _eval_shape_rule(
                 f"({node.attr!r})"
             )
 
-    # Build the per-rule builtin set: the base sandboxed builtins
-    # always, plus the opt-in predicate helpers only when this rule
-    # came in through the ``helper:`` URI scheme. Constructing a fresh
-    # dict per call keeps the unconditional ``_SHAPE_RULE_BUILTINS``
-    # immune to leakage between helper and non-helper evaluations.
-    if is_helper_rule:
-        rule_builtins = {**_SHAPE_RULE_BUILTINS, **_SHAPE_RULE_HELPER_ONLY}
-    else:
-        rule_builtins = _SHAPE_RULE_BUILTINS
-    eval_globals = {"__builtins__": rule_builtins}
+    eval_globals = {"__builtins__": _SHAPE_RULE_BUILTINS}
     # Ctx names must be visible inside comprehensions, which only see
     # globals. Merge ctx into globals while keeping locals=ctx so plain
     # (non-comprehension) lookups behave identically.
@@ -1690,10 +1590,10 @@ def _eval_shape_rule(
     # the sandboxed builtins mapping installed above and re-expose the
     # full unrestricted builtins set. Reinstate the sandbox after the
     # update so ctx cannot escape it.
-    eval_globals["__builtins__"] = rule_builtins
+    eval_globals["__builtins__"] = _SHAPE_RULE_BUILTINS
     try:
         result = eval(  # noqa: S307 — manifest-controlled
-            eval_target, eval_globals, ctx,
+            rule, eval_globals, ctx,
         )
     except Exception as exc:  # noqa: BLE001
         return False, f"eval error: {exc.__class__.__name__}: {exc}"
