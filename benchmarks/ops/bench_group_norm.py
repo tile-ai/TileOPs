@@ -37,7 +37,11 @@ def _manifest_params():
     for w in load_workloads(_OP_NAME):
         shape = w["x_shape"]
         n, c, spatial = shape[0], shape[1], tuple(shape[2:])
-        g = w["groups"]
+        g = w.get("num_groups", w.get("groups"))
+        if g is None:
+            raise KeyError(
+                f"Workload manifest for {_OP_NAME} must contain 'num_groups' or 'groups'"
+            )
         label = w.get("label", f"{n}x{c}x{'x'.join(map(str, spatial))}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
