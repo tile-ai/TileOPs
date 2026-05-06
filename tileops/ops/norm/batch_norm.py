@@ -3,18 +3,21 @@
 Wraps BatchNormFwdTrainKernel, BatchNormFwdInferKernel, and BatchNormBwdKernel
 in a standard TileOPs Op interface.
 
-User-facing API mirrors torch.nn.functional.batch_norm:
+User-facing API mirrors :func:`torch.nn.functional.batch_norm`:
 
     fwd_op = BatchNormFwdOp(N, C, *spatial, dtype=dtype, momentum=0.1, eps=1e-5)
-    y, mean, rstd = fwd_op(x, weight, bias, running_mean, running_var,
-                           training=True)
+    y = fwd_op(x, running_mean, running_var, weight, bias, training=False)
 
     bwd_op = BatchNormBwdOp(N, C, *spatial, dtype=dtype)
     grad_x, grad_weight, grad_bias = bwd_op(grad_out, x, weight, mean, rstd)
 
-Input tensors accept any shape (N, C, *spatial); the op reshapes to (C, L)
-internally.  L = N * prod(spatial) must be divisible by the kernel's block_l
-(chosen automatically by the kernel's default_config).
+Forward returns the normalized output only (manifest contract); ``mean`` and
+``rstd`` from the training path stay internal. Callers needing them for the
+backward pass can recompute on the original input.
+
+Input tensors accept any shape ``(N, C, *spatial)``; the op reshapes to
+``(C, L)`` internally.  ``L = N * prod(spatial)`` must be divisible by the
+kernel's block_l (chosen automatically by the kernel's default_config).
 """
 
 import functools
@@ -37,11 +40,10 @@ __all__ = ["BatchNormBwdOp", "BatchNormFwdOp"]
 
 
 def _reshape_to_CL(x: torch.Tensor) -> Tuple[torch.Tensor, Tuple]:
-    """Reshape (N, C, *spatial) → (C, L) and return the original shape."""
+    """Reshape (N, C, *spatial) to (C, L) and return the original shape."""
     orig_shape = x.shape
     C = orig_shape[1]
     L = x.numel() // C
-    # Bring C to front: (N, C, *spatial) → (C, N, *spatial) → (C, L)
     x_cl = x.permute(1, 0, *range(2, x.ndim)).reshape(C, L).contiguous()
     return x_cl, orig_shape
 
@@ -69,6 +71,12 @@ class BatchNormFwdOp(Op):
     where the mean and variance are computed per channel over ``(N, *spatial)``
     elements.
 
+    Mirrors :func:`torch.nn.functional.batch_norm`: ``forward`` accepts
+    ``(input, running_mean, running_var, weight, bias)`` in PyTorch's
+    positional order and returns only the normalized output. Internal
+    mean/rstd computed in training mode stay private; callers needing them
+    for the backward pass recompute on the original input.
+
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
 
@@ -81,8 +89,10 @@ class BatchNormFwdOp(Op):
         C: Number of channels.
         *spatial: Spatial dimensions (H, W, ...).
         dtype: Input/output data type.
-        eps: Epsilon for numerical stability.
+        training: Default ``training`` flag for ``forward()``; per the
+            manifest the default is ``False``.
         momentum: Running-stat update momentum (used in training mode).
+        eps: Epsilon for numerical stability.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """
@@ -93,8 +103,9 @@ class BatchNormFwdOp(Op):
         C: int,
         *spatial: int,
         dtype: torch.dtype = torch.float16,
-        eps: float = 1e-5,
+        training: bool = False,
         momentum: float = 0.1,
+        eps: float = 1e-5,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -103,6 +114,7 @@ class BatchNormFwdOp(Op):
         self.spatial = spatial
         self.L = N * math.prod(spatial) if spatial else N
         self.dtype = dtype
+        self.training = training
         self.eps = eps
         self.momentum = momentum
 
@@ -148,63 +160,52 @@ class BatchNormFwdOp(Op):
     def forward(
         self,
         x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
-        training: bool = True,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+        training: Optional[bool] = None,
+    ) -> torch.Tensor:
         """Run batch normalization forward pass.
 
         Args:
             x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
+            running_mean: Running mean of shape ``(C,)`` on the same CUDA
+                device as ``x``, with dtype ``torch.float32``. Updated
+                in-place during training.
+            running_var: Running variance of shape ``(C,)`` on the same
+                CUDA device as ``x``, with dtype ``torch.float32``. Updated
+                in-place during training.
             weight: Affine scale (gamma) of shape ``(C,)`` on the same CUDA
                 device as ``x``.
             bias: Affine shift (beta) of shape ``(C,)`` on the same CUDA
                 device as ``x``.
-            running_mean: Running mean of shape ``(C,)`` on the same CUDA
-                device as ``x``, with dtype ``torch.float32``. Updated
-                in-place during training.
-            running_var: Running variance of shape ``(C,)`` on the same CUDA
-                device as ``x``, with dtype ``torch.float32``. Updated
-                in-place during training.
-            training: If ``True``, compute batch statistics and update
-                running stats; otherwise use running stats directly.
+            training: Override the ctor-bound ``training`` flag for this
+                call. ``None`` uses the ctor-bound default.
 
         Returns:
-            Tuple of ``(y, mean, rstd)`` where *y* is the normalized output
-            (same shape as *x*), *mean* is the per-channel batch mean, and
-            *rstd* is the per-channel reciprocal standard deviation. In
-            inference mode *mean* and *rstd* are ``None``.
+            Normalized output tensor with the same shape as ``x``.
         """
+        train_flag = self.training if training is None else training
         self._validate_inputs(x)
         x_cl, orig_shape = self._prepare(x)
 
-        if training:
-            y_cl, mean, rstd = self.train_kernel(
+        if train_flag:
+            y_cl, _mean, _rstd = self.train_kernel(
                 x_cl, weight.float(), bias.float(),
                 running_mean, running_var)
-            y = _restore_shape(y_cl, orig_shape)
-            return y, mean, rstd
         else:
             y_cl = self.infer_kernel(
                 x_cl, weight.float(), bias.float(),
                 running_mean, running_var)
-            y = _restore_shape(y_cl, orig_shape)
-            return y, None, None
+        return _restore_shape(y_cl, orig_shape)
 
 
 class BatchNormBwdOp(Op):
     """Batch Normalization backward operator.
 
     Computes gradients with respect to input, scale, and shift for batch
-    normalization:
-
-    .. math::
-
-        \\frac{\\partial \\mathcal{L}}{\\partial x},\\;
-        \\frac{\\partial \\mathcal{L}}{\\partial \\gamma},\\;
-        \\frac{\\partial \\mathcal{L}}{\\partial \\beta}
+    normalization.
 
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
@@ -273,19 +274,17 @@ class BatchNormBwdOp(Op):
             grad_out: Upstream gradient of shape ``(N, C, *spatial)``.
             x: Original input tensor of shape ``(N, C, *spatial)``.
             weight: Affine scale (gamma) of shape ``(C,)`` on the same CUDA
-                device as ``x``. Internally
-                cast to ``torch.float32`` for the backward kernel.
+                device as ``x``. Internally cast to ``torch.float32`` for the
+                backward kernel.
             mean: Per-channel batch mean from the forward pass, shape
-                ``(C,)``. Expected as ``torch.float32`` (produced by
-                the forward training kernel).
+                ``(C,)``. Expected as ``torch.float32``.
             rstd: Per-channel reciprocal std from the forward pass,
-                shape ``(C,)``. Expected as ``torch.float32`` (produced
-                by the forward training kernel).
+                shape ``(C,)``. Expected as ``torch.float32``.
 
         Returns:
-            Tuple of ``(grad_x, grad_weight, grad_bias)`` where *grad_x*
-            has the same shape as *x*, *grad_weight* has shape ``(C,)``,
-            and *grad_bias* has shape ``(C,)``.
+            Tuple of ``(grad_x, grad_weight, grad_bias)`` where ``grad_x``
+            has the same shape as ``x``, ``grad_weight`` has shape ``(C,)``,
+            and ``grad_bias`` has shape ``(C,)``.
         """
         orig_shape = grad_out.shape
         go_cl = self._prepare(grad_out)
@@ -299,7 +298,7 @@ class BatchNormBwdOp(Op):
 
 
 # ---------------------------------------------------------------------------
-# torch.compile registration — BatchNormFwdOp
+# torch.compile registration -- BatchNormFwdOp / BatchNormBwdOp
 # ---------------------------------------------------------------------------
 
 _OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
@@ -312,76 +311,66 @@ def _register_instance(op_instance: object) -> int:
     return key
 
 
-# -- Fwd custom_op ----------------------------------------------------------
-
-@torch.library.custom_op("top::batch_norm_fwd", mutates_args=("running_mean", "running_var"))
+@torch.library.custom_op(
+    "top::norm_batch_norm_fwd",
+    mutates_args=("running_mean", "running_var"),
+)
 def _batch_norm_fwd_wrapped(
     x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
     running_mean: torch.Tensor,
     running_var: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
     training: bool,
     instance_key: int,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     instance = _OP_REGISTRY[instance_key]
-    y, mean, rstd = instance._eager_forward(
-        x, weight, bias, running_mean, running_var, training=training)
-    # custom_op must return concrete tensors; replace None with empty
-    if mean is None:
-        mean = torch.empty(0, device=x.device, dtype=torch.float32)
-    if rstd is None:
-        rstd = torch.empty(0, device=x.device, dtype=torch.float32)
-    return y, mean, rstd
+    return instance._eager_forward(
+        x, running_mean, running_var, weight, bias, training=training)
 
 
 @_batch_norm_fwd_wrapped.register_fake
 def _batch_norm_fwd_fake(
     x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
     running_mean: torch.Tensor,
     running_var: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
     training: bool,
     instance_key: int,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    C = weight.shape[0]
-    return (
-        torch.empty_like(x),
-        torch.empty(C, device=x.device, dtype=torch.float32),
-        torch.empty(C, device=x.device, dtype=torch.float32),
-    )
+) -> torch.Tensor:
+    return torch.empty_like(x)
 
 
-# Patch BatchNormFwdOp to support torch.compile
 BatchNormFwdOp._wrapped = _batch_norm_fwd_wrapped
 
 
 def _batchnorm_fwd_eager_forward(
     self,
     x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
     running_mean: torch.Tensor,
     running_var: torch.Tensor,
-    training: bool = True,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    training: Optional[bool] = None,
+) -> torch.Tensor:
     """Direct kernel call (no torch.compile wrapping)."""
+    train_flag = self.training if training is None else training
     self._validate_inputs(x)
     x_cl, orig_shape = self._prepare(x)
-    if training:
-        y_cl, mean, rstd = self.train_kernel(
-            x_cl, weight.float(), bias.float(), running_mean, running_var)
-        return _restore_shape(y_cl, orig_shape), mean, rstd
+    if train_flag:
+        y_cl, _mean, _rstd = self.train_kernel(
+            x_cl, weight.float(), bias.float(),
+            running_mean, running_var)
     else:
         y_cl = self.infer_kernel(
-            x_cl, weight.float(), bias.float(), running_mean, running_var)
-        return _restore_shape(y_cl, orig_shape), None, None
+            x_cl, weight.float(), bias.float(),
+            running_mean, running_var)
+    return _restore_shape(y_cl, orig_shape)
 
 
 BatchNormFwdOp._eager_forward = _batchnorm_fwd_eager_forward
 
-# Override forward to go through custom_op when instance is registered
 _orig_fwd_init = BatchNormFwdOp.__init__
 
 
@@ -394,20 +383,23 @@ def _patched_fwd_init(self, *args, **kwargs):
 BatchNormFwdOp.__init__ = _patched_fwd_init
 
 
-def _patched_fwd_forward(self, x, weight, bias, running_mean, running_var, training=True):
-    y, mean, rstd = _batch_norm_fwd_wrapped(
-        x, weight, bias, running_mean, running_var, training, self._instance_key)
-    if mean.numel() == 0:
-        mean = None
-    if rstd.numel() == 0:
-        rstd = None
-    return y, mean, rstd
+def _patched_fwd_forward(
+    self,
+    x: torch.Tensor,
+    running_mean: torch.Tensor,
+    running_var: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    training: Optional[bool] = None,
+) -> torch.Tensor:
+    train_flag = self.training if training is None else training
+    return _batch_norm_fwd_wrapped(
+        x, running_mean, running_var, weight, bias,
+        train_flag, self._instance_key)
 
 
 BatchNormFwdOp.forward = _patched_fwd_forward
 
-
-# -- Bwd custom_op ----------------------------------------------------------
 
 @torch.library.custom_op("top::batch_norm_bwd", mutates_args=())
 def _batch_norm_bwd_wrapped(
