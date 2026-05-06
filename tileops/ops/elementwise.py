@@ -1169,8 +1169,10 @@ class _AlphaScaledBinaryOp(BinaryOp):
     Non-default ``alpha`` values are routed through a ``torch.add`` /
     ``torch.sub`` eager fallback after the same input validation as the
     kernel path runs, so the manifest contract is honored without a
-    kernel rewrite. ``alpha`` is keyword-only to keep the existing
-    positional ``(a_shape, b_shape, dtype, strategy, ...)`` call pattern.
+    kernel rewrite. The leading ``*`` makes ``alpha`` and the existing
+    ``strategy`` / ``kernel_map`` / ``tune`` parameters keyword-only;
+    only the positional triplet ``(a_shape, b_shape, dtype)`` is shared
+    with ``BinaryOp``.
     """
 
     def __init__(
@@ -1210,8 +1212,11 @@ class AddFwdOp(_AlphaScaledBinaryOp):
         input: torch.Tensor,  # noqa: A002
         other: torch.Tensor,
     ) -> torch.Tensor:
-        self._validate_binary_inputs(input, other)
         if self.alpha != 1:
+            # Fallback path bypasses ``BinaryOp.forward`` so we run the
+            # shared validator here. The ``alpha == 1`` path delegates to
+            # ``super().forward()``, which already validates.
+            self._validate_binary_inputs(input, other)
             return torch.add(input, other, alpha=self.alpha)
         return super().forward(input, other)
 
@@ -1234,8 +1239,10 @@ class SubFwdOp(_AlphaScaledBinaryOp):
         input: torch.Tensor,  # noqa: A002
         other: torch.Tensor,
     ) -> torch.Tensor:
-        self._validate_binary_inputs(input, other)
         if self.alpha != 1:
+            # Fallback path bypasses ``BinaryOp.forward``; validate here.
+            # The ``alpha == 1`` path delegates to ``super().forward()``.
+            self._validate_binary_inputs(input, other)
             return torch.sub(input, other, alpha=self.alpha)
         return super().forward(input, other)
 
@@ -1256,9 +1263,10 @@ class DivFwdOp(BinaryOp):
     ``rounding_mode`` accepts ``None`` (true division), ``"trunc"``
     (truncation toward zero), or ``"floor"`` (floor division). Non-None
     rounding modes run through a ``torch.div`` eager fallback after the
-    standard ``BinaryOp`` device / dtype / numel checks. ``rounding_mode``
-    is keyword-only to preserve the existing positional
-    ``(a_shape, b_shape, dtype, strategy, ...)`` call pattern.
+    standard ``BinaryOp`` device / dtype / numel checks. The leading ``*``
+    makes ``rounding_mode`` and the existing ``strategy`` / ``kernel_map``
+    / ``tune`` parameters keyword-only; only the positional triplet
+    ``(a_shape, b_shape, dtype)`` is shared with ``BinaryOp``.
     """
 
     _op_name = "div"
@@ -1291,8 +1299,10 @@ class DivFwdOp(BinaryOp):
         input: torch.Tensor,  # noqa: A002
         other: torch.Tensor,
     ) -> torch.Tensor:
-        self._validate_binary_inputs(input, other)
         if self.rounding_mode is not None:
+            # Fallback path bypasses ``BinaryOp.forward``; validate here.
+            # The default path delegates to ``super().forward()``.
+            self._validate_binary_inputs(input, other)
             return torch.div(input, other, rounding_mode=self.rounding_mode)
         return super().forward(input, other)
 
@@ -3038,7 +3048,9 @@ class MaskedFillScalarFwdOp(Op):
     Args:
         input: Shape of the input tensor.
         mask: Shape of the mask tensor (bool).
-        value: Scalar fill value.
+        value: Scalar fill value (bool / int / float; range-validated
+            against ``dtype`` for the float vectorized path; passed
+            through verbatim on the integer / bool fallback path).
         dtype: Torch dtype.
     """
 
@@ -3049,7 +3061,7 @@ class MaskedFillScalarFwdOp(Op):
         self,
         input: tuple,  # noqa: A002
         mask: tuple,
-        value: float = 0.0,
+        value: bool | int | float = 0,
         dtype: torch.dtype = torch.float32,
     ):
         self.input_shape = tuple(input)

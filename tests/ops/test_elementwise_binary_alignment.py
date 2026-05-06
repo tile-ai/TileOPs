@@ -588,5 +588,32 @@ def test_compare_int_fallback_matches_torch(
     torch.testing.assert_close(out, ref)
 
 
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    "op_name, ref_fn",
+    [
+        ("AddFwdOp", torch.add),
+        ("MulFwdOp", torch.mul),
+        ("MaximumFwdOp", torch.maximum),
+        ("MinimumFwdOp", torch.minimum),
+    ],
+)
+def test_arith_bool_fallback_matches_torch(op_name: str, ref_fn) -> None:
+    """Bool arithmetic ops in the manifest dtype union must match torch."""
+    import tileops.ops.elementwise as mod
+
+    cls = getattr(mod, op_name)
+    a = torch.tensor([True, False, True, False, True, False, True, False],
+                     dtype=torch.bool, device="cuda")
+    b = torch.tensor([True, True, False, False, True, True, False, False],
+                     dtype=torch.bool, device="cuda")
+    op = cls(a_shape=(8,), b_shape=(8,), dtype=torch.bool)
+    out = op(a, b)
+    ref = ref_fn(a, b)
+    assert out.dtype == ref.dtype
+    torch.testing.assert_close(out, ref)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
