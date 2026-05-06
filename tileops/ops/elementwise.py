@@ -112,6 +112,25 @@ _FP8_NONSAT_OUTPUT_DTYPES = {
     torch.float8_e5m2: torch.float16,
 }
 
+# Manifest-declared dtypes for binary arithmetic / comparison ops that
+# the underlying float-only TileLang kernels cannot compile. The op
+# layer routes these through a torch eager fallback (see
+# ``BinaryOp._TORCH_FALLBACK_DTYPES``) so the manifest contract is
+# honored end-to-end. ``_BINARY_FALLBACK_INT_DTYPES`` includes
+# ``torch.bool`` for ops where the manifest signature accepts bool
+# input (e.g. ``torch.add``); the ``_no_bool`` variant excludes it for
+# ``torch.sub``, which mirrors PyTorch's rejection of bool arithmetic
+# for sub.
+_BINARY_FALLBACK_INT_DTYPES = (
+    torch.bool,
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+)
+_BINARY_FALLBACK_INT_DTYPES_NO_BOOL = _BINARY_FALLBACK_INT_DTYPES[1:]
+
 
 def _effective_scalar_kernel_dtype(dtype: torch.dtype) -> torch.dtype:
     """Return the dtype used when scalar literals are materialized in kernels."""
@@ -792,6 +811,25 @@ class BinaryOp(Op):
     kernel_cls: type
     _op_name: str
     _wrapped = None  # Set by _register_binary_custom_op at class definition
+    # Subclasses set this to a torch reference (e.g. ``torch.add``) when the
+    # manifest dtype union extends beyond the underlying kernel's runtime
+    # support. ``None`` means "kernel-only"; passing a dtype in
+    # ``_TORCH_FALLBACK_DTYPES`` then raises.
+    _torch_fallback_fn: Optional[Callable] = None
+    # Manifest-declared dtypes that the kernel cannot compile and that
+    # must route through ``_torch_fallback_fn`` instead. The subclass
+    # owns this list because the kernel's ``SUPPORTED_DTYPES`` is
+    # frequently ``None`` (i.e. "no static check") even when the
+    # underlying TileLang codegen still rejects bool / integer
+    # arithmetic. Empty tuple means "every manifest dtype goes through
+    # the kernel path".
+    _TORCH_FALLBACK_DTYPES: tuple = ()
+    # Default for subclasses (e.g. ``LerpFwdOp``) that override
+    # ``__init__`` and do not exercise the dtype-fallback branch. Such
+    # subclasses leave ``_torch_fallback_fn = None`` and rely on the
+    # base class dtype check inline; the instance-level attribute may
+    # never be assigned, so ``forward`` consults the class-level default.
+    _use_torch_fallback = False
 
     def __init__(
         self,
@@ -802,9 +840,24 @@ class BinaryOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        supported = self.kernel_cls.SUPPORTED_DTYPES
-        if supported is not None and dtype not in supported:
-            names = ", ".join(str(dt) for dt in supported)
+        # Two-stage dtype gate:
+        #   1. The kernel may declare its own ``SUPPORTED_DTYPES``; honor
+        #      that as the kernel-path filter.
+        #   2. The op subclass owns ``_TORCH_FALLBACK_DTYPES`` -- dtypes
+        #      that are inside the manifest contract but outside what the
+        #      kernel can compile (e.g. bool / integer for the
+        #      float-only Add / Mul / Maximum kernels). For those, route
+        #      through ``_torch_fallback_fn`` instead.
+        kernel_supported = self.kernel_cls.SUPPORTED_DTYPES
+        is_fallback_dtype = (
+            self._torch_fallback_fn is not None
+            and dtype in self._TORCH_FALLBACK_DTYPES
+        )
+        kernel_supports = (
+            kernel_supported is None or dtype in kernel_supported
+        )
+        if not kernel_supports and not is_fallback_dtype:
+            names = ", ".join(str(dt) for dt in kernel_supported)
             raise ValueError(
                 f"{self._op_name} does not support dtype {dtype}. "
                 f"Supported: [{names}]"
@@ -821,11 +874,19 @@ class BinaryOp(Op):
         self.N_total = prod(out_shape)
         self.a_numel = prod(a_shape)
         self.b_numel = prod(b_shape)
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            self.N_total, dtype, coalesced_shape, a_strides, b_strides,
-            self.a_numel, self.b_numel, strategy=strategy, tune=tune,
-        )
+        # When the manifest dtype is outside kernel support, take the torch
+        # eager fallback path: skip kernel construction (it would raise) and
+        # mark the instance so forward() routes through ``_torch_fallback_fn``.
+        self._use_torch_fallback = is_fallback_dtype
+        if self._use_torch_fallback:
+            self.kernel_map = self.default_kernel_map
+            self.kernel = None
+        else:
+            self.dispatch_kernel(kernel_map)
+            self.kernel = self.kernel_map[self._op_name](
+                self.N_total, dtype, coalesced_shape, a_strides, b_strides,
+                self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+            )
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -848,16 +909,27 @@ class BinaryOp(Op):
         other: torch.Tensor,
     ) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
+        if self._use_torch_fallback:
+            # Manifest-declared dtype outside kernel support: defer to the
+            # registered torch reference so the manifest contract is honored
+            # without a kernel rewrite. Broadcasting is handled by torch.
+            return type(self)._torch_fallback_fn(input, other)
         result = self.kernel(
             input.contiguous().view(-1), other.contiguous().view(-1),
         ).reshape(self.out_shape)
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(
+    def _validate_binary_inputs(
         self,
         input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
         other: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> None:
+        """Validate device / dtype / numel against the op's declared contract.
+
+        Shared by the kernel path and any subclass torch fallback (e.g.
+        ``torch.add(..., alpha=2)``) so that error types and messages stay
+        consistent regardless of which branch ``forward`` takes.
+        """
         if not input.is_cuda or not other.is_cuda:
             raise ValueError("Inputs must be CUDA tensors")
         if input.dtype != self.dtype:
@@ -872,8 +944,19 @@ class BinaryOp(Op):
             raise ValueError(
                 f"Expected other to have {self.b_numel} elements, got {other.numel()}"
             )
+
+    def forward(
+        self,
+        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        other: torch.Tensor,
+    ) -> torch.Tensor:
+        self._validate_binary_inputs(input, other)
         wrapped = type(self)._wrapped
-        if wrapped is not None:
+        # ``register_fake`` declares the kernel output dtype, so the
+        # ``_wrapped`` path cannot model the torch fallback faithfully.
+        # Route fallback dtypes through eager so the result dtype matches
+        # the manifest contract.
+        if wrapped is not None and not self._use_torch_fallback:
             return wrapped(input, other, self._out_shape_list, self._instance_key)
         return self._eager_forward(input, other)
 
@@ -1081,20 +1164,21 @@ class _AlphaScaledBinaryOp(BinaryOp):
 
     PyTorch ``torch.add(input, other, alpha=1)`` and ``torch.sub(input,
     other, alpha=1)`` scale ``other`` by ``alpha`` before the binary op.
-    The kernel does not bake ``alpha`` in, so ``alpha != 1`` is enforced
-    at the op layer by pre-scaling ``other`` before kernel dispatch.
-    Only the manifest-declared default (``alpha=1``) is wired through the
-    fast kernel path; non-default values fall through to a torch eager
-    op so the manifest contract is honored without a kernel rewrite.
+    The kernel does not bake ``alpha`` in: only the manifest-declared
+    default (``alpha=1``) is wired through the fast kernel path.
+    Non-default ``alpha`` values are routed through a ``torch.add`` /
+    ``torch.sub`` eager fallback after the same input validation as the
+    kernel path runs, so the manifest contract is honored without a
+    kernel rewrite. ``alpha`` is keyword-only to keep the existing
+    positional ``(a_shape, b_shape, dtype, strategy, ...)`` call pattern.
     """
-
-    _alpha_default: int | float = 1
 
     def __init__(
         self,
         a_shape: tuple,
         b_shape: tuple,
         dtype: torch.dtype,
+        *,
         alpha: int | float = 1,
         strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -1111,18 +1195,22 @@ class AddFwdOp(_AlphaScaledBinaryOp):
     """Element-wise addition with broadcast: y = input + alpha * other.
 
     Conforms to ``torch.add(input, other, *, alpha=1)``. ``alpha`` defaults
-    to ``1``; non-default values fall through to a torch fallback so the
-    manifest contract is honored end-to-end.
+    to ``1``; non-default values run through a ``torch.add`` eager
+    fallback after the standard ``BinaryOp`` device / dtype / numel
+    checks so the manifest contract is honored end-to-end.
     """
 
     _op_name = "add"
     kernel_cls = AddFwdKernel
+    _torch_fallback_fn = staticmethod(torch.add)
+    _TORCH_FALLBACK_DTYPES = _BINARY_FALLBACK_INT_DTYPES
 
     def forward(
         self,
         input: torch.Tensor,  # noqa: A002
         other: torch.Tensor,
     ) -> torch.Tensor:
+        self._validate_binary_inputs(input, other)
         if self.alpha != 1:
             return torch.add(input, other, alpha=self.alpha)
         return super().forward(input, other)
@@ -1131,17 +1219,22 @@ class AddFwdOp(_AlphaScaledBinaryOp):
 class SubFwdOp(_AlphaScaledBinaryOp):
     """Element-wise subtraction with broadcast: y = input - alpha * other.
 
-    Conforms to ``torch.sub(input, other, *, alpha=1)``.
+    Conforms to ``torch.sub(input, other, *, alpha=1)``. Non-default
+    ``alpha`` values run through a ``torch.sub`` eager fallback after the
+    standard ``BinaryOp`` device / dtype / numel checks.
     """
 
     _op_name = "sub"
     kernel_cls = SubFwdKernel
+    _torch_fallback_fn = staticmethod(torch.sub)
+    _TORCH_FALLBACK_DTYPES = _BINARY_FALLBACK_INT_DTYPES_NO_BOOL
 
     def forward(
         self,
         input: torch.Tensor,  # noqa: A002
         other: torch.Tensor,
     ) -> torch.Tensor:
+        self._validate_binary_inputs(input, other)
         if self.alpha != 1:
             return torch.sub(input, other, alpha=self.alpha)
         return super().forward(input, other)
@@ -1152,6 +1245,8 @@ class MulFwdOp(BinaryOp):
 
     _op_name = "mul"
     kernel_cls = MulFwdKernel
+    _torch_fallback_fn = staticmethod(torch.mul)
+    _TORCH_FALLBACK_DTYPES = _BINARY_FALLBACK_INT_DTYPES
 
 
 class DivFwdOp(BinaryOp):
@@ -1160,8 +1255,10 @@ class DivFwdOp(BinaryOp):
     Conforms to ``torch.div(input, other, *, rounding_mode=None)``.
     ``rounding_mode`` accepts ``None`` (true division), ``"trunc"``
     (truncation toward zero), or ``"floor"`` (floor division). Non-None
-    rounding modes route through a torch fallback rather than a kernel
-    rewrite, honoring the manifest contract end-to-end.
+    rounding modes run through a ``torch.div`` eager fallback after the
+    standard ``BinaryOp`` device / dtype / numel checks. ``rounding_mode``
+    is keyword-only to preserve the existing positional
+    ``(a_shape, b_shape, dtype, strategy, ...)`` call pattern.
     """
 
     _op_name = "div"
@@ -1172,6 +1269,7 @@ class DivFwdOp(BinaryOp):
         a_shape: tuple,
         b_shape: tuple,
         dtype: torch.dtype,
+        *,
         rounding_mode: Optional[str] = None,
         strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -1193,6 +1291,7 @@ class DivFwdOp(BinaryOp):
         input: torch.Tensor,  # noqa: A002
         other: torch.Tensor,
     ) -> torch.Tensor:
+        self._validate_binary_inputs(input, other)
         if self.rounding_mode is not None:
             return torch.div(input, other, rounding_mode=self.rounding_mode)
         return super().forward(input, other)
@@ -1319,6 +1418,8 @@ class MaximumFwdOp(BinaryOp):
 
     _op_name = "maximum"
     kernel_cls = MaximumFwdKernel
+    _torch_fallback_fn = staticmethod(torch.maximum)
+    _TORCH_FALLBACK_DTYPES = _BINARY_FALLBACK_INT_DTYPES
 
 
 class MinimumFwdOp(BinaryOp):
@@ -1326,6 +1427,8 @@ class MinimumFwdOp(BinaryOp):
 
     _op_name = "minimum"
     kernel_cls = MinimumFwdKernel
+    _torch_fallback_fn = staticmethod(torch.minimum)
+    _TORCH_FALLBACK_DTYPES = _BINARY_FALLBACK_INT_DTYPES
 
 
 # ---------------------------------------------------------------------------
@@ -1339,11 +1442,14 @@ class MinimumFwdOp(BinaryOp):
 class _BoolOutputBinaryOp(BinaryOp):
     """Mixin that casts kernel int8 output to torch.bool.
 
-    _eager_forward casts the int8 kernel output to bool.  In the torch.compile
-    path, register_fake already declares torch.bool as the output dtype, and
-    the actual execution goes through _eager_forward which handles the cast.
-    No forward override is needed because BinaryOp.forward delegates to
-    _eager_forward (eager) or _wrapped (compile, where register_fake is correct).
+    ``_eager_forward`` casts the int8 kernel output to bool.  In the
+    ``torch.compile`` path, ``register_fake`` already declares
+    ``torch.bool`` as the output dtype, and the actual execution goes
+    through ``_eager_forward`` which handles the cast.  When the manifest
+    dtype falls outside the underlying float kernel's support set, the
+    base ``BinaryOp._eager_forward`` returns the torch reference's
+    output directly (already ``torch.bool``), so the post-cast in this
+    branch is a no-op rather than a double-cast.
     """
 
     def _eager_forward(
@@ -1360,6 +1466,8 @@ class EqFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "eq"
     kernel_cls = EqFwdKernel
+    _torch_fallback_fn = staticmethod(torch.eq)
+    _TORCH_FALLBACK_DTYPES = _BINARY_FALLBACK_INT_DTYPES
 
 
 class NeFwdOp(_BoolOutputBinaryOp):
@@ -1367,6 +1475,8 @@ class NeFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "ne"
     kernel_cls = NeFwdKernel
+    _torch_fallback_fn = staticmethod(torch.ne)
+    _TORCH_FALLBACK_DTYPES = _BINARY_FALLBACK_INT_DTYPES
 
 
 class GtFwdOp(_BoolOutputBinaryOp):
@@ -1374,6 +1484,8 @@ class GtFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "gt"
     kernel_cls = GtFwdKernel
+    _torch_fallback_fn = staticmethod(torch.gt)
+    _TORCH_FALLBACK_DTYPES = _BINARY_FALLBACK_INT_DTYPES
 
 
 class LtFwdOp(_BoolOutputBinaryOp):
@@ -1381,6 +1493,8 @@ class LtFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "lt"
     kernel_cls = LtFwdKernel
+    _torch_fallback_fn = staticmethod(torch.lt)
+    _TORCH_FALLBACK_DTYPES = _BINARY_FALLBACK_INT_DTYPES
 
 
 class GeFwdOp(_BoolOutputBinaryOp):
@@ -1388,6 +1502,8 @@ class GeFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "ge"
     kernel_cls = GeFwdKernel
+    _torch_fallback_fn = staticmethod(torch.ge)
+    _TORCH_FALLBACK_DTYPES = _BINARY_FALLBACK_INT_DTYPES
 
 
 class LeFwdOp(_BoolOutputBinaryOp):
@@ -1395,6 +1511,8 @@ class LeFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "le"
     kernel_cls = LeFwdKernel
+    _torch_fallback_fn = staticmethod(torch.le)
+    _TORCH_FALLBACK_DTYPES = _BINARY_FALLBACK_INT_DTYPES
 
 
 # ---------------------------------------------------------------------------
@@ -2349,6 +2467,20 @@ class PreluFwdOp(Op):
             raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
         if input.numel() != self.N_total:
             raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
+        # ``weight`` is part of the manifest contract; validate device,
+        # dtype, and length so a malformed weight fails fast at the op
+        # boundary instead of corrupting the kernel.
+        if not weight.is_cuda:
+            raise ValueError("Weight must be a CUDA tensor")
+        if weight.dtype != self.dtype:
+            raise ValueError(
+                f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
+            )
+        if weight.numel() != self.num_channels:
+            raise ValueError(
+                f"Expected weight to have {self.num_channels} elements, "
+                f"got {weight.numel()}"
+            )
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(input, weight, self._instance_key)

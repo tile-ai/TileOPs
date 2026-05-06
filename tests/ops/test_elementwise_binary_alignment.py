@@ -4,7 +4,7 @@ Covers the 24 ops in ``tileops/manifest/elementwise_binary.yaml``:
 
 - ``PreluFwdOp`` (channel-broadcast PReLU)
 - ``MaskedFillFwdOp`` / ``MaskedFillScalarFwdOp``
-- 9 binary arithmetic ops (Add/Sub/Mul/Div/Remainder/Pow/FloorDivide/Lerp/
+- 10 binary arithmetic ops (Add/Sub/Mul/Div/Remainder/Pow/FloorDivide/Lerp/
   Maximum/Minimum)
 - 6 binary comparison ops (Eq/Ne/Gt/Lt/Ge/Le)
 - 2 binary logical ops (LogicalAnd/LogicalOr)
@@ -366,6 +366,226 @@ def test_div_rounding_mode_param_plumbed() -> None:
     assert "rounding_mode" in keys, (
         f"DivFwdOp missing 'rounding_mode'; got {keys}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Functional correctness for non-default alpha / rounding_mode
+# ---------------------------------------------------------------------------
+#
+# The Op layer routes non-default ``alpha`` / ``rounding_mode`` through a
+# torch eager fallback (the kernel does not bake these in). These tests
+# guard the runtime semantics on the fallback path so the manifest
+# contract for non-default values is honored end-to-end, not just at the
+# signature level.
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_add_alpha_nondefault_matches_torch() -> None:
+    """``AddFwdOp(alpha=2)`` must agree with ``torch.add(..., alpha=2)``."""
+    from tileops.ops.elementwise import AddFwdOp
+
+    a = torch.randn(8, dtype=torch.float16, device="cuda")
+    b = torch.randn(8, dtype=torch.float16, device="cuda")
+    op = AddFwdOp(a_shape=(8,), b_shape=(8,), dtype=torch.float16, alpha=2)
+    out = op(a, b)
+    ref = torch.add(a, b, alpha=2)
+    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_sub_alpha_nondefault_matches_torch() -> None:
+    """``SubFwdOp(alpha=3)`` must agree with ``torch.sub(..., alpha=3)``."""
+    from tileops.ops.elementwise import SubFwdOp
+
+    a = torch.randn(8, dtype=torch.float16, device="cuda")
+    b = torch.randn(8, dtype=torch.float16, device="cuda")
+    op = SubFwdOp(a_shape=(8,), b_shape=(8,), dtype=torch.float16, alpha=3)
+    out = op(a, b)
+    ref = torch.sub(a, b, alpha=3)
+    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("rounding_mode", ["floor", "trunc"])
+def test_div_rounding_mode_nondefault_matches_torch(rounding_mode: str) -> None:
+    """``DivFwdOp(rounding_mode=...)`` must agree with ``torch.div``."""
+    from tileops.ops.elementwise import DivFwdOp
+
+    a = torch.randn(8, dtype=torch.float32, device="cuda") * 4.0
+    b = torch.rand(8, dtype=torch.float32, device="cuda") + 0.5
+    op = DivFwdOp(
+        a_shape=(8,), b_shape=(8,), dtype=torch.float32,
+        rounding_mode=rounding_mode,
+    )
+    out = op(a, b)
+    ref = torch.div(a, b, rounding_mode=rounding_mode)
+    torch.testing.assert_close(out, ref)
+
+
+@pytest.mark.smoke
+def test_alpha_and_rounding_mode_are_keyword_only() -> None:
+    """``alpha`` / ``rounding_mode`` must be keyword-only.
+
+    Inserting them positionally before ``strategy/kernel_map/tune`` would
+    silently re-bind any existing positional ``strategy`` arguments to
+    the new param.
+    """
+    from tileops.ops.elementwise import AddFwdOp, DivFwdOp, SubFwdOp
+
+    for cls, name in [(AddFwdOp, "alpha"), (SubFwdOp, "alpha"), (DivFwdOp, "rounding_mode")]:
+        sig = inspect.signature(cls.__init__)
+        param = sig.parameters[name]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY, (
+            f"{cls.__name__}.__init__({name}) must be keyword-only, "
+            f"got kind={param.kind}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Manifest dtype-union coverage
+# ---------------------------------------------------------------------------
+#
+# The manifest declares the full
+# ``bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 |
+# float32`` dtype union for arithmetic Add/Sub/Mul/Maximum/Minimum and
+# every comparison op (Eq/Ne/Gt/Lt/Ge/Le). The underlying TileLang
+# kernel only supports float dtypes, so the op layer routes integer /
+# bool inputs through a torch eager fallback. These tests:
+#
+#   1. ``test_*_construction_*`` -- construction must succeed for every
+#      manifest dtype (was previously ``ValueError`` for non-float).
+#   2. ``test_*_int_fallback_matches_torch`` -- the fallback path must
+#      match ``torch`` runtime semantics.
+
+_BINARY_FULL_UNION = [
+    torch.bool,
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+    torch.float16,
+    torch.bfloat16,
+    torch.float32,
+]
+
+# Bool is excluded for ops where torch itself rejects bool-in-bool-out
+# arithmetic (sub does not accept bool).
+_ARITH_DTYPES_NO_BOOL = [d for d in _BINARY_FULL_UNION if d is not torch.bool]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_name", ["AddFwdOp", "MulFwdOp", "MaximumFwdOp", "MinimumFwdOp"],
+)
+@pytest.mark.parametrize("dtype", _BINARY_FULL_UNION)
+def test_arith_construction_accepts_manifest_dtype_union(
+    op_name: str, dtype: torch.dtype,
+) -> None:
+    """Add/Mul/Maximum/Minimum must construct for every manifest dtype."""
+    import tileops.ops.elementwise as mod
+
+    cls = getattr(mod, op_name)
+    op = cls(a_shape=(8,), b_shape=(8,), dtype=dtype)
+    assert op.dtype is dtype
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", _ARITH_DTYPES_NO_BOOL)
+def test_sub_construction_accepts_manifest_dtype_union(
+    dtype: torch.dtype,
+) -> None:
+    """SubFwdOp must construct for every manifest dtype except bool."""
+    from tileops.ops.elementwise import SubFwdOp
+
+    op = SubFwdOp(a_shape=(8,), b_shape=(8,), dtype=dtype)
+    assert op.dtype is dtype
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_name",
+    ["EqFwdOp", "NeFwdOp", "GtFwdOp", "LtFwdOp", "GeFwdOp", "LeFwdOp"],
+)
+@pytest.mark.parametrize("dtype", _BINARY_FULL_UNION)
+def test_compare_construction_accepts_manifest_dtype_union(
+    op_name: str, dtype: torch.dtype,
+) -> None:
+    """Comparison ops must construct for every manifest dtype."""
+    import tileops.ops.elementwise as mod
+
+    cls = getattr(mod, op_name)
+    op = cls(a_shape=(8,), b_shape=(8,), dtype=dtype)
+    assert op.dtype is dtype
+
+
+# (op_name, torch ref) for arithmetic ops that share the full union.
+_ARITH_INT_FALLBACK = [
+    ("AddFwdOp", lambda a, b: a + b),
+    ("MulFwdOp", lambda a, b: a * b),
+    ("MaximumFwdOp", torch.maximum),
+    ("MinimumFwdOp", torch.minimum),
+]
+
+_COMPARE_INT_FALLBACK = [
+    ("EqFwdOp", torch.eq),
+    ("NeFwdOp", torch.ne),
+    ("GtFwdOp", torch.gt),
+    ("LtFwdOp", torch.lt),
+    ("GeFwdOp", torch.ge),
+    ("LeFwdOp", torch.le),
+]
+
+_INT_DTYPES = [
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("op_name, ref_fn", _ARITH_INT_FALLBACK)
+@pytest.mark.parametrize("dtype", _INT_DTYPES)
+def test_arith_int_fallback_matches_torch(
+    op_name: str, ref_fn, dtype: torch.dtype,
+) -> None:
+    """Integer arithmetic ops must match torch via the op-layer fallback."""
+    import tileops.ops.elementwise as mod
+
+    cls = getattr(mod, op_name)
+    a = torch.randint(0, 8, (8,), dtype=dtype, device="cuda")
+    b = torch.randint(1, 8, (8,), dtype=dtype, device="cuda")
+    op = cls(a_shape=(8,), b_shape=(8,), dtype=dtype)
+    out = op(a, b)
+    ref = ref_fn(a, b)
+    assert out.dtype == ref.dtype
+    torch.testing.assert_close(out, ref)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("op_name, ref_fn", _COMPARE_INT_FALLBACK)
+@pytest.mark.parametrize("dtype", _INT_DTYPES)
+def test_compare_int_fallback_matches_torch(
+    op_name: str, ref_fn, dtype: torch.dtype,
+) -> None:
+    """Integer comparison ops must match torch via the op-layer fallback."""
+    import tileops.ops.elementwise as mod
+
+    cls = getattr(mod, op_name)
+    a = torch.randint(0, 4, (8,), dtype=dtype, device="cuda")
+    b = torch.randint(0, 4, (8,), dtype=dtype, device="cuda")
+    op = cls(a_shape=(8,), b_shape=(8,), dtype=dtype)
+    out = op(a, b)
+    ref = ref_fn(a, b)
+    assert out.dtype == torch.bool
+    torch.testing.assert_close(out, ref)
 
 
 if __name__ == "__main__":
