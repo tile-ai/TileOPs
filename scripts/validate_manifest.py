@@ -181,18 +181,25 @@ def _check_shape_rule_callables(
             f"{rule_str!r} ({exc})"
         )
         return errors
+    # _SHAPE_RULE_BUILTINS is defined later in the module; the forward
+    # reference is intentional. The dict resolves at call time (validation
+    # runs after import), and keeping its single source of truth alongside
+    # the helper callables it maps to avoids splitting the registry.
+    seen_unknown: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
         if not isinstance(func, ast.Name):
             continue
-        if func.id not in _SHAPE_RULE_BUILTINS:
-            errors.append(
-                f"[schema] {op_name}: shape_rules[{index}] calls unknown "
-                f"helper {func.id!r}; allowed callables are "
-                f"{sorted(_SHAPE_RULE_BUILTINS)}"
-            )
+        if func.id in _SHAPE_RULE_BUILTINS or func.id in seen_unknown:
+            continue
+        seen_unknown.add(func.id)
+        errors.append(
+            f"[schema] {op_name}: shape_rules[{index}] calls unknown "
+            f"helper {func.id!r}; allowed callables are "
+            f"{', '.join(sorted(_SHAPE_RULE_BUILTINS))}"
+        )
     return errors
 
 
@@ -1585,6 +1592,10 @@ _SHAPE_RULE_BUILTIN_PAIRS = [
     ("len", len),
     ("isinstance", isinstance),
     ("int", int),
+    # ``float`` is part of the rule language so manifest rules can spell
+    # sentinel values like ``ord == float('inf')``. Adding new callables
+    # here widens the L2 eval scope; do so only when an existing manifest
+    # rule needs it and the addition has obvious bounded semantics.
     ("float", float),
     ("tuple", tuple),
     ("list", list),

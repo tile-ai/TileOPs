@@ -487,6 +487,24 @@ class TestSchema:
             for e in errors
         ), f"Expected schema syntax error, got: {errors}"
 
+    def test_shape_rule_unknown_callable_dedup_per_rule(self, validator):
+        """Repeated misspellings in one rule emit a single [schema] error per name."""
+        entry = _make_entry()
+        entry["signature"]["shape_rules"] = [
+            "totally_unknown_helper(x.shape) and totally_unknown_helper(x.shape)"
+        ]
+        errors = validator.check_l0("test_op", entry)
+        matching = [
+            e for e in errors
+            if "[schema]" in e
+            and "shape_rules[0]" in e
+            and "totally_unknown_helper" in e
+        ]
+        assert len(matching) == 1, (
+            f"Expected one schema error for the duplicated unknown callable, "
+            f"got {len(matching)}: {matching}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # variant_of: cross-entry consistency (R16)
