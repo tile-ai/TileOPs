@@ -54,7 +54,14 @@ LAST_REVIEW_COMMENT_ID_PREV=$(jq -r '.last_processed_review_comment_id' "$META")
 CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
 MAX_IDLE=20
 
-PR_JSON=$(gh pr view "$PR" --json state,headRefOid,isDraft,baseRepository 2>/dev/null) \
+# Pin `gh pr view` to the repo recorded in meta.json. Preflight already
+# stamped this to the canonical base repo; without `--repo`, gh defaults
+# to the worktree's origin remote, which in a fork checkout points at
+# the contributor's fork and either fails or fetches the wrong PR.
+META_REPO=$(jq -r '.repo // empty' "$META")
+[[ -n "$META_REPO" ]] \
+  || { echo "round-pre: meta.json missing .repo — re-run preflight.sh" >&2; exit 1; }
+PR_JSON=$(gh pr view "$PR" --repo "$META_REPO" --json state,headRefOid,isDraft,baseRepository 2>/dev/null) \
   || { echo "round-pre: gh pr view failed" >&2; exit 1; }
 PR_STATE=$(echo "$PR_JSON" | jq -r .state)
 HEAD_SHA=$(echo "$PR_JSON" | jq -r .headRefOid)
@@ -226,6 +233,13 @@ if [[ "$ACTION" == "continue" ]]; then
   # unknown bot-like logins are recorded for human triage. The classifier
   # consumes the unresolved-threads snapshot directly so the pagination
   # contract above is the single source of truth.
+  # Contract: $SNAP_PREFIX.auto-resolve.json is ALWAYS present after
+  # round-pre completes. Downstream consumers may rely on the file
+  # existing with the standard shape `{resolve, unknown_bot_like, skip}`.
+  # On classifier-missing or classifier-crash we still emit a valid empty
+  # plan plus an `error` field so the failure is visible without breaking
+  # the consumer's jq pipeline.
+  AR_OUT="$SNAP_PREFIX.auto-resolve.json"
   if [[ -x "$SKILL_DIR/auto-resolve-stale.sh" && -f "$SKILL_DIR/known-bots.json" ]]; then
     AR_INPUT="$SNAP_PREFIX.auto-resolve-input.json"
     jq -n --arg sha "$HEAD_SHA" \
@@ -234,18 +248,23 @@ if [[ "$ACTION" == "continue" ]]; then
     # Write to a tmpfile and only mv into place on success — guarantees
     # downstream readers never consume a half-written / empty file when
     # the classifier crashes mid-emit.
-    AR_TMP="$SNAP_PREFIX.auto-resolve.json.tmp"
+    AR_TMP="$AR_OUT.tmp"
     if "$SKILL_DIR/auto-resolve-stale.sh" \
         --threads "$AR_INPUT" \
         --bots "$SKILL_DIR/known-bots.json" \
         --run-dir "$RUN_DIR" \
         --round "$N" \
         > "$AR_TMP"; then
-      mv "$AR_TMP" "$SNAP_PREFIX.auto-resolve.json"
+      mv "$AR_TMP" "$AR_OUT"
     else
       echo "round-pre: auto-resolve-stale exited non-zero" >&2
       rm -f "$AR_TMP"
+      jq -n --arg err "auto-resolve-stale exited non-zero" \
+        '{resolve:[], unknown_bot_like:[], skip:[], error:$err}' > "$AR_OUT"
     fi
+  else
+    jq -n --arg err "auto-resolve-stale.sh or known-bots.json missing" \
+      '{resolve:[], unknown_bot_like:[], skip:[], error:$err}' > "$AR_OUT"
   fi
 
   gh pr checks "$PR" --repo "$REPO" --json name,state,conclusion \

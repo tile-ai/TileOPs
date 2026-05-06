@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # Fixture tests for auto-resolve-stale.sh.
 #
-# Drives the classifier in --dry-run against fixtures under fixtures/
-# and asserts the emitted action plan + side-effect artifacts. On a
-# mismatch each case prints the expected and actual JSON strings (or
-# the offending artifact's contents) so the failing comparison can be
-# read off the test log directly.
+# Two suites in one harness:
+#   - Dry-run classification (cases 1-5, 8): drive the classifier with
+#     --dry-run against fixtures under fixtures/ and assert the emitted
+#     action plan + side-effect artifacts.
+#   - Live-mode execution gating (cases 6-7): drive the classifier WITHOUT
+#     --dry-run against a mocked `gh` on PATH, asserting that a failed
+#     reply mutation does not orphan-resolve the thread (case 6) and that
+#     the happy path resolves only after a successful reply (case 7).
+#
+# On a mismatch each case prints the expected and actual JSON strings
+# (or the offending artifact's contents) so the failing comparison can
+# be read off the test log directly.
 #
 # Exit 0: all cases pass.
 # Exit 1: any case fails.

@@ -169,8 +169,12 @@ fi
 
 # Annotate the plan with execution outcomes so the caller (and the test
 # harness) can distinguish "resolved" from "reply failed, left open".
+# Use `jq -n '$ARGS.positional' --args …` to lift each shell array into
+# a JSON string array in one shot — the `${arr[@]+"${arr[@]}"}` guard is
+# needed under `set -u` so an empty array does not trip "unbound
+# variable".
 printf '%s' "$PLAN" | jq \
-  --argjson resolved "$(printf '%s\n' "${RESOLVED_IDS[@]:-}" | jq -R . | jq -s 'map(select(length>0))')" \
-  --argjson reply_failed "$(printf '%s\n' "${REPLY_FAILED_IDS[@]:-}" | jq -R . | jq -s 'map(select(length>0))')" \
-  --argjson resolve_failed "$(printf '%s\n' "${RESOLVE_FAILED_IDS[@]:-}" | jq -R . | jq -s 'map(select(length>0))')" \
+  --argjson resolved       "$(jq -n '$ARGS.positional' --args ${RESOLVED_IDS[@]+"${RESOLVED_IDS[@]}"})" \
+  --argjson reply_failed   "$(jq -n '$ARGS.positional' --args ${REPLY_FAILED_IDS[@]+"${REPLY_FAILED_IDS[@]}"})" \
+  --argjson resolve_failed "$(jq -n '$ARGS.positional' --args ${RESOLVE_FAILED_IDS[@]+"${RESOLVE_FAILED_IDS[@]}"})" \
   '. + {executed: {resolved: $resolved, reply_failed: $reply_failed, resolve_failed: $resolve_failed}}'
