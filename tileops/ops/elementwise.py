@@ -1224,11 +1224,19 @@ class _ParametricActivationOp(Op, _InplaceMixin):
     refactor). Leaves must call ``self._init_common(...)`` after
     populating their op-specific scalar attributes.
 
-    The optional ``inplace`` param is honored by ``forward``: leaves
-    that do not declare ``inplace`` must set ``self.inplace = False``
-    via ``_init_common``'s default so the dispatch logic remains
-    well-defined.
+    The optional ``inplace`` param is honored by ``forward`` only on
+    leaves whose manifest entry declares ``inplace``. Leaves that omit
+    ``inplace`` from their manifest signature must set
+    ``_SUPPORTS_INPLACE = False`` so ``forward`` ignores any
+    post-construction mutation of ``self.inplace`` and behavior matches
+    the manifest contract.
     """
+
+    # Default: leaves that expose ``inplace`` in their constructor honor
+    # it. Set False on a leaf whose manifest signature does not declare
+    # ``inplace`` (e.g. ``softplus``) so ``forward`` short-circuits the
+    # mutate-back path even if a caller flips ``op.inplace = True``.
+    _SUPPORTS_INPLACE: bool = True
 
     def _init_common(
         self,
@@ -1278,12 +1286,17 @@ class _ParametricActivationOp(Op, _InplaceMixin):
         if input.numel() != self.N_total:
             raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
         wrapped = type(self)._wrapped
+        # Leaves that do not declare ``inplace`` in their manifest entry
+        # set ``_SUPPORTS_INPLACE = False``; force the inplace flag off
+        # so ``forward`` ignores any post-construction mutation of
+        # ``self.inplace`` and matches the manifest signature.
+        inplace = self.inplace and self._SUPPORTS_INPLACE
         # inplace=True bypasses the torch.compile route; the custom_op
         # is registered with mutates_args=() and would mis-trace.
-        if wrapped is not None and not self.inplace:
+        if wrapped is not None and not inplace:
             return wrapped(input, self._instance_key)
         result = self._eager_forward(input)
-        return self._apply_inplace(self.inplace, input, result)
+        return self._apply_inplace(inplace, input, result)
 
 
 class ReluFwdOp(_ParamFreeActivationOp):
@@ -2356,6 +2369,12 @@ class SoftplusFwdOp(_ParametricActivationOp):
 
     _op_name = "softplus"
     _wrapped = None
+    # Softplus's manifest signature does not declare ``inplace``; opt
+    # out of the parametric base's inplace path so a caller flipping
+    # ``op.inplace = True`` post-construction cannot change behavior.
+    _SUPPORTS_INPLACE = False
+    # Manifest: flops = "7 * N" (mul + exp + add + log + div + compare + select).
+    FLOPS_PER_ELEM = 7
 
     def __init__(
         self,

@@ -293,6 +293,45 @@ def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_softplus_ignores_post_construction_inplace() -> None:
+    """Softplus must not honor ``op.inplace = True`` set after construction.
+
+    Softplus's manifest signature does not declare ``inplace``; the
+    parametric activation base shares an inplace path with siblings
+    (LeakyReLU/ELU/Hardtanh) that *do* declare it, so the leaf opts out
+    via ``_SUPPORTS_INPLACE = False``. Verify the opt-out: flipping
+    ``self.inplace`` post-construction must not change tensor identity
+    or mutate the input in place.
+    """
+    import tileops.ops.elementwise as mod
+
+    n_total = 64
+    dtype = torch.float16
+    op = mod.SoftplusFwdOp(N_total=n_total, dtype=dtype)
+    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x_before = x.clone()
+
+    # Baseline: default ``inplace=False`` returns a fresh tensor.
+    y_default = op(x)
+    assert y_default is not x
+    assert torch.allclose(x, x_before), "default path must not mutate input"
+
+    # Force the flag on; with ``_SUPPORTS_INPLACE = False`` the forward
+    # flow ignores it and behavior matches the default path.
+    op.inplace = True
+    y_forced = op(x)
+    assert y_forced is not x, (
+        "SoftplusFwdOp.inplace = True must not alias the input "
+        "(manifest does not declare inplace)"
+    )
+    assert torch.allclose(x, x_before), (
+        "SoftplusFwdOp.inplace = True must not mutate the input "
+        "(manifest does not declare inplace)"
+    )
+
+
+@pytest.mark.smoke
 def test_apply_inplace_numel_mismatch_raises_value_error() -> None:
     """``_InplaceMixin._apply_inplace`` rejects numel mismatches with a ValueError.
 
