@@ -441,6 +441,52 @@ class TestSchema:
         errors = validator.check_l0("test_op", entry)
         assert errors == [], f"Unexpected schema errors: {errors}"
 
+    def test_shape_rule_unknown_callable_rejected_at_l0(self, validator):
+        """Unknown callable name in a shape_rule fails at L0 with a [schema] error."""
+        entry = _make_entry()
+        entry["signature"]["shape_rules"] = ["totally_unknown_helper(x.shape) == 0"]
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "[schema]" in e
+            and "shape_rules[0]" in e
+            and "totally_unknown_helper" in e
+            for e in errors
+        ), f"Expected schema error for unknown callable, got: {errors}"
+
+    def test_shape_rule_known_callables_pass_l0(self, validator):
+        """Rules using only registered _SHAPE_RULE_BUILTINS callables pass L0."""
+        entry = _make_entry(
+            inputs={"x": {"dtype": "float16"}, "y": {"dtype": "float16"}},
+        )
+        entry["signature"]["shape_rules"] = [
+            "len(x.shape) == 2",
+            "broadcast_shapes(x.shape, y.shape) == x.shape",
+            "all(d > 0 for d in x.shape)",
+        ]
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_shape_rule_attribute_call_passes_l0(self, validator):
+        """Method/attribute calls (e.g. ``x.foo(...)``) are out of scope and pass L0."""
+        entry = _make_entry()
+        entry["signature"]["shape_rules"] = [
+            "x.shape.count(1) == 0",
+        ]
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+    def test_shape_rule_syntax_error_rejected_at_l0(self, validator):
+        """A SyntaxError in a shape_rule surfaces as a [schema] L0 error."""
+        entry = _make_entry()
+        entry["signature"]["shape_rules"] = ["x.shape == ("]
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "[schema]" in e
+            and "shape_rules[0]" in e
+            and "syntax" in e.lower()
+            for e in errors
+        ), f"Expected schema syntax error, got: {errors}"
+
 
 # ---------------------------------------------------------------------------
 # variant_of: cross-entry consistency (R16)
