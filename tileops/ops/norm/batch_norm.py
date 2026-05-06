@@ -298,7 +298,7 @@ class BatchNormBwdOp(Op):
 
 
 # ---------------------------------------------------------------------------
-# torch.compile registration -- BatchNormBwdOp
+# torch.compile registration -- BatchNormFwdOp / BatchNormBwdOp
 # ---------------------------------------------------------------------------
 
 _OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
@@ -309,6 +309,96 @@ def _register_instance(op_instance: object) -> int:
     key = id(op_instance)
     _OP_REGISTRY[key] = op_instance
     return key
+
+
+@torch.library.custom_op(
+    "top::norm_batch_norm_fwd",
+    mutates_args=("running_mean", "running_var"),
+)
+def _batch_norm_fwd_wrapped(
+    x: torch.Tensor,
+    running_mean: torch.Tensor,
+    running_var: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    training: bool,
+    instance_key: int,
+) -> torch.Tensor:
+    instance = _OP_REGISTRY[instance_key]
+    return instance._eager_forward(
+        x, running_mean, running_var, weight, bias, training=training)
+
+
+@_batch_norm_fwd_wrapped.register_fake
+def _batch_norm_fwd_fake(
+    x: torch.Tensor,
+    running_mean: torch.Tensor,
+    running_var: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    training: bool,
+    instance_key: int,
+) -> torch.Tensor:
+    return torch.empty_like(x)
+
+
+BatchNormFwdOp._wrapped = _batch_norm_fwd_wrapped
+
+
+def _batchnorm_fwd_eager_forward(
+    self,
+    x: torch.Tensor,
+    running_mean: torch.Tensor,
+    running_var: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    training: Optional[bool] = None,
+) -> torch.Tensor:
+    """Direct kernel call (no torch.compile wrapping)."""
+    train_flag = self.training if training is None else training
+    self._validate_inputs(x)
+    x_cl, orig_shape = self._prepare(x)
+    if train_flag:
+        y_cl, _mean, _rstd = self.train_kernel(
+            x_cl, weight.float(), bias.float(),
+            running_mean, running_var)
+    else:
+        y_cl = self.infer_kernel(
+            x_cl, weight.float(), bias.float(),
+            running_mean, running_var)
+    return _restore_shape(y_cl, orig_shape)
+
+
+BatchNormFwdOp._eager_forward = _batchnorm_fwd_eager_forward
+
+_orig_fwd_init = BatchNormFwdOp.__init__
+
+
+@functools.wraps(_orig_fwd_init)
+def _patched_fwd_init(self, *args, **kwargs):
+    _orig_fwd_init(self, *args, **kwargs)
+    self._instance_key = _register_instance(self)
+
+
+BatchNormFwdOp.__init__ = _patched_fwd_init
+
+
+def _patched_fwd_forward(
+    self,
+    x: torch.Tensor,
+    running_mean: torch.Tensor,
+    running_var: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    training: Optional[bool] = None,
+) -> torch.Tensor:
+    train_flag = self.training if training is None else training
+    return _batch_norm_fwd_wrapped(
+        x, running_mean, running_var, weight, bias,
+        train_flag, self._instance_key)
+
+
+BatchNormFwdOp.forward = _patched_fwd_forward
 
 
 @torch.library.custom_op("top::batch_norm_bwd", mutates_args=())
