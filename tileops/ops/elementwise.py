@@ -580,6 +580,7 @@ __all__ = [
     "SoftplusFwdOp",
     "PreluFwdOp",
     "WhereFwdOp",
+    "LerpTensorFwdOp",
     "ClampFwdOp",
     "ClampScalarFwdOp",
     "ClampMinFwdOp",
@@ -2521,6 +2522,11 @@ class WhereFwdOp(Op):
     _op_name = "where"
     _wrapped = None
 
+    # Manifest declares ``input`` / ``other`` dtype as
+    # ``float16 | bfloat16 | float32``. fp8 dtypes are not in the contract;
+    # reject them at the op-layer signature so the impl matches the manifest.
+    _SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
     def __init__(
         self,
         condition: tuple,
@@ -2528,6 +2534,12 @@ class WhereFwdOp(Op):
         other: tuple,
         dtype: torch.dtype,
     ):
+        if dtype not in self._SUPPORTED_DTYPES:
+            names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
+            raise ValueError(
+                f"WhereFwdOp does not support dtype {dtype}. "
+                f"Supported: [{names}]"
+            )
         self.condition_shape = tuple(condition)
         self.input_shape = tuple(input)
         self.other_shape = tuple(other)
@@ -2591,6 +2603,98 @@ class WhereFwdOp(Op):
         if wrapped is not None:
             return wrapped(condition, input, other, self._instance_key)
         return self._eager_forward(condition, input, other)
+
+
+class LerpTensorFwdOp(Op):
+    """Tensor-weight lerp: out = input + weight * (end - input).
+
+    Conforms to the Tensor-weight overload of ``torch.lerp`` —
+    ``torch.lerp(input, end, weight: Tensor)`` where ``weight`` is a
+    Tensor that broadcasts together with ``input`` and ``end`` to the
+    output shape (vs ``LerpFwdOp``'s scalar ``weight`` baked at
+    construction time). The kernel-level implementation is not yet
+    available; the op layer dispatches to ``torch.lerp`` so the manifest
+    L1 contract (signature + broadcast semantics) is honoured at the
+    op boundary while the manifest entry remains ``status: spec-only``.
+
+    Args:
+        input: Shape of the start tensor.
+        end: Shape of the end tensor.
+        weight: Shape of the per-element weight tensor.
+        dtype: Torch dtype for all three operands.
+    """
+
+    _op_name = "lerp_tensor"
+    _wrapped = None
+    # Manifest declares all three operands as ``float16 | bfloat16 | float32``.
+    _SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
+    def __init__(
+        self,
+        input: tuple,  # noqa: A002 — manifest-aligned PyTorch param name
+        end: tuple,
+        weight: tuple,
+        dtype: torch.dtype,
+    ):
+        if dtype not in self._SUPPORTED_DTYPES:
+            names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
+            raise ValueError(
+                f"LerpTensorFwdOp does not support dtype {dtype}. "
+                f"Supported: [{names}]"
+            )
+        self.input_shape = tuple(input)
+        self.end_shape = tuple(end)
+        self.weight_shape = tuple(weight)
+        self.dtype = dtype
+        self.out_shape = tuple(
+            torch.broadcast_shapes(
+                self.input_shape, self.end_shape, self.weight_shape,
+            )
+        )
+        self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        # Manifest entry has no ``kernel_map`` (spec-only). Returning an
+        # empty dict honours the abstract-method contract; callers must
+        # not invoke ``dispatch_kernel`` on this op until a kernel ships.
+        return {}
+
+    def _eager_forward(
+        self,
+        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        end: torch.Tensor,
+        weight: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.lerp(input, end, weight)
+
+    def forward(
+        self,
+        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        end: torch.Tensor,
+        weight: torch.Tensor,
+    ) -> torch.Tensor:
+        if not (input.is_cuda and end.is_cuda and weight.is_cuda):
+            raise ValueError("Inputs must be CUDA tensors")
+        for name, t, expected in [
+            ("input", input, self.input_shape),
+            ("end", end, self.end_shape),
+            ("weight", weight, self.weight_shape),
+        ]:
+            if t.dtype != self.dtype:
+                raise ValueError(
+                    f"Expected {name}.dtype {self.dtype}, got {t.dtype}"
+                )
+            if tuple(t.shape) != expected:
+                raise ValueError(
+                    f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
+                )
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(input, end, weight, self._instance_key)
+        return self._eager_forward(input, end, weight)
 
 
 class _ClampTensorBase(Op):
