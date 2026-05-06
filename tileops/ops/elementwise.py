@@ -1247,8 +1247,8 @@ class AddFwdOp(_AlphaScaledBinaryOp):
         if self.alpha != 1:
             raise NotImplementedError(
                 "AddFwdOp(alpha != 1) is not yet implemented; the current "
-                "kernel only honors alpha == 1. Tracked at "
-                "a follow-up issue tracks the kernel work"
+                "kernel only honors alpha == 1. A follow-up "
+                "issue tracks the kernel work."
             )
         return super().forward(input, other)
 
@@ -1273,8 +1273,8 @@ class SubFwdOp(_AlphaScaledBinaryOp):
         if self.alpha != 1:
             raise NotImplementedError(
                 "SubFwdOp(alpha != 1) is not yet implemented; the current "
-                "kernel only honors alpha == 1. Tracked at "
-                "a follow-up issue tracks the kernel work"
+                "kernel only honors alpha == 1. A follow-up "
+                "issue tracks the kernel work."
             )
         return super().forward(input, other)
 
@@ -1335,8 +1335,7 @@ class DivFwdOp(BinaryOp):
             raise NotImplementedError(
                 f"DivFwdOp(rounding_mode={self.rounding_mode!r}) is not yet "
                 "implemented; the current kernel only honors rounding_mode is "
-                "None. Tracked at "
-                "a follow-up issue tracks the kernel work"
+                "None. A follow-up issue tracks the kernel work."
             )
         return super().forward(input, other)
 
@@ -1869,8 +1868,8 @@ class _GeluApproximateBase(UnaryOp):
             raise NotImplementedError(
                 f"{type(self).__name__}(approximate='tanh') is not "
                 "implemented: no fused tanh-GELU unary kernel is exposed "
-                "to the Op layer yet. Tracked at "
-                "a follow-up issue tracks the kernel work",
+                "to the Op layer yet. A follow-up issue "
+                "tracks the kernel work.",
             )
         self.approximate = approximate
         super().__init__(
