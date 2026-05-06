@@ -191,6 +191,29 @@ def _register_unary_custom_op(op_cls, output_dtype_override=None):
     op_cls._wrapped = _wrapped
 
 
+def _register_unary_inplace_custom_op(op_cls):
+    """Register the ``inplace=True`` companion for a unary activation op.
+
+    The kernel writes into a fresh buffer; this wrapper copies the result
+    back into ``x`` and returns ``x`` so the caller sees ``y is x`` and
+    ``x`` carries the activation output. The custom op is registered with
+    ``mutates_args=("x",)`` so ``torch.compile`` traces the mutation
+    correctly. Sets ``op_cls._wrapped_inplace`` for ``forward()`` to
+    dispatch through.
+    """
+    op_name = op_cls._op_name
+
+    @torch.library.custom_op(
+        f"top::elementwise_unary_{op_name}_inplace", mutates_args=("x",),
+    )
+    def _wrapped_inplace(x: torch.Tensor, instance_key: int) -> None:
+        instance = _OP_REGISTRY[instance_key]
+        result = instance._eager_forward(x)
+        x.copy_(result.reshape(x.shape))
+
+    op_cls._wrapped_inplace = _wrapped_inplace
+
+
 def _register_binary_custom_op(op_cls, output_bool: bool = False):
     """Register a binary elementwise op for torch.compile.
 
@@ -1091,92 +1114,7 @@ class FusedGatedOp(Op):
 # ---------------------------------------------------------------------------
 
 
-class _InplaceMixin:
-    """Implement out-of-kernel ``inplace=True`` for activation ops.
-
-    Used by activation ops whose manifest entry declares ``inplace:
-    bool = False`` (e.g. ReLU, SiLU, HardSwish, HardSigmoid, Mish, SELU,
-    LeakyReLU, ELU, Hardtanh). Activations whose manifest does not
-    declare ``inplace`` opt out in one of two ways: standalone unary
-    ops (e.g. GELU) simply do not mix this in, while parametric ops
-    that share ``_ParametricActivationOp`` as their base (e.g. Softplus)
-    inherit the mixin transparently and set ``_SUPPORTS_INPLACE = False``
-    so ``forward()`` ignores any post-construction ``inplace`` toggle.
-
-    The underlying kernels always write to a fresh output buffer, but
-    PyTorch's activation contract for ``inplace=True`` requires the
-    *user-visible* tensor identity to be preserved (``y is x``).  We
-    honor the manifest contract by computing into a fresh buffer and
-    then copying the result back into the input tensor when
-    ``inplace=True``; the returned tensor is the original input. The
-    op-level ``inplace`` mutation is intentionally only honored on the
-    eager ``forward()`` path: the ``torch.compile`` ``_wrapped`` route
-    is registered with ``mutates_args=()`` and would mis-trace under
-    aliasing, so we route inplace=True around the custom-op dispatch.
-    """
-
-    @staticmethod
-    def _apply_inplace(
-        inplace: bool, input_tensor: torch.Tensor, output: torch.Tensor,
-    ) -> torch.Tensor:
-        """Materialize ``output`` back into ``input_tensor`` when inplace=True.
-
-        Returns ``input_tensor`` (preserving identity) if ``inplace`` is
-        True, otherwise returns ``output`` unchanged.
-
-        The kernel path frequently flattens the input before launch, so
-        ``output`` may differ from ``input_tensor`` in *layout* while
-        carrying the same number of elements. A ``reshape`` followed by
-        ``copy_`` recovers the caller's layout without broadcasting; any
-        true element-count mismatch is rejected up front with a
-        ``ValueError`` rather than letting ``reshape`` raise a downstream
-        ``RuntimeError``.
-
-        Raises:
-            ValueError: if ``output.dtype`` does not match
-                ``input_tensor.dtype`` (an inplace write must not change
-                the storage dtype), or if ``output.numel()`` does not
-                equal ``input_tensor.numel()`` (broadcasting is not
-                supported here).
-        """
-        if not inplace:
-            return output
-        if output.dtype != input_tensor.dtype:
-            raise ValueError(
-                f"inplace=True requires output.dtype ({output.dtype}) to "
-                f"match input.dtype ({input_tensor.dtype}); they differ"
-            )
-        if output.numel() != input_tensor.numel():
-            raise ValueError(
-                f"inplace=True requires output.numel() ({output.numel()}) "
-                f"to match input.numel() ({input_tensor.numel()}); "
-                f"broadcasting is not supported on the inplace path"
-            )
-        # Reshape to the input layout to handle the contiguous/flatten
-        # round-trip used by the kernel path without forcing the caller
-        # to think about it. The numel guard above ensures reshape never
-        # raises here.
-        input_tensor.copy_(output.reshape(input_tensor.shape))
-        return input_tensor
-
-    def _inplace_aware_forward(
-        self, input: torch.Tensor,  # noqa: A002
-    ) -> torch.Tensor:
-        """Run validate + dispatch + ``_apply_inplace`` for unary activations.
-
-        Routes ``inplace=True`` around the ``_wrapped`` custom-op so the
-        functional torch.compile path never sees a mutation it cannot
-        model (the custom op is registered with ``mutates_args=()``).
-        """
-        self._validate_input(input)
-        wrapped = type(self)._wrapped
-        if wrapped is not None and not self.inplace:
-            return wrapped(input, self._instance_key)
-        result = self._eager_forward(input)
-        return self._apply_inplace(self.inplace, input, result)
-
-
-class _ParamFreeActivationOp(UnaryOp, _InplaceMixin):
+class _ParamFreeActivationOp(UnaryOp):
     """Shared base for the param-free activation Op group.
 
     Centralizes the canonical constructor and ``forward`` flow used by
@@ -1185,11 +1123,16 @@ class _ParamFreeActivationOp(UnaryOp, _InplaceMixin):
     declares its op-specific class fields (``_op_name``, ``kernel_cls``,
     ``FLOPS_PER_ELEM``, docstring); behavior is otherwise inherited.
 
-    The constructor signature is preserved as
-    ``(N_total, dtype, *, strategy=None, kernel_map=None, tune=False,
-    inplace=False)`` so leaves remain bit-identical to the pre-refactor
-    public API.
+    ``inplace=True`` dispatches through a separate ``_wrapped_inplace``
+    custom op registered with ``mutates_args=("x",)`` so ``torch.compile``
+    traces the mutation correctly; the returned tensor is the original
+    input (``y is x``).
     """
+
+    # Set by ``_register_unary_inplace_custom_op`` for leaves that
+    # declare ``inplace`` in their manifest signature. Stays ``None``
+    # when the leaf does not support inplace.
+    _wrapped_inplace = None
 
     def __init__(
         self,
@@ -1207,73 +1150,65 @@ class _ParamFreeActivationOp(UnaryOp, _InplaceMixin):
         self.inplace = inplace
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        return self._inplace_aware_forward(input)
+        self._validate_input(input)
+        if self.inplace:
+            wrapped_inplace = type(self)._wrapped_inplace
+            if wrapped_inplace is not None:
+                wrapped_inplace(input, self._instance_key)
+                return input
+            # No inplace custom op registered (e.g. test-only subclass);
+            # fall back to direct mutation via the eager path.
+            result = self._eager_forward(input)
+            input.copy_(result.reshape(input.shape))
+            return input
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(input, self._instance_key)
+        return self._eager_forward(input)
 
 
-class _ParametricActivationOp(Op, _InplaceMixin):
+class _ParametricActivationOp(Op):
     """Shared base for the parametric activation Op group.
 
-    Centralizes the kernel-construction, ``_eager_forward``, and
-    ``forward`` flows for activations that take one or more scalar
-    construction-time parameters (LeakyReLU, ELU, Hardtanh, Softplus).
-    Leaves keep authority over their constructor signature -- each
-    declares the scalar params with op-specific defaults explicitly --
-    but delegate the post-validation init body to ``_init_common`` and
-    inherit the shared ``forward`` flow.
+    Centralizes the ``_eager_forward`` and ``forward`` flows for
+    activations that take one or more scalar construction-time
+    parameters (LeakyReLU, ELU, Hardtanh, Softplus). Leaves own their
+    ``__init__`` (scalar parameter names and defaults vary per leaf):
+    each leaf validates its scalars, populates ``self.<param>`` for
+    introspection, instantiates ``self.kernel`` with typed kwargs, and
+    registers itself with ``_OP_REGISTRY`` via the
+    ``_finalize_init`` helper.
 
-    The base class does not implement ``__init__`` itself: scalar
-    parameter names and defaults vary per leaf, and pinning them in
-    one place would either force a positional ``**params`` (drifts the
-    public API) or push validation onto the leaves (defeats the
-    refactor). Leaves must call ``self._init_common(...)`` after
-    populating their op-specific scalar attributes.
-
-    The optional ``inplace`` param is honored by ``forward`` only on
-    leaves whose manifest entry declares ``inplace``. Leaves that omit
-    ``inplace`` from their manifest signature must set
-    ``_SUPPORTS_INPLACE = False`` so ``forward`` ignores any
-    post-construction mutation of ``self.inplace`` and behavior matches
-    the manifest contract.
+    Leaves that declare ``inplace`` in the manifest signature accept it
+    in ``__init__`` and pass it to ``_finalize_init``. ``inplace=True``
+    dispatches through ``_wrapped_inplace`` (registered with
+    ``mutates_args=("x",)``); the returned tensor is the original input.
     """
 
-    # Default: leaves that expose ``inplace`` in their constructor honor
-    # it. Set False on a leaf whose manifest signature does not declare
-    # ``inplace`` (e.g. ``softplus``) so ``forward`` short-circuits the
-    # mutate-back path even if a caller flips ``op.inplace = True``.
-    _SUPPORTS_INPLACE: bool = True
+    # Set by ``_register_unary_inplace_custom_op`` for leaves that
+    # declare ``inplace`` in their manifest signature. Stays ``None``
+    # when the leaf does not support inplace (e.g. Softplus).
+    _wrapped_inplace = None
 
-    def _init_common(
+    def _finalize_init(
         self,
         N_total: int,
         dtype: torch.dtype,
-        kernel_kwargs: Dict[str, object],
+        kernel: Kernel,
         *,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         inplace: bool = False,
     ) -> None:
-        """Populate Op-base state and instantiate the kernel.
+        """Record the leaf-built kernel and wire shared base state.
 
-        Args:
-            N_total: Total number of elements (flattened).
-            dtype: Torch dtype.
-            kernel_kwargs: Op-specific scalar kwargs forwarded to the
-                kernel constructor (e.g. ``{"alpha": alpha}``).
-            kernel_map: Optional kernel dispatch override.
-            tune: Whether to autotune the kernel.
-            inplace: Whether ``forward`` should materialize the result
-                back into ``input``. Ignored if the leaf does not
-                expose ``inplace`` to callers (the leaf simply omits
-                the kwarg from its constructor and relies on the
-                default).
+        The leaf has already called ``self.dispatch_kernel(kernel_map)``
+        and instantiated its kernel directly with typed kwargs. This
+        helper records the kernel on ``self`` and runs the
+        ``_OP_REGISTRY`` registration shared by every parametric leaf.
         """
         self.N_total = N_total
         self.dtype = dtype
         self.inplace = inplace
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            N_total, dtype, tune=tune, **kernel_kwargs,
-        )
+        self.kernel = kernel
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -1289,18 +1224,18 @@ class _ParametricActivationOp(Op, _InplaceMixin):
             raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
         if input.numel() != self.N_total:
             raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
+        if self.inplace:
+            wrapped_inplace = type(self)._wrapped_inplace
+            if wrapped_inplace is not None:
+                wrapped_inplace(input, self._instance_key)
+                return input
+            result = self._eager_forward(input)
+            input.copy_(result.reshape(input.shape))
+            return input
         wrapped = type(self)._wrapped
-        # Leaves that do not declare ``inplace`` in their manifest entry
-        # set ``_SUPPORTS_INPLACE = False``; force the inplace flag off
-        # so ``forward`` ignores any post-construction mutation of
-        # ``self.inplace`` and matches the manifest signature.
-        inplace = self.inplace and self._SUPPORTS_INPLACE
-        # inplace=True bypasses the torch.compile route; the custom_op
-        # is registered with mutates_args=() and would mis-trace.
-        if wrapped is not None and not inplace:
+        if wrapped is not None:
             return wrapped(input, self._instance_key)
-        result = self._eager_forward(input)
-        return self._apply_inplace(inplace, input, result)
+        return self._eager_forward(input)
 
 
 class ReluFwdOp(_ParamFreeActivationOp):
@@ -2006,26 +1941,16 @@ class Expm1FwdOp(UnaryOp):
 # ---------------------------------------------------------------------------
 
 
-class GeluFwdOp(UnaryOp):
-    """Element-wise GELU honoring the manifest ``approximate`` contract.
+class _GeluApproximateBase(UnaryOp):
+    """Intermediate base that resolves the manifest ``approximate`` field.
 
-    Args:
-        N_total: Number of elements (flattened input).
-        dtype: Torch dtype.
-        approximate: Approximation mode. ``'none'`` (default) routes to the
-            erf-based ``GeluFwdKernel``; ``'tanh'`` routes through a torch
-            reference path (``torch.nn.functional.gelu(..., approximate='tanh')``)
-            because no fused tanh-GELU kernel is exposed for the unary op
-            yet. Both values are honored end-to-end.
-        strategy: Optional kernel strategy override.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune the kernel.
+    Validates the ``approximate`` argument against the manifest's allowed
+    values (``'none'`` / ``'tanh'``), records it on ``self.approximate``
+    for introspection, and then delegates to ``UnaryOp.__init__``.
+    ``approximate='tanh'`` is rejected with ``NotImplementedError`` until
+    a fused tanh-GELU unary kernel is exposed to the Op layer (tracked
+    at https://github.com/tile-ai/TileOPs/issues/1241).
     """
-
-    _op_name = "gelu"
-    kernel_cls = GeluFwdKernel
-    # Manifest: flops = "8 * N" (erf-based: mul + erf + add + mul + mul ≈ 8).
-    FLOPS_PER_ELEM = 8
 
     def __init__(
         self,
@@ -2039,48 +1964,45 @@ class GeluFwdOp(UnaryOp):
     ):
         if approximate not in ("none", "tanh"):
             raise ValueError(
-                f"GeluFwdOp: approximate must be 'none' or 'tanh', got {approximate!r}"
+                f"{type(self).__name__}: approximate must be 'none' or "
+                f"'tanh', got {approximate!r}"
             )
-        # Apply the same dtype gate both branches share so the tanh
-        # fallback rejects unsupported dtypes (e.g. integer / fp8) up
-        # front instead of deferring the failure to forward(). The
-        # ``approximate='none'`` branch enforces this implicitly via
-        # GeluFwdKernel's SUPPORTED_DTYPES check inside super().__init__;
-        # mirror that contract here so both branches behave consistently.
-        supported = self.kernel_cls.SUPPORTED_DTYPES
-        if supported is not None and dtype not in supported:
-            names = ", ".join(str(dt) for dt in supported)
-            raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. "
-                f"Supported: [{names}]"
+        if approximate == "tanh":
+            raise NotImplementedError(
+                f"{type(self).__name__}(approximate='tanh') is not "
+                "implemented: no fused tanh-GELU unary kernel is exposed "
+                "to the Op layer yet. Tracked at "
+                "https://github.com/tile-ai/TileOPs/issues/1241",
             )
         self.approximate = approximate
-        if approximate == "tanh":
-            # No fused tanh-GELU unary kernel is exposed to the op layer
-            # yet; honor the manifest contract by routing through torch
-            # so callers passing the manifest-allowed value still get a
-            # correct result rather than an error.
-            self.N_total = N_total
-            self.dtype = dtype
-            self.strategy = strategy
-            self.kernel_map = kernel_map or self.default_kernel_map
-            self.kernel = None
-            self.output_dtype = dtype
-            self._instance_key = id(self)
-            _OP_REGISTRY[self._instance_key] = self
-            return
         super().__init__(
             N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
         )
 
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        if self.kernel is None:
-            # approximate='tanh' fallback path — see __init__.
-            orig_shape = input.shape
-            flat = input.contiguous().reshape(-1)
-            out = torch.nn.functional.gelu(flat, approximate="tanh")
-            return out.reshape(orig_shape)
-        return super()._eager_forward(input)
+
+class GeluFwdOp(_GeluApproximateBase):
+    """Element-wise GELU honoring the manifest ``approximate`` contract.
+
+    Args:
+        N_total: Number of elements (flattened input).
+        dtype: Torch dtype.
+        approximate: Approximation mode. ``'none'`` (default) routes to
+            the erf-based ``GeluFwdKernel``. ``'tanh'`` is accepted by
+            the manifest signature but raises ``NotImplementedError``
+            because no fused tanh-GELU unary kernel is implemented yet
+            (tracked at https://github.com/tile-ai/TileOPs/issues/1241).
+        strategy: Optional kernel strategy override.
+        kernel_map: Optional kernel dispatch override.
+        tune: Whether to autotune the kernel.
+    """
+
+    _op_name = "gelu"
+    kernel_cls = GeluFwdKernel
+    # Manifest: flops = "8 * N" (erf-based: mul + erf + add + mul + mul ≈ 8).
+    FLOPS_PER_ELEM = 8
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 
 class SiluFwdOp(_ParamFreeActivationOp):
@@ -2265,10 +2187,11 @@ class LeakyReluFwdOp(_ParametricActivationOp):
     ):
         _validate_scalar_param_repr("negative_slope", negative_slope, dtype, self._op_name)
         self.negative_slope = negative_slope
-        self._init_common(
-            N_total, dtype, {"negative_slope": negative_slope},
-            kernel_map=kernel_map, tune=tune, inplace=inplace,
+        self.dispatch_kernel(kernel_map)
+        kernel = self.kernel_map[self._op_name](
+            N_total, dtype, negative_slope=negative_slope, tune=tune,
         )
+        self._finalize_init(N_total, dtype, kernel, inplace=inplace)
 
     @property
     def default_kernel_map(self):
@@ -2305,10 +2228,11 @@ class EluFwdOp(_ParametricActivationOp):
     ):
         _validate_scalar_param_repr("alpha", alpha, dtype, self._op_name)
         self.alpha = alpha
-        self._init_common(
-            N_total, dtype, {"alpha": alpha},
-            kernel_map=kernel_map, tune=tune, inplace=inplace,
+        self.dispatch_kernel(kernel_map)
+        kernel = self.kernel_map[self._op_name](
+            N_total, dtype, alpha=alpha, tune=tune,
         )
+        self._finalize_init(N_total, dtype, kernel, inplace=inplace)
 
     @property
     def default_kernel_map(self):
@@ -2349,10 +2273,11 @@ class HardtanhFwdOp(_ParametricActivationOp):
         _validate_scalar_param_repr("max_val", max_val, dtype, self._op_name)
         self.min_val = min_val
         self.max_val = max_val
-        self._init_common(
-            N_total, dtype, {"min_val": min_val, "max_val": max_val},
-            kernel_map=kernel_map, tune=tune, inplace=inplace,
+        self.dispatch_kernel(kernel_map)
+        kernel = self.kernel_map[self._op_name](
+            N_total, dtype, min_val=min_val, max_val=max_val, tune=tune,
         )
+        self._finalize_init(N_total, dtype, kernel, inplace=inplace)
 
     @property
     def default_kernel_map(self):
@@ -2373,10 +2298,6 @@ class SoftplusFwdOp(_ParametricActivationOp):
 
     _op_name = "softplus"
     _wrapped = None
-    # Softplus's manifest signature does not declare ``inplace``; opt
-    # out of the parametric base's inplace path so a caller flipping
-    # ``op.inplace = True`` post-construction cannot change behavior.
-    _SUPPORTS_INPLACE = False
     # Manifest: flops = "7 * N" (mul + exp + add + log + div + compare + select).
     FLOPS_PER_ELEM = 7
 
@@ -2394,13 +2315,12 @@ class SoftplusFwdOp(_ParametricActivationOp):
         _validate_scalar_param_repr("threshold", threshold, dtype, self._op_name)
         self.beta = beta
         self.threshold = threshold
-        # Softplus does not expose ``inplace`` to callers; the parametric
-        # base defaults ``self.inplace = False`` so ``forward`` skips the
-        # mutate-back path entirely.
-        self._init_common(
-            N_total, dtype, {"beta": beta, "threshold": threshold},
-            kernel_map=kernel_map, tune=tune,
+        self.dispatch_kernel(kernel_map)
+        kernel = self.kernel_map[self._op_name](
+            N_total, dtype, beta=beta, threshold=threshold, tune=tune,
         )
+        # Softplus does not expose ``inplace`` to callers; default to False.
+        self._finalize_init(N_total, dtype, kernel, inplace=False)
 
     @property
     def default_kernel_map(self):
@@ -3222,16 +3142,13 @@ class MaskedFillScalarFwdOp(Op):
         return self._eager_forward(input, mask)
 
 
-_NAN_TO_NUM_SENTINEL = object()
-
-
 class NanToNumFwdOp(Op):
     """NanToNum: replace NaN, +Inf, -Inf with specified values.
 
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype.
-        nan: Replacement for NaN (default 0.0). Manifest-aligned name.
+        nan: Replacement for NaN (default 0.0).
         posinf: Replacement for +Inf. Manifest default ``None`` resolves
             to the largest finite value representable in the user-facing
             ``dtype`` (matches ``torch.nan_to_num``). Explicit values
@@ -3244,12 +3161,6 @@ class NanToNumFwdOp(Op):
             in the user-facing ``dtype``.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
-
-    Note:
-        ``nan_val`` / ``posinf_val`` / ``neginf_val`` remain accepted as
-        legacy aliases for ``nan`` / ``posinf`` / ``neginf`` to keep
-        existing call sites working during the manifest-alignment
-        migration.
     """
 
     _op_name = "nan_to_num"
@@ -3265,19 +3176,7 @@ class NanToNumFwdOp(Op):
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
-        # Legacy aliases kept for back-compat with existing tests / benches.
-        nan_val: object = _NAN_TO_NUM_SENTINEL,
-        posinf_val: object = _NAN_TO_NUM_SENTINEL,
-        neginf_val: object = _NAN_TO_NUM_SENTINEL,
     ):
-        if nan_val is not _NAN_TO_NUM_SENTINEL:
-            nan = nan_val  # type: ignore[assignment]
-        if posinf_val is not _NAN_TO_NUM_SENTINEL:
-            posinf = posinf_val  # type: ignore[assignment]
-        if neginf_val is not _NAN_TO_NUM_SENTINEL:
-            neginf = neginf_val  # type: ignore[assignment]
-        # User-supplied scalars must be representable in the user-facing
-        # dtype, so they go through the standard validation path below.
         # The manifest default ``None`` resolves to the *final*
         # user-facing dtype's max / min, not ``+/-inf``: the kernel runs
         # in ``output_dtype`` (fp16 for e5m2 to preserve Inf/NaN) and
@@ -3303,15 +3202,11 @@ class NanToNumFwdOp(Op):
         self.nan = nan
         self.posinf = posinf
         self.neginf = neginf
-        # Legacy attribute aliases retained so callers reading the
-        # original names keep working.
-        self.nan_val = nan
-        self.posinf_val = kernel_posinf
-        self.neginf_val = kernel_neginf
         self.dispatch_kernel(kernel_map)
+        # Pass replacement values positionally; the kernel constructor's
+        # internal parameter naming is encapsulated below the Op layer.
         self.kernel = self.kernel_map["nan_to_num"](
-            N_total, dtype, nan_val=nan, posinf_val=kernel_posinf,
-            neginf_val=kernel_neginf, tune=tune,
+            N_total, dtype, nan, kernel_posinf, kernel_neginf, tune=tune,
         )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -3477,6 +3372,17 @@ for _cls in [
     NanToNumFwdOp,
 ]:
     _register_unary_custom_op(_cls)
+
+# --- Inplace companions for activations declaring ``inplace`` ---
+# Each leaf below has ``inplace`` in its manifest signature. Register a
+# parallel ``_wrapped_inplace`` custom op with ``mutates_args=("x",)``
+# so ``forward(input)`` with ``self.inplace=True`` traces correctly
+# under ``torch.compile``.
+for _cls in [
+    ReluFwdOp, SiluFwdOp, HardswishFwdOp, HardsigmoidFwdOp, MishFwdOp,
+    SeluFwdOp, LeakyReluFwdOp, EluFwdOp, HardtanhFwdOp,
+]:
+    _register_unary_inplace_custom_op(_cls)
 
 # --- PReLU op (1 op: x, weight -> y) ---
 _register_prelu_custom_op(PreluFwdOp)
