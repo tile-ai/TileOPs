@@ -1710,111 +1710,77 @@ class TestShapeRuleBroadcastBuiltins:
     shape_rules expressions.
     """
 
-    # -- broadcast_shapes -------------------------------------------------
+    def test_broadcast_shapes_value_matrix(self, validator):
+        """``broadcast_shapes`` produces the expected output across cases.
 
-    def test_broadcast_shapes_helper_registered(self, validator):
-        """``broadcast_shapes`` must be exposed in ``_SHAPE_RULE_BUILTINS``."""
-        assert "broadcast_shapes" in validator._SHAPE_RULE_BUILTINS
-
-    def test_broadcast_shapes_identical_shapes(self, validator):
+        Covers identical / scalar / size-1-expand / rank-promotion /
+        variadic (0, 1, 3+ args) / list-input forms in one matrix. Hand-
+        coded expectations (no torch dependency) so the test stays
+        consistent with the validator's pure-Python implementation.
+        """
         fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((2, 3), (2, 3)) == (2, 3)
-
-    def test_broadcast_shapes_scalar_with_tensor(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((), (4, 5)) == (4, 5)
-        assert fn((4, 5), ()) == (4, 5)
-
-    def test_broadcast_shapes_size_one_expands(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((1, 3), (2, 1)) == (2, 3)
-
-    def test_broadcast_shapes_rank_promotion(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((3,), (2, 4, 3)) == (2, 4, 3)
-
-    def test_broadcast_shapes_three_or_more_args(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((1, 3), (2, 1), (1, 1)) == (2, 3)
-
-    def test_broadcast_shapes_no_args_returns_empty(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn() == ()
-
-    def test_broadcast_shapes_single_arg(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn((2, 3)) == (2, 3)
+        cases: list[tuple[tuple, tuple]] = [
+            (((2, 3), (2, 3)), (2, 3)),                  # identical
+            (((), (4, 5)), (4, 5)),                      # scalar left
+            (((4, 5), ()), (4, 5)),                      # scalar right
+            (((1, 3), (2, 1)), (2, 3)),                  # size-1 expands
+            (((3,), (2, 4, 3)), (2, 4, 3)),              # rank promotion
+            (((1, 3), (2, 1), (1, 1)), (2, 3)),          # 3+ args
+            ((), ()),                                    # no args
+            (((2, 3),), (2, 3)),                         # single arg
+            (([1, 3], [2, 1]), (2, 3)),                  # list inputs
+        ]
+        for args, expected in cases:
+            assert fn(*args) == expected, (args, fn(*args), expected)
 
     def test_broadcast_shapes_incompatible_raises(self, validator):
+        """Incompatible shapes raise ``ValueError`` (the only error path)."""
         fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
         with pytest.raises(ValueError, match="not broadcast-compatible"):
             fn((2, 3), (3, 3))
 
-    def test_broadcast_shapes_accepts_lists(self, validator):
-        """Tensor.shape may surface as list[int] depending on context."""
-        fn = validator._SHAPE_RULE_BUILTINS["broadcast_shapes"]
-        assert fn([1, 3], [2, 1]) == (2, 3)
+    def test_is_broadcastable_to_value_matrix(self, validator):
+        """``is_broadcastable_to(src, dst)`` returns True/False per cases.
 
-    # -- is_broadcastable_to ---------------------------------------------
-
-    def test_is_broadcastable_to_helper_registered(self, validator):
-        assert "is_broadcastable_to" in validator._SHAPE_RULE_BUILTINS
-
-    def test_is_broadcastable_to_equal_shapes(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
-        assert fn((2, 3), (2, 3)) is True
-
-    def test_is_broadcastable_to_size_one_expands(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
-        assert fn((1, 3), (2, 3)) is True
-        assert fn((3,), (2, 3)) is True
-        assert fn((), (2, 3)) is True
-
-    def test_is_broadcastable_to_unidirectional(self, validator):
-        """``is_broadcastable_to(src, dst)`` is asymmetric.
-
-        ``src`` may grow into ``dst`` but ``dst`` is fixed; expanding
-        ``dst`` into a larger shape is not allowed.
+        Pins the asymmetric semantics (src may grow into dst; dst is
+        fixed) including the equal-shape, size-1-expand, dst-smaller,
+        dst-shrink, dim-mismatch, and extra-leading-dim branches.
         """
         fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
-        # (2, 3) cannot broadcast *to* (3,) — dst is smaller.
-        assert fn((2, 3), (3,)) is False
-        # (2, 1) into (2, 3) — fine.
-        assert fn((2, 1), (2, 3)) is True
-        # (2, 3) into (2, 1) — would require shrinking dst dim 1.
-        assert fn((2, 3), (2, 1)) is False
+        cases: list[tuple[tuple, tuple, bool]] = [
+            ((2, 3), (2, 3), True),     # equal
+            ((1, 3), (2, 3), True),     # size-1 expand
+            ((3,), (2, 3), True),       # rank promotion
+            ((), (2, 3), True),         # scalar source
+            ((2, 3), (3,), False),      # dst smaller (asymmetry)
+            ((2, 1), (2, 3), True),     # one-dim expand
+            ((2, 3), (2, 1), False),    # would require shrinking dst
+            ((2, 4), (2, 3), False),    # dim mismatch
+            ((5, 2, 3), (2, 3), False), # extra leading dim
+        ]
+        for src, dst, expected in cases:
+            assert fn(src, dst) is expected, (src, dst, fn(src, dst), expected)
 
-    def test_is_broadcastable_to_mismatched_dim_returns_false(self, validator):
-        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
-        assert fn((2, 4), (2, 3)) is False
+    def test_broadcast_helpers_callable_from_shape_rule_eval(self, validator):
+        """Both helpers resolve from inside ``_eval_shape_rule`` rule bodies.
 
-    def test_is_broadcastable_to_extra_leading_dim_returns_false(self, validator):
-        """Source rank may not exceed destination rank."""
-        fn = validator._SHAPE_RULE_BUILTINS["is_broadcastable_to"]
-        assert fn((5, 2, 3), (2, 3)) is False
-
-    # -- end-to-end via _eval_shape_rule ---------------------------------
-
-    def test_broadcast_shapes_in_shape_rule(self, validator):
-        ok, reason = validator._eval_shape_rule(
-            "broadcast_shapes((1, 3), (2, 1)) == (2, 3)", {},
-        )
-        assert reason is None
-        assert ok is True
-
-    def test_is_broadcastable_to_in_shape_rule_true(self, validator):
-        ok, reason = validator._eval_shape_rule(
-            "is_broadcastable_to((1, 3), (2, 3))", {},
-        )
-        assert reason is None
-        assert ok is True
-
-    def test_is_broadcastable_to_in_shape_rule_false(self, validator):
-        ok, reason = validator._eval_shape_rule(
-            "is_broadcastable_to((2, 3), (2, 1))", {},
-        )
-        assert reason is None
-        assert ok is False
+        Pins the validator-integration contract: the helpers in
+        ``_SHAPE_RULE_BUILTINS`` are reachable as bare names from rule
+        text, returning the same value as direct calls. Drives one true
+        and one false case for ``is_broadcastable_to`` (its bool return
+        flows through the ok/reason pair) plus one ``broadcast_shapes``
+        equality rule (its tuple return must support ``==`` comparison
+        in the rule body).
+        """
+        cases: list[tuple[str, bool]] = [
+            ("broadcast_shapes((1, 3), (2, 1)) == (2, 3)", True),
+            ("is_broadcastable_to((1, 3), (2, 3))", True),
+            ("is_broadcastable_to((2, 3), (2, 1))", False),
+        ]
+        for rule, expected_ok in cases:
+            ok, reason = validator._eval_shape_rule(rule, {})
+            assert reason is None, (rule, reason)
+            assert ok is expected_ok, (rule, ok, expected_ok)
 
 
 # ---------------------------------------------------------------------------
@@ -3714,3 +3680,351 @@ class TestIntegration:
             f"Schema validation produced {len(errors)} error(s) on the "
             f"checked-in manifest:\n" + "\n".join(errors)
         )
+
+
+# ---------------------------------------------------------------------------
+# tileops.manifest.shape_rules helper module + validator integration
+# ---------------------------------------------------------------------------
+
+
+class TestShapeRuleHelpers:
+    """Unit tests for :mod:`tileops.manifest.shape_rules` predicates."""
+
+    def test_helpers_match_inline_expressions_over_full_case_matrix(self):
+        """Helpers and inline expressions agree on results AND raised exceptions.
+
+        Drives every helper against the literal inline expression that
+        was migrated out of the manifest, over a case matrix that
+        includes well-formed *and* malformed inputs. For each input, both
+        forms must either return the same value or raise the same
+        exception type — anything else is a behavioural drift.
+
+        Covers the malformed cases the validator previously surfaced as
+        eval-error warnings (``dim=["2"]``, ``dim=[1.5]``), as well as
+        the contract-spec edge cases (``dim=None`` for "all axes" and an
+        empty tuple).
+        """
+        from tileops.manifest.shape_rules import (
+            dim_range_validity,
+            dim_uniqueness,
+            reduced_axes,
+        )
+
+        def inline_range(x, dim):
+            return dim is None or all(
+                -x.ndim <= d < x.ndim
+                for d in ([dim] if isinstance(dim, int) else dim)
+            )
+
+        def inline_uniqueness(x, dim):
+            return isinstance(dim, (int, type(None))) or (
+                len({d % x.ndim for d in dim}) == len(dim)
+            )
+
+        def inline_axes(x, dim):
+            # Mirrors the manifest's inline expression literally — every
+            # branch returns ``set`` (or a set-literal). The helper
+            # version intentionally returns ``frozenset`` for immutability;
+            # ``set == frozenset`` of the same elements is True in Python,
+            # so the parity ``==`` comparison below tolerates the
+            # type substitution without false negatives.
+            if isinstance(dim, int):
+                return {dim % x.ndim}
+            if isinstance(dim, (list, tuple)) and len(dim) > 0:
+                return {d % x.ndim for d in dim}
+            return set(range(x.ndim))
+
+        x = type("X", (), {"ndim": 3})()
+        cases = [
+            None,
+            0,
+            -1,
+            2,
+            [0, 2],
+            (-1, -2),
+            [],
+            (),
+            # Reviewer reproducer: a string element triggers TypeError in
+            # both ``-3 <= "2"`` and ``"2" % 3``; the helper must
+            # propagate so the validator's eval-error path keeps treating
+            # this as a warning, not a hard shape mismatch.
+            ["2"],
+            # A float element survives ordering and modulo; both forms
+            # return the same set.
+            [1.5],
+        ]
+        pairs = [
+            (dim_range_validity, inline_range),
+            (dim_uniqueness, inline_uniqueness),
+            (reduced_axes, inline_axes),
+        ]
+        for helper, inline in pairs:
+            for d in cases:
+                helper_exc: type[BaseException] | None = None
+                inline_exc: type[BaseException] | None = None
+                helper_val = inline_val = None
+                try:
+                    helper_val = helper(x, d)
+                except Exception as exc:  # noqa: BLE001
+                    helper_exc = type(exc)
+                try:
+                    inline_val = inline(x, d)
+                except Exception as exc:  # noqa: BLE001
+                    inline_exc = type(exc)
+                assert helper_exc is inline_exc, (
+                    helper.__name__, d, helper_exc, inline_exc,
+                )
+                if helper_exc is None:
+                    assert helper_val == inline_val, (
+                        helper.__name__, d, helper_val, inline_val,
+                    )
+
+    def test_helper_rule_validator_warns_on_malformed_dim(self, validator):
+        """Validator integration: helper rules surface malformed dims as warnings.
+
+        The reviewer's reproducer (``dim=["2"]``) raises TypeError from
+        the helper, which the validator classifies as an eval-error
+        warning ("could not be evaluated"). The contract: the parity
+        check is skipped with a warning, not turned into a hard shape
+        error — bit-identical to the pre-migration inline form.
+        """
+        def infer(self, x_shape, *, dim=None, keepdim=False):  # noqa: ARG001
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer, name="HelperMalformedDimOp")
+        sig_common = {
+            "inputs": {"x": {"dtype": "float16"}},
+            "outputs": {"y": {"dtype": "same_as(x)"}},
+            "params": {
+                "dim": {
+                    "type": "int | list[int] | tuple[int, ...] | None",
+                    "default": ["2"],
+                },
+                "keepdim": {"type": "bool", "default": False},
+            },
+        }
+        entry_inline = {
+            "signature": {
+                **sig_common,
+                "shape_rules": [
+                    "dim is None or all(-x.ndim <= d < x.ndim for d in "
+                    "([dim] if isinstance(dim, int) else dim))",
+                    "isinstance(dim, (int, type(None))) or "
+                    "len({d % x.ndim for d in dim}) == len(dim)",
+                ],
+            },
+        }
+        entry_helper = {
+            "signature": {
+                **sig_common,
+                "shape_rules": [
+                    "dim_range_validity(x, dim)",
+                    "dim_uniqueness(x, dim)",
+                ],
+            },
+        }
+        warn_inline: list[str] = []
+        warn_helper: list[str] = []
+        errs_inline = validator.check_l2_infer_parity(
+            "HelperMalformedDimOp", entry_inline, cls, warnings=warn_inline,
+        )
+        errs_helper = validator.check_l2_infer_parity(
+            "HelperMalformedDimOp", entry_helper, cls, warnings=warn_helper,
+        )
+        # Both forms classify the malformed dim as an eval error and
+        # emit a "could not be evaluated" warning; neither raises a hard
+        # parity error.
+        assert errs_inline == [] == errs_helper, (errs_inline, errs_helper)
+        assert any("could not be evaluated" in w for w in warn_inline), (
+            warn_inline
+        )
+        assert any("could not be evaluated" in w for w in warn_helper), (
+            warn_helper
+        )
+
+
+
+class TestValidatorHelperResolution:
+    """Validator integration of the shape_rules helper builtins."""
+
+    def test_l2_parity_helper_detects_out_of_range_default(self, validator):
+        """Out-of-range default ``dim`` surfaces as an input-only precondition.
+
+        Mirrors what the inline expression would do: the predicate
+        evaluates to False under mock inputs, but the validator
+        classifies that as an *input* problem (the manifest's mock
+        default ``dim`` is out of range for the mock ``x.ndim``), not
+        as a parity failure of ``_infer_output_shapes``. The contract
+        pinned here: ``errors == []`` (no parity blame on infer) plus
+        exactly one ``"input-only precondition"`` warning citing the
+        helper rule itself.
+        """
+        def infer(self, x_shape):
+            return {"y": x_shape}
+
+        cls = _make_op_cls_with_infer(infer, name="HelperBadDimOp")
+        # Mock inputs for a single-rank-2 tensor; default dim=9 is out of
+        # range. The helper rule must fail under mock evaluation.
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+                "params": {"dim": {"type": "int", "default": 9}},
+                "shape_rules": [
+                    "x.shape == (B, S)",
+                    "dim_range_validity(x, dim)",
+                    "y.shape == x.shape",
+                ],
+            },
+        }
+        warnings: list[str] = []
+        errors = validator.check_l2_infer_parity(
+            "HelperBadDimOp", entry, cls, warnings=warnings,
+        )
+        # Out-of-range dim is an input-only precondition that mock inputs
+        # violate; the validator classifies that as a skip with a
+        # warning (not a hard error). Concrete expected outcome:
+        #   - no parity errors (the helper rule must not blame a correct
+        #     ``_infer_output_shapes``),
+        #   - no "could not be evaluated" warning (the helper resolved and
+        #     ran — failure was a real predicate result, not an eval skip),
+        #   - exactly one "input-only precondition" warning citing the
+        #     helper rule itself, proving the helper-resolution path
+        #     produced the same classification as the inline form would.
+        assert errors == [], errors
+        assert not any(
+            "could not be evaluated" in w for w in warnings
+        ), warnings
+        precondition_hits = [
+            w for w in warnings
+            if "input-only precondition" in w
+            and "dim_range_validity(x, dim)" in w
+        ]
+        assert len(precondition_hits) == 1, warnings
+
+    def test_shape_rule_builtin_pairs_have_unique_names(self, validator):
+        """Validator startup rejects a duplicate name in the builtin pairs list.
+
+        ``_SHAPE_RULE_BUILTIN_PAIRS`` is the editorial source: Python
+        primitives, broadcasting helpers, and reduction-dim helpers
+        share the same eval-scope namespace. If a future addition picks
+        a name that already exists, the eval scope would silently shadow
+        one with the other; the loop that builds ``_SHAPE_RULE_BUILTINS``
+        raises ``RuntimeError`` instead. Pin the contract so the guard
+        cannot regress to a silent dict-merge.
+        """
+        names = [name for name, _ in validator._SHAPE_RULE_BUILTIN_PAIRS]
+        assert len(names) == len(set(names)), (
+            f"duplicate name in _SHAPE_RULE_BUILTIN_PAIRS: {names}"
+        )
+
+    def test_shape_rules_helpers_callable_by_bare_name(self, validator):
+        """Reduction-dim helpers from shape_rules.py are in the eval scope.
+
+        Pin the public surface of ``tileops.manifest.shape_rules`` as
+        seen by manifest YAML: each function listed in :data:`__all__`
+        must be callable from a shape_rule body by bare name. Adding a
+        new helper requires updating both ``__all__`` and the validator's
+        ``_SHAPE_RULE_BUILTIN_PAIRS`` — this test fails loudly when one
+        side moves without the other.
+        """
+        import types
+
+        from tileops.manifest import shape_rules
+        ctx = {"x": types.SimpleNamespace(ndim=4), "dim": 0}
+        for name in shape_rules.__all__:
+            ok, reason = validator._eval_shape_rule(f"{name}(x, dim)", ctx)
+            assert reason is None, (name, reason)
+            # Predicate helpers return bool; reduced_axes returns frozenset
+            # — both are truthy on the canonical (ndim=4, dim=0) input.
+            assert ok is True, name
+
+    def test_sum_rules_helper_inline_classification_parity(self, validator):
+        """Synthetic parity regression: helper form vs inline form via validator.
+
+        Two locally constructed manifest fixtures encode SumFwdOp-shaped
+        shape_rules in pre-migration inline form and post-migration helper
+        form. Both are driven through :func:`check_l2_infer_parity` against
+        the same mock op class; the validator's classification at each rule
+        index must be identical. This pins helper-resolution semantics
+        against the inline expressions the manifest historically used —
+        without taking any dependency on the checked-in manifest YAML
+        (real ``reduction.yaml`` migration is tracked as a separate
+        manifest PR per the trust-model rule).
+        """
+        def infer(self, x_shape, *, dim=None, keepdim=False):  # noqa: ARG001
+            # Identity output is enough to exercise the rule eval path
+            # under mock inputs; the rules themselves don't reach this.
+            return {"output": x_shape}
+
+        cls = _make_op_cls_with_infer(infer, name="SumParityOp")
+        sig_common = {
+            "inputs": {"x": {"dtype": "float16"}},
+            "outputs": {"output": {"dtype": "same_as(x)"}},
+            "params": {
+                "dim": {
+                    "type": "int | list[int] | tuple[int, ...] | None",
+                    "default": None,
+                },
+                "keepdim": {"type": "bool", "default": False},
+            },
+        }
+        inline_axes = (
+            "({dim % x.ndim} if isinstance(dim, int) else "
+            "{d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) "
+            "and len(dim) > 0 else set(range(x.ndim)))"
+        )
+        entry_pre = {
+            "signature": {
+                **sig_common,
+                "shape_rules": [
+                    "dim is None or all(-x.ndim <= d < x.ndim for d in "
+                    "([dim] if isinstance(dim, int) else dim))",
+                    "isinstance(dim, (int, type(None))) or "
+                    "len({d % x.ndim for d in dim}) == len(dim)",
+                    f"output.ndim == (x.ndim if keepdim else x.ndim - "
+                    f"len({inline_axes}))",
+                ],
+            },
+        }
+        entry_post = {
+            "signature": {
+                **sig_common,
+                "shape_rules": [
+                    "dim_range_validity(x, dim)",
+                    "dim_uniqueness(x, dim)",
+                    "output.ndim == (x.ndim if keepdim else x.ndim - "
+                    "len(reduced_axes(x, dim)))",
+                ],
+            },
+        }
+        errs_pre = validator.check_l2_infer_parity(
+            "SumParityOp", entry_pre, cls,
+        )
+        errs_post = validator.check_l2_infer_parity(
+            "SumParityOp", entry_post, cls,
+        )
+        # Error strings quote the rule text verbatim, so post-migration
+        # entries naturally differ from pre-migration ones in the rule
+        # body. What must stay identical is the validator's classification
+        # at each rule index: the same number of errors, the same severity
+        # tags ("[shape]"), and the same indices flagged. That captures
+        # the AC-3 contract — bit-identical validator behaviour pre/post
+        # — without coupling the test to literal rule wording.
+        def _classify(errs: list[str]) -> list[str]:
+            tags = []
+            for e in errs:
+                if "shape_rules[0]" in e:
+                    tags.append("[shape] rule[0]")
+                elif "shape_rules[1]" in e:
+                    tags.append("[shape] rule[1]")
+                elif "shape_rules[2]" in e:
+                    tags.append("[shape] rule[2]")
+                else:
+                    tags.append(e.split(" ", 1)[0])
+            return tags
+
+        assert _classify(errs_pre) == _classify(errs_post), (
+            errs_pre, errs_post,
+        )
+        assert len(errs_pre) == len(errs_post), (errs_pre, errs_post)

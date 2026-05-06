@@ -36,6 +36,31 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
 
+# Load ``tileops/manifest/shape_rules.py`` directly via importlib so the
+# validator does not pull in the full ``tileops`` package (which eagerly
+# imports ``tileops.ops`` at package init time). Loading the module file
+# in isolation keeps the validator's import surface minimal and avoids
+# coupling validator startup to runtime op infrastructure.
+import importlib.util as _importlib_util  # noqa: E402
+
+_SHAPE_RULES_PATH = REPO_ROOT / "tileops" / "manifest" / "shape_rules.py"
+_shape_rules_spec = _importlib_util.spec_from_file_location(
+    "_tileops_validator_shape_rules", _SHAPE_RULES_PATH,
+)
+if _shape_rules_spec is None or _shape_rules_spec.loader is None:
+    raise ImportError(
+        f"could not load shape_rules helpers from {_SHAPE_RULES_PATH}",
+    )
+_shape_rules_module = _importlib_util.module_from_spec(_shape_rules_spec)
+_shape_rules_spec.loader.exec_module(_shape_rules_module)
+# Pull individual helpers off the isolated module by attribute. Keeping
+# the references narrow (no broader registry import) localises any
+# future shape_rules.py rename or removal to a single edit site here.
+_dim_range_validity = _shape_rules_module.dim_range_validity
+_dim_uniqueness = _shape_rules_module.dim_uniqueness
+_reduced_axes = _shape_rules_module.reduced_axes
+del _shape_rules_module
+
 # Valid torch dtype base names (without same_as references)
 _TORCH_DTYPES = {
     "float16", "float32", "float64", "bfloat16",
@@ -710,6 +735,8 @@ def check_l2(op_name: str, entry: dict) -> list[str]:
     rules = sig.get("shape_rules", [])
 
     for i, rule in enumerate(rules):
+        if not isinstance(rule, str):
+            continue
         try:
             ast.parse(rule, mode="eval")
         except SyntaxError as exc:
@@ -1488,26 +1515,47 @@ def _is_broadcastable_to(src: object, dst: object) -> bool:
 # documented helper set (see docs/design/ops-design-reference.md). Keep this list
 # aligned with manifest spec; widening it changes the rule language.
 #
-# Broadcasting helpers (``broadcast_shapes`` / ``is_broadcastable_to``)
-# mirror PyTorch semantics but are pure-Python so the validator does
-# not require ``torch`` to evaluate L1 shape_rules.
-_SHAPE_RULE_BUILTINS: dict = {
-    "len": len,
-    "isinstance": isinstance,
-    "int": int,
-    "tuple": tuple,
-    "list": list,
-    "type": type,
-    "all": all,
-    "any": any,
-    "range": range,
-    "set": set,
-    "abs": abs,
-    "min": min,
-    "max": max,
-    "broadcast_shapes": _broadcast_shapes,
-    "is_broadcastable_to": _is_broadcastable_to,
-}
+# Three name groups live here together: Python primitives (``len`` etc.),
+# broadcasting helpers (``broadcast_shapes`` / ``is_broadcastable_to``,
+# pure-Python so the validator does not require ``torch``), and
+# reduction-dim helpers from ``tileops.manifest.shape_rules``. All three
+# share the same eval-scope contract — callable by bare name from any
+# rule body. Group membership is editorial; the eval scope sees one
+# flat namespace.
+#
+# The dict is built from an explicit (name, callable) list so a name
+# collision between groups raises at validator import time. Silent
+# dict-merge override would let a future helper shadow a Python primitive
+# (or an existing broadcasting helper) without surfacing the conflict.
+_SHAPE_RULE_BUILTIN_PAIRS = [
+    ("len", len),
+    ("isinstance", isinstance),
+    ("int", int),
+    ("tuple", tuple),
+    ("list", list),
+    ("type", type),
+    ("all", all),
+    ("any", any),
+    ("range", range),
+    ("set", set),
+    ("abs", abs),
+    ("min", min),
+    ("max", max),
+    ("broadcast_shapes", _broadcast_shapes),
+    ("is_broadcastable_to", _is_broadcastable_to),
+    ("dim_range_validity", _dim_range_validity),
+    ("dim_uniqueness", _dim_uniqueness),
+    ("reduced_axes", _reduced_axes),
+]
+_SHAPE_RULE_BUILTINS: dict = {}
+for _entry_name, _entry_fn in _SHAPE_RULE_BUILTIN_PAIRS:
+    if _entry_name in _SHAPE_RULE_BUILTINS:
+        raise RuntimeError(
+            f"shape_rule builtin name collision: {_entry_name!r} is "
+            f"registered twice. Two callables cannot share the same "
+            f"name in the rule eval scope; rename one or unify them."
+        )
+    _SHAPE_RULE_BUILTINS[_entry_name] = _entry_fn
 
 
 def _eval_shape_rule(
@@ -1523,9 +1571,10 @@ def _eval_shape_rule(
     The eval globals expose the ``_SHAPE_RULE_BUILTINS`` helper set
     (``len``, ``isinstance``, ``int``, ``tuple``, ``list``, ``type``,
     ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``, ``max``,
-    ``broadcast_shapes``, ``is_broadcastable_to``) so R11 / R11a-style
-    rules that use these helpers can be evaluated against the mock
-    context instead of being silently skipped.
+    ``broadcast_shapes``, ``is_broadcastable_to``, ``dim_range_validity``,
+    ``dim_uniqueness``, ``reduced_axes``) so R11 / R11a-style rules that
+    use these helpers can be evaluated against the mock context instead
+    of being silently skipped.
 
     The context names (inputs / outputs / params) are injected into both
     eval globals and locals. Comprehensions (generator / set / list /

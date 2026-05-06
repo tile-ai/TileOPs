@@ -8,7 +8,7 @@
 
 ______________________________________________________________________
 
-- Manifest keys are PascalCase Op class names: `{PascalCaseName}{Direction}Op` (e.g., `RMSNormFwdOp`). The key must exactly match the Python class name (`cls.__name__`). No abbreviation rules — the manifest author determines the name.
+- Manifest key must equal the corresponding Op `cls.__name__` exactly. Class-naming convention is in `ops-design.md`.
 
 - `ref_api` (required) — declares the external API the signature follows (e.g., `torch.nn.functional.rms_norm`). Set to `"none"` if no direct external counterpart exists. Informational only; does not affect validation.
 
@@ -28,9 +28,9 @@ ______________________________________________________________________
 
 - `shape_rules` are Python expressions for shape relationships. `shape` and `shape_rules` fully specify output shape derivation.
 
-- For reduction ops whose `dim` accepts an integer or sequence: validate range → normalize negatives → enforce uniqueness, in that order; do NOT silently wrap out-of-range indices with `% x.ndim`. Concrete `shape_rules` expressions live in each op's manifest entry; lifting them into a shared helper module is tracked as a follow-up.
+- Reduction-dim validation: do NOT silently wrap out-of-range indices with `% x.ndim`. Canonical predicates and value extractors live in `tileops.manifest.shape_rules` and are exposed as shape_rule builtins (callable by bare name from any rule body, alongside `broadcast_shapes` etc.); new reduction ops MUST reference them, inline string expressions are a transitional fallback only.
 
-- `status` is required. `status: implemented` = all validator levels apply. `status: spec-only` = L0 only.
+- `status` is required: one of `implemented` or `spec-only`.
 
 - Roofline `vars` maps variable names to Python expressions over tensor shapes and params. Required for arbitrary-rank ops.
 
@@ -40,7 +40,7 @@ ______________________________________________________________________
 
 - Tensor layout defaults to contiguous row-major. When an op requires non-default layout (e.g., `channels_last`), add `layout` field to the tensor declaration. `shape` dimension names reflect actual memory order.
 
-- `source.kernel_map` is the Op→Kernel dispatch registration table (`dispatch_key: KernelClassName`). It declares which Kernels an Op uses so agents know what to implement. Required when `status: implemented`, optional when `status: spec-only`. Does not describe dispatch strategy.
+- `source.kernel_map` is the Op→Kernel dispatch registration table (`dispatch_key: KernelClassName`). It declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy.
 
 - Never modify manifest to match non-conforming code. If code doesn't match spec: set `status: spec-only` and fix implementation in a follow-up PR. Never remove params, vars, or shape_rules to silence validator errors.
 
