@@ -137,7 +137,7 @@ GroupedQueryAttentionFwdOp:
 GroupedQueryAttentionPrefillFwdOp:
   ref_api: "none"
   family: attention
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -179,7 +179,7 @@ GroupedQueryAttentionPrefillFwdOp:
 GroupedQueryAttentionPrefillWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -237,7 +237,7 @@ GroupedQueryAttentionPrefillWithKVCacheFwdOp:
 GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
