@@ -36,30 +36,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
 
-# Load ``tileops/manifest/shape_rules.py`` directly via importlib so the
-# validator does not pull in the full ``tileops`` package (which eagerly
-# imports ``tileops.ops`` at package init time). Loading the module file
-# in isolation keeps the validator's import surface minimal and avoids
-# coupling validator startup to runtime op infrastructure.
-import importlib.util as _importlib_util  # noqa: E402
-
-_SHAPE_RULES_PATH = REPO_ROOT / "tileops" / "manifest" / "shape_rules.py"
-_shape_rules_spec = _importlib_util.spec_from_file_location(
-    "_tileops_validator_shape_rules", _SHAPE_RULES_PATH,
+from tileops.manifest.shape_rules import (  # noqa: E402
+    dim_range_validity,
+    dim_uniqueness,
+    reduced_axes,
 )
-if _shape_rules_spec is None or _shape_rules_spec.loader is None:
-    raise ImportError(
-        f"could not load shape_rules helpers from {_SHAPE_RULES_PATH}",
-    )
-_shape_rules_module = _importlib_util.module_from_spec(_shape_rules_spec)
-_shape_rules_spec.loader.exec_module(_shape_rules_module)
-# Pull individual helpers off the isolated module by attribute. Keeping
-# the references narrow (no broader registry import) localises any
-# future shape_rules.py rename or removal to a single edit site here.
-_dim_range_validity = _shape_rules_module.dim_range_validity
-_dim_uniqueness = _shape_rules_module.dim_uniqueness
-_reduced_axes = _shape_rules_module.reduced_axes
-del _shape_rules_module
 
 # Valid torch dtype base names (without same_as references)
 _TORCH_DTYPES = {
@@ -1543,9 +1524,9 @@ _SHAPE_RULE_BUILTIN_PAIRS = [
     ("max", max),
     ("broadcast_shapes", _broadcast_shapes),
     ("is_broadcastable_to", _is_broadcastable_to),
-    ("dim_range_validity", _dim_range_validity),
-    ("dim_uniqueness", _dim_uniqueness),
-    ("reduced_axes", _reduced_axes),
+    ("dim_range_validity", dim_range_validity),
+    ("dim_uniqueness", dim_uniqueness),
+    ("reduced_axes", reduced_axes),
 ]
 _SHAPE_RULE_BUILTINS: dict = {}
 for _entry_name, _entry_fn in _SHAPE_RULE_BUILTIN_PAIRS:
