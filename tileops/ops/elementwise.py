@@ -624,6 +624,7 @@ __all__ = [
     "ClampMaxFwdOp",
     "MaskedFillFwdOp",
     "MaskedFillScalarFwdOp",
+    "LerpTensorFwdOp",
     "NanToNumFwdOp",
     "AlibiFwdOp",
     "SinusoidalFwdOp",
