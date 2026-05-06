@@ -284,10 +284,11 @@ def _register_lerp_tensor_custom_op(op_cls):
 
     The fake function computes the broadcast output shape from ``input`` /
     ``end`` / ``weight`` so that ``torch.compile(fullgraph=True)`` works
-    for both same-shape and broadcasting inputs. Registered under a
-    distinct ``_tensor`` namespace to avoid colliding with the scalar
-    ``LerpFwdOp`` (which bakes ``weight`` at construction time and uses
-    the binary registration path).
+    for both same-shape and broadcasting inputs. The op is registered
+    as ``top::elementwise_{op_name}`` (e.g. ``top::elementwise_lerp_tensor``
+    when ``op_cls._op_name == 'lerp_tensor'``), giving it a distinct name
+    from the scalar ``LerpFwdOp`` (registered as ``top::elementwise_lerp``
+    via the binary path) so the two overloads cannot collide.
     """
     op_name = op_cls._op_name
 
@@ -1097,8 +1098,11 @@ class _InplaceMixin:
     Used by activation ops whose manifest entry declares ``inplace:
     bool = False`` (e.g. ReLU, SiLU, HardSwish, HardSigmoid, Mish, SELU,
     LeakyReLU, ELU, Hardtanh). Activations whose manifest does not
-    declare ``inplace`` (e.g. GELU, Softplus) intentionally do not mix
-    this in.
+    declare ``inplace`` opt out in one of two ways: standalone unary
+    ops (e.g. GELU) simply do not mix this in, while parametric ops
+    that share ``_ParametricActivationOp`` as their base (e.g. Softplus)
+    inherit the mixin transparently and set ``_SUPPORTS_INPLACE = False``
+    so ``forward()`` ignores any post-construction ``inplace`` toggle.
 
     The underlying kernels always write to a fresh output buffer, but
     PyTorch's activation contract for ``inplace=True`` requires the
