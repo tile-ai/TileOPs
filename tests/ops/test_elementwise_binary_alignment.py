@@ -95,7 +95,7 @@ def test_binary_signature_matches_manifest(
 
 
 # ---------------------------------------------------------------------------
-# Bidirectional broadcast coverage (AC-5)
+# Bidirectional broadcast coverage
 # ---------------------------------------------------------------------------
 #
 # Every broadcast-capable binary op must accept input.shape != other.shape.
@@ -247,7 +247,7 @@ def test_binary_op_bidirectional_broadcast(
 
 
 # ---------------------------------------------------------------------------
-# MaskedFillScalar dtype widening (AC-4)
+# MaskedFillScalar dtype widening
 # ---------------------------------------------------------------------------
 
 # Manifest declares: bool | uint8 | int8 | int16 | int32 | int64 |
