@@ -1109,6 +1109,8 @@ def _gqa_prefill_with_kv_cache_fwd_kernel(batch: int,
                         else:
                             q_shared[i, d] = T.cast(0, dtype)
 
+                # The first heads_kv CTAs append one KV head each; in this branch
+                # by is the KV-head index, not the query-head-to-KV mapping.
                 if by < heads_kv:
                     if (bx + 1) * block_m <= seq_len_new and old_len + (
                             bx + 1) * block_m <= seqlen_kv:
