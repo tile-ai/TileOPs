@@ -1233,7 +1233,7 @@ class AddFwdOp(_AlphaScaledBinaryOp):
     Conforms to ``torch.add(input, other, *, alpha=1)``. Only ``alpha == 1``
     dispatches to the kernel; non-default ``alpha`` raises
     ``NotImplementedError`` until a kernel-side scalar multiplier lands
-    (tracked at https://github.com/tile-ai/TileOPs/issues/1244).
+    (tracked in a follow-up issue).
     """
 
     _op_name = "add"
@@ -1248,7 +1248,7 @@ class AddFwdOp(_AlphaScaledBinaryOp):
             raise NotImplementedError(
                 "AddFwdOp(alpha != 1) is not yet implemented; the current "
                 "kernel only honors alpha == 1. Tracked at "
-                "https://github.com/tile-ai/TileOPs/issues/1244"
+                "a follow-up issue tracks the kernel work"
             )
         return super().forward(input, other)
 
@@ -1259,7 +1259,7 @@ class SubFwdOp(_AlphaScaledBinaryOp):
     Conforms to ``torch.sub(input, other, *, alpha=1)``. Only ``alpha == 1``
     dispatches to the kernel; non-default ``alpha`` raises
     ``NotImplementedError`` until a kernel-side scalar multiplier lands
-    (tracked at https://github.com/tile-ai/TileOPs/issues/1244).
+    (tracked in a follow-up issue).
     """
 
     _op_name = "sub"
@@ -1274,7 +1274,7 @@ class SubFwdOp(_AlphaScaledBinaryOp):
             raise NotImplementedError(
                 "SubFwdOp(alpha != 1) is not yet implemented; the current "
                 "kernel only honors alpha == 1. Tracked at "
-                "https://github.com/tile-ai/TileOPs/issues/1244"
+                "a follow-up issue tracks the kernel work"
             )
         return super().forward(input, other)
 
@@ -1294,8 +1294,7 @@ class DivFwdOp(BinaryOp):
     (truncation toward zero), or ``"floor"`` (floor division). Only
     ``rounding_mode is None`` dispatches to the kernel; the trunc /
     floor variants raise ``NotImplementedError`` until a rounded-divide
-    kernel lands (tracked at
-    https://github.com/tile-ai/TileOPs/issues/1245). The leading ``*``
+    kernel lands (tracked in a follow-up issue). The leading ``*``
     makes ``rounding_mode`` and the existing ``strategy`` /
     ``kernel_map`` / ``tune`` parameters keyword-only; only the
     positional triplet ``(a_shape, b_shape, dtype)`` is shared with
@@ -1337,7 +1336,7 @@ class DivFwdOp(BinaryOp):
                 f"DivFwdOp(rounding_mode={self.rounding_mode!r}) is not yet "
                 "implemented; the current kernel only honors rounding_mode is "
                 "None. Tracked at "
-                "https://github.com/tile-ai/TileOPs/issues/1245"
+                "a follow-up issue tracks the kernel work"
             )
         return super().forward(input, other)
 
@@ -1848,7 +1847,7 @@ class _GeluApproximateBase(UnaryOp):
     for introspection, and then delegates to ``UnaryOp.__init__``.
     ``approximate='tanh'`` is rejected with ``NotImplementedError`` until
     a fused tanh-GELU unary kernel is exposed to the Op layer (tracked
-    at https://github.com/tile-ai/TileOPs/issues/1241).
+    in a follow-up issue).
     """
 
     def __init__(
@@ -1871,7 +1870,7 @@ class _GeluApproximateBase(UnaryOp):
                 f"{type(self).__name__}(approximate='tanh') is not "
                 "implemented: no fused tanh-GELU unary kernel is exposed "
                 "to the Op layer yet. Tracked at "
-                "https://github.com/tile-ai/TileOPs/issues/1241",
+                "a follow-up issue tracks the kernel work",
             )
         self.approximate = approximate
         super().__init__(
@@ -1889,7 +1888,7 @@ class GeluFwdOp(_GeluApproximateBase):
             the erf-based ``GeluFwdKernel``. ``'tanh'`` is accepted by
             the manifest signature but raises ``NotImplementedError``
             because no fused tanh-GELU unary kernel is implemented yet
-            (tracked at https://github.com/tile-ai/TileOPs/issues/1241).
+            (tracked in a follow-up issue).
         strategy: Optional kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
@@ -2939,8 +2938,7 @@ class MaskedFillScalarFwdOp(Op):
     int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``). The
     current TileLang kernel only supports float dtypes; integer and
     bool dtypes are rejected at construction time with ``ValueError``
-    until a real int / bool kernel lands (tracked at
-    https://github.com/tile-ai/TileOPs/issues/1246).
+    until a real int / bool kernel lands (tracked in a follow-up issue).
 
     Args:
         input: Shape of the input tensor.
