@@ -281,13 +281,13 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
       - "max_position is None or max_position > 0"
 
   workloads:
-    - {total_q: 8192, batch: 8, heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-paged-fullattn-b8-prefix32k-chunk1k-p64-partial-rope64-fp16"}
-    - {total_q: 4608, batch: 8, heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-paged-fullattn-mixed-b8-p64-partial-rope64-fp16"}
-    - {total_q: 4096, batch: 8, heads: 32, heads_kv: 8, dim: 128, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 36864, is_causal: true, fuse_rope: true, max_position: 4608, rotary_dim: null, dtypes: [float16], label: "llama31-8b-prefill-paged-b8-prefix4k-chunk512-p64-full-rope-fp16"}
-    - {total_q: 2048, batch: 4, heads: 8, heads_kv: 2, dim: 64, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 18432, is_causal: true, softcap: 50.0, dtypes: [float16], label: "gqa-prefill-paged-softcap50-b4-prefix4k-chunk512-p64-fp16"}
+    - {total_q: 8192, batch: 8, q_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], cache_lens: [32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768], heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-paged-fullattn-b8-prefix32k-chunk1k-p64-partial-rope64-fp16"}
+    - {total_q: 4608, batch: 8, q_lens: [1024, 1024, 1024, 512, 512, 256, 128, 128], cache_lens: [32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768], heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-paged-fullattn-mixed-b8-p64-partial-rope64-fp16"}
+    - {total_q: 4096, batch: 8, q_lens: [512, 512, 512, 512, 512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], heads: 32, heads_kv: 8, dim: 128, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 36864, is_causal: true, fuse_rope: true, max_position: 4608, rotary_dim: null, dtypes: [float16], label: "llama31-8b-prefill-paged-b8-prefix4k-chunk512-p64-full-rope-fp16"}
+    - {total_q: 2048, batch: 4, q_lens: [512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096], heads: 8, heads_kv: 2, dim: 64, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 18432, is_causal: true, softcap: 50.0, dtypes: [float16], label: "gqa-prefill-paged-softcap50-b4-prefix4k-chunk512-p64-fp16"}
 
   roofline:
-    func: "tileops.perf.formulas.gqa_prefill_with_kv_cache_fwd_roofline"
+    func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
 
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
