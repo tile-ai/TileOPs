@@ -21,8 +21,8 @@ PR="${1:?usage: round-pre.sh <PR_NUMBER>}"
 command -v gh >/dev/null 2>&1 || { echo "round-pre: missing gh" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "round-pre: missing jq" >&2; exit 1; }
 
-REPO="tile-ai/TileOPs"
 REVIEWER_LOGIN="${RESOLVE_REVIEWER_LOGIN:-Ibuki-wind}"
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Anchor state lookup to the main checkout (see preflight.sh).
 REPO_PATH="$(git worktree list --porcelain 2>/dev/null | head -n 1 | sed 's/^worktree //')" \
   || { echo "round-pre: not in a git repo" >&2; exit 1; }
@@ -54,10 +54,16 @@ LAST_REVIEW_COMMENT_ID_PREV=$(jq -r '.last_processed_review_comment_id' "$META")
 CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
 MAX_IDLE=20
 
-PR_JSON=$(gh pr view "$PR" --repo "$REPO" --json state,headRefOid,isDraft 2>/dev/null) \
+PR_JSON=$(gh pr view "$PR" --json state,headRefOid,isDraft,baseRepository 2>/dev/null) \
   || { echo "round-pre: gh pr view failed" >&2; exit 1; }
 PR_STATE=$(echo "$PR_JSON" | jq -r .state)
 HEAD_SHA=$(echo "$PR_JSON" | jq -r .headRefOid)
+REPO_OWNER=$(echo "$PR_JSON" | jq -r '.baseRepository.owner.login // .baseRepository.owner // empty')
+REPO_NAME=$(echo "$PR_JSON" | jq -r '.baseRepository.name // empty')
+if [[ -z "$REPO_OWNER" || -z "$REPO_NAME" ]]; then
+  echo "round-pre: could not derive base repo from gh pr view" >&2; exit 1
+fi
+REPO="$REPO_OWNER/$REPO_NAME"
 
 # Reviews + inline comments — paginate so PRs with >1 page don't
 # silently lose the latest IDs / state.
@@ -88,7 +94,7 @@ count_unresolved() {
             }
           }
         }
-      }' -F owner=tile-ai -F repo=TileOPs -F pr="$PR" \
+      }' -F owner="$REPO_OWNER" -F repo="$REPO_NAME" -F pr="$PR" \
         ${cursor:+-f after="$cursor"})
     page_unresolved=$(printf '%s' "$page" \
       | jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length')
@@ -184,13 +190,16 @@ if [[ "$ACTION" == "continue" ]]; then
             reviewThreads(first:100, after:$after){
               nodes{
                 id isResolved
-                comments(first:100){ nodes{ databaseId author{login} body path line } }
+                comments(first:100){ nodes{
+                  id databaseId author{login} body path line
+                  commit{ oid }
+                } }
               }
               pageInfo{ hasNextPage endCursor }
             }
           }
         }
-      }' -F owner=tile-ai -F repo=TileOPs -F pr="$PR" \
+      }' -F owner="$REPO_OWNER" -F repo="$REPO_NAME" -F pr="$PR" \
         ${cursor:+-f after="$cursor"})
     items=$(printf '%s' "$page" \
       | jq -c '.data.repository.pullRequest.reviewThreads.nodes|map(select(.isResolved==false))[]')
@@ -207,6 +216,25 @@ if [[ "$ACTION" == "continue" ]]; then
       | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
   done
   echo ']' >> "$SNAP_PREFIX.unresolved-threads.json"
+
+  # Stale-bot auto-resolve: scoped to known bot identities anchored to a
+  # commit older than current HEAD. Humans and bots-at-HEAD are skipped;
+  # unknown bot-like logins are recorded for human triage. The classifier
+  # consumes the unresolved-threads snapshot directly so the pagination
+  # contract above is the single source of truth.
+  if [[ -x "$SKILL_DIR/auto-resolve-stale.sh" && -f "$SKILL_DIR/known-bots.json" ]]; then
+    AR_INPUT="$SNAP_PREFIX.auto-resolve-input.json"
+    jq -n --arg sha "$HEAD_SHA" \
+      --slurpfile threads "$SNAP_PREFIX.unresolved-threads.json" \
+      '{head_sha:$sha, threads:$threads[0]}' > "$AR_INPUT"
+    "$SKILL_DIR/auto-resolve-stale.sh" \
+      --threads "$AR_INPUT" \
+      --bots "$SKILL_DIR/known-bots.json" \
+      --run-dir "$RUN_DIR" \
+      --round "$N" \
+      > "$SNAP_PREFIX.auto-resolve.json" \
+      || echo "round-pre: auto-resolve-stale exited non-zero" >&2
+  fi
 
   gh pr checks "$PR" --repo "$REPO" --json name,state,conclusion \
     > "$SNAP_PREFIX.ci.json" 2>/dev/null || echo '[]' > "$SNAP_PREFIX.ci.json"

@@ -66,6 +66,7 @@ Round 2+ rely on session memory.
 - `$SNAP.new-inline-comments.json`
 - `$SNAP.unresolved-threads.json`
 - `$SNAP.ci.json`
+- `$SNAP.auto-resolve.json` — JSON action plan from the stale-bot auto-resolver. `resolve[]` lists threads that round-pre already auto-replied + resolved (known bot, anchored to a stale commit). `unknown_bot_like[]` and `$RUN_DIR/round-NN.unknown-bot-like.json` flag bot-like logins missing from `known-bots.json` for human triage. `skip[]` lists threads the resolver intentionally left untouched (humans, or bots already at HEAD).
 
 ## Step 3: Resolve
 

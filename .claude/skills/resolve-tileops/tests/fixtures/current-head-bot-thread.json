@@ -1,0 +1,22 @@
+{
+  "head_sha": "deadbeef0000000000000000000000000000aaaa",
+  "threads": [
+    {
+      "id": "PRT_kwDO_current_head_bot",
+      "isResolved": false,
+      "comments": {
+        "nodes": [
+          {
+            "id": "PRRC_kwDO_current_first",
+            "databaseId": 4444444444,
+            "author": { "login": "gemini-code-assist" },
+            "commit": { "oid": "deadbeef0000000000000000000000000000aaaa" },
+            "body": "Style nit",
+            "path": "tileops/qux.py",
+            "line": 21
+          }
+        ]
+      }
+    }
+  ]
+}
