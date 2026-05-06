@@ -287,8 +287,8 @@ def _register_lerp_tensor_custom_op(op_cls):
     for both same-shape and broadcasting inputs. The op is registered
     as ``top::elementwise_{op_name}`` (e.g. ``top::elementwise_lerp_tensor``
     when ``op_cls._op_name == 'lerp_tensor'``), giving it a distinct name
-    from the scalar ``LerpFwdOp`` (registered as ``top::elementwise_lerp``
-    via the binary path) so the two overloads cannot collide.
+    from the scalar ``LerpFwdOp`` (registered as ``top::elementwise_binary_lerp``
+    via the binary factory) so the two overloads cannot collide.
     """
     op_name = op_cls._op_name
 
@@ -3503,7 +3503,7 @@ _register_masked_fill_tensor_value_custom_op(MaskedFillFwdOp)
 
 # --- Tensor-weight lerp (1 op: input, end, weight -> out) ---
 # Registered under ``top::elementwise_lerp_tensor`` to avoid colliding with
-# the scalar ``LerpFwdOp``'s ``top::elementwise_lerp`` namespace. The fake
+# the scalar ``LerpFwdOp``'s ``top::elementwise_binary_lerp`` namespace. The fake
 # function is broadcast-aware so torch.compile(fullgraph=True) traces
 # correctly for both same-shape and broadcasting inputs.
 _register_lerp_tensor_custom_op(LerpTensorFwdOp)
