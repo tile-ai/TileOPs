@@ -78,6 +78,7 @@ def _gqa_prefill_paged_ref(
     heads: int,
     heads_kv: int,
     is_causal: bool,
+    softcap: float | None = None,
 ) -> torch.Tensor:
     groups = heads // heads_kv
     dim = q.shape[-1]
@@ -97,6 +98,8 @@ def _gqa_prefill_paged_ref(
         k_bhsd = k_all.repeat_interleave(groups, dim=1).transpose(0, 1).float()
         v_bhsd = v_all.repeat_interleave(groups, dim=1).transpose(0, 1).float()
         scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * scale
+        if softcap is not None and softcap > 0:
+            scores = softcap * torch.tanh(scores / softcap)
         if is_causal:
             q_pos = torch.arange(q_len, device=q.device)[:, None] + old_len
             kv_pos = torch.arange(total_len, device=q.device)[None, :]
@@ -204,8 +207,17 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("rotary_dim", [None, 32])
-def test_gqa_prefill_paged_with_kv_cache_fused_rope(rotary_dim: int | None) -> None:
+@pytest.mark.parametrize("rotary_dim, is_causal, softcap", [
+    pytest.param(None, True, None, id="full-causal"),
+    pytest.param(32, True, None, id="partial-causal"),
+    pytest.param(32, False, None, id="partial-noncausal"),
+    pytest.param(32, True, 2.0, id="partial-causal-softcap"),
+])
+def test_gqa_prefill_paged_with_kv_cache_fused_rope(
+    rotary_dim: int | None,
+    is_causal: bool,
+    softcap: float | None,
+) -> None:
     q_lens = [48, 33]
     old_lens = [67, 100]
     batch, heads, heads_kv, dim = 2, 8, 2, 64
@@ -266,7 +278,8 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(rotary_dim: int | None) -> N
         batch=batch,
         heads=heads,
         heads_kv=heads_kv,
-        is_causal=True,
+        is_causal=is_causal,
+        softcap=softcap,
     )
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         batch=batch,
@@ -275,7 +288,9 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(rotary_dim: int | None) -> N
         max_pages_per_req=max_pages_per_req,
         page_size=page_size,
         dim=dim,
+        is_causal=is_causal,
         dtype=dtype,
+        softcap=softcap,
         fuse_rope=True,
         max_position=max_position,
         rotary_dim=rotary_dim,

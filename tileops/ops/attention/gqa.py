@@ -17,9 +17,11 @@ from tileops.kernels.attention import (
     GQAFwdWsPersistentKernel,
     GQAPrefillFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
+    GQAPrefillPagedWithKVCacheRopeAppendKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
     GQAPrefillVarlenFwdKernel,
     GQAPrefillWithKVCacheFwdKernel,
+    GQAPrefillWithKVCacheRopeAppendKernel,
     GQAPrefillWithKVCacheRopeFwdKernel,
     GQASlidingWindowFwdKernel,
     GQASlidingWindowFwdWgmmaPipelinedKernel,
@@ -144,12 +146,20 @@ def _select_gqa_prefill_with_kv_cache_rope_fwd_kernel_cls() -> Type[Kernel]:
     return GQAPrefillWithKVCacheRopeFwdKernel
 
 
+def _select_gqa_prefill_with_kv_cache_rope_append_kernel_cls() -> Type[Kernel]:
+    return GQAPrefillWithKVCacheRopeAppendKernel
+
+
 def _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
     return GQAPrefillPagedWithKVCacheFwdKernel
 
 
 def _select_gqa_prefill_paged_with_kv_cache_rope_fwd_kernel_cls() -> Type[Kernel]:
     return GQAPrefillPagedWithKVCacheRopeFwdKernel
+
+
+def _select_gqa_prefill_paged_with_kv_cache_rope_append_kernel_cls() -> Type[Kernel]:
+    return GQAPrefillPagedWithKVCacheRopeAppendKernel
 
 
 def _validate_gqa_dims(heads: int, heads_kv: int, dim: int) -> None:
@@ -534,7 +544,12 @@ class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
         self._rope_cache_device: Optional[torch.device] = None
 
         self.dispatch_kernel(kernel_map)
+        self.append_kernel: Optional[Kernel] = None
         if self.fuse_rope:
+            self.append_kernel = self.kernel_map[
+                "gqa_prefill_with_kv_cache_rope_append_kernel"](
+                    batch, heads_kv, seq_len_new, seqlen_kv, dim, self.max_position,
+                    self.rotary_dim, self.dtype, tune=tune)
             self.kernel = self.kernel_map["gqa_prefill_with_kv_cache_rope_fwd_kernel"](
                 batch, heads, heads_kv, seq_len_new, seqlen_kv, dim, self.max_position,
                 self.rotary_dim, is_causal, self.dtype, sm_scale=self.sm_scale,
@@ -548,6 +563,8 @@ class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         if self.fuse_rope:
             return {
+                "gqa_prefill_with_kv_cache_rope_append_kernel":
+                    _select_gqa_prefill_with_kv_cache_rope_append_kernel_cls(),
                 "gqa_prefill_with_kv_cache_rope_fwd_kernel":
                     _select_gqa_prefill_with_kv_cache_rope_fwd_kernel_cls()
             }
@@ -630,6 +647,7 @@ class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
         self._validate_forward_inputs(q, k_new, v_new, k_cache, v_cache, cache_seqlens)
         if self.fuse_rope:
             cos, sin = self._get_rope_cos_sin(q.device)
+            self.append_kernel(k_new, v_new, k_cache, v_cache, cache_seqlens, cos, sin)
             return _attention_output(
                 self.kernel(q, k_new, v_new, k_cache, v_cache, cache_seqlens, cos, sin))
         return _attention_output(self.kernel(q, k_new, v_new, k_cache, v_cache, cache_seqlens))
@@ -700,7 +718,20 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         self._rope_cache_device: Optional[torch.device] = None
 
         self.dispatch_kernel(kernel_map)
+        self.append_kernel: Optional[Kernel] = None
         if self.fuse_rope:
+            self.append_kernel = self.kernel_map[
+                "gqa_prefill_paged_with_kv_cache_rope_append_kernel"](
+                    batch=batch,
+                    heads_kv=heads_kv,
+                    max_pages_per_req=max_pages_per_req,
+                    page_size=page_size,
+                    dim=dim,
+                    max_position=self.max_position,
+                    rotary_dim=self.rotary_dim,
+                    dtype=dtype,
+                    tune=tune,
+                )
             self.kernel = self.kernel_map["gqa_prefill_paged_with_kv_cache_rope_fwd_kernel"](
                 batch=batch,
                 heads=heads,
@@ -735,6 +766,8 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         if self.fuse_rope:
             return {
+                "gqa_prefill_paged_with_kv_cache_rope_append_kernel":
+                    _select_gqa_prefill_paged_with_kv_cache_rope_append_kernel_cls(),
                 "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel":
                     _select_gqa_prefill_paged_with_kv_cache_rope_fwd_kernel_cls()
             }
@@ -888,6 +921,9 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             block_table, max_seqlen_q)
         if self.fuse_rope:
             cos, sin = self._get_rope_cos_sin(q.device)
+            self.append_kernel(
+                k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table,
+                max_seqlen_q, cos, sin)
             return _attention_output(
                 self.kernel(q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens,
                             block_table, max_seqlen_q, cos, sin))

@@ -664,10 +664,15 @@ def test_gqa_prefill_with_kv_cache_external_rope_uses_absolute_cache_positions()
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("rotary_dim", [None, 32])
+@pytest.mark.parametrize("dtype, rotary_dim, is_causal", [
+    pytest.param(torch.float16, None, True, id="fp16-full-causal"),
+    pytest.param(torch.bfloat16, None, True, id="bf16-full-causal"),
+    pytest.param(torch.float16, 32, True, id="fp16-partial-causal"),
+    pytest.param(torch.bfloat16, 32, True, id="bf16-partial-causal"),
+    pytest.param(torch.float16, 32, False, id="fp16-partial-noncausal"),
+])
 def test_gqa_prefill_with_kv_cache_fused_rope_rotates_only_current_chunk(
-        dtype: torch.dtype, rotary_dim: int | None) -> None:
+        dtype: torch.dtype, rotary_dim: int | None, is_causal: bool) -> None:
     batch, seq_len_new, seqlen_kv, heads, heads_kv, dim = 2, 48, 256, 8, 2, 64
     old_lens = [67, 113]
     softcap = 2.0
@@ -728,7 +733,7 @@ def test_gqa_prefill_with_kv_cache_fused_rope_rotates_only_current_chunk(
         cache_seqlens,
         heads=heads,
         heads_kv=heads_kv,
-        is_causal=True,
+        is_causal=is_causal,
         softcap=softcap,
     )
     op = GroupedQueryAttentionPrefillWithKVCacheFwdOp(
@@ -738,7 +743,7 @@ def test_gqa_prefill_with_kv_cache_fused_rope_rotates_only_current_chunk(
         seq_len_new,
         seqlen_kv,
         dim,
-        True,
+        is_causal,
         dtype,
         softcap=softcap,
         fuse_rope=True,

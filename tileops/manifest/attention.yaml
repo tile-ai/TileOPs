@@ -228,6 +228,7 @@ GroupedQueryAttentionPrefillWithKVCacheFwdOp:
     kernel: tileops/kernels/attention/gqa_fwd.py
     kernel_map:
       gqa_prefill_with_kv_cache_fwd_kernel: GQAPrefillWithKVCacheFwdKernel
+      gqa_prefill_with_kv_cache_rope_append_kernel: GQAPrefillWithKVCacheRopeAppendKernel
       gqa_prefill_with_kv_cache_rope_fwd_kernel: GQAPrefillWithKVCacheRopeFwdKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
@@ -292,6 +293,7 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
     kernel: tileops/kernels/attention/gqa_fwd.py
     kernel_map:
       gqa_prefill_paged_with_kv_cache_fwd_kernel: GQAPrefillPagedWithKVCacheFwdKernel
+      gqa_prefill_paged_with_kv_cache_rope_append_kernel: GQAPrefillPagedWithKVCacheRopeAppendKernel
       gqa_prefill_paged_with_kv_cache_rope_fwd_kernel: GQAPrefillPagedWithKVCacheRopeFwdKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_prefill_paged.py
