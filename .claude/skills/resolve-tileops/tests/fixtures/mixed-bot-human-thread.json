@@ -1,0 +1,31 @@
+{
+  "head_sha": "deadbeef0000000000000000000000000000aaaa",
+  "threads": [
+    {
+      "id": "PRT_kwDO_mixed_bot_human",
+      "isResolved": false,
+      "comments": {
+        "nodes": [
+          {
+            "id": "PRRC_kwDO_mixed_first",
+            "databaseId": 9000000001,
+            "author": { "login": "copilot-pull-request-reviewer" },
+            "commit": { "oid": "cafef00d0000000000000000000000000000bbbb" },
+            "body": "Bot-rooted comment on a stale commit",
+            "path": "tileops/foo.py",
+            "line": 42
+          },
+          {
+            "id": "PRRC_kwDO_mixed_second",
+            "databaseId": 9000000002,
+            "author": { "login": "alice" },
+            "commit": { "oid": "cafef00d0000000000000000000000000000bbbb" },
+            "body": "Human reviewer follow-up — still relevant",
+            "path": "tileops/foo.py",
+            "line": 42
+          }
+        ]
+      }
+    }
+  ]
+}

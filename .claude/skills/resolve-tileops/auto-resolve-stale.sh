@@ -44,6 +44,15 @@ command -v jq >/dev/null 2>&1 || { echo "auto-resolve-stale: missing jq" >&2; ex
 # Build the action plan in pure jq — single pass, no shell-side per-thread state.
 # REPLY_TEXT is passed in as --arg so the action plan and the executed
 # mutation body below share a single source of truth.
+# Validate the unknown-bot-like policy up front so the config field is
+# load-bearing rather than decorative. Only "log_for_manual_triage" is
+# implemented today — any other value fails fast.
+POLICY=$(jq -r '.policy.unknown_bot_like_login // ""' "$BOTS_FILE")
+if [[ "$POLICY" != "log_for_manual_triage" ]]; then
+  echo "auto-resolve-stale: unsupported policy.unknown_bot_like_login='$POLICY' (expected 'log_for_manual_triage')" >&2
+  exit 2
+fi
+
 PLAN=$(jq --slurpfile bots "$BOTS_FILE" --arg reply "$REPLY_TEXT" '
   # Normalise both sides: strip a trailing "[bot]" suffix before comparing.
   # GitHub returns either "copilot-pull-request-reviewer" or
@@ -69,6 +78,20 @@ PLAN=$(jq --slurpfile bots "$BOTS_FILE" --arg reply "$REPLY_TEXT" '
       | ($t.comments.nodes[0]) as $first
       | ($first.author.login // "") as $login
       | ($first.commit.oid // "") as $oid
+      # Whole-thread author check: if ANY comment in the thread is
+      # authored by a human (i.e. a login that is neither whitelisted
+      # nor matches the GitHub-App "[bot]" suffix), treat the thread as
+      # having human discussion and never auto-resolve. Threads whose
+      # only authors are known bots — or known bots plus other bot-like
+      # apps — remain bot-only for classification purposes.
+      | ([ $t.comments.nodes[]
+            | (.author.login // "")
+            | select(
+                . != ""
+                and (is_known($known; .) | not)
+                and (is_bot_like(.)       | not)
+              )
+         ] | length) as $human_repliers
       | {
           thread_id: $t.id,
           comment_id: ($first.id // ""),
@@ -81,28 +104,33 @@ PLAN=$(jq --slurpfile bots "$BOTS_FILE" --arg reply "$REPLY_TEXT" '
           #   stale: oid present and != head
           #   at_head: oid present and == head
           missing_oid: ($oid == ""),
-          stale:       ($oid != $head and $oid != "")
+          stale:       ($oid != $head and $oid != ""),
+          mixed:       ($human_repliers > 0)
         }
     ] as $rows
   | {
       resolve: [
-        $rows[] | select(.known_bot and .stale)
+        $rows[] | select(.known_bot and .stale and (.mixed | not))
         | { thread_id, comment_id, login, reply: $reply }
       ],
       unknown_bot_like: [
-        $rows[] | select((.known_bot|not) and .bot_like)
+        $rows[] | select((.known_bot|not) and .bot_like and (.mixed | not))
         | { thread_id, login }
       ],
       skip: [
         $rows[]
         | select(
-            (.known_bot|not) and (.bot_like|not)         # human
+            .mixed                                       # any human/unknown-bot replier in thread
+            or ((.known_bot|not) and (.bot_like|not))    # human-rooted
             or (.known_bot and (.stale|not))             # bot not stale (at HEAD or missing oid)
           )
         | {
             thread_id,
             reason: (
-              if .known_bot and .missing_oid then "known_bot_missing_commit_oid"
+              if .mixed and .known_bot then "mixed_thread_known_bot_root"
+              elif .mixed and .bot_like then "mixed_thread_unknown_bot_like_root"
+              elif .mixed then "mixed_thread_human_root"
+              elif .known_bot and .missing_oid then "known_bot_missing_commit_oid"
               elif .known_bot and (.stale|not) then "known_bot_at_head"
               elif (.bot_like|not) then "human_reviewer"
               else "other"

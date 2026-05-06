@@ -296,6 +296,19 @@ run_missing_oid_case() {
 }
 run_missing_oid_case
 
+# Case 9: mixed bot+human thread — bot-rooted on a stale commit, but a
+# human reviewer has replied within the same thread. The whole-thread
+# author check must keep this thread out of the resolve bucket so the
+# human's discussion is not silently closed.
+run_case "mixed-bot-human-thread" \
+  "$FIX/mixed-bot-human-thread.json" "09" \
+  '[]' \
+  '[]' \
+  '[
+  "PRT_kwDO_mixed_bot_human"
+]' \
+  "none"
+
 echo
 echo "Results: $PASS passed, $FAIL failed."
 [[ "$FAIL" -eq 0 ]] || exit 1
