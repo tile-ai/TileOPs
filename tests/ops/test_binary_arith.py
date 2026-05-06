@@ -848,6 +848,10 @@ def test_binary_arith_edge_cases(op_cls, ref_fn, gen_fn) -> None:
 
 
 class FloatOnlyBinaryRejectFixture(FixtureBase):
+    # ``MaximumFwdOp`` and ``MinimumFwdOp`` are intentionally absent: their
+    # manifests declare the full bool / integer / float dtype union and the
+    # op layer routes integer dtypes through a torch fallback so the
+    # manifest contract is honored end-to-end.
     PARAMS = [
         ("op_cls, dtype", [
             pytest.param(DivFwdOp, torch.int32, marks=pytest.mark.smoke),
@@ -855,8 +859,6 @@ class FloatOnlyBinaryRejectFixture(FixtureBase):
             pytest.param(PowFwdOp, torch.int32, marks=pytest.mark.smoke),
             pytest.param(FloorDivideFwdOp, torch.int64, marks=pytest.mark.smoke),
             pytest.param(LerpFwdOp, torch.int32, marks=pytest.mark.smoke),
-            pytest.param(MaximumFwdOp, torch.int32, marks=pytest.mark.smoke),
-            pytest.param(MinimumFwdOp, torch.int64, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -875,7 +877,7 @@ def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
     op = SubFwdOp(a_shape=(16,), b_shape=(16,), dtype=torch.float16)
     a = torch.randn(16, device="cuda", dtype=torch.float32)
     b = torch.randn(16, device="cuda", dtype=torch.float16)
-    with pytest.raises(ValueError, match="Expected a.dtype"):
+    with pytest.raises(ValueError, match="Expected input.dtype"):
         op(a, b)
 
 
