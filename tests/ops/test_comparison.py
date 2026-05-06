@@ -254,18 +254,11 @@ def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Manifest dtype-union acceptance tests
+# Dtype rejection tests
 # ---------------------------------------------------------------------------
-#
-# Comparison ops declare the full ``bool | uint8 | int8 | int16 | int32 |
-# int64 | float16 | bfloat16 | float32`` union in the manifest. The
-# underlying TileLang kernel only supports float dtypes, so the op layer
-# routes integer / bool inputs through a torch eager fallback. These
-# tests pin the op-level acceptance and replace the previous "rejects
-# integer dtype" tests, which contradicted the manifest contract.
 
 
-class ComparisonAcceptFixture(FixtureBase):
+class ComparisonRejectFixture(FixtureBase):
     PARAMS = [
         ("op_cls, dtype", [
             pytest.param(EqFwdOp, torch.int32, marks=pytest.mark.smoke),
@@ -279,12 +272,12 @@ class ComparisonAcceptFixture(FixtureBase):
     ]
 
 
-@ComparisonAcceptFixture
-def test_comparison_accepts_integer_dtype(op_cls, dtype: torch.dtype) -> None:
-    """Comparison ops must accept the manifest-declared integer dtypes."""
+@ComparisonRejectFixture
+def test_comparison_rejects_integer_dtype(op_cls, dtype: torch.dtype) -> None:
+    """Comparison ops only support float dtypes; integers must be rejected."""
     shape = (16,)
-    op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
-    assert op.dtype is dtype
+    with pytest.raises(ValueError, match="does not support dtype"):
+        op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
 
 
 if __name__ == "__main__":
