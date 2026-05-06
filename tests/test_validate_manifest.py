@@ -4009,18 +4009,18 @@ class TestValidatorHelperResolution:
         assert reason is None, reason
         assert ok is True
 
-    def test_migrated_sum_rules_parity_with_pre_migration_inline(self, validator):
-        """Regression: SumFwdOp's helper-based rules match the pre-migration inline form.
+    def test_sum_rules_helper_inline_classification_parity(self, validator):
+        """Synthetic parity regression: helper form vs inline form via validator.
 
-        Captures the proof-of-concept end-to-end migration. The pre-
-        migration manifest entry encoded the same five reduction-dim
-        rules as inline Python. The post-migration entry replaces the
-        first two with ``helper:`` predicates and lifts the shared
-        "set of normalized reduction axes" expression into
-        :func:`reduced_axes`. Driving both forms through
-        :func:`check_l2_infer_parity` against the same mock op class
-        must produce equal error lists; any future drift in helper
-        semantics will fail this test.
+        Two locally constructed manifest fixtures encode SumFwdOp-shaped
+        shape_rules in pre-migration inline form and post-migration helper
+        form. Both are driven through :func:`check_l2_infer_parity` against
+        the same mock op class; the validator's classification at each rule
+        index must be identical. This pins helper-resolution semantics
+        against the inline expressions the manifest historically used —
+        without taking any dependency on the checked-in manifest YAML
+        (real ``reduction.yaml`` migration is tracked as a separate
+        manifest PR per the trust-model rule).
         """
         def infer(self, x_shape, *, dim=None, keepdim=False):  # noqa: ARG001
             # Identity output is enough to exercise the rule eval path
