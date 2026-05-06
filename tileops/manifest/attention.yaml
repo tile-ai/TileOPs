@@ -137,7 +137,7 @@ GroupedQueryAttentionFwdOp:
 GroupedQueryAttentionPrefillFwdOp:
   ref_api: "none"
   family: attention
-  status: implemented
+  status: spec-only
 
   signature:
     inputs:
@@ -179,7 +179,7 @@ GroupedQueryAttentionPrefillFwdOp:
 GroupedQueryAttentionPrefillWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
-  status: implemented
+  status: spec-only
 
   signature:
     inputs:
@@ -237,7 +237,7 @@ GroupedQueryAttentionPrefillWithKVCacheFwdOp:
 GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
-  status: implemented
+  status: spec-only
 
   signature:
     inputs:
@@ -287,7 +287,7 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
     - {total_q: 2048, batch: 4, heads: 8, heads_kv: 2, dim: 64, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 18432, is_causal: true, softcap: 50.0, dtypes: [float16], label: "gqa-prefill-paged-softcap50-b4-prefix4k-chunk512-p64-fp16"}
 
   roofline:
-    func: "tileops.perf.formulas.gqa_prefill_with_kv_cache_fwd_roofline"
+    func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
 
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
