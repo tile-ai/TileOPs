@@ -27,7 +27,7 @@ def test_softplus_ignores_post_construction_inplace() -> None:
     # Baseline: default ``inplace=False`` returns a fresh tensor.
     y_default = op(x)
     assert y_default is not x
-    assert torch.allclose(x, x_before), "default path must not mutate input"
+    assert torch.equal(x, x_before), "default path must not mutate input"
 
     # Force the flag on; with ``_SUPPORTS_INPLACE = False`` the forward
     # flow ignores it and behavior matches the default path.
@@ -37,7 +37,7 @@ def test_softplus_ignores_post_construction_inplace() -> None:
         "SoftplusFwdOp.inplace = True must not alias the input "
         "(manifest does not declare inplace)"
     )
-    assert torch.allclose(x, x_before), (
+    assert torch.equal(x, x_before), (
         "SoftplusFwdOp.inplace = True must not mutate the input "
         "(manifest does not declare inplace)"
     )
