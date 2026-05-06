@@ -1008,6 +1008,22 @@ class _InplaceMixin:
         input_tensor.copy_(output.reshape(input_tensor.shape))
         return input_tensor
 
+    def _inplace_aware_forward(
+        self, input: torch.Tensor,  # noqa: A002
+    ) -> torch.Tensor:
+        """Run validate + dispatch + ``_apply_inplace`` for unary activations.
+
+        Routes ``inplace=True`` around the ``_wrapped`` custom-op so the
+        functional torch.compile path never sees a mutation it cannot
+        model (the custom op is registered with ``mutates_args=()``).
+        """
+        self._validate_input(input)
+        wrapped = type(self)._wrapped
+        if wrapped is not None and not self.inplace:
+            return wrapped(input, self._instance_key)
+        result = self._eager_forward(input)
+        return self._apply_inplace(self.inplace, input, result)
+
 
 class ReluFwdOp(UnaryOp, _InplaceMixin):
     """ReLU activation: y = max(x, 0)."""
@@ -1033,8 +1049,7 @@ class ReluFwdOp(UnaryOp, _InplaceMixin):
         self.inplace = inplace
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        result = super().forward(input)
-        return self._apply_inplace(self.inplace, input, result)
+        return self._inplace_aware_forward(input)
 
 
 class AddFwdOp(BinaryOp):
@@ -1654,8 +1669,7 @@ class SiluFwdOp(UnaryOp, _InplaceMixin):
         self.inplace = inplace
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        result = super().forward(input)
-        return self._apply_inplace(self.inplace, input, result)
+        return self._inplace_aware_forward(input)
 
 
 class SigmoidFwdOp(UnaryOp):
@@ -1700,8 +1714,7 @@ class HardswishFwdOp(UnaryOp, _InplaceMixin):
         self.inplace = inplace
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        result = super().forward(input)
-        return self._apply_inplace(self.inplace, input, result)
+        return self._inplace_aware_forward(input)
 
 
 class HardsigmoidFwdOp(UnaryOp, _InplaceMixin):
@@ -1728,8 +1741,7 @@ class HardsigmoidFwdOp(UnaryOp, _InplaceMixin):
         self.inplace = inplace
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        result = super().forward(input)
-        return self._apply_inplace(self.inplace, input, result)
+        return self._inplace_aware_forward(input)
 
 
 class MishFwdOp(UnaryOp, _InplaceMixin):
@@ -1756,8 +1768,7 @@ class MishFwdOp(UnaryOp, _InplaceMixin):
         self.inplace = inplace
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        result = super().forward(input)
-        return self._apply_inplace(self.inplace, input, result)
+        return self._inplace_aware_forward(input)
 
 
 class SeluFwdOp(UnaryOp, _InplaceMixin):
@@ -1784,8 +1795,7 @@ class SeluFwdOp(UnaryOp, _InplaceMixin):
         self.inplace = inplace
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        result = super().forward(input)
-        return self._apply_inplace(self.inplace, input, result)
+        return self._inplace_aware_forward(input)
 
 
 # ---------------------------------------------------------------------------

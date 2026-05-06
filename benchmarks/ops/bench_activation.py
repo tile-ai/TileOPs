@@ -119,8 +119,16 @@ class UnaryBenchmark(BenchmarkBase[_UnaryWorkload]):
         if self._op is not None:
             eval_fn = getattr(self._op, "eval_roofline", None)
             if eval_fn is not None:
-                flops, _ = eval_fn()
-                return float(flops)
+                # The base ``Op.eval_roofline`` raises ``NotImplementedError``
+                # so subclasses must opt in. Fall through to the per-elem
+                # path when the op inherits the unimplemented stub rather
+                # than crashing the bench.
+                try:
+                    flops, _ = eval_fn()
+                except NotImplementedError:
+                    pass
+                else:
+                    return float(flops)
             per_elem = getattr(self._op, "FLOPS_PER_ELEM", None)
             if per_elem is not None:
                 return float(per_elem) * self.workload.n_total
