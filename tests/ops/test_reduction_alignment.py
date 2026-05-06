@@ -151,17 +151,38 @@ def test_reduction_eval_roofline_matches_manifest(
 
 # ---------------------------------------------------------------------------
 # Construction smoke: every op constructs over its manifest dtype contract.
-# Manifest declares ``float16 | bfloat16 | float32`` for every op except
-# AllFwdOp / AnyFwdOp which additionally accept ``bool``.
+# Per-op dtype list comes from ``manifest[op].signature.inputs.x.dtype``
+# so e.g. LogSumExp (fp16 | bf16) is not exercised with fp32.
 # ---------------------------------------------------------------------------
 
-_FLOAT_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
+_DTYPE_NAME_TO_TORCH = {
+    "float16": torch.float16,
+    "bfloat16": torch.bfloat16,
+    "float32": torch.float32,
+}
+
+
+def _float_dtypes_for(op_name: str) -> list[torch.dtype]:
+    """Manifest-declared float dtypes for the op's ``x`` input."""
+    raw = _MANIFEST[op_name]["signature"]["inputs"]["x"]["dtype"]
+    names = [t.strip() for t in raw.split("|")]
+    return [_DTYPE_NAME_TO_TORCH[n] for n in names if n in _DTYPE_NAME_TO_TORCH]
+
+
+_DTYPE_CASES = [
+    (op_name, dtype)
+    for op_name in _SPEC_ONLY_OPS
+    for dtype in _float_dtypes_for(op_name)
+]
 
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-@pytest.mark.parametrize("dtype", _FLOAT_DTYPES)
-@pytest.mark.parametrize("op_name", _SPEC_ONLY_OPS)
+@pytest.mark.parametrize(
+    "op_name, dtype",
+    _DTYPE_CASES,
+    ids=[f"{n}-{d}".replace("torch.", "") for n, d in _DTYPE_CASES],
+)
 def test_reduction_constructs_for_manifest_dtypes(
     op_name: str, dtype: torch.dtype,
 ) -> None:
