@@ -42,7 +42,9 @@ done
 command -v jq >/dev/null 2>&1 || { echo "auto-resolve-stale: missing jq" >&2; exit 2; }
 
 # Build the action plan in pure jq — single pass, no shell-side per-thread state.
-PLAN=$(jq --slurpfile bots "$BOTS_FILE" '
+# REPLY_TEXT is passed in as --arg so the action plan and the executed
+# mutation body below share a single source of truth.
+PLAN=$(jq --slurpfile bots "$BOTS_FILE" --arg reply "$REPLY_TEXT" '
   # Normalise both sides: strip a trailing "[bot]" suffix before comparing.
   # GitHub returns either "copilot-pull-request-reviewer" or
   # "copilot-pull-request-reviewer[bot]" depending on the API; treat them
@@ -74,13 +76,18 @@ PLAN=$(jq --slurpfile bots "$BOTS_FILE" '
           oid: $oid,
           known_bot: is_known($known; $login),
           bot_like:  is_bot_like($login),
-          stale:     ($oid != $head and $oid != "")
+          # Distinct buckets:
+          #   missing_oid: comment has no commit anchor → cannot judge stale
+          #   stale: oid present and != head
+          #   at_head: oid present and == head
+          missing_oid: ($oid == ""),
+          stale:       ($oid != $head and $oid != "")
         }
     ] as $rows
   | {
       resolve: [
         $rows[] | select(.known_bot and .stale)
-        | { thread_id, comment_id, login, reply: "Not assessed on latest HEAD" }
+        | { thread_id, comment_id, login, reply: $reply }
       ],
       unknown_bot_like: [
         $rows[] | select((.known_bot|not) and .bot_like)
@@ -90,12 +97,13 @@ PLAN=$(jq --slurpfile bots "$BOTS_FILE" '
         $rows[]
         | select(
             (.known_bot|not) and (.bot_like|not)         # human
-            or (.known_bot and (.stale|not))             # bot at current HEAD
+            or (.known_bot and (.stale|not))             # bot not stale (at HEAD or missing oid)
           )
         | {
             thread_id,
             reason: (
-              if .known_bot and (.stale|not) then "known_bot_at_head"
+              if .known_bot and .missing_oid then "known_bot_missing_commit_oid"
+              elif .known_bot and (.stale|not) then "known_bot_at_head"
               elif (.bot_like|not) then "human_reviewer"
               else "other"
               end

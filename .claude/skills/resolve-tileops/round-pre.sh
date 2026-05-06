@@ -58,10 +58,14 @@ PR_JSON=$(gh pr view "$PR" --json state,headRefOid,isDraft,baseRepository 2>/dev
   || { echo "round-pre: gh pr view failed" >&2; exit 1; }
 PR_STATE=$(echo "$PR_JSON" | jq -r .state)
 HEAD_SHA=$(echo "$PR_JSON" | jq -r .headRefOid)
-REPO_OWNER=$(echo "$PR_JSON" | jq -r '.baseRepository.owner.login // .baseRepository.owner // empty')
+# `gh pr view --json baseRepository` returns owner as an object
+# `{login: "..."}`, not a bare string. Extract `.login` strictly; if it's
+# absent we cannot construct a valid owner/name pair, so fail rather than
+# stringify the object.
+REPO_OWNER=$(echo "$PR_JSON" | jq -r '.baseRepository.owner.login // empty')
 REPO_NAME=$(echo "$PR_JSON" | jq -r '.baseRepository.name // empty')
 if [[ -z "$REPO_OWNER" || -z "$REPO_NAME" ]]; then
-  echo "round-pre: could not derive base repo from gh pr view" >&2; exit 1
+  echo "round-pre: could not derive base repo from gh pr view (need .baseRepository.owner.login and .baseRepository.name)" >&2; exit 1
 fi
 REPO="$REPO_OWNER/$REPO_NAME"
 
@@ -227,13 +231,21 @@ if [[ "$ACTION" == "continue" ]]; then
     jq -n --arg sha "$HEAD_SHA" \
       --slurpfile threads "$SNAP_PREFIX.unresolved-threads.json" \
       '{head_sha:$sha, threads:$threads[0]}' > "$AR_INPUT"
-    "$SKILL_DIR/auto-resolve-stale.sh" \
-      --threads "$AR_INPUT" \
-      --bots "$SKILL_DIR/known-bots.json" \
-      --run-dir "$RUN_DIR" \
-      --round "$N" \
-      > "$SNAP_PREFIX.auto-resolve.json" \
-      || echo "round-pre: auto-resolve-stale exited non-zero" >&2
+    # Write to a tmpfile and only mv into place on success — guarantees
+    # downstream readers never consume a half-written / empty file when
+    # the classifier crashes mid-emit.
+    AR_TMP="$SNAP_PREFIX.auto-resolve.json.tmp"
+    if "$SKILL_DIR/auto-resolve-stale.sh" \
+        --threads "$AR_INPUT" \
+        --bots "$SKILL_DIR/known-bots.json" \
+        --run-dir "$RUN_DIR" \
+        --round "$N" \
+        > "$AR_TMP"; then
+      mv "$AR_TMP" "$SNAP_PREFIX.auto-resolve.json"
+    else
+      echo "round-pre: auto-resolve-stale exited non-zero" >&2
+      rm -f "$AR_TMP"
+    fi
   fi
 
   gh pr checks "$PR" --repo "$REPO" --json name,state,conclusion \

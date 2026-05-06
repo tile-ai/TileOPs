@@ -2,10 +2,13 @@
 # Fixture tests for auto-resolve-stale.sh.
 #
 # Drives the classifier in --dry-run against fixtures under fixtures/
-# and asserts the emitted action plan + side-effect artifacts.
+# and asserts the emitted action plan + side-effect artifacts. On a
+# mismatch each case prints the expected and actual JSON strings (or
+# the offending artifact's contents) so the failing comparison can be
+# read off the test log directly.
 #
 # Exit 0: all cases pass.
-# Exit 1: any case fails (full diff printed).
+# Exit 1: any case fails.
 
 set -uo pipefail
 
@@ -18,14 +21,25 @@ FIX="$HERE/fixtures"
 [[ -x "$CLASSIFIER" ]] || { echo "FAIL: $CLASSIFIER not found / not executable" >&2; exit 1; }
 [[ -f "$BOTS" ]] || { echo "FAIL: $BOTS not found" >&2; exit 1; }
 
+# Reply text contract — kept here as the single source the assertion
+# checks against. The classifier owns the literal string; this constant
+# must match auto-resolve-stale.sh's REPLY_TEXT exactly.
+STALE_REPLY_TEXT="Not assessed on latest HEAD"
+
 PASS=0
 FAIL=0
 
 run_case() {
   local name="$1" fixture="$2" round="$3"
   local expected_resolve="$4" expected_unknown="$5" expected_skip="$6"
-  local expected_unknown_artifact="$7"  # path to expected artifact json (or "none")
+  # expected_unknown_artifact: either the literal string "none" (expect
+  # no artifact file) or a JSON-array string (compared against the
+  # artifact's [.[].login] projection).
+  local expected_unknown_artifact="$7"
   local tmp; tmp=$(mktemp -d)
+  # Cleanup on every return path, including failures. Without the trap
+  # the early `return` branches below would leak the tmpdir.
+  trap 'rm -rf "$tmp"' RETURN
   local plan
   if ! plan=$("$CLASSIFIER" \
         --threads "$fixture" \
@@ -63,8 +77,8 @@ run_case() {
   # Reply text contract: every resolve entry must carry the literal text.
   local reply_texts
   reply_texts=$(printf '%s' "$plan" | jq -r '[.resolve[].reply] | unique | .[]')
-  if [[ -n "$reply_texts" && "$reply_texts" != "Not assessed on latest HEAD" ]]; then
-    echo "FAIL [$name]: reply text mismatch — got '$reply_texts'" >&2
+  if [[ -n "$reply_texts" && "$reply_texts" != "$STALE_REPLY_TEXT" ]]; then
+    echo "FAIL [$name]: reply text mismatch — got '$reply_texts' want '$STALE_REPLY_TEXT'" >&2
     FAIL=$((FAIL+1)); return
   fi
 
@@ -93,7 +107,6 @@ run_case() {
 
   echo "PASS [$name]"
   PASS=$((PASS+1))
-  rm -rf "$tmp"
 }
 
 # Case 1: known bot, stale anchor → auto-resolve, reply text matches.
@@ -160,6 +173,7 @@ run_case "unknown-bare-bot-thread" \
 run_reply_failure_case() {
   local name="reply-failure-leaves-thread-open"
   local tmp; tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' RETURN
   local mockbin="$tmp/bin"
   mkdir -p "$mockbin"
   cat > "$mockbin/gh" <<'MOCK'
@@ -197,7 +211,6 @@ MOCK
   fi
   echo "PASS [$name]"
   PASS=$((PASS+1))
-  rm -rf "$tmp"
 }
 run_reply_failure_case
 
@@ -207,6 +220,7 @@ run_reply_failure_case
 run_reply_success_case() {
   local name="reply-success-resolves-thread"
   local tmp; tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' RETURN
   local mockbin="$tmp/bin"
   mkdir -p "$mockbin"
   cat > "$mockbin/gh" <<'MOCK'
@@ -236,9 +250,44 @@ MOCK
   fi
   echo "PASS [$name]"
   PASS=$((PASS+1))
-  rm -rf "$tmp"
 }
 run_reply_success_case
+
+# Case 8: known bot whose first comment has no commit oid → skipped with
+# reason known_bot_missing_commit_oid (NOT known_bot_at_head). The
+# missing oid means we can't tell whether the comment is anchored to
+# HEAD, so the safe action is to leave it for human triage.
+run_missing_oid_case() {
+  local name="known-bot-missing-commit-oid"
+  local tmp; tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' RETURN
+  local plan
+  if ! plan=$("$CLASSIFIER" \
+        --threads "$FIX/known-bot-missing-oid-thread.json" \
+        --bots "$BOTS" \
+        --run-dir "$tmp" \
+        --round "08" \
+        --dry-run); then
+    echo "FAIL [$name]: classifier exited non-zero" >&2
+    FAIL=$((FAIL+1)); return
+  fi
+  local got_skip_reason
+  got_skip_reason=$(printf '%s' "$plan" \
+    | jq -r '[.skip[] | select(.thread_id=="PRT_kwDO_missing_oid_bot") | .reason] | first // ""')
+  if [[ "$got_skip_reason" != "known_bot_missing_commit_oid" ]]; then
+    echo "FAIL [$name]: skip reason mismatch — got '$got_skip_reason' want 'known_bot_missing_commit_oid'" >&2
+    FAIL=$((FAIL+1)); return
+  fi
+  local got_resolve
+  got_resolve=$(printf '%s' "$plan" | jq -c '[.resolve[].thread_id]')
+  if [[ "$got_resolve" != '[]' ]]; then
+    echo "FAIL [$name]: resolve must be empty for missing-oid bot, got $got_resolve" >&2
+    FAIL=$((FAIL+1)); return
+  fi
+  echo "PASS [$name]"
+  PASS=$((PASS+1))
+}
+run_missing_oid_case
 
 echo
 echo "Results: $PASS passed, $FAIL failed."
