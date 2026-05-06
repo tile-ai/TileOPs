@@ -1941,7 +1941,46 @@ class Expm1FwdOp(UnaryOp):
 # ---------------------------------------------------------------------------
 
 
-class GeluFwdOp(UnaryOp):
+class _GeluApproximateBase(UnaryOp):
+    """Intermediate base that resolves the manifest ``approximate`` field.
+
+    Validates the ``approximate`` argument against the manifest's allowed
+    values (``'none'`` / ``'tanh'``), records it on ``self.approximate``
+    for introspection, and then delegates to ``UnaryOp.__init__``.
+    ``approximate='tanh'`` is rejected with ``NotImplementedError`` until
+    a fused tanh-GELU unary kernel is exposed to the Op layer (tracked
+    at https://github.com/tile-ai/TileOPs/issues/1241).
+    """
+
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        *,
+        approximate: str = "none",
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        if approximate not in ("none", "tanh"):
+            raise ValueError(
+                f"{type(self).__name__}: approximate must be 'none' or "
+                f"'tanh', got {approximate!r}"
+            )
+        if approximate == "tanh":
+            raise NotImplementedError(
+                f"{type(self).__name__}(approximate='tanh') is not "
+                "implemented: no fused tanh-GELU unary kernel is exposed "
+                "to the Op layer yet. Tracked at "
+                "https://github.com/tile-ai/TileOPs/issues/1241",
+            )
+        self.approximate = approximate
+        super().__init__(
+            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+
+
+class GeluFwdOp(_GeluApproximateBase):
     """Element-wise GELU honoring the manifest ``approximate`` contract.
 
     Args:
@@ -1962,31 +2001,8 @@ class GeluFwdOp(UnaryOp):
     # Manifest: flops = "8 * N" (erf-based: mul + erf + add + mul + mul ≈ 8).
     FLOPS_PER_ELEM = 8
 
-    def __init__(
-        self,
-        N_total: int,
-        dtype: torch.dtype,
-        *,
-        approximate: str = "none",
-        strategy: Optional[str] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ):
-        if approximate not in ("none", "tanh"):
-            raise ValueError(
-                f"GeluFwdOp: approximate must be 'none' or 'tanh', got {approximate!r}"
-            )
-        if approximate == "tanh":
-            raise NotImplementedError(
-                "GeluFwdOp(approximate='tanh') is not implemented: no "
-                "fused tanh-GELU unary kernel is exposed to the Op layer "
-                "yet. Tracked at "
-                "https://github.com/tile-ai/TileOPs/issues/1241",
-            )
-        self.approximate = approximate
-        super().__init__(
-            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
-        )
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 
 class SiluFwdOp(_ParamFreeActivationOp):
@@ -3187,12 +3203,10 @@ class NanToNumFwdOp(Op):
         self.posinf = posinf
         self.neginf = neginf
         self.dispatch_kernel(kernel_map)
-        # Kernel-layer parameters keep the ``_val`` suffix to match the
-        # ``NanToNumFwdKernel`` constructor signature; the Op-facing
-        # API uses the manifest-aligned ``nan`` / ``posinf`` / ``neginf``.
+        # Pass replacement values positionally; the kernel constructor's
+        # internal parameter naming is encapsulated below the Op layer.
         self.kernel = self.kernel_map["nan_to_num"](
-            N_total, dtype, nan_val=nan, posinf_val=kernel_posinf,
-            neginf_val=kernel_neginf, tune=tune,
+            N_total, dtype, nan, kernel_posinf, kernel_neginf, tune=tune,
         )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self

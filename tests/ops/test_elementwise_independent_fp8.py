@@ -77,13 +77,30 @@ def test_masked_fill_kernel_clamps_overflow_fill_value():
 
 
 @pytest.mark.smoke
-def test_nan_to_num_kernel_clamps_overflow_defaults():
-    """NanToNumFwdKernel clamps default posinf_val/neginf_val for e4m3fn."""
+def test_nan_to_num_op_default_replacements_are_finite_e4m3fn():
+    """NanToNumFwdOp default replacement values stay finite end-to-end on e4m3fn.
+
+    Asserts the public Op contract: with the manifest defaults
+    (``posinf=None`` / ``neginf=None``), feeding ``+/-inf`` and ``NaN``
+    through the op produces an output that is entirely finite in the
+    user-facing fp8 dtype. The internal clamping that the kernel layer
+    performs is an implementation detail and is not asserted directly.
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    from tileops.ops.elementwise import NanToNumFwdOp
+
     dtype = torch.float8_e4m3fn
-    kernel = _kern_mod.NanToNumFwdKernel(N_total=_N, dtype=dtype)
-    finfo = torch.finfo(dtype)
-    assert kernel.posinf_val == finfo.max
-    assert kernel.neginf_val == finfo.min
+    n = 1024
+    op = NanToNumFwdOp(N_total=n, dtype=dtype)
+    x_fp16 = torch.zeros(n, dtype=torch.float16, device="cuda")
+    x_fp16[0] = float("inf")
+    x_fp16[1] = float("-inf")
+    x_fp16[2] = float("nan")
+    out = op(x_fp16.to(dtype))
+    assert out.dtype == dtype
+    assert torch.isfinite(out.to(torch.float32)).all()
 
 
 # ---------------------------------------------------------------------------
