@@ -6,6 +6,10 @@ Each test asserts the live Op class signature satisfies the manifest L1
 contract (every manifest input appears in ``forward()`` in declaration
 order, every manifest param is reachable through ``__init__`` or
 ``forward``) and exercises the runtime roofline contract end-to-end.
+
+Test data is read from ``tileops.manifest.load_manifest()`` rather than
+duplicated here, so manifest changes flow into the assertions
+automatically. Only the op allowlist (spec-only selection) is hardcoded.
 """
 
 from __future__ import annotations
@@ -13,31 +17,69 @@ from __future__ import annotations
 import pytest
 import torch
 
-# (op_class_name, manifest_inputs (forward order), manifest_params)
-_REDUCTION_ALIGNMENT_OPS = [
-    ("SumFwdOp", ["x"], ["dim", "keepdim"]),
-    ("MeanFwdOp", ["x"], ["dim", "keepdim"]),
-    ("AmaxFwdOp", ["x"], ["dim", "keepdim"]),
-    ("AminFwdOp", ["x"], ["dim", "keepdim"]),
-    ("ProdFwdOp", ["x"], ["dim", "keepdim"]),
-    ("LogSumExpFwdOp", ["x"], ["dim", "keepdim"]),
-    ("VarFwdOp", ["x"], ["dim", "correction", "keepdim"]),
-    ("StdFwdOp", ["x"], ["dim", "correction", "keepdim"]),
-    ("VarMeanFwdOp", ["x"], ["dim", "correction", "keepdim"]),
-    ("AllFwdOp", ["x"], ["dim", "keepdim"]),
-    ("AnyFwdOp", ["x"], ["dim", "keepdim"]),
-    ("CountNonzeroFwdOp", ["x"], ["dim"]),
-]
+from tileops.manifest import load_manifest
+
+# Spec-only ops covered by this PR. Manifest provides every other field.
+_SPEC_ONLY_OPS = (
+    "SumFwdOp",
+    "MeanFwdOp",
+    "AmaxFwdOp",
+    "AminFwdOp",
+    "ProdFwdOp",
+    "LogSumExpFwdOp",
+    "VarFwdOp",
+    "StdFwdOp",
+    "VarMeanFwdOp",
+    "AllFwdOp",
+    "AnyFwdOp",
+    "CountNonzeroFwdOp",
+)
+
+# Roofline parity is also exercised on the already-implemented softmax
+# family so the LogSoftmax FLOP fix is regression-tested against
+# Softmax / LogSumExp directly.
+_ROOFLINE_OPS = (*_SPEC_ONLY_OPS, "LogSoftmaxFwdOp", "SoftmaxFwdOp")
+
+# Representative shape used for every roofline / runtime case.
+_M = 64
+_N = 256
+
+_MANIFEST = load_manifest()
+
+
+def _signature_case(op_name: str):
+    entry = _MANIFEST[op_name]["signature"]
+    return (op_name, entry.get("inputs", {}), entry.get("params", {}))
+
+
+def _roofline_case(op_name: str):
+    """Return (op_name, op_kwargs, flops_expr, bytes_expr) from the manifest."""
+    entry = _MANIFEST[op_name]
+    rf = entry.get("roofline", {})
+    params = entry["signature"].get("params", {})
+    op_kwargs: dict = {}
+    if "correction" in params:
+        op_kwargs["correction"] = 1
+    return (op_name, op_kwargs, rf["flops"], rf["bytes"])
+
+
+def _eval_roofline_expr(expr: str, m: int, n: int, elem_bytes: int) -> int:
+    """Evaluate a manifest roofline expression at fixed (M, N, elem_bytes)."""
+    return int(eval(expr, {"M": m, "N": n, "elem_bytes": elem_bytes}))
+
+
+_SIGNATURE_CASES = [_signature_case(n) for n in _SPEC_ONLY_OPS]
+_ROOFLINE_CASES = [_roofline_case(n) for n in _ROOFLINE_OPS]
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "op_name, manifest_inputs, manifest_params",
-    _REDUCTION_ALIGNMENT_OPS,
-    ids=lambda v: v if isinstance(v, str) else None,
+    _SIGNATURE_CASES,
+    ids=[c[0] for c in _SIGNATURE_CASES],
 )
 def test_reduction_signature_matches_manifest(
-    op_name: str, manifest_inputs: list, manifest_params: list,
+    op_name: str, manifest_inputs: dict, manifest_params: dict,
 ) -> None:
     """Op class signatures must satisfy the manifest L1 contract."""
     import tileops.ops.reduction as mod
@@ -53,164 +95,57 @@ def test_reduction_signature_matches_manifest(
         f"Cannot extract forward() params for {op_name}"
     )
     init_params = _get_init_params(cls)
-    inputs_dict = {n: {} for n in manifest_inputs}
-    params_dict = {n: {} for n in manifest_params}
     errors = check_l1_signature(
-        op_name, inputs_dict, params_dict, forward_params,
+        op_name, manifest_inputs, manifest_params, forward_params,
         init_params=init_params,
     )
     assert errors == [], f"{op_name}: {errors}"
 
 
 # ---------------------------------------------------------------------------
-# Roofline FLOP parity: op.eval_roofline() must agree with the manifest
-# ``flops`` formula for a representative (M, N).
+# Roofline FLOP/byte parity: op.eval_roofline() must agree with the
+# manifest formulas evaluated at the representative (M=64, N=256) shape.
+# Drives both the 12 spec-only ops and LogSoftmax/Softmax (regression
+# coverage for the LogSoftmax FLOP fix).
 # ---------------------------------------------------------------------------
-
-# (op_name, op_kwargs, expected_flops_fn(M,N,elem_bytes), expected_bytes_fn(M,N,elem_bytes))
-# All formulas are taken straight from ``tileops/manifest/reduction.yaml``.
-_M = 64
-_N = 256
-
-
-def _softmax_flops(M: int, N: int, _eb: int) -> int:
-    return 5 * M * N
-
-
-def _softmax_bytes(M: int, N: int, eb: int) -> int:
-    return 2 * M * N * eb
-
-
-def _log_softmax_flops(M: int, N: int, _eb: int) -> int:
-    return 5 * M * N
-
-
-def _log_softmax_bytes(M: int, N: int, eb: int) -> int:
-    return 2 * M * N * eb
-
-
-def _logsumexp_flops(M: int, N: int, _eb: int) -> int:
-    return 4 * M * N
-
-
-def _logsumexp_bytes(M: int, N: int, eb: int) -> int:
-    return (M * N + M) * eb
-
-
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_log_softmax_eval_roofline_matches_manifest() -> None:
-    """LogSoftmaxFwdOp.eval_roofline must return manifest's 5*M*N FLOPs."""
-    from tileops.ops.reduction.log_softmax import LogSoftmaxFwdOp
-
-    dtype = torch.float16
-    op = LogSoftmaxFwdOp(N=_N, dtype=dtype, dim=-1)
-    x = torch.randn(_M, _N, dtype=dtype, device="cuda")
-    op(x)  # bind dynamic shape
-    flops, mem_bytes = op.eval_roofline()
-    elem_bytes = dtype.itemsize
-    assert flops == _log_softmax_flops(_M, _N, elem_bytes), (
-        f"LogSoftmax flops {flops} != manifest 5*M*N = "
-        f"{_log_softmax_flops(_M, _N, elem_bytes)}"
-    )
-    assert mem_bytes == _log_softmax_bytes(_M, _N, elem_bytes), (
-        f"LogSoftmax bytes {mem_bytes} != manifest = "
-        f"{_log_softmax_bytes(_M, _N, elem_bytes)}"
-    )
-
-
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_softmax_eval_roofline_matches_manifest() -> None:
-    """SoftmaxFwdOp.eval_roofline must return manifest's 5*M*N FLOPs."""
-    from tileops.ops.reduction.softmax import SoftmaxFwdOp
-
-    dtype = torch.float16
-    op = SoftmaxFwdOp(N=_N, dtype=dtype, dim=-1)
-    x = torch.randn(_M, _N, dtype=dtype, device="cuda")
-    op(x)
-    flops, mem_bytes = op.eval_roofline()
-    elem_bytes = dtype.itemsize
-    assert flops == _softmax_flops(_M, _N, elem_bytes)
-    assert mem_bytes == _softmax_bytes(_M, _N, elem_bytes)
-
-
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_logsumexp_eval_roofline_matches_manifest() -> None:
-    """LogSumExpFwdOp.eval_roofline must return manifest's 4*M*N FLOPs."""
-    from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
-
-    dtype = torch.float16
-    op = LogSumExpFwdOp(dtype=dtype, dim=-1)
-    x = torch.randn(_M, _N, dtype=dtype, device="cuda")
-    op(x)
-    flops, mem_bytes = op.eval_roofline()
-    elem_bytes = dtype.itemsize
-    assert flops == _logsumexp_flops(_M, _N, elem_bytes)
-    assert mem_bytes == _logsumexp_bytes(_M, _N, elem_bytes)
-
-
-# ---------------------------------------------------------------------------
-# Roofline parity for the simple-reduce / Welford / logical-reduce families.
-# Each op's eval_roofline(M, N, elem_bytes) must match its manifest formula.
-# ---------------------------------------------------------------------------
-
-# Manifest formulas, per reduction.yaml:
-#   sum: flops = M * N            bytes = (M*N + M) * eb
-#   mean: flops = M * (N + 1)     bytes = (M*N + M) * eb
-#   amax / amin / prod: flops = M * N   bytes = (M*N + M) * eb
-#   var: flops = 5*M*N            bytes = (M*N + M) * eb
-#   std: flops = 5*M*N + M        bytes = (M*N + M) * eb
-#   var_mean: flops = 5*M*N       bytes = (M*N + 2*M) * eb
-#   all / any: flops = M*N        bytes = M*N*eb + M
-#   count_nonzero: flops = 2*M*N  bytes = M*N*eb + M*8
-
-_REDUCE_ROOFLINE_CASES = [
-    # (op_name, op_kwargs, flops_fn, bytes_fn)
-    ("SumFwdOp", {}, lambda M, N, eb: M * N, lambda M, N, eb: (M * N + M) * eb),
-    ("MeanFwdOp", {}, lambda M, N, eb: M * (N + 1), lambda M, N, eb: (M * N + M) * eb),
-    ("AmaxFwdOp", {}, lambda M, N, eb: M * N, lambda M, N, eb: (M * N + M) * eb),
-    ("AminFwdOp", {}, lambda M, N, eb: M * N, lambda M, N, eb: (M * N + M) * eb),
-    ("ProdFwdOp", {}, lambda M, N, eb: M * N, lambda M, N, eb: (M * N + M) * eb),
-    ("VarFwdOp", {"correction": 1}, lambda M, N, eb: 5 * M * N, lambda M, N, eb: (M * N + M) * eb),
-    ("StdFwdOp", {"correction": 1}, lambda M, N, eb: 5 * M * N + M, lambda M, N, eb: (M * N + M) * eb),
-    ("VarMeanFwdOp", {"correction": 1}, lambda M, N, eb: 5 * M * N, lambda M, N, eb: (M * N + 2 * M) * eb),
-    ("AllFwdOp", {}, lambda M, N, eb: M * N, lambda M, N, eb: M * N * eb + M),
-    ("AnyFwdOp", {}, lambda M, N, eb: M * N, lambda M, N, eb: M * N * eb + M),
-    # CountNonzeroFwdOp has no keepdim param.
-    ("CountNonzeroFwdOp", {}, lambda M, N, eb: 2 * M * N, lambda M, N, eb: M * N * eb + M * 8),
-]
 
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize(
-    "op_name, op_kwargs, flops_fn, bytes_fn",
-    _REDUCE_ROOFLINE_CASES,
-    ids=[c[0] for c in _REDUCE_ROOFLINE_CASES],
+    "op_name, op_kwargs, flops_expr, bytes_expr",
+    _ROOFLINE_CASES,
+    ids=[c[0] for c in _ROOFLINE_CASES],
 )
-def test_reduce_eval_roofline_matches_manifest(
+def test_reduction_eval_roofline_matches_manifest(
     op_name: str,
     op_kwargs: dict,
-    flops_fn,
-    bytes_fn,
+    flops_expr: str,
+    bytes_expr: str,
 ) -> None:
-    """eval_roofline() output must match the manifest roofline formula."""
+    """eval_roofline() must match the manifest formulas evaluated at (M, N)."""
     import tileops.ops.reduction as mod
 
     cls = getattr(mod, op_name)
     dtype = torch.float16
-    op = cls(dtype=dtype, dim=-1, **op_kwargs)
+    # LogSoftmax/Softmax expose N at __init__; spec-only reduce ops don't.
+    ctor_kwargs = dict(op_kwargs)
+    if op_name in {"LogSoftmaxFwdOp", "SoftmaxFwdOp"}:
+        ctor_kwargs["N"] = _N
+    op = cls(dtype=dtype, dim=-1, **ctor_kwargs)
     x = torch.randn(_M, _N, dtype=dtype, device="cuda")
-    op(x)
+    op(x)  # bind dynamic shape
     flops, mem_bytes = op.eval_roofline()
-    eb = dtype.itemsize
-    assert flops == flops_fn(_M, _N, eb), (
-        f"{op_name} flops {flops} != manifest {flops_fn(_M, _N, eb)}"
+    elem_bytes = dtype.itemsize
+    expected_flops = _eval_roofline_expr(flops_expr, _M, _N, elem_bytes)
+    expected_bytes = _eval_roofline_expr(bytes_expr, _M, _N, elem_bytes)
+    assert flops == expected_flops, (
+        f"{op_name} flops {flops} != manifest "
+        f"'{flops_expr}' = {expected_flops}"
     )
-    assert mem_bytes == bytes_fn(_M, _N, eb), (
-        f"{op_name} bytes {mem_bytes} != manifest {bytes_fn(_M, _N, eb)}"
+    assert mem_bytes == expected_bytes, (
+        f"{op_name} bytes {mem_bytes} != manifest "
+        f"'{bytes_expr}' = {expected_bytes}"
     )
 
 
@@ -226,30 +161,18 @@ _FLOAT_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("dtype", _FLOAT_DTYPES)
-@pytest.mark.parametrize(
-    "op_name, op_kwargs",
-    [
-        ("SumFwdOp", {}),
-        ("MeanFwdOp", {}),
-        ("AmaxFwdOp", {}),
-        ("AminFwdOp", {}),
-        ("ProdFwdOp", {}),
-        ("LogSumExpFwdOp", {}),
-        ("VarFwdOp", {"correction": 1}),
-        ("StdFwdOp", {"correction": 1}),
-        ("VarMeanFwdOp", {"correction": 1}),
-        ("AllFwdOp", {}),
-        ("AnyFwdOp", {}),
-        ("CountNonzeroFwdOp", {}),
-    ],
-)
+@pytest.mark.parametrize("op_name", _SPEC_ONLY_OPS)
 def test_reduction_constructs_for_manifest_dtypes(
-    op_name: str, op_kwargs: dict, dtype: torch.dtype,
+    op_name: str, dtype: torch.dtype,
 ) -> None:
     """Every op must construct + run for each manifest-declared dtype."""
     import tileops.ops.reduction as mod
 
     cls = getattr(mod, op_name)
+    params = _MANIFEST[op_name]["signature"].get("params", {})
+    op_kwargs: dict = {}
+    if "correction" in params:
+        op_kwargs["correction"] = 1
     op = cls(dtype=dtype, dim=-1, **op_kwargs)
     x = torch.randn(_M, _N, dtype=dtype, device="cuda")
     out = op(x)
@@ -264,6 +187,7 @@ def test_reduction_constructs_for_manifest_dtypes(
 # ---------------------------------------------------------------------------
 # AllFwdOp / AnyFwdOp also accept bool inputs per manifest.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -284,6 +208,7 @@ def test_logical_reduce_accepts_bool(op_name: str) -> None:
 # Output dtype contract: count_nonzero must return int64; all/any must return
 # bool. Per manifest signature.outputs.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
