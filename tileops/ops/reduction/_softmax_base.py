@@ -196,7 +196,7 @@ class _SoftmaxBaseOp(Op):
         if self._op_kind == "softmax":
             return 5 * M * N, 2 * M * N * elem_bytes
         if self._op_kind == "log_softmax":
-            return 6 * M * N, 2 * M * N * elem_bytes
+            return 5 * M * N, 2 * M * N * elem_bytes
         if self._op_kind == "logsumexp":
             return 4 * M * N, (M * N + M) * elem_bytes
         raise NotImplementedError(
