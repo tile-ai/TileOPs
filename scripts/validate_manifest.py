@@ -146,6 +146,63 @@ def _check_static_dims(op_name: str, sdims: object, sig: dict) -> list[str]:
 # schema: YAML structure validation
 # ---------------------------------------------------------------------------
 
+def _check_shape_rule_callables(
+    op_name: str, index: int, rule_str: str,
+) -> list[str]:
+    """Validate that bare-name calls in a shape_rule reference known helpers.
+
+    Parses ``rule_str`` as a Python expression and walks the AST. For each
+    ``ast.Call`` whose ``func`` is a bare ``ast.Name``, verify the name is
+    registered in ``_SHAPE_RULE_BUILTINS``. Method calls
+    (``x.foo(y)`` -> ``func`` is ``ast.Attribute``) and subscript calls
+    (``f[0](x)``) are skipped — only direct name lookups are validated.
+
+    A ``SyntaxError`` on parse surfaces as a single ``[schema]`` error so
+    typos and malformed rules are rejected at L0 without requiring the L2
+    eval context.
+
+    Args:
+        op_name: Op key being validated, used in error messages.
+        index: Index of the rule within ``signature.shape_rules`` for the
+            ``shape_rules[<i>]`` locator in error messages.
+        rule_str: The shape_rule expression source.
+
+    Returns:
+        A list of ``[schema]``-prefixed error strings. Empty when the rule
+        parses cleanly and every bare-name call resolves to a registered
+        builtin.
+    """
+    errors: list[str] = []
+    try:
+        tree = ast.parse(rule_str, mode="eval")
+    except SyntaxError as exc:
+        errors.append(
+            f"[schema] {op_name}: shape_rules[{index}] invalid syntax: "
+            f"{rule_str!r} ({exc})"
+        )
+        return errors
+    # _SHAPE_RULE_BUILTINS is defined later in the module; the forward
+    # reference is intentional. The dict resolves at call time (validation
+    # runs after import), and keeping its single source of truth alongside
+    # the helper callables it maps to avoids splitting the registry.
+    seen_unknown: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Name):
+            continue
+        if func.id in _SHAPE_RULE_BUILTINS or func.id in seen_unknown:
+            continue
+        seen_unknown.add(func.id)
+        errors.append(
+            f"[schema] {op_name}: shape_rules[{index}] calls unknown "
+            f"helper {func.id!r}; allowed callables are "
+            f"{', '.join(sorted(_SHAPE_RULE_BUILTINS))}"
+        )
+    return errors
+
+
 def check_l0(
     op_name: str, entry: dict, *, warnings: list[str] | None = None,
 ) -> list[str]:
@@ -258,6 +315,10 @@ def check_l0(
                         errors.append(
                             f"[schema] {op_name}: shape_rules[{i}] must be a string"
                         )
+                        continue
+                    errors.extend(
+                        _check_shape_rule_callables(op_name, i, rule)
+                    )
 
         # Reject the deprecated `init_dims` key explicitly (R20 rename).
         # L0 doesn't flag unknown signature keys, so without this check an
@@ -1531,6 +1592,11 @@ _SHAPE_RULE_BUILTIN_PAIRS = [
     ("len", len),
     ("isinstance", isinstance),
     ("int", int),
+    # ``float`` is part of the rule language so manifest rules can spell
+    # sentinel values like ``ord == float('inf')``. Adding new callables
+    # here widens the L2 eval scope; do so only when an existing manifest
+    # rule needs it and the addition has obvious bounded semantics.
+    ("float", float),
     ("tuple", tuple),
     ("list", list),
     ("type", type),
@@ -1569,12 +1635,12 @@ def _eval_shape_rule(
     parity error).
 
     The eval globals expose the ``_SHAPE_RULE_BUILTINS`` helper set
-    (``len``, ``isinstance``, ``int``, ``tuple``, ``list``, ``type``,
-    ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``, ``max``,
-    ``broadcast_shapes``, ``is_broadcastable_to``, ``dim_range_validity``,
-    ``dim_uniqueness``, ``reduced_axes``) so R11 / R11a-style rules that
-    use these helpers can be evaluated against the mock context instead
-    of being silently skipped.
+    (``len``, ``isinstance``, ``int``, ``float``, ``tuple``, ``list``,
+    ``type``, ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``,
+    ``max``, ``broadcast_shapes``, ``is_broadcastable_to``,
+    ``dim_range_validity``, ``dim_uniqueness``, ``reduced_axes``) so
+    R11 / R11a-style rules that use these helpers can be evaluated
+    against the mock context instead of being silently skipped.
 
     The context names (inputs / outputs / params) are injected into both
     eval globals and locals. Comprehensions (generator / set / list /
