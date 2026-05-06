@@ -38,6 +38,7 @@ __all__ = [
     "gqa_decode_roofline",
     "gqa_fwd_roofline",
     "gqa_prefill_fwd_roofline",
+    "gqa_prefill_paged_with_kv_cache_fwd_roofline",
     "gqa_prefill_varlen_fwd_roofline",
     "gqa_prefill_with_kv_cache_fwd_roofline",
     "gqa_sliding_window_fwd_roofline",
@@ -224,6 +225,61 @@ def gqa_prefill_with_kv_cache_fwd_roofline(**kwargs: Any) -> dict[str, int]:
     nbytes = (
         (q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems) * elem_bytes
         + cache_seqlens_bytes)
+    return {"flops": int(flops), "bytes": int(nbytes)}
+
+
+def gqa_prefill_paged_with_kv_cache_fwd_roofline(**kwargs: Any) -> dict[str, int]:
+    """Conservative roofline for paged-cache GQA prefill.
+
+    Paged workloads bind aggregate request metadata rather than dense tensor
+    shapes. When explicit per-request ``q_lens`` are absent, use the same
+    deterministic fill convention as packed-varlen prefill.
+    """
+    total_q = int(kwargs["total_q"])
+    batch = int(kwargs["batch"])
+    heads = int(kwargs["heads"])
+    heads_kv = int(kwargs["heads_kv"])
+    dim = int(kwargs["dim"])
+    max_pages_per_req = int(kwargs["max_pages_per_req"])
+    page_size = int(kwargs["page_size"])
+    max_seqlen_q = int(kwargs["max_seqlen_q"])
+    max_total_len = int(
+        kwargs.get("max_position") or max_pages_per_req * page_size
+    )
+    is_causal = bool(kwargs.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(kwargs.get("dtype", kwargs.get("dtypes", "float16")))
+
+    q_lens = kwargs.get("q_lens")
+    if q_lens is None:
+        q_lens = _distribute_total(total_q, batch, max_seqlen_q)
+
+    visible = 0
+    logical_kv_tokens = 0
+    for q_len in q_lens:
+        q_len = int(q_len)
+        old_len = max(max_total_len - q_len, 0)
+        logical_kv_tokens += old_len + q_len
+        visible += (
+            q_len * old_len + q_len * (q_len + 1) // 2
+            if is_causal else q_len * (old_len + q_len)
+        )
+    flops = 4 * heads * visible * dim
+
+    q_elems = total_q * heads * dim
+    logical_kv_elems = 2 * logical_kv_tokens * heads_kv * dim
+    new_kv_elems = 2 * total_q * heads_kv * dim
+    append_kv_elems = new_kv_elems
+    o_elems = q_elems
+    metadata_bytes = (
+        (batch + 1) * 4
+        + batch * 4
+        + batch * max_pages_per_req * 4
+    )
+    nbytes = (
+        (q_elems + logical_kv_elems + new_kv_elems + append_kv_elems + o_elems)
+        * elem_bytes
+        + metadata_bytes
+    )
     return {"flops": int(flops), "bytes": int(nbytes)}
 
 
