@@ -37,7 +37,7 @@ def _manifest_params():
     for w in load_workloads(_OP_NAME):
         shape = w["x_shape"]
         n, c, spatial = shape[0], shape[1], tuple(shape[2:])
-        g = w["groups"]
+        g = w["num_groups"] if "num_groups" in w else w["groups"]
         label = w.get("label", f"{n}x{c}x{'x'.join(map(str, spatial))}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
