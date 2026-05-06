@@ -8,7 +8,7 @@
 
 ______________________________________________________________________
 
-- Manifest keys are PascalCase Op class names: `{PascalCaseName}{Direction}Op` (e.g., `RMSNormFwdOp`). The key must exactly match the Python class name (`cls.__name__`). No abbreviation rules — the manifest author determines the name.
+- Manifest key must equal the corresponding Op `cls.__name__` exactly. Class-naming convention is in `ops-design.md`.
 
 - `ref_api` (required) — declares the external API the signature follows (e.g., `torch.nn.functional.rms_norm`). Set to `"none"` if no direct external counterpart exists. Informational only; does not affect validation.
 

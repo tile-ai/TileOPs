@@ -1,5 +1,5 @@
 - Validator failures mean the op, manifest, or benchmark is wrong — **not** the validator. Do not edit validator code, downgrade errors to warnings, add skip paths, or special-case a new op to get CI green.
-- Manifest keys must equal the Op class name exactly (PascalCase, e.g. `RMSNormFwdOp`). The validator does direct equality; there is no snake_case-to-PascalCase fallback.
+- Manifest-key match is direct string equality on `cls.__name__`. Do not add normalization, casing fallbacks, or alias paths.
 - Validator-related infrastructure: `scripts/validate_manifest.py`, `tests/test_validate_manifest.py`, `docs/design/manifest.md`. Only modify these when the PR is explicitly about manifest schema, trust-model policy, or validator infrastructure — and document the change in the PR body.
 - If a new op cannot satisfy the current validator: stop and surface the mismatch. Do not "fix" it in the validator.
 - Full spec: [docs/design/manifest.md](../../docs/design/manifest.md) (Manifest Validation section).
