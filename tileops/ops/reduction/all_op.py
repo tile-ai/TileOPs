@@ -1,8 +1,9 @@
 """AllFwdOp: returns bool indicating if all elements are non-zero along ``dim``.
 
 The Op layer validates inputs, normalizes ``dim``, reshapes to 2D (M, N),
-pads to alignment (with 1, which is neutral for AND/all), calls the kernel,
-and reshapes the output back.  Output dtype is always bool.
+calls the kernel, and reshapes the output back.  Alignment padding is handled
+inside the kernel with 1, which is neutral for AND/all.  Output dtype is always
+bool.
 
 Supports any numeric dtype as input including torch.bool, int32, int64, and
 complex types. Inputs with unsupported TileLang storage dtypes (bool, int32,
@@ -55,6 +56,7 @@ class AllFwdOp(_ReduceOpBase):
     _op_kind = "all"
     _kernel_key = "logical_reduce"
     _kernel_cls = LogicalReduceKernel
+    _kernel_handles_padding = True
 
     def __init__(
         self,

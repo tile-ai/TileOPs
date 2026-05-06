@@ -3,11 +3,11 @@
 Each op reduces along the configured ``dim`` and supports arbitrary-rank input.
 The ``dim`` parameter accepts ``int`` or ``list[int]`` for multi-dim reduction.
 The Op layer validates inputs, reshapes to 2D (M, N), and calls the kernel.
-For simple and Welford reduce ops, alignment padding is handled inside the
-kernel via masked loads with identity-element fills, eliminating host-side
-``F.pad`` from the forward path.  Other ops that inherit ``_ReduceOpBase``
-(argreduce, logical, vector_norm) continue to use host-side padding until
-their kernels are converted.
+For simple, Welford, logical reduce, and vector norm ops, alignment padding is
+handled inside the kernel via masked loads with identity-element fills,
+eliminating host-side ``F.pad`` from the forward path. Other ops that inherit
+``_ReduceOpBase`` continue to use host-side padding until their kernels are
+converted.
 Kernels are cached by ``(M, N)`` so that the same op instance can handle
 varying shapes.
 """

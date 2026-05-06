@@ -1,9 +1,9 @@
 """InfNormFwdOp: computes infinity norm (max absolute value) along a given dim.
 
-The Op layer validates inputs, reshapes to 2D (M, N), pads to alignment
-(with 0.0, which is neutral for max of absolute values), calls the kernel,
-and reshapes the output back. Output dtype matches input dtype; internal
-computation in fp32.
+The Op layer validates inputs, reshapes to 2D (M, N), calls the kernel, and
+reshapes the output back. Alignment padding is handled inside the kernel with
+0.0, which is neutral for max of absolute values. Output dtype matches input
+dtype; internal computation in fp32.
 
 NaN propagation: T.reduce_max in TileLang does not propagate NaN (it drops
 NaN values). To match torch.linalg.vector_norm(ord=inf) semantics, the Op
@@ -51,6 +51,7 @@ class InfNormFwdOp(_ReduceOpBase):
     _op_kind = "inf"
     _kernel_key = "vector_norm"
     _kernel_cls = VectorNormKernel
+    _kernel_handles_padding = True
     _required_ord: Union[int, float] = inf
     _empty_dim_policy: EmptyDimPolicy = "full"
 

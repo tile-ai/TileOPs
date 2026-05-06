@@ -1,8 +1,9 @@
 """L1NormFwdOp: computes L1 norm (sum of absolute values) along a given dim.
 
-The Op layer validates inputs, reshapes to 2D (M, N), pads to alignment
-(with 0.0, which is neutral for sum), calls the kernel, and reshapes the
-output back. Output dtype matches input dtype; internal computation in fp32.
+The Op layer validates inputs, reshapes to 2D (M, N), calls the kernel, and
+reshapes the output back. Alignment padding is handled inside the kernel with
+0.0, which is neutral for sum. Output dtype matches input dtype; internal
+computation in fp32.
 """
 
 from typing import Dict, List, Optional, Union
@@ -41,6 +42,7 @@ class L1NormFwdOp(_ReduceOpBase):
     _op_kind = "l1"
     _kernel_key = "vector_norm"
     _kernel_cls = VectorNormKernel
+    _kernel_handles_padding = True
     _required_ord: Union[int, float] = 1
     _empty_dim_policy: EmptyDimPolicy = "full"
 

@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
 from workloads.logical_reduce import AnyTest as _AnyWorkload
 
 # ---------------------------------------------------------------------------
@@ -151,6 +152,22 @@ class LogicalReduceTest(_AnyWorkload, TestBase):
         elif self.op_kind == "count_nonzero":
             return torch.count_nonzero(x, dim=-1).to(torch.int64)
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
+
+
+class _TailBlockLogicalReduceKernel(LogicalReduceKernel):
+    """Force tiled tests to cover tail-M masking with block_m > M."""
+
+    _TAIL_BLOCK_M = 4
+    _TAIL_TILE_N = 8192
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self._needs_tiling, "tail-M regression test must use the tiled kernel"
+        self.config = {
+            "block_m": self._TAIL_BLOCK_M,
+            "threads": 128,
+            "tile_n": self._TAIL_TILE_N,
+        }
 
 
 def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
@@ -619,6 +636,38 @@ def test_count_nonzero_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_kind, dtype",
+    [
+        ("any", torch.bool),
+        ("all", torch.bool),
+        ("count_nonzero", torch.float16),
+    ],
+)
+def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) -> None:
+    """Exercise the N-tiled path with a tail-M block."""
+    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+
+    op_map = {
+        "any": AnyFwdOp,
+        "all": AllFwdOp,
+        "count_nonzero": CountNonzeroFwdOp,
+    }
+    test = LogicalReduceTest(3, 33024, dtype, op_kind)
+    op = op_map[op_kind](
+        dtype=dtype,
+        kernel_map={"logical_reduce": _TailBlockLogicalReduceKernel},
+    )
+    compare = _exact_compare_int64 if op_kind == "count_nonzero" else _exact_compare
+    test.check(op, *test.gen_inputs(), compare=compare)
+    kernel = op._kernel_cache[(3, 33024)]
+    assert kernel.config["block_m"] > test.shape[0]
+    assert kernel.config["tile_n"] > 0
 
 
 if __name__ == "__main__":
