@@ -73,6 +73,8 @@ class RMSNormFwdOp(RowNormOp):
         )
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        if self.normalized_shape is not None and len(self.normalized_shape) > 1:
+            return self._forward_normalized_shape(x, weight)
         ndim = x.ndim
         dim_norm = self._validate_and_normalize_dim(x, weight)
         x, post_move_shape = self._flatten_to_2d(x, dim_norm)
@@ -83,3 +85,44 @@ class RMSNormFwdOp(RowNormOp):
         y = self._get_kernel(M)(x, weight)
         self._last_roofline_mn = (M, self.N)
         return self._trim_and_unflatten(y, post_move_shape, dim_norm, ndim)
+
+    def _forward_normalized_shape(
+        self, x: torch.Tensor, weight: torch.Tensor,
+    ) -> torch.Tensor:
+        """Forward path for multi-axis ``normalized_shape`` (manifest contract).
+
+        Reduction runs over the trailing ``len(normalized_shape)`` axes; the
+        tail is flattened to a 1-D row of size ``N = prod(normalized_shape)``
+        and the same row-norm kernel is reused.
+        """
+        ns = self.normalized_shape
+        k = len(ns)
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if not weight.is_cuda or weight.dtype != self.dtype:
+            raise ValueError(
+                f"weight must be a CUDA tensor of dtype {self.dtype}"
+            )
+        if x.ndim < k or tuple(x.shape[-k:]) != ns:
+            raise ValueError(
+                f"Expected x trailing shape {ns}, "
+                f"got {tuple(x.shape[-k:]) if x.ndim >= k else tuple(x.shape)}"
+            )
+        if tuple(weight.shape) != ns:
+            raise ValueError(
+                f"Expected weight shape {ns}, got {tuple(weight.shape)}"
+            )
+        orig_shape = tuple(x.shape)
+        x_flat = x.contiguous().reshape(-1, self.N)
+        w_flat = weight.contiguous().reshape(self.N)
+        M = x_flat.shape[0]
+        if self._needs_pad:
+            x_flat = self._pad_row(x_flat)
+            w_flat = self._pad_vec(w_flat)
+        y = self._get_kernel(M)(x_flat, w_flat)
+        if self._needs_pad:
+            y = y[:, : self.N]
+        self._last_roofline_mn = (M, self.N)
+        return y.reshape(orig_shape)

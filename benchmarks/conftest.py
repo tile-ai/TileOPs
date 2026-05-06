@@ -39,7 +39,6 @@ TILELANG_019_BENCH_PATHS = {
     "benchmarks/ops/bench_rope.py",
     "benchmarks/ops/bench_topk_selector.py",
     # Normalization.
-    "benchmarks/ops/bench_batch_norm.py",
     "benchmarks/ops/bench_fused_add_layer_norm.py",
     "benchmarks/ops/bench_instance_norm.py",
     # MoE.

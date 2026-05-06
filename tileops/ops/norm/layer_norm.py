@@ -143,29 +143,48 @@ class LayerNormFwdOp(Op):
             raise ValueError(
                 f"Expected bias.dtype {self.dtype}, got {bias.dtype}"
             )
-        if weight.ndim != 1:
-            raise ValueError(
-                f"Expected weight to be 1D, got {weight.ndim}D"
-            )
-        if bias.ndim != 1:
-            raise ValueError(
-                f"Expected bias to be 1D, got {bias.ndim}D"
-            )
-        if x.shape[-1] != self.N:
-            raise ValueError(
-                f"Expected hidden dim {self.N}, got {x.shape[-1]}"
-            )
-        if weight.shape[0] != self.N:
-            raise ValueError(
-                f"Expected weight dim {self.N}, got {weight.shape[0]}"
-            )
-        if bias.shape[0] != self.N:
-            raise ValueError(
-                f"Expected bias dim {self.N}, got {bias.shape[0]}"
-            )
+        if self.normalized_shape is not None:
+            ns = self.normalized_shape
+            k = len(ns)
+            if x.ndim < k or tuple(x.shape[-k:]) != ns:
+                raise ValueError(
+                    f"Expected x trailing shape {ns}, "
+                    f"got {tuple(x.shape[-k:]) if x.ndim >= k else tuple(x.shape)}"
+                )
+            if tuple(weight.shape) != ns:
+                raise ValueError(
+                    f"Expected weight shape {ns}, got {tuple(weight.shape)}"
+                )
+            if tuple(bias.shape) != ns:
+                raise ValueError(
+                    f"Expected bias shape {ns}, got {tuple(bias.shape)}"
+                )
+        else:
+            if weight.ndim != 1:
+                raise ValueError(
+                    f"Expected weight to be 1D, got {weight.ndim}D"
+                )
+            if bias.ndim != 1:
+                raise ValueError(
+                    f"Expected bias to be 1D, got {bias.ndim}D"
+                )
+            if x.shape[-1] != self.N:
+                raise ValueError(
+                    f"Expected hidden dim {self.N}, got {x.shape[-1]}"
+                )
+            if weight.shape[0] != self.N:
+                raise ValueError(
+                    f"Expected weight dim {self.N}, got {weight.shape[0]}"
+                )
+            if bias.shape[0] != self.N:
+                raise ValueError(
+                    f"Expected bias dim {self.N}, got {bias.shape[0]}"
+                )
 
         orig_shape = x.shape
         x = x.contiguous().reshape(-1, self.N)
+        weight = weight.contiguous().reshape(self.N)
+        bias = bias.contiguous().reshape(self.N)
         m_actual = x.shape[0]
         if self.M is not None and m_actual != self.M:
             raise ValueError(
