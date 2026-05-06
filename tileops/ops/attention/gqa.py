@@ -16,6 +16,7 @@ from tileops.kernels.attention import (
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
     GQAPrefillFwdKernel,
+    GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillVarlenFwdKernel,
     GQAPrefillWithKVCacheFwdKernel,
     GQASlidingWindowFwdKernel,
@@ -34,6 +35,7 @@ __all__ = [
     "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionFwdOp",
     "GroupedQueryAttentionPrefillFwdOp",
+    "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
     "GroupedQueryAttentionPrefillWithKVCacheFwdOp",
     "GroupedQueryAttentionSlidingWindowFwdOp",
@@ -133,6 +135,10 @@ def _select_gqa_prefill_varlen_fwd_kernel_cls() -> Type[Kernel]:
 
 def _select_gqa_prefill_with_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
     return GQAPrefillWithKVCacheFwdKernel
+
+
+def _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
+    return GQAPrefillPagedWithKVCacheFwdKernel
 
 
 def _validate_gqa_dims(heads: int, heads_kv: int, dim: int) -> None:
@@ -537,6 +543,210 @@ class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
                 cache_seqlens: torch.Tensor) -> torch.Tensor:
         self._validate_forward_inputs(q, k_new, v_new, k_cache, v_cache, cache_seqlens)
         return _attention_output(self.kernel(q, k_new, v_new, k_cache, v_cache, cache_seqlens))
+
+
+class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
+    """Packed GQA prefill with paged KV cache append. Layout: THD.
+
+    The current chunk is packed by request. ``cache_seqlens`` stores each
+    request's logical KV length before append. ``block_table`` maps logical
+    page ids to physical pages in ``k_pages`` / ``v_pages``.
+    """
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        max_pages_per_req: int,
+        page_size: int,
+        dim: int,
+        is_causal: bool = True,
+        dtype: torch.dtype = torch.float16,
+        sm_scale: Optional[float] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        _validate_gqa_dims(heads, heads_kv, dim)
+        if batch <= 0:
+            raise ValueError("batch must be positive")
+        if max_pages_per_req <= 0:
+            raise ValueError("max_pages_per_req must be positive")
+        if page_size <= 0:
+            raise ValueError("page_size must be positive")
+        if page_size & (page_size - 1) != 0:
+            raise ValueError("page_size must be a power of two")
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.groups = heads // heads_kv
+        self.max_pages_per_req = max_pages_per_req
+        self.page_size = page_size
+        self.max_cache_len = max_pages_per_req * page_size
+        self.dim = dim
+        self.is_causal = is_causal
+        self.dtype = dtype
+        self.sm_scale = _attention_scale(dim, sm_scale)
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["gqa_prefill_paged_with_kv_cache_fwd_kernel"](
+            batch=batch,
+            heads=heads,
+            heads_kv=heads_kv,
+            max_pages_per_req=max_pages_per_req,
+            page_size=page_size,
+            dim=dim,
+            is_causal=is_causal,
+            dtype=dtype,
+            sm_scale=self.sm_scale,
+            tune=tune,
+        )
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        kernel_cls = _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls()
+        return {"gqa_prefill_paged_with_kv_cache_fwd_kernel": kernel_cls}
+
+    def _validate_forward_inputs(
+        self,
+        q: torch.Tensor,
+        k_new: torch.Tensor,
+        v_new: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        block_table: torch.Tensor,
+        max_seqlen_q: int,
+    ) -> None:
+        tensors = {
+            "q": q,
+            "k_new": k_new,
+            "v_new": v_new,
+            "k_pages": k_pages,
+            "v_pages": v_pages,
+            "cu_seqlens_q": cu_seqlens_q,
+            "cache_seqlens": cache_seqlens,
+            "block_table": block_table,
+        }
+        for name, tensor in tensors.items():
+            if tensor.device.type != "cuda":
+                raise ValueError(f"{name} must be on a cuda device, got {tensor.device}")
+            if not tensor.is_contiguous():
+                raise ValueError(f"{name} must be contiguous")
+
+        expected_q_shape_tail = (self.heads, self.dim)
+        expected_kv_shape_tail = (self.heads_kv, self.dim)
+        if q.ndim != 3 or tuple(q.shape[1:]) != expected_q_shape_tail:
+            raise ValueError(
+                f"q must have shape [total_q, {self.heads}, {self.dim}], got {q.shape}")
+        if k_new.ndim != 3 or tuple(k_new.shape[1:]) != expected_kv_shape_tail:
+            raise ValueError(
+                f"k_new must have shape [total_q, {self.heads_kv}, {self.dim}], got "
+                f"{k_new.shape}")
+        if v_new.shape != k_new.shape:
+            raise ValueError(
+                f"v_new must have the same shape as k_new, got {v_new.shape} and "
+                f"{k_new.shape}")
+        if k_new.shape[0] != q.shape[0]:
+            raise ValueError(
+                f"k_new.shape[0] ({k_new.shape[0]}) must equal q.shape[0] ({q.shape[0]})")
+        if k_pages.ndim != 3 or tuple(k_pages.shape[1:]) != expected_kv_shape_tail:
+            raise ValueError(
+                f"k_pages must have shape [physical_tokens, {self.heads_kv}, {self.dim}], "
+                f"got {k_pages.shape}")
+        if v_pages.shape != k_pages.shape:
+            raise ValueError(
+                f"v_pages must have the same shape as k_pages, got {v_pages.shape} and "
+                f"{k_pages.shape}")
+        if k_pages.shape[0] % self.page_size != 0:
+            raise ValueError("k_pages physical token dimension must be divisible by page_size")
+        if cu_seqlens_q.shape != (self.batch + 1,):
+            raise ValueError(
+                f"cu_seqlens_q shape must be ({self.batch + 1},), got "
+                f"{tuple(cu_seqlens_q.shape)}")
+        if cache_seqlens.shape != (self.batch,):
+            raise ValueError(
+                f"cache_seqlens shape must be ({self.batch},), got "
+                f"{tuple(cache_seqlens.shape)}")
+        if block_table.shape != (self.batch, self.max_pages_per_req):
+            raise ValueError(
+                f"block_table shape must be ({self.batch}, {self.max_pages_per_req}), "
+                f"got {tuple(block_table.shape)}")
+
+        for name, tensor in tensors.items():
+            if name in {"cu_seqlens_q", "cache_seqlens", "block_table"}:
+                continue
+            if tensor.dtype != self.dtype:
+                raise ValueError(f"Expected {name}.dtype {self.dtype}, got {tensor.dtype}")
+        for name, tensor in [("cu_seqlens_q", cu_seqlens_q),
+                             ("cache_seqlens", cache_seqlens),
+                             ("block_table", block_table)]:
+            if tensor.dtype != torch.int32:
+                raise ValueError(f"{name} must have dtype torch.int32, got {tensor.dtype}")
+
+        if int(cu_seqlens_q[0].item()) != 0:
+            raise ValueError("cu_seqlens_q[0] must be 0")
+        q_lens = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
+        if torch.any(q_lens < 0).item():
+            raise ValueError("cu_seqlens_q must be non-decreasing")
+        total_q = int(cu_seqlens_q[-1].item())
+        if total_q != q.shape[0]:
+            raise ValueError(f"cu_seqlens_q[-1] ({total_q}) must equal q.shape[0] ({q.shape[0]})")
+        actual_max_q = int(q_lens.max().item())
+        if max_seqlen_q < actual_max_q:
+            raise ValueError(
+                f"max_seqlen_q ({max_seqlen_q}) must be >= actual max Q "
+                f"sequence length ({actual_max_q})")
+
+        min_cache_len = int(cache_seqlens.min().item())
+        max_total_len = int((cache_seqlens + q_lens).max().item())
+        if min_cache_len < 0:
+            raise ValueError("cache_seqlens must be non-negative")
+        if max_total_len > self.max_cache_len:
+            raise ValueError(
+                "cache_seqlens + q_len exceeds paged KV capacity: "
+                f"max total length {max_total_len}, capacity {self.max_cache_len}")
+
+        num_pages = k_pages.shape[0] // self.page_size
+        min_page = int(block_table.min().item())
+        max_page = int(block_table.max().item())
+        if min_page < 0:
+            raise ValueError("block_table must contain non-negative physical page ids")
+        if max_page >= num_pages:
+            raise ValueError(
+                f"block_table references page {max_page}, but only {num_pages} pages exist")
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_new: torch.Tensor,
+        v_new: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        block_table: torch.Tensor,
+        max_seqlen_q: int,
+    ) -> torch.Tensor:
+        self._validate_forward_inputs(
+            q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens,
+            block_table, max_seqlen_q)
+        return _attention_output(
+            self.kernel(q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens,
+                        block_table, max_seqlen_q))
+
+    @property
+    def total_flops(self) -> int:
+        raise NotImplementedError(
+            "total_flops is not defined for paged varlen ops; "
+            "compute per-sample from cu_seqlens and cache_seqlens at call time.")
+
+    @property
+    def total_memory(self) -> int:
+        raise NotImplementedError(
+            "total_memory is not defined for paged varlen ops; "
+            "compute per-sample from cu_seqlens and cache_seqlens at call time.")
 
 
 class GroupedQueryAttentionBwdOp(Op):
