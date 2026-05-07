@@ -89,6 +89,12 @@ class InstanceNormFwdOp(Op):
         self.kernel = self.kernel_map["group_norm"](
             self.M, self.D, eps, dtype, tune=tune,
         )
+        # The compiled kernel binds to the active CUDA device at construction
+        # time, so subsequent forwards must receive inputs on that same
+        # device. Capture it here so forward() can raise a clean error
+        # rather than letting the kernel layer surface an opaque
+        # device-mismatch failure.
+        self._kernel_device = torch.device("cuda", torch.cuda.current_device())
         # Affine-identity tensors are reused across forward calls when the
         # caller passes weight=None / bias=None. Cached on the op instance
         # and invalidated on (dtype, device) change of the input.
@@ -146,6 +152,12 @@ class InstanceNormFwdOp(Op):
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
+        if x.device != self._kernel_device:
+            raise ValueError(
+                f"Device mismatch: op was constructed for {self._kernel_device} "
+                f"but x is on {x.device}. Construct a separate op instance per "
+                f"CUDA device."
+            )
         if x.dtype != self.dtype:
             raise ValueError(
                 f"Expected x.dtype {self.dtype}, got {x.dtype}"

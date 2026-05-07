@@ -160,5 +160,27 @@ def test_instance_norm_supplied_affine_does_not_consult_cache() -> None:
     assert op._cached_affine_key is None
 
 
+@pytest.mark.smoke
+def test_instance_norm_rejects_device_mismatch() -> None:
+    """Forward must raise ValueError when input device differs from kernel device.
+
+    The compiled kernel binds to the active CUDA device at construction
+    time, so callers must construct one op per device. Verify the op
+    surfaces a clean ValueError rather than letting the kernel layer
+    raise an opaque device-id error.
+    """
+    if torch.cuda.device_count() < 2:
+        pytest.skip("device-mismatch test requires >= 2 CUDA devices")
+
+    n, c, spatial, dtype = 2, 32, (8, 8), torch.float16
+    with torch.cuda.device(0):
+        op = InstanceNormFwdOp(N=n, C=c, spatial=spatial, dtype=dtype)
+    x_other = torch.randn(
+        (n, c, *spatial), dtype=dtype, device=torch.device("cuda", 1),
+    )
+    with pytest.raises(ValueError, match="[Dd]evice mismatch"):
+        op(x_other, None, None)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
