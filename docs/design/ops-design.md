@@ -335,6 +335,25 @@ To plug in a new EP or quantization backend, subclass `MoEPrepareAndFinalize` an
 
 The scaffold emits T2 (L1-direct) ops only. Once a family accumulates 2-3 ops sharing an identical `forward()` flow, extract an L2 family base via refactoring; concrete ops then become T1 thin wrappers declaring family protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, …). This transformation is driven by a separate family-specific skill, not the scaffold-op. See [Development Path](ops-design-reference.md#development-path) for when to extract an L2 base and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the step-by-step process.
 
+### Per-op exceptions stay per-op within a migration scope
+
+A workaround / fallback / special branch introduced for a single op MUST NOT be promoted to a base-class shared mechanism (mixin, class attribute, shared method, opt-out flag) covering multiple ops as part of the same op-family migration. The base class encodes invariants common to a family; it does not encode workarounds. Promoting a per-op exception turns transient hack into permanent infrastructure and silently extends the workaround surface to every sibling op.
+
+Patterns that this clause forbids without a separate design PR:
+
+- A class-level torch-fallback slot (e.g. `_<NAME>_fn = staticmethod(torch.<fn>)`) bundled with a `_FALLBACK_DTYPES` tuple, where each leaf opts in by setting the slot — converts a per-op torch passthrough into shared base-class machinery covering N ops.
+- Opt-out class flags such as `_SUPPORTS_<X>: bool = True` that let specific subclasses negate a base-class capability — the base is doing too much, and the flag is the negation channel.
+- Mixin classes extracted from per-op duplicated code (e.g. an `_InplaceMixin` lifted from N copies of the same `__init__`/`forward` boilerplate) — extraction surfaces the duplication but freezes the underlying workaround into a reusable layer.
+- A new `Op`-level method whose body is a sequence of `if isinstance(self, <SubclassA>)` branches dispatching per-op behavior at the base — by-name dispatch is the same shape as a fallback slot, just less explicit.
+
+Promoting a per-op pattern to base-class infrastructure requires a **separate design PR** (not folded into the alignment PR that first observes the duplication). That design PR MUST document:
+
+- (a) **Invariant vs workaround.** Why does the mechanism encode a genuine invariant of the family rather than a workaround for an unimplemented kernel? Litmus test: would the mechanism still belong in the base class if no op had previously needed the workaround? If the mechanism only exists because some op took a shortcut, it is a workaround and belongs in that op (or in a follow-up that closes the shortcut), not in the base class.
+- (b) **MUST vs MAY scope.** Which ops in the family MUST use the mechanism, and which MAY opt-in or out? An MAY-with-default pattern (subclass sets a class flag to negate the base) is the opt-out anti-pattern from the list above; reject this shape unless the design PR justifies why every other framing fails.
+- (c) **Compatibility with [trust-model.md](trust-model.md).** Specifically, the mechanism MUST NOT be a way to ship `status: spec-only` ops as if they were `status: implemented`. If a base-class fallback exists so a `spec-only` op can return runnable output without a real kernel, the right answer is to keep the op's status `spec-only` and file follow-up issues for the missing kernels — not to promote a torch passthrough to the base.
+
+Cross-references: trust-model rules for status semantics live in [trust-model.md](trust-model.md) §Manifest; backwards-compatibility shim policy lives in [.claude/rules/code-style.md](../../.claude/rules/code-style.md). This clause does not restate those rules; it ties the family-refactor decision to them.
+
 ## Further Reference
 
 - [Slot Rules](ops-design-reference.md#slot-rules) — full Rule / Derivation / Example / Common mistakes per slot
