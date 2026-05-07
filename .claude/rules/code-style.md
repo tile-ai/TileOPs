@@ -20,9 +20,7 @@
 
 - **Abbreviation casing in PascalCase**: standard abbreviations stay fully uppercase — `RMSNormKernel`, `SSDDecodeOp`, `FusedAddRMSNormFwdOp`.
 
-- **Filenames**: all-lowercase with underscores; multi-letter abbreviations stay lowercase — `rms_norm.py`, `ssd_decode.py`. Don't capitalize a single letter.
-
-- **Norm filenames**: underscore-separated — `rms_norm`, `layer_norm`, `batch_norm`, `fused_add_rms_norm`. Never contracted (`rmsnorm` etc.).
+- **Filenames**: all-lowercase with underscores; multi-letter abbreviations stay lowercase — `rms_norm.py`, `ssd_decode.py`. Don't capitalize a single letter. Norm filenames specifically must be underscore-separated, never contracted (`rms_norm`, never `rmsnorm`).
 
 - **Docstrings**: Google style. One-sentence summary, blank line, then optional `Args:` / `Returns:` / `Raises:` / `Example:`. Internal helpers may have a single-line summary. Never mix Sphinx (`:param x:`) or NumPy headers in the same file.
 
