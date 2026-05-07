@@ -18,7 +18,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.ops.elementwise import AddFwdOp, WhereFwdOp
+from tileops.ops.elementwise import AddFwdOp, LerpTensorFwdOp, WhereFwdOp
 from workloads.binary_arith import AddSameShapeTest
 from workloads.workload_base import FixtureBase
 
@@ -416,6 +416,86 @@ def test_add_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
         return a + b
 
     result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ---------------------------------------------------------------------------
+# LerpTensorFwdOp — Tensor-weight torch.lerp benchmark.
+#
+# Per output element: 3 flops (sub + mul + add); 3 reads + 1 write at
+# post-broadcast ``N_total`` (matches
+# ``tileops.perf.formulas.lerp_tensor_fwd_roofline``). Same-shape inputs
+# only here; the broadcast contract is exercised by the test suite.
+# ---------------------------------------------------------------------------
+
+
+class LerpTensorBenchCase:
+    """Same-shape input/end/weight; output broadcast equals the shape."""
+
+    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
+        self.shape = shape
+        self.n_total = prod(shape)
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.shape, device="cuda", dtype=self.dtype)
+        b = torch.randn(self.shape, device="cuda", dtype=self.dtype)
+        # Keep weight in [0, 1] to stay close to typical lerp usage.
+        w = torch.rand(self.shape, device="cuda", dtype=self.dtype)
+        return a, b, w
+
+
+class LerpTensorBenchmark(BenchmarkBase[LerpTensorBenchCase]):
+    """Bandwidth-oriented benchmark for ``LerpTensorFwdOp``."""
+
+    def calculate_flops(self) -> Optional[float]:
+        return 3 * self.workload.n_total
+
+    def calculate_memory(self) -> Optional[float]:
+        t = self.workload
+        return 4 * t.n_total * t.dtype.itemsize
+
+
+_LERP_TENSOR_BENCH_PARAMS = [
+    pytest.param((1024, 4096), torch.float16,
+                 id="lerp-tensor-fp16-1024x4096", marks=pytest.mark.smoke),
+    pytest.param((1024, 4096), torch.bfloat16,
+                 id="lerp-tensor-bf16-1024x4096", marks=pytest.mark.full),
+    pytest.param((1024, 4096), torch.float32,
+                 id="lerp-tensor-fp32-1024x4096", marks=pytest.mark.full),
+    pytest.param((1024, 10240), torch.float16,
+                 id="lerp-tensor-fp16-1024x10240", marks=pytest.mark.full),
+    pytest.param((1024, 11008), torch.float16,
+                 id="lerp-tensor-fp16-1024x11008", marks=pytest.mark.full),
+]
+
+
+@pytest.mark.parametrize("shape, dtype", _LERP_TENSOR_BENCH_PARAMS)
+def test_lerp_tensor_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
+    from tileops.perf.formulas import lerp_tensor_fwd_roofline
+
+    test = LerpTensorBenchCase(shape, dtype)
+    bm = LerpTensorBenchmark(test)
+    a, b, w = test.gen_inputs()
+
+    op = LerpTensorFwdOp(
+        input=tuple(shape), end=tuple(shape), weight=tuple(shape), dtype=dtype,
+    )
+    # Cross-check the bench harness' inline flop/byte counts against the
+    # manifest-bound roofline formula so a drift in either direction
+    # surfaces as a bench failure rather than silent perf misreporting.
+    formula_flops, formula_bytes = lerp_tensor_fwd_roofline(op)
+    assert formula_flops == bm.calculate_flops(), (
+        f"flop mismatch: formula={formula_flops}, bench={bm.calculate_flops()}"
+    )
+    assert formula_bytes == bm.calculate_memory(), (
+        f"byte mismatch: formula={formula_bytes}, bench={bm.calculate_memory()}"
+    )
+
+    result = bm.profile(op, a, b, w)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(torch.lerp, a, b, w)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 

@@ -46,9 +46,11 @@ LerpTensorFwdOp:
   ref_api: "torch.lerp"
   # Tensor-weight variant: weight is a tensor that broadcasts together
   # with input and end (PyTorch's torch.lerp(input, end, weight: Tensor)
-  # overload). No kernel implementation yet — spec-only placeholder.
+  # overload). Implements the 3-way tensor broadcast variant; the Op
+  # layer pre-broadcasts/expands to contiguous 1-D tensors before kernel
+  # dispatch.
   family: elementwise
-  status: spec-only
+  status: implemented
   variant_of: LerpFwdOp
 
   signature:
@@ -61,13 +63,17 @@ LerpTensorFwdOp:
     shape_rules:
       - "output.shape == broadcast_shapes(input.shape, end.shape, weight.shape)"
 
-  workloads: []
+  workloads:
+    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     func: "tileops.perf.formulas.lerp_tensor_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      lerp_tensor: LerpTensorFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_binary_arith.py
