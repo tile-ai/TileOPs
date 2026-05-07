@@ -107,7 +107,7 @@ def _check_static_dims(op_name: str, sdims: object, sig: dict) -> list[str]:
     # treat non-dicts as empty so static_dims checks don't crash the validator.
     inputs = sig.get("inputs")
     params = sig.get("params")
-    input_names = set(inputs.keys()) if isinstance(inputs, dict) else set()
+    input_names = set(inputs.keys())
     param_names = set(params.keys()) if isinstance(params, dict) else set()
 
     for dname, expr in sdims.items():
@@ -925,7 +925,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     all_tensors.update(outputs)
 
     tensor_names = set(all_tensors.keys())
-    input_names = set(inputs.keys()) if isinstance(inputs, dict) else set()
+    input_names = set(inputs.keys())
 
     # Validate signature tensor dtypes. ``promote_int_to_float`` is an
     # output-side-only construct (R3a) — reject it on input tensors.
@@ -1302,7 +1302,7 @@ def _input_bound_symbols(sig: dict) -> set[str]:
         r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.shape\s*==\s*\(([^)]*)\)\s*$"
     )
     inputs = sig.get("inputs") or {}
-    input_names = set(inputs.keys()) if isinstance(inputs, dict) else set()
+    input_names = set(inputs.keys())
     for rule in rules:
         if not isinstance(rule, str):
             continue

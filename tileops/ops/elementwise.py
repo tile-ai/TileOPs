@@ -1701,32 +1701,16 @@ class ReciprocalFwdOp(UnaryOp):
                 N_total, torch.float32, strategy=strategy,
                 kernel_map=kernel_map, tune=tune,
             )
-            self._compute_dtype = torch.float32
             self.dtype = dtype
         else:
             super().__init__(
                 N_total, dtype, strategy=strategy,
                 kernel_map=kernel_map, tune=tune,
             )
-            self._compute_dtype = dtype
-        self._declared_dtype = dtype
-
-    def _validate_input(self, input: torch.Tensor) -> None:  # noqa: A002
-        if not input.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
-        if input.dtype != self._declared_dtype:
-            raise ValueError(
-                f"Expected input.dtype {self._declared_dtype}, "
-                f"got {input.dtype}"
-            )
-        if input.numel() != self.N_total:
-            raise ValueError(
-                f"Expected {self.N_total} elements, got {input.numel()}"
-            )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        self._validate_input(input)
-        if self._declared_dtype in _MANIFEST_INT_DTYPES:
+        if self.dtype in _MANIFEST_INT_DTYPES:
+            self._validate_input(input)
             # Promote integer input to the kernel's float32 working dtype.
             # The torch.compile fast path is bypassed because the
             # registered custom op was built for the float kernel; the
@@ -1734,10 +1718,7 @@ class ReciprocalFwdOp(UnaryOp):
             # eager kernel call is the simpler contract.
             promoted = input.to(torch.float32)
             return self._eager_forward(promoted)
-        wrapped = type(self)._wrapped
-        if wrapped is not None:
-            return wrapped(input, self._instance_key)
-        return self._eager_forward(input)
+        return super().forward(input)
 
 
 class SignFwdOp(_IntIdentityUnaryOp):
