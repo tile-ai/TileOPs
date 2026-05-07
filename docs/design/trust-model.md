@@ -23,6 +23,12 @@ Source of truth for op interfaces. Human-reviewed, separate PR.
 - **OWNS**: op signatures, dtypes, workload shapes, roofline formulas, status, kernel_map (dispatch registration table)
 - **MUST NOT WRITE**: kernel internals, dispatch strategy, or test logic
 
+### Status flip carve-out
+
+An implementation PR MAY flip `status:` and edit `source.kernel_map` on the op it aligns; contractual fields (`signature`, `workloads`, `roofline.*`, `params`, output-dtype / shape rules) stay frozen and require a separate manifest-only PR with human review.
+
+Authoritative enumeration of allowed vs forbidden mutations: [.claude/rules/manifest-trust-model.md](../../.claude/rules/manifest-trust-model.md) §Status flip carve-out.
+
 → Rules: [manifest-spec.md](../../.claude/domain-rules/manifest-spec.md) | Guide: [manifest.md](manifest.md)
 
 ## Test
