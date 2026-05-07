@@ -89,6 +89,27 @@ class InstanceNormFwdOp(Op):
         self.kernel = self.kernel_map["group_norm"](
             self.M, self.D, eps, dtype, tune=tune,
         )
+        # Affine-identity tensors are reused across forward calls when the
+        # caller passes weight=None / bias=None. Cached on the op instance
+        # and invalidated on (dtype, device) change of the input.
+        self._cached_unit_weight: Optional[torch.Tensor] = None
+        self._cached_zero_bias: Optional[torch.Tensor] = None
+        self._cached_affine_key: Optional[tuple] = None
+
+    def _get_affine_identity(
+        self, dtype: torch.dtype, device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return cached unit_weight / zero_bias for the given (dtype, device)."""
+        key = (dtype, device)
+        if self._cached_affine_key != key:
+            self._cached_unit_weight = torch.ones(
+                self.D_padded, dtype=dtype, device=device,
+            )
+            self._cached_zero_bias = torch.zeros(
+                self.D_padded, dtype=dtype, device=device,
+            )
+            self._cached_affine_key = key
+        return self._cached_unit_weight, self._cached_zero_bias
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -102,14 +123,19 @@ class InstanceNormFwdOp(Op):
         )
 
     def forward(
-        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor,
+        self,
+        x: torch.Tensor,
+        weight: Optional[torch.Tensor] = None,
+        bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Apply instance normalization.
 
         Args:
             x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
-            weight: Affine scale of shape ``(C,)`` on CUDA.
-            bias: Affine shift of shape ``(C,)`` on CUDA.
+            weight: Optional affine scale of shape ``(C,)`` on CUDA. When
+                ``None``, the affine scale defaults to all-ones (no scaling).
+            bias: Optional affine shift of shape ``(C,)`` on CUDA. When
+                ``None``, the affine shift defaults to all-zeros (no shift).
 
         Returns:
             Normalized tensor of the same shape as *x*.
@@ -120,30 +146,32 @@ class InstanceNormFwdOp(Op):
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
-        if not weight.is_cuda:
-            raise ValueError("weight must be a CUDA tensor")
-        if not bias.is_cuda:
-            raise ValueError("bias must be a CUDA tensor")
         if x.dtype != self.dtype:
             raise ValueError(
                 f"Expected x.dtype {self.dtype}, got {x.dtype}"
             )
-        if weight.dtype != self.dtype:
-            raise ValueError(
-                f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
-            )
-        if bias.dtype != self.dtype:
-            raise ValueError(
-                f"Expected bias.dtype {self.dtype}, got {bias.dtype}"
-            )
-        if weight.ndim != 1 or weight.shape[0] != self.C:
-            raise ValueError(
-                f"Expected weight shape ({self.C},), got {weight.shape}"
-            )
-        if bias.ndim != 1 or bias.shape[0] != self.C:
-            raise ValueError(
-                f"Expected bias shape ({self.C},), got {bias.shape}"
-            )
+        if weight is not None:
+            if not weight.is_cuda:
+                raise ValueError("weight must be a CUDA tensor")
+            if weight.dtype != self.dtype:
+                raise ValueError(
+                    f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
+                )
+            if weight.ndim != 1 or weight.shape[0] != self.C:
+                raise ValueError(
+                    f"Expected weight shape ({self.C},), got {weight.shape}"
+                )
+        if bias is not None:
+            if not bias.is_cuda:
+                raise ValueError("bias must be a CUDA tensor")
+            if bias.dtype != self.dtype:
+                raise ValueError(
+                    f"Expected bias.dtype {self.dtype}, got {bias.dtype}"
+                )
+            if bias.ndim != 1 or bias.shape[0] != self.C:
+                raise ValueError(
+                    f"Expected bias shape ({self.C},), got {bias.shape}"
+                )
 
         orig_shape = x.shape
         x = x.contiguous()
@@ -151,13 +179,9 @@ class InstanceNormFwdOp(Op):
         # Reshape: (N, C, *spatial) -> (N*C, spatial_size)
         x_2d = x.reshape(self.M, self.D)
 
-        # Unit weight and zero bias for the kernel (affine applied after)
-        unit_weight = torch.ones(
-            self.D_padded, dtype=self.dtype, device=x.device,
-        )
-        zero_bias = torch.zeros(
-            self.D_padded, dtype=self.dtype, device=x.device,
-        )
+        # Unit weight and zero bias for the kernel (affine applied after).
+        # Cached on the op instance keyed on (dtype, device) of the input.
+        unit_weight, zero_bias = self._get_affine_identity(x.dtype, x.device)
 
         # Pad to alignment
         if self.D_padded != self.D:
@@ -173,8 +197,15 @@ class InstanceNormFwdOp(Op):
         # Reshape back: (N*C, spatial_size) -> (N, C, *spatial)
         y = y_2d.reshape(orig_shape)
 
-        # Apply per-channel affine: y = y * weight + bias
+        # Apply per-channel affine: y = y * weight + bias when supplied.
+        # Both args default to identity (no-op) when None. The combined
+        # expression matches the user-supplied path bit-for-bit.
         affine_shape = [1, self.C] + [1] * len(self.spatial)
-        y = y * weight.reshape(affine_shape) + bias.reshape(affine_shape)
+        if weight is not None and bias is not None:
+            y = y * weight.reshape(affine_shape) + bias.reshape(affine_shape)
+        elif weight is not None:
+            y = y * weight.reshape(affine_shape)
+        elif bias is not None:
+            y = y + bias.reshape(affine_shape)
 
         return y
