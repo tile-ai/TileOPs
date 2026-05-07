@@ -937,6 +937,8 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     # Validate signature tensor dtypes. ``promote_int_to_float`` is an
     # output-side-only construct (R3a) — reject it on input tensors.
     for tname, attrs in all_tensors.items():
+        if not isinstance(attrs, dict):
+            continue
         dtype_str = attrs.get("dtype", "")
         tokens = _parse_dtype_expr(dtype_str)
         is_input = tname in input_names

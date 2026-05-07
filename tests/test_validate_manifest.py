@@ -1065,6 +1065,17 @@ class TestDtype:
                 errors = validator.check_l3("BadOp", entry)
                 assert isinstance(errors, list)
 
+        # Non-dict entry value inside an otherwise-well-formed inputs/outputs
+        # mapping (e.g. ``inputs: {x: "float16"}``) must also be tolerated.
+        entry = {
+            "signature": {
+                "inputs": {"x": "float16"},
+                "outputs": {"y": ["float16"]},
+            },
+        }
+        errors = validator.check_l3("BadOp", entry)
+        assert isinstance(errors, list)
+
     def test_promote_int_to_float_rejects_output_self_ref(self, validator):
         """``promote_int_to_float(ref)`` ref must name a signature INPUT.
 
