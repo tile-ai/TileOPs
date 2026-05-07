@@ -46,9 +46,9 @@ LerpTensorFwdOp:
   ref_api: "torch.lerp"
   # Tensor-weight variant: weight is a tensor that broadcasts together
   # with input and end (PyTorch's torch.lerp(input, end, weight: Tensor)
-  # overload). No kernel implementation yet — spec-only placeholder.
+  # overload).
   family: elementwise
-  status: spec-only
+  status: implemented
   variant_of: LerpFwdOp
 
   signature:
@@ -68,6 +68,8 @@ LerpTensorFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      lerp_tensor: LerpTensorFwdKernel
     op: tileops/ops/elementwise.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_binary_arith.py
