@@ -1690,21 +1690,26 @@ class ReciprocalFwdOp(UnaryOp):
         tune: bool = False,
     ):
         if dtype in _MANIFEST_INT_DTYPES:
-            # Build the kernel against the promoted dtype so the float-only
-            # ReciprocalFwdKernel can run; remember the original ctor dtype
-            # so ``forward`` can validate user input against the declared
-            # contract before promotion.
+            # Build the kernel against the promoted compute dtype (float32)
+            # so the float-only ReciprocalFwdKernel can run, then restore
+            # the user-declared dtype on ``self.dtype`` so metadata and
+            # ``eval_roofline`` reflect the real I/O contract: integer
+            # input bytes + float32 output bytes. ``self.output_dtype``
+            # stays float32 (set by the kernel) per the manifest's
+            # ``promote_int_to_float`` contract.
             super().__init__(
                 N_total, torch.float32, strategy=strategy,
                 kernel_map=kernel_map, tune=tune,
             )
-            self._declared_dtype = dtype
+            self._compute_dtype = torch.float32
+            self.dtype = dtype
         else:
             super().__init__(
                 N_total, dtype, strategy=strategy,
                 kernel_map=kernel_map, tune=tune,
             )
-            self._declared_dtype = dtype
+            self._compute_dtype = dtype
+        self._declared_dtype = dtype
 
     def _validate_input(self, input: torch.Tensor) -> None:  # noqa: A002
         if not input.is_cuda:

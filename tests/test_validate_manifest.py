@@ -992,6 +992,34 @@ class TestDtype:
             f"Expected malformed-token error, got: {errors}"
         )
 
+    def test_promote_int_to_float_rejected_on_input_tensor(self, validator):
+        """``promote_int_to_float`` is output-side only (R3a).
+
+        Using it on a signature.inputs entry must surface a hard L3
+        error rather than silently resolving — the construct describes
+        an output's contract and is not legal as an input dtype.
+        """
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "int8 | int32 | float32"},
+                    "y": {"dtype": "promote_int_to_float(x)"},
+                },
+                "outputs": {"out": {"dtype": "float32"}},
+            },
+            "workloads": [{"dtypes": ["float32"]}],
+        }
+        errors = validator.check_l3("InputPromoteOp", entry)
+        assert any(
+            "promote_int_to_float" in e
+            and "input" in e
+            and "output-side only" in e
+            for e in errors
+        ), (
+            "Expected input-side promote_int_to_float to be rejected, "
+            f"got: {errors}"
+        )
+
     def test_promote_int_to_float_in_union_resolves(self, validator):
         """``promote_int_to_float(ref) | float64`` mixes promotion + literal."""
         sig = {

@@ -552,6 +552,38 @@ def test_reciprocal_int_promotes_to_float32(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.int8, torch.int32, torch.int64, torch.uint8],
+)
+def test_reciprocal_int_metadata_preserves_input_dtype(
+    dtype: torch.dtype,
+) -> None:
+    """``op.dtype`` must reflect the user-declared input dtype.
+
+    The float32 promotion is a kernel-side detail; the public
+    ``self.dtype`` metadata and ``eval_roofline`` byte accounting must
+    describe the actual I/O contract — integer input bytes plus
+    float32 output bytes — so downstream consumers (benchmarks,
+    bandwidth math) see the real workload.
+    """
+    n_total = 4
+    op = ReciprocalFwdOp(N_total=n_total, dtype=dtype)
+    assert op.dtype == dtype, (
+        f"op.dtype must keep declared input dtype, got {op.dtype}"
+    )
+    assert op.output_dtype == torch.float32
+    expected_bytes = n_total * (dtype.itemsize + torch.float32.itemsize)
+    assert int(op.total_memory) == expected_bytes, (
+        f"total_memory must charge int input bytes + float32 output "
+        f"bytes; expected {expected_bytes}, got {op.total_memory}"
+    )
+    flops, bytes_ = op.eval_roofline()
+    assert flops == n_total
+    assert bytes_ == expected_bytes
+
+
+@pytest.mark.smoke
 def test_reciprocal_int_input_validation() -> None:
     """ReciprocalFwdOp(int dtype) must validate the user input dtype.
 

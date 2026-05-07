@@ -821,9 +821,19 @@ def _parse_dtype_expr(dtype_str: str) -> list[str]:
 
 
 def _validate_dtype_token(
-    op_name: str, context: str, token: str, tensor_names: set[str],
+    op_name: str,
+    context: str,
+    token: str,
+    tensor_names: set[str],
+    *,
+    allow_promote_int_to_float: bool = True,
 ) -> str | None:
-    """Validate a single dtype token. Returns an error string or None."""
+    """Validate a single dtype token. Returns an error string or None.
+
+    ``promote_int_to_float(ref)`` is an output-side-only construct per
+    docs/design/manifest.md R3a. Callers validating input tensors set
+    ``allow_promote_int_to_float=False`` to reject it on the input side.
+    """
     m = _SAME_AS_RE.match(token)
     if m:
         ref = m.group(1)
@@ -835,6 +845,11 @@ def _validate_dtype_token(
         return None
     m = _PROMOTE_INT_TO_FLOAT_RE.match(token)
     if m:
+        if not allow_promote_int_to_float:
+            return (
+                f"[dtype] {op_name}: {context} uses promote_int_to_float "
+                f"on an input tensor — this construct is output-side only"
+            )
         ref = m.group(1)
         if ref not in tensor_names:
             return (
@@ -903,18 +918,26 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     """
     errors: list[str] = []
     sig = entry.get("signature", {})
+    inputs = sig.get("inputs", {}) or {}
+    outputs = sig.get("outputs", {}) or {}
     all_tensors = {}
-    all_tensors.update(sig.get("inputs", {}))
-    all_tensors.update(sig.get("outputs", {}))
+    all_tensors.update(inputs)
+    all_tensors.update(outputs)
 
     tensor_names = set(all_tensors.keys())
+    input_names = set(inputs.keys()) if isinstance(inputs, dict) else set()
 
-    # Validate signature tensor dtypes
+    # Validate signature tensor dtypes. ``promote_int_to_float`` is an
+    # output-side-only construct (R3a) — reject it on input tensors.
     for tname, attrs in all_tensors.items():
         dtype_str = attrs.get("dtype", "")
         tokens = _parse_dtype_expr(dtype_str)
+        is_input = tname in input_names
         for token in tokens:
-            err = _validate_dtype_token(op_name, tname, token, tensor_names)
+            err = _validate_dtype_token(
+                op_name, tname, token, tensor_names,
+                allow_promote_int_to_float=not is_input,
+            )
             if err:
                 errors.append(err)
 
