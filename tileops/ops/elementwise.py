@@ -2465,6 +2465,9 @@ class LerpTensorFwdOp(Op):
         end: tuple,
         weight: tuple,
         dtype: torch.dtype,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         if dtype not in self._SUPPORTED_DTYPES:
             names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
@@ -2476,13 +2479,17 @@ class LerpTensorFwdOp(Op):
         self.end_shape = tuple(end)
         self.weight_shape = tuple(weight)
         self.dtype = dtype
+        self.strategy = strategy
         self.out_shape = tuple(
             torch.broadcast_shapes(
                 self.input_shape, self.end_shape, self.weight_shape,
             )
         )
         self.N_total = prod(self.out_shape) if self.out_shape else 1
-        self.kernel = LerpTensorFwdKernel(self.N_total, dtype)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map[self._op_name](
+            self.N_total, dtype, tune=tune,
+        )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -3340,7 +3347,7 @@ _register_where_custom_op(WhereFwdOp)
 
 # --- Tensor-weight lerp (1 op: input, end, weight -> out) ---
 # Registered under ``top::elementwise_lerp_tensor`` to avoid colliding with
-# the scalar ``LerpFwdOp``'s ``top::elementwise_lerp`` namespace. The fake
+# the scalar ``LerpFwdOp``'s ``top::elementwise_binary_lerp`` namespace. The fake
 # function is broadcast-aware so torch.compile(fullgraph=True) traces
 # correctly for both same-shape and broadcasting inputs.
 _register_lerp_tensor_custom_op(LerpTensorFwdOp)
