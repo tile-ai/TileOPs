@@ -515,7 +515,7 @@ def test_round_decimals_validates_input() -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "dtype",
-    [torch.int8, torch.int32, torch.int64, torch.uint8],
+    [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8],
 )
 def test_reciprocal_int_promotes_to_float32(dtype: torch.dtype) -> None:
     """ReciprocalFwdOp must accept integral inputs and yield float32 output.
@@ -554,7 +554,7 @@ def test_reciprocal_int_promotes_to_float32(dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "dtype",
-    [torch.int8, torch.int32, torch.int64, torch.uint8],
+    [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8],
 )
 def test_reciprocal_int_metadata_preserves_input_dtype(
     dtype: torch.dtype,
