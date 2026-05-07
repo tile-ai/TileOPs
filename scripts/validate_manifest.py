@@ -53,6 +53,25 @@ _TORCH_DTYPES = {
 }
 
 _SAME_AS_RE = re.compile(r"^same_as\(\s*(\w+)\s*\)$")
+# ``promote_int_to_float(ref)``: output dtype is ``float32`` when ``ref``'s
+# dtype is integral (uint8 / int8 / int16 / int32 / int64), else
+# ``same_as(ref)``. Models PyTorch-style int-input promotion for ops like
+# ``torch.reciprocal`` whose float32 result cannot be expressed by
+# ``same_as(input)`` alone.
+_PROMOTE_INT_TO_FLOAT_RE = re.compile(
+    r"^promote_int_to_float\(\s*(\w+)\s*\)$"
+)
+
+# Integral torch dtypes that ``promote_int_to_float`` rewrites to ``float32``.
+# Restricted to the dtypes PyTorch's int-input promotion treats as integral
+# (bool is excluded — it is not part of the integral promotion contract).
+_PROMOTE_INT_DTYPES: frozenset[str] = frozenset({
+    "uint8", "int8", "int16", "int32", "int64",
+})
+
+# Target dtype for integral inputs under ``promote_int_to_float``. Matches
+# PyTorch's default scalar type.
+_PROMOTE_TARGET_DTYPE: str = "float32"
 
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
@@ -802,9 +821,23 @@ def _parse_dtype_expr(dtype_str: str) -> list[str]:
 
 
 def _validate_dtype_token(
-    op_name: str, context: str, token: str, tensor_names: set[str],
+    op_name: str,
+    context: str,
+    token: str,
+    tensor_names: set[str],
+    *,
+    allow_promote_int_to_float: bool = True,
+    input_tensor_names: set[str] | None = None,
 ) -> str | None:
-    """Validate a single dtype token. Returns an error string or None."""
+    """Validate a single dtype token. Returns an error string or None.
+
+    ``promote_int_to_float(ref)`` is an output-side-only construct per
+    docs/design/manifest.md R3a. Callers validating input tensors set
+    ``allow_promote_int_to_float=False`` to reject it on the input side.
+    When ``allow_promote_int_to_float`` is True, ``input_tensor_names``
+    must be supplied: ``ref`` must name a signature input tensor — not
+    an output, and not the tensor itself.
+    """
     m = _SAME_AS_RE.match(token)
     if m:
         ref = m.group(1)
@@ -813,7 +846,23 @@ def _validate_dtype_token(
                 f"[dtype] {op_name}: {context} dtype same_as({ref}) "
                 f"references unknown tensor"
             )
-    elif token not in _TORCH_DTYPES:
+        return None
+    m = _PROMOTE_INT_TO_FLOAT_RE.match(token)
+    if m:
+        if not allow_promote_int_to_float:
+            return (
+                f"[dtype] {op_name}: {context} uses promote_int_to_float "
+                f"— this construct is output-side only"
+            )
+        ref = m.group(1)
+        if input_tensor_names is None or ref not in input_tensor_names:
+            return (
+                f"[dtype] {op_name}: {context} dtype "
+                f"promote_int_to_float({ref}) must reference a signature "
+                f"input tensor"
+            )
+        return None
+    if token not in _TORCH_DTYPES:
         return f"[dtype] {op_name}: {context} has unrecognized dtype '{token}'"
     return None
 
@@ -874,18 +923,31 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     """
     errors: list[str] = []
     sig = entry.get("signature", {})
+    raw_inputs = sig.get("inputs")
+    raw_outputs = sig.get("outputs")
+    inputs = raw_inputs if isinstance(raw_inputs, dict) else {}
+    outputs = raw_outputs if isinstance(raw_outputs, dict) else {}
     all_tensors = {}
-    all_tensors.update(sig.get("inputs", {}))
-    all_tensors.update(sig.get("outputs", {}))
+    all_tensors.update(inputs)
+    all_tensors.update(outputs)
 
     tensor_names = set(all_tensors.keys())
+    input_names = set(inputs.keys())
 
-    # Validate signature tensor dtypes
+    # Validate signature tensor dtypes. ``promote_int_to_float`` is an
+    # output-side-only construct (R3a) — reject it on input tensors.
     for tname, attrs in all_tensors.items():
+        if not isinstance(attrs, dict):
+            continue
         dtype_str = attrs.get("dtype", "")
         tokens = _parse_dtype_expr(dtype_str)
+        is_input = tname in input_names
         for token in tokens:
-            err = _validate_dtype_token(op_name, tname, token, tensor_names)
+            err = _validate_dtype_token(
+                op_name, tname, token, tensor_names,
+                allow_promote_int_to_float=not is_input,
+                input_tensor_names=input_names,
+            )
             if err:
                 errors.append(err)
 
@@ -925,6 +987,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
                     err = _validate_dtype_token(
                         op_name, f"workloads[{i}].dtypes[{j}]",
                         token, tensor_names,
+                        allow_promote_int_to_float=False,
                     )
                     if err:
                         errors.append(err)
@@ -1097,6 +1160,20 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
                     f"dtype, not a union"
                 )
                 continue
+            # promote_int_to_float(ref) is an output-side construct that
+            # may expand to multiple concrete dtypes (e.g. {float32,
+            # float16, bfloat16}). Combo rows must pin a single concrete
+            # dtype per tensor, so reject this DSL form on the combo-value
+            # side. Authors should expand the rows manually or use
+            # same_as(ref) when the dtype is genuinely identity-bound.
+            if _PROMOTE_INT_TO_FLOAT_RE.match(val):
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
+                    f"{val!r} — combo values must be a single concrete "
+                    f"dtype; promote_int_to_float(...) is allowed only on "
+                    f"signature.outputs"
+                )
+                continue
             opts = _dtype_options_for_tensor(key, val, dtype_options)
             if opts is None:
                 errors.append(
@@ -1249,8 +1326,9 @@ def _input_bound_symbols(sig: dict) -> set[str]:
     shape_eq_re = re.compile(
         r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.shape\s*==\s*\(([^)]*)\)\s*$"
     )
-    inputs = sig.get("inputs") or {}
-    input_names = set(inputs.keys()) if isinstance(inputs, dict) else set()
+    inputs_raw = sig.get("inputs")
+    inputs = inputs_raw if isinstance(inputs_raw, dict) else {}
+    input_names = set(inputs.keys())
     for rule in rules:
         if not isinstance(rule, str):
             continue
@@ -2100,6 +2178,23 @@ def check_l2_infer_parity(
 # ---------------------------------------------------------------------------
 
 
+def _expand_promote_int_to_float(ref_options: list[str]) -> list[str]:
+    """Resolve ``promote_int_to_float(ref)`` against ``ref``'s dtype options.
+
+    Each integral token in ``ref_options`` (uint8 / int8 / int16 / int32 /
+    int64) maps to ``float32``; non-integral tokens pass through unchanged.
+    Result is de-duplicated, preserving first-seen order.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for opt in ref_options:
+        target = _PROMOTE_TARGET_DTYPE if opt in _PROMOTE_INT_DTYPES else opt
+        if target not in seen:
+            seen.add(target)
+            out.append(target)
+    return out
+
+
 def _dtype_options_for_tensor(
     tname: str, dtype_str: str, resolved: dict[str, list[str]],
 ) -> list[str] | None:
@@ -2125,6 +2220,12 @@ def _dtype_options_for_tensor(
                 # contract. Returning [] here would silently disable parity.
                 return None
             return list(resolved[ref])
+        m = _PROMOTE_INT_TO_FLOAT_RE.match(tokens[0])
+        if m:
+            ref = m.group(1)
+            if ref not in resolved:
+                return None
+            return _expand_promote_int_to_float(resolved[ref])
     out: list[str] = []
     for tok in tokens:
         m = _SAME_AS_RE.match(tok)
@@ -2133,7 +2234,15 @@ def _dtype_options_for_tensor(
             if ref not in resolved:
                 return None
             out.extend(resolved[ref])
-        elif tok in _TORCH_DTYPES:
+            continue
+        m = _PROMOTE_INT_TO_FLOAT_RE.match(tok)
+        if m:
+            ref = m.group(1)
+            if ref not in resolved:
+                return None
+            out.extend(_expand_promote_int_to_float(resolved[ref]))
+            continue
+        if tok in _TORCH_DTYPES:
             out.append(tok)
         else:
             return None

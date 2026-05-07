@@ -512,5 +512,90 @@ def test_round_decimals_validates_input() -> None:
         op(wrong_numel, decimals=2)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8],
+)
+def test_reciprocal_int_promotes_to_float32(dtype: torch.dtype) -> None:
+    """ReciprocalFwdOp must accept integral inputs and yield float32 output.
+
+    Mirrors ``torch.reciprocal``'s int-input promotion: the manifest's
+    ``promote_int_to_float(input)`` output dtype must round-trip against
+    the PyTorch reference for every declared integer dtype.
+    """
+    n_total = 4096
+    if dtype == torch.uint8:
+        # uint8 range [1, 255] avoids zero (1/0 = inf disagrees with the
+        # tolerance-based comparison) without saturating the reference.
+        x = torch.randint(1, 256, (n_total,), device="cuda", dtype=dtype)
+    elif dtype == torch.int8:
+        # int8 range [-127, 127] excluding zero.
+        x = torch.randint(-127, 128, (n_total,), device="cuda", dtype=dtype)
+        x = torch.where(x == 0, torch.ones_like(x), x)
+    else:
+        x = torch.randint(-1000, 1001, (n_total,), device="cuda", dtype=dtype)
+        x = torch.where(x == 0, torch.ones_like(x), x)
+    op = ReciprocalFwdOp(N_total=n_total, dtype=dtype)
+    assert op.output_dtype == torch.float32, (
+        f"ReciprocalFwdOp({dtype}).output_dtype must be float32, got {op.output_dtype}"
+    )
+    out = op(x)
+    assert out.dtype == torch.float32, (
+        f"output dtype must be float32 for int input, got {out.dtype}"
+    )
+    ref = torch.reciprocal(x)
+    assert ref.dtype == torch.float32, (
+        f"torch.reciprocal({dtype}) reference dtype changed: {ref.dtype}"
+    )
+    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8],
+)
+def test_reciprocal_int_metadata_preserves_input_dtype(
+    dtype: torch.dtype,
+) -> None:
+    """``op.dtype`` must reflect the user-declared input dtype.
+
+    The float32 promotion is a kernel-side detail; the public
+    ``self.dtype`` metadata and ``eval_roofline`` byte accounting must
+    describe the actual I/O contract — integer input bytes plus
+    float32 output bytes — so downstream consumers (benchmarks,
+    bandwidth math) see the real workload.
+    """
+    n_total = 4
+    op = ReciprocalFwdOp(N_total=n_total, dtype=dtype)
+    assert op.dtype == dtype, (
+        f"op.dtype must keep declared input dtype, got {op.dtype}"
+    )
+    assert op.output_dtype == torch.float32
+    expected_bytes = n_total * (dtype.itemsize + torch.float32.itemsize)
+    assert int(op.total_memory) == expected_bytes, (
+        f"total_memory must charge int input bytes + float32 output "
+        f"bytes; expected {expected_bytes}, got {op.total_memory}"
+    )
+    flops, bytes_ = op.eval_roofline()
+    assert flops == n_total
+    assert bytes_ == expected_bytes
+
+
+@pytest.mark.smoke
+def test_reciprocal_int_input_validation() -> None:
+    """ReciprocalFwdOp(int dtype) must validate the user input dtype.
+
+    A float32 tensor handed to an op constructed with ``dtype=int32`` must
+    raise rather than silently bypass promotion: the op's contract is
+    ``input.dtype == declared dtype``.
+    """
+    op = ReciprocalFwdOp(N_total=4, dtype=torch.int32)
+    wrong = torch.ones(4, device="cuda", dtype=torch.float32)
+    with pytest.raises(ValueError, match="dtype"):
+        op(wrong)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
