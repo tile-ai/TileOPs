@@ -25,9 +25,9 @@ Source of truth for op interfaces. Human-reviewed, separate PR.
 
 ### Status flip carve-out
 
-An implementation PR MAY flip `status:` and edit `source.kernel_map` on the op it aligns; contractual fields (`signature`, `workloads`, `roofline.*`, `params`, output-dtype / shape rules) stay frozen and require a separate manifest-only PR with human review.
+An implementation PR may edit only `status`, `source.kernel_map`, and (only when promoting `spec-only → implemented`) `workloads` on the aligned op; every other contractual field needs a separate manifest-only PR.
 
-Authoritative enumeration of allowed vs forbidden mutations: [.claude/rules/manifest-trust-model.md](../../.claude/rules/manifest-trust-model.md) §Status flip carve-out.
+Full enumeration: [.claude/rules/manifest-trust-model.md](../../.claude/rules/manifest-trust-model.md) §Status flip carve-out.
 
 → Rules: [manifest-spec.md](../../.claude/domain-rules/manifest-spec.md) | Guide: [manifest.md](manifest.md)
 
