@@ -156,17 +156,21 @@ PLAN=$(jq --slurpfile bots "$BOTS_FILE" --arg reply "$REPLY_TEXT" '
     }
 ' "$THREADS_FILE")
 
+if (( DRY_RUN )); then
+  # Dry-run is a pure read: no GraphQL mutations AND no on-disk side
+  # effects. The artifact write below belongs only to the live path so
+  # tests / future tooling can inspect the action plan without leaving
+  # a stale unknown-bot-like artifact behind.
+  printf '%s\n' "$PLAN"
+  exit 0
+fi
+
 # Drop the artifact for human triage when there is anything to record.
 ARTIFACT="$RUN_DIR/round-${ROUND}.unknown-bot-like.json"
 UNKNOWN_COUNT=$(printf '%s' "$PLAN" | jq '.unknown_bot_like | length')
 if (( UNKNOWN_COUNT > 0 )); then
   mkdir -p "$RUN_DIR"
   printf '%s' "$PLAN" | jq '.unknown_bot_like' > "$ARTIFACT"
-fi
-
-if (( DRY_RUN )); then
-  printf '%s\n' "$PLAN"
-  exit 0
 fi
 
 # Execute mutations for each resolve entry: post a reply on the first
