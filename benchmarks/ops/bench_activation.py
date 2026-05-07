@@ -281,23 +281,26 @@ def test_r4_default_strategy_unary(
     )
 
 
-# Also benchmark gelu to verify strategy choice holds for transcendental ops
+# Also benchmark gelu to verify strategy choice holds for transcendental ops.
+# Both ``approximate`` modes (``none`` -> erf-based; ``tanh`` -> tanh
+# approximation) are exercised so the bench captures kernel selection.
 _R4_GELU_PARAMS = []
 for size_label, _shape in _SHAPE_BY_LABEL.items():
     for dt in _DTYPES:
         for strategy in _UNARY_STRATEGIES:
-            _R4_GELU_PARAMS.append(
-                pytest.param(
-                    _shape, size_label, dt, strategy,
-                    id=f"gelu-{size_label}-{dt}-{strategy}",
-                    marks=pytest.mark.full,
+            for approximate in ("none", "tanh"):
+                _R4_GELU_PARAMS.append(
+                    pytest.param(
+                        _shape, size_label, dt, strategy, approximate,
+                        id=f"gelu-{approximate}-{size_label}-{dt}-{strategy}",
+                        marks=pytest.mark.full,
+                    )
                 )
-            )
 
 
 class R4GeluStrategyFixture(FixtureBase):
     PARAMS = [
-        ("shape, size_label, dtype, strategy", _R4_GELU_PARAMS),
+        ("shape, size_label, dtype, strategy, approximate", _R4_GELU_PARAMS),
     ]
 
 
@@ -307,21 +310,25 @@ def test_r4_default_strategy_gelu(
     size_label: str,
     dtype: torch.dtype,
     strategy: str,
+    approximate: str,
 ) -> None:
     """R4: Benchmark gelu strategies (transcendental op) to confirm DEFAULT_STRATEGY."""
     test = UnaryBenchCase(shape, dtype)
     inputs = test.gen_inputs()
 
     n_total = prod(shape)
-    op = GeluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
+    op = GeluFwdOp(
+        N_total=n_total, dtype=dtype, strategy=strategy,
+        approximate=approximate,
+    )
     bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_strategy_gelu",
         {"shape": shape, "size_label": size_label,
-         "dtype": dtype, "strategy": strategy},
+         "dtype": dtype, "strategy": strategy, "approximate": approximate},
         result,
-        tag=f"gelu_{strategy}",
+        tag=f"gelu_{approximate}_{strategy}",
     )
 
 
