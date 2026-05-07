@@ -45,6 +45,23 @@ flowchart LR
 
 **R3. `dtype` syntax.** `|` for alternatives. `same_as(ref)` is a dtype-only identity constraint: the tensor must have the exact same dtype as `ref` at runtime, does not contribute an independent axis to the Cartesian product in R4, and must not be used for shape.
 
+**R3a. `promote_int_to_float(ref)`.** Output-dtype construct for ops whose integral inputs PyTorch promotes to a floating result (e.g. `torch.reciprocal`). Resolves to `float32` when `ref`'s runtime dtype is integral (`uint8` / `int8` / `int16` / `int32` / `int64`); otherwise resolves to `same_as(ref)`. May appear inside `|` unions on the output side (e.g. `"promote_int_to_float(input) | float64"`). `ref` MUST name a `signature.inputs` tensor; references to outputs or to the tensor itself are rejected. The construct is allowed only inside `signature.outputs[*].dtype`; it MUST NOT appear on input tensors, in `signature.dtype_combos` rows, or in `workloads[*].dtypes` (those positions require concrete `torch.*` dtypes or `same_as(ref)`). The validator expands the resolved dtype set when checking parity with `_validate_dtypes` and `dtype_combos`.
+
+Worked example — `torch.reciprocal` accepts integral inputs and returns `float32`, while floating inputs round-trip:
+
+```yaml
+ReciprocalFwdOp:
+  ref_api: "torch.reciprocal"
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
+    outputs:
+      # int8/int16/int32/int64/uint8 -> float32; float16/bfloat16/float32 unchanged.
+      output: {dtype: "promote_int_to_float(input)"}
+```
+
+The op-layer implementation must mirror this contract: integer inputs are cast to `float32` before the float kernel runs, and `output_dtype` is `float32` for those constructions.
+
 **R4. `dtype_combos`.** Enumerates supported cross-tensor dtype combinations.
 
 - **Present:** exhaustive. Only listed combinations are valid.
@@ -258,12 +275,12 @@ signature:
 
 **Tensor fields:**
 
-| Field         | Required | Description                                                |
-| ------------- | -------- | ---------------------------------------------------------- |
-| `dtype`       | yes      | `\|` for alternatives, `same_as(ref)` = same dtype as ref. |
-| `shape`       | no       | Dimension names (e.g., `"[M, K]"`). Present = fixed rank.  |
-| `constraints` | no       | Dimension restrictions (requires `shape`).                 |
-| `layout`      | no       | Memory format when non-default (R19).                      |
+| Field         | Required | Description                                                                                                                              |
+| ------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `dtype`       | yes      | `\|` for alternatives, `same_as(ref)` = same dtype as ref, `promote_int_to_float(ref)` = `float32` for integral ref else `same_as(ref)`. |
+| `shape`       | no       | Dimension names (e.g., `"[M, K]"`). Present = fixed rank.                                                                                |
+| `constraints` | no       | Dimension restrictions (requires `shape`).                                                                                               |
+| `layout`      | no       | Memory format when non-default (R19).                                                                                                    |
 
 **Param fields:** `type` (string: `int`, `float`, `bool`, `"list[int]"`) + optional `default`.
 
@@ -505,7 +522,7 @@ workloads:
 | L0    | Schema    | Required fields exist, correct types                                                                                        |
 | L1    | Signature | Params ⊆ `__init__()` ∪ `forward()` names; `forward()` order matches                                                        |
 | L2    | Shape     | `shape_rules` are valid Python expressions                                                                                  |
-| L3    | Dtype     | dtype strings are valid torch types or `same_as()` refs                                                                     |
+| L3    | Dtype     | dtype strings are valid torch types, `same_as()` refs, or `promote_int_to_float()` refs                                     |
 | L4    | Benchmark | Bench file imports/calls `load_workloads` and `eval_roofline` (directly or via `workloads_to_params` / `ManifestBenchmark`) |
 
 `spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on a targeted entry + its variants.

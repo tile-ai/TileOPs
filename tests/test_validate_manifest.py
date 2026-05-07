@@ -244,6 +244,32 @@ class TestSchema:
         errors = validator.check_l0("test_op", entry)
         assert errors == [], f"Unexpected schema errors: {errors}"
 
+    def test_static_dims_with_missing_inputs_does_not_crash(self, validator):
+        """Malformed signature (no inputs) must not crash static_dims check.
+
+        Other schema layers report the missing-inputs error; static_dims
+        validation should treat absent or non-mapping inputs as empty and
+        emit a regular schema diagnostic rather than raise AttributeError.
+        """
+        entry = {
+            "signature": {
+                "outputs": {"y": {"dtype": "float32"}},
+                "static_dims": {"N": "x.shape[0]"},
+            },
+        }
+        errors = validator.check_l0("BadOp", entry)
+        assert isinstance(errors, list)
+
+        entry_non_dict = {
+            "signature": {
+                "inputs": "not a mapping",
+                "outputs": {"y": {"dtype": "float32"}},
+                "static_dims": {"N": "x.shape[0]"},
+            },
+        }
+        errors = validator.check_l0("BadOp", entry_non_dict)
+        assert isinstance(errors, list)
+
     def test_static_dims_list_fails(self, validator):
         """Non-dict static_dims (e.g. list) is rejected at L0 (R20)."""
         entry = _make_entry()
@@ -906,6 +932,236 @@ class TestDtype:
         assert resolved["x"] == ["float16", "bfloat16"]
         assert resolved["y"] == ["float16", "bfloat16"]
         assert resolved["z"] == ["float16", "bfloat16"]
+
+    def test_promote_int_to_float_signature_accepts(self, validator):
+        """``promote_int_to_float(ref)`` is a recognized output dtype token."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "input": {
+                        "dtype": (
+                            "float16 | bfloat16 | float32 | "
+                            "int8 | int16 | int32 | int64 | uint8"
+                        ),
+                    },
+                },
+                "outputs": {
+                    "output": {"dtype": "promote_int_to_float(input)"},
+                },
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("PromoteOp", entry)
+        assert errors == [], (
+            f"promote_int_to_float on declared input must validate, got: {errors}"
+        )
+
+    def test_promote_int_to_float_unknown_ref_rejected(self, validator):
+        """``promote_int_to_float(unknown)`` references no declared tensor."""
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | int32"}},
+                "outputs": {
+                    "y": {"dtype": "promote_int_to_float(z)"},
+                },
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("PromoteBadOp", entry)
+        assert any(
+            "promote_int_to_float(z)" in e
+            and "must reference a signature input tensor" in e
+            for e in errors
+        ), (
+            f"Expected input-ref error, got: {errors}"
+        )
+
+    def test_promote_int_to_float_resolves_options(self, validator):
+        """Resolver maps integral input options to float32, keeps floats as-is.
+        """
+        sig = {
+            "inputs": {
+                "input": {
+                    "dtype": (
+                        "float16 | bfloat16 | float32 | "
+                        "int8 | int16 | int32 | int64 | uint8"
+                    ),
+                },
+            },
+            "outputs": {
+                "output": {"dtype": "promote_int_to_float(input)"},
+            },
+        }
+        resolved = validator._resolve_tensor_dtype_options(sig)
+        assert resolved is not None
+        # All integral options collapse to a single float32 entry; float
+        # options stay as themselves. Order-preserving de-dup keeps the
+        # first-seen token (float16 first, then float32 from the integer
+        # promotion path absorbs the explicit float32 entry).
+        assert resolved["output"] == ["float16", "bfloat16", "float32"]
+
+    def test_promote_int_to_float_rejects_malformed_arg(self, validator):
+        """Malformed arg (non-identifier) is not a recognized dtype token."""
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {
+                    "y": {"dtype": "promote_int_to_float()"},
+                },
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("MalformedPromoteOp", entry)
+        assert any(
+            "unrecognized dtype" in e and "promote_int_to_float()" in e
+            for e in errors
+        ), (
+            f"Expected malformed-token error, got: {errors}"
+        )
+
+    def test_promote_int_to_float_rejected_on_input_tensor(self, validator):
+        """``promote_int_to_float`` is output-side only (R3a).
+
+        Using it on a signature.inputs entry must surface a hard L3
+        error rather than silently resolving — the construct describes
+        an output's contract and is not legal as an input dtype.
+        """
+        entry = {
+            "signature": {
+                "inputs": {
+                    "x": {"dtype": "int8 | int32 | float32"},
+                    "y": {"dtype": "promote_int_to_float(x)"},
+                },
+                "outputs": {"out": {"dtype": "float32"}},
+            },
+            "workloads": [{"dtypes": ["float32"]}],
+        }
+        errors = validator.check_l3("InputPromoteOp", entry)
+        assert any(
+            "promote_int_to_float" in e
+            and " y " in e
+            and "output-side only" in e
+            for e in errors
+        ), (
+            "Expected input-side promote_int_to_float to be rejected, "
+            f"got: {errors}"
+        )
+
+    def test_check_l3_with_non_dict_signature_does_not_crash(self, validator):
+        """check_l3 must tolerate malformed signature.inputs/outputs.
+
+        A list or string in place of the expected dict triggered an
+        unguarded ``.update()`` / ``.keys()`` crash; treat as empty so
+        the schema layer's own diagnostics surface unmasked.
+        """
+        for inputs_val in ([{"x": {}}], "not a mapping", None):
+            for outputs_val in ([{"y": {}}], "nope", None):
+                entry = {
+                    "signature": {
+                        "inputs": inputs_val,
+                        "outputs": outputs_val,
+                    },
+                }
+                errors = validator.check_l3("BadOp", entry)
+                assert isinstance(errors, list)
+
+        # Non-dict entry value inside an otherwise-well-formed inputs/outputs
+        # mapping (e.g. ``inputs: {x: "float16"}``) must also be tolerated.
+        entry = {
+            "signature": {
+                "inputs": {"x": "float16"},
+                "outputs": {"y": ["float16"]},
+            },
+        }
+        errors = validator.check_l3("BadOp", entry)
+        assert isinstance(errors, list)
+
+    def test_promote_int_to_float_rejects_output_self_ref(self, validator):
+        """``promote_int_to_float(ref)`` ref must name a signature INPUT.
+
+        Self-reference (``promote_int_to_float(output)`` on the ``output``
+        tensor) and references to other output tensors are nonsense — the
+        construct describes how an output's dtype tracks an input. The
+        validator must reject these with a hard L3 error.
+        """
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "int8 | int32 | float32"}},
+                "outputs": {
+                    "output": {"dtype": "promote_int_to_float(output)"},
+                },
+            },
+            "workloads": [{"dtypes": ["float32"]}],
+        }
+        errors = validator.check_l3("PromoteSelfRefOp", entry)
+        assert any(
+            "promote_int_to_float(output)" in e
+            and "must reference a signature input tensor" in e
+            for e in errors
+        ), (
+            "Expected output/self ref to be rejected, "
+            f"got: {errors}"
+        )
+
+    def test_promote_int_to_float_rejects_other_output_ref(self, validator):
+        """``promote_int_to_float(other_output)`` is also rejected."""
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "int8 | float32"}},
+                "outputs": {
+                    "y": {"dtype": "float32"},
+                    "z": {"dtype": "promote_int_to_float(y)"},
+                },
+            },
+            "workloads": [{"dtypes": ["float32"]}],
+        }
+        errors = validator.check_l3("PromoteOutputRefOp", entry)
+        assert any(
+            "promote_int_to_float(y)" in e
+            and "must reference a signature input tensor" in e
+            for e in errors
+        ), (
+            "Expected output-tensor ref to be rejected, "
+            f"got: {errors}"
+        )
+
+    def test_promote_int_to_float_rejected_in_workload_dtypes(self, validator):
+        """``promote_int_to_float`` is output-side only (R3a).
+
+        Workload dtypes describe concrete benchmark inputs, not output
+        contracts; an entry like ``workloads[].dtypes: [promote_int_to_float(x)]``
+        must be rejected with the same hard L3 error as the input-side
+        and combo-value rejections.
+        """
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "int8 | int32 | float32"}},
+                "outputs": {"y": {"dtype": "promote_int_to_float(x)"}},
+            },
+            "workloads": [{"dtypes": ["promote_int_to_float(x)"]}],
+        }
+        errors = validator.check_l3("WorkloadPromoteOp", entry)
+        assert any(
+            "promote_int_to_float" in e
+            and "workloads[0].dtypes[0]" in e
+            and "output-side only" in e
+            for e in errors
+        ), (
+            "Expected workload-dtype promote_int_to_float to be rejected, "
+            f"got: {errors}"
+        )
+
+    def test_promote_int_to_float_in_union_resolves(self, validator):
+        """``promote_int_to_float(ref) | float64`` mixes promotion + literal."""
+        sig = {
+            "inputs": {"x": {"dtype": "float16 | int32"}},
+            "outputs": {
+                "y": {"dtype": "promote_int_to_float(x) | float64"},
+            },
+        }
+        resolved = validator._resolve_tensor_dtype_options(sig)
+        assert resolved is not None
+        assert resolved["y"] == ["float16", "float32", "float64"]
 
     def test_resolve_dtype_options_same_as_cycle_fails(self, validator):
         """A pure ``same_as`` cycle (``x: same_as(y)``, ``y: same_as(x)``)
@@ -2748,6 +3004,28 @@ class TestDtypeCombosDataHardening:
             "combo values must be a single concrete dtype" in e for e in errors
         ), f"expected union rejection, got {errors}"
 
+    def test_combo_value_promote_int_to_float_is_hard_error(self, validator):
+        """``promote_int_to_float(ref)`` is rejected on the combo-value side.
+
+        The DSL form expands to multiple concrete dtypes (every integral
+        token in ``ref``'s options collapses to ``float32``, and float
+        tokens pass through), so it cannot pin a single concrete dtype
+        per combo row. It is allowed only on ``signature.outputs``.
+        """
+        sig = {
+            "inputs": {"x": {"dtype": "float16 | int8"}},
+            "outputs": {"y": {"dtype": "promote_int_to_float(x)"}},
+            "dtype_combos": [
+                {"x": "float16", "y": "promote_int_to_float(x)"},
+            ],
+        }
+        errors = validator.check_l3_dtype_combos_data("FakeOp", sig)
+        assert any(
+            "promote_int_to_float(...) is allowed only on signature.outputs"
+            in e
+            for e in errors
+        ), f"expected combo-value promote_int_to_float rejection, got {errors}"
+
 
 class TestStaticDimShapeParity:
     """Finding #3 regression: static_dims values must pin expected output sizes."""
@@ -3981,6 +4259,23 @@ class TestValidatorHelperResolution:
         assert len(names) == len(set(names)), (
             f"duplicate name in _SHAPE_RULE_BUILTIN_PAIRS: {names}"
         )
+
+    def test_input_bound_symbols_tolerates_non_dict_inputs(self, validator):
+        """``_input_bound_symbols`` must treat malformed inputs as empty.
+
+        Schema-independent shape-rule extraction must not crash when
+        ``signature.inputs`` is missing or non-mapping; the schema layer
+        owns the structural error message. Regression for a list value.
+        """
+        result = validator._input_bound_symbols({
+            "inputs": [{"x": {"shape": "[N]"}}],
+            "shape_rules": ["x.shape == (N)"],
+        })
+        assert isinstance(result, set)
+        result = validator._input_bound_symbols({
+            "shape_rules": ["x.shape == (N)"],
+        })
+        assert isinstance(result, set)
 
     def test_shape_rules_helpers_callable_by_bare_name(self, validator):
         """Reduction-dim helpers from shape_rules.py are in the eval scope.
