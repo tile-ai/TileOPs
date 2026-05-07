@@ -180,8 +180,20 @@ class InstanceNormFwdOp(Op):
         x_2d = x.reshape(self.M, self.D)
 
         # Unit weight and zero bias for the kernel (affine applied after).
-        # Cached on the op instance keyed on (dtype, device) of the input.
-        unit_weight, zero_bias = self._get_affine_identity(x.dtype, x.device)
+        # Reuse cached identity tensors only on the affine-free path
+        # (weight is None or bias is None); the user-supplied path allocates
+        # fresh tensors to preserve byte-identical behavior.
+        if weight is None or bias is None:
+            unit_weight, zero_bias = self._get_affine_identity(
+                x.dtype, x.device,
+            )
+        else:
+            unit_weight = torch.ones(
+                self.D_padded, dtype=x.dtype, device=x.device,
+            )
+            zero_bias = torch.zeros(
+                self.D_padded, dtype=x.dtype, device=x.device,
+            )
 
         # Pad to alignment
         if self.D_padded != self.D:

@@ -129,5 +129,36 @@ def test_instance_norm_cache_rebuilds_on_dtype_change() -> None:
     assert op_bf._cached_zero_bias.dtype == torch.bfloat16
 
 
+@pytest.mark.smoke
+def test_instance_norm_supplied_affine_does_not_consult_cache() -> None:
+    """When weight and bias are both supplied, the cache must not be consulted."""
+    n, c, spatial, dtype = 2, 32, (8, 8), torch.float16
+    op = InstanceNormFwdOp(N=n, C=c, spatial=spatial, dtype=dtype)
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    weight = torch.randn((c,), dtype=dtype, device="cuda")
+    bias = torch.randn((c,), dtype=dtype, device="cuda")
+
+    def _raise(*args, **kwargs):
+        raise AssertionError(
+            "_get_affine_identity must not be called on the supplied-affine path"
+        )
+
+    op._get_affine_identity = _raise  # type: ignore[method-assign]
+
+    y = op(x, weight, bias)
+
+    # Correctness sanity check: matches torch reference.
+    y_ref = F.instance_norm(
+        x.float(), weight=weight.float(), bias=bias.float(), eps=1e-5,
+    ).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
+
+    # Cache state must remain untouched.
+    assert op._cached_unit_weight is None
+    assert op._cached_zero_bias is None
+    assert op._cached_affine_key is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
