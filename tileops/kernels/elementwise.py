@@ -65,8 +65,9 @@ __all__ = [
     "SinFwdKernel",
     "SqrtFwdKernel",
     "TruncFwdKernel",
-    # --- unary: activations (8) ---
+    # --- unary: activations (9) ---
     "GeluFwdKernel",
+    "GeluTanhFwdKernel",
     "HardsigmoidFwdKernel",
     "HardswishFwdKernel",
     "MishFwdKernel",
@@ -1736,7 +1737,7 @@ class Expm1FwdKernel(FloatUnaryKernel):
 
 
 # ---------------------------------------------------------------------------
-# Concrete unary kernel subclasses -- activations (8)
+# Concrete unary kernel subclasses -- activations (9)
 # ---------------------------------------------------------------------------
 
 
@@ -1749,6 +1750,24 @@ class GeluFwdKernel(FloatUnaryKernel):
         half = T.cast(0.5, "float32")
         one = T.cast(1.0, "float32")
         return half * x * (one + T.erf(T.cast(x, "float32") * inv_sqrt_2))
+
+
+class GeluTanhFwdKernel(FloatUnaryKernel):
+    """Element-wise GELU using the tanh approximation.
+
+    Computes ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``,
+    matching ``torch.nn.functional.gelu(x, approximate='tanh')``.
+    """
+
+    @staticmethod
+    def op_func(x):
+        sqrt_2_over_pi = T.cast(0.7978845608028654, "float32")
+        coeff = T.cast(0.044715, "float32")
+        half = T.cast(0.5, "float32")
+        one = T.cast(1.0, "float32")
+        x_f32 = T.cast(x, "float32")
+        inner = sqrt_2_over_pi * (x_f32 + coeff * x_f32 * x_f32 * x_f32)
+        return half * x_f32 * (one + T.tanh(inner))
 
 
 class SiluFwdKernel(FloatUnaryKernel):
