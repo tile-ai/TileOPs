@@ -251,8 +251,9 @@ def gqa_prefill_paged_with_kv_cache_fwd_roofline(**kwargs: Any) -> dict[str, int
         q_lens = _distribute_total(total_q, batch, max_seqlen_q)
     cache_lens = kwargs.get("cache_lens")
     if cache_lens is None:
-        max_total_len = int(
-            kwargs.get("max_position") or max_pages_per_req * page_size
+        max_position = kwargs.get("max_position")
+        max_total_len = (
+            max_pages_per_req * page_size if max_position is None else int(max_position)
         )
         cache_lens = [max(max_total_len - int(q_len), 0) for q_len in q_lens]
 
