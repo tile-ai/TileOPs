@@ -48,7 +48,9 @@ description: Per-op orchestrator that brings a single op into alignment with its
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PRE_CHECK
+    [*] --> AC_ARTICULATION
+    AC_ARTICULATION --> PRE_CHECK: no AC contradicts manifest status (or no context.json)
+    AC_ARTICULATION --> BLOCKED: AC requires runnable for spec-only op (NEEDS_AC_REWRITE)
     PRE_CHECK --> CLASSIFY: manifest preconditions pass
     PRE_CHECK --> BLOCKED: prereq missing
     CLASSIFY --> CLASSIFY_ONLY_EXIT: --classify-only flag
@@ -78,6 +80,23 @@ stateDiagram-v2
 ```
 
 ## Steps
+
+<a id="ac_articulation"></a>### 0. AC_ARTICULATION (AC-vs-manifest-status gate)
+
+If `align-op` is invoked through a foundry pipeline run (i.e. `FOUNDRY_RUN_DIR` set and `$FOUNDRY_RUN_DIR/context.json` contains `acceptance_criteria[]`), articulate every incoming AC against the op's manifest `status` before any work happens. This catches AC-text-vs-trust-model contradictions before fake-impl can ship — the upstream root cause of PR #1229's whole-Op fake (cleanup tracked in #1237).
+
+For each AC in `context.json`:
+
+- **Source A**: AC text (cite `context.json:acceptance_criteria[<n>]`)
+- **Source B**: op manifest `status` (cite `<manifest_yaml>:<line>` of the `status:` field) + `docs/design/trust-model.md` clause governing that status
+- **Choice**: A | B | merge | `none + propose alternative`
+- **Reasoning**: citation-grounded; not paraphrase
+
+If `status: spec-only` AND the AC requires runnable artifacts (impl producing real outputs / tests asserting real behavior / bench producing numbers / `forward()` call), `Choice` MUST be `none + propose alternative` and the alternative is "narrow the AC to manifest-only requirements (entry exists, validator clean, status unchanged)". align-op then BLOCKs with reason `NEEDS_AC_REWRITE` and surfaces the proposed narrowed AC in `.foundry/plan/<op_name>/ac-articulation.json`. Do NOT proceed to PRE_CHECK.
+
+If no `context.json` (skill invoked outside foundry pipeline) or no `acceptance_criteria[]` field, skip this step. align-op invoked standalone (CLI) trusts the caller.
+
+Schema reference: `https://github.com/AIGCIC/foundry/blob/main/agents/articulation-schema.md` (consolidated by foundry#25 / PR #27). Until that PR merges, the inline rules above are sufficient. Citations MUST be specific (file:line, doc:section), not paraphrase.
 
 ### <a id="pre_check"></a>1. PRE_CHECK
 

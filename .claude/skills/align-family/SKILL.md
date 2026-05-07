@@ -32,7 +32,9 @@ Family name from `tileops/manifest/` (e.g., `reduction`, `norm`, `attention`).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> AUDIT
+    [*] --> AC_ARTICULATION
+    AC_ARTICULATION --> AUDIT: no AC contradicts manifest status (or no context.json)
+    AC_ARTICULATION --> CLEANUP_REGRESSION: AC requires runnable for spec-only op (NEEDS_AC_REWRITE)
     AUDIT --> GROUP_BY_BASE: gap report generated
     GROUP_BY_BASE --> ROUTE: ops grouped by base class
     ROUTE --> ALIGN_OP: ready (mode=minor) or semantic_gap (mode=redesign)
@@ -68,6 +70,23 @@ When `align-op` rewrites a base class during its per-op pipeline, it may create 
 **Dual-path definition**: a class `__init__` with runtime branching to support two incompatible construction interfaces, and `forward` dispatching to two execution paths. Not polymorphism — same semantics, temporary interface coexistence.
 
 ## Steps
+
+<a id="ac_articulation"></a>### 0. AC_ARTICULATION (AC-vs-family-status gate)
+
+If `align-family` is invoked through a foundry pipeline run (i.e. `FOUNDRY_RUN_DIR` set and `$FOUNDRY_RUN_DIR/context.json` contains `acceptance_criteria[]`), articulate every incoming AC against the family's per-op manifest `status` BEFORE running AUDIT. This catches AC-text-vs-trust-model contradictions before any per-op work runs — the upstream root cause of the family-scope fake-impl observed in PR #1229 (cleanup tracked in #1237).
+
+For each AC in `context.json`:
+
+- **Source A**: AC text (cite `context.json:acceptance_criteria[<n>]`)
+- **Source B**: per-op manifest `status` for every op in `family` (cite `<manifest_yaml>:<line>` of each op's `status:` field) + `docs/design/trust-model.md` clause governing those statuses
+- **Choice**: A | B | merge | `none + propose alternative`
+- **Reasoning**: citation-grounded; not paraphrase
+
+If ANY op in the family has `status: spec-only` AND the AC requires runnable artifacts (impl / runnable test / bench numbers) for those ops, `Choice` MUST be `none + propose alternative` and the alternative narrows the AC to "manifest entries valid + validator clean for spec-only ops; runnable artifacts required only for ops already at `status: implemented`". align-family then transitions to `CLEANUP_REGRESSION` (terminal) with reason `NEEDS_AC_REWRITE` — no per-op work runs. The proposed narrowed AC is surfaced in `.foundry/migrations/<family>-ac-articulation.json`.
+
+If no `context.json` or no `acceptance_criteria[]` field, skip this step. align-family invoked standalone (CLI) trusts the caller.
+
+Schema reference: `https://github.com/AIGCIC/foundry/blob/main/agents/articulation-schema.md` (consolidated by foundry#25 / PR #27). Citations MUST be specific (file:line, doc:section), not paraphrase.
 
 ### 1. AUDIT
 
