@@ -165,6 +165,10 @@ class InstanceNormFwdOp(Op):
         if weight is not None:
             if not weight.is_cuda:
                 raise ValueError("weight must be a CUDA tensor")
+            if weight.device != x.device:
+                raise ValueError(
+                    f"Expected weight on {x.device}, got {weight.device}"
+                )
             if weight.dtype != self.dtype:
                 raise ValueError(
                     f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
@@ -176,6 +180,10 @@ class InstanceNormFwdOp(Op):
         if bias is not None:
             if not bias.is_cuda:
                 raise ValueError("bias must be a CUDA tensor")
+            if bias.device != x.device:
+                raise ValueError(
+                    f"Expected bias on {x.device}, got {bias.device}"
+                )
             if bias.dtype != self.dtype:
                 raise ValueError(
                     f"Expected bias.dtype {self.dtype}, got {bias.dtype}"

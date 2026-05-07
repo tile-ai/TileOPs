@@ -182,5 +182,30 @@ def test_instance_norm_rejects_device_mismatch() -> None:
         op(x_other, None, None)
 
 
+@pytest.mark.smoke
+def test_instance_norm_rejects_affine_device_mismatch() -> None:
+    """Forward must raise ValueError when weight/bias live on a different CUDA device than x.
+
+    Without an explicit check the kernel call would either dispatch on
+    cross-device tensors (slow / wrong) or surface as an opaque CUDA
+    error; surface a clean ValueError instead.
+    """
+    if torch.cuda.device_count() < 2:
+        pytest.skip("affine-device-mismatch test requires >= 2 CUDA devices")
+
+    n, c, spatial, dtype = 2, 32, (8, 8), torch.float16
+    with torch.cuda.device(0):
+        op = InstanceNormFwdOp(N=n, C=c, spatial=spatial, dtype=dtype)
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=torch.device("cuda", 0))
+    weight_other = torch.randn((c,), dtype=dtype, device=torch.device("cuda", 1))
+    bias_other = torch.randn((c,), dtype=dtype, device=torch.device("cuda", 1))
+    bias_same = torch.randn((c,), dtype=dtype, device=torch.device("cuda", 0))
+
+    with pytest.raises(ValueError, match="weight on"):
+        op(x, weight_other, bias_same)
+    with pytest.raises(ValueError, match="bias on"):
+        op(x, None, bias_other)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
