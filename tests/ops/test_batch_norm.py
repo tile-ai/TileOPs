@@ -117,7 +117,7 @@ def test_batch_norm_fwd(N, C, spatial, dtype, training):
 
     op = BatchNormFwdOp(N, C, *spatial, dtype=dtype, training=training)
     # Manifest input order: (x, running_mean, running_var, weight, bias).
-    y = op(x, running_mean, running_var, weight, bias, training=training)
+    y = op(x, running_mean, running_var, weight, bias)
 
     ref_y, ref_rm, ref_rv = _ref_fwd(x, weight, bias, running_mean_ref, running_var_ref,
                                       training=training)
@@ -160,6 +160,27 @@ def test_batch_norm_bwd(N, C, spatial, dtype):
         assert torch.allclose(got, ref, atol=atol, rtol=rtol), \
             f"bwd {name} mismatch: max_err={max_err:.4e}"
     print("test_batch_norm_bwd passed: grad_x/weight/bias all match")
+
+
+@pytest.mark.smoke
+def test_batch_norm_fwd_returns_single_tensor() -> None:
+    """BatchNormFwdOp forward must produce one tensor — manifest declares
+    a single output. ``training`` is bound at ctor; the runtime kwarg is
+    no longer accepted."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for forward call")
+
+    N, C, H, W = 4, 8, 4, 4
+    op = BatchNormFwdOp(N, C, H, W, dtype=torch.float16, training=False)
+    x = torch.randn(N, C, H, W, device="cuda", dtype=torch.float16)
+    weight = torch.randn(C, device="cuda", dtype=torch.float32)
+    bias = torch.randn(C, device="cuda", dtype=torch.float32)
+    rm = torch.zeros(C, device="cuda", dtype=torch.float32)
+    rv = torch.ones(C, device="cuda", dtype=torch.float32)
+
+    y = op(x, rm, rv, weight, bias)
+    assert isinstance(y, torch.Tensor)
+    assert y.shape == x.shape
 
 
 if __name__ == "__main__":

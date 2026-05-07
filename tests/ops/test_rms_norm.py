@@ -38,7 +38,7 @@ class RMSNormFixture(FixtureBase):
 @RMSNormFixture
 def test_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = RMSNormTest(m, n, dtype)
-    op = RMSNormFwdOp(N=n, dtype=dtype)
+    op = RMSNormFwdOp(normalized_shape=(n,), dtype=dtype)
     atol = 1e-2 if dtype == torch.float16 else 1.6e-2
     rtol = atol
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
@@ -60,7 +60,7 @@ def test_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     x = x_full[:, :n]  # non-contiguous slice
     weight = torch.randn(n, dtype=dtype, device="cuda")
 
-    op = RMSNormFwdOp(N=n, dtype=dtype)
+    op = RMSNormFwdOp(normalized_shape=(n,), dtype=dtype)
 
     # Reference on contiguous copy
     eps = 1e-6
@@ -90,7 +90,7 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
     weight = torch.randn(hidden, dtype=dtype, device="cuda")
 
-    op = RMSNormFwdOp(N=hidden, dtype=dtype)
+    op = RMSNormFwdOp(normalized_shape=(hidden,), dtype=dtype)
 
     # Reference
     eps = 1e-6
@@ -104,41 +104,6 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
         f"3D test failed, max err: {(y - y_ref).abs().max()}"
 
 
-class RMSNormDimAxis1Fixture(FixtureBase):
-    PARAMS = [
-        ("batch, hidden, seq, dtype", [
-            pytest.param(2, 4096, 512, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(2, 4096, 512, torch.bfloat16, marks=pytest.mark.smoke),
-        ]),
-    ]
-
-
-@RMSNormDimAxis1Fixture
-def test_rms_norm_dim_axis1(
-    batch: int, hidden: int, seq: int, dtype: torch.dtype
-) -> None:
-    """Test reducing along dim=1 (not -1) with a 3D tensor.
-
-    Exercises the movedim choreography in RowNormOp._flatten_to_2d /
-    _trim_and_unflatten — the new code path enabled by this PR. Without
-    this test, the dim != -1 branch could regress while the suite passes.
-    """
-    x = torch.randn(batch, hidden, seq, dtype=dtype, device="cuda")
-    weight = torch.randn(hidden, dtype=dtype, device="cuda")
-
-    op = RMSNormFwdOp(N=hidden, dtype=dtype, dim=1)
-
-    eps = 1e-6
-    x_f32 = x.float()
-    rms = torch.sqrt(x_f32.pow(2).mean(dim=1, keepdim=True) + eps)
-    # Apply 1-D weight to dim=1 via reshape for broadcasting.
-    weight_b = weight.float().view(1, hidden, 1)
-    y_ref = ((x_f32 / rms) * weight_b).to(dtype)
-
-    y = op(x, weight)
-    atol = 1e-2 if dtype == torch.float16 else 1.6e-2
-    assert torch.allclose(y, y_ref, atol=atol, rtol=atol), \
-        f"dim=1 test failed, max err: {(y - y_ref).abs().max()}"
 
 
 if __name__ == "__main__":

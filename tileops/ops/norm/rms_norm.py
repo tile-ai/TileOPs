@@ -1,40 +1,38 @@
-from typing import Dict, Optional, Sequence
+import math
+from typing import Dict, Optional, Sequence, Tuple
 
 import torch
+import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import RMSNormKernel
 
-from .norm_base import RowNormOp, normalized_shape_to_n
+from ..op_base import Op
+from .norm_base import ALIGNMENT, align_up
 
 __all__ = ["RMSNormFwdOp"]
 
 _DEFAULT_EPS = 1e-6
 
 
-class RMSNormFwdOp(RowNormOp):
+class RMSNormFwdOp(Op):
     """Standalone Root Mean Square (RMS) Norm operator.
 
-    Computes ``y = x * rsqrt(mean(x ** 2, dim) + eps) * weight``.
+    Mirrors :func:`torch.nn.functional.rms_norm`. Computes::
 
-    Mirrors :func:`torch.nn.functional.rms_norm`: ``normalized_shape`` is the
-    trailing-axis shape tuple over which the reduction runs; ``eps=None``
-    selects the dtype default.
+        y = x * rsqrt(mean(x ** 2, trailing_axes) + eps) * weight
+
+    where the reduction runs over the trailing ``len(normalized_shape)``
+    axes; ``normalized_shape`` is the only entry point (the manifest spec).
 
     Args:
-        normalized_shape: Trailing axes the reduction runs over (manifest
-            ``params.normalized_shape``). Either this or legacy ``N`` must be
-            set.
+        normalized_shape: Trailing-axis shape tuple over which the
+            reduction runs (manifest ``params.normalized_shape``).
         eps: Epsilon for numerical stability (manifest ``params.eps``).
-            ``None`` uses the implementation default (``1e-6``).
-        dtype: Data type (float16 or bfloat16).
-        N: Legacy single-axis reduction size; supplied when callers cannot
-            yet pass a tuple. Mutually exclusive with ``normalized_shape``.
-        dim: Reduction axis (default -1) when using legacy ``N`` form.
-            When ``normalized_shape`` is set, the reduction always runs over
-            the trailing axes.
-        kernel_map: Optional override for kernel dispatch.
-        tune: Whether to autotune (default False).
+            ``None`` selects the implementation default ``1e-6``.
+        dtype: Data type (``torch.float16`` or ``torch.bfloat16``).
+        kernel_map: Optional kernel override dictionary.
+        tune: Whether to autotune (default ``False``).
 
     Example:
         >>> op = RMSNormFwdOp(normalized_shape=(4096,), dtype=torch.float16)
@@ -43,57 +41,63 @@ class RMSNormFwdOp(RowNormOp):
         >>> y = op(x, w)  # shape: (1024, 4096)
     """
 
-    _kernel_key = "rms_norm"
-    _kernel_cls = RMSNormKernel
-
     def __init__(
         self,
-        normalized_shape: Optional[Sequence[int]] = None,
+        normalized_shape: Sequence[int],
         eps: Optional[float] = None,
         *,
         dtype: torch.dtype,
-        N: Optional[int] = None,
-        dim: int = -1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        n_resolved = normalized_shape_to_n(normalized_shape, n_fallback=N)
-        self.normalized_shape = (
-            tuple(int(d) for d in normalized_shape)
-            if normalized_shape is not None else None
-        )
-        eps_resolved = _DEFAULT_EPS if eps is None else float(eps)
-        super().__init__(
-            N=n_resolved,
-            dtype=dtype,
-            dim=dim,
-            eps=eps_resolved,
-            kernel_map=kernel_map,
-            tune=tune,
-        )
+        self.normalized_shape = tuple(int(d) for d in normalized_shape)
+        if len(self.normalized_shape) == 0:
+            raise ValueError("normalized_shape must be non-empty")
+        self.N = math.prod(self.normalized_shape)
+        self.dtype = dtype
+        self.eps = _DEFAULT_EPS if eps is None else float(eps)
+        self.tune = tune
+        self.N_padded = align_up(self.N, ALIGNMENT)
+        self.dispatch_kernel(kernel_map)
+        self._kernel_cache: Dict[int, Kernel] = {}
+        self._last_roofline_mn: Optional[Tuple[int, int]] = None
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {"rms_norm": RMSNormKernel}
+
+    def _get_kernel(self, m: int) -> Kernel:
+        if m not in self._kernel_cache:
+            self._kernel_cache[m] = self.kernel_map["rms_norm"](
+                m, self.N, self.eps, self.dtype, tune=self.tune,
+            )
+        return self._kernel_cache[m]
+
+    def eval_roofline(self) -> Tuple[int, int]:
+        if self._last_roofline_mn is None:
+            raise RuntimeError(
+                "RMSNormFwdOp.eval_roofline() requires a prior forward() "
+                "call to bind the leading-dims product."
+            )
+        m, n = self._last_roofline_mn
+        elem_bytes = self.dtype.itemsize
+        return (4 * m * n, (2 * m * n + n) * elem_bytes)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        if self.normalized_shape is not None and len(self.normalized_shape) > 1:
-            return self._forward_normalized_shape(x, weight)
-        ndim = x.ndim
-        dim_norm = self._validate_and_normalize_dim(x, weight)
-        x, post_move_shape = self._flatten_to_2d(x, dim_norm)
-        M = x.shape[0]
-        if self._needs_pad:
-            x = self._pad_row(x)
-            weight = self._pad_vec(weight)
-        y = self._get_kernel(M)(x, weight)
-        self._last_roofline_mn = (M, self.N)
-        return self._trim_and_unflatten(y, post_move_shape, dim_norm, ndim)
+        """Apply RMS normalization over the trailing ``normalized_shape``.
 
-    def _forward_normalized_shape(
-        self, x: torch.Tensor, weight: torch.Tensor,
-    ) -> torch.Tensor:
-        """Forward path for multi-axis ``normalized_shape`` (manifest contract).
+        Args:
+            x: Input tensor with trailing shape equal to
+                ``normalized_shape`` on CUDA.
+            weight: Affine scale of shape ``normalized_shape`` on CUDA.
 
-        Reduction runs over the trailing ``len(normalized_shape)`` axes; the
-        tail is flattened to a 1-D row of size ``N = prod(normalized_shape)``
-        and the same row-norm kernel is reused.
+        Returns:
+            Normalized tensor of the same shape as *x*.
+
+        Raises:
+            ValueError: If tensors are not on CUDA, dtypes mismatch, or
+                shapes are incompatible with the configured
+                ``normalized_shape``.
         """
         ns = self.normalized_shape
         k = len(ns)
@@ -114,15 +118,16 @@ class RMSNormFwdOp(RowNormOp):
             raise ValueError(
                 f"Expected weight shape {ns}, got {tuple(weight.shape)}"
             )
+
         orig_shape = tuple(x.shape)
         x_flat = x.contiguous().reshape(-1, self.N)
         w_flat = weight.contiguous().reshape(self.N)
-        M = x_flat.shape[0]
-        if self._needs_pad:
-            x_flat = self._pad_row(x_flat)
-            w_flat = self._pad_vec(w_flat)
-        y = self._get_kernel(M)(x_flat, w_flat)
-        if self._needs_pad:
+        m = x_flat.shape[0]
+        if self.N_padded != self.N:
+            x_flat = F.pad(x_flat, (0, self.N_padded - self.N))
+            w_flat = F.pad(w_flat, (0, self.N_padded - self.N))
+        y = self._get_kernel(m)(x_flat, w_flat)
+        if self.N_padded != self.N:
             y = y[:, : self.N]
-        self._last_roofline_mn = (M, self.N)
+        self._last_roofline_mn = (m, self.N)
         return y.reshape(orig_shape)

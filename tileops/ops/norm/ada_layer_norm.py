@@ -7,14 +7,9 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import AdaLayerNormKernel
 
 from ..op_base import Op
+from .norm_base import ALIGNMENT, align_up
 
 __all__ = ["AdaLayerNormFwdOp"]
-
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 class AdaLayerNormFwdOp(Op):
@@ -63,7 +58,7 @@ class AdaLayerNormFwdOp(Op):
         self.N = N
         self.dtype = dtype
         self.eps = eps
-        self.N_padded = _align_up(N, ALIGNMENT)
+        self.N_padded = align_up(N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["ada_layer_norm"](
             M, N, eps, dtype, has_gate=False, tune=tune,
