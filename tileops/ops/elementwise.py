@@ -2460,6 +2460,7 @@ class LerpTensorFwdOp(Op):
 
     def __init__(
         self,
+        *,
         input: tuple,  # noqa: A002 — manifest-aligned PyTorch param name
         end: tuple,
         weight: tuple,

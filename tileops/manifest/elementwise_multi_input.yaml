@@ -46,7 +46,7 @@ LerpTensorFwdOp:
   ref_api: "torch.lerp"
   # Tensor-weight variant: weight is a tensor that broadcasts together
   # with input and end (PyTorch's torch.lerp(input, end, weight: Tensor)
-  # overload).
+  # overload). No kernel implementation yet — spec-only placeholder.
   family: elementwise
   status: implemented
   variant_of: LerpFwdOp
