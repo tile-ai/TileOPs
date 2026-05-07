@@ -1766,7 +1766,7 @@ class GeluTanhFwdKernel(FloatUnaryKernel):
         half = T.cast(0.5, "float32")
         one = T.cast(1.0, "float32")
         x_f32 = T.cast(x, "float32")
-        inner = sqrt_2_over_pi * (x_f32 + coeff * x_f32 * x_f32 * x_f32)
+        inner = sqrt_2_over_pi * x_f32 * (one + coeff * x_f32 * x_f32)
         return half * x_f32 * (one + T.tanh(inner))
 
 
