@@ -114,6 +114,8 @@ Per-op outcome:
 
 `align-family` MUST NOT re-flip manifest status or re-run per-op validation on its own; `align-op`'s SUCCESS return is the single source of truth that the manifest was flipped.
 
+The flip performed by `align-op`'s FLIP_STATUS stage MUST stay within the [Status flip carve-out](../../rules/manifest-trust-model.md#status-flip-carve-out): only `status` and `source.kernel_map` may change in an implementation PR; `signature`, `workloads`, `roofline.*`, `params`, output-dtype and shape rules require a separate manifest-only PR with human review. `align-family` MUST NOT batch contractual-field edits across ops in the same PR.
+
 ### 5. CLEANUP_GATE
 
 After each per-op outcome — whether `align-op` returned SUCCESS / BLOCKED or ROUTE recorded an audit-classified `blocked` op directly to `REPORT_BLOCKED` — check group completion:
