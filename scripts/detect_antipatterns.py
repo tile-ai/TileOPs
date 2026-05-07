@@ -218,26 +218,53 @@ def detect_ap03(ctx: DetectorContext) -> List[str]:
 # to "FIXME(staged-rollout) marker present" alone — the staged-rollout marker
 # itself is a defer signal worth surfacing.
 _AP04_FIXME_RE = re.compile(r"FIXME\(staged-rollout\)")
-_AP04_AC_LINE_RE = re.compile(r"-\s*\[x\][^\n]*\bAC-?(\d+)", re.IGNORECASE)
+# AC reference inside a FIXME block — typically appears in the "Broken
+# invariant" / "Cleanup" lines (e.g. "Broken invariant: AC-7 (touched
+# bench file emits numbers) is only satisfied for ...").
+_AP04_FIXME_AC_RE = re.compile(r"\bAC-?(\d+)", re.IGNORECASE)
+# Checked AC bullet in PR body, capturing the AC number.
+_AP04_BODY_AC_RE = re.compile(r"-\s*\[x\][^\n]*\bAC-?(\d+)", re.IGNORECASE)
 
 
 def detect_ap04(ctx: DetectorContext) -> List[str]:
-    locs: List[str] = []
+    # Step 1: locate FIXME markers in added lines and, for each, extract
+    # the AC numbers referenced in the surrounding FIXME block. The block
+    # is a sequence of consecutive added comment lines starting at the
+    # FIXME line; we scan up to 12 lines forward (enough to cover the
+    # Broken-invariant / Why / Cleanup sections of the standard template)
+    # while staying inside contiguous added lines for that file.
+    fixme_blocks: List[Tuple[str, int, set]] = []  # (path, lineno, ac_set)
     for f in ctx.files:
-        for lineno, content in f.added_lines:
-            if _AP04_FIXME_RE.search(content):
-                locs.append(f"{f.path}:{lineno}")
-    if not locs:
+        added = f.added_lines
+        for i, (lineno, content) in enumerate(added):
+            if not _AP04_FIXME_RE.search(content):
+                continue
+            # Collect AC numbers from this FIXME's block (this line + next
+            # 12, while the next line is contiguous in `added`).
+            block_text = content
+            for j in range(i + 1, min(i + 13, len(added))):
+                next_lineno, next_content = added[j]
+                if next_lineno != added[j - 1][0] + 1:
+                    break
+                block_text += "\n" + next_content
+            ac_set = {m.group(1) for m in _AP04_FIXME_AC_RE.finditer(block_text)}
+            fixme_blocks.append((f.path, lineno, ac_set))
+    if not fixme_blocks:
         return []
     if ctx.pr_body is None:
-        # Body unavailable — surface the FIXME alone (degraded fallback).
-        return locs
-    # Body available: gate on a checked [x] AC bullet. The documented signal
-    # is FIXME(staged-rollout) co-occurring with the same AC marked done in
-    # the PR body. Without a checked AC bullet we have no contradiction
-    # signal — drop the hit.
-    if not _AP04_AC_LINE_RE.search(ctx.pr_body):
+        # Body unavailable — surface every FIXME (degraded fallback).
+        return [f"{p}:{ln}" for (p, ln, _) in fixme_blocks]
+    # Step 2: collect checked AC numbers from the PR body.
+    checked_acs = {m.group(1) for m in _AP04_BODY_AC_RE.finditer(ctx.pr_body)}
+    if not checked_acs:
         return []
+    # Step 3: for each FIXME block, hit only if it cites at least one AC
+    # that is also checked in the body. FIXMEs without an AC reference
+    # cannot be matched and are dropped (no contradiction signal).
+    locs: List[str] = []
+    for path, lineno, ac_set in fixme_blocks:
+        if ac_set & checked_acs:
+            locs.append(f"{path}:{lineno}")
     return locs
 
 
