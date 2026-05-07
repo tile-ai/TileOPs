@@ -7,6 +7,8 @@ identity, ``approximate`` validation, kernel_map override
 dispatch, and end-to-end correctness against the PyTorch reference.
 """
 
+import inspect
+
 import pytest
 import torch
 
@@ -183,6 +185,96 @@ def test_gelu_approximate_none_runs_through_forward() -> None:
     expected = torch.nn.functional.gelu(x, approximate="none")
     assert y.shape == x.shape
     assert torch.allclose(y, expected, rtol=1e-2, atol=1e-2)
+
+
+# Frozen ``__init__`` signatures for every unary activation Op. The
+# refactor pulling shared ``__init__`` / ``forward`` / ``_eager_forward``
+# logic up into a base or mixin must keep these byte-identical, because
+# downstream code (tests, benches, codegen) relies on them.
+_FROZEN_UNARY_ACTIVATION_SIGNATURES = {
+    "ReluFwdOp": (
+        "(self, N_total: int, dtype: torch.dtype, *, "
+        "strategy: Optional[str] = None, "
+        "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
+        "tune: bool = False, inplace: bool = False)"
+    ),
+    "SiluFwdOp": (
+        "(self, N_total: int, dtype: torch.dtype, *, "
+        "strategy: Optional[str] = None, "
+        "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
+        "tune: bool = False, inplace: bool = False)"
+    ),
+    "HardswishFwdOp": (
+        "(self, N_total: int, dtype: torch.dtype, *, "
+        "strategy: Optional[str] = None, "
+        "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
+        "tune: bool = False, inplace: bool = False)"
+    ),
+    "HardsigmoidFwdOp": (
+        "(self, N_total: int, dtype: torch.dtype, *, "
+        "strategy: Optional[str] = None, "
+        "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
+        "tune: bool = False, inplace: bool = False)"
+    ),
+    "MishFwdOp": (
+        "(self, N_total: int, dtype: torch.dtype, *, "
+        "strategy: Optional[str] = None, "
+        "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
+        "tune: bool = False, inplace: bool = False)"
+    ),
+    "SeluFwdOp": (
+        "(self, N_total: int, dtype: torch.dtype, *, "
+        "strategy: Optional[str] = None, "
+        "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
+        "tune: bool = False, inplace: bool = False)"
+    ),
+    "LeakyReluFwdOp": (
+        "(self, N_total: int, dtype: torch.dtype, "
+        "negative_slope: float = 0.01, *, "
+        "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
+        "tune: bool = False, inplace: bool = False)"
+    ),
+    "EluFwdOp": (
+        "(self, N_total: int, dtype: torch.dtype, "
+        "alpha: float = 1.0, *, "
+        "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
+        "tune: bool = False, inplace: bool = False)"
+    ),
+    "HardtanhFwdOp": (
+        "(self, N_total: int, dtype: torch.dtype, "
+        "min_val: float = -1.0, max_val: float = 1.0, *, "
+        "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
+        "tune: bool = False, inplace: bool = False)"
+    ),
+    "SoftplusFwdOp": (
+        "(self, N_total: int, dtype: torch.dtype, "
+        "beta: float = 1.0, threshold: float = 20.0, *, "
+        "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
+        "tune: bool = False)"
+    ),
+}
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_name", sorted(_FROZEN_UNARY_ACTIVATION_SIGNATURES.keys()),
+)
+def test_unary_activation_init_signature_is_frozen(op_name: str) -> None:
+    """All ten unary activation Ops keep their ``__init__`` signature.
+
+    The shared base/mixin refactor must not alter the constructor
+    contract (parameter names, defaults, keyword-only-ness) of any
+    leaf Op; downstream code (codegen, tests, benches) depends on
+    these exact signatures.
+    """
+    import tileops.ops.elementwise as mod
+
+    cls = getattr(mod, op_name)
+    sig = inspect.signature(cls.__init__)
+    assert str(sig) == _FROZEN_UNARY_ACTIVATION_SIGNATURES[op_name], (
+        f"{op_name}.__init__ signature drifted: "
+        f"got {sig!s}, expected {_FROZEN_UNARY_ACTIVATION_SIGNATURES[op_name]}"
+    )
 
 
 if __name__ == "__main__":

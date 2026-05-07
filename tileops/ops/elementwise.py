@@ -1023,40 +1023,33 @@ class FusedGatedOp(Op):
 # ---------------------------------------------------------------------------
 
 
-class _ParamFreeActivationOp(UnaryOp):
-    """Shared base for the param-free activation Op group.
+class _UnaryActivationMixin:
+    """Shared ``forward`` / inplace dispatch for unary activation Ops.
 
-    Centralizes the canonical constructor and ``forward`` flow used by
-    activations whose only manifest-declared parameter is ``inplace``
-    (ReLU, SiLU, HardSwish, HardSigmoid, Mish, SELU). Each leaf only
-    declares its op-specific class fields (``_op_name``, ``kernel_cls``,
-    ``FLOPS_PER_ELEM``, docstring); behavior is otherwise inherited.
+    The ten unary activation Ops (six param-free: ReLU, SiLU, HardSwish,
+    HardSigmoid, Mish, SELU; four parametric: LeakyReLU, ELU, Hardtanh,
+    Softplus) share an identical ``forward`` template:
 
-    ``inplace=True`` dispatches through a separate ``_wrapped_inplace``
-    custom op registered with ``mutates_args=("x",)`` so ``torch.compile``
-    traces the mutation correctly; the returned tensor is the original
-    input (``y is x``).
+    1. validate ``input`` against the op's ``dtype`` / ``N_total`` contract,
+    2. when ``self.inplace`` is true, dispatch through ``_wrapped_inplace``
+       (registered with ``mutates_args=("x",)`` so ``torch.compile`` traces
+       the mutation correctly) and return the original ``input`` so callers
+       see ``y is x``,
+    3. otherwise dispatch through the standard ``_wrapped`` custom op or
+       fall back to ``_eager_forward``.
+
+    Concrete classes provide ``_validate_input`` and ``_eager_forward``
+    (both inherited from ``UnaryOp``) plus ``self.inplace`` /
+    ``self._instance_key`` state. Leaves that do not expose ``inplace``
+    in their signature (e.g. Softplus) simply default ``self.inplace`` to
+    ``False`` via ``_finalize_init``.
     """
 
     # Set by ``_register_unary_inplace_custom_op`` for leaves that
     # declare ``inplace`` in their manifest signature. Stays ``None``
-    # when the leaf does not support inplace.
+    # when the leaf does not support inplace (e.g. Softplus, or a
+    # test-only subclass that skipped registration).
     _wrapped_inplace = None
-
-    def __init__(
-        self,
-        N_total: int,
-        dtype: torch.dtype,
-        *,
-        strategy: Optional[str] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-        inplace: bool = False,
-    ):
-        super().__init__(
-            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
-        )
-        self.inplace = inplace
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
         self._validate_input(input)
@@ -1076,28 +1069,49 @@ class _ParamFreeActivationOp(UnaryOp):
         return self._eager_forward(input)
 
 
-class _ParametricActivationOp(Op):
+class _ParamFreeActivationOp(_UnaryActivationMixin, UnaryOp):
+    """Shared base for the param-free activation Op group.
+
+    Centralizes the canonical constructor used by activations whose only
+    manifest-declared parameter is ``inplace`` (ReLU, SiLU, HardSwish,
+    HardSigmoid, Mish, SELU). Each leaf only declares its op-specific
+    class fields (``_op_name``, ``kernel_cls``, ``FLOPS_PER_ELEM``,
+    docstring); ``forward``/``_eager_forward`` come from
+    ``_UnaryActivationMixin`` / ``UnaryOp``.
+    """
+
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        *,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        inplace: bool = False,
+    ):
+        super().__init__(
+            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+        self.inplace = inplace
+
+
+class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
     """Shared base for the parametric activation Op group.
 
-    Centralizes the ``_eager_forward`` and ``forward`` flows for
-    activations that take one or more scalar construction-time
+    Used by activations that take one or more scalar construction-time
     parameters (LeakyReLU, ELU, Hardtanh, Softplus). Leaves own their
     ``__init__`` (scalar parameter names and defaults vary per leaf):
     each leaf validates its scalars, populates ``self.<param>`` for
     introspection, instantiates ``self.kernel`` with typed kwargs, and
     registers itself with ``_OP_REGISTRY`` via the
-    ``_finalize_init`` helper.
+    ``_finalize_init`` helper. ``UnaryOp.__init__`` is intentionally
+    bypassed; ``_finalize_init`` performs the equivalent state setup.
 
     Leaves that declare ``inplace`` in the manifest signature accept it
-    in ``__init__`` and pass it to ``_finalize_init``. ``inplace=True``
-    dispatches through ``_wrapped_inplace`` (registered with
-    ``mutates_args=("x",)``); the returned tensor is the original input.
+    in ``__init__`` and pass it to ``_finalize_init``. ``forward`` and
+    ``_eager_forward`` are inherited from the mixin and ``UnaryOp``.
     """
-
-    # Set by ``_register_unary_inplace_custom_op`` for leaves that
-    # declare ``inplace`` in their manifest signature. Stays ``None``
-    # when the leaf does not support inplace (e.g. Softplus).
-    _wrapped_inplace = None
 
     def _finalize_init(
         self,
@@ -1118,33 +1132,14 @@ class _ParametricActivationOp(Op):
         self.dtype = dtype
         self.inplace = inplace
         self.kernel = kernel
+        # Mirror ``UnaryOp.__init__``: surface ``output_dtype`` so callers
+        # and ``total_memory`` can reason about FP8 post-casts. Parametric
+        # activations do not currently declare an FP8 path, so the common
+        # branch returns ``self.dtype``; the lookup is kept for parity.
+        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
+        self.output_dtype = fp8_out or getattr(self.kernel, "output_dtype", dtype)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
-
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        orig_shape = input.shape
-        result = self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
-        return _apply_fp8_post_cast(result, self.kernel)
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        if not input.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
-        if input.dtype != self.dtype:
-            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
-        if input.numel() != self.N_total:
-            raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
-        if self.inplace:
-            wrapped_inplace = type(self)._wrapped_inplace
-            if wrapped_inplace is not None:
-                wrapped_inplace(input, self._instance_key)
-                return input
-            result = self._eager_forward(input)
-            input.copy_(result.reshape(input.shape))
-            return input
-        wrapped = type(self)._wrapped
-        if wrapped is not None:
-            return wrapped(input, self._instance_key)
-        return self._eager_forward(input)
 
 
 class ReluFwdOp(_ParamFreeActivationOp):
