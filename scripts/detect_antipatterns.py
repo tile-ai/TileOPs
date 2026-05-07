@@ -257,7 +257,7 @@ def detect_ap05(ctx: DetectorContext) -> List[str]:
         # the next 8 added lines) by ``return torch.<fn>(...)``, mark the
         # return line as a hit.
         added = f.added_lines
-        for i, (_lineno, content) in enumerate(added):
+        for i, (_, content) in enumerate(added):
             if _AP05_DEF_RE.search(content):
                 for j in range(i + 1, min(i + 9, len(added))):
                     next_lineno, next_content = added[j]
