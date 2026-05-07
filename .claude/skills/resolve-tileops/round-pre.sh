@@ -188,11 +188,14 @@ if [[ "$ACTION" == "continue" ]]; then
     | jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_COMMENT_ID_PREV)|{id,path,line,body,in_reply_to_id,created_at}]" \
     > "$SNAP_PREFIX.new-inline-comments.json"
 
-  # Snapshot ALL unresolved threads (paginated) — agent acts on these
-  # regardless of which reviewer raised them.
+  # Snapshot ALL unresolved threads (paginated). Inner comments() is
+  # also paginated below: the auto-resolver's whole-thread author check
+  # depends on seeing every comment, so a thread that overflows the
+  # first 100 comments would otherwise look bot-only and get
+  # mis-resolved.
   : > "$SNAP_PREFIX.unresolved-threads.json"
-  echo '[' > "$SNAP_PREFIX.unresolved-threads.json"
-  cursor=''; first_page=1
+  collected=()
+  cursor=''
   while :; do
     page=$(gh api graphql -f query='
       query($owner:String!,$repo:String!,$pr:Int!,$after:String){
@@ -201,10 +204,13 @@ if [[ "$ACTION" == "continue" ]]; then
             reviewThreads(first:100, after:$after){
               nodes{
                 id isResolved
-                comments(first:100){ nodes{
-                  id databaseId author{login} body path line
-                  commit{ oid }
-                } }
+                comments(first:100){
+                  pageInfo{ hasNextPage endCursor }
+                  nodes{
+                    id databaseId author{login} body path line
+                    commit{ oid }
+                  }
+                }
               }
               pageInfo{ hasNextPage endCursor }
             }
@@ -216,8 +222,7 @@ if [[ "$ACTION" == "continue" ]]; then
       | jq -c '.data.repository.pullRequest.reviewThreads.nodes|map(select(.isResolved==false))[]')
     if [[ -n "$items" ]]; then
       while IFS= read -r line; do
-        [[ "$first_page" -eq 1 ]] && first_page=0 || echo ',' >> "$SNAP_PREFIX.unresolved-threads.json"
-        echo -n "$line" >> "$SNAP_PREFIX.unresolved-threads.json"
+        collected+=("$line")
       done <<< "$items"
     fi
     has_next=$(printf '%s' "$page" \
@@ -226,7 +231,59 @@ if [[ "$ACTION" == "continue" ]]; then
     cursor=$(printf '%s' "$page" \
       | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
   done
-  echo ']' >> "$SNAP_PREFIX.unresolved-threads.json"
+
+  # Per-thread comments completion: any thread whose first comments page
+  # was truncated gets follow-up node(id) queries until exhausted, then
+  # the new nodes are merged into the thread's comments.nodes array.
+  # Without this, the whole-thread author check in auto-resolve-stale.sh
+  # could miss a human reply that landed past comment #100.
+  for i in "${!collected[@]}"; do
+    thread="${collected[$i]}"
+    has_more=$(printf '%s' "$thread" | jq -r '.comments.pageInfo.hasNextPage // false')
+    [[ "$has_more" != "true" ]] && continue
+    cursor=$(printf '%s' "$thread" | jq -r '.comments.pageInfo.endCursor')
+    thread_id=$(printf '%s' "$thread" | jq -r '.id')
+    extra_nodes='[]'
+    while :; do
+      page=$(gh api graphql -f query='
+        query($id:ID!,$after:String){
+          node(id:$id){
+            ... on PullRequestReviewThread{
+              comments(first:100, after:$after){
+                pageInfo{ hasNextPage endCursor }
+                nodes{
+                  id databaseId author{login} body path line
+                  commit{ oid }
+                }
+              }
+            }
+          }
+        }' -F id="$thread_id" -f after="$cursor")
+      page_nodes=$(printf '%s' "$page" | jq -c '.data.node.comments.nodes')
+      extra_nodes=$(jq -nc --argjson a "$extra_nodes" --argjson b "$page_nodes" '$a + $b')
+      has_next=$(printf '%s' "$page" | jq -r '.data.node.comments.pageInfo.hasNextPage')
+      [[ "$has_next" == "true" ]] || break
+      cursor=$(printf '%s' "$page" | jq -r '.data.node.comments.pageInfo.endCursor')
+    done
+    collected[$i]=$(printf '%s' "$thread" \
+      | jq -c --argjson extra "$extra_nodes" \
+          '.comments.nodes = (.comments.nodes + $extra) | .comments.pageInfo.hasNextPage = false')
+  done
+
+  # Emit the final array.
+  if (( ${#collected[@]} == 0 )); then
+    echo '[]' > "$SNAP_PREFIX.unresolved-threads.json"
+  else
+    {
+      echo '['
+      first_page=1
+      for thread in "${collected[@]}"; do
+        [[ "$first_page" -eq 1 ]] && first_page=0 || echo ','
+        printf '%s' "$thread"
+      done
+      echo ']'
+    } > "$SNAP_PREFIX.unresolved-threads.json"
+  fi
 
   # Stale-bot auto-resolve: scoped to known bot identities anchored to a
   # commit older than current HEAD. Humans and bots-at-HEAD are skipped;
