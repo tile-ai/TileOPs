@@ -266,7 +266,7 @@ Orchestrator (not a sub-skill) edits the manifest:
 - `ops.<op_name>.status: spec-only` → `status: implemented`
 - Commit as `[Refactor][Manifest] promote <op_name> to implemented`.
 
-This is the only manifest write in the entire workflow.
+This is the only manifest write in the entire workflow, and it MUST stay within the [Status flip carve-out](../../rules/manifest-trust-model.md#status-flip-carve-out); any contractual-field change requires a separate manifest-only PR.
 
 ### 11. CLEANUP
 
