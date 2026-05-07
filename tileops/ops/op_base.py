@@ -135,20 +135,42 @@ class Op(ABC):
             "intentionally does not provide a generic evaluator — see "
             "docs/design/roofline.md §4.4.6 (Evaluator Surface Boundary)")
 
-    def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
-        if self.default_kernel_map is None or len(self.default_kernel_map) == 0:
+    def _install_kernel_map(self, candidate_map: Optional[dict[str, Kernel]] = None) -> None:
+        """Validate and install the resolved kernel map onto ``self.kernel_map``.
+
+        Iterates ``self.default_kernel_map`` and, for each entry, picks the
+        override from ``candidate_map`` when present, falling back to the
+        default. Each resolved kernel is then validated against the current
+        device architecture: if the kernel declares ``supported_archs`` and the
+        current ``sm`` version is not in that list, a ``ValueError`` is raised
+        — the same exception class produced by the auto-discovery path on the
+        same input. Both auto-discovered and user-supplied maps share this
+        single validate-and-install path, so arch-compat checks fire
+        identically regardless of provenance.
+        """
+        default_map = self.default_kernel_map
+        if default_map is None or len(default_map) == 0:
             raise ValueError("default_kernel_map must be non-empty")
-        self.kernel_map = {}
-        for name, default_kernel in self.default_kernel_map.items():
-            if kernel_map is not None and name in kernel_map:
-                kernel_type = kernel_map[name]
+        resolved: dict[str, Kernel] = {}
+        current_arch = get_sm_version()
+        for name, default_kernel in default_map.items():
+            if candidate_map is not None and name in candidate_map:
+                kernel_type = candidate_map[name]
             else:
                 kernel_type = default_kernel
-            current_arch = get_sm_version()
-            if kernel_type is not None and current_arch not in kernel_type.supported_archs:
+            if (
+                kernel_type is not None
+                and kernel_type.supported_archs is not None
+                and current_arch not in kernel_type.supported_archs
+            ):
                 raise ValueError(
                     f'{kernel_type.__name__} is not supported on architecture {current_arch}')
-            self.kernel_map[name] = kernel_type
+            resolved[name] = kernel_type
+        self.kernel_map = resolved
+
+    def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
+        """Resolve and install the kernel map (auto-discovery entry point)."""
+        self._install_kernel_map(kernel_map)
 
     def autotune(self) -> None:
         """Autotune all kernels of the op"""
