@@ -1,14 +1,14 @@
-- Every `tileops/kernels/*` subpackage must have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
+- Every `tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
 
-- Relative imports for intra-package references (e.g. `from .op import Op`); absolute `tileops.*` imports for cross-package references.
+- Relative imports for intra-package references (`from .op import Op`); absolute `tileops.*` imports for cross-package references.
 
-- Do not use file-level lint suppressions (`# ruff: noqa`, `# flake8: noqa`). Use targeted inline `# noqa: XXXX` only when genuinely needed.
+- No file-level lint suppressions (`# ruff: noqa`, `# flake8: noqa`). Targeted inline `# noqa: XXXX` only when needed.
 
-- Use `T.Tensor(shape, dtype)` for TIR function parameters, not the deprecated `T.Buffer(shape, dtype)`.
+- Use `T.Tensor(shape, dtype)` for TIR function parameters (not deprecated `T.Buffer`).
 
-- Use `T.reinterpret(value, dtype)` (value first), not the deprecated `T.reinterpret(dtype, value)`.
+- Use `T.reinterpret(value, dtype)` (value first; not deprecated dtype-first form).
 
-- When a PR intentionally degrades a test (xfail, skip, weakened assertion) due to a process constraint (e.g. trust model requiring separate manifest and code PRs), mark it with `FIXME(staged-rollout)` using this template:
+- Tests intentionally degraded by a process constraint (e.g. trust model splitting manifest and code PRs) get a `FIXME(staged-rollout)` marker. Cleanup describes the invariant to restore — never references a specific PR. Scan: `grep -rn 'FIXME(staged-rollout)'`.
 
   ```python
   # FIXME(staged-rollout): <one-line summary of what's degraded>
@@ -18,21 +18,14 @@
   # Cleanup: <concrete condition that triggers removal of this marker>
   ```
 
-  Cleanup must describe the invariant to restore, not reference a specific PR. Scan with `grep -rn 'FIXME(staged-rollout)'`.
+- **Abbreviation casing in PascalCase**: standard abbreviations stay fully uppercase — `RMSNormKernel`, `SSDDecodeOp`, `FusedAddRMSNormFwdOp`.
 
-- **Abbreviation casing in PascalCase symbols**: Standard abbreviations must be fully uppercase — `RMS`, not `Rms`; `SSD`, not `Ssd`; `SSM`, not `Ssm`. Examples: `RMSNormKernel`, `SSDDecodeOp`, `FusedAddRMSNormFwdOp`.
+- **Filenames**: all-lowercase with underscores; multi-letter abbreviations stay lowercase — `rms_norm.py`, `ssd_decode.py`. Don't capitalize a single letter. Norm filenames specifically must be underscore-separated, never contracted (`rms_norm`, never `rmsnorm`).
 
-- **Abbreviation casing in filenames**: Filenames use all-lowercase with underscores. Multi-word abbreviations keep all letters lowercase — `rms_norm.py`, `ssd_decode.py`. Do not capitalize a single letter (e.g. `Ssd_decode.py` is wrong).
+- **Docstrings**: Google style. One-sentence summary, blank line, then optional `Args:` / `Returns:` / `Raises:` / `Example:`. Internal helpers may have a single-line summary. Never mix Sphinx (`:param x:`) or NumPy headers in the same file.
 
-- **Docstring style: Google**. All Python docstrings (modules, classes, public functions / methods) follow Google style: one-sentence summary on the opening line, blank line, then optional sections `Args:`, `Returns:`, `Raises:`, `Example:`. Internal helpers may use a single-line summary docstring. Do NOT mix Sphinx-style (`:param x:`) or NumPy-style (separate header lines for each param) into the same file.
+- **Expand abbreviations on first use in docstrings**: e.g. `State Space Model (SSM)`, `State-Space Dual (SSD)`. Subsequent uses may abbreviate.
 
-- **Expand abbreviations on first use in docstrings**: When SSM, SSD, or other domain abbreviations first appear in a module or class docstring, write the full form followed by the abbreviation in parentheses. Subsequent uses in the same file can use the abbreviation alone.
+- **No development-process metadata in shipped source.** Code, docstrings, and manifest YAML must not reference issue/PR numbers, AC labels, round numbers, reviewer names, or `Follow-up: #N` pointers — that context belongs in the commit message, PR description, and the follow-up issue. See [domain-rules/manifest-spec.md](../domain-rules/manifest-spec.md).
 
-  - SSM → State Space Model (SSM)
-  - SSD → State-Space Dual (SSD)
-
-- **Underscore-separated naming for norm files**: All norm-related filenames use underscore separation — `rms_norm`, `layer_norm`, `batch_norm`, `fused_add_rms_norm`. Do not contract (e.g. `rmsnorm`, `layernorm`, `batchnorm`).
-
-- **No development-process metadata in shipped source.** Code and docstrings must not reference issue/PR numbers, AC labels (e.g. `AC-4`), round numbers, reviewer names, or `Follow-up: #N` pointers — that context belongs in the commit message, PR description, and the follow-up issue itself. Manifest YAML follows the same principle; see [domain-rules/manifest-spec.md](../domain-rules/manifest-spec.md).
-
-  Discovery scan (flags candidates; new code must not add new matches): `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up:[[:space:]]*#' --exclude-dir=manifest tileops/ tests/ benchmarks/ scripts/`
+  Discovery scan: `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up:[[:space:]]*#' --exclude-dir=manifest tileops/ tests/ benchmarks/ scripts/`
