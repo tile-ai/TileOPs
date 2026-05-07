@@ -10,7 +10,7 @@ ______________________________________________________________________
 
 - Manifest key must equal the Op `cls.__name__` exactly.
 
-- `ref_api` (required): the external API the signature mirrors (e.g. `torch.nn.functional.rms_norm`); `"none"` if none. Informational, not validated.
+- `ref_api` (required): the external API the signature mirrors (e.g. `torch.nn.functional.rms_norm`); `"none"` if none. Validator enforces presence + string type only; semantics not checked.
 
 - `inputs`, `outputs`, `params` are ordered dicts — key order is signature position. Don't reorder.
 

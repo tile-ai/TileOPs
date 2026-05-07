@@ -1,4 +1,4 @@
-- Every `tileops/kernels/*` subpackage has an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
+- Every `tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
 
 - Relative imports for intra-package references (`from .op import Op`); absolute `tileops.*` imports for cross-package references.
 
