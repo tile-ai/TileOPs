@@ -71,7 +71,7 @@ class TestBatchNormCustomOp:
 
         compiled = torch.compile(op, fullgraph=False)
         # Manifest input order: (x, running_mean, running_var, weight, bias).
-        y = compiled(x, rm, rv, weight, bias, training=True)
+        y = compiled(x, rm, rv, weight, bias)
         assert y.shape == x.shape
 
     def test_bwd_torch_compile_smoke(self):

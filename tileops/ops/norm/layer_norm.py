@@ -7,15 +7,9 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import LayerNormKernel
 
 from ..op_base import Op
-from .norm_base import normalized_shape_to_n
+from .norm_base import ALIGNMENT, align_up, normalized_shape_to_n
 
 __all__ = ["LayerNormFwdOp"]
-
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 class LayerNormFwdOp(Op):
@@ -29,83 +23,62 @@ class LayerNormFwdOp(Op):
         y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
             \\cdot w + b
 
-    Mirrors :func:`torch.nn.functional.layer_norm`.
+    Mirrors :func:`torch.nn.functional.layer_norm`. ``normalized_shape``
+    is the only entry point (the manifest spec).
 
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
 
     Note:
         Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
-        Handles non-contiguous inputs and non-power-of-two hidden dims
-        by padding to 256-element alignment. The leading-dims product
-        ``M`` is bound at forward time and kernels are cached per ``M``.
+        Handles non-contiguous inputs and non-power-of-two hidden dims by
+        padding to 256-element alignment. The leading-dims product ``M``
+        is bound on the first forward call; if a subsequent call uses a
+        different ``M``, the kernel is rebuilt for the new value.
 
     Args:
-        normalized_shape: Trailing-axis shape tuple over which the reduction
-            runs (manifest ``params.normalized_shape``). Either this or
-            legacy ``N`` must be set.
+        normalized_shape: Trailing-axis shape tuple over which the
+            reduction runs (manifest ``params.normalized_shape``).
         eps: Epsilon for numerical stability (manifest ``params.eps``).
+            ``None`` uses the PyTorch default ``1e-5``.
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
-        N: Legacy single-axis reduction size; mutually exclusive with
-            ``normalized_shape``.
-        M: Optional pre-bound leading-dims product. When omitted, ``M`` is
-            derived from the input at forward time.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
         self,
-        normalized_shape: Optional[Sequence[int]] = None,
+        normalized_shape: Sequence[int],
         eps: Optional[float] = 1e-5,
         *,
         dtype: torch.dtype,
-        N: Optional[int] = None,
-        M: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.normalized_shape = (
-            tuple(int(d) for d in normalized_shape)
-            if normalized_shape is not None else None
-        )
-        self.N = normalized_shape_to_n(normalized_shape, n_fallback=N)
+        self.N = normalized_shape_to_n(normalized_shape)
+        self.normalized_shape = tuple(int(d) for d in normalized_shape)
         self.dtype = dtype
         # Manifest declares ``eps: float | None`` with PyTorch default 1e-5.
-        # Map None to the PyTorch default so callers passing the manifest
-        # default literally (None) get a working kernel.
         self.eps = 1e-5 if eps is None else float(eps)
         self.tune = tune
-        self.N_padded = _align_up(self.N, ALIGNMENT)
+        self.N_padded = align_up(self.N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
-        self.M: Optional[int] = M
-        self._kernel_cache: Dict[int, Kernel] = {}
-        if M is not None:
-            self._kernel_cache[M] = self.kernel_map["layer_norm"](
-                M, self.N, self.eps, dtype, tune=tune,
-            )
+        self.kernel: Optional[Kernel] = None
         self._last_m: Optional[int] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"layer_norm": LayerNormKernel}
 
-    def _get_kernel(self, m: int) -> Kernel:
-        if m not in self._kernel_cache:
-            self._kernel_cache[m] = self.kernel_map["layer_norm"](
-                m, self.N, self.eps, self.dtype, tune=self.tune,
-            )
-        return self._kernel_cache[m]
-
     def eval_roofline(self) -> tuple[int, int]:
-        m = self._last_m if self._last_m is not None else self.M
-        if m is None:
+        if self._last_m is None:
             raise RuntimeError(
-                "LayerNormFwdOp.eval_roofline() requires a prior "
-                "forward() call (or ctor M) to bind the leading-dims product."
+                "LayerNormFwdOp.eval_roofline() requires a prior forward() "
+                "call to bind the leading-dims product."
             )
         elem_bytes = self.dtype.itemsize
+        m = self._last_m
         return (
             5 * m * self.N,
             (2 * m * self.N + 2 * self.N) * elem_bytes,
@@ -117,16 +90,18 @@ class LayerNormFwdOp(Op):
         """Apply layer normalization.
 
         Args:
-            x: Input tensor of shape ``(*leading, N)`` on CUDA.
-            weight: Affine scale of shape ``(N,)`` on CUDA.
-            bias: Affine shift of shape ``(N,)`` on CUDA.
+            x: Input tensor with trailing shape equal to
+                ``normalized_shape`` on CUDA.
+            weight: Affine scale of shape ``normalized_shape`` on CUDA.
+            bias: Affine shift of shape ``normalized_shape`` on CUDA.
 
         Returns:
             Normalized tensor of the same shape as *x*.
 
         Raises:
-            ValueError: If tensors are not on CUDA, dtypes mismatch,
-                or shapes are incompatible with the configured dimensions.
+            ValueError: If tensors are not on CUDA, dtypes mismatch, or
+                shapes are incompatible with the configured
+                ``normalized_shape``.
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
@@ -146,53 +121,31 @@ class LayerNormFwdOp(Op):
             raise ValueError(
                 f"Expected bias.dtype {self.dtype}, got {bias.dtype}"
             )
-        if self.normalized_shape is not None:
-            ns = self.normalized_shape
-            k = len(ns)
-            if x.ndim < k or tuple(x.shape[-k:]) != ns:
-                raise ValueError(
-                    f"Expected x trailing shape {ns}, "
-                    f"got {tuple(x.shape[-k:]) if x.ndim >= k else tuple(x.shape)}"
-                )
-            if tuple(weight.shape) != ns:
-                raise ValueError(
-                    f"Expected weight shape {ns}, got {tuple(weight.shape)}"
-                )
-            if tuple(bias.shape) != ns:
-                raise ValueError(
-                    f"Expected bias shape {ns}, got {tuple(bias.shape)}"
-                )
-        else:
-            if weight.ndim != 1:
-                raise ValueError(
-                    f"Expected weight to be 1D, got {weight.ndim}D"
-                )
-            if bias.ndim != 1:
-                raise ValueError(
-                    f"Expected bias to be 1D, got {bias.ndim}D"
-                )
-            if x.shape[-1] != self.N:
-                raise ValueError(
-                    f"Expected hidden dim {self.N}, got {x.shape[-1]}"
-                )
-            if weight.shape[0] != self.N:
-                raise ValueError(
-                    f"Expected weight dim {self.N}, got {weight.shape[0]}"
-                )
-            if bias.shape[0] != self.N:
-                raise ValueError(
-                    f"Expected bias dim {self.N}, got {bias.shape[0]}"
-                )
+
+        ns = self.normalized_shape
+        k = len(ns)
+        if x.ndim < k or tuple(x.shape[-k:]) != ns:
+            raise ValueError(
+                f"Expected x trailing shape {ns}, "
+                f"got {tuple(x.shape[-k:]) if x.ndim >= k else tuple(x.shape)}"
+            )
+        if tuple(weight.shape) != ns:
+            raise ValueError(
+                f"Expected weight shape {ns}, got {tuple(weight.shape)}"
+            )
+        if tuple(bias.shape) != ns:
+            raise ValueError(
+                f"Expected bias shape {ns}, got {tuple(bias.shape)}"
+            )
 
         orig_shape = x.shape
         x = x.contiguous().reshape(-1, self.N)
         weight = weight.contiguous().reshape(self.N)
         bias = bias.contiguous().reshape(self.N)
         m_actual = x.shape[0]
-        if self.M is not None and m_actual != self.M:
-            raise ValueError(
-                f"Expected M={self.M} (product of leading dims), "
-                f"got {m_actual}"
+        if self.kernel is None or m_actual != self._last_m:
+            self.kernel = self.kernel_map["layer_norm"](
+                m_actual, self.N, self.eps, self.dtype, tune=self.tune,
             )
         self._last_m = m_actual
 
@@ -202,7 +155,7 @@ class LayerNormFwdOp(Op):
             weight = F.pad(weight, (0, self.N_padded - self.N))
             bias = F.pad(bias, (0, self.N_padded - self.N))
 
-        y = self._get_kernel(m_actual)(x, weight, bias)
+        y = self.kernel(x, weight, bias)
 
         # Trim padding
         if self.N_padded != self.N:

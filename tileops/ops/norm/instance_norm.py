@@ -1,14 +1,15 @@
 """InstanceNorm forward operator.
 
-InstanceNorm is a special case of GroupNorm where G = C (each channel
-is its own group). This operator delegates to GroupNormKernel with G=C.
+Instance Normalization (IN) is a special case of Group Normalization (GN)
+where ``num_groups = C`` (each channel is its own group). This operator
+delegates to :class:`GroupNormKernel` with that grouping.
 
-User-facing API mirrors torch.nn.functional.instance_norm:
+User-facing API mirrors :func:`torch.nn.functional.instance_norm`:
 
     op = InstanceNormFwdOp(N=batch, C=channels, spatial=(H, W), dtype=dtype)
     y = op(x, weight, bias)
 
-Input tensors accept shape (N, C, *spatial).
+Input tensors accept shape ``(N, C, *spatial)``.
 """
 
 import math
@@ -21,14 +22,9 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import GroupNormKernel
 
 from ..op_base import Op
+from .norm_base import ALIGNMENT, align_up
 
 __all__ = ["InstanceNormFwdOp"]
-
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 class InstanceNormFwdOp(Op):
@@ -43,15 +39,18 @@ class InstanceNormFwdOp(Op):
             \\cdot w + b
 
     where the mean and variance are computed over ``*spatial`` for each
-    sample-channel pair. Equivalent to Group Normalization with ``G = C``.
+    sample-channel pair. Equivalent to Group Normalization with
+    ``num_groups = C``.
 
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
 
     Note:
-        Supports arbitrary spatial dimensions (1-D, 2-D, 3-D+).
-        Delegates to :class:`GroupNormKernel` with ``G = C``.
-        Hidden dimension is padded to 256-element alignment internally.
+        Supports arbitrary spatial dimensions (1-D, 2-D, 3-D+). Delegates
+        to :class:`GroupNormKernel` with one group per channel. Hidden
+        dimension is padded to 256-element alignment internally. The
+        running-stats variant (``use_input_stats=False``) is out of scope
+        for this op.
 
     Args:
         N: Batch size.
@@ -70,30 +69,22 @@ class InstanceNormFwdOp(Op):
         C: int,
         spatial: tuple,
         dtype: torch.dtype,
-        use_input_stats: bool = True,
-        momentum: float = 0.1,
         eps: float = 1e-5,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if not use_input_stats:
-            raise NotImplementedError(
-                "InstanceNormFwdOp.use_input_stats=False (running-stats "
-                "variant) is out of scope for this op; track separately."
-            )
         self.N = N
         self.C = C
         self.spatial = spatial
-        self.G = C  # InstanceNorm: each channel is its own group
         self.dtype = dtype
-        self.use_input_stats = use_input_stats
-        self.momentum = momentum
         self.eps = eps
         self.spatial_size = math.prod(spatial)
-        # For InstanceNorm (G=C): D = (C/C) * spatial_size = spatial_size
+        # InstanceNorm: each channel is its own group (num_groups = C)
+        # so D = (C/C) * spatial_size = spatial_size and M = N * C.
         self.D = self.spatial_size
-        self.M = N * C  # number of rows = N * G = N * C
-        self.D_padded = _align_up(self.D, ALIGNMENT)
+        self.M = N * C
+        self.D_padded = align_up(self.D, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["group_norm"](
             self.M, self.D, eps, dtype, tune=tune,
@@ -110,7 +101,9 @@ class InstanceNormFwdOp(Op):
             (2 * self.N * self.C * self.spatial_size + 2 * self.C) * elem_bytes,
         )
 
-    def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor,
+    ) -> torch.Tensor:
         """Apply instance normalization.
 
         Args:
@@ -159,8 +152,12 @@ class InstanceNormFwdOp(Op):
         x_2d = x.reshape(self.M, self.D)
 
         # Unit weight and zero bias for the kernel (affine applied after)
-        unit_weight = torch.ones(self.D_padded, dtype=self.dtype, device=x.device)
-        zero_bias = torch.zeros(self.D_padded, dtype=self.dtype, device=x.device)
+        unit_weight = torch.ones(
+            self.D_padded, dtype=self.dtype, device=x.device,
+        )
+        zero_bias = torch.zeros(
+            self.D_padded, dtype=self.dtype, device=x.device,
+        )
 
         # Pad to alignment
         if self.D_padded != self.D:

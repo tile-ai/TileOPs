@@ -154,7 +154,7 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     test = BatchNormFwdTest(N, C, spatial, dtype, training)
     bm = BatchNormFwdBenchmark(test, op)
 
-    result = bm.profile(lambda *a: op(*a, training=training), *inputs)
+    result = bm.profile(lambda *a: op(*a), *inputs)
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

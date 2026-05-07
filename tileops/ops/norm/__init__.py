@@ -6,7 +6,6 @@ from .fused_add_rms_norm import FusedAddRMSNormFwdOp
 from .group_norm import GroupNormFwdOp
 from .instance_norm import InstanceNormFwdOp
 from .layer_norm import LayerNormFwdOp
-from .norm_base import RowNormOp
 from .rms_norm import RMSNormFwdOp
 
 __all__: list[str] = [
@@ -20,5 +19,4 @@ __all__: list[str] = [
     "InstanceNormFwdOp",
     "LayerNormFwdOp",
     "RMSNormFwdOp",
-    "RowNormOp",
 ]
