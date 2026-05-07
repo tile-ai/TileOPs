@@ -24,14 +24,9 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import GroupNormKernel
 
 from ..op_base import Op
+from .norm_base import ALIGNMENT, align_up
 
 __all__ = ["GroupNormFwdOp"]
-
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 class GroupNormFwdOp(Op):
@@ -94,7 +89,7 @@ class GroupNormFwdOp(Op):
         # row length before padding
         self.D = (C // num_groups) * self.spatial_size
         self.M = N * num_groups  # number of rows
-        self.D_padded = _align_up(self.D, ALIGNMENT)
+        self.D_padded = align_up(self.D, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["group_norm"](
             self.M, self.D, eps, dtype, tune=tune,

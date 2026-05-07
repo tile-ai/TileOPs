@@ -7,15 +7,9 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import LayerNormKernel
 
 from ..op_base import Op
-from .norm_base import normalized_shape_to_n
+from .norm_base import ALIGNMENT, align_up, normalized_shape_to_n
 
 __all__ = ["LayerNormFwdOp"]
-
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 class LayerNormFwdOp(Op):
@@ -39,8 +33,8 @@ class LayerNormFwdOp(Op):
         Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
         Handles non-contiguous inputs and non-power-of-two hidden dims by
         padding to 256-element alignment. The leading-dims product ``M``
-        is bound on the first forward call; subsequent calls must use the
-        same ``M``.
+        is bound on the first forward call; if a subsequent call uses a
+        different ``M``, the kernel is rebuilt for the new value.
 
     Args:
         normalized_shape: Trailing-axis shape tuple over which the
@@ -62,15 +56,13 @@ class LayerNormFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        self.N = normalized_shape_to_n(normalized_shape)
         self.normalized_shape = tuple(int(d) for d in normalized_shape)
-        if len(self.normalized_shape) == 0:
-            raise ValueError("normalized_shape must be non-empty")
-        self.N = normalized_shape_to_n(self.normalized_shape)
         self.dtype = dtype
         # Manifest declares ``eps: float | None`` with PyTorch default 1e-5.
         self.eps = 1e-5 if eps is None else float(eps)
         self.tune = tune
-        self.N_padded = _align_up(self.N, ALIGNMENT)
+        self.N_padded = align_up(self.N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel: Optional[Kernel] = None
         self._last_m: Optional[int] = None
@@ -151,14 +143,9 @@ class LayerNormFwdOp(Op):
         weight = weight.contiguous().reshape(self.N)
         bias = bias.contiguous().reshape(self.N)
         m_actual = x.shape[0]
-        if self.kernel is None:
+        if self.kernel is None or m_actual != self._last_m:
             self.kernel = self.kernel_map["layer_norm"](
                 m_actual, self.N, self.eps, self.dtype, tune=self.tune,
-            )
-        elif m_actual != self._last_m:
-            raise ValueError(
-                f"LayerNormFwdOp was bound to leading-dims product "
-                f"{self._last_m} on first forward; got {m_actual}"
             )
         self._last_m = m_actual
 

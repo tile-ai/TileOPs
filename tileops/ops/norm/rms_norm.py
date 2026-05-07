@@ -8,16 +8,11 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import RMSNormKernel
 
 from ..op_base import Op
+from .norm_base import ALIGNMENT, align_up
 
 __all__ = ["RMSNormFwdOp"]
 
-ALIGNMENT = 256
-
 _DEFAULT_EPS = 1e-6
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 class RMSNormFwdOp(Op):
@@ -62,7 +57,7 @@ class RMSNormFwdOp(Op):
         self.dtype = dtype
         self.eps = _DEFAULT_EPS if eps is None else float(eps)
         self.tune = tune
-        self.N_padded = _align_up(self.N, ALIGNMENT)
+        self.N_padded = align_up(self.N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[int, Kernel] = {}
         self._last_roofline_mn: Optional[Tuple[int, int]] = None

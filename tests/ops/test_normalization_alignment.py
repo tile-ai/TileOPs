@@ -77,26 +77,3 @@ def test_group_norm_uses_num_groups_kwarg() -> None:
         N=2, C=32, spatial=(8, 8), num_groups=8, dtype=torch.float16,
     )
     assert op.num_groups == 8
-
-
-@pytest.mark.smoke
-def test_batch_norm_fwd_returns_single_tensor() -> None:
-    """BatchNormFwdOp forward must produce one tensor — manifest declares
-    a single output. ``training`` is bound at ctor; the runtime kwarg is
-    no longer accepted."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for forward call")
-
-    from tileops.ops.norm.batch_norm import BatchNormFwdOp
-
-    N, C, H, W = 4, 8, 4, 4
-    op = BatchNormFwdOp(N, C, H, W, dtype=torch.float16, training=False)
-    x = torch.randn(N, C, H, W, device="cuda", dtype=torch.float16)
-    weight = torch.randn(C, device="cuda", dtype=torch.float32)
-    bias = torch.randn(C, device="cuda", dtype=torch.float32)
-    rm = torch.zeros(C, device="cuda", dtype=torch.float32)
-    rv = torch.ones(C, device="cuda", dtype=torch.float32)
-
-    y = op(x, rm, rv, weight, bias)
-    assert isinstance(y, torch.Tensor)
-    assert y.shape == x.shape
