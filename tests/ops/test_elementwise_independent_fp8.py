@@ -494,5 +494,47 @@ def test_clamp_fp8_unaligned_n(dtype):
     )
 
 
+# ---------------------------------------------------------------------------
+# WhereFwdOp dtype contract: manifest declares fp16 | bf16 | fp32.
+# fp8 dtypes must be rejected at the op-layer signature.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "bad_dtype",
+    [torch.float8_e4m3fn, torch.float8_e5m2],
+)
+def test_where_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
+    """WhereFwdOp must reject fp8 dtypes at construction (manifest contract)."""
+    from tileops.ops.elementwise import WhereFwdOp
+
+    shape = (4, 8)
+    with pytest.raises((ValueError, TypeError)):
+        WhereFwdOp(
+            condition=shape, input=shape, other=shape, dtype=bad_dtype,
+        )
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.float16, torch.bfloat16, torch.float32],
+)
+def test_where_accepts_manifest_dtypes(dtype: torch.dtype) -> None:
+    """WhereFwdOp constructs and runs for every manifest-declared dtype."""
+    from tileops.ops.elementwise import WhereFwdOp
+
+    shape = (4, 8)
+    cond = torch.randint(0, 2, shape, device="cuda").bool()
+    inp = torch.randn(shape, device="cuda", dtype=dtype)
+    other = torch.randn(shape, device="cuda", dtype=dtype)
+    op = WhereFwdOp(condition=shape, input=shape, other=shape, dtype=dtype)
+    out = op(cond, inp, other)
+    ref = torch.where(cond, inp, other)
+    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
