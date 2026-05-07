@@ -65,7 +65,7 @@ __all__ = [
     "SinFwdKernel",
     "SqrtFwdKernel",
     "TruncFwdKernel",
-    # --- unary: activations (8) ---
+    # --- unary: activations (9) ---
     "GeluFwdKernel",
     "GeluTanhFwdKernel",
     "HardsigmoidFwdKernel",
