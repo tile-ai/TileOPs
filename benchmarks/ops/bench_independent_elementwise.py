@@ -522,7 +522,7 @@ def test_fp8_selection_bench(
             return torch.where(cond, x, y)
 
         result_bl = bm.profile(baseline, cond, x, y)
-        BenchmarkReport.record("where_fp8", locals(), result_bl, tag="torch-where-baseline-only")
+        BenchmarkReport.record("where_fp8", locals(), result_bl, tag="torch-ref")
     else:
         test = Fp8MaskedFillBenchCase(shape, dtype)
         bm = Fp8MaskedFillBenchmark(test)
