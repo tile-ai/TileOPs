@@ -2873,6 +2873,28 @@ class TestDtypeCombosDataHardening:
             "combo values must be a single concrete dtype" in e for e in errors
         ), f"expected union rejection, got {errors}"
 
+    def test_combo_value_promote_int_to_float_is_hard_error(self, validator):
+        """``promote_int_to_float(ref)`` is rejected on the combo-value side.
+
+        The DSL form expands to multiple concrete dtypes (every integral
+        token in ``ref``'s options collapses to ``float32``, and float
+        tokens pass through), so it cannot pin a single concrete dtype
+        per combo row. It is allowed only on ``signature.outputs``.
+        """
+        sig = {
+            "inputs": {"x": {"dtype": "float16 | int8"}},
+            "outputs": {"y": {"dtype": "promote_int_to_float(x)"}},
+            "dtype_combos": [
+                {"x": "float16", "y": "promote_int_to_float(x)"},
+            ],
+        }
+        errors = validator.check_l3_dtype_combos_data("FakeOp", sig)
+        assert any(
+            "promote_int_to_float(...) is allowed only on signature.outputs"
+            in e
+            for e in errors
+        ), f"expected combo-value promote_int_to_float rejection, got {errors}"
+
 
 class TestStaticDimShapeParity:
     """Finding #3 regression: static_dims values must pin expected output sizes."""

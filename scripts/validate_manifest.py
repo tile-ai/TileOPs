@@ -1149,6 +1149,20 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
                     f"dtype, not a union"
                 )
                 continue
+            # promote_int_to_float(ref) is an output-side construct that
+            # may expand to multiple concrete dtypes (e.g. {float32,
+            # float16, bfloat16}). Combo rows must pin a single concrete
+            # dtype per tensor, so reject this DSL form on the combo-value
+            # side. Authors should expand the rows manually or use
+            # same_as(ref) when the dtype is genuinely identity-bound.
+            if _PROMOTE_INT_TO_FLOAT_RE.match(val):
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
+                    f"{val!r} — combo values must be a single concrete "
+                    f"dtype; promote_int_to_float(...) is allowed only on "
+                    f"signature.outputs"
+                )
+                continue
             opts = _dtype_options_for_tensor(key, val, dtype_options)
             if opts is None:
                 errors.append(
