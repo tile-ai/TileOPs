@@ -118,6 +118,7 @@ __all__ = [
     "SoftplusFwdKernel",
     "PreluFwdKernel",
     "WhereFwdKernel",
+    "LerpTensorFwdKernel",
     "ClampFwdKernel",
     "ClampTensorFwdKernel",
     "MaskedFillFwdKernel",
@@ -2474,6 +2475,77 @@ class WhereFwdKernel(ParametricUnaryKernel):
 
     def forward(self, cond, x, y):
         return self._compiled_fn(cond, x, y)
+
+
+@functools.lru_cache(maxsize=32)
+def _make_lerp_tensor_kernel(N, dtype, output_dtype=None, is_fp8=False,
+                             threads=256, npt=8):
+    """Build Tensor-weight lerp kernel: out = a + weight * (b - a).
+
+    The Op layer pre-broadcasts ``input`` / ``end`` / ``weight`` to the
+    flat output shape so the kernel sees three contiguous 1-D tensors of
+    size ``N``. Computation is performed in the input dtype for fp16 /
+    bfloat16 / float32 (the only dtypes the manifest declares); the fp8
+    path is unreachable here because the kernel's ``SUPPORTED_DTYPES``
+    excludes fp8.
+
+    Uses the register-fragment load -> compute -> fragment store strategy
+    (matches the non-fp8 ``_make_where_kernel`` layout) so all three
+    inputs and the output share the same vectorized memory access path.
+    """
+    del is_fp8  # fp8 is not in the manifest contract for this op
+    out_dtype = output_dtype or dtype
+    block_size = threads * npt
+
+    @tilelang.jit(out_idx=[3])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(
+            a: T.Tensor((N,), dtype),
+            b: T.Tensor((N,), dtype),
+            w: T.Tensor((N,), dtype),
+            out: T.Tensor((N,), out_dtype),
+        ):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                a_reg = T.alloc_fragment((block_size,), dtype)
+                b_reg = T.alloc_fragment((block_size,), dtype)
+                w_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(a[bx * block_size : (bx + 1) * block_size], a_reg)
+                T.copy(b[bx * block_size : (bx + 1) * block_size], b_reg)
+                T.copy(w[bx * block_size : (bx + 1) * block_size], w_reg)
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    k = i * npt_arg + j
+                    a_reg[k] = a_reg[k] + w_reg[k] * (b_reg[k] - a_reg[k])
+                T.copy(a_reg, out[bx * block_size : (bx + 1) * block_size])
+
+        return main
+
+    return kernel
+
+
+class LerpTensorFwdKernel(ParametricUnaryKernel):
+    """Tensor-weight lerp: out = input + weight * (end - input).
+
+    Implements the Tensor-weight overload of ``torch.lerp`` —
+    ``torch.lerp(input, end, weight: Tensor)`` — where all three operands
+    are float tensors of the same dtype broadcast together by the Op
+    layer to a flat ``N``-element view.
+
+    Manifest declares ``float16 | bfloat16 | float32``; fp8 is rejected
+    at construction. The Op layer is responsible for broadcasting the
+    three inputs to ``N_total`` before dispatch.
+    """
+
+    SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+    _DEFAULT_THREADS = 512
+    _skip_fp8_output = True
+
+    @staticmethod
+    def _builder_fn():
+        return _make_lerp_tensor_kernel
+
+    def forward(self, a, b, w):
+        return self._compiled_fn(a, b, w)
 
 
 @functools.lru_cache(maxsize=32)
