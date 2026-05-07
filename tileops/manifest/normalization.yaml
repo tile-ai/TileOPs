@@ -454,6 +454,57 @@ GroupNormFwdOp:
     test: tests/ops/test_group_norm.py
     bench: benchmarks/ops/bench_group_norm.py
 
+GroupNormFwdOpNoAffine:
+  ref_api: "torch.nn.functional.group_norm"
+  # No-affine variant: torch.nn.functional.group_norm(x, num_groups, weight=None,
+  # bias=None, eps), matching torch.nn.GroupNorm(affine=False). Split from
+  # the affine primary per the "No Optional[Tensor]" rule (R16,
+  # .claude/domain-rules/manifest-spec.md). torch.nn.GroupNorm toggles
+  # weight and bias together via the affine flag.
+  family: normalization
+  status: spec-only
+  variant_of: GroupNormFwdOp
+
+  signature:
+    inputs:
+      x: {dtype: "float32 | float16 | bfloat16"}
+    outputs:
+      output: {dtype: "same_as(x)"}
+    params:
+      num_groups: {type: int}
+      eps: {type: float, default: 1.0e-5}
+    static_dims:
+      C: "x.shape[1]"
+    shape_rules:
+      - "x.shape[1] % num_groups == 0"
+      - "output.shape == x.shape"
+
+  workloads:
+    # Mirror the affine primary's CV shapes; affine-vs-no-affine perf
+    # difference is sub-percent, so shape coverage is what matters.
+    - {x_shape: [8, 128, 32, 32], num_groups: 32, dtypes: [float16, bfloat16], label: "image-g32"}
+    - {x_shape: [4, 256, 28, 28], num_groups: 32, dtypes: [float16], label: "wider-channel-g32"}
+    - {x_shape: [4, 128, 30, 30], num_groups: 16, dtypes: [float16], label: "tail-spatial-g16"}
+
+  roofline:
+    vars:
+      N: "x.shape[0]"
+      C: "x.shape[1]"
+      spatial_size: "product(x.shape[2:])"
+    # Per element: subtract mean + square for var + normalize ≈ 3
+    # (no scale, no bias relative to the affine primary's 5).
+    flops: "3 * N * C * spatial_size"
+    # Read x + write output (no weight, no bias).
+    bytes: "2 * N * C * spatial_size * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/norm/group_norm.py
+    kernel_map:
+      group_norm: GroupNormKernel
+    op: tileops/ops/norm/group_norm.py
+    test: tests/ops/test_group_norm.py
+    bench: benchmarks/ops/bench_group_norm.py
+
 InstanceNormFwdOp:
   ref_api: "torch.nn.functional.instance_norm"
   family: normalization
@@ -492,6 +543,55 @@ InstanceNormFwdOp:
     flops: "5 * N * C * spatial_size"
     # Read x + write output + read weight (C) + read bias (C)
     bytes: "(2 * N * C * spatial_size + 2 * C) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/norm/group_norm.py
+    kernel_map:
+      group_norm: GroupNormKernel
+    op: tileops/ops/norm/instance_norm.py
+    test: tests/ops/test_instance_norm.py
+    bench: benchmarks/ops/bench_instance_norm.py
+
+InstanceNormFwdOpNoAffine:
+  ref_api: "torch.nn.functional.instance_norm"
+  # No-affine variant: torch.nn.functional.instance_norm(x, weight=None,
+  # bias=None, ...), matching torch.nn.InstanceNorm*(affine=False) — the
+  # default for InstanceNorm. Split from the affine primary per the
+  # "No Optional[Tensor]" rule (R16, .claude/domain-rules/manifest-spec.md).
+  family: normalization
+  status: spec-only
+  variant_of: InstanceNormFwdOp
+
+  signature:
+    inputs:
+      x: {dtype: "float32 | float16 | bfloat16"}
+    outputs:
+      output: {dtype: "same_as(x)"}
+    params:
+      use_input_stats: {type: bool, default: true}
+      momentum: {type: float, default: 0.1}
+      eps: {type: float, default: 1.0e-5}
+    static_dims:
+      C: "x.shape[1]"
+    shape_rules:
+      - "output.shape == x.shape"
+
+  workloads:
+    # Mirror the affine primary's CV shapes.
+    - {x_shape: [8, 128, 32, 32], dtypes: [float16, bfloat16], label: "image"}
+    - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "wider-channel"}
+    - {x_shape: [4, 64, 30, 30], dtypes: [float16], label: "tail-spatial"}
+
+  roofline:
+    vars:
+      N: "x.shape[0]"
+      C: "x.shape[1]"
+      spatial_size: "product(x.shape[2:])"
+    # No-affine: 3 fp ops/elem (subtract mean + square for var + normalize),
+    # vs the affine primary's 5 (which includes scale + bias).
+    flops: "3 * N * C * spatial_size"
+    # Read x + write output (no weight, no bias).
+    bytes: "2 * N * C * spatial_size * elem_bytes"
 
   source:
     kernel: tileops/kernels/norm/group_norm.py
