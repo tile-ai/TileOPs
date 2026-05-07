@@ -827,12 +827,16 @@ def _validate_dtype_token(
     tensor_names: set[str],
     *,
     allow_promote_int_to_float: bool = True,
+    input_tensor_names: set[str] | None = None,
 ) -> str | None:
     """Validate a single dtype token. Returns an error string or None.
 
     ``promote_int_to_float(ref)`` is an output-side-only construct per
     docs/design/manifest.md R3a. Callers validating input tensors set
     ``allow_promote_int_to_float=False`` to reject it on the input side.
+    When ``allow_promote_int_to_float`` is True, ``input_tensor_names``
+    must be supplied: ``ref`` must name a signature input tensor — not
+    an output, and not the tensor itself.
     """
     m = _SAME_AS_RE.match(token)
     if m:
@@ -851,10 +855,11 @@ def _validate_dtype_token(
                 f"— this construct is output-side only"
             )
         ref = m.group(1)
-        if ref not in tensor_names:
+        if input_tensor_names is None or ref not in input_tensor_names:
             return (
                 f"[dtype] {op_name}: {context} dtype "
-                f"promote_int_to_float({ref}) references unknown tensor"
+                f"promote_int_to_float({ref}) must reference a signature "
+                f"input tensor"
             )
         return None
     if token not in _TORCH_DTYPES:
@@ -937,6 +942,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
             err = _validate_dtype_token(
                 op_name, tname, token, tensor_names,
                 allow_promote_int_to_float=not is_input,
+                input_tensor_names=input_names,
             )
             if err:
                 errors.append(err)

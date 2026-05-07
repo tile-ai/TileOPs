@@ -943,10 +943,11 @@ class TestDtype:
         }
         errors = validator.check_l3("PromoteBadOp", entry)
         assert any(
-            "promote_int_to_float(z)" in e and "unknown tensor" in e
+            "promote_int_to_float(z)" in e
+            and "must reference a signature input tensor" in e
             for e in errors
         ), (
-            f"Expected unknown-tensor error, got: {errors}"
+            f"Expected input-ref error, got: {errors}"
         )
 
     def test_promote_int_to_float_resolves_options(self, validator):
@@ -1017,6 +1018,55 @@ class TestDtype:
             for e in errors
         ), (
             "Expected input-side promote_int_to_float to be rejected, "
+            f"got: {errors}"
+        )
+
+    def test_promote_int_to_float_rejects_output_self_ref(self, validator):
+        """``promote_int_to_float(ref)`` ref must name a signature INPUT.
+
+        Self-reference (``promote_int_to_float(output)`` on the ``output``
+        tensor) and references to other output tensors are nonsense — the
+        construct describes how an output's dtype tracks an input. The
+        validator must reject these with a hard L3 error.
+        """
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "int8 | int32 | float32"}},
+                "outputs": {
+                    "output": {"dtype": "promote_int_to_float(output)"},
+                },
+            },
+            "workloads": [{"dtypes": ["float32"]}],
+        }
+        errors = validator.check_l3("PromoteSelfRefOp", entry)
+        assert any(
+            "promote_int_to_float(output)" in e
+            and "must reference a signature input tensor" in e
+            for e in errors
+        ), (
+            "Expected output/self ref to be rejected, "
+            f"got: {errors}"
+        )
+
+    def test_promote_int_to_float_rejects_other_output_ref(self, validator):
+        """``promote_int_to_float(other_output)`` is also rejected."""
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "int8 | float32"}},
+                "outputs": {
+                    "y": {"dtype": "float32"},
+                    "z": {"dtype": "promote_int_to_float(y)"},
+                },
+            },
+            "workloads": [{"dtypes": ["float32"]}],
+        }
+        errors = validator.check_l3("PromoteOutputRefOp", entry)
+        assert any(
+            "promote_int_to_float(y)" in e
+            and "must reference a signature input tensor" in e
+            for e in errors
+        ), (
+            "Expected output-tensor ref to be rejected, "
             f"got: {errors}"
         )
 
