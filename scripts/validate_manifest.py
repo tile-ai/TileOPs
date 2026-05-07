@@ -107,7 +107,7 @@ def _check_static_dims(op_name: str, sdims: object, sig: dict) -> list[str]:
     # treat non-dicts as empty so static_dims checks don't crash the validator.
     inputs = sig.get("inputs")
     params = sig.get("params")
-    input_names = set(inputs.keys())
+    input_names = set(inputs.keys()) if isinstance(inputs, dict) else set()
     param_names = set(params.keys()) if isinstance(params, dict) else set()
 
     for dname, expr in sdims.items():

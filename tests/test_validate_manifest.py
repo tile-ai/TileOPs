@@ -244,6 +244,32 @@ class TestSchema:
         errors = validator.check_l0("test_op", entry)
         assert errors == [], f"Unexpected schema errors: {errors}"
 
+    def test_static_dims_with_missing_inputs_does_not_crash(self, validator):
+        """Malformed signature (no inputs) must not crash static_dims check.
+
+        Other schema layers report the missing-inputs error; static_dims
+        validation should treat absent or non-mapping inputs as empty and
+        emit a regular schema diagnostic rather than raise AttributeError.
+        """
+        entry = {
+            "signature": {
+                "outputs": {"y": {"dtype": "float32"}},
+                "static_dims": {"N": "x.shape[0]"},
+            },
+        }
+        errors = validator.check_l0("BadOp", entry)
+        assert isinstance(errors, list)
+
+        entry_non_dict = {
+            "signature": {
+                "inputs": "not a mapping",
+                "outputs": {"y": {"dtype": "float32"}},
+                "static_dims": {"N": "x.shape[0]"},
+            },
+        }
+        errors = validator.check_l0("BadOp", entry_non_dict)
+        assert isinstance(errors, list)
+
     def test_static_dims_list_fails(self, validator):
         """Non-dict static_dims (e.g. list) is rejected at L0 (R20)."""
         entry = _make_entry()
