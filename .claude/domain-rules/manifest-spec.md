@@ -8,7 +8,7 @@
 
 ______________________________________________________________________
 
-- Manifest key must equal the Op `cls.__name__` exactly.
+- Manifest key must equal the Op `cls.__name__` exactly. Class-naming convention: see [ops-design.md](ops-design.md).
 
 - `ref_api` (required): the external API the signature mirrors (e.g. `torch.nn.functional.rms_norm`); `"none"` if none. Validator enforces presence + string type only; semantics not checked.
 
