@@ -266,14 +266,14 @@ def _make_rope_non_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: i
                     s = sin_table[s_idx, freq_idx]
                     val = x[flat_idx]
 
-                    # Adjacent pair: even pairs with next, odd pairs with prev
-                    is_even = (col % 2) == 0
-                    paired_col = T.if_then_else(is_even, col + 1, col - 1)
-                    head_base = flat_idx - col
-                    paired_idx = head_base + paired_col
+                    # Adjacent pair: even pairs with next, odd pairs with previous.
+                    # Compute the same pair as a +/-1 flat offset to avoid a
+                    # TileLang 0.1.9 lowering bug for if_then_else-derived indices.
+                    col_parity = col % 2
+                    paired_idx = flat_idx + 1 - 2 * col_parity
                     paired_val = x[paired_idx]
 
-                    rotated = T.if_then_else(is_even, -paired_val, paired_val)
+                    rotated = T.if_then_else(col_parity == 0, -paired_val, paired_val)
                     y[flat_idx] = val * c + rotated * s
 
         return main
