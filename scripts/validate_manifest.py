@@ -848,7 +848,7 @@ def _validate_dtype_token(
         if not allow_promote_int_to_float:
             return (
                 f"[dtype] {op_name}: {context} uses promote_int_to_float "
-                f"on an input tensor — this construct is output-side only"
+                f"— this construct is output-side only"
             )
         ref = m.group(1)
         if ref not in tensor_names:
@@ -977,6 +977,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
                     err = _validate_dtype_token(
                         op_name, f"workloads[{i}].dtypes[{j}]",
                         token, tensor_names,
+                        allow_promote_int_to_float=False,
                     )
                     if err:
                         errors.append(err)

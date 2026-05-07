@@ -1012,11 +1012,37 @@ class TestDtype:
         errors = validator.check_l3("InputPromoteOp", entry)
         assert any(
             "promote_int_to_float" in e
-            and "input" in e
+            and " y " in e
             and "output-side only" in e
             for e in errors
         ), (
             "Expected input-side promote_int_to_float to be rejected, "
+            f"got: {errors}"
+        )
+
+    def test_promote_int_to_float_rejected_in_workload_dtypes(self, validator):
+        """``promote_int_to_float`` is output-side only (R3a).
+
+        Workload dtypes describe concrete benchmark inputs, not output
+        contracts; an entry like ``workloads[].dtypes: [promote_int_to_float(x)]``
+        must be rejected with the same hard L3 error as the input-side
+        and combo-value rejections.
+        """
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "int8 | int32 | float32"}},
+                "outputs": {"y": {"dtype": "promote_int_to_float(x)"}},
+            },
+            "workloads": [{"dtypes": ["promote_int_to_float(x)"]}],
+        }
+        errors = validator.check_l3("WorkloadPromoteOp", entry)
+        assert any(
+            "promote_int_to_float" in e
+            and "workloads[0].dtypes[0]" in e
+            and "output-side only" in e
+            for e in errors
+        ), (
+            "Expected workload-dtype promote_int_to_float to be rejected, "
             f"got: {errors}"
         )
 
