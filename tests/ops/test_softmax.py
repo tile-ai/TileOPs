@@ -664,5 +664,29 @@ def test_log_softmax_dim_none_reused_across_ranks() -> None:
     assert torch.allclose(y3, y3_ref, atol=atol, rtol=rtol)
 
 
+# ---------------------------------------------------------------------------
+# Roofline regression: LogSoftmax FLOPs must equal 5 * M * N (not 6 * M * N).
+# Direct construction — no manifest-string indirection.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_log_softmax_eval_roofline_flops_5mn() -> None:
+    """LogSoftmaxFwdOp.eval_roofline() must report flops == 5 * M * N."""
+    M, N = 64, 256
+    dtype = torch.float16
+    op = LogSoftmaxFwdOp(N=N, dtype=dtype, dim=-1)
+    x = torch.randn(M, N, dtype=dtype, device="cuda")
+    op(x)  # bind dynamic shape
+    flops, mem_bytes = op.eval_roofline()
+    elem_bytes = dtype.itemsize
+    assert flops == 5 * M * N, f"LogSoftmax flops {flops} != 5 * M * N = {5 * M * N}"
+    assert mem_bytes == 2 * M * N * elem_bytes, (
+        f"LogSoftmax bytes {mem_bytes} != 2 * M * N * elem_bytes = "
+        f"{2 * M * N * elem_bytes}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
