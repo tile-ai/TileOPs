@@ -1623,11 +1623,12 @@ class _IntIdentityUnaryOp(UnaryOp):
             self.N_total = N_total
             self.dtype = dtype
             self.strategy = strategy
-            # Skip dispatch_kernel: the float-only kernel cannot be
-            # instantiated for an integer dtype. Expose a kernel_map shape
-            # consistent with the float path for any introspection that
-            # iterates it, but leave the kernel itself unconstructed.
-            self.kernel_map = kernel_map or self.default_kernel_map
+            # The float-only kernel cannot be instantiated for an integer
+            # dtype, so the kernel itself stays unconstructed. The kernel_map
+            # is still installed through the shared validate-and-install path
+            # so a user-supplied override is arch-checked identically to the
+            # auto-discovered map on the float path.
+            self._install_kernel_map(kernel_map)
             self.kernel = None
             self.output_dtype = (
                 type(self)._int_output_dtype
