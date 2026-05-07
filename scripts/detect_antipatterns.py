@@ -230,14 +230,15 @@ def detect_ap04(ctx: DetectorContext) -> List[str]:
     if not locs:
         return []
     if ctx.pr_body is None:
-        # Body unavailable — surface the FIXME alone (degraded but useful).
+        # Body unavailable — surface the FIXME alone (degraded fallback).
         return locs
-    # Body available: stronger signal is FIXME co-occurring with [x] AC. We
-    # still surface the FIXME locations either way; presence of any [x] AC
-    # bullet in the body is the gate.
-    if _AP04_AC_LINE_RE.search(ctx.pr_body):
-        return locs
-    return locs  # FIXME alone still warrants a hit; body just amplifies it.
+    # Body available: gate on a checked [x] AC bullet. The documented signal
+    # is FIXME(staged-rollout) co-occurring with the same AC marked done in
+    # the PR body. Without a checked AC bullet we have no contradiction
+    # signal — drop the hit.
+    if not _AP04_AC_LINE_RE.search(ctx.pr_body):
+        return []
+    return locs
 
 
 # ---- AP-05 ---------------------------------------------------------------
@@ -292,8 +293,14 @@ def detect_ap06(ctx: DetectorContext) -> List[str]:
 # appears in the diff or if any backticked op name's snake_case form appears
 # in a benchmarks/ filename in the diff.
 _AP07_TRIGGER_RE = re.compile(
+    # Artifact-creation keyword pairings. Matches NEW-artifact claims:
+    #   - explicit "scaffold ... bench" / "bench ... scaffold" co-occurrence
+    #   - "bench entries" idiom (template phrase for new bench rows)
+    #   - "spec-only ops have impl + test + bench" phrasing (status:spec-only
+    #     implies new-artifact work; the AC asserts the work is done)
     r"scaffold[a-z]*[^\n]{0,200}\bbench|bench[^\n]{0,200}\bscaffold[a-z]*|"
-    r"\bbench entries\b",
+    r"\bbench entries\b|"
+    r"\bspec-only\b[^\n]{0,200}\bimpl\b",
     re.IGNORECASE,
 )
 _AP07_OPNAME_RE = re.compile(r"`([A-Z][A-Za-z0-9\[\]]*)`")
@@ -318,10 +325,26 @@ def detect_ap07(ctx: DetectorContext) -> List[str]:
         f.path for f in ctx.files if f.is_new and f.path.startswith("benchmarks/")
     ]
     locs: List[str] = []
+    # Documented signal: AC `[x]` checkbox claims artifact added. Trigger:
+    # at least one checked-bullet line (`- [x]` / `* [x]`) must contain
+    # scaffold/bench/impl/test artifact-creation keywords. Op names may
+    # appear on that line OR elsewhere in the body (Summary section often
+    # carries the explicit op list). Without the [x] gate, any descriptive
+    # bullet would falsely fire.
+    _checked_re = re.compile(r"^\s*[-*]\s*\[x\]\s", re.IGNORECASE)
+    has_checked_artifact_claim = any(
+        _checked_re.search(line) and _AP07_TRIGGER_RE.search(line)
+        for line in body.splitlines()
+    )
+    if not has_checked_artifact_claim:
+        return []
+    # All-body op-name pool (Summary frequently carries the named-op list
+    # when the AC line itself only describes the scope numerically).
+    all_ops = _AP07_OPNAME_RE.findall(body)
     for idx, line in enumerate(body.splitlines(), start=1):
         if not _AP07_TRIGGER_RE.search(line):
             continue
-        ops = _AP07_OPNAME_RE.findall(line)
+        ops = _AP07_OPNAME_RE.findall(line) or all_ops
         if not ops:
             continue
         # Identify which named ops have a matching bench file in the diff.
