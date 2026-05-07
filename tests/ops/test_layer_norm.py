@@ -60,7 +60,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @LayerNormFixture
 def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormTest(m, n, dtype)
-    op = LayerNormFwdOp(M=m, N=n, dtype=dtype)
+    op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -83,7 +83,7 @@ def test_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     weight = torch.randn(n, dtype=dtype, device="cuda")
     bias = torch.randn(n, dtype=dtype, device="cuda")
 
-    op = LayerNormFwdOp(M=m, N=n, dtype=dtype)
+    op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
 
     # Reference using torch.nn.functional.layer_norm
     x_ref = x.contiguous()
@@ -115,8 +115,7 @@ def test_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) ->
     weight = torch.randn(hidden, dtype=dtype, device="cuda")
     bias = torch.randn(hidden, dtype=dtype, device="cuda")
 
-    M = batch * seq
-    op = LayerNormFwdOp(M=M, N=hidden, dtype=dtype)
+    op = LayerNormFwdOp(normalized_shape=(hidden,), dtype=dtype)
 
     # Reference using torch.nn.functional.layer_norm
     y_ref = F.layer_norm(
@@ -159,7 +158,7 @@ def test_layer_norm_large_offset(m: int, n: int, dtype: torch.dtype) -> None:
     weight = torch.ones(n, dtype=dtype, device="cuda")
     bias = torch.zeros(n, dtype=dtype, device="cuda")
 
-    op = LayerNormFwdOp(M=m, N=n, dtype=dtype)
+    op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
 
     y_ref = F.layer_norm(
         x.float(), (n,),
@@ -183,6 +182,36 @@ def test_layer_norm_large_offset(m: int, n: int, dtype: torch.dtype) -> None:
     # with the unstable formula, errors would be > 1.0
     assert max_err < 1.0, \
         f"Catastrophic cancellation detected, max err: {max_err}"
+
+
+@pytest.mark.smoke
+def test_layer_norm_rebuilds_kernel_on_m_change() -> None:
+    """A second forward with a different leading-dims product must rebuild
+    the kernel rather than reject the call."""
+    n = 4096
+    dtype = torch.float16
+
+    op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
+    weight = torch.randn(n, dtype=dtype, device="cuda")
+    bias = torch.randn(n, dtype=dtype, device="cuda")
+
+    x1 = torch.randn(512, n, dtype=dtype, device="cuda")
+    y1 = op(x1, weight, bias)
+    first_kernel = op.kernel
+    assert y1.shape == x1.shape
+
+    x2 = torch.randn(1024, n, dtype=dtype, device="cuda")
+    y2 = op(x2, weight, bias)
+    assert y2.shape == x2.shape
+    # Kernel should have been rebuilt for the new M.
+    assert op.kernel is not first_kernel
+
+    y_ref = F.layer_norm(
+        x2.float(), (n,),
+        weight=weight.float(), bias=bias.float(), eps=1e-5,
+    ).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y2, y_ref, atol=atol, rtol=rtol)
 
 
 if __name__ == "__main__":

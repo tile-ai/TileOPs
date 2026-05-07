@@ -10,7 +10,8 @@ User-facing API mirrors torch.nn.functional.group_norm:
     y = op(x, weight, bias)
 
 Input tensors accept shape (N, C, *spatial); the op reshapes to
-(N*num_groups, D_padded) internally where D = (C/num_groups) * spatial_size.
+(N*num_groups, D_padded) internally where
+D = (C/num_groups) * spatial_size.
 """
 
 import math
@@ -23,20 +24,15 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import GroupNormKernel
 
 from ..op_base import Op
+from .norm_base import ALIGNMENT, align_up
 
 __all__ = ["GroupNormFwdOp"]
-
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 class GroupNormFwdOp(Op):
     """Group Normalization forward operator.
 
-    Computes group normalization over ``(C/G, *spatial)`` slices:
+    Computes group normalization over ``(C/num_groups, *spatial)`` slices:
 
     .. math::
 
@@ -44,7 +40,7 @@ class GroupNormFwdOp(Op):
             \\cdot w + b
 
     where the mean and variance are computed per group over
-    ``(C/G, *spatial)`` elements.
+    ``(C/num_groups, *spatial)`` elements.
 
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
@@ -63,9 +59,6 @@ class GroupNormFwdOp(Op):
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
         eps: Epsilon for numerical stability.
-        G: Deprecated alias for ``num_groups``; kept for legacy callers
-            that have not migrated yet. Pass exactly one of ``num_groups``
-            or ``G``.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """
@@ -75,38 +68,28 @@ class GroupNormFwdOp(Op):
         N: int,
         C: int,
         spatial: tuple,
-        num_groups: Optional[int] = None,
-        dtype: Optional[torch.dtype] = None,
+        num_groups: int,
+        dtype: torch.dtype,
         eps: float = 1e-5,
         *,
-        G: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if num_groups is None and G is None:
-            raise TypeError("GroupNormFwdOp requires 'num_groups'")
-        if num_groups is not None and G is not None and num_groups != G:
+        if C % num_groups != 0:
             raise ValueError(
-                f"Conflicting num_groups={num_groups} and legacy G={G}"
+                f"C={C} must be divisible by num_groups={num_groups}"
             )
-        groups = num_groups if num_groups is not None else G
-        if dtype is None:
-            raise TypeError("GroupNormFwdOp requires 'dtype'")
-        if C % groups != 0:
-            raise ValueError(f"C={C} must be divisible by num_groups={groups}")
         self.N = N
         self.C = C
         self.spatial = spatial
-        self.num_groups = groups
-        # Keep the legacy attribute name pointing at the same value so
-        # downstream readers that still inspect ``op.G`` keep working.
-        self.G = groups
+        self.num_groups = num_groups
         self.dtype = dtype
         self.eps = eps
         self.spatial_size = math.prod(spatial)
-        self.D = (C // groups) * self.spatial_size  # row length before padding
-        self.M = N * groups  # number of rows
-        self.D_padded = _align_up(self.D, ALIGNMENT)
+        # row length before padding
+        self.D = (C // num_groups) * self.spatial_size
+        self.M = N * num_groups  # number of rows
+        self.D_padded = align_up(self.D, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["group_norm"](
             self.M, self.D, eps, dtype, tune=tune,
@@ -123,7 +106,9 @@ class GroupNormFwdOp(Op):
             (2 * self.N * self.C * self.spatial_size + 2 * self.C) * elem_bytes,
         )
 
-    def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor,
+    ) -> torch.Tensor:
         """Apply group normalization.
 
         Args:
@@ -166,19 +151,25 @@ class GroupNormFwdOp(Op):
             )
 
         orig_shape = x.shape
-        # Ensure contiguous and reshape to (N, G, C/G, *spatial)
+        # Ensure contiguous and reshape to (N, num_groups, C/num_groups, *spatial)
         x = x.contiguous()
 
-        # Reshape: (N, C, *spatial) -> (N, G, C/G, *spatial) -> (N*G, (C/G)*spatial_size)
-        cpg = self.C // self.G  # channels per group
-        x_reshaped = x.reshape(self.N, self.G, cpg, *self.spatial)
+        # Reshape: (N, C, *spatial)
+        # -> (N, num_groups, C/num_groups, *spatial)
+        # -> (N*num_groups, (C/num_groups)*spatial_size)
+        cpg = self.C // self.num_groups  # channels per group
+        x_reshaped = x.reshape(self.N, self.num_groups, cpg, *self.spatial)
         x_2d = x_reshaped.reshape(self.M, self.D)
 
         # The kernel broadcasts 1D weight/bias across all rows, but GroupNorm
-        # needs per-group affine parameters. Run kernel with unit weight/zero bias
-        # to normalize, then apply per-channel affine transform afterwards.
-        unit_weight = torch.ones(self.D_padded, dtype=self.dtype, device=x.device)
-        zero_bias = torch.zeros(self.D_padded, dtype=self.dtype, device=x.device)
+        # needs per-group affine parameters. Run kernel with unit weight/zero
+        # bias to normalize, then apply per-channel affine afterwards.
+        unit_weight = torch.ones(
+            self.D_padded, dtype=self.dtype, device=x.device,
+        )
+        zero_bias = torch.zeros(
+            self.D_padded, dtype=self.dtype, device=x.device,
+        )
 
         # Pad to alignment
         if self.D_padded != self.D:
@@ -191,8 +182,9 @@ class GroupNormFwdOp(Op):
         if self.D_padded != self.D:
             y_2d = y_2d[:, :self.D]
 
-        # Reshape back: (N*G, D) -> (N, G, cpg, *spatial) -> (N, C, *spatial)
-        y = y_2d.reshape(self.N, self.G, cpg, *self.spatial)
+        # Reshape back: (N*num_groups, D) -> (N, num_groups, cpg, *spatial)
+        # -> (N, C, *spatial)
+        y = y_2d.reshape(self.N, self.num_groups, cpg, *self.spatial)
         y = y.reshape(orig_shape)
 
         # Apply per-channel affine: y = y * weight + bias

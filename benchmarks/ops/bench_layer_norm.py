@@ -49,7 +49,7 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
     test = LayerNormTest(m, n, dtype)
     inputs = test.gen_inputs()
 
-    op = LayerNormFwdOp(M=m, N=n, dtype=dtype, tune=tune)
+    op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype, tune=tune)
     bm = LayerNormBenchmark(test, op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
