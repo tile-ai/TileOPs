@@ -148,16 +148,21 @@ class Op(ABC):
         single validate-and-install path, so arch-compat checks fire
         identically regardless of provenance.
         """
-        if self.default_kernel_map is None or len(self.default_kernel_map) == 0:
+        default_map = self.default_kernel_map
+        if default_map is None or len(default_map) == 0:
             raise ValueError("default_kernel_map must be non-empty")
         resolved: dict[str, Kernel] = {}
         current_arch = get_sm_version()
-        for name, default_kernel in self.default_kernel_map.items():
+        for name, default_kernel in default_map.items():
             if candidate_map is not None and name in candidate_map:
                 kernel_type = candidate_map[name]
             else:
                 kernel_type = default_kernel
-            if kernel_type is not None and current_arch not in kernel_type.supported_archs:
+            if (
+                kernel_type is not None
+                and kernel_type.supported_archs is not None
+                and current_arch not in kernel_type.supported_archs
+            ):
                 raise ValueError(
                     f'{kernel_type.__name__} is not supported on architecture {current_arch}')
             resolved[name] = kernel_type

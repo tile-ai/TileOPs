@@ -102,6 +102,28 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
 
 
 @pytest.mark.smoke
+def test_install_kernel_map_supported_archs_none() -> None:
+    """A kernel with ``supported_archs=None`` installs without raising.
+
+    The base ``Kernel`` class declares ``supported_archs: Optional[list[int]]``
+    defaulting to ``None``. The validate-and-install path must treat ``None``
+    as "no arch restriction" rather than attempting ``in None``, which would
+    raise ``TypeError``.
+    """
+    import tileops.ops.elementwise as mod
+
+    cls = mod.ReluFwdOp
+    inst = cls(N_total=8, dtype=torch.float16)
+    (key, default_kernel_cls), = inst.default_kernel_map.items()
+
+    class UnrestrictedKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
+        supported_archs = None
+
+    overridden = cls(N_total=8, dtype=torch.float16, kernel_map={key: UnrestrictedKernel})
+    assert overridden.kernel_map[key] is UnrestrictedKernel
+
+
+@pytest.mark.smoke
 def test_install_kernel_map_is_private_helper_only() -> None:
     """Refactor exposes ``_install_kernel_map`` only — no new public API.
 
