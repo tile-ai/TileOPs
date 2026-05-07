@@ -665,7 +665,7 @@ def test_log_softmax_dim_none_reused_across_ranks() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Roofline regression: LogSoftmax FLOPs must equal 5 * M * N (not 4 * M * N).
+# Roofline regression: LogSoftmax FLOPs must equal 5 * M * N (not 6 * M * N).
 # Direct construction — no manifest-string indirection.
 # ---------------------------------------------------------------------------
 
