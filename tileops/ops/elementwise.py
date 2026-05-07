@@ -1711,12 +1711,10 @@ class ReciprocalFwdOp(UnaryOp):
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
         if self.dtype in _MANIFEST_INT_DTYPES:
             self._validate_input(input)
-            # Promote integer input to the kernel's float32 working dtype.
-            # The torch.compile fast path is bypassed because the
-            # registered custom op was built for the float kernel; the
-            # integer entry point is rare enough that going through the
-            # eager kernel call is the simpler contract.
             promoted = input.to(torch.float32)
+            wrapped = type(self)._wrapped
+            if wrapped is not None:
+                return wrapped(promoted, self._instance_key)
             return self._eager_forward(promoted)
         return super().forward(input)
 

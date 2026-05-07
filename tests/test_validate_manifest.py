@@ -1047,6 +1047,24 @@ class TestDtype:
             f"got: {errors}"
         )
 
+    def test_check_l3_with_non_dict_signature_does_not_crash(self, validator):
+        """check_l3 must tolerate malformed signature.inputs/outputs.
+
+        A list or string in place of the expected dict triggered an
+        unguarded ``.update()`` / ``.keys()`` crash; treat as empty so
+        the schema layer's own diagnostics surface unmasked.
+        """
+        for inputs_val in ([{"x": {}}], "not a mapping", None):
+            for outputs_val in ([{"y": {}}], "nope", None):
+                entry = {
+                    "signature": {
+                        "inputs": inputs_val,
+                        "outputs": outputs_val,
+                    },
+                }
+                errors = validator.check_l3("BadOp", entry)
+                assert isinstance(errors, list)
+
     def test_promote_int_to_float_rejects_output_self_ref(self, validator):
         """``promote_int_to_float(ref)`` ref must name a signature INPUT.
 
@@ -4230,6 +4248,23 @@ class TestValidatorHelperResolution:
         assert len(names) == len(set(names)), (
             f"duplicate name in _SHAPE_RULE_BUILTIN_PAIRS: {names}"
         )
+
+    def test_input_bound_symbols_tolerates_non_dict_inputs(self, validator):
+        """``_input_bound_symbols`` must treat malformed inputs as empty.
+
+        Schema-independent shape-rule extraction must not crash when
+        ``signature.inputs`` is missing or non-mapping; the schema layer
+        owns the structural error message. Regression for a list value.
+        """
+        result = validator._input_bound_symbols({
+            "inputs": [{"x": {"shape": "[N]"}}],
+            "shape_rules": ["x.shape == (N)"],
+        })
+        assert isinstance(result, set)
+        result = validator._input_bound_symbols({
+            "shape_rules": ["x.shape == (N)"],
+        })
+        assert isinstance(result, set)
 
     def test_shape_rules_helpers_callable_by_bare_name(self, validator):
         """Reduction-dim helpers from shape_rules.py are in the eval scope.

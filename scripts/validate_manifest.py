@@ -923,8 +923,10 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     """
     errors: list[str] = []
     sig = entry.get("signature", {})
-    inputs = sig.get("inputs", {}) or {}
-    outputs = sig.get("outputs", {}) or {}
+    raw_inputs = sig.get("inputs")
+    raw_outputs = sig.get("outputs")
+    inputs = raw_inputs if isinstance(raw_inputs, dict) else {}
+    outputs = raw_outputs if isinstance(raw_outputs, dict) else {}
     all_tensors = {}
     all_tensors.update(inputs)
     all_tensors.update(outputs)
@@ -1322,7 +1324,8 @@ def _input_bound_symbols(sig: dict) -> set[str]:
     shape_eq_re = re.compile(
         r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.shape\s*==\s*\(([^)]*)\)\s*$"
     )
-    inputs = sig.get("inputs") or {}
+    inputs_raw = sig.get("inputs")
+    inputs = inputs_raw if isinstance(inputs_raw, dict) else {}
     input_names = set(inputs.keys())
     for rule in rules:
         if not isinstance(rule, str):
