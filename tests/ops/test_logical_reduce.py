@@ -670,5 +670,54 @@ def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) ->
     assert kernel.config["tile_n"] > 0
 
 
+# ---------------------------------------------------------------------------
+# Manifest dtype contract: bool input + int64 / bool output dtypes.
+# ---------------------------------------------------------------------------
+
+_M = 64
+_N = 256
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("op_name", ["AllFwdOp", "AnyFwdOp"])
+def test_logical_reduce_accepts_bool(op_name: str) -> None:
+    """All / Any must accept bool inputs (manifest dtype contract)."""
+    import tileops.ops.reduction as mod
+
+    cls = getattr(mod, op_name)
+    op = cls(dtype=torch.bool, dim=-1)
+    x = torch.randint(0, 2, (_M, _N), device="cuda").bool()
+    out = op(x)
+    assert out.dtype == torch.bool
+    assert out.shape == (_M,)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_count_nonzero_returns_int64() -> None:
+    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+
+    op = CountNonzeroFwdOp(dtype=torch.float16, dim=-1)
+    x = torch.randn(_M, _N, dtype=torch.float16, device="cuda")
+    out = op(x)
+    assert out.dtype == torch.int64, (
+        f"CountNonzero output dtype {out.dtype} != int64"
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("op_name", ["AllFwdOp", "AnyFwdOp"])
+def test_logical_reduce_returns_bool(op_name: str) -> None:
+    import tileops.ops.reduction as mod
+
+    cls = getattr(mod, op_name)
+    op = cls(dtype=torch.float16, dim=-1)
+    x = torch.randn(_M, _N, dtype=torch.float16, device="cuda")
+    out = op(x)
+    assert out.dtype == torch.bool
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
