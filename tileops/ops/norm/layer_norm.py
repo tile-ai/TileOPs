@@ -39,7 +39,8 @@ class LayerNormFwdOp(Op):
         Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
         Handles non-contiguous inputs and non-power-of-two hidden dims by
         padding to 256-element alignment. The leading-dims product ``M``
-        is bound at forward time and kernels are cached per ``M``.
+        is bound on the first forward call; subsequent calls must use the
+        same ``M``.
 
     Args:
         normalized_shape: Trailing-axis shape tuple over which the
@@ -71,19 +72,12 @@ class LayerNormFwdOp(Op):
         self.tune = tune
         self.N_padded = _align_up(self.N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[int, Kernel] = {}
+        self.kernel: Optional[Kernel] = None
         self._last_m: Optional[int] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"layer_norm": LayerNormKernel}
-
-    def _get_kernel(self, m: int) -> Kernel:
-        if m not in self._kernel_cache:
-            self._kernel_cache[m] = self.kernel_map["layer_norm"](
-                m, self.N, self.eps, self.dtype, tune=self.tune,
-            )
-        return self._kernel_cache[m]
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_m is None:
@@ -157,6 +151,15 @@ class LayerNormFwdOp(Op):
         weight = weight.contiguous().reshape(self.N)
         bias = bias.contiguous().reshape(self.N)
         m_actual = x.shape[0]
+        if self.kernel is None:
+            self.kernel = self.kernel_map["layer_norm"](
+                m_actual, self.N, self.eps, self.dtype, tune=self.tune,
+            )
+        elif m_actual != self._last_m:
+            raise ValueError(
+                f"LayerNormFwdOp was bound to leading-dims product "
+                f"{self._last_m} on first forward; got {m_actual}"
+            )
         self._last_m = m_actual
 
         # Pad hidden dim to 256-element alignment if needed
@@ -165,7 +168,7 @@ class LayerNormFwdOp(Op):
             weight = F.pad(weight, (0, self.N_padded - self.N))
             bias = F.pad(bias, (0, self.N_padded - self.N))
 
-        y = self._get_kernel(m_actual)(x, weight, bias)
+        y = self.kernel(x, weight, bias)
 
         # Trim padding
         if self.N_padded != self.N:
