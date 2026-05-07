@@ -1671,15 +1671,52 @@ class NegFwdOp(_IntIdentityUnaryOp):
 class ReciprocalFwdOp(UnaryOp):
     """Element-wise 1/x.
 
-    The manifest's int-dtype declaration is a known gap: ``torch.reciprocal``
-    promotes int input to float32, which does not match the manifest's
-    ``same_as(input)`` output rule. The op layer here only supports the
-    float dtypes the kernel implements; int input falls through to the
-    kernel's dtype check and raises.
+    Mirrors ``torch.reciprocal`` int-input promotion: integral dtypes
+    (uint8 / int8 / int16 / int32 / int64) are cast to float32 before the
+    float kernel runs, and the op's ``output_dtype`` is float32 in that
+    case. Floating inputs (float16 / bfloat16 / float32) follow the
+    standard same-dtype path.
     """
 
     _op_name = "reciprocal"
     kernel_cls = ReciprocalFwdKernel
+
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        if dtype in _MANIFEST_INT_DTYPES:
+            # Build the kernel against the promoted compute dtype (float32)
+            # so the float-only ReciprocalFwdKernel can run, then restore
+            # the user-declared dtype on ``self.dtype`` so metadata and
+            # ``eval_roofline`` reflect the real I/O contract: integer
+            # input bytes + float32 output bytes. ``self.output_dtype``
+            # stays float32 (set by the kernel) per the manifest's
+            # ``promote_int_to_float`` contract.
+            super().__init__(
+                N_total, torch.float32, strategy=strategy,
+                kernel_map=kernel_map, tune=tune,
+            )
+            self.dtype = dtype
+        else:
+            super().__init__(
+                N_total, dtype, strategy=strategy,
+                kernel_map=kernel_map, tune=tune,
+            )
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if self.dtype in _MANIFEST_INT_DTYPES:
+            self._validate_input(input)
+            promoted = input.to(torch.float32)
+            wrapped = type(self)._wrapped
+            if wrapped is not None:
+                return wrapped(promoted, self._instance_key)
+            return self._eager_forward(promoted)
+        return super().forward(input)
 
 
 class SignFwdOp(_IntIdentityUnaryOp):
