@@ -114,10 +114,10 @@ def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
     return torch.randn(n, device="cuda", dtype=dtype)
 
 
-def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls):
+def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls, **op_kwargs):
     """Build test, instantiate op, and run check."""
     test = UnaryActivationTest(n_total, dtype, gen_fn=gen_fn, ref_fn=ref_fn)
-    op = op_cls(N_total=n_total, dtype=dtype)
+    op = op_cls(N_total=n_total, dtype=dtype, **op_kwargs)
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
     elif dtype == torch.bfloat16:
@@ -128,10 +128,16 @@ def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls):
 
 
 @ActivationFixture
-def test_gelu(n_total: int, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize("approximate", ["none", "tanh"])
+def test_gelu(n_total: int, dtype: torch.dtype, approximate: str) -> None:
     from tileops.ops.elementwise import GeluFwdOp
-    _make_activation_test(n_total, dtype, _randn,
-                          F.gelu, GeluFwdOp)
+
+    def _ref(x: torch.Tensor) -> torch.Tensor:
+        return F.gelu(x, approximate=approximate)
+
+    _make_activation_test(
+        n_total, dtype, _randn, _ref, GeluFwdOp, approximate=approximate,
+    )
 
 
 @ActivationFixture

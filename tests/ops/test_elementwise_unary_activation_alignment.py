@@ -157,32 +157,31 @@ def test_unary_activation_inplace_false_returns_fresh_tensor(op_name: str) -> No
 
 @pytest.mark.smoke
 def test_gelu_approximate_validation() -> None:
-    """GeluFwdOp must accept ``approximate='none'`` and reject invalid values.
-
-    ``approximate='tanh'`` is a manifest-allowed value but no fused
-    tanh-GELU unary kernel is implemented yet (see follow-up issue
-    referenced in the ``NotImplementedError`` message).
-    """
+    """GeluFwdOp must reject ``approximate`` values outside the manifest set."""
     import tileops.ops.elementwise as mod
 
     with pytest.raises(ValueError, match="approximate"):
         mod.GeluFwdOp(N_total=8, dtype=torch.float16, approximate="invalid")
-    with pytest.raises(NotImplementedError, match=r"tanh"):
-        mod.GeluFwdOp(N_total=8, dtype=torch.float16, approximate="tanh")
 
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_gelu_approximate_none_runs_through_forward() -> None:
-    """GeluFwdOp(approximate='none') must dispatch through ``forward()``."""
+@pytest.mark.parametrize("approximate", ["none", "tanh"])
+def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
+    """Both ``approximate='none'`` and ``'tanh'`` must dispatch end-to-end.
+
+    Each mode is checked against ``torch.nn.functional.gelu`` with the
+    matching ``approximate`` argument so the kernel selection is
+    observable from the op layer.
+    """
     import tileops.ops.elementwise as mod
 
     n_total = 128
     dtype = torch.float16
-    op = mod.GeluFwdOp(N_total=n_total, dtype=dtype)
+    op = mod.GeluFwdOp(N_total=n_total, dtype=dtype, approximate=approximate)
     x = torch.randn(n_total, dtype=dtype, device="cuda")
     y = op(x)
-    expected = torch.nn.functional.gelu(x, approximate="none")
+    expected = torch.nn.functional.gelu(x, approximate=approximate)
     assert y.shape == x.shape
     assert torch.allclose(y, expected, rtol=1e-2, atol=1e-2)
 

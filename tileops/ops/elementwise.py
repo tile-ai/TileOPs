@@ -47,6 +47,7 @@ from tileops.kernels.elementwise import (
     GeluAndMulFwdKernel,
     GeluFwdKernel,
     GeluTanhAndMulFwdKernel,
+    GeluTanhFwdKernel,
     GtFwdKernel,
     HardsigmoidFwdKernel,
     HardswishFwdKernel,
@@ -1837,10 +1838,9 @@ class _GeluApproximateBase(UnaryOp):
 
     Validates the ``approximate`` argument against the manifest's allowed
     values (``'none'`` / ``'tanh'``), records it on ``self.approximate``
-    for introspection, and then delegates to ``UnaryOp.__init__``.
-    ``approximate='tanh'`` is rejected with ``NotImplementedError`` until
-    a fused tanh-GELU unary kernel is exposed to the Op layer (tracked
-    in a follow-up issue).
+    for introspection, and then delegates to ``UnaryOp.__init__``. The
+    ``default_kernel_map`` of the leaf op picks the kernel implementation
+    from ``self.approximate``.
     """
 
     def __init__(
@@ -1858,13 +1858,6 @@ class _GeluApproximateBase(UnaryOp):
                 f"{type(self).__name__}: approximate must be 'none' or "
                 f"'tanh', got {approximate!r}"
             )
-        if approximate == "tanh":
-            raise NotImplementedError(
-                f"{type(self).__name__}(approximate='tanh') is not "
-                "implemented: no fused tanh-GELU unary kernel is exposed "
-                "to the Op layer yet. A follow-up issue "
-                "tracks the kernel work.",
-            )
         self.approximate = approximate
         super().__init__(
             N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
@@ -1878,10 +1871,9 @@ class GeluFwdOp(_GeluApproximateBase):
         N_total: Number of elements (flattened input).
         dtype: Torch dtype.
         approximate: Approximation mode. ``'none'`` (default) routes to
-            the erf-based ``GeluFwdKernel``. ``'tanh'`` is accepted by
-            the manifest signature but raises ``NotImplementedError``
-            because no fused tanh-GELU unary kernel is implemented yet
-            (tracked in a follow-up issue).
+            the erf-based ``GeluFwdKernel``. ``'tanh'`` routes to
+            ``GeluTanhFwdKernel`` (the fused tanh approximation
+            ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``).
         strategy: Optional kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
@@ -1889,11 +1881,19 @@ class GeluFwdOp(_GeluApproximateBase):
 
     _op_name = "gelu"
     kernel_cls = GeluFwdKernel
-    # Manifest: flops = "8 * N" (erf-based: mul + erf + add + mul + mul ≈ 8).
+    # Manifest: flops = "8 * N" (erf-based: mul + erf + add + mul + mul ≈ 8;
+    # tanh approximation is similar order, see manifest comment).
     FLOPS_PER_ELEM = 8
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        kernel_cls = (
+            GeluTanhFwdKernel if self.approximate == "tanh" else GeluFwdKernel
+        )
+        return {self._op_name: kernel_cls}
 
 
 class SiluFwdOp(_ParamFreeActivationOp):
