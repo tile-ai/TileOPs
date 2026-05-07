@@ -907,6 +907,103 @@ class TestDtype:
         assert resolved["y"] == ["float16", "bfloat16"]
         assert resolved["z"] == ["float16", "bfloat16"]
 
+    def test_promote_int_to_float_signature_accepts(self, validator):
+        """``promote_int_to_float(ref)`` is a recognized output dtype token."""
+        entry = {
+            "signature": {
+                "inputs": {
+                    "input": {
+                        "dtype": (
+                            "float16 | bfloat16 | float32 | "
+                            "int8 | int16 | int32 | int64 | uint8"
+                        ),
+                    },
+                },
+                "outputs": {
+                    "output": {"dtype": "promote_int_to_float(input)"},
+                },
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("PromoteOp", entry)
+        assert errors == [], (
+            f"promote_int_to_float on declared input must validate, got: {errors}"
+        )
+
+    def test_promote_int_to_float_unknown_ref_rejected(self, validator):
+        """``promote_int_to_float(unknown)`` references no declared tensor."""
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16 | int32"}},
+                "outputs": {
+                    "y": {"dtype": "promote_int_to_float(z)"},
+                },
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("PromoteBadOp", entry)
+        assert any(
+            "promote_int_to_float(z)" in e and "unknown tensor" in e
+            for e in errors
+        ), (
+            f"Expected unknown-tensor error, got: {errors}"
+        )
+
+    def test_promote_int_to_float_resolves_options(self, validator):
+        """Resolver maps integral input options to float32, keeps floats as-is.
+        """
+        sig = {
+            "inputs": {
+                "input": {
+                    "dtype": (
+                        "float16 | bfloat16 | float32 | "
+                        "int8 | int16 | int32 | int64 | uint8"
+                    ),
+                },
+            },
+            "outputs": {
+                "output": {"dtype": "promote_int_to_float(input)"},
+            },
+        }
+        resolved = validator._resolve_tensor_dtype_options(sig)
+        assert resolved is not None
+        # All integral options collapse to a single float32 entry; float
+        # options stay as themselves. Order-preserving de-dup keeps the
+        # first-seen token (float16 first, then float32 from the integer
+        # promotion path absorbs the explicit float32 entry).
+        assert resolved["output"] == ["float16", "bfloat16", "float32"]
+
+    def test_promote_int_to_float_rejects_malformed_arg(self, validator):
+        """Malformed arg (non-identifier) is not a recognized dtype token."""
+        entry = {
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {
+                    "y": {"dtype": "promote_int_to_float()"},
+                },
+            },
+            "workloads": [{"dtypes": ["float16"]}],
+        }
+        errors = validator.check_l3("MalformedPromoteOp", entry)
+        assert any(
+            "unrecognized dtype" in e and "promote_int_to_float()" in e
+            for e in errors
+        ), (
+            f"Expected malformed-token error, got: {errors}"
+        )
+
+    def test_promote_int_to_float_in_union_resolves(self, validator):
+        """``promote_int_to_float(ref) | float64`` mixes promotion + literal."""
+        sig = {
+            "inputs": {"x": {"dtype": "float16 | int32"}},
+            "outputs": {
+                "y": {"dtype": "promote_int_to_float(x) | float64"},
+            },
+        }
+        resolved = validator._resolve_tensor_dtype_options(sig)
+        assert resolved is not None
+        assert resolved["y"] == ["float16", "float32", "float64"]
+
     def test_resolve_dtype_options_same_as_cycle_fails(self, validator):
         """A pure ``same_as`` cycle (``x: same_as(y)``, ``y: same_as(x)``)
         has no concrete dtype grounding — resolver returns None.

@@ -204,20 +204,15 @@ NegFwdOp:
 ReciprocalFwdOp:
   ref_api: "torch.reciprocal"
   family: elementwise
-  # PyTorch's torch.reciprocal supports integral inputs and automatically
-  # promotes them to the default scalar type (typically float32). The dtype
-  # union below lists every accepted input dtype per the public docs; the
-  # output dtype expression cannot encode conditional promotion, so it is
-  # kept as same_as(input) for the floating cases. Integral-input promotion
-  # is a known modeling gap tracked separately and does not change the
-  # accepted-input contract documented here.
-  status: spec-only  # int-input promotion (int -> float32) cannot be expressed by same_as(input); op layer covers float dtypes only
+  status: implemented
 
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
     outputs:
-      output: {dtype: "same_as(input)"}
+      # Integral inputs promote to float32 (matches torch.reciprocal); float
+      # inputs preserve their dtype.
+      output: {dtype: "promote_int_to_float(input)"}
     shape_rules:
       - "output.shape == input.shape"
 

@@ -53,6 +53,25 @@ _TORCH_DTYPES = {
 }
 
 _SAME_AS_RE = re.compile(r"^same_as\(\s*(\w+)\s*\)$")
+# ``promote_int_to_float(ref)``: output dtype is ``float32`` when ``ref``'s
+# dtype is integral (uint8 / int8 / int16 / int32 / int64), else
+# ``same_as(ref)``. Models PyTorch-style int-input promotion for ops like
+# ``torch.reciprocal`` whose float32 result cannot be expressed by
+# ``same_as(input)`` alone.
+_PROMOTE_INT_TO_FLOAT_RE = re.compile(
+    r"^promote_int_to_float\(\s*(\w+)\s*\)$"
+)
+
+# Integral torch dtypes that ``promote_int_to_float`` rewrites to ``float32``.
+# Restricted to the dtypes PyTorch's int-input promotion treats as integral
+# (bool is excluded — it is not part of the integral promotion contract).
+_PROMOTE_INT_DTYPES: frozenset[str] = frozenset({
+    "uint8", "int8", "int16", "int32", "int64",
+})
+
+# Target dtype for integral inputs under ``promote_int_to_float``. Matches
+# PyTorch's default scalar type.
+_PROMOTE_TARGET_DTYPE: str = "float32"
 
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
@@ -813,7 +832,17 @@ def _validate_dtype_token(
                 f"[dtype] {op_name}: {context} dtype same_as({ref}) "
                 f"references unknown tensor"
             )
-    elif token not in _TORCH_DTYPES:
+        return None
+    m = _PROMOTE_INT_TO_FLOAT_RE.match(token)
+    if m:
+        ref = m.group(1)
+        if ref not in tensor_names:
+            return (
+                f"[dtype] {op_name}: {context} dtype "
+                f"promote_int_to_float({ref}) references unknown tensor"
+            )
+        return None
+    if token not in _TORCH_DTYPES:
         return f"[dtype] {op_name}: {context} has unrecognized dtype '{token}'"
     return None
 
@@ -2100,6 +2129,23 @@ def check_l2_infer_parity(
 # ---------------------------------------------------------------------------
 
 
+def _expand_promote_int_to_float(ref_options: list[str]) -> list[str]:
+    """Resolve ``promote_int_to_float(ref)`` against ``ref``'s dtype options.
+
+    Each integral token in ``ref_options`` (uint8 / int8 / int16 / int32 /
+    int64) maps to ``float32``; non-integral tokens pass through unchanged.
+    Result is de-duplicated, preserving first-seen order.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for opt in ref_options:
+        target = _PROMOTE_TARGET_DTYPE if opt in _PROMOTE_INT_DTYPES else opt
+        if target not in seen:
+            seen.add(target)
+            out.append(target)
+    return out
+
+
 def _dtype_options_for_tensor(
     tname: str, dtype_str: str, resolved: dict[str, list[str]],
 ) -> list[str] | None:
@@ -2125,6 +2171,12 @@ def _dtype_options_for_tensor(
                 # contract. Returning [] here would silently disable parity.
                 return None
             return list(resolved[ref])
+        m = _PROMOTE_INT_TO_FLOAT_RE.match(tokens[0])
+        if m:
+            ref = m.group(1)
+            if ref not in resolved:
+                return None
+            return _expand_promote_int_to_float(resolved[ref])
     out: list[str] = []
     for tok in tokens:
         m = _SAME_AS_RE.match(tok)
@@ -2133,7 +2185,15 @@ def _dtype_options_for_tensor(
             if ref not in resolved:
                 return None
             out.extend(resolved[ref])
-        elif tok in _TORCH_DTYPES:
+            continue
+        m = _PROMOTE_INT_TO_FLOAT_RE.match(tok)
+        if m:
+            ref = m.group(1)
+            if ref not in resolved:
+                return None
+            out.extend(_expand_promote_int_to_float(resolved[ref]))
+            continue
+        if tok in _TORCH_DTYPES:
             out.append(tok)
         else:
             return None

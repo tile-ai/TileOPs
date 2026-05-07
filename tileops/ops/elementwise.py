@@ -1671,15 +1671,68 @@ class NegFwdOp(_IntIdentityUnaryOp):
 class ReciprocalFwdOp(UnaryOp):
     """Element-wise 1/x.
 
-    The manifest's int-dtype declaration is a known gap: ``torch.reciprocal``
-    promotes int input to float32, which does not match the manifest's
-    ``same_as(input)`` output rule. The op layer here only supports the
-    float dtypes the kernel implements; int input falls through to the
-    kernel's dtype check and raises.
+    Mirrors ``torch.reciprocal`` int-input promotion: integral dtypes
+    (uint8 / int8 / int16 / int32 / int64) are cast to float32 before the
+    float kernel runs, and the op's ``output_dtype`` is float32 in that
+    case. Floating inputs (float16 / bfloat16 / float32) follow the
+    standard same-dtype path.
     """
 
     _op_name = "reciprocal"
     kernel_cls = ReciprocalFwdKernel
+
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        strategy: Optional[str] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        if dtype in _MANIFEST_INT_DTYPES:
+            # Build the kernel against the promoted dtype so the float-only
+            # ReciprocalFwdKernel can run; remember the original ctor dtype
+            # so ``forward`` can validate user input against the declared
+            # contract before promotion.
+            super().__init__(
+                N_total, torch.float32, strategy=strategy,
+                kernel_map=kernel_map, tune=tune,
+            )
+            self._declared_dtype = dtype
+        else:
+            super().__init__(
+                N_total, dtype, strategy=strategy,
+                kernel_map=kernel_map, tune=tune,
+            )
+            self._declared_dtype = dtype
+
+    def _validate_input(self, input: torch.Tensor) -> None:  # noqa: A002
+        if not input.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        if input.dtype != self._declared_dtype:
+            raise ValueError(
+                f"Expected input.dtype {self._declared_dtype}, "
+                f"got {input.dtype}"
+            )
+        if input.numel() != self.N_total:
+            raise ValueError(
+                f"Expected {self.N_total} elements, got {input.numel()}"
+            )
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        self._validate_input(input)
+        if self._declared_dtype in _MANIFEST_INT_DTYPES:
+            # Promote integer input to the kernel's float32 working dtype.
+            # The torch.compile fast path is bypassed because the
+            # registered custom op was built for the float kernel; the
+            # integer entry point is rare enough that going through the
+            # eager kernel call is the simpler contract.
+            promoted = input.to(torch.float32)
+            return self._eager_forward(promoted)
+        wrapped = type(self)._wrapped
+        if wrapped is not None:
+            return wrapped(input, self._instance_key)
+        return self._eager_forward(input)
 
 
 class SignFwdOp(_IntIdentityUnaryOp):
