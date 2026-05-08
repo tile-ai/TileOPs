@@ -217,7 +217,7 @@ def test_nan_to_num(n_total: int, dtype: torch.dtype) -> None:
     x[quarter:2 * quarter] = float("inf")
     x[2 * quarter:3 * quarter] = float("-inf")
     ref = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
-    op = NanToNumFwdOp(N_total=n_total, dtype=dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4)
+    op = NanToNumFwdOp(N_total=n_total, dtype=dtype, nan=0.0, posinf=1e4, neginf=-1e4)
     out = op(x)
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
@@ -453,7 +453,7 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
             x[k + 3] = 1.0
 
     ref = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
-    op = NanToNumFwdOp(N_total=n_total, dtype=dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4)
+    op = NanToNumFwdOp(N_total=n_total, dtype=dtype, nan=0.0, posinf=1e4, neginf=-1e4)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5, equal_nan=True)
     print("All checks passed for NanToNumFwdOp edge case.")

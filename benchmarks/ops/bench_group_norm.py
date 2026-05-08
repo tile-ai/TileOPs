@@ -37,36 +37,50 @@ def _manifest_params():
     for w in load_workloads(_OP_NAME):
         shape = w["x_shape"]
         n, c, spatial = shape[0], shape[1], tuple(shape[2:])
-        g = w.get("num_groups", w.get("groups"))
-        if g is None:
+        num_groups = w.get("num_groups")
+        if num_groups is None:
             raise KeyError(
-                f"Workload manifest for {_OP_NAME} must contain 'num_groups' or 'groups'"
+                f"Workload manifest for {_OP_NAME} must contain 'num_groups'"
             )
         label = w.get("label", f"{n}x{c}x{'x'.join(map(str, spatial))}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(n, c, spatial, g, dtype, True,
+            params.append(pytest.param(n, c, spatial, num_groups, dtype, False,
                                        id=f"{label}-{dtype_str}"))
     return params
 
 
-@pytest.mark.parametrize("n, c, spatial, g, dtype, tune", _manifest_params())
-def test_group_norm_bench(n: int, c: int, spatial: tuple, g: int,
+@pytest.mark.parametrize("n, c, spatial, num_groups, dtype, tune", _manifest_params())
+def test_group_norm_bench(n: int, c: int, spatial: tuple, num_groups: int,
                           dtype: torch.dtype, tune: bool) -> None:
-    test = GroupNormTest(n, c, spatial, g, dtype)
-    inputs = test.gen_inputs()
+    test = GroupNormTest(n, c, spatial, num_groups, dtype)
+    x, weight, bias = test.gen_inputs()
 
-    op = GroupNormFwdOp(N=n, C=c, spatial=spatial, G=g, dtype=dtype, tune=tune)
+    op = GroupNormFwdOp(
+        N=n, C=c, spatial=spatial, num_groups=num_groups,
+        dtype=dtype, tune=tune,
+    )
     bm = GroupNormBenchmark(test, op)
-    result = bm.profile(op, *inputs)
+    result = bm.profile(op, x, weight, bias)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    # Affine-free path (weight=None, bias=None) exercises the cached
+    # unit_weight / zero_bias allocation reuse on the op instance.
+    result_no_affine = bm.profile(op, x, None, None)
+    BenchmarkReport.record(op, locals(), result_no_affine, tag="tileops-no-affine")
 
     # Baseline: torch.nn.functional.group_norm
     def baseline_fn(x, weight, bias):
-        return F.group_norm(x, g, weight=weight, bias=bias, eps=1e-5)
+        return F.group_norm(x, num_groups, weight=weight, bias=bias, eps=1e-5)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
+    result_bl = bm.profile(baseline_fn, x, weight, bias)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+    def baseline_no_affine(x):
+        return F.group_norm(x, num_groups, weight=None, bias=None, eps=1e-5)
+
+    result_bl_no_affine = bm.profile(baseline_no_affine, x)
+    BenchmarkReport.record(op, locals(), result_bl_no_affine, tag="torch-no-affine")
 
 
 if __name__ == "__main__":

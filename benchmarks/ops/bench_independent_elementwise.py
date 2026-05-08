@@ -509,20 +509,20 @@ def test_fp8_selection_bench(
     n_total = prod(shape)
 
     if op_name == "where":
+        # WhereFwdOp manifest does not declare fp8 dtype support, so this
+        # branch records only the torch.where baseline. Instantiating
+        # WhereFwdOp with an fp8 dtype here would violate the manifest
+        # contract; the manifest is the spec, not the code.
         test = Fp8WhereBenchCase(shape, dtype)
         bm = Fp8WhereBenchmark(test)
         cond, x, y = test.gen_inputs()
-
-        op = WhereFwdOp(condition=tuple(shape), input=tuple(shape), other=tuple(shape), dtype=dtype)
-        result = bm.profile(op, cond, x, y)
-        BenchmarkReport.record(op, locals(), result, tag="tileops")
 
         # torch.where supports fp8 natively (pure selection, no arithmetic)
         def baseline(cond, x, y):
             return torch.where(cond, x, y)
 
         result_bl = bm.profile(baseline, cond, x, y)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+        BenchmarkReport.record("where_fp8", locals(), result_bl, tag="torch-ref")
     else:
         test = Fp8MaskedFillBenchCase(shape, dtype)
         bm = Fp8MaskedFillBenchmark(test)

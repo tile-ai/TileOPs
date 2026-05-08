@@ -25,7 +25,20 @@ from tileops.kernels.elementwise import (
     ReluFwdKernel,
     _make_unary_explicit,
 )
-from tileops.ops.elementwise import ErfFwdOp, GeluFwdOp, MishFwdOp, ReluFwdOp
+from tileops.ops.elementwise import (
+    EluFwdOp,
+    ErfFwdOp,
+    GeluFwdOp,
+    HardsigmoidFwdOp,
+    HardswishFwdOp,
+    HardtanhFwdOp,
+    LeakyReluFwdOp,
+    MishFwdOp,
+    ReluFwdOp,
+    SeluFwdOp,
+    SiluFwdOp,
+    SoftplusFwdOp,
+)
 from workloads.activation import ReluTest
 from workloads.workload_base import FixtureBase
 
@@ -84,9 +97,42 @@ class UnaryBenchCase:
 
 
 class UnaryBenchmark(BenchmarkBase[_UnaryWorkload]):
-    """Bandwidth-oriented benchmark for unary elementwise ops."""
+    """Bandwidth-oriented benchmark for unary elementwise ops.
+
+    Constructed with the Op instance whose roofline drives the TFLOPs
+    column: the bench reads ``op.eval_roofline()`` (or
+    ``FLOPS_PER_ELEM`` as a fallback for ops that have not implemented
+    ``eval_roofline``) so the reported TFLOPs reflects the manifest
+    ``roofline.flops`` contract end-to-end. The R6 / R7 kernel-direct
+    benches build a transient Op of the corresponding family and pass
+    it here; there is no separate ``flops_per_elem`` override.
+    """
+
+    def __init__(
+        self,
+        workload: _UnaryWorkload,
+        *,
+        op: object,
+    ):
+        super().__init__(workload)
+        self._op = op
 
     def calculate_flops(self) -> Optional[float]:
+        eval_fn = getattr(self._op, "eval_roofline", None)
+        if eval_fn is not None:
+            # The base ``Op.eval_roofline`` raises ``NotImplementedError``
+            # so subclasses must opt in. Fall through to the per-elem
+            # path when the op inherits the unimplemented stub rather
+            # than crashing the bench.
+            try:
+                flops, _ = eval_fn()
+            except NotImplementedError:
+                pass
+            else:
+                return float(flops)
+        per_elem = getattr(self._op, "FLOPS_PER_ELEM", None)
+        if per_elem is not None:
+            return float(per_elem) * self.workload.n_total
         return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
@@ -112,11 +158,11 @@ class R2SmallTensorFixture(FixtureBase):
 def test_r2_small_tensor_unary(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     """R2: Benchmark divmod overhead on small tensors (unary relu, 4K)."""
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     n_total = prod(shape)
     op = ReluFwdOp(N_total=n_total, dtype=dtype)
+    bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -172,7 +218,7 @@ def test_r3_jit_compilation_cost(shape: tuple[int, ...]) -> None:
 
     # Warm: profile subsequent calls
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
+    bm = UnaryBenchmark(test, op=op)
     warm_result = bm.profile(op, x)
 
     BenchmarkReport.record(
@@ -220,11 +266,11 @@ def test_r4_default_strategy_unary(
 ) -> None:
     """R4: Benchmark all 3 unary strategies to confirm DEFAULT_STRATEGY."""
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     n_total = prod(shape)
     op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
+    bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_strategy_unary",
@@ -235,23 +281,26 @@ def test_r4_default_strategy_unary(
     )
 
 
-# Also benchmark gelu to verify strategy choice holds for transcendental ops
+# Also benchmark gelu to verify strategy choice holds for transcendental ops.
+# Both ``approximate`` modes (``none`` -> erf-based; ``tanh`` -> tanh
+# approximation) are exercised so the bench captures kernel selection.
 _R4_GELU_PARAMS = []
 for size_label, _shape in _SHAPE_BY_LABEL.items():
     for dt in _DTYPES:
         for strategy in _UNARY_STRATEGIES:
-            _R4_GELU_PARAMS.append(
-                pytest.param(
-                    _shape, size_label, dt, strategy,
-                    id=f"gelu-{size_label}-{dt}-{strategy}",
-                    marks=pytest.mark.full,
+            for approximate in ("none", "tanh"):
+                _R4_GELU_PARAMS.append(
+                    pytest.param(
+                        _shape, size_label, dt, strategy, approximate,
+                        id=f"gelu-{approximate}-{size_label}-{dt}-{strategy}",
+                        marks=pytest.mark.full,
+                    )
                 )
-            )
 
 
 class R4GeluStrategyFixture(FixtureBase):
     PARAMS = [
-        ("shape, size_label, dtype, strategy", _R4_GELU_PARAMS),
+        ("shape, size_label, dtype, strategy, approximate", _R4_GELU_PARAMS),
     ]
 
 
@@ -261,21 +310,25 @@ def test_r4_default_strategy_gelu(
     size_label: str,
     dtype: torch.dtype,
     strategy: str,
+    approximate: str,
 ) -> None:
     """R4: Benchmark gelu strategies (transcendental op) to confirm DEFAULT_STRATEGY."""
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     n_total = prod(shape)
-    op = GeluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
+    op = GeluFwdOp(
+        N_total=n_total, dtype=dtype, strategy=strategy,
+        approximate=approximate,
+    )
+    bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r4_strategy_gelu",
         {"shape": shape, "size_label": size_label,
-         "dtype": dtype, "strategy": strategy},
+         "dtype": dtype, "strategy": strategy, "approximate": approximate},
         result,
-        tag=f"gelu_{strategy}",
+        tag=f"gelu_{approximate}_{strategy}",
     )
 
 
@@ -311,11 +364,11 @@ def test_r5_boundary_guard(shape: tuple[int, ...], align_label: str) -> None:
     """
     dtype = torch.float16
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     n_total = prod(shape)
     op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy="explicit_parallel")
+    bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "r5_boundary",
@@ -335,6 +388,17 @@ _R6_KERNEL_OPS = [
     ("erf", ErfFwdKernel),
     ("mish", MishFwdKernel),
 ]
+
+
+# Op classes corresponding to the kernel-direct benches below. Each
+# R6 / R7 case constructs a transient instance and hands it to
+# ``UnaryBenchmark`` so the TFLOPs column reads ``op.eval_roofline()``
+# (or ``FLOPS_PER_ELEM``) — no manifest expression parsing in the bench.
+_R6_OP_BY_NAME = {
+    "relu": ReluFwdOp,
+    "erf": ErfFwdOp,
+    "mish": MishFwdOp,
+}
 
 _R6_THREADS = [128, 256]
 
@@ -382,10 +446,15 @@ def test_r6_threads_comparison(
     dtype = torch.float16
     dtype_str = "float16"
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
+    n_total = prod(shape)
+    # Build a transient Op of the same family; ``UnaryBenchmark`` reads
+    # ``op.eval_roofline()`` to drive the TFLOPs column so the kernel-
+    # direct R6 path stays aligned with the manifest coefficient
+    # without parsing roofline expressions in the bench file.
+    flops_op = _R6_OP_BY_NAME[op_name](N_total=n_total, dtype=dtype)
+    bm = UnaryBenchmark(test, op=flops_op)
     inputs = test.gen_inputs()
 
-    n_total = prod(shape)
     npt = 8  # default for fp16
     kernel_cls = _R6_KERNEL_MAP[op_name]
     # Build kernel directly with the desired threads/npt so block_size is correct
@@ -452,7 +521,9 @@ def test_r7_dtype_npt(
     threads = 256
     dtype_str = "float32" if dtype == torch.float32 else "float16"
     test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
+    # Transient Op carries the manifest roofline; bench reads it.
+    flops_op = ReluFwdOp(N_total=n_total, dtype=dtype)
+    bm = UnaryBenchmark(test, op=flops_op)
     inputs = test.gen_inputs()
 
     # Build kernel directly with the desired threads/npt so block_size is correct
@@ -489,15 +560,159 @@ def test_relu_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     # ``ReluTest`` (workloads) accepts a flat element count; the bench
     # harness still records the original shape tuple via ``record(...)``.
     test = ReluTest(n_total, dtype)
-    bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
     op = ReluFwdOp(N_total=n_total, dtype=dtype)
+    bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
         return torch.relu(x)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ---------------------------------------------------------------------------
+# Throughput coverage for the param-free unary activations declared in
+# tileops/manifest/elementwise_unary_activation.yaml. Each op gets a single
+# fp16 case at the LLaMA hidden-dim shape so the bench file produces a
+# number for downstream perf tracking without inflating CI runtime.
+# ---------------------------------------------------------------------------
+
+
+_PARAM_FREE_ACTIVATION_OPS = [
+    pytest.param(SiluFwdOp, "silu", torch.nn.functional.silu, id="silu"),
+    pytest.param(
+        HardswishFwdOp, "hardswish", torch.nn.functional.hardswish, id="hardswish",
+    ),
+    pytest.param(
+        HardsigmoidFwdOp, "hardsigmoid", torch.nn.functional.hardsigmoid,
+        id="hardsigmoid",
+    ),
+    pytest.param(MishFwdOp, "mish", torch.nn.functional.mish, id="mish"),
+    pytest.param(SeluFwdOp, "selu", torch.nn.functional.selu, id="selu"),
+]
+
+
+@pytest.mark.parametrize("op_cls, op_label, torch_ref", _PARAM_FREE_ACTIVATION_OPS)
+@pytest.mark.parametrize("dtype", [torch.float16])
+def test_param_free_unary_bench(
+    op_cls, op_label: str, torch_ref, dtype: torch.dtype,
+) -> None:
+    """Throughput bench for param-free unary activations (manifest-aligned).
+
+    One representative shape x fp16 keeps each op covered without
+    expanding the matrix. Records both the TileOps op and the matching
+    ``torch.nn.functional`` reference so each row has an external
+    baseline per the benchmark contract.
+    """
+    shape = _SHAPES_2D[1]  # (1024, 4096), LLaMA hidden dim
+    n_total = prod(shape)
+    test = UnaryBenchCase(shape, dtype)
+    inputs = test.gen_inputs()
+
+    op = op_cls(N_total=n_total, dtype=dtype)
+    # Pass ``op=`` so UnaryBenchmark reads ``op.eval_roofline()`` /
+    # ``FLOPS_PER_ELEM`` and reports manifest-aligned TFLOPs (e.g. SiLU
+    # 4*N, Mish 7*N, SELU 5*N) rather than the bandwidth-only 1*N
+    # default. The torch baseline is profiled with the same harness so
+    # both rows share the same FLOP normalization.
+    bm = UnaryBenchmark(test, op=op)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x):
+        return torch_ref(x)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+# ---------------------------------------------------------------------------
+# Throughput coverage for the parametric unary activations (leaky_relu, elu,
+# hardtanh, softplus). These ops take scalar constructor params and need
+# matching kwargs on the torch baseline so the two rows compute the same
+# function. Layout mirrors the param-free block: one fp16 case at the
+# LLaMA hidden-dim shape per op.
+# ---------------------------------------------------------------------------
+
+
+def _leaky_relu_baseline(x: torch.Tensor) -> torch.Tensor:
+    return torch.nn.functional.leaky_relu(x, negative_slope=0.01)
+
+
+def _elu_baseline(x: torch.Tensor) -> torch.Tensor:
+    return torch.nn.functional.elu(x, alpha=1.0)
+
+
+def _hardtanh_baseline(x: torch.Tensor) -> torch.Tensor:
+    return torch.nn.functional.hardtanh(x, min_val=-1.0, max_val=1.0)
+
+
+def _softplus_baseline(x: torch.Tensor) -> torch.Tensor:
+    return torch.nn.functional.softplus(x, beta=1.0, threshold=20.0)
+
+
+_PARAMETRIC_ACTIVATION_OPS = [
+    pytest.param(
+        LeakyReluFwdOp, "leaky_relu",
+        {"negative_slope": 0.01},
+        _leaky_relu_baseline,
+        id="leaky_relu",
+    ),
+    pytest.param(
+        EluFwdOp, "elu",
+        {"alpha": 1.0},
+        _elu_baseline,
+        id="elu",
+    ),
+    pytest.param(
+        HardtanhFwdOp, "hardtanh",
+        {"min_val": -1.0, "max_val": 1.0},
+        _hardtanh_baseline,
+        id="hardtanh",
+    ),
+    pytest.param(
+        SoftplusFwdOp, "softplus",
+        {"beta": 1.0, "threshold": 20.0},
+        _softplus_baseline,
+        id="softplus",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "op_cls, op_label, op_kwargs, torch_ref", _PARAMETRIC_ACTIVATION_OPS,
+)
+@pytest.mark.parametrize("dtype", [torch.float16])
+def test_parametric_unary_bench(
+    op_cls,
+    op_label: str,
+    op_kwargs: dict,
+    torch_ref,
+    dtype: torch.dtype,
+) -> None:
+    """Throughput bench for parametric unary activations (manifest-aligned).
+
+    Each op is constructed with its default scalar params and the torch
+    baseline is wrapped with the same kwargs so both rows compute the
+    same function. One representative shape x fp16 keeps the matrix
+    small while still producing a number per touched op.
+    """
+    shape = _SHAPES_2D[1]  # (1024, 4096), LLaMA hidden dim
+    n_total = prod(shape)
+    test = UnaryBenchCase(shape, dtype)
+    inputs = test.gen_inputs()
+
+    op = op_cls(N_total=n_total, dtype=dtype, **op_kwargs)
+    bm = UnaryBenchmark(test, op=op)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x):
+        return torch_ref(x)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")

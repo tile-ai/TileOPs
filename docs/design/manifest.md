@@ -4,11 +4,11 @@ The [`tileops/manifest/`](../../tileops/manifest/) package is the **source of tr
 
 ## Layout
 
-The manifest is split across one or more YAML files per op family. A family is normally a single file; large families may be sharded across multiple files. Each file is a flat top-level mapping of op name → entry (no wrapper key). The `tileops.manifest` package merges all files at load time; duplicate op names across files are an error.
+One or more YAML files per family (single file by default; large families may shard). Each file is a flat top-level mapping `op_name → entry`. The `tileops.manifest` package merges all files at load; duplicate op names across files are an error.
 
 - **Add or edit an op**: edit the family file matching the op's `family` field. Use `ruamel.yaml` for round-trip edits.
 - **Read programmatically**: `from tileops.manifest import load_manifest, load_workloads, manifest_files`. `load_manifest()` returns the merged `ops` dict.
-- **Read for inspection**: parse the relevant family file with `yaml.safe_load`. There is no aggregate file on disk.
+- **Read for inspection**: `yaml.safe_load` the relevant family file. No aggregate file on disk.
 
 ## Trust Model
 
@@ -35,17 +35,32 @@ flowchart LR
 
 ## Rules
 
-**R1. Ordered dict.** `inputs`, `outputs`, `params` are keyed by name. Key order = function signature position. Reordering is a breaking change.
-
-> YAML does not guarantee order. This project relies on Python 3.7+ dict insertion-order via `yaml.safe_load()`. All consumers MUST use an order-preserving parser.
+**R1. Ordered dict.** `inputs`, `outputs`, `params` are keyed by name. Key order = function signature position. Reordering is a breaking change. Consumers MUST use an order-preserving parser (Python 3.7+ `yaml.safe_load` qualifies).
 
 **R2. Full interface.** Params include all PyTorch-supported parameters, even if the kernel only supports the default.
 
-**R2a. Param placement — default rule.** Params are `__init__` kwargs by default (architecture-decided, fixed for the Op instance's lifetime). In rare cases a param belongs in `forward()` when PyTorch's reference API requires it or when the value is per-batch. The exception is justified in the op's introducing issue; the manifest schema does not encode the distinction.
+**R3. Param placement.** Default: `__init__` kwarg (architecture-decided, lifetime-fixed). Use `forward()` only when the reference API requires it or the value is per-batch; justify in the introducing issue. The manifest schema does not encode the distinction.
 
-**R3. `dtype` syntax.** `|` for alternatives. `same_as(ref)` is a dtype-only identity constraint: the tensor must have the exact same dtype as `ref` at runtime, does not contribute an independent axis to the Cartesian product in R4, and must not be used for shape.
+**R4. `dtype` syntax.** `|` for alternatives. `same_as(ref)` is a dtype-only identity constraint: the tensor must have the exact same dtype as `ref` at runtime, does not contribute an independent axis to the Cartesian product in R6, and must not be used for shape.
 
-**R4. `dtype_combos`.** Enumerates supported cross-tensor dtype combinations.
+**R5. `promote_int_to_float(ref)`.** Output-dtype construct for ops whose integral inputs PyTorch promotes to a floating result (e.g. `torch.reciprocal`). Resolves to `float32` when `ref`'s runtime dtype is integral (`uint8` / `int8` / `int16` / `int32` / `int64`); otherwise resolves to `same_as(ref)`. May appear inside `|` unions on the output side (e.g. `"promote_int_to_float(input) | float64"`). `ref` MUST name a `signature.inputs` tensor; references to outputs or to the tensor itself are rejected. The construct is allowed only inside `signature.outputs[*].dtype`; it MUST NOT appear on input tensors, in `signature.dtype_combos` rows, or in `workloads[*].dtypes` (those positions require concrete `torch.*` dtypes or `same_as(ref)`). The validator expands the resolved dtype set when checking parity with `_validate_dtypes` and `dtype_combos`.
+
+Worked example — `torch.reciprocal` accepts integral inputs and returns `float32`, while floating inputs round-trip:
+
+```yaml
+ReciprocalFwdOp:
+  ref_api: "torch.reciprocal"
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
+    outputs:
+      # int8/int16/int32/int64/uint8 -> float32; float16/bfloat16/float32 unchanged.
+      output: {dtype: "promote_int_to_float(input)"}
+```
+
+The op-layer implementation must mirror this contract: integer inputs are cast to `float32` before the float kernel runs, and `output_dtype` is `float32` for those constructions.
+
+**R6. `dtype_combos`.** Enumerates supported cross-tensor dtype combinations.
 
 - **Present:** exhaustive. Only listed combinations are valid.
 - **Absent:** all Cartesian-product combinations are assumed valid.
@@ -59,27 +74,29 @@ dtype_combos:
   - {x: bfloat16, weight: bfloat16}
 ```
 
-**R5. Explicit shape.** Every output tensor's shape must be fully specified via `shape` and/or `shape_rules`. Input tensors may omit `shape` (→ arbitrary rank per R7).
+**R7. Explicit shape.** Every output tensor's shape must be fully specified via `shape` and/or `shape_rules`. Input tensors may omit `shape` (→ arbitrary rank per R9).
 
-**R6. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). No ellipsis or wildcards. Roofline variable binding is defined in [roofline.md](roofline.md).
+**R8. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). No ellipsis or wildcards. Roofline variable binding is defined in [roofline.md](roofline.md).
 
-**R7. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`. Optionally, `static_dims` declares values the user commits to at Op construction time (R20).
+**R9. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`. Optionally, `static_dims` declares values the user commits to at Op construction time (R20).
 
-**R8. No shape aliasing.** Each tensor declares its own shape. Use shared dimension names (R9) or `shape_rules` (R11) to express shape relationships.
+**R10. No shape aliasing.** Each tensor declares its own shape. Use shared dimension names (R11) or `shape_rules` (R13) to express shape relationships.
 
-**R9. Shared dimension names = equality.** `K` in two tensors means their sizes must match.
+**R11. Shared dimension names = equality.** `K` in two tensors means their sizes must match.
 
-**R10. `constraints`.** Restricts dimensions: `"64 | 128 | 256"` (enumerated) or `"power_of_2"`, `"divisible_by(k)"`, `"even"`, `"positive"` (predicates). Requires `shape`.
+**R12. `constraints`.** Restricts dimensions: `"64 | 128 | 256"` (enumerated) or `"power_of_2"`, `"divisible_by(k)"`, `"even"`, `"positive"` (predicates). Requires `shape`.
 
-**R11. `shape_rules`.** Python expressions for shape relationships. Required when `shape` alone cannot fully specify output shape.
+**R13. `shape_rules`.** Python expressions for shape relationships. Required when `shape` alone cannot fully specify output shape.
 
-**R13. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on a targeted entry (includes its variants).
+**R14. Reduction `dim` semantics.** Expressed via `shape_rules` (range validity, normalize-then-check, uniqueness), reusing the existing vocabulary rather than a dedicated manifest field. Authoring boilerplate and per-op empty-sequence semantics: see [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
 
-**R14. Roofline metadata.** See [roofline.md](roofline.md). That document is the source of truth for roofline modes, variable binding, formula syntax, consumers, and codegen behavior.
+**R15. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on a targeted entry (includes its variants).
 
-**R15. PyTorch API alignment.** Op signatures match PyTorch's public API (names, parameter set, semantics). Do not invent parameters.
+**R16. Roofline metadata.** See [roofline.md](roofline.md). That document is the source of truth for roofline modes, variable binding, formula syntax, consumers, and codegen behavior.
 
-**R16. No Optional[Tensor].** Fixed tensor inputs per entry. Conditional inputs split into variants via `variant_of`, which is single-level (variant → primary, no chaining). Variants share `source.kernel` and `source.op`; each has its own `signature`, `workloads`, `roofline`.
+**R17. PyTorch API alignment.** Op signatures match PyTorch's public API (names, parameter set, semantics). Do not invent parameters.
+
+**R18. No Optional[Tensor].** Fixed tensor inputs per entry. Conditional inputs split into variants via `variant_of`, which is single-level (variant → primary, no chaining). Variants share `source.kernel` and `source.op`; each has its own `signature`, `workloads`, `roofline`.
 
 **R19. Tensor layout.** Default: contiguous row-major (no `layout` field). Non-default: add `layout` field, `shape` names reflect memory order.
 
@@ -96,10 +113,10 @@ static_dims:
 
 ### Semantics
 
-The shape expression is a **forward-time validation rule**, not an init-time derivation — no tensor exists at `__init__`. Two time points, one contract:
+The shape expression is a **forward-time validation rule**, not an init-time derivation. Two time points, one contract:
 
-- `__init__` is the **commitment point**. The user-supplied value is stored on `self`. The expression is NOT evaluated here.
-- `forward` is the **validation point**. The expression is evaluated against the actual tensor and must match the committed value.
+- `__init__` — **commitment point**. User-supplied value stored on `self`. Expression NOT evaluated (no tensor yet).
+- `forward` — **validation point**. Expression evaluated against the actual tensor; must equal the committed value.
 
 ```python
 # __init__ — commitment point. No tensor; expression not evaluated.
@@ -125,7 +142,7 @@ def forward(self, x: torch.Tensor):
 - The expression MUST be a **single-axis reference** of the form `<tensor>.shape[<const_or_param>]`. Multi-axis forms (e.g., `product(x.shape[i] for i in ...)`, comprehensions, arithmetic over shape) are forbidden.
 - Referenced tensor names must be in `signature.inputs`. Referenced axis names (when not integer literals) must be in `signature.params`.
 - Key order determines the order those kwargs appear in the generated `__init__`, consistent with R1.
-- `static_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R6).
+- `static_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R8).
 
 ### Evaluation context
 
@@ -157,13 +174,13 @@ LinearFwdOp:
 
 ### Generated `__init__` kwarg block order
 
-The signature has three blocks in this order:
+Three blocks in order:
 
-1. `static_dims` entries — in manifest key order
-1. `dtype` (single parameter, unless the op has explicit multi-dtype axes)
-1. `params` entries — in manifest key order
+1. `static_dims` — manifest key order
+1. `dtype` — single parameter unless the op has explicit multi-dtype axes
+1. `params` — manifest key order
 
-All parameters are keyword-only (`*`-separated). Block order determines the visible signature for documentation and introspection; callers always use kwargs.
+All parameters are keyword-only (`*`-separated); callers always use kwargs.
 
 ### Empty `static_dims`
 
@@ -188,7 +205,7 @@ def __init__(self, *, dtype, dim=-1, keepdim=False, ...):
     # ...
 ```
 
-**When `static_dims` is empty, the Op author MUST override `_cache_key`.** The Op base class's default `_cache_key` falls back to the full input shape tuple when no axes are committed — correct, but pathological under dynamic shapes: every distinct input shape produces a new kernel compile. A typical full-reduce override:
+**When `static_dims` is empty, the Op author MUST override `_cache_key`.** The default falls back to the full input shape tuple — correct but pathological under dynamic shapes (every distinct input shape recompiles). Typical full-reduce override:
 
 ```python
 class SumFwdOp(Op):
@@ -198,7 +215,7 @@ class SumFwdOp(Op):
         )  # all full-reductions with same numel share a kernel
 ```
 
-The base class emits a once-per-type runtime warning if the default `_cache_key` is invoked with empty `static_dims` and no subclass override, to catch missing overrides early. See [ops-design.md § Implementing an Op](ops-design.md#implementing-an-op) for the `_cache_key` interface.
+The base class emits a once-per-type runtime warning when the default `_cache_key` is invoked with empty `static_dims` and no subclass override. See [ops-design.md § Implementing an Op](ops-design.md#implementing-an-op).
 
 ## Manifest Key Format
 
@@ -208,13 +225,13 @@ Each top-level entry is keyed by the **Python class name** of the Op — PascalC
 {PascalCaseName}{Direction}Op
 ```
 
-- **PascalCaseName** — the op's descriptive name in PascalCase (e.g., `RMSNorm`, `BatchNorm`, `Softmax`). No abbreviation rules are enforced; the manifest author determines the name.
-- **Direction** — a mandatory suffix indicating the computation direction: `Fwd` or `Bwd`.
-- **Op** — the literal suffix `Op`.
+- **PascalCaseName** — descriptive name in PascalCase (`RMSNorm`, `BatchNorm`, `Softmax`). Author chooses; no abbreviation rules.
+- **Direction** — mandatory: `Fwd` or `Bwd`.
+- **Op** — literal suffix.
 
 Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`.
 
-The validator enforces `assert cls.__name__ == manifest_key` — the manifest key must exactly match the Op class name. There is no heuristic resolution or snake_case-to-PascalCase conversion.
+Validator enforces `cls.__name__ == manifest_key` exactly — no heuristic resolution or case conversion.
 
 ## Entry Structure
 
@@ -234,7 +251,7 @@ Closed set: `elementwise`, `reduction`, `normalization`, `convolution`, `gemm`, 
 
 ### `ref_api`
 
-Fully qualified external API name (typically PyTorch), or `"none"` if no direct counterpart. Required but informational — validator checks presence only, does not affect signature validation or code generation.
+Fully qualified external API name (typically PyTorch), or `"none"`. Informational — validator checks presence only.
 
 ```yaml
 RMSNormFwdOp:
@@ -257,12 +274,12 @@ signature:
 
 **Tensor fields:**
 
-| Field         | Required | Description                                                |
-| ------------- | -------- | ---------------------------------------------------------- |
-| `dtype`       | yes      | `\|` for alternatives, `same_as(ref)` = same dtype as ref. |
-| `shape`       | no       | Dimension names (e.g., `"[M, K]"`). Present = fixed rank.  |
-| `constraints` | no       | Dimension restrictions (requires `shape`).                 |
-| `layout`      | no       | Memory format when non-default (R19).                      |
+| Field         | Required | Description                                                                                                                              |
+| ------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `dtype`       | yes      | `\|` for alternatives, `same_as(ref)` = same dtype as ref, `promote_int_to_float(ref)` = `float32` for integral ref else `same_as(ref)`. |
+| `shape`       | no       | Dimension names (e.g., `"[M, K]"`). Present = fixed rank.                                                                                |
+| `constraints` | no       | Dimension restrictions (requires `shape`).                                                                                               |
+| `layout`      | no       | Memory format when non-default (R19).                                                                                                    |
 
 **Param fields:** `type` (string: `int`, `float`, `bool`, `"list[int]"`) + optional `default`.
 
@@ -270,18 +287,18 @@ signature:
 
 ```
 Fixed rank, expressible with dimension names?
-├─ YES → shape: "[D1, D2, ...]"                           [R6]
+├─ YES → shape: "[D1, D2, ...]"                           [R8]
 │   Relationships beyond shared names?
-│   └─ YES → add shape_rules                              [R11]
+│   └─ YES → add shape_rules                              [R13]
 └─ NO (arbitrary rank)
-   ├─ write shape_rules                                   [R11]
+   ├─ write shape_rules                                   [R13]
    └─ Values committed at Op construction time?
       └─ YES → add static_dims                            [R20]
 ```
 
 #### Optional Inputs
 
-Manifest does not support `Optional[Tensor]` (R16). Split into variant entries with fixed signatures, linked by `variant_of`.
+Manifest does not support `Optional[Tensor]` (R18). Split into variant entries with fixed signatures, linked by `variant_of`.
 
 **Decision tree:**
 
@@ -351,7 +368,7 @@ source:
 
 ## Entry Examples
 
-**Fixed rank — GEMM** \[R6, R9\]:
+**Fixed rank — GEMM** \[R8, R11\]:
 
 ```yaml
 inputs:
@@ -361,7 +378,7 @@ outputs:
   c: {dtype: "same_as(a)", shape: "[M, N]"}
 ```
 
-**Fixed rank + constraints — FFT** \[R6, R10\]:
+**Fixed rank + constraints — FFT** \[R8, R12\]:
 
 ```yaml
 inputs:
@@ -370,7 +387,7 @@ outputs:
   y: {dtype: "same_as(x)", shape: "[M, N]"}
 ```
 
-**Arbitrary rank — RMSNorm** \[R7, R11, R20\]:
+**Arbitrary rank — RMSNorm** \[R9, R13, R20\]:
 
 ```yaml
 inputs:
@@ -388,7 +405,7 @@ shape_rules:
   - "weight.shape == (x.shape[dim],)"
 ```
 
-**Arbitrary rank — Reduce** \[R7, R11\]:
+**Arbitrary rank — Reduce** \[R9, R13\]:
 
 ```yaml
 inputs:
@@ -399,31 +416,13 @@ params:
   dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
   keepdim: {type: bool, default: false}
 shape_rules:
-  # R11a step 1 — range validity: every axis must be in [-ndim, ndim)
   - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-  # R11a step 2 — reduce_axes is a SET of normalized axis indices
   - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
   - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
-  # R11a step 3 — sequence dims must be unique after normalization
   - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 ```
 
-All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve input shape (no `keepdim`); use `shape_rules` to express `y.shape == x.shape`. count_nonzero has no `keepdim` (per R15).
-
-**R11a. `dim` contract for reduction ops.** When `dim` accepts an integer or a sequence (`list[int]` / `tuple[int, ...]`), the manifest expresses the contract as three `shape_rules`, in this order:
-
-1. **Range validity.** Every axis must satisfy `-x.ndim <= d < x.ndim`. Out-of-range indices are invalid in PyTorch; the manifest must not silently wrap them with `% x.ndim`. Declare:
-   `"dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"` (for ops accepting `None`), or drop the `dim is None or` prefix for ops that do not.
-1. **Normalize negatives.** Downstream expressions apply `% x.ndim` only after step 1 has validated range, producing a canonical non-negative axis set `{d % x.ndim for d in dim}`.
-1. **Uniqueness (sequence only).** After normalization, entries must be pairwise distinct. PyTorch rejects duplicates. Declare:
-   `"isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"`.
-
-**Empty-sequence semantics is per-op:**
-
-- Ops accepting `dim=None` (`sum`, `mean`, `amax`, `amin`, `var`, `std`, `var_mean`, `all`, `any`, `count_nonzero`, `linalg.vector_norm` variants): empty sequence is equivalent to `dim=None` (full reduction). Formulas use `set(range(x.ndim))` as the fallback axis set.
-- Ops that do **not** accept `dim=None` (e.g. `logsumexp`): empty sequence is invalid; declare `"isinstance(dim, int) or len(dim) > 0"`.
-
-These rules are `shape_rules` (Python expressions) rather than a new manifest field — they reuse the existing vocabulary and are enforceable by future codegen or by the op's forward-time validation.
+All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve input shape (no `keepdim`); use `shape_rules` to express `y.shape == x.shape`. count_nonzero has no `keepdim` (per R17). Authoring contract for `dim`: see R14 → [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
 
 **Full entry — RMSNorm:**
 
@@ -504,7 +503,7 @@ workloads:
 | L0    | Schema    | Required fields exist, correct types                                                                                        |
 | L1    | Signature | Params ⊆ `__init__()` ∪ `forward()` names; `forward()` order matches                                                        |
 | L2    | Shape     | `shape_rules` are valid Python expressions                                                                                  |
-| L3    | Dtype     | dtype strings are valid torch types or `same_as()` refs                                                                     |
+| L3    | Dtype     | dtype strings are valid torch types, `same_as()` refs, or `promote_int_to_float()` refs                                     |
 | L4    | Benchmark | Bench file imports/calls `load_workloads` and `eval_roofline` (directly or via `workloads_to_params` / `ManifestBenchmark`) |
 
 `spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on a targeted entry + its variants.
