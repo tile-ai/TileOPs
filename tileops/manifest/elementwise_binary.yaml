@@ -8,7 +8,7 @@
 PreluFwdOp:
   ref_api: "torch.nn.functional.prelu"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -60,7 +60,7 @@ MaskedFillFwdOp:
   # value form lands as MaskedFillScalarFwdOp below per the
   # "No Optional[Tensor]" manifest rule for variant splits.
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -97,7 +97,7 @@ MaskedFillScalarFwdOp:
   # Per the "No Optional[Tensor]" manifest rule, this is split from the
   # 0-dim-Tensor-value primary entry above.
   family: elementwise
-  status: spec-only
+  status: implemented
   variant_of: MaskedFillFwdOp
 
   signature:
@@ -136,7 +136,7 @@ MaskedFillScalarFwdOp:
 AddFwdOp:
   ref_api: "torch.add"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -165,7 +165,7 @@ AddFwdOp:
 SubFwdOp:
   ref_api: "torch.sub"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -193,7 +193,7 @@ SubFwdOp:
 MulFwdOp:
   ref_api: "torch.mul"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -219,7 +219,7 @@ MulFwdOp:
 DivFwdOp:
   ref_api: "torch.div"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -248,7 +248,7 @@ DivFwdOp:
 RemainderFwdOp:
   ref_api: "torch.remainder"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -274,7 +274,7 @@ RemainderFwdOp:
 PowFwdOp:
   ref_api: "torch.pow"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -300,7 +300,7 @@ PowFwdOp:
 FloorDivideFwdOp:
   ref_api: "torch.floor_divide"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -329,7 +329,7 @@ LerpFwdOp:
   # weight (see LerpTensorFwdOp); this entry tracks the scalar (Number)
   # slice that the existing kernel implements.
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -357,7 +357,7 @@ LerpFwdOp:
 MaximumFwdOp:
   ref_api: "torch.maximum"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -383,7 +383,7 @@ MaximumFwdOp:
 MinimumFwdOp:
   ref_api: "torch.minimum"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -413,7 +413,7 @@ MinimumFwdOp:
 EqFwdOp:
   ref_api: "torch.eq"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -439,7 +439,7 @@ EqFwdOp:
 NeFwdOp:
   ref_api: "torch.ne"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -465,7 +465,7 @@ NeFwdOp:
 GtFwdOp:
   ref_api: "torch.gt"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -491,7 +491,7 @@ GtFwdOp:
 LtFwdOp:
   ref_api: "torch.lt"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -517,7 +517,7 @@ LtFwdOp:
 GeFwdOp:
   ref_api: "torch.ge"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -543,7 +543,7 @@ GeFwdOp:
 LeFwdOp:
   ref_api: "torch.le"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -573,7 +573,7 @@ LeFwdOp:
 LogicalAndFwdOp:
   ref_api: "torch.logical_and"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -599,7 +599,7 @@ LogicalAndFwdOp:
 LogicalOrFwdOp:
   ref_api: "torch.logical_or"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -629,7 +629,7 @@ LogicalOrFwdOp:
 BitwiseAndFwdOp:
   ref_api: "torch.bitwise_and"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -655,7 +655,7 @@ BitwiseAndFwdOp:
 BitwiseOrFwdOp:
   ref_api: "torch.bitwise_or"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -681,7 +681,7 @@ BitwiseOrFwdOp:
 BitwiseXorFwdOp:
   ref_api: "torch.bitwise_xor"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
