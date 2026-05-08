@@ -3450,12 +3450,27 @@ def check_c7_eval_roofline_not_stub(
     return []
 
 
-# Tag prefixes emitted by strict-parity checks (C1-C7). The orchestrator
-# routes failures with these tags to ``strict_errors`` so advisory mode
-# can demote them to warnings; tests use the same tuple to assert the
-# routing has not regressed across all tags.
+# Tag prefixes that strict-parity checks (C1-C7) emit.
+#
+# Routing is structural, not tag-based: the orchestrator unconditionally
+# extends ``strict_errors`` with the return of each strict check. The
+# tags below are documentation / triage aids, not the routing key.
+#
+# ``[shape]`` and ``[dtype]`` are also emitted by the non-strict L2 / L3
+# checks (``check_l2`` / ``check_l3`` for shape_rules / dtype_combos
+# parsing); when those entries appear in ``errors`` it is not a strict
+# leak — they are non-strict errors that always stay in ``errors``
+# regardless of mode. Use ``STRICT_ONLY_TAGS`` for leakage assertions
+# (tags exclusive to C1-C7's parity / structural checks).
 STRICT_TAGS: tuple[str, ...] = (
     "[shape]", "[dtype]", "[ctor]", "[forward]", "[dispatch]", "[stub]",
+)
+
+# Subset of ``STRICT_TAGS`` that only strict-parity checks emit. Used by
+# tests asserting that strict-parity failures are routed to ``warnings``
+# (advisory mode) instead of ``errors``.
+STRICT_ONLY_TAGS: tuple[str, ...] = (
+    "[ctor]", "[forward]", "[dispatch]", "[stub]",
 )
 
 

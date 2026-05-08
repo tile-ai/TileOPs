@@ -4217,9 +4217,18 @@ class TestStrictParityC5Dispatch:
             "CompositeOp", {}, CompositeOp,
         ) == []
 
-    def test_honors_override_passes(self, validator, DummyKernel):
-        """Op that routes through ``dispatch_kernel`` honors sentinel override."""
+    def test_honors_override_passes(self, validator, DummyKernel, monkeypatch):
+        """Op that routes through ``dispatch_kernel`` honors sentinel override.
+
+        ``Op.dispatch_kernel`` calls ``get_sm_version`` which raises on
+        CPU-only CI; monkeypatch it to a valid SM so the dispatch path
+        actually runs (otherwise C5 would degrade to advisory, returning
+        [] vacuously and never proving the sentinel arrived in
+        ``self.kernel_map``).
+        """
         from tileops.ops.op_base import Op
+
+        monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
 
         class GoodOp(Op):
             def __init__(self, kernel_map=None):
@@ -4429,10 +4438,11 @@ class TestStrictAdvisoryMode:
         errors, warnings = validator.validate_manifest(
             manifest_path=stub_setup, strict_parity=False, levels=levels,
         )
-        # No strict-parity tagged entries should appear in errors.
-        # Centralised tuple from the validator so [shape]/[dtype]/etc.
-        # all stay covered as the strict-tag set evolves.
-        leaked = [e for e in errors if any(t in e for t in validator.STRICT_TAGS)]
+        # No strict-parity-only tag should appear in errors. Use
+        # STRICT_ONLY_TAGS, not STRICT_TAGS: ``[shape]`` / ``[dtype]``
+        # are also emitted by non-strict L2 / L3 checks and may
+        # legitimately reach errors regardless of advisory mode.
+        leaked = [e for e in errors if any(t in e for t in validator.STRICT_ONLY_TAGS)]
         assert not leaked, (
             f"strict failures must not appear in errors in advisory mode; "
             f"leaked={leaked}"
