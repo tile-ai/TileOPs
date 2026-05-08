@@ -24,9 +24,11 @@ class AdaLayerNormBenchmark(BenchmarkBase[AdaLayerNormTest]):
         self._op = op
 
     def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
+        cache = self._roofline_cache
+        if cache is None:
+            cache = self._op.eval_roofline()
+            self._roofline_cache = cache
+        return cache
 
     def calculate_flops(self) -> Optional[float]:
         return self._get_roofline()[0]
@@ -44,9 +46,11 @@ class AdaLayerNormZeroBenchmark(BenchmarkBase[AdaLayerNormZeroTest]):
         self._op = op
 
     def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
+        cache = self._roofline_cache
+        if cache is None:
+            cache = self._op.eval_roofline()
+            self._roofline_cache = cache
+        return cache
 
     def calculate_flops(self) -> Optional[float]:
         return self._get_roofline()[0]

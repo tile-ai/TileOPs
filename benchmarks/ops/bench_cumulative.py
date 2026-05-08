@@ -41,7 +41,8 @@ class _CumulativeWorkload(WorkloadBase):
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMSUM_OP))
 def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
     m, n = shape
-    test = _CumulativeWorkload(m, n, dtype, "cumsum")
+    op_kind = "cumsum"
+    test = _CumulativeWorkload(m, n, dtype, op_kind)
     inputs = test.gen_inputs()
 
     op = CumsumFwdOp(N=n, dtype=dtype)
@@ -52,16 +53,19 @@ def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    # Preserve legacy report column order: m, n, dtype, op_kind.
+    report_params = {"m": m, "n": n, "dtype": dtype, "op_kind": op_kind}
+    BenchmarkReport.record(op, report_params, result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMPROD_OP))
 def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
     m, n = shape
-    test = _CumulativeWorkload(m, n, dtype, "cumprod")
+    op_kind = "cumprod"
+    test = _CumulativeWorkload(m, n, dtype, op_kind)
     inputs = test.gen_inputs()
 
     op = CumprodFwdOp(N=n, dtype=dtype)
@@ -72,10 +76,12 @@ def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    # Preserve legacy report column order: m, n, dtype, op_kind.
+    report_params = {"m": m, "n": n, "dtype": dtype, "op_kind": op_kind}
+    BenchmarkReport.record(op, report_params, result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
 if __name__ == "__main__":
