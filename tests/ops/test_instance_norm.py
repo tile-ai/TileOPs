@@ -6,7 +6,10 @@ import torch.nn.functional as F
 import yaml
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.instance_norm import InstanceNormFwdOp
+from tileops.ops.norm.instance_norm import (
+    InstanceNormFwdOp,
+    InstanceNormFwdOpNoAffine,
+)
 from workloads.instance_norm import InstanceNormTest as _InstanceNormTestWorkload
 
 
@@ -210,15 +213,28 @@ def test_instance_norm_rejects_affine_device_mismatch() -> None:
         op(x, None, bias_other)
 
 
+_OP_CLASSES = [
+    pytest.param(InstanceNormFwdOp, "InstanceNormFwdOp", id="InstanceNormFwdOp"),
+    pytest.param(
+        InstanceNormFwdOpNoAffine,
+        "InstanceNormFwdOpNoAffine",
+        id="InstanceNormFwdOpNoAffine",
+    ),
+]
+
+
 @pytest.mark.smoke
-def test_instance_norm_init_accepts_use_input_stats_and_momentum() -> None:
+@pytest.mark.parametrize("op_cls, manifest_key", _OP_CLASSES)
+def test_instance_norm_init_accepts_use_input_stats_and_momentum(
+    op_cls: type, manifest_key: str,
+) -> None:
     """`__init__` must expose the manifest-declared params so L1 parity holds.
 
     The manifest entry declares `use_input_stats` and `momentum` (matching
-    PyTorch's `torch.nn.InstanceNorm{1,2,3}d` public API). The op must
+    PyTorch's `torch.nn.functional.instance_norm` public API). The op must
     accept both, defaulting to PyTorch's defaults.
     """
-    init_params = inspect.signature(InstanceNormFwdOp.__init__).parameters
+    init_params = inspect.signature(op_cls.__init__).parameters
     assert "use_input_stats" in init_params
     assert "momentum" in init_params
     assert init_params["use_input_stats"].default is True
@@ -226,7 +242,10 @@ def test_instance_norm_init_accepts_use_input_stats_and_momentum() -> None:
 
 
 @pytest.mark.smoke
-def test_instance_norm_init_signature_covers_manifest_params() -> None:
+@pytest.mark.parametrize("op_cls, manifest_key", _OP_CLASSES)
+def test_instance_norm_init_signature_covers_manifest_params(
+    op_cls: type, manifest_key: str,
+) -> None:
     """Union of `__init__` and `forward` params must cover manifest params."""
     from pathlib import Path
 
@@ -237,20 +256,23 @@ def test_instance_norm_init_signature_covers_manifest_params() -> None:
     with open(manifest_file) as fp:
         manifest = yaml.safe_load(fp) or {}
     manifest_params = set(
-        manifest["InstanceNormFwdOp"]["signature"]["params"].keys()
+        manifest[manifest_key]["signature"]["params"].keys()
     )
-    init_params = set(inspect.signature(InstanceNormFwdOp.__init__).parameters)
-    forward_params = set(inspect.signature(InstanceNormFwdOp.forward).parameters)
+    init_params = set(inspect.signature(op_cls.__init__).parameters)
+    forward_params = set(inspect.signature(op_cls.forward).parameters)
     code_params = (init_params | forward_params) - {"self"}
     missing = manifest_params - code_params
     assert not missing, f"manifest params not covered by code: {missing}"
 
 
 @pytest.mark.smoke
-def test_instance_norm_rejects_running_stats_path() -> None:
+@pytest.mark.parametrize("op_cls, manifest_key", _OP_CLASSES)
+def test_instance_norm_rejects_running_stats_path(
+    op_cls: type, manifest_key: str,
+) -> None:
     """`use_input_stats=False` (running-stats / eval-mode) is deferred."""
     with pytest.raises(NotImplementedError, match="running-stats"):
-        InstanceNormFwdOp(
+        op_cls(
             N=2, C=16, spatial=(8, 8), dtype=torch.float16,
             use_input_stats=False,
         )
