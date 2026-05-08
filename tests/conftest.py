@@ -32,7 +32,6 @@ TILELANG_019_SKIP_REASON = (
 
 TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES = (
     "tests/ops/test_batch_norm.py",
-    "tests/ops/attention/test_mha_decode_paged.py",
 )
 
 TILELANG_019_KNOWN_FAILING_NODEIDS = {

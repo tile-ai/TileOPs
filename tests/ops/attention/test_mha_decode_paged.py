@@ -94,7 +94,6 @@ def test_mha_decode_paged_op(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    pytest.skip("Paged MHA decode fails under tilelang 0.1.9; re-enable when decode produces numerically correct results.")
     test = MhaDecodePagedTest(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
         batch=batch,

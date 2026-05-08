@@ -313,6 +313,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                 po_shared = T.alloc_shared([block_M, dim], dtype)
                 o_accum_local = T.alloc_fragment([block_M, dim], accum_dtype)
                 o_shared = T.alloc_shared([block_M, dim], dtype)
+                lse_shared = T.alloc_shared([num_split, block_M], dtype)
                 lse_local = T.alloc_fragment([num_split, block_M], dtype)
                 lse_local_split = T.alloc_fragment([block_M], accum_dtype)
                 lse_logsum_local = T.alloc_fragment([block_M], accum_dtype)
@@ -326,6 +327,8 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                         tilelang.layout.make_swizzled_layout(o_shared),
                     po_shared:
                         tilelang.layout.make_swizzled_layout(po_shared),
+                    lse_local:
+                        T.Fragment(lse_local.shape, forward_thread_fn=lambda _k, i: i),
                 })
 
                 T.clear(lse_logsum_local)
@@ -335,10 +338,11 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                     by,
                     :,
                     bx * block_M:(bx + 1) * block_M,
-                ], lse_local)
+                ], lse_shared, disable_tma=True)
+                T.copy(lse_shared, lse_local)
                 T.reduce_max(lse_local, lse_max_local, dim=0, clear=False)
                 for k in T.Pipelined(num_split):
-                    T.copy(lse_local[k, :], lse_local_split)
+                    T.copy(lse_shared[k, :], lse_local_split)
                     for i in T.Parallel(block_M):
                         lse_logsum_local[i] += T.exp2(lse_local_split[i] - lse_max_local[i])
                 for i in T.Parallel(block_M):
@@ -349,8 +353,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                         po_shared,
                         disable_tma=True)
                     T.copy(po_shared, po_local)
-                    for i in T.Parallel(block_M):
-                        lse_local_split[i] = lse_local[k, i]
+                    T.copy(lse_shared[k, :], lse_local_split)
                     for i in T.Parallel(block_M):
                         scale_local[i] = T.exp2(lse_local_split[i] - lse_logsum_local[i])
                     for i, j in T.Parallel(block_M, dim):
