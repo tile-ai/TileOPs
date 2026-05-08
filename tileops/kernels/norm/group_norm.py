@@ -26,7 +26,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-__all__ = ["GroupNormKernel"]
+__all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
 ALIGNMENT = 256
 
@@ -204,4 +204,163 @@ class GroupNormKernel(Kernel):
             x,
             weight,
             bias,
+        )
+
+
+@functools.lru_cache(maxsize=32)
+def _group_norm_no_affine_kernel(M, D, eps, dtype):
+    """Build a row-wise normalization kernel for shape (M, D_padded) without affine.
+
+    Same numerics as :func:`_group_norm_kernel` but omits the trailing
+    weight/bias multiply/add — output is ``(x - mean) * rstd``. Used for the
+    no-affine variants of GroupNorm and InstanceNorm.
+
+    Args:
+        M: Number of rows = N * G.
+        D: Row length = (C / G) * spatial_size (before padding).
+        eps: Epsilon for numerical stability.
+        dtype: TileLang dtype string.
+    """
+    D_padded = _align_up(D, ALIGNMENT)
+    pad_count = D_padded - D
+
+    @tilelang.jit(out_idx=[1])
+    def _func(block_m, threads):
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, D_padded), dtype],
+            y: T.Tensor[(M, D_padded), dtype],
+        ):
+            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
+                shared_buf = T.alloc_shared((block_m, D_padded), dtype)
+                x_local = T.alloc_fragment((block_m, D_padded), dtype)
+                x_f32 = T.alloc_fragment((block_m, D_padded), "float32")
+                acc = T.alloc_fragment((block_m,), "float32")
+                mean_val = T.alloc_fragment((block_m,), "float32")
+                rstd = T.alloc_fragment((block_m,), "float32")
+
+                T.copy(x[pid_m * block_m, 0], shared_buf)
+                T.copy(shared_buf, x_local)
+
+                for i, j in T.Parallel(block_m, D_padded):
+                    x_f32[i, j] = T.cast(x_local[i, j], "float32")
+
+                T.reduce_sum(x_f32, acc, dim=1)
+                for i in T.Parallel(block_m):
+                    mean_val[i] = acc[i] / float(D)
+
+                for i, j in T.Parallel(block_m, D_padded):
+                    x_f32[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
+
+                T.reduce_sum(x_f32, acc, dim=1)
+                for i in T.Parallel(block_m):
+                    rstd[i] = T.rsqrt(
+                        (acc[i] - float(pad_count) * mean_val[i] * mean_val[i])
+                        / float(D)
+                        + eps
+                    )
+
+                # No-affine output: y = (x - mean) * rstd
+                for i, j in T.Parallel(block_m, D_padded):
+                    x_local[i, j] = T.cast(
+                        (T.cast(x_local[i, j], "float32") - mean_val[i]) * rstd[i],
+                        dtype,
+                    )
+
+                T.copy(x_local, shared_buf)
+                T.copy(shared_buf, y[pid_m * block_m, 0])
+
+        return main
+
+    return _func
+
+
+@torch.library.custom_op("top::group_norm_no_affine_fwd", mutates_args=())
+def _group_norm_no_affine_wrapped(
+    M: int,
+    D: int,
+    eps: float,
+    dtype_str: str,
+    block_m: int,
+    threads: int,
+    x: torch.Tensor,
+) -> torch.Tensor:
+    return _group_norm_no_affine_kernel(M, D, eps, dtype_str)(block_m, threads)(x)
+
+
+@_group_norm_no_affine_wrapped.register_fake
+def _(M, D, eps, dtype_str, block_m, threads, x):
+    D_padded = _align_up(D, ALIGNMENT)
+    return torch.empty((M, D_padded), dtype=x.dtype, device=x.device)
+
+
+class GroupNormNoAffineKernel(Kernel):
+    """GroupNorm forward kernel without affine scale/shift.
+
+    Computes ``y = (x - mean) * rstd`` row-wise for shape ``(M, D)`` reshaped
+    inputs. Shares the build/launch parameters and shared-memory layout of
+    :class:`GroupNormKernel`; only the output stage differs (no weight/bias
+    multiply-add). Used by the no-affine variants of GroupNorm and
+    InstanceNorm.
+
+    Args:
+        M: Number of rows = N * G.
+        D: Row length = (C / G) * spatial_size.
+        eps: Epsilon for numerical stability.
+        dtype: Data type (float32, float16, or bfloat16).
+        config: Optional tile config dict.
+        tune: If True, autotune tile config.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(
+        self,
+        M: int,
+        D: int,
+        eps: float,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ):
+        super().__init__()
+        self.M = M
+        self.D = D
+        self.eps = eps
+        self.dtype = dtype
+        self.D_padded = _align_up(D, ALIGNMENT)
+        self.kernel = _group_norm_no_affine_kernel(
+            self.M, self.D, self.eps, self.dtype_str,
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        smem_per_row = self.D_padded * torch.tensor([], dtype=self.dtype).element_size()
+        max_block_m = (48 * 1024) // smem_per_row
+        block_m = 1
+        for bm in [1, 2, 4, 8, 16]:
+            if bm <= max_block_m:
+                block_m = bm
+        return {"block_m": block_m, "threads": 256}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        smem_per_row = self.D_padded * torch.tensor([], dtype=self.dtype).element_size()
+        max_block_m = (48 * 1024) // smem_per_row
+        block_ms = [bm for bm in [1, 2, 4, 8, 16] if bm <= max_block_m]
+        threads_list = [128, 256]
+        configs = list(itertools.product(block_ms, threads_list))
+        return [{"block_m": bm, "threads": t} for bm, t in configs]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return _group_norm_no_affine_wrapped(
+            self.M,
+            self.D,
+            self.eps,
+            self.dtype_str,
+            self.config["block_m"],
+            self.config["threads"],
+            x,
         )

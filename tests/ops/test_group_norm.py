@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.group_norm import GroupNormFwdOp
+from tileops.ops.norm.group_norm import GroupNormFwdOp, GroupNormFwdOpNoAffine
 from workloads.group_norm import GroupNormTest as _GroupNormTestWorkload
 
 
@@ -224,6 +224,110 @@ def test_group_norm_rejects_affine_device_mismatch() -> None:
         op(x, weight_other, bias_same)
     with pytest.raises(ValueError, match="bias on"):
         op(x, None, bias_other)
+
+
+class GroupNormNoAffineFixture(FixtureBase):
+    PARAMS = [
+        ("n, c, spatial, g, dtype", [
+            pytest.param(2, 32, (8, 8), 8, torch.float32, marks=pytest.mark.smoke),
+            pytest.param(2, 32, (8, 8), 8, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(2, 32, (8, 8), 8, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4, 16, (4, 4), 4, torch.float16, marks=pytest.mark.full),
+            # Non-aligned spatial: exercises padding path.
+            pytest.param(2, 32, (7, 7), 8, torch.float16, marks=pytest.mark.full),
+            # 1D spatial.
+            pytest.param(2, 32, (16,), 8, torch.float16, marks=pytest.mark.full),
+            # 3D spatial.
+            pytest.param(2, 16, (4, 4, 4), 4, torch.float16, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@GroupNormNoAffineFixture
+def test_group_norm_no_affine_op(n: int, c: int, spatial: tuple, g: int,
+                                 dtype: torch.dtype) -> None:
+    """No-affine GroupNorm op matches torch.nn.functional.group_norm with weight=bias=None."""
+    op = GroupNormFwdOpNoAffine(N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype)
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    y = op(x)
+    y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+        f"max err: {(y - y_ref).abs().max()}"
+
+
+@pytest.mark.smoke
+def test_group_norm_no_affine_forward_signature() -> None:
+    """No-affine forward accepts only x — no weight/bias parameters."""
+    import inspect
+    sig = inspect.signature(GroupNormFwdOpNoAffine.forward)
+    params = [p for p in sig.parameters if p != "self"]
+    assert params == ["x"], f"expected ['x'], got {params}"
+
+
+@pytest.mark.smoke
+def test_group_norm_no_affine_rejects_device_mismatch() -> None:
+    """Forward raises ValueError when input lives on a different CUDA device."""
+    if torch.cuda.device_count() < 2:
+        pytest.skip("device-mismatch test requires >= 2 CUDA devices")
+
+    n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
+    with torch.cuda.device(0):
+        op = GroupNormFwdOpNoAffine(
+            N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype,
+        )
+    x_other = torch.randn(
+        (n, c, *spatial), dtype=dtype, device=torch.device("cuda", 1),
+    )
+    with pytest.raises(ValueError, match="[Dd]evice mismatch"):
+        op(x_other)
+
+
+@pytest.mark.smoke
+def test_group_norm_no_affine_rejects_shape_mismatch() -> None:
+    """Forward raises ValueError when input shape differs from configured (N, C, *spatial)."""
+    n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
+    op = GroupNormFwdOpNoAffine(
+        N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype,
+    )
+    x_bad = torch.randn((n, c, 4, 8), dtype=dtype, device="cuda")
+    with pytest.raises(ValueError, match="shape"):
+        op(x_bad)
+
+
+@pytest.mark.smoke
+def test_group_norm_no_affine_rejects_dtype_mismatch() -> None:
+    """Forward raises ValueError when input dtype differs from configured dtype."""
+    n, c, spatial, g = 2, 32, (8, 8), 8
+    op = GroupNormFwdOpNoAffine(
+        N=n, C=c, spatial=spatial, num_groups=g, dtype=torch.float16,
+    )
+    x = torch.randn((n, c, *spatial), dtype=torch.float32, device="cuda")
+    with pytest.raises(ValueError, match="dtype"):
+        op(x)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("n, c, spatial, g", [
+    # M = N * num_groups not divisible by max block_m (16): triggers tail
+    # program reading/writing rows >= M before the M-padding fix.
+    (1, 24, (4, 4), 3),   # M = 3
+    (3, 30, (2, 2), 5),   # M = 15
+    (1, 16, (8, 8), 1),   # M = 1
+])
+def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple,
+                                         g: int) -> None:
+    """No-affine GroupNorm handles M not divisible by the kernel's block_m."""
+    dtype = torch.float16
+    op = GroupNormFwdOpNoAffine(N=n, C=c, spatial=spatial, num_groups=g,
+                                dtype=dtype)
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    y = op(x)
+    y_ref = F.group_norm(x.float(), g, weight=None, bias=None,
+                        eps=1e-5).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+        f"max err: {(y - y_ref).abs().max()}"
 
 
 if __name__ == "__main__":

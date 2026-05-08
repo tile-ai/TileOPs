@@ -462,7 +462,7 @@ GroupNormFwdOpNoAffine:
   # .claude/domain-rules/manifest-spec.md). torch.nn.GroupNorm toggles
   # weight and bias together via the affine flag.
   family: normalization
-  status: spec-only
+  status: implemented
   variant_of: GroupNormFwdOp
 
   signature:
@@ -500,7 +500,7 @@ GroupNormFwdOpNoAffine:
   source:
     kernel: tileops/kernels/norm/group_norm.py
     kernel_map:
-      group_norm: GroupNormKernel
+      group_norm_no_affine: GroupNormNoAffineKernel
     op: tileops/ops/norm/group_norm.py
     test: tests/ops/test_group_norm.py
     bench: benchmarks/ops/bench_group_norm.py
@@ -596,7 +596,7 @@ InstanceNormFwdOpNoAffine:
   source:
     kernel: tileops/kernels/norm/group_norm.py
     kernel_map:
-      group_norm: GroupNormKernel
+      instance_norm_no_affine: InstanceNormNoAffineKernel
     op: tileops/ops/norm/instance_norm.py
     test: tests/ops/test_instance_norm.py
     bench: benchmarks/ops/bench_instance_norm.py

@@ -21,12 +21,17 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm import GroupNormKernel
+from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
 
 from ..op_base import Op
 from .norm_base import ALIGNMENT, align_up
 
-__all__ = ["GroupNormFwdOp"]
+__all__ = ["GroupNormFwdOp", "GroupNormFwdOpNoAffine"]
+
+# Largest candidate block_m in GroupNormNoAffineKernel.autotune_configs.
+# The op pads M to a multiple of this value so the kernel's full-tile
+# T.copy never crosses the M boundary regardless of the selected block_m.
+_M_BLOCK_ALIGN = 16
 
 
 class GroupNormFwdOp(Op):
@@ -255,3 +260,135 @@ class GroupNormFwdOp(Op):
             y = y + bias.reshape(affine_shape)
 
         return y
+
+
+class GroupNormFwdOpNoAffine(Op):
+    """Group Normalization forward without affine scale/shift.
+
+    Computes group normalization without the trailing weight/bias affine:
+
+    .. math::
+
+        y = \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x] + \\epsilon}}
+
+    where the mean and variance are computed per group over
+    ``(C/num_groups, *spatial)`` elements. Mirrors
+    ``torch.nn.functional.group_norm(x, num_groups, weight=None, bias=None)``
+    and ``torch.nn.GroupNorm(affine=False)``.
+
+    Supported dtypes:
+        ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
+
+    Args:
+        N: Batch size.
+        C: Number of channels.
+        spatial: Spatial dimensions tuple ``(H, W, ...)``.
+        num_groups: Number of groups (manifest ``params.num_groups``).
+            Must divide *C* evenly.
+        dtype: Data type (``torch.float32``, ``torch.float16``, or
+            ``torch.bfloat16``).
+        eps: Epsilon for numerical stability.
+        kernel_map: Optional kernel override dictionary.
+        tune: If ``True``, autotune tile configurations.
+    """
+
+    def __init__(
+        self,
+        N: int,
+        C: int,
+        spatial: tuple,
+        num_groups: int,
+        dtype: torch.dtype,
+        eps: float = 1e-5,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        if C % num_groups != 0:
+            raise ValueError(
+                f"C={C} must be divisible by num_groups={num_groups}"
+            )
+        self.N = N
+        self.C = C
+        self.spatial = spatial
+        self.num_groups = num_groups
+        self.dtype = dtype
+        self.eps = eps
+        self.spatial_size = math.prod(spatial)
+        self.D = (C // num_groups) * self.spatial_size
+        self.M = N * num_groups
+        self.D_padded = align_up(self.D, ALIGNMENT)
+        # Kernel launches T.ceildiv(M, block_m) programs, each copying a full
+        # block_m-row tile. Pad M to a multiple of the largest candidate
+        # block_m so the tail program never reads/writes past the input.
+        self.M_padded = align_up(self.M, _M_BLOCK_ALIGN)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["group_norm_no_affine"](
+            self.M_padded, self.D, eps, dtype, tune=tune,
+        )
+        self._kernel_device = torch.device("cuda", torch.cuda.current_device())
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {"group_norm_no_affine": GroupNormNoAffineKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        elem_bytes = self.dtype.itemsize
+        return (
+            3 * self.N * self.C * self.spatial_size,
+            2 * self.N * self.C * self.spatial_size * elem_bytes,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply group normalization without affine.
+
+        Args:
+            x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
+
+        Returns:
+            Normalized tensor of the same shape as *x*.
+
+        Raises:
+            ValueError: If *x* is not a CUDA tensor, lives on a different
+                device than the op was constructed for, or its dtype does
+                not match the configured dtype.
+        """
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if x.device != self._kernel_device:
+            raise ValueError(
+                f"Device mismatch: op was constructed for {self._kernel_device} "
+                f"but x is on {x.device}. Construct a separate op instance per "
+                f"CUDA device."
+            )
+        if x.dtype != self.dtype:
+            raise ValueError(
+                f"Expected x.dtype {self.dtype}, got {x.dtype}"
+            )
+        expected_shape = (self.N, self.C, *self.spatial)
+        if tuple(x.shape) != expected_shape:
+            raise ValueError(
+                f"Expected x shape {expected_shape}, got {tuple(x.shape)}"
+            )
+
+        orig_shape = x.shape
+        x = x.contiguous()
+        cpg = self.C // self.num_groups
+        x_reshaped = x.reshape(self.N, self.num_groups, cpg, *self.spatial)
+        x_2d = x_reshaped.reshape(self.M, self.D)
+
+        if self.D_padded != self.D:
+            x_2d = F.pad(x_2d, (0, self.D_padded - self.D))
+        if self.M_padded != self.M:
+            # Pad along dim 0 (M); padded rows are dropped after the kernel.
+            x_2d = F.pad(x_2d, (0, 0, 0, self.M_padded - self.M))
+
+        y_2d = self.kernel(x_2d)
+
+        if self.M_padded != self.M:
+            y_2d = y_2d[:self.M, :]
+        if self.D_padded != self.D:
+            y_2d = y_2d[:, :self.D]
+
+        y = y_2d.reshape(self.N, self.num_groups, cpg, *self.spatial)
+        return y.reshape(orig_shape)
