@@ -43,10 +43,21 @@ _OP_NAMES = sorted(_MANIFEST.keys())
 
 
 @pytest.mark.smoke
-def test_manifest_covers_all_24_ops() -> None:
-    """Sanity: the manifest file lists 24 elementwise_binary ops."""
-    assert len(_OP_NAMES) == 24, (
-        f"Expected 24 elementwise_binary manifest entries, got {len(_OP_NAMES)}"
+def test_manifest_entries_resolve_to_classes() -> None:
+    """Every manifest op resolves to an exported class.
+
+    Structural check that scales as the family grows: rather than pinning
+    a specific count, assert (a) every manifest entry has a matching class
+    on ``tileops.ops.elementwise`` and (b) the family has at least the
+    initial 24 ops, so an accidental mass-deletion still fails loud.
+    """
+    missing = [name for name in _OP_NAMES if not hasattr(elementwise_mod, name)]
+    assert not missing, (
+        f"Manifest entries missing from tileops.ops.elementwise: {missing}"
+    )
+    assert len(_OP_NAMES) >= 24, (
+        f"elementwise_binary manifest shrank below initial floor: "
+        f"got {len(_OP_NAMES)} entries"
     )
 
 
@@ -172,8 +183,28 @@ _DTYPE_MAP = {
 }
 
 
-def _pick_dtype(workload: Dict[str, Any]) -> torch.dtype:
-    dtypes = workload.get("dtypes") or ["float16"]
+def _pick_dtype(
+    workload: Dict[str, Any] | None,
+    cls: type | None = None,
+) -> torch.dtype:
+    """Pick a torch dtype from a workload, with a kernel-aware default.
+
+    For an empty workload, default to ``float32`` for general ops and to
+    the first supported dtype on ``cls.kernel_cls.SUPPORTED_DTYPES`` when
+    the kernel restricts dtypes (e.g. bitwise ops accept ints only). This
+    lets the construction smoke cover ops whose manifest has no workloads.
+    """
+    if not workload:
+        if cls is not None:
+            sup = getattr(getattr(cls, "kernel_cls", None), "SUPPORTED_DTYPES", None)
+            if sup and torch.float32 not in sup:
+                # Prefer int32 (or first non-bool int), falling back to sup[0].
+                for pref in (torch.int32, torch.int64, torch.int16, torch.int8):
+                    if pref in sup:
+                        return pref
+                return sup[0]
+        return torch.float32
+    dtypes = workload.get("dtypes") or ["float32"]
     for d in dtypes:
         if d in _DTYPE_MAP:
             return _DTYPE_MAP[d]
@@ -205,30 +236,34 @@ def _ctor_for(op_name: str, spec: Dict[str, Any]) -> Tuple[type, Dict[str, Any]]
     """Resolve ``(cls, kwargs)`` for the manifest's first workload."""
     cls = getattr(elementwise_mod, op_name)
     workloads = spec.get("workloads") or []
-    if not workloads:
-        pytest.skip(f"{op_name} has no workloads to drive ctor smoke")
-    workload = workloads[0]
-    dtype = _pick_dtype(workload)
+    # Empty workloads: synthesize a default so construction smoke still
+    # covers the op. ``_pick_dtype({})`` returns float32 and
+    # ``_binary_ctor_kwargs`` falls back to a default ``(8, 8)`` shape.
+    workload: Dict[str, Any] = workloads[0] if workloads else {}
+    dtype = _pick_dtype(workload, cls)
 
     # Special-shape ops (non-BinaryOp templates): manifest input set diverges
     # from the standard (input, other) pair, so dispatch on op name. Each
     # branch reads the workload directly — no hidden defaults.
     if op_name == "PreluFwdOp":
-        shape = tuple(workload["input_shape"])
-        weight_shape = tuple(workload["weight_shape"])
+        shape = tuple(workload.get("input_shape", (8, 8)))
+        default_weight = (shape[1] if len(shape) > 1 else 1,)
+        weight_shape = tuple(workload.get("weight_shape", default_weight))
         num_channels = weight_shape[0] if weight_shape else 1
         return cls, {"shape": shape, "dtype": dtype, "num_channels": num_channels}
     if op_name == "MaskedFillFwdOp":
+        in_shape = tuple(workload.get("input_shape", (8, 8)))
         return cls, {
-            "input": tuple(workload["input_shape"]),
-            "mask": tuple(workload["mask_shape"]),
+            "input": in_shape,
+            "mask": tuple(workload.get("mask_shape", in_shape)),
             "value": tuple(workload.get("value_shape", ())),
             "dtype": dtype,
         }
     if op_name == "MaskedFillScalarFwdOp":
+        in_shape = tuple(workload.get("input_shape", (8, 8)))
         return cls, {
-            "input": tuple(workload["input_shape"]),
-            "mask": tuple(workload.get("mask_shape", workload["input_shape"])),
+            "input": in_shape,
+            "mask": tuple(workload.get("mask_shape", in_shape)),
             "dtype": dtype,
         }
 
