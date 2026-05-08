@@ -25,33 +25,35 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `tileops/manife
 ```mermaid
 stateDiagram-v2
     [*] --> READ
-    READ --> PRE_CHECK: manifest entry loaded
-    PRE_CHECK --> DRY_RUN: preconditions satisfied
+    READ --> PRE_CHECK
+    PRE_CHECK --> DRY_RUN
     PRE_CHECK --> BLOCKED: precondition failed
     DRY_RUN --> EMIT: plan.json written
-    EMIT --> REGISTER: file written per plan §1 facts
-    REGISTER --> VALIDATE: package __init__.py (parent of source.op) updated
-    VALIDATE --> REPORT: validator + §1 post-check classified
-    VALIDATE --> BLOCKED: validator errors attributable to this op, or §1 drift
+    EMIT --> REGISTER
+    REGISTER --> VALIDATE
+    VALIDATE --> REPORT
+    VALIDATE --> BLOCKED: validator error or §1 drift
     REPORT --> [*]
-    BLOCKED --> [*]: return to caller with reason
+    BLOCKED --> [*]
 ```
 
-`DRY_RUN` is the skill's self-audit before codegen: agent freezes manifest-sourced facts as a JSON contract (`plan.json` §1), records its own judgement calls (§2), and tags open questions (§3). `VALIDATE` re-parses the emitted file and diffs it against §1 — any drift means the skill (agent) deviated from its own frozen contract, not that the manifest or docs are wrong.
+`DRY_RUN` writes `plan.json` to freeze manifest-sourced facts before codegen. `VALIDATE` diffs the emitted file against `plan.json` §1 — any drift is a skill bug, not a manifest issue.
 
-## Scope boundary
+## Slot scope
 
-The scaffold emits **exactly** the 17 slots defined in [`docs/design/ops-design-reference.md` § Slot Rules](../../../docs/design/ops-design-reference.md#slot-rules): S1-S7 (file header, imports, class, docstring), S12-S13 (`__init__` signature and body), S14-S16 (`default_kernel_map`, `forward`), S17-S19 (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`), S20 (package registration), S21 (`_static_axes`). S8-S11 are intentionally skipped (reserved from slot iteration for T1 thin-wrapper slots).
+Emit exactly the 17 slots in [`ops-design-reference.md § Slot Rules`](../../../docs/design/ops-design-reference.md#slot-rules): S1–S7, S12–S21. S8–S11 are reserved for T1 thin-wrapper subclasses and skipped.
 
-Explicitly **out of scope** — leave empty, do not invent:
+Out of scope — leave empty:
 
-- **Family-specific protocol variables** (e.g. `_op_kind` for reduction, `_op_name` for elementwise). Kernel-dispatch-convention-dependent; cannot be derived from the manifest. See [Family-Base Protocol (Appendix)](../../../docs/design/ops-design-reference.md#base-class-protocol).
-- **Optional hooks** (`_pad_value`, `_validate_dim`, `_pre_kernel`, `_post_kernel`). Op-specific business logic; no manifest derivation.
-- **`_cache_key` override**. Recommended for cache efficiency under dynamic shapes when `_static_axes` is empty — the `Op._cache_key` default is correctness-preserving (it keys by all non-static axis sizes) but may over-fragment under dynamic shapes and emits a once-per-type `UserWarning` to surface the missing override. The override logic depends on kernel math and is out of scope for scaffolding.
-- **Kernel implementations**. The scaffold only references the Kernel classes named in `source.kernel_map`; their implementation is out of scope.
-- **Tests and benchmarks**. Downstream skills (`test-op`, `bench-op`) own these.
+| Item                                                                          | Reason                                                   |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Family protocol vars (`_op_kind`, `_kernel_key`, `_op_name`, …)               | Kernel-dispatch convention; not in manifest              |
+| Optional hooks (`_pad_value`, `_validate_dim`, `_pre_kernel`, `_post_kernel`) | Op-specific business logic                               |
+| `_cache_key` override                                                         | Recommended under dynamic shapes; depends on kernel math |
+| Kernel implementations                                                        | Owned by kernel skill                                    |
+| Tests / benchmarks                                                            | Owned by `test-op` / `bench-op`                          |
 
-These gaps are expected and acceptable. The resulting scaffold will raise `NotImplementedError` or trigger validator warnings when invoked beyond the 17 slots' coverage; that is the intended hand-off to `implement-op` and the family-refactoring skill.
+These gaps surface as `NotImplementedError` or validator warnings; downstream skills fill them.
 
 ## Steps
 
@@ -88,96 +90,33 @@ BLOCKED terminations return without writing any file.
 
 ### 3. DRY_RUN
 
-Before any code is emitted, produce a self-audit plan at `.foundry/plan/<op_name>/plan.json`. This is the skill's own contract — it freezes manifest-sourced facts so that later EMIT cannot silently drift, and it lets the agent record its own judgement calls and observations.
+Write `.foundry/plan/<op_name>/plan.json` with three sections:
 
-The file has three top-level keys: `locked_facts`, `agent_notes`, `open_questions`.
+| Section               | Diffed at VALIDATE?       | Content                                                                                                                                                                                                  |
+| --------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `locked_facts` (§1)   | yes (hard error on drift) | Verbatim manifest extraction (op_name, class_name, family, module_path, kernel_imports, kernel_map, init_kwargs, forward_inputs/outputs, dtype_unions, dtype_combos, shape_rules, static_dims, roofline) |
+| `agent_notes` (§2)    | no                        | Judgement calls (docstring, kernel ctor signature observed, helper state, forward reshape strategy, codebase refs consulted)                                                                             |
+| `open_questions` (§3) | no                        | Ambiguities tagged `needs_doc_fix` / `needs_manifest_fix` / `needs_human_decision`; surfaced in REPORT, never block                                                                                      |
 
-**`locked_facts` (§1) — non-negotiable, machine-diffed at VALIDATE**
+Always proceed to EMIT. Empty `open_questions` is fine.
 
-Verbatim extraction from the manifest entry. If the emitted file disagrees with any field here, VALIDATE raises a hard error (skill bug, not a manifest or doc issue).
+Skeleton:
 
 ```json
 {
   "locked_facts": {
     "op_name": "CumsumFwdOp",
-    "class_name": "CumsumFwdOp",
-    "family": "scan",
     "module_path": "tileops/ops/reduction/cumsum.py",
-    "parent_class": "Op",
-    "kernel_imports": [
-      {"module": "tileops.kernels.reduction.cumulative", "symbol": "CumulativeKernel"}
-    ],
     "kernel_map": {"cumulative_fwd": "CumulativeKernel"},
-    "init_kwargs": [
-      {"name": "N", "source": "static_dims", "type": "int", "default": null},
-      {"name": "dtype", "source": "dtype", "type": "torch.dtype", "default": null},
-      {"name": "dim", "source": "signature.params.dim", "type": "int", "default": -1}
-    ],
+    "init_kwargs": [{"name": "dim", "source": "signature.params.dim", "type": "int", "default": -1}],
     "forward_inputs": ["x"],
-    "forward_outputs": ["y"],
-    "dtype_unions": {"x": ["float32", "float16", "bfloat16"]},
-    "dtype_combos": null,
-    "shape_rules": ["-x.ndim <= dim < x.ndim", "y.shape == x.shape"],
     "static_dims": {"N": "x.shape[dim]"},
-    "roofline": {
-      "vars": {
-        "M": "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])",
-        "N": "x.shape[dim % x.ndim]"
-      },
-      "flops": "M * N",
-      "bytes": "2 * M * N * elem_bytes"
-    }
-  }
+    "roofline": {"flops": "M * N", "bytes": "2 * M * N * elem_bytes"}
+  },
+  "agent_notes": {"docstring_summary": "...", "kernel_ctor_signature_observed": "..."},
+  "open_questions": [{"tag": "needs_human_decision", "topic": "...", "detail": "..."}]
 }
 ```
-
-**`agent_notes` (§2) — agent discretion, NOT diffed at VALIDATE**
-
-Judgement calls and codebase observations that inform EMIT without being locked. Record them so the reasoning is auditable but not brittle.
-
-```json
-{
-  "agent_notes": {
-    "docstring_summary": "Cumulative sum operator: y = cumsum(x, dim=-1).",
-    "kernel_ctor_signature_observed": "CumulativeKernel(M, N, op_kind, dtype, tune=False)",
-    "helper_state_on_self": ["N_padded = align_up(N, DEFAULT_ALIGNMENT)", "_kernel_cache = {}"],
-    "forward_reshape_strategy": "movedim(dim, -1) + reshape to (M, N); restore via movedim(-1, dim)",
-    "codebase_references_consulted": [
-      "tileops/ops/reduction/cumsum.py (for helper-var names like N_padded)",
-      "tileops/kernels/reduction/cumulative.py (kernel ctor signature)"
-    ]
-  }
-}
-```
-
-**`open_questions` (§3) — tagged observations for post-run iteration, NOT blocking**
-
-Ambiguities the agent had to judgement-call through, plus anything that smells like it needs human or doc attention. This section does NOT block DRY_RUN or EMIT — the skill proceeds with the agent's best judgement. These items are surfaced in the final REPORT for follow-up.
-
-Each item carries a tag driving the follow-up action:
-
-- `needs_doc_fix` — design docs (`ops-design.md`, `ops-design-reference.md`, `roofline.md`, `manifest.md`) don't cover the case encountered. Follow-up: file a doc issue.
-- `needs_manifest_fix` — the op's manifest entry is missing or ambiguous (not a general-doc gap, this specific entry). Follow-up: file a manifest-PR.
-- `needs_human_decision` — a legitimate design call that's neither doc nor manifest's fault; this op needs a human to look at it. Follow-up: route to reviewer.
-
-```json
-{
-  "open_questions": [
-    {
-      "tag": "needs_human_decision",
-      "topic": "multi-kernel dispatch selection",
-      "detail": "kernel_map has 3 entries; chose 'mha_bwd' as primary. Confirm?"
-    },
-    {
-      "tag": "needs_doc_fix",
-      "topic": "fixed-rank vs arbitrary-rank in Step 3",
-      "detail": "playbook Step 3 Example is arbitrary-rank; fixed-rank branching is not spelled out in ops-design-reference.md"
-    }
-  ]
-}
-```
-
-DRY_RUN terminates by writing `plan.json` and proceeding to EMIT unconditionally. Empty `open_questions` is fine. Non-empty is fine. Only the validator and §1-drift checks in VALIDATE can BLOCK.
 
 ### 4. EMIT
 
@@ -199,43 +138,37 @@ If a slot's rule is ambiguous for the given manifest entry (e.g. multi-kernel `k
 
 ### 5. REGISTER
 
-Append to the package `__init__.py` at the parent directory of `source.op` (e.g., `tileops/ops/reduction/__init__.py`):
+Append to the `__init__.py` at `dirname(source.op)`:
 
-1. One `from .<module> import <ClassName>` line, matching the file's existing style. Inspect the current `__init__.py` first:
-   - **File uses grouping comments `# --- <KernelClassName> ops ---`** (e.g., `tileops/ops/reduction/__init__.py`): place the import under the matching kernel block, where `<KernelClassName>` is the primary Kernel class name from `source.kernel_map` (the single value for single-kernel ops; for multi-kernel ops, the value shared with already-grouped siblings). If no existing block references the kernel, create a new `# --- <KernelClassName> ops ---` block at the natural position (keep groups in kernel-name alphabetical order, or follow any existing convention in the file).
-   - **File uses flat imports with no grouping comments** (e.g., `tileops/ops/norm/__init__.py`, `tileops/ops/attention/__init__.py`): append the import alongside the existing package imports following the current ordering convention (alphabetical by filename is common). Do NOT introduce new block comments — match the file's existing style.
-1. A matching `<ClassName>` entry added to the module-level `__all__` list. If `__all__` is commented into sections, preserve grouping order. If `__all__` is a flat list, update it flat — do not introduce new commented sections or other grouping scaffolding.
+| File style                                                                                     | Action                                                                                                                   |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Grouping comments `# --- <KernelClassName> ops ---` (e.g. `tileops/ops/reduction/__init__.py`) | Place import under matching kernel block; create a new block (alphabetical) when no existing block references the kernel |
+| Flat imports (e.g. `tileops/ops/norm/__init__.py`)                                             | Append alongside existing imports following file's ordering convention; do NOT introduce grouping comments               |
+
+Add matching `<ClassName>` to `__all__`, preserving any existing sectioning.
 
 ### 6. VALIDATE
 
-Two checks in order. The first catches skill-bugs; the second catches spec disagreements.
+**(a) §1 post-check** — diff `plan.json.locked_facts` against the emitted artefacts:
 
-**(a) §1 post-check (plan vs emitted)** — mechanical diff between `plan.json.locked_facts` and the facts extracted from the emitted file:
+- Parse `source.op` with `ast`: extract class name, base, imports, `__all__`, `__init__` kwargs (names / defaults / types in order), `forward` params, `default_kernel_map` dict, `_static_axes`.
+- Parse `dirname(source.op)/__init__.py` with both `ast` (presence + `__all__` membership) and raw text (block placement under `# --- <KernelClassName> ops ---` when the file uses grouping comments; skip placement check on flat-style files).
+- Any `locked_facts` field mismatch → BLOCKED `§1 drift: <field>`. Skill deviated from its own contract; fix the emitted file (or revert and restart DRY_RUN if the plan was wrong). Do NOT edit `plan.json` to match.
 
-Mechanical diff across **both** emitted artefacts (the new op file and the updated package `__init__.py`), using syntax-aware and text-aware checks as appropriate:
-
-- Parse the new file at `source.op` with `ast`. Extract class name, base class, import list, `__all__`, `__init__` kwarg names / defaults / types in order, `forward` parameter names, `default_kernel_map` dict, `_static_axes` class attribute.
-- For `dirname(source.op)/__init__.py`: use **both** `ast` and raw-source text.
-  - `ast`: verify the exact `from .<module> import <ClassName>` import exists and that `__all__` contains a matching `<ClassName>` entry.
-  - Raw source text / token-level inspection: verify the import sits under the correct `# --- <KernelClassName> ops ---` block when the file uses grouping comments, or that a newly created block was inserted in the correct order; verify `__all__` section placement when `__all__` is sectioned. Comment-delimited placement cannot be asserted from `ast` alone because comments are not preserved in the AST. When the file is flat-style (no grouping comments), skip the block-placement check — only presence + ordering matter.
-- For each field in `locked_facts`, compare against the applicable artefact using the appropriate extraction method (op-file facts from the `source.op` AST; `__init__.py` registration facts from AST plus raw-source / token inspection for comment-delimited placement). Any mismatch is a skill bug — BLOCKED with a `§1 drift: <field>` row. The agent deviated from its own frozen contract during EMIT. Do NOT rationalize; do NOT edit the plan to match. Fix the emitted op file or `__init__.py`, or if the plan itself was wrong, revert and restart DRY_RUN.
-
-**(b) Manifest validator** — scoped to this op via `--check-op` so that L0-L4 checks run even on a freshly scaffolded `status: spec-only` entry (the default run skips L1-L4 for `spec-only`):
+**(b) Manifest validator**:
 
 ```bash
 python scripts/validate_manifest.py --check-op <op_name>
 ```
 
-Classify every line in the output:
+`--check-op` runs L0–L4 even on `status: spec-only`. Classify output:
 
-- **ERROR** → BLOCKED. Do not commit. Copy the full error row into the report. If the error is a parity failure (L2 or L3 per PR #1005), re-check the emitted `_infer_output_shapes` or `_validate_dtypes` against the manifest's `shape_rules` / `dtype` / `dtype_combos` before classifying as BLOCKED — the scaffold may have mis-emitted.
-- **WARNING** → pass through to the report unchanged.
+- **ERROR** → BLOCKED. Copy the row to REPORT. For L2 / L3 parity failures, re-check the emitted `_infer_output_shapes` / `_validate_dtypes` against manifest `shape_rules` / `dtype_combos` first — likely a mis-emit.
+- **WARNING** → pass through.
 
-Do NOT edit the manifest to silence an error. There is no `parity_opt_out` escape hatch; demote to `status: spec-only` only when the implementation genuinely cannot conform. If the scaffold cannot produce a body that satisfies the manifest, BLOCKED is the correct outcome.
+Never edit the manifest to silence an error. No `parity_opt_out` escape hatch. Demote to `status: spec-only` only when the implementation genuinely cannot conform.
 
 ### 7. REPORT
-
-Print a concise summary in this format. The REPORT is the single surface where post-run iteration feedback leaves the skill — it is the only channel for `open_questions` to reach the caller.
 
 ```
 Status: SUCCESS | BLOCKED
@@ -244,37 +177,31 @@ File: <path> (<lines>)
 Package registration: <parent-of-source.op>/__init__.py (+1 import, +1 __all__)
 Plan: .foundry/plan/<op_name>/plan.json
 
-§1 drift: <none, or list of <field>: <plan value> vs <emitted value>>
+§1 drift: <none | <field>: <plan> vs <emitted>>
 Validator: <N errors, M warnings>
 <if BLOCKED, list each blocking error row verbatim>
 
-Warnings (not blocking):
-  - <warning 1>
-  - <warning 2>
+Warnings:
+  - <warning>
 
-Open questions (post-run iteration; from plan.json §3):
-  needs_doc_fix:
-    - <topic>: <detail>
-  needs_manifest_fix:
-    - <topic>: <detail>
-  needs_human_decision:
-    - <topic>: <detail>
+Open questions (from plan.json §3):
+  needs_doc_fix:      - <topic>: <detail>
+  needs_manifest_fix: - <topic>: <detail>
+  needs_human_decision: - <topic>: <detail>
 
-Not filled (out of scope; hand-off to downstream):
-  - Kernel implementation: <source.kernel>
-  - Optional hooks: <list hook names if the family-base appendix documents any for this family>
-  - Family protocol variables: <list if this family uses any, e.g. reduction's _op_kind>
-  - _cache_key override: recommended for cache efficiency under dynamic shapes / empty _static_axes; the default is correctness-preserving but may over-fragment
+Not filled (downstream hand-off):
+  - Kernel implementation
+  - Optional hooks (family-specific)
+  - Family protocol variables (family-specific)
+  - _cache_key override (recommended under dynamic shapes)
 ```
 
-On SUCCESS, commit the new file + `__init__.py` update with message `[Feat][OPS] scaffold <op_name>`. On BLOCKED, leave the working tree dirty and return without committing — caller inspects and decides. In both cases, `plan.json` remains under `.foundry/plan/<op_name>/` for post-mortem / follow-up action.
-
-## Calibration against the playbook
-
-The scaffold's behaviour must stay in sync with `docs/design/ops-design.md` and `docs/design/ops-design-reference.md`. If you discover during EMIT or VALIDATE that a slot rule is internally inconsistent or cannot be mechanically followed, file a follow-up documentation issue and BLOCK; do NOT paper over by inventing slot behaviour.
+SUCCESS → commit `[Feat][OPS] scaffold <op_name>`. BLOCKED → leave tree dirty, return. `plan.json` persists either way.
 
 ## Non-goals
 
-- Not a codegen engine. This skill is an agent-executable procedure. A future real codegen script can replace the EMIT step; the skill's input/output contract is designed to be codegen-compatible.
-- Not a migration driver. If `op_name` already exists with `status: implemented`, use `implement-op` (or `align-family`) instead.
-- Not a kernel scaffold. Kernel-side scaffolding is a separate concern.
+- Not a codegen engine — agent procedure. The input/output contract is codegen-compatible.
+- Not a migration driver — `status: implemented` ops use `implement-op` / `align-family`.
+- Not a kernel scaffold.
+
+If a slot rule is internally inconsistent or cannot be followed mechanically, file a doc issue and BLOCK; do not invent slot behaviour.
