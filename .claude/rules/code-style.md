@@ -14,7 +14,7 @@
 
 - Promote overflow-prone fp16/bf16 math to fp32 (cubic, division, `exp`, softmax accumulators); cast back to storage dtype at the boundary.
 
-- Cache kernel builders with `@functools.lru_cache(maxsize=32)`. The `_<op>_kernel(static_params) -> Callable` builder wrapping `@tilelang.jit` decorates with `functools.lru_cache(maxsize=32)`; every parameter must be hashable.
+- Cache kernel builders with `@functools.lru_cache`. The `_<op>_kernel(static_params) -> Callable` builder wrapping `@tilelang.jit` is decorated with `@functools.lru_cache(maxsize=<N>)`; every parameter must be hashable. Default `maxsize=32`; pick a different bound only when the op's distinct-config working set genuinely exceeds it (e.g. `64` for variable-shape attention/conv) and note the reason at the call site. `maxsize=None` is reserved for kernels whose config space is intrinsically bounded and small.
 
 - Tests intentionally degraded by a process constraint (e.g. trust model splitting manifest and code PRs) get a `FIXME(staged-rollout)` marker. Cleanup describes the invariant to restore — never references a specific PR. Scan: `grep -rn 'FIXME(staged-rollout)'`.
 
