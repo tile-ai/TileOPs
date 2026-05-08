@@ -24,6 +24,17 @@ ______________________________________________________________________
 
 - `shape_rules` are Python expressions describing shape relationships. For reduction-dim validation, use the canonical predicates / extractors in `tileops.manifest.shape_rules` (callable by bare name from any rule body); never silently wrap out-of-range indices with `% x.ndim`. Inline string expressions are a transitional fallback only.
 
+- **Reduction `dim` authoring contract.** When `dim` accepts an integer or a sequence (`list[int]` / `tuple[int, ...]`), declare three `shape_rules` in this order:
+
+  1. **Range validity.** Every axis in `[-x.ndim, x.ndim)`. For ops accepting `None`: `"dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"`. Drop the `dim is None or` prefix when the op does not accept `None`.
+  1. **Normalize negatives.** Downstream rules apply `% x.ndim` only after step 1, producing the canonical axis set `{d % x.ndim for d in dim}`.
+  1. **Uniqueness (sequence only).** `"isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"`.
+
+  Empty-sequence semantics is per-op:
+
+  - Ops accepting `dim=None` (`sum`, `mean`, `amax`, `amin`, `var`, `std`, `var_mean`, `all`, `any`, `count_nonzero`, `linalg.vector_norm` variants): empty sequence ≡ full reduction; formulas use `set(range(x.ndim))` as fallback.
+  - Ops without `dim=None` (e.g. `logsumexp`): empty sequence is invalid; declare `"isinstance(dim, int) or len(dim) > 0"`.
+
 - Roofline `vars` maps variable names to Python expressions over tensor shapes and params. Required for arbitrary-rank ops.
 
 - `status` is required: `implemented` or `spec-only`.
