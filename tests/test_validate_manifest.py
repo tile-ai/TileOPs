@@ -4400,6 +4400,11 @@ class TestStrictAdvisoryMode:
             def default_kernel_map(self):
                 return {}
 
+        # Schema-valid synthetic manifest entry. ``shape_rules`` is a
+        # list of expression strings under ``signature``; all required
+        # top-level fields (``ref_api``, ``roofline``, ``source.{op,
+        # kernel, bench, test, kernel_map}``) are present so the test
+        # would still parse if schema checks were enabled.
         manifest_yaml = tmp_path / "stub.yaml"
         manifest_yaml.write_text(
             "StubOp:\n"
@@ -4413,10 +4418,9 @@ class TestStrictAdvisoryMode:
             "    inputs:\n"
             "      x: {dtype: float16}\n"
             "    outputs:\n"
-            "      y: {dtype: float16}\n"
-            "  shape_rules:\n"
-            "    x: '[N]'\n"
-            "    y: '[N]'\n"
+            "      y: {dtype: 'same_as(x)'}\n"
+            "    shape_rules:\n"
+            "      - 'y.shape == x.shape'\n"
             "  workloads: []\n"
             "  roofline:\n"
             "    flops: 'N'\n"
@@ -4451,8 +4455,9 @@ class TestStrictAdvisoryMode:
             manifest_path=stub_setup, strict_parity=False, levels=levels,
         )
         # No strict-parity tagged entries should appear in errors.
-        strict_tags = ("[stub]", "[ctor]", "[forward]", "[dispatch]")
-        leaked = [e for e in errors if any(t in e for t in strict_tags)]
+        # Centralised tuple from the validator so [shape]/[dtype]/etc.
+        # all stay covered as the strict-tag set evolves.
+        leaked = [e for e in errors if any(t in e for t in validator.STRICT_TAGS)]
         assert not leaked, (
             f"strict failures must not appear in errors in advisory mode; "
             f"leaked={leaked}"

@@ -3450,10 +3450,11 @@ def check_c7_eval_roofline_not_stub(
     return []
 
 
-# Tag prefixes emitted by strict-parity checks. Used by the orchestrator
-# to separate strict failures from legacy-level errors when running in
-# advisory mode.
-_STRICT_TAGS: tuple[str, ...] = (
+# Tag prefixes emitted by strict-parity checks (C1-C7). The orchestrator
+# routes failures with these tags to ``strict_errors`` so advisory mode
+# can demote them to warnings; tests use the same tuple to assert the
+# routing has not regressed across all tags.
+STRICT_TAGS: tuple[str, ...] = (
     "[shape]", "[dtype]", "[ctor]", "[forward]", "[dispatch]", "[stub]",
 )
 
