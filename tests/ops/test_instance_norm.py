@@ -3,7 +3,10 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.instance_norm import InstanceNormFwdOp
+from tileops.ops.norm.instance_norm import (
+    InstanceNormFwdOp,
+    InstanceNormFwdOpNoAffine,
+)
 from workloads.instance_norm import InstanceNormTest as _InstanceNormTestWorkload
 
 
@@ -205,6 +208,71 @@ def test_instance_norm_rejects_affine_device_mismatch() -> None:
         op(x, weight_other, bias_same)
     with pytest.raises(ValueError, match="bias on"):
         op(x, None, bias_other)
+
+
+class InstanceNormNoAffineFixture(FixtureBase):
+    PARAMS = [
+        ("n, c, spatial, dtype", [
+            pytest.param(2, 16, (8, 8), torch.float32, marks=pytest.mark.smoke),
+            pytest.param(2, 16, (8, 8), torch.float16, marks=pytest.mark.smoke),
+            pytest.param(2, 16, (8, 8), torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4, 8, (4, 4), torch.float16, marks=pytest.mark.full),
+            # 1D spatial.
+            pytest.param(2, 16, (16,), torch.float16, marks=pytest.mark.full),
+            # 3D spatial.
+            pytest.param(2, 8, (4, 4, 4), torch.float16, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@InstanceNormNoAffineFixture
+def test_instance_norm_no_affine_op(n: int, c: int, spatial: tuple,
+                                    dtype: torch.dtype) -> None:
+    """No-affine InstanceNorm op matches torch.nn.functional.instance_norm with weight=bias=None."""
+    op = InstanceNormFwdOpNoAffine(N=n, C=c, spatial=spatial, dtype=dtype)
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    y = op(x)
+    y_ref = F.instance_norm(x.float(), weight=None, bias=None, eps=1e-5).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+        f"max err: {(y - y_ref).abs().max()}"
+
+
+@pytest.mark.smoke
+def test_instance_norm_no_affine_forward_signature() -> None:
+    """No-affine forward accepts only x — no weight/bias parameters."""
+    import inspect
+    sig = inspect.signature(InstanceNormFwdOpNoAffine.forward)
+    params = [p for p in sig.parameters if p != "self"]
+    assert params == ["x"], f"expected ['x'], got {params}"
+
+
+@pytest.mark.smoke
+def test_instance_norm_no_affine_rejects_device_mismatch() -> None:
+    """Forward raises ValueError when input lives on a different CUDA device."""
+    if torch.cuda.device_count() < 2:
+        pytest.skip("device-mismatch test requires >= 2 CUDA devices")
+
+    n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
+    with torch.cuda.device(0):
+        op = InstanceNormFwdOpNoAffine(N=n, C=c, spatial=spatial, dtype=dtype)
+    x_other = torch.randn(
+        (n, c, *spatial), dtype=dtype, device=torch.device("cuda", 1),
+    )
+    with pytest.raises(ValueError, match="[Dd]evice mismatch"):
+        op(x_other)
+
+
+@pytest.mark.smoke
+def test_instance_norm_no_affine_rejects_dtype_mismatch() -> None:
+    """Forward raises ValueError when input dtype differs from configured dtype."""
+    n, c, spatial = 2, 16, (8, 8)
+    op = InstanceNormFwdOpNoAffine(
+        N=n, C=c, spatial=spatial, dtype=torch.float16,
+    )
+    x = torch.randn((n, c, *spatial), dtype=torch.float32, device="cuda")
+    with pytest.raises(ValueError, match="dtype"):
+        op(x)
 
 
 if __name__ == "__main__":
