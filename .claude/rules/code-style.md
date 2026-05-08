@@ -8,6 +8,14 @@
 
 - Use `T.reinterpret(value, dtype)` (value first; not deprecated dtype-first form).
 
+- Each TileLang kernel is one `@T.prim_func` whose body opens `with T.Kernel(...)`. Reusable sub-routines factor out as `@T.macro`, never nested `prim_func`.
+
+- No narrow-type literal casts. Hardcoding storage dtype in numeric literals (e.g. `T.cast(1.0, "float16")`) blocks dtype reuse — reference `x.dtype` or compute in a wider intermediate and cast at the boundary.
+
+- Promote overflow-prone fp16/bf16 math to fp32 (cubic, division, `exp`, softmax accumulators); cast back to storage dtype at the boundary.
+
+- Cache kernel builders with `@functools.lru_cache(maxsize=32)`. The `_<op>_kernel(static_params) -> Callable` builder wrapping `@tilelang.jit` decorates with `functools.lru_cache(maxsize=32)`; every parameter must be hashable.
+
 - Tests intentionally degraded by a process constraint (e.g. trust model splitting manifest and code PRs) get a `FIXME(staged-rollout)` marker. Cleanup describes the invariant to restore — never references a specific PR. Scan: `grep -rn 'FIXME(staged-rollout)'`.
 
   ```python
