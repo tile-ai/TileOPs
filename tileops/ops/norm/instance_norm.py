@@ -158,6 +158,34 @@ class InstanceNormFwdOp(Op):
             (2 * self.N * self.C * self.spatial_size + 2 * self.C) * elem_bytes,
         )
 
+    def _validate_dtypes(self, x: torch.Tensor) -> None:
+        """Validate ``x.dtype`` and ``self.dtype`` against the manifest dtype union.
+
+        Manifest declares ``x.dtype`` as ``float32 | float16 | bfloat16``
+        and the configured op dtype must be drawn from the same union and
+        match the input.
+
+        Args:
+            x: Input tensor.
+
+        Raises:
+            ValueError: If ``self.dtype`` or ``x.dtype`` is outside the
+                supported union, or ``x.dtype`` does not match ``self.dtype``.
+        """
+        allowed = (torch.float32, torch.float16, torch.bfloat16)
+        if self.dtype not in allowed:
+            raise ValueError(
+                f"self.dtype must be one of {allowed}, got {self.dtype}"
+            )
+        if x.dtype not in allowed:
+            raise ValueError(
+                f"x.dtype must be one of {allowed}, got {x.dtype}"
+            )
+        if x.dtype != self.dtype:
+            raise ValueError(
+                f"Expected x.dtype {self.dtype}, got {x.dtype}"
+            )
+
     def forward(
         self,
         x: torch.Tensor,
@@ -180,6 +208,7 @@ class InstanceNormFwdOp(Op):
             ValueError: If tensors are not on CUDA, dtypes mismatch,
                 or shapes are incompatible with the configured dimensions.
         """
+        self._validate_dtypes(x)
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.device != self._kernel_device:
@@ -187,10 +216,6 @@ class InstanceNormFwdOp(Op):
                 f"Device mismatch: op was constructed for {self._kernel_device} "
                 f"but x is on {x.device}. Construct a separate op instance per "
                 f"CUDA device."
-            )
-        if x.dtype != self.dtype:
-            raise ValueError(
-                f"Expected x.dtype {self.dtype}, got {x.dtype}"
             )
         if weight is not None:
             if not weight.is_cuda:
@@ -365,19 +390,24 @@ class InstanceNormFwdOpNoAffine(Op):
         )
 
     def _validate_dtypes(self, x: torch.Tensor) -> None:
-        """Validate ``x.dtype`` against the manifest dtype union.
+        """Validate ``x.dtype`` and ``self.dtype`` against the manifest dtype union.
 
         Manifest declares ``x.dtype`` as ``float32 | float16 | bfloat16``
-        and the configured op dtype must match the input.
+        and the configured op dtype must be drawn from the same union and
+        match the input.
 
         Args:
             x: Input tensor.
 
         Raises:
-            ValueError: If ``x.dtype`` is outside the supported union or
-                does not match ``self.dtype``.
+            ValueError: If ``self.dtype`` or ``x.dtype`` is outside the
+                supported union, or ``x.dtype`` does not match ``self.dtype``.
         """
         allowed = (torch.float32, torch.float16, torch.bfloat16)
+        if self.dtype not in allowed:
+            raise ValueError(
+                f"self.dtype must be one of {allowed}, got {self.dtype}"
+            )
         if x.dtype not in allowed:
             raise ValueError(
                 f"x.dtype must be one of {allowed}, got {x.dtype}"
