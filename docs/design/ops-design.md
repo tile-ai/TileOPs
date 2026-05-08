@@ -335,18 +335,6 @@ To plug in a new EP or quantization backend, subclass `MoEPrepareAndFinalize` an
 
 The scaffold emits T2 (L1-direct) ops only. Once a family accumulates 2-3 ops sharing an identical `forward()` flow, extract an L2 family base via refactoring; concrete ops then become T1 thin wrappers declaring family protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, …). This transformation is driven by a separate family-specific skill, not the scaffold-op. See [Development Path](ops-design-reference.md#development-path) for when to extract an L2 base and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the step-by-step process.
 
-### Per-op exceptions stay per-op within a migration scope
-
-A workaround / fallback / special branch introduced for a single op MUST NOT be promoted to a base-class shared mechanism (mixin, class attribute, shared method, opt-out flag) within the same op-family migration PR. The base class encodes family invariants; promoting a per-op exception turns a transient hack into permanent infrastructure and silently extends the workaround surface across siblings.
-
-Promotion is allowed only via a **separate design PR** that justifies the move on three axes:
-
-- **Invariant vs workaround.** The mechanism must encode a genuine family invariant — one that would still belong in the base if no op had previously needed the workaround. A mechanism that exists only because some op took a shortcut is a workaround and stays in that op (or the follow-up that closes the shortcut).
-- **MUST vs MAY scope.** State whether every op in the family MUST use the mechanism or only some MAY opt in. The MAY-with-default shape (subclass sets a class flag to negate the base) is the opt-out anti-pattern; reject unless the design PR shows every other framing fails.
-- **Trust-model compatibility.** A base-class mechanism MUST NOT let `status: spec-only` ops appear runnable. If the only motivation is making spec-only ops return outputs without a real kernel, file follow-up issues for the missing kernels — do not promote a passthrough to the base. See [trust-model.md](trust-model.md) §Manifest.
-
-Pattern-level detection lives outside this doc, in the foundry articulation source-pair-2 anti-pattern detector — design doc states the rule, the detector flags occurrences.
-
 ## Further Reference
 
 - [Slot Rules](ops-design-reference.md#slot-rules) — full Rule / Derivation / Example / Common mistakes per slot
