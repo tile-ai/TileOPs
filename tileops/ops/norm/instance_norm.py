@@ -89,10 +89,10 @@ class InstanceNormFwdOp(Op):
         C: int,
         spatial: tuple,
         dtype: torch.dtype,
-        eps: float = 1e-5,
-        *,
         use_input_stats: bool = True,
         momentum: float = 0.1,
+        eps: float = 1e-5,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -158,6 +158,34 @@ class InstanceNormFwdOp(Op):
             (2 * self.N * self.C * self.spatial_size + 2 * self.C) * elem_bytes,
         )
 
+    def _validate_dtypes(self, x: torch.Tensor) -> None:
+        """Validate ``x.dtype`` and ``self.dtype`` against the manifest dtype union.
+
+        Manifest declares ``x.dtype`` as ``float32 | float16 | bfloat16``
+        and the configured op dtype must be drawn from the same union and
+        match the input.
+
+        Args:
+            x: Input tensor.
+
+        Raises:
+            ValueError: If ``self.dtype`` or ``x.dtype`` is outside the
+                supported union, or ``x.dtype`` does not match ``self.dtype``.
+        """
+        allowed = (torch.float32, torch.float16, torch.bfloat16)
+        if self.dtype not in allowed:
+            raise ValueError(
+                f"self.dtype must be one of {allowed}, got {self.dtype}"
+            )
+        if x.dtype not in allowed:
+            raise ValueError(
+                f"x.dtype must be one of {allowed}, got {x.dtype}"
+            )
+        if x.dtype != self.dtype:
+            raise ValueError(
+                f"Expected x.dtype {self.dtype}, got {x.dtype}"
+            )
+
     def forward(
         self,
         x: torch.Tensor,
@@ -180,6 +208,7 @@ class InstanceNormFwdOp(Op):
             ValueError: If tensors are not on CUDA, dtypes mismatch,
                 or shapes are incompatible with the configured dimensions.
         """
+        self._validate_dtypes(x)
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.device != self._kernel_device:
@@ -187,10 +216,6 @@ class InstanceNormFwdOp(Op):
                 f"Device mismatch: op was constructed for {self._kernel_device} "
                 f"but x is on {x.device}. Construct a separate op instance per "
                 f"CUDA device."
-            )
-        if x.dtype != self.dtype:
-            raise ValueError(
-                f"Expected x.dtype {self.dtype}, got {x.dtype}"
             )
         if weight is not None:
             if not weight.is_cuda:
@@ -297,13 +322,13 @@ class InstanceNormFwdOpNoAffine(Op):
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
         use_input_stats: Mirrors ``torch.nn.functional.instance_norm``. When
-            ``True`` (the default and only supported value), per-batch
+            ``True`` (the default and only supported value), per-instance
             statistics are computed from the input. ``False`` (the
             running-stats / eval-mode path) is deferred and raises
             ``NotImplementedError``.
         momentum: Mirrors ``torch.nn.functional.instance_norm``. Stored on
-            the op instance for API parity with PyTorch but unused on
-            the per-batch (``use_input_stats=True``) path.
+            the op instance for API parity with PyTorch but unused on the
+            per-instance (``use_input_stats=True``) path.
         eps: Epsilon for numerical stability.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
@@ -319,18 +344,18 @@ class InstanceNormFwdOpNoAffine(Op):
         C: int,
         spatial: tuple,
         dtype: torch.dtype,
-        eps: float = 1e-5,
-        *,
         use_input_stats: bool = True,
         momentum: float = 0.1,
+        eps: float = 1e-5,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         if not use_input_stats:
             raise NotImplementedError(
-                "use_input_stats=False (running-stats / eval-mode path) is "
-                "not supported by InstanceNormFwdOpNoAffine; only "
-                "use_input_stats=True (per-batch statistics) is implemented."
+                "use_input_stats=False (the running-stats / eval-mode path) "
+                "is not supported by InstanceNormFwdOpNoAffine; only "
+                "use_input_stats=True (per-instance statistics) is implemented."
             )
         self.N = N
         self.C = C
@@ -364,6 +389,34 @@ class InstanceNormFwdOpNoAffine(Op):
             2 * self.N * self.C * self.spatial_size * elem_bytes,
         )
 
+    def _validate_dtypes(self, x: torch.Tensor) -> None:
+        """Validate ``x.dtype`` and ``self.dtype`` against the manifest dtype union.
+
+        Manifest declares ``x.dtype`` as ``float32 | float16 | bfloat16``
+        and the configured op dtype must be drawn from the same union and
+        match the input.
+
+        Args:
+            x: Input tensor.
+
+        Raises:
+            ValueError: If ``self.dtype`` or ``x.dtype`` is outside the
+                supported union, or ``x.dtype`` does not match ``self.dtype``.
+        """
+        allowed = (torch.float32, torch.float16, torch.bfloat16)
+        if self.dtype not in allowed:
+            raise ValueError(
+                f"self.dtype must be one of {allowed}, got {self.dtype}"
+            )
+        if x.dtype not in allowed:
+            raise ValueError(
+                f"x.dtype must be one of {allowed}, got {x.dtype}"
+            )
+        if x.dtype != self.dtype:
+            raise ValueError(
+                f"Expected x.dtype {self.dtype}, got {x.dtype}"
+            )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply instance normalization without affine.
 
@@ -374,10 +427,10 @@ class InstanceNormFwdOpNoAffine(Op):
             Normalized tensor of the same shape as *x*.
 
         Raises:
-            ValueError: If *x* is not a CUDA tensor, lives on a different
-                device than the op was constructed for, or its dtype does
-                not match the configured dtype.
+            ValueError: If tensors are not on CUDA, dtypes mismatch, or
+                shapes are incompatible with the configured dimensions.
         """
+        self._validate_dtypes(x)
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.device != self._kernel_device:
@@ -385,10 +438,6 @@ class InstanceNormFwdOpNoAffine(Op):
                 f"Device mismatch: op was constructed for {self._kernel_device} "
                 f"but x is on {x.device}. Construct a separate op instance per "
                 f"CUDA device."
-            )
-        if x.dtype != self.dtype:
-            raise ValueError(
-                f"Expected x.dtype {self.dtype}, got {x.dtype}"
             )
         expected_shape = (self.N, self.C, *self.spatial)
         if tuple(x.shape) != expected_shape:

@@ -94,6 +94,41 @@ def test_instance_norm_non_contiguous(n: int, c: int, spatial: tuple,
         f"Non-contiguous test failed, max err: {(y - y_ref).abs().max()}"
 
 
+class InstanceNormNoAffineFixture(FixtureBase):
+    PARAMS = [
+        ("n, c, spatial, dtype, tune", [
+            # Small CI-friendly shapes -- fp32
+            pytest.param(2, 16, (8, 8), torch.float32, False, marks=pytest.mark.smoke),
+            # Small CI-friendly shapes -- fp16
+            pytest.param(2, 16, (8, 8), torch.float16, False, marks=pytest.mark.smoke),
+            # Small CI-friendly shapes -- bf16
+            pytest.param(2, 16, (8, 8), torch.bfloat16, False, marks=pytest.mark.smoke),
+            pytest.param(4, 8, (4, 4), torch.float32, False, marks=pytest.mark.full),
+            pytest.param(4, 8, (4, 4), torch.float16, False, marks=pytest.mark.full),
+            pytest.param(4, 8, (4, 4), torch.bfloat16, False, marks=pytest.mark.full),
+            # 1D spatial
+            pytest.param(2, 16, (16,), torch.float16, False, marks=pytest.mark.full),
+            # 3D spatial
+            pytest.param(2, 8, (4, 4, 4), torch.float16, False, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+@InstanceNormNoAffineFixture
+def test_instance_norm_no_affine_op(n: int, c: int, spatial: tuple,
+                                    dtype: torch.dtype, tune: bool) -> None:
+    """Forward correctness for InstanceNormFwdOpNoAffine vs F.instance_norm(weight=None, bias=None)."""
+    op = InstanceNormFwdOpNoAffine(N=n, C=c, spatial=spatial, dtype=dtype)
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    y = op(x)
+    y_ref = F.instance_norm(
+        x.float(), weight=None, bias=None, eps=1e-5,
+    ).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+        f"NoAffine forward mismatch, max err: {(y - y_ref).abs().max()}"
+
+
 @pytest.mark.smoke
 def test_instance_norm_optional_weight_bias_cache_stable() -> None:
     """When weight/bias are None, repeated forwards reuse cached affine tensors."""
@@ -266,11 +301,9 @@ def test_instance_norm_init_signature_covers_manifest_params(
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_cls, manifest_key", _OP_CLASSES)
-def test_instance_norm_rejects_running_stats_path(
-    op_cls: type, manifest_key: str,
-) -> None:
-    """`use_input_stats=False` (running-stats / eval-mode) is deferred."""
+@pytest.mark.parametrize("op_cls", [InstanceNormFwdOp, InstanceNormFwdOpNoAffine])
+def test_instance_norm_rejects_running_stats_path(op_cls: type) -> None:
+    """Both variants defer `use_input_stats=False` (running-stats path)."""
     with pytest.raises(NotImplementedError, match="running-stats"):
         op_cls(
             N=2, C=16, spatial=(8, 8), dtype=torch.float16,
