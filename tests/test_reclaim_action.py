@@ -2,16 +2,16 @@
 
 Covers the sentinel-repair + atomic-trim primitives that protect caches
 whose consumers assume "directory exists => contents complete" (the
-tilelang autotuner cache in particular). See issue #989.
+tilelang autotuner cache in particular).
 
-Required cases per milestone plan:
+Required cases:
   - half_dead       : atomic subdir with files but no sentinel is removed
-                      on a single invocation (AC-2, AC-3).
+                      on a single invocation.
   - atomic_stale    : atomic subdir whose newest file is older than
                       cache-age-days is removed whole-directory.
   - atomic_fresh    : fresh atomic subdirs are preserved.
   - invariant       : atomic roots never have their *individual files*
-                      trimmed, even when file-level trim runs (AC-4).
+                      trimmed, even when file-level trim runs.
 
 Runs on every PR (smoke tier), so does not depend on a self-hosted
 runner or the Tilelang runtime. Must stay fast and hermetic.
@@ -128,7 +128,7 @@ def test_sentinel_repair_honours_custom_sentinel_filename(tmp_path: Path) -> Non
 
 
 def test_no_half_dead_after_reclaim(tmp_path: Path) -> None:
-    """AC-2: after a full reclaim sequence no autotuner subdir is left
+    """After a full reclaim sequence no autotuner subdir is left
     in the half-dead state (exists but missing best_config.json)."""
     root = tmp_path / "autotuner"
     _make_autotuner_subdir(root, "halfdead_a", with_sentinel=False)

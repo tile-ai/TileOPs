@@ -25,7 +25,9 @@ NON_RUNTIME_OPS_TIER_FILES = {
 }
 
 TILELANG_019_SKIP_REASON = (
-    "Temporarily skipped while tracking TileLang 0.1.9 migration failures (#1039)."
+    "Skipped under TileLang 0.1.9: known regressions in autodiff/codegen "
+    "lowering produce incorrect numerics or compile failures; re-enable "
+    "when these tests pass against the current tilelang."
 )
 
 TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES = (

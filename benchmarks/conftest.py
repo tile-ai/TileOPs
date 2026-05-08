@@ -3,14 +3,15 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, _bench_results
 
-# Skip NSA benchmarks until op failures are resolved (see #696).
+# Skip NSA benchmarks until the underlying op failures are resolved.
 collect_ignore_glob = [
     "ops/attention/bench_deepseek_nsa*.py",
 ]
 
 TILELANG_019_BENCH_SKIP_REASON = (
-    "Temporarily skipped while tracking TileLang 0.1.9 benchmark migration "
-    "failures (#1067)."
+    "Skipped under tilelang 0.1.9: known benchmark regressions in autodiff/"
+    "codegen lowering produce incorrect numerics or compile failures; "
+    "re-enable when the benchmark runs cleanly against current tilelang."
 )
 
 TILELANG_019_BENCH_PATHS = {
@@ -96,8 +97,9 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     tilelang_019_skip = pytest.mark.skip(reason=TILELANG_019_BENCH_SKIP_REASON)
     fp8_e4m3_skip = pytest.mark.skip(
         reason=(
-            "Temporarily skipped while tracking TileLang 0.1.9 fp8 e4m3 "
-            "benchmark migration failures (#1067)."
+            "Skipped under tilelang 0.1.9: fp8 e4m3 benchmark fails due to "
+            "lowering regression; re-enable when fp8 e4m3 benchmarks run "
+            "cleanly against current tilelang."
         )
     )
 

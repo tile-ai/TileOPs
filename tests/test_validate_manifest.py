@@ -1115,7 +1115,7 @@ class TestInferShapeParity:
         assert validator.check_l2_infer_parity("FakeOp", entry, cls) == []
 
     def test_incorrect_infer_fails(self, validator):
-        """AC-2: parity error when _infer_output_shapes disagrees with shape_rules."""
+        """Parity error when _infer_output_shapes disagrees with shape_rules."""
         def infer(self, x_shape):
             # Wrong: drops a dim.
             return {"y": x_shape[:-1]}
@@ -1361,8 +1361,7 @@ class TestInferShapeParity:
         The signature is pre-bound via ``inspect.signature().bind`` so a
         TypeError from the body is distinguished from a signature
         mismatch. The body-raise is surfaced as a hard L2 parity error
-        (policy tightened in PR #1005: previously a warning, which let
-        genuine bugs silently pass).
+        rather than a warning so genuine bugs cannot silently pass.
         """
         def infer(self, x_shape):
             # Signature matches; the body itself raises TypeError.
@@ -1957,7 +1956,7 @@ class TestValidateDtypesParity:
         assert validator.check_l3_validate_dtypes_parity("FakeDtypeOp", entry, cls) == []
 
     def test_union_reject_declared_fails(self, validator):
-        """AC-3: rejects a dtype in the declared union -> parity error."""
+        """Rejects a dtype in the declared union -> parity error."""
         import torch
 
         def validate(self, x):
@@ -2028,7 +2027,7 @@ class TestValidateDtypesParity:
         assert any("rejects dtype_combos" in e for e in errors), errors
 
     def test_dtype_combos_accepts_unlisted_fails(self, validator):
-        """AC-3: accepts a non-listed combo -> parity error."""
+        """Accepts a non-listed combo -> parity error."""
         def validate(self, x, w):
             return None  # accepts everything
 
@@ -2098,7 +2097,7 @@ class TestValidateDtypesParity:
         )
 
     def test_signature_mismatch_union_fails(self, validator):
-        """AC-3 regression: _validate_dtypes with a wrong kwarg name must fail.
+        """_validate_dtypes with a wrong kwarg name must fail.
 
         Previously TypeError from a signature mismatch was silently
         downgraded to a warning, letting an unusable _validate_dtypes
@@ -2286,12 +2285,12 @@ class TestValidateDtypesParity:
         )
 
     def test_no_combos_accepts_out_of_union_fails(self, validator):
-        """AC-3 rejection side: when the op has no ``dtype_combos`` and
-        ``_validate_dtypes`` accepts a dtype outside the declared union,
-        the no-combos branch must emit a parity error.
+        """When the op has no ``dtype_combos`` and ``_validate_dtypes``
+        accepts a dtype outside the declared union, the no-combos branch
+        must emit a parity error.
 
-        Regression for F010: previously the no-combos branch iterated
-        only the union's Cartesian product and so could not detect an
+        Regression for an earlier gap where the no-combos branch iterated
+        only the union's Cartesian product and could not detect an
         overly-permissive ``_validate_dtypes``.
         """
         # Overly-permissive implementation: accepts any dtype.
@@ -2377,13 +2376,12 @@ class TestValidateDtypesParity:
         )
 
     def test_no_combos_accepts_same_as_violation_fails(self, validator):
-        """AC-3 / R3: when ``_validate_dtypes`` accepts a same_as
-        identity violation, the no-combos branch must surface it.
+        """When ``_validate_dtypes`` accepts a same_as identity violation,
+        the no-combos branch must surface it.
 
-        Regression for F011: the union-iteration loop skips every
-        same_as-violating candidate via ``_honours_same_as``, so a
-        permissive op that fails to enforce same_as would go unflagged
-        without a dedicated probe.
+        The union-iteration loop skips every same_as-violating candidate
+        via ``_honours_same_as``, so a permissive op that fails to enforce
+        same_as would go unflagged without a dedicated probe.
         """
         # Overly-permissive: does not check x.dtype == w.dtype.
         def validate(self, x, w):
@@ -2697,8 +2695,8 @@ class TestValidateDtypesParity:
 class TestDtypeCombosDataHardening:
     """Hardening regressions for ``check_l3_dtype_combos_data``.
 
-    Covers PR #1005 review findings #1 (combo-row completeness) and #5
-    (reject union dtype expressions in combo values).
+    Covers two hardening rules: every combo row must cover every declared
+    input, and union dtype expressions are rejected as combo values.
     """
 
     def test_combo_missing_input_is_hard_error(self, validator):
@@ -2869,7 +2867,7 @@ class TestUnexpectedValidateDtypesException:
 
 
 class TestSameAsCycleHardError:
-    """PR #1005 follow-up: pure ``same_as`` cycles must surface a hard L3 error.
+    """Pure ``same_as`` cycles must surface a hard L3 error.
 
     Previously, ``check_l3_dtype_combos_data`` returned silently when
     ``_resolve_tensor_dtype_options`` returned None, relying on
@@ -2921,7 +2919,7 @@ class TestSameAsCycleHardError:
 
 
 class TestParamDefaultOutputShapePin:
-    """PR #1005 follow-up: param defaults must pin declared output-shape dims.
+    """Param defaults must pin declared output-shape dims.
 
     A param with a concrete integer default (e.g. ``params.k.default = 4``)
     is a compile-time-known value just like ``static_dims``. Declared
@@ -2978,7 +2976,7 @@ class TestParamDefaultOutputShapePin:
 
 
 class TestOutOfUnionProbeEngulfment:
-    """PR #1005 follow-up: out-of-union probe must not be engulfed by wide unions.
+    """Out-of-union probe must not be engulfed by wide unions.
 
     A prior implementation used a fixed 8-dtype ``_DTYPE_SENTINELS`` pool.
     An op declaring exactly those 8 dtypes for an input left the probe
@@ -4073,8 +4071,8 @@ class TestValidatorHelperResolution:
         # body. What must stay identical is the validator's classification
         # at each rule index: the same number of errors, the same severity
         # tags ("[shape]"), and the same indices flagged. That captures
-        # the AC-3 contract — bit-identical validator behaviour pre/post
-        # — without coupling the test to literal rule wording.
+        # the bit-identical-validator-behaviour contract pre/post without
+        # coupling the test to literal rule wording.
         def _classify(errs: list[str]) -> list[str]:
             tags = []
             for e in errs:

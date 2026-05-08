@@ -310,9 +310,9 @@ class LogSumExpKernel(Kernel):
         # tile_n differs from this pre-built one, so the autotuner stays
         # within a single tiling regime by design.
         #
-        # Cross-tile_n autotune exploration is tracked as a known follow-up:
-        # see issue #821. The single-regime restriction is inherited from
-        # #801, not introduced by this fix.
+        # Cross-tile_n autotune exploration is a known limitation; the
+        # single-regime restriction is inherited from prior tiling design
+        # and not introduced here.
         self._tile_n = self.default_config["tile_n"]
         self.kernel = _logsumexp_kernel(
             self.M,

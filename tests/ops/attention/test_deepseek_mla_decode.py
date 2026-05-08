@@ -65,7 +65,7 @@ class MlaDecodeFixture(FixtureBase):
 @MlaDecodeFixture
 def test_mla_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                     dim_pe: int, dtype: torch.dtype, tune: bool):
-    pytest.skip("Temporarily skipping known DeepSeek MLA decode failure under TileLang 0.1.9 (#1039).")
+    pytest.skip("DeepSeek MLA decode fails under tilelang 0.1.9; re-enable when decode produces numerically correct results.")
     test = MlaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
     op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(
         batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune=tune)
