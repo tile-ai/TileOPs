@@ -295,5 +295,28 @@ def test_group_norm_no_affine_rejects_dtype_mismatch() -> None:
         op(x)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("n, c, spatial, g", [
+    # M = N * num_groups not divisible by max block_m (16): triggers tail
+    # program reading/writing rows >= M before the M-padding fix.
+    (1, 24, (4, 4), 3),   # M = 3
+    (3, 30, (2, 2), 5),   # M = 15
+    (1, 16, (8, 8), 1),   # M = 1
+])
+def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple,
+                                         g: int) -> None:
+    """No-affine GroupNorm handles M not divisible by the kernel's block_m."""
+    dtype = torch.float16
+    op = GroupNormFwdOpNoAffine(N=n, C=c, spatial=spatial, num_groups=g,
+                                dtype=dtype)
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    y = op(x)
+    y_ref = F.group_norm(x.float(), g, weight=None, bias=None,
+                        eps=1e-5).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+        f"max err: {(y - y_ref).abs().max()}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

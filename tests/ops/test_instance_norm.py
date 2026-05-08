@@ -275,5 +275,27 @@ def test_instance_norm_no_affine_rejects_dtype_mismatch() -> None:
         op(x)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("n, c, spatial", [
+    # M = N * C not divisible by max block_m (16): triggers tail program
+    # reading/writing rows >= M before the M-padding fix.
+    (1, 3, (4, 4)),    # M = 3
+    (3, 5, (2, 2)),    # M = 15
+    (1, 1, (8, 8)),    # M = 1
+])
+def test_instance_norm_no_affine_tail_block(n: int, c: int,
+                                            spatial: tuple) -> None:
+    """No-affine InstanceNorm handles M not divisible by the kernel's block_m."""
+    dtype = torch.float16
+    op = InstanceNormFwdOpNoAffine(N=n, C=c, spatial=spatial, dtype=dtype)
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    y = op(x)
+    y_ref = F.instance_norm(x.float(), weight=None, bias=None,
+                            eps=1e-5).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+        f"max err: {(y - y_ref).abs().max()}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
