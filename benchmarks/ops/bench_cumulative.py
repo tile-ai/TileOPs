@@ -1,34 +1,26 @@
-"""Benchmarks for cumulative ops (cumsum, cumprod)."""
+"""Benchmarks for cumulative ops (cumsum, cumprod).
 
-from typing import Optional
+Workload shapes and roofline formulas are loaded from the ops manifest
+(``tileops/manifest/scan.yaml``).
+"""
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from workloads.workload_base import FixtureBase, WorkloadBase
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from tileops.ops.reduction.cumprod import CumprodFwdOp
+from tileops.ops.reduction.cumsum import CumsumFwdOp
+from workloads.workload_base import WorkloadBase
+
+_CUMSUM_OP = "CumsumFwdOp"
+_CUMPROD_OP = "CumprodFwdOp"
 
 
-class CumulativeBenchFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype, op_kind",
-            [
-                pytest.param(1024, 4096, torch.float16, "cumsum"),
-                pytest.param(1024, 4096, torch.bfloat16, "cumsum"),
-                pytest.param(4096, 4096, torch.float16, "cumsum"),
-                pytest.param(1024, 4096, torch.float16, "cumprod"),
-                pytest.param(1024, 4096, torch.bfloat16, "cumprod"),
-                pytest.param(4096, 4096, torch.float16, "cumprod"),
-            ],
-        ),
-    ]
-
-
-class CumulativeBenchTest(WorkloadBase):
+class _CumulativeWorkload(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
         self.m = m
         self.n = n
+        self.shape = (m, n)
         self.dtype = dtype
         self.op_kind = op_kind
 
@@ -43,45 +35,43 @@ class CumulativeBenchTest(WorkloadBase):
         x_f32 = x.float()
         if self.op_kind == "cumsum":
             return x_f32.cumsum(dim=-1).to(x.dtype)
-        elif self.op_kind == "cumprod":
-            return x_f32.cumprod(dim=-1).to(x.dtype)
-        raise ValueError(f"Unknown op_kind: {self.op_kind}")
+        return x_f32.cumprod(dim=-1).to(x.dtype)
 
 
-class CumulativeBenchmark(BenchmarkBase[CumulativeBenchTest]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        # Approximate: inclusive scan performs N-1 ops per row, rounded up to M*N
-        return t.m * t.n
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Read x (M*N) + write output (M*N)
-        return 2 * t.m * t.n * elem_bytes
-
-
-def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
-    """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.cumprod import CumprodFwdOp
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
-
-    op_map = {
-        "cumsum": CumsumFwdOp,
-        "cumprod": CumprodFwdOp,
-    }
-    cls = op_map[op_kind]
-    return cls(N=n, dtype=dtype)
-
-
-@CumulativeBenchFixture
-def test_cumulative_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> None:
-    test = CumulativeBenchTest(m, n, dtype, op_kind)
-    bm = CumulativeBenchmark(test)
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMSUM_OP))
+def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
+    m, n = shape
+    test = _CumulativeWorkload(m, n, dtype, "cumsum")
     inputs = test.gen_inputs()
 
-    op = _make_op(m, n, dtype, op_kind)
-    result = bm.profile(op, *inputs)
+    op = CumsumFwdOp(N=n, dtype=dtype)
+    bm = ManifestBenchmark(_CUMSUM_OP, op, test)
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMPROD_OP))
+def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
+    m, n = shape
+    test = _CumulativeWorkload(m, n, dtype, "cumprod")
+    inputs = test.gen_inputs()
+
+    op = CumprodFwdOp(N=n, dtype=dtype)
+    bm = ManifestBenchmark(_CUMPROD_OP, op, test)
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
