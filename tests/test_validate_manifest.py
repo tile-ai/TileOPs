@@ -1013,11 +1013,10 @@ class TestInferShapeParity:
             f"the codegen-derived method, got: {warnings}"
         )
 
-    def test_no_override_opt_out_suppresses_warning(self, validator):
-        """F002: parity_opt_out: [shape_parity] suppresses the warning.
-
-        Documented GPU-only ops can opt out of shape parity via a
-        manifest flag.
+    def test_parity_opt_out_field_no_longer_suppresses(self, validator):
+        """``parity_opt_out`` is removed; setting it does NOT suppress the
+        missing-method warning. Schema check additionally rejects the
+        field outright (covered by ``TestParityOptOutRemoval``).
         """
         from tileops.ops.op_base import Op
 
@@ -1042,7 +1041,7 @@ class TestInferShapeParity:
             "BareOp", entry, BareOp, warnings=warnings,
         )
         assert errors == []
-        assert not any(
+        assert any(
             "does not override _infer_output_shapes" in w for w in warnings
         ), warnings
 
@@ -1392,9 +1391,9 @@ class TestInferShapeParity:
             f"errors={errors}"
         )
 
-    def test_body_raise_opt_out_downgrades_to_warning(self, validator):
-        """``parity_opt_out: [shape_parity]`` downgrades a body-raise to
-        a warning for documented GPU-only ops.
+    def test_body_raise_with_parity_opt_out_field_still_hard_error(self, validator):
+        """``parity_opt_out`` is removed; declaring it does NOT downgrade
+        a body-raise. Body exceptions are unconditionally hard L2 errors.
         """
         def infer(self, x_shape):
             raise RuntimeError("needs GPU-only state")
@@ -1412,11 +1411,9 @@ class TestInferShapeParity:
         errors = validator.check_l2_infer_parity(
             "FakeOp", entry, cls, warnings=warnings,
         )
-        assert errors == []
         assert any(
-            "parity skipped (opt-out)" in w and "RuntimeError" in w
-            for w in warnings
-        )
+            "raised RuntimeError" in e for e in errors
+        ), f"opt-out field must NOT suppress hard error; errors={errors}"
 
     def test_body_runtime_error_is_hard_l2_error(self, validator):
         """Finding #2 regression: a body raising ``RuntimeError('not ready')``
@@ -1911,8 +1908,10 @@ class TestValidateDtypesParity:
             "does not override _validate_dtypes" in w for w in warnings
         ), warnings
 
-    def test_no_override_opt_out_suppresses_warning(self, validator):
-        """F002: parity_opt_out: [dtype_parity] suppresses the warning."""
+    def test_parity_opt_out_field_no_longer_suppresses(self, validator):
+        """``parity_opt_out`` is removed; setting it does NOT suppress
+        the missing-method warning.
+        """
         from tileops.ops.op_base import Op
 
         class BareOp(Op):
@@ -1935,7 +1934,7 @@ class TestValidateDtypesParity:
             "BareOp", entry, BareOp, warnings=warnings,
         )
         assert errors == []
-        assert not any(
+        assert any(
             "does not override _validate_dtypes" in w for w in warnings
         ), warnings
 
@@ -2815,9 +2814,9 @@ class TestUnexpectedValidateDtypesException:
             for e in errors
         ), f"expected hard L3 error, got errors={errors} warnings={warnings}"
 
-    def test_runtime_error_opt_out_downgrades_to_skip(self, validator):
-        """``parity_opt_out: [dtype_parity]`` downgrades the body-raise
-        to a silent skip for documented GPU-only cases.
+    def test_parity_opt_out_field_does_not_downgrade(self, validator):
+        """``parity_opt_out`` is removed; declaring it does NOT downgrade
+        body-raise to a skip. Body exceptions are unconditionally hard L3.
         """
         def bad_validate(self, x):
             raise RuntimeError("needs GPU state")
@@ -2838,9 +2837,9 @@ class TestUnexpectedValidateDtypesException:
         errors = validator.check_l3_validate_dtypes_parity(
             "OptOutValidateOp", entry, cls, warnings=warnings,
         )
-        assert not any(
+        assert any(
             "raised unexpected exception" in e for e in errors
-        ), f"opt-out must suppress hard error; errors={errors}"
+        ), f"opt-out field must NOT suppress hard error; errors={errors}"
 
     def test_runtime_error_no_combos_is_hard_error(self, validator):
         """Same policy in the no-dtype_combos Cartesian branch."""
@@ -4090,3 +4089,275 @@ class TestValidatorHelperResolution:
             errs_pre, errs_post,
         )
         assert len(errs_pre) == len(errs_post), (errs_pre, errs_post)
+
+
+# ---------------------------------------------------------------------------
+# C1-C7 strict parity gates
+# ---------------------------------------------------------------------------
+
+
+def _make_strict_op(init_params=None, forward_params=("x",), kernel_map=None,
+                    name="StrictOp"):
+    """Build a synthetic Op subclass with controlled __init__ / forward."""
+    from tileops.ops.op_base import Op
+
+    init_src = "def __init__(self, " + ", ".join(init_params or []) + "): pass"
+    fwd_args = ", ".join(forward_params)
+    fwd_src = f"def forward(self, {fwd_args}): return None"
+    ns = {}
+    exec(init_src, ns)
+    exec(fwd_src, ns)
+
+    cls = type(
+        name, (Op,),
+        {
+            "__init__": ns["__init__"],
+            "forward": ns["forward"],
+            "default_kernel_map": property(
+                lambda self: kernel_map or {}
+            ),
+        },
+    )
+    return cls
+
+
+class TestStrictParityC3Ctor:
+    """C3: ctor signature parity (defaults + kw-only)."""
+
+    def test_default_match_passes(self, validator):
+        from tileops.ops.op_base import Op
+
+        class Op1(Op):
+            def __init__(self, dim=-1, eps=1e-6, kernel_map=None): pass
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        entry = {"signature": {
+            "params": {
+                "dim": {"type": "int", "default": -1},
+                "eps": {"type": "float", "default": 1e-6},
+            },
+        }}
+        assert validator.check_c3_ctor_signature_parity("Op1", entry, Op1) == []
+
+    def test_missing_default_fails(self, validator):
+        from tileops.ops.op_base import Op
+
+        class Op2(Op):
+            def __init__(self, dim, kernel_map=None): pass  # no default
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        entry = {"signature": {
+            "params": {"dim": {"type": "int", "default": -1}},
+        }}
+        errs = validator.check_c3_ctor_signature_parity("Op2", entry, Op2)
+        assert any("no default on __init__" in e for e in errs), errs
+
+    def test_kw_only_mismatch_fails(self, validator):
+        from tileops.ops.op_base import Op
+
+        class Op3(Op):
+            def __init__(self, *, dim=-1, kernel_map=None): pass
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        entry = {"signature": {
+            "params": {"dim": {"type": "int", "default": -1, "kw_only": False}},
+        }}
+        errs = validator.check_c3_ctor_signature_parity("Op3", entry, Op3)
+        assert any("kw_only mismatch" in e for e in errs), errs
+
+
+class TestStrictParityC4Forward:
+    """C4: forward positional names match manifest inputs order."""
+
+    def test_matching_passes(self, validator):
+        from tileops.ops.op_base import Op
+
+        class Op1(Op):
+            def __init__(self): pass
+            def forward(self, x, weight): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        entry = {"signature": {
+            "inputs": {"x": {"dtype": "float16"}, "weight": {"dtype": "float16"}},
+        }}
+        assert validator.check_c4_forward_signature_parity(
+            "Op1", entry, Op1,
+        ) == []
+
+    def test_wrong_order_fails(self, validator):
+        from tileops.ops.op_base import Op
+
+        class Op2(Op):
+            def __init__(self): pass
+            def forward(self, weight, x): return None  # swapped
+            @property
+            def default_kernel_map(self): return {}
+
+        entry = {"signature": {
+            "inputs": {"x": {"dtype": "float16"}, "weight": {"dtype": "float16"}},
+        }}
+        errs = validator.check_c4_forward_signature_parity("Op2", entry, Op2)
+        assert any("do not start with" in e for e in errs), errs
+
+
+class TestStrictParityC5Dispatch:
+    """C5: dispatch_kernel invariant (kernel_map ctor pass-through)."""
+
+    def test_kernel_map_param_passes(self, validator):
+        from tileops.ops.op_base import Op
+
+        class Op1(Op):
+            def __init__(self, kernel_map=None): pass
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        entry = {"source": {"kernel_map": {"k": "K"}}}
+        assert validator.check_c5_dispatch_kernel_invariant(
+            "Op1", entry, Op1,
+        ) == []
+
+    def test_missing_kernel_map_fails(self, validator):
+        from tileops.ops.op_base import Op
+
+        class Op2(Op):
+            def __init__(self): pass  # no kernel_map
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        entry = {"source": {"kernel_map": {"k": "K"}}}
+        errs = validator.check_c5_dispatch_kernel_invariant("Op2", entry, Op2)
+        assert any("does not accept" in e and "kernel_map" in e for e in errs), errs
+
+    def test_no_kernel_map_in_source_skips(self, validator):
+        """Composite ops (no source.kernel_map) skip C5."""
+        from tileops.ops.op_base import Op
+
+        class Op3(Op):
+            def __init__(self): pass
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        entry = {"source": {}}
+        assert validator.check_c5_dispatch_kernel_invariant(
+            "Op3", entry, Op3,
+        ) == []
+
+
+class TestStrictParityC6C7Stub:
+    """C6 / C7: _validate_dtypes / eval_roofline must not be base stubs."""
+
+    def test_c6_stub_detected(self, validator):
+        from tileops.ops.op_base import Op
+
+        class Op1(Op):
+            def __init__(self): pass
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        errs = validator.check_c6_validate_dtypes_not_stub("Op1", {}, Op1)
+        assert any("is the Op base stub" in e for e in errs), errs
+
+    def test_c6_overridden_passes(self, validator):
+        from tileops.ops.op_base import Op
+
+        class Op2(Op):
+            def __init__(self): pass
+            def forward(self, x): return None
+            def _validate_dtypes(self, *args): pass
+            @property
+            def default_kernel_map(self): return {}
+
+        assert validator.check_c6_validate_dtypes_not_stub("Op2", {}, Op2) == []
+
+    def test_c7_stub_detected(self, validator):
+        from tileops.ops.op_base import Op
+
+        class Op3(Op):
+            def __init__(self): pass
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        errs = validator.check_c7_eval_roofline_not_stub("Op3", {}, Op3)
+        assert any("is the Op base stub" in e for e in errs), errs
+
+    def test_c7_overridden_passes(self, validator):
+        from tileops.ops.op_base import Op
+
+        class Op4(Op):
+            def __init__(self): pass
+            def forward(self, x): return None
+            def eval_roofline(self): return (0, 0)
+            @property
+            def default_kernel_map(self): return {}
+
+        assert validator.check_c7_eval_roofline_not_stub("Op4", {}, Op4) == []
+
+
+class TestParityOptOutRemoval:
+    """``parity_opt_out`` is removed: schema rejects it, parity ignores it."""
+
+    def test_schema_rejects_parity_opt_out_field(self, validator):
+        entry = _make_entry(status="implemented")
+        entry["parity_opt_out"] = ["shape_parity"]
+        errs = validator.check_l0("FakeOp", entry)
+        assert any("'parity_opt_out' is no longer a valid" in e for e in errs), errs
+
+    def test_schema_rejects_parity_opt_out_true(self, validator):
+        entry = _make_entry(status="spec-only")
+        entry["parity_opt_out"] = True
+        errs = validator.check_l0("FakeOp", entry)
+        assert any("'parity_opt_out' is no longer a valid" in e for e in errs), errs
+
+
+class TestStrictAdvisoryMode:
+    """Advisory vs strict routing of C1-C7 failures."""
+
+    def _write_manifest_with_stub_op(self, tmp_path):
+        """Synthesize a manifest pointing to an op whose class will fail
+        C5/C6/C7 (it does not override the base stubs and lacks
+        kernel_map plumbing). We point at an existing op file that has
+        Op subclasses; the validator's resolver will pull the class
+        and the stub checks fire.
+        """
+        # Pick an op known to fail C6/C7 stubs on main: any op with
+        # ``status: implemented`` is fine. We reuse the merged manifest
+        # path to avoid bespoke fixtures.
+        return None
+
+    def test_advisory_default_exits_zero_with_strict_failures(self):
+        """Advisory mode (default): strict-parity failures become
+        warnings, validator exits 0.
+        """
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR_SCRIPT)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"advisory mode must exit 0; stdout tail:\n{result.stdout[-500:]}"
+        )
+        assert "ADVISORY MODE" in result.stdout
+
+    def test_strict_flag_blocks_on_failures(self):
+        """``--strict`` flips strict-parity failures back to errors."""
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR_SCRIPT), "--strict"],
+            capture_output=True, text=True,
+        )
+        # Current main has known C1-C7 violations; strict mode must
+        # surface at least one of them and exit non-zero.
+        assert result.returncode != 0, (
+            f"strict mode must exit non-zero on current manifest; "
+            f"stdout tail:\n{result.stdout[-500:]}"
+        )

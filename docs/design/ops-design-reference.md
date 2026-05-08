@@ -198,7 +198,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   def _infer_output_shapes(self, x_shape: tuple) -> Dict[str, tuple]:
       return {"y": x_shape}
   ```
-- **Common mistakes.** Shape tuple disagreeing with `shape_rules` (hard L2 error); accepting/returning `torch.Tensor` instead of shape tuples; `parity_opt_out` used to silence a genuine disagreement.
+- **Common mistakes.** Shape tuple disagreeing with `shape_rules` (hard L2 error); accepting/returning `torch.Tensor` instead of shape tuples; demoting an op to `status: spec-only` to silence a genuine disagreement (only legitimate when the impl truly does not conform).
 
 ### Slot S18: <a id="slot-s18"></a> `_validate_dtypes` method body
 
@@ -383,7 +383,7 @@ Three time points: (1) manifest — constraint structure; (2) `__init__` — use
 
 Checks beyond this table are tracked as separate issues, not as spec status.
 
-**Parity check coverage.** The L2 / L3 parity checks compare the manifest spec against the concrete method the op class defines. When the class has not migrated to the codegen protocol, the validator emits a **warning** naming the missing method — the gap is surfaced, never silently passed. When the method exists, the parity check runs and any disagreement is a hard L2 / L3 error. A manifest entry may declare `parity_opt_out: [shape_parity, dtype_parity]` (or `parity_opt_out: true` for both) to suppress the warning for documented GPU-only ops whose method cannot be invoked in a CPU-only validator context; see [manifest.md § Entry Structure](manifest.md#entry-structure). Do not use `parity_opt_out` to silence a genuine disagreement.
+**Parity check coverage.** The L2 / L3 parity checks compare the manifest spec against the concrete method the op class defines. When the class has not migrated to the codegen protocol, the validator emits a **warning** naming the missing method — the gap is surfaced, never silently passed. When the method exists, the parity check runs and any disagreement is a hard L2 / L3 error. Ops whose method genuinely cannot be invoked in a CPU-only validator context must declare `status: spec-only`; there is no parity opt-out, and demotion is only legitimate when the implementation truly does not conform.
 
 ## Development Path (Appendix) <a id="development-path"></a>
 

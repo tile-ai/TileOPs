@@ -231,7 +231,7 @@ Classify every line in the output:
 - **ERROR** → BLOCKED. Do not commit. Copy the full error row into the report. If the error is a parity failure (L2 or L3 per PR #1005), re-check the emitted `_infer_output_shapes` or `_validate_dtypes` against the manifest's `shape_rules` / `dtype` / `dtype_combos` before classifying as BLOCKED — the scaffold may have mis-emitted.
 - **WARNING** → pass through to the report unchanged.
 
-Do NOT edit the manifest to silence an error. Do NOT set `parity_opt_out` to silence a parity error. If the scaffold cannot produce a body that satisfies the manifest, BLOCKED is the correct outcome.
+Do NOT edit the manifest to silence an error. There is no `parity_opt_out` escape hatch; demote to `status: spec-only` only when the implementation genuinely cannot conform. If the scaffold cannot produce a body that satisfies the manifest, BLOCKED is the correct outcome.
 
 ### 7. REPORT
 
