@@ -39,11 +39,11 @@ flowchart LR
 
 **R2. Full interface.** Params include all PyTorch-supported parameters, even if the kernel only supports the default.
 
-**R2a. Param placement.** Default: `__init__` kwarg (architecture-decided, lifetime-fixed). Use `forward()` only when the reference API requires it or the value is per-batch; justify in the introducing issue. The manifest schema does not encode the distinction.
+**R3. Param placement.** Default: `__init__` kwarg (architecture-decided, lifetime-fixed). Use `forward()` only when the reference API requires it or the value is per-batch; justify in the introducing issue. The manifest schema does not encode the distinction.
 
-**R3. `dtype` syntax.** `|` for alternatives. `same_as(ref)` is a dtype-only identity constraint: the tensor must have the exact same dtype as `ref` at runtime, does not contribute an independent axis to the Cartesian product in R4, and must not be used for shape.
+**R4. `dtype` syntax.** `|` for alternatives. `same_as(ref)` is a dtype-only identity constraint: the tensor must have the exact same dtype as `ref` at runtime, does not contribute an independent axis to the Cartesian product in R6, and must not be used for shape.
 
-**R3a. `promote_int_to_float(ref)`.** Output-dtype construct for ops whose integral inputs PyTorch promotes to a floating result (e.g. `torch.reciprocal`). Resolves to `float32` when `ref`'s runtime dtype is integral (`uint8` / `int8` / `int16` / `int32` / `int64`); otherwise resolves to `same_as(ref)`. May appear inside `|` unions on the output side (e.g. `"promote_int_to_float(input) | float64"`). `ref` MUST name a `signature.inputs` tensor; references to outputs or to the tensor itself are rejected. The construct is allowed only inside `signature.outputs[*].dtype`; it MUST NOT appear on input tensors, in `signature.dtype_combos` rows, or in `workloads[*].dtypes` (those positions require concrete `torch.*` dtypes or `same_as(ref)`). The validator expands the resolved dtype set when checking parity with `_validate_dtypes` and `dtype_combos`.
+**R5. `promote_int_to_float(ref)`.** Output-dtype construct for ops whose integral inputs PyTorch promotes to a floating result (e.g. `torch.reciprocal`). Resolves to `float32` when `ref`'s runtime dtype is integral (`uint8` / `int8` / `int16` / `int32` / `int64`); otherwise resolves to `same_as(ref)`. May appear inside `|` unions on the output side (e.g. `"promote_int_to_float(input) | float64"`). `ref` MUST name a `signature.inputs` tensor; references to outputs or to the tensor itself are rejected. The construct is allowed only inside `signature.outputs[*].dtype`; it MUST NOT appear on input tensors, in `signature.dtype_combos` rows, or in `workloads[*].dtypes` (those positions require concrete `torch.*` dtypes or `same_as(ref)`). The validator expands the resolved dtype set when checking parity with `_validate_dtypes` and `dtype_combos`.
 
 Worked example — `torch.reciprocal` accepts integral inputs and returns `float32`, while floating inputs round-trip:
 
@@ -60,7 +60,7 @@ ReciprocalFwdOp:
 
 The op-layer implementation must mirror this contract: integer inputs are cast to `float32` before the float kernel runs, and `output_dtype` is `float32` for those constructions.
 
-**R4. `dtype_combos`.** Enumerates supported cross-tensor dtype combinations.
+**R6. `dtype_combos`.** Enumerates supported cross-tensor dtype combinations.
 
 - **Present:** exhaustive. Only listed combinations are valid.
 - **Absent:** all Cartesian-product combinations are assumed valid.
@@ -74,29 +74,29 @@ dtype_combos:
   - {x: bfloat16, weight: bfloat16}
 ```
 
-**R5. Explicit shape.** Every output tensor's shape must be fully specified via `shape` and/or `shape_rules`. Input tensors may omit `shape` (→ arbitrary rank per R7).
+**R7. Explicit shape.** Every output tensor's shape must be fully specified via `shape` and/or `shape_rules`. Input tensors may omit `shape` (→ arbitrary rank per R9).
 
-**R6. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). No ellipsis or wildcards. Roofline variable binding is defined in [roofline.md](roofline.md).
+**R8. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). No ellipsis or wildcards. Roofline variable binding is defined in [roofline.md](roofline.md).
 
-**R7. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`. Optionally, `static_dims` declares values the user commits to at Op construction time (R20).
+**R9. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`. Optionally, `static_dims` declares values the user commits to at Op construction time (R20).
 
-**R8. No shape aliasing.** Each tensor declares its own shape. Use shared dimension names (R9) or `shape_rules` (R11) to express shape relationships.
+**R10. No shape aliasing.** Each tensor declares its own shape. Use shared dimension names (R11) or `shape_rules` (R13) to express shape relationships.
 
-**R9. Shared dimension names = equality.** `K` in two tensors means their sizes must match.
+**R11. Shared dimension names = equality.** `K` in two tensors means their sizes must match.
 
-**R10. `constraints`.** Restricts dimensions: `"64 | 128 | 256"` (enumerated) or `"power_of_2"`, `"divisible_by(k)"`, `"even"`, `"positive"` (predicates). Requires `shape`.
+**R12. `constraints`.** Restricts dimensions: `"64 | 128 | 256"` (enumerated) or `"power_of_2"`, `"divisible_by(k)"`, `"even"`, `"positive"` (predicates). Requires `shape`.
 
-**R11. `shape_rules`.** Python expressions for shape relationships. Required when `shape` alone cannot fully specify output shape.
+**R13. `shape_rules`.** Python expressions for shape relationships. Required when `shape` alone cannot fully specify output shape.
 
-**R11a. Reduction `dim` semantics.** Expressed via `shape_rules` (range validity, normalize-then-check, uniqueness), reusing the existing vocabulary rather than a dedicated manifest field. Authoring boilerplate and per-op empty-sequence semantics: see [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
+**R14. Reduction `dim` semantics.** Expressed via `shape_rules` (range validity, normalize-then-check, uniqueness), reusing the existing vocabulary rather than a dedicated manifest field. Authoring boilerplate and per-op empty-sequence semantics: see [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
 
-**R13. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on a targeted entry (includes its variants).
+**R15. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on a targeted entry (includes its variants).
 
-**R14. Roofline metadata.** See [roofline.md](roofline.md). That document is the source of truth for roofline modes, variable binding, formula syntax, consumers, and codegen behavior.
+**R16. Roofline metadata.** See [roofline.md](roofline.md). That document is the source of truth for roofline modes, variable binding, formula syntax, consumers, and codegen behavior.
 
-**R15. PyTorch API alignment.** Op signatures match PyTorch's public API (names, parameter set, semantics). Do not invent parameters.
+**R17. PyTorch API alignment.** Op signatures match PyTorch's public API (names, parameter set, semantics). Do not invent parameters.
 
-**R16. No Optional[Tensor].** Fixed tensor inputs per entry. Conditional inputs split into variants via `variant_of`, which is single-level (variant → primary, no chaining). Variants share `source.kernel` and `source.op`; each has its own `signature`, `workloads`, `roofline`.
+**R18. No Optional[Tensor].** Fixed tensor inputs per entry. Conditional inputs split into variants via `variant_of`, which is single-level (variant → primary, no chaining). Variants share `source.kernel` and `source.op`; each has its own `signature`, `workloads`, `roofline`.
 
 **R19. Tensor layout.** Default: contiguous row-major (no `layout` field). Non-default: add `layout` field, `shape` names reflect memory order.
 
@@ -142,7 +142,7 @@ def forward(self, x: torch.Tensor):
 - The expression MUST be a **single-axis reference** of the form `<tensor>.shape[<const_or_param>]`. Multi-axis forms (e.g., `product(x.shape[i] for i in ...)`, comprehensions, arithmetic over shape) are forbidden.
 - Referenced tensor names must be in `signature.inputs`. Referenced axis names (when not integer literals) must be in `signature.params`.
 - Key order determines the order those kwargs appear in the generated `__init__`, consistent with R1.
-- `static_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R6).
+- `static_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R8).
 
 ### Evaluation context
 
@@ -287,18 +287,18 @@ signature:
 
 ```
 Fixed rank, expressible with dimension names?
-├─ YES → shape: "[D1, D2, ...]"                           [R6]
+├─ YES → shape: "[D1, D2, ...]"                           [R8]
 │   Relationships beyond shared names?
-│   └─ YES → add shape_rules                              [R11]
+│   └─ YES → add shape_rules                              [R13]
 └─ NO (arbitrary rank)
-   ├─ write shape_rules                                   [R11]
+   ├─ write shape_rules                                   [R13]
    └─ Values committed at Op construction time?
       └─ YES → add static_dims                            [R20]
 ```
 
 #### Optional Inputs
 
-Manifest does not support `Optional[Tensor]` (R16). Split into variant entries with fixed signatures, linked by `variant_of`.
+Manifest does not support `Optional[Tensor]` (R18). Split into variant entries with fixed signatures, linked by `variant_of`.
 
 **Decision tree:**
 
@@ -368,7 +368,7 @@ source:
 
 ## Entry Examples
 
-**Fixed rank — GEMM** \[R6, R9\]:
+**Fixed rank — GEMM** \[R8, R11\]:
 
 ```yaml
 inputs:
@@ -378,7 +378,7 @@ outputs:
   c: {dtype: "same_as(a)", shape: "[M, N]"}
 ```
 
-**Fixed rank + constraints — FFT** \[R6, R10\]:
+**Fixed rank + constraints — FFT** \[R8, R12\]:
 
 ```yaml
 inputs:
@@ -387,7 +387,7 @@ outputs:
   y: {dtype: "same_as(x)", shape: "[M, N]"}
 ```
 
-**Arbitrary rank — RMSNorm** \[R7, R11, R20\]:
+**Arbitrary rank — RMSNorm** \[R9, R13, R20\]:
 
 ```yaml
 inputs:
@@ -405,7 +405,7 @@ shape_rules:
   - "weight.shape == (x.shape[dim],)"
 ```
 
-**Arbitrary rank — Reduce** \[R7, R11\]:
+**Arbitrary rank — Reduce** \[R9, R13\]:
 
 ```yaml
 inputs:
@@ -422,7 +422,7 @@ shape_rules:
   - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 ```
 
-All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve input shape (no `keepdim`); use `shape_rules` to express `y.shape == x.shape`. count_nonzero has no `keepdim` (per R15). Authoring contract for `dim`: see R11a → [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
+All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve input shape (no `keepdim`); use `shape_rules` to express `y.shape == x.shape`. count_nonzero has no `keepdim` (per R17). Authoring contract for `dim`: see R14 → [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
 
 **Full entry — RMSNorm:**
 
