@@ -19,7 +19,10 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
+from tileops.kernels.norm import (
+    GroupNormKernel,
+    InstanceNormNoAffineKernel,
+)
 
 from ..op_base import Op
 from .norm_base import ALIGNMENT, align_up
@@ -300,14 +303,14 @@ class InstanceNormFwdOpNoAffine(Op):
         self.M = N * C
         self.D_padded = align_up(self.D, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["group_norm_no_affine"](
+        self.kernel = self.kernel_map["instance_norm_no_affine"](
             self.M, self.D, eps, dtype, tune=tune,
         )
         self._kernel_device = torch.device("cuda", torch.cuda.current_device())
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"group_norm_no_affine": GroupNormNoAffineKernel}
+        return {"instance_norm_no_affine": InstanceNormNoAffineKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
         elem_bytes = self.dtype.itemsize

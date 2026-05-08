@@ -596,7 +596,7 @@ InstanceNormFwdOpNoAffine:
   source:
     kernel: tileops/kernels/norm/group_norm.py
     kernel_map:
-      group_norm_no_affine: GroupNormNoAffineKernel
+      instance_norm_no_affine: InstanceNormNoAffineKernel
     op: tileops/ops/norm/instance_norm.py
     test: tests/ops/test_instance_norm.py
     bench: benchmarks/ops/bench_instance_norm.py
