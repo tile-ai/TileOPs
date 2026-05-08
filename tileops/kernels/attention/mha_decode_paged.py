@@ -338,7 +338,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                     by,
                     :,
                     bx * block_M:(bx + 1) * block_M,
-                ], lse_shared)
+                ], lse_shared, disable_tma=True)
                 T.copy(lse_shared, lse_local)
                 T.reduce_max(lse_local, lse_max_local, dim=0, clear=False)
                 for k in T.Pipelined(num_split):
