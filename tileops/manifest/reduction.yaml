@@ -55,7 +55,7 @@ SoftmaxFwdOp:
 LogSoftmaxFwdOp:
   ref_api: "torch.nn.functional.log_softmax"
   family: reduction
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -107,7 +107,7 @@ LogSoftmaxFwdOp:
 LogSumExpFwdOp:
   ref_api: "torch.logsumexp"
   family: reduction
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -347,7 +347,7 @@ AminFwdOp:
 ProdFwdOp:
   ref_api: "torch.prod"
   family: reduction
-  status: spec-only
+  status: implemented
   # NOTE: torch.prod has two overloads -- prod(input) for full reduction (no
   # dim arg) and prod(input, dim, keepdim=False) where dim is a required int.
   # Unlike torch.sum, torch.prod's dim overload rejects dim=None at runtime
