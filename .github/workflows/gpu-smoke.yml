@@ -170,8 +170,6 @@ jobs:
 
           add_target() {
             local target="$1"
-            # Skip paths that were deleted/renamed in this PR — the diff
-            # surfaces them but pytest would error with ENOENT.
             [[ -e "$target" ]] || return 0
             if [[ -z "${seen_targets[$target]:-}" ]]; then
               selected_targets+=("$target")
