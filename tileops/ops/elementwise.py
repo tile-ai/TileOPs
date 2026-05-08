@@ -2270,7 +2270,14 @@ class PreluFwdOp(Op):
     _op_name = "prelu"
     _wrapped = None
 
-    def __init__(self, shape: tuple, dtype: torch.dtype, num_channels: int):
+    def __init__(
+        self,
+        shape: tuple,
+        dtype: torch.dtype,
+        num_channels: int,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+    ):
         self.shape = shape
         self.dtype = dtype
         self.num_channels = num_channels
@@ -2279,7 +2286,8 @@ class PreluFwdOp(Op):
         # PyTorch PReLU: channel dim is 1 for ndim>=2, else 0
         inner_size = (prod(shape[2:]) if len(shape) > 2 else 1) if len(shape) >= 2 else 1
         self.inner_size = inner_size
-        self.kernel = PreluFwdKernel(N_total, num_channels, inner_size, dtype)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["prelu"](N_total, num_channels, inner_size, dtype)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -2360,6 +2368,8 @@ class WhereFwdOp(Op):
         input: tuple,  # noqa: A002 — manifest-aligned PyTorch param name
         other: tuple,
         dtype: torch.dtype,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         if dtype not in self._SUPPORTED_DTYPES:
             names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
@@ -2375,7 +2385,8 @@ class WhereFwdOp(Op):
             torch.broadcast_shapes(self.condition_shape, self.input_shape, self.other_shape)
         )
         self.N_total = prod(self.out_shape) if self.out_shape else 1
-        self.kernel = WhereFwdKernel(self.N_total, dtype)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["where"](self.N_total, dtype)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -2913,6 +2924,8 @@ class MaskedFillFwdOp(Op):
         mask: tuple,
         value: tuple,
         dtype: torch.dtype,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         if tuple(value) != ():
             raise ValueError(
@@ -2924,7 +2937,8 @@ class MaskedFillFwdOp(Op):
         self.dtype = dtype
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.mask_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
-        self.kernel = MaskedFillTensorValueFwdKernel(self.N_total, dtype)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["masked_fill_tensor_value"](self.N_total, dtype)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -3008,6 +3022,8 @@ class MaskedFillScalarFwdOp(Op):
         mask: tuple,
         value: bool | int | float = 0,
         dtype: torch.dtype = torch.float32,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         kernel_supported = MaskedFillFwdKernel.SUPPORTED_DTYPES
         if kernel_supported is not None and dtype not in kernel_supported:
@@ -3031,7 +3047,8 @@ class MaskedFillScalarFwdOp(Op):
             self.input_shape != self.out_shape or self.mask_shape != self.out_shape
         )
         _validate_scalar_param_repr("value", value, dtype, self._op_name)
-        self.kernel = MaskedFillFwdKernel(self.N_total, dtype, value)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["masked_fill"](self.N_total, dtype, value)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -3181,11 +3198,19 @@ class AlibiFwdOp(Op):
     _op_name = "alibi"
     _wrapped = None
 
-    def __init__(self, seq_len: int, num_heads: int, dtype: torch.dtype):
+    def __init__(
+        self,
+        seq_len: int,
+        num_heads: int,
+        dtype: torch.dtype,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+    ):
         self.seq_len = seq_len
         self.num_heads = num_heads
         self.dtype = dtype
-        self.kernel = AlibiFwdKernel(seq_len, num_heads, dtype)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["alibi"](seq_len, num_heads, dtype)
         # Scalar tensor used as device/dtype carrier for torch.compile tracing
         self._device_carrier = torch.empty((), dtype=dtype, device="cuda")
         self._instance_key = id(self)
@@ -3225,11 +3250,19 @@ class SinusoidalFwdOp(Op):
     _op_name = "sinusoidal"
     _wrapped = None
 
-    def __init__(self, seq_len: int, d_model: int, dtype: torch.dtype):
+    def __init__(
+        self,
+        seq_len: int,
+        d_model: int,
+        dtype: torch.dtype,
+        *,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+    ):
         self.seq_len = seq_len
         self.d_model = d_model
         self.dtype = dtype
-        self.kernel = SinusoidalFwdKernel(seq_len, d_model, dtype)
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["sinusoidal"](seq_len, d_model, dtype)
         # Scalar tensor used as device/dtype carrier for torch.compile tracing
         self._device_carrier = torch.empty((), dtype=dtype, device="cuda")
         self._instance_key = id(self)
