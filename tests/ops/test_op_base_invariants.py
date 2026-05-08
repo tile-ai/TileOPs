@@ -38,15 +38,19 @@ pytestmark = pytest.mark.smoke
 
 
 def _import_all_op_modules() -> None:
-    """Walk ``tileops.ops`` recursively so every Op subclass is imported."""
+    """Walk ``tileops.ops`` recursively so every Op subclass is imported.
+
+    Tolerate ``ImportError`` only — a missing optional backend should not
+    block invariant scanning. Any other exception (``SyntaxError``,
+    ``RuntimeError``, ...) is a real bug that would silently drop ops from
+    the invariant scan, so re-raise to surface it as a test failure.
+    """
     for mod_info in pkgutil.walk_packages(
         ops_pkg.__path__, prefix=ops_pkg.__name__ + ".",
     ):
         try:
             importlib.import_module(mod_info.name)
-        except Exception:  # noqa: BLE001
-            # A missing optional backend should not block invariant scanning
-            # of the rest of the package; record and continue.
+        except ImportError:
             continue
 
 
@@ -152,8 +156,14 @@ def _init_routes_through_dispatch(init_node: ast.FunctionDef) -> bool:
         if not isinstance(stmt, ast.Call):
             continue
         func = stmt.func
-        # self.dispatch_kernel(...)
-        if isinstance(func, ast.Attribute) and func.attr == "dispatch_kernel":
+        # self.dispatch_kernel(...) — require the call target to be ``self``
+        # so ``other.dispatch_kernel(...)`` does not satisfy the invariant.
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "dispatch_kernel"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "self"
+        ):
             return True
         # super().__init__(...)
         if (

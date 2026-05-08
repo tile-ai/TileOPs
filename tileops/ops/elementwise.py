@@ -2265,6 +2265,8 @@ class PreluFwdOp(Op):
         shape: Shape of the input tensor (must have a channel dimension).
         dtype: Torch dtype.
         num_channels: Number of channels (weight length).
+        kernel_map: Optional dispatch override mapping kernel keys to
+            ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
 
     _op_name = "prelu"
@@ -2287,7 +2289,7 @@ class PreluFwdOp(Op):
         inner_size = (prod(shape[2:]) if len(shape) > 2 else 1) if len(shape) >= 2 else 1
         self.inner_size = inner_size
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["prelu"](N_total, num_channels, inner_size, dtype)
+        self.kernel = self.kernel_map[self._op_name](N_total, num_channels, inner_size, dtype)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -2352,6 +2354,8 @@ class WhereFwdOp(Op):
         input: Shape of the value-when-true tensor.
         other: Shape of the value-when-false tensor.
         dtype: Torch dtype for ``input`` / ``other``.
+        kernel_map: Optional dispatch override mapping kernel keys to
+            ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
 
     _op_name = "where"
@@ -2386,7 +2390,7 @@ class WhereFwdOp(Op):
         )
         self.N_total = prod(self.out_shape) if self.out_shape else 1
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["where"](self.N_total, dtype)
+        self.kernel = self.kernel_map[self._op_name](self.N_total, dtype)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -2913,6 +2917,8 @@ class MaskedFillFwdOp(Op):
         mask: Shape of the mask tensor (bool).
         value: Shape of the value tensor (must be ``()`` per the manifest).
         dtype: Torch dtype for ``input`` / ``value``.
+        kernel_map: Optional dispatch override mapping kernel keys to
+            ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
 
     _op_name = "masked_fill"
@@ -3011,6 +3017,8 @@ class MaskedFillScalarFwdOp(Op):
             against ``dtype``.
         dtype: Torch dtype. Must be a kernel-supported floating-point
             dtype.
+        kernel_map: Optional dispatch override mapping kernel keys to
+            ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
 
     _op_name = "masked_fill"
@@ -3193,6 +3201,8 @@ class AlibiFwdOp(Op):
         seq_len: Sequence length.
         num_heads: Number of attention heads.
         dtype: Torch dtype.
+        kernel_map: Optional dispatch override mapping kernel keys to
+            ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
 
     _op_name = "alibi"
@@ -3210,7 +3220,7 @@ class AlibiFwdOp(Op):
         self.num_heads = num_heads
         self.dtype = dtype
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["alibi"](seq_len, num_heads, dtype)
+        self.kernel = self.kernel_map[self._op_name](seq_len, num_heads, dtype)
         # Scalar tensor used as device/dtype carrier for torch.compile tracing
         self._device_carrier = torch.empty((), dtype=dtype, device="cuda")
         self._instance_key = id(self)
@@ -3245,6 +3255,8 @@ class SinusoidalFwdOp(Op):
         seq_len: Sequence length.
         d_model: Model dimension.
         dtype: Torch dtype.
+        kernel_map: Optional dispatch override mapping kernel keys to
+            ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
 
     _op_name = "sinusoidal"
@@ -3262,7 +3274,7 @@ class SinusoidalFwdOp(Op):
         self.d_model = d_model
         self.dtype = dtype
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["sinusoidal"](seq_len, d_model, dtype)
+        self.kernel = self.kernel_map[self._op_name](seq_len, d_model, dtype)
         # Scalar tensor used as device/dtype carrier for torch.compile tracing
         self._device_carrier = torch.empty((), dtype=dtype, device="cuda")
         self._instance_key = id(self)
