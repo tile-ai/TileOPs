@@ -1,7 +1,11 @@
 """L1 signature parity coverage for ``elementwise_binary`` ops.
 
 Drives expectations from ``tileops/manifest/elementwise_binary.yaml`` so
-future drift between manifest and code surfaces immediately. Covers:
+future drift between manifest and code surfaces immediately.
+
+Signature/parity tests run anywhere; construction smoke requires CUDA.
+
+Covers:
 
 - ``forward`` second-arg name matches ``signature.inputs[1].name`` — guards
   the ``BinaryOp.__init_subclass__`` ``_other_name`` rebinding for ops like
@@ -10,9 +14,9 @@ future drift between manifest and code surfaces immediately. Covers:
 - Every manifest-declared param appears in ``__init__`` with the same
   default value.
 - Construction-only smoke per op using test-owned shapes/dtypes (no
-  manifest workload reads, no autotune); runs wherever the test suite
-  runs (GPU runner, since ``BinaryOp.__init__`` resolves an SM version
-  via ``torch.cuda.get_device_capability``).
+  manifest workload reads, no autotune). CUDA-gated because
+  ``BinaryOp.__init__`` resolves SM version via
+  ``torch.cuda.get_device_capability``.
 
 Behavior tests (bidirectional broadcast) remain CUDA-only and live at the
 end of the file.
@@ -229,9 +233,16 @@ def _ctor_for(op_name: str) -> Tuple[type, Dict[str, Any]]:
 
 
 @pytest.mark.smoke
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason=(
+        "construction smoke calls dispatch_kernel which queries CUDA SM "
+        "via torch.cuda.get_device_capability"
+    ),
+)
 @pytest.mark.parametrize("op_name", _OP_NAMES)
 def test_construction_smoke(op_name: str) -> None:
-    """Each op constructs from test-owned smoke shapes/dtypes on CPU."""
+    """Each op constructs from test-owned smoke shapes/dtypes."""
     spec = _MANIFEST[op_name]
     if spec.get("parity_opt_out"):
         pytest.skip(f"{op_name} parity_opt_out: {spec['parity_opt_out']}")
