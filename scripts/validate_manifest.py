@@ -3260,6 +3260,16 @@ def check_c3_ctor_signature_parity(
                 f"manifest={manifest_kw_only}, code={code_kw_only}"
             )
 
+    # Code-only extras: any ``__init__`` param that is not infra and is
+    # not declared in manifest ``signature.params``. Without this an op
+    # can grow a new ctor knob without touching the spec.
+    manifest_param_names = set(manifest_params.keys())
+    for pname in sorted(set(code_params) - manifest_param_names):
+        errors.append(
+            f"[ctor] {op_name}: param {pname!r} present on __init__ but "
+            f"not declared in manifest signature.params"
+        )
+
     return errors
 
 

@@ -4376,46 +4376,21 @@ class TestParityOptOutRemoval:
 
 
 class TestStrictAdvisoryMode:
-    """Advisory vs strict routing of C1-C7 failures."""
+    """Advisory vs strict routing of C1-C7 failures, driven through
+    ``validate_manifest()`` with a synthetic single-file manifest pointing
+    at a stub-only Op fixture. Tests the routing itself, not the bare
+    helpers — independent of the checked-in manifest's strict-parity
+    backlog."""
 
-    def _write_manifest_with_stub_op(self, tmp_path):
-        """Synthesize a manifest pointing to an op whose class will fail
-        C5/C6/C7 (it does not override the base stubs and lacks
-        kernel_map plumbing). We point at an existing op file that has
-        Op subclasses; the validator's resolver will pull the class
-        and the stub checks fire.
-        """
-        # Pick an op known to fail C6/C7 stubs on main: any op with
-        # ``status: implemented`` is fine. We reuse the merged manifest
-        # path to avoid bespoke fixtures.
-        return None
-
-    def test_advisory_default_exits_zero_with_strict_failures(self):
-        """Advisory mode (default): strict-parity failures become
-        warnings, validator exits 0.
-        """
-        result = subprocess.run(
-            [sys.executable, str(VALIDATOR_SCRIPT)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, (
-            f"advisory mode must exit 0; stdout tail:\n{result.stdout[-500:]}"
-        )
-        assert "ADVISORY MODE" in result.stdout
-
-    def test_strict_flag_blocks_on_failures(self, validator):
-        """``--strict`` (``strict_parity=True``) routes strict-parity
-        failures to errors; advisory mode routes the same failures to
-        warnings.
-
-        Driven by a tiny synthetic Op + manifest entry that intentionally
-        leaves ``_validate_dtypes`` and ``eval_roofline`` as base stubs
-        (C6 + C7 violations). Independent of the real repo manifest, so
-        this test stays stable as the strict-parity backlog gets cleaned up.
-        """
+    @pytest.fixture
+    def stub_setup(self, tmp_path, monkeypatch, validator):
+        """Build a synthetic single-file manifest pointing at an in-process
+        Op fixture that fails C6/C7. Monkeypatches the validator's op-class
+        resolver so the test does not depend on the synthetic op file
+        being importable from sys.path."""
         from tileops.ops.op_base import Op
 
-        class _StrictFlagOp(Op):
+        class StubOp(Op):
             def __init__(self, N, dtype):
                 self.N = N
                 self.dtype = dtype
@@ -4425,27 +4400,100 @@ class TestStrictAdvisoryMode:
             def default_kernel_map(self):
                 return {}
 
-        entry = {
-            "family": "synth",
-            "status": "implemented",
-            "signature": {
-                "params": {
-                    "N": {"dtype": "int"},
-                    "dtype": {"dtype": "torch.dtype"},
-                },
-                "inputs": {"x": {"dtype": "float16"}},
-                "outputs": {"y": {"dtype": "float16"}},
-            },
-            "shape_rules": {"x": "[N]", "y": "[N]"},
-            "workloads": [],
-            "source": {"op": "synthetic://_StrictFlagOp"},
-        }
-        # Strict mode: C6 and C7 stub failures must surface as errors.
-        c6 = validator.check_c6_validate_dtypes_not_stub(
-            "_StrictFlagOp", entry, _StrictFlagOp,
+        manifest_yaml = tmp_path / "stub.yaml"
+        manifest_yaml.write_text(
+            "StubOp:\n"
+            "  family: synth\n"
+            "  status: implemented\n"
+            "  ref_api: https://example.invalid/stub\n"
+            "  signature:\n"
+            "    params:\n"
+            "      N: {type: int}\n"
+            "      dtype: {type: torch.dtype}\n"
+            "    inputs:\n"
+            "      x: {dtype: float16}\n"
+            "    outputs:\n"
+            "      y: {dtype: float16}\n"
+            "  shape_rules:\n"
+            "    x: '[N]'\n"
+            "    y: '[N]'\n"
+            "  workloads: []\n"
+            "  roofline:\n"
+            "    flops: 'N'\n"
+            "    bytes: '2 * N'\n"
+            "  source:\n"
+            "    op: tests/__strict_parity_stub__.py\n"
+            "    kernel: tileops/kernels/__strict_parity_stub__.py\n"
+            "    bench: benchmarks/ops/__strict_parity_stub__.py\n"
+            "    test: tests/__strict_parity_stub_test__.py\n"
+            "    kernel_map:\n"
+            "      stub: tileops.kernels.StubKernel\n"
         )
-        c7 = validator.check_c7_eval_roofline_not_stub(
-            "_StrictFlagOp", entry, _StrictFlagOp,
+
+        def _fake_resolve(op_file, op_name):
+            if op_name == "StubOp":
+                return validator._ResolveResult(cls=StubOp)
+            return validator._ResolveResult()
+
+        monkeypatch.setattr(validator, "_resolve_op_class", _fake_resolve)
+        return manifest_yaml
+
+    def test_advisory_routes_strict_failures_to_warnings(
+        self, validator, stub_setup,
+    ):
+        """Advisory mode: strict-parity failures land in warnings,
+        ``errors`` stays empty for these checks."""
+        # Skip schema/L1 to keep the synthetic manifest minimal; the
+        # checks we exercise here are the strict-parity ones (C5-C7),
+        # gated by signature/dtype/bench.
+        levels = frozenset({"signature", "shape", "dtype", "bench"})
+        errors, warnings = validator.validate_manifest(
+            manifest_path=stub_setup, strict_parity=False, levels=levels,
         )
-        assert c6 and any("base stub" in e for e in c6), c6
-        assert c7 and any("base stub" in e for e in c7), c7
+        # No strict-parity tagged entries should appear in errors.
+        strict_tags = ("[stub]", "[ctor]", "[forward]", "[dispatch]")
+        leaked = [e for e in errors if any(t in e for t in strict_tags)]
+        assert not leaked, (
+            f"strict failures must not appear in errors in advisory mode; "
+            f"leaked={leaked}"
+        )
+        # At least one strict-parity warning was raised (C6/C7 fixture
+        # is guaranteed to fail both).
+        strict_warnings = [
+            w for w in warnings if "STRICT-PARITY (advisory)" in w
+        ]
+        assert strict_warnings, (
+            f"advisory mode must surface strict-parity warnings; "
+            f"warnings={warnings}"
+        )
+
+    def test_strict_routes_failures_to_errors(
+        self, validator, stub_setup,
+    ):
+        """Strict mode: the same failures land in ``errors`` and the
+        ``STRICT-PARITY (advisory)`` warning prefix is absent."""
+        levels = frozenset({"signature", "shape", "dtype", "bench"})
+        errors, warnings = validator.validate_manifest(
+            manifest_path=stub_setup, strict_parity=True, levels=levels,
+        )
+        strict_errors = [e for e in errors if "[stub]" in e]
+        assert strict_errors, (
+            f"strict mode must surface strict-parity errors; "
+            f"errors={errors}"
+        )
+        assert not any(
+            "STRICT-PARITY (advisory)" in w for w in warnings
+        ), f"strict mode must not demote to advisory; warnings={warnings}"
+
+    def test_cli_advisory_mode_exits_zero_on_real_manifest(self):
+        """Advisory mode end to end on the checked-in manifest must
+        exit 0 even with the current strict-parity backlog. Stable
+        over time: the gate stays advisory until follow-ups close."""
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR_SCRIPT)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"advisory mode must exit 0; stdout tail:\n{result.stdout[-500:]}"
+        )
+        assert "ADVISORY MODE" in result.stdout
