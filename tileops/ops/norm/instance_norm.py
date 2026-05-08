@@ -297,17 +297,20 @@ class InstanceNormFwdOpNoAffine(Op):
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
         use_input_stats: Mirrors ``torch.nn.functional.instance_norm``. When
-            ``True`` (the default), per-instance statistics are computed
-            from the input. When ``False`` (the running-stats / eval-mode
-            path), the supplied ``running_mean`` and ``running_var``
-            tensors are used as the normalization statistics, broadcast
-            across the batch and spatial dimensions.
+            ``True`` (the default and only supported value), per-instance
+            statistics are computed from the input. ``False`` (the
+            running-stats / eval-mode path) is deferred and raises
+            ``NotImplementedError``.
         momentum: Mirrors ``torch.nn.functional.instance_norm``. Stored on
-            the op instance for API parity with PyTorch but unused at the
-            op layer (running-stat updates are the caller's responsibility).
+            the op instance for API parity with PyTorch but unused on the
+            per-instance (``use_input_stats=True``) path.
         eps: Epsilon for numerical stability.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
+
+    Raises:
+        NotImplementedError: If ``use_input_stats=False`` is requested
+            (the deferred running-stats path).
     """
 
     def __init__(
@@ -323,6 +326,12 @@ class InstanceNormFwdOpNoAffine(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        if not use_input_stats:
+            raise NotImplementedError(
+                "use_input_stats=False (the running-stats / eval-mode path) "
+                "is not supported by InstanceNormFwdOpNoAffine; only "
+                "use_input_stats=True (per-instance statistics) is implemented."
+            )
         self.N = N
         self.C = C
         self.spatial = spatial
@@ -343,10 +352,6 @@ class InstanceNormFwdOpNoAffine(Op):
             self.M_padded, self.D, eps, dtype, tune=tune,
         )
         self._kernel_device = torch.device("cuda", torch.cuda.current_device())
-        # Running statistics for the use_input_stats=False path. Bound via
-        # set_running_stats(); left None on the per-instance-stats path.
-        self._running_mean: Optional[torch.Tensor] = None
-        self._running_var: Optional[torch.Tensor] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -382,57 +387,8 @@ class InstanceNormFwdOpNoAffine(Op):
                 f"Expected x.dtype {self.dtype}, got {x.dtype}"
             )
 
-    def set_running_stats(
-        self,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-    ) -> None:
-        """Bind the running statistics consumed on the ``use_input_stats=False`` path.
-
-        Mirrors how ``torch.nn.InstanceNorm*`` carries ``running_mean`` /
-        ``running_var`` as module buffers: the op stores references to the
-        caller's tensors and reads them on each forward. The op does not
-        update the buffers; the caller is responsible for the momentum-
-        based update before calling forward.
-
-        Args:
-            running_mean: Channel-wise running mean of shape ``(C,)`` on
-                the kernel device, with dtype matching the op.
-            running_var: Channel-wise running variance of shape ``(C,)`` on
-                the kernel device, with dtype matching the op.
-
-        Raises:
-            ValueError: On dtype, shape, or device mismatch.
-        """
-        for name, t in (("running_mean", running_mean),
-                        ("running_var", running_var)):
-            if not t.is_cuda:
-                raise ValueError(f"{name} must be a CUDA tensor")
-            if t.device != self._kernel_device:
-                raise ValueError(
-                    f"Expected {name} on {self._kernel_device}, got {t.device}"
-                )
-            if t.dtype != self.dtype:
-                raise ValueError(
-                    f"Expected {name}.dtype {self.dtype}, got {t.dtype}"
-                )
-            if t.ndim != 1 or t.shape[0] != self.C:
-                raise ValueError(
-                    f"Expected {name} shape ({self.C},), got {tuple(t.shape)}"
-                )
-        self._running_mean = running_mean
-        self._running_var = running_var
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply instance normalization without affine.
-
-        On the ``use_input_stats=True`` path, per-instance statistics are
-        computed from the input. On the ``use_input_stats=False`` path,
-        the running statistics previously bound via
-        :meth:`set_running_stats` are broadcast across the batch and
-        spatial dimensions and used as the normalization statistics,
-        matching ``torch.nn.functional.instance_norm`` with
-        ``use_input_stats=False``.
 
         Args:
             x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
@@ -442,9 +398,7 @@ class InstanceNormFwdOpNoAffine(Op):
 
         Raises:
             ValueError: If tensors are not on CUDA, dtypes mismatch, or
-                shapes are incompatible with the configured dimensions, or
-                if ``use_input_stats=False`` and running stats have not
-                been bound.
+                shapes are incompatible with the configured dimensions.
         """
         self._validate_dtypes(x)
         if not x.is_cuda:
@@ -459,16 +413,6 @@ class InstanceNormFwdOpNoAffine(Op):
         if tuple(x.shape) != expected_shape:
             raise ValueError(
                 f"Expected x shape {expected_shape}, got {tuple(x.shape)}"
-            )
-
-        if not self.use_input_stats:
-            if self._running_mean is None or self._running_var is None:
-                raise ValueError(
-                    "use_input_stats=False requires running_mean and running_var "
-                    "to be bound via set_running_stats() before forward()."
-                )
-            return self._forward_running_stats(
-                x, self._running_mean, self._running_var,
             )
 
         orig_shape = x.shape
@@ -489,22 +433,3 @@ class InstanceNormFwdOpNoAffine(Op):
             y_2d = y_2d[:, :self.D]
 
         return y_2d.reshape(orig_shape)
-
-    def _forward_running_stats(
-        self,
-        x: torch.Tensor,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-    ) -> torch.Tensor:
-        """Normalize using supplied per-channel running statistics.
-
-        Pure elementwise: ``y = (x - rm[None, :, None...]) / sqrt(rv + eps)``.
-        Math is promoted to fp32 to keep fp16 / bf16 numerics aligned with
-        PyTorch's reference path; the result is cast back to ``x.dtype``.
-        """
-        broadcast_shape = [1, self.C] + [1] * len(self.spatial)
-        rm = running_mean.float().reshape(broadcast_shape)
-        rv = running_var.float().reshape(broadcast_shape)
-        rstd = torch.rsqrt(rv + self.eps)
-        y = (x.float() - rm) * rstd
-        return y.to(x.dtype)

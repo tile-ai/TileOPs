@@ -266,123 +266,14 @@ def test_instance_norm_init_signature_covers_manifest_params(
 
 
 @pytest.mark.smoke
-def test_instance_norm_affine_rejects_running_stats_path() -> None:
-    """Affine variant defers `use_input_stats=False` (running-stats path)."""
+@pytest.mark.parametrize("op_cls", [InstanceNormFwdOp, InstanceNormFwdOpNoAffine])
+def test_instance_norm_rejects_running_stats_path(op_cls: type) -> None:
+    """Both variants defer `use_input_stats=False` (running-stats path)."""
     with pytest.raises(NotImplementedError, match="running-stats"):
-        InstanceNormFwdOp(
+        op_cls(
             N=2, C=16, spatial=(8, 8), dtype=torch.float16,
             use_input_stats=False,
         )
-
-
-def _no_affine_running_stats_ref(
-    x: torch.Tensor,
-    running_mean: torch.Tensor,
-    running_var: torch.Tensor,
-    eps: float,
-) -> torch.Tensor:
-    """Reference output: PyTorch's running-stats path for the no-affine op."""
-    return F.instance_norm(
-        x.float(),
-        running_mean=running_mean.float(),
-        running_var=running_var.float(),
-        weight=None,
-        bias=None,
-        use_input_stats=False,
-        eps=eps,
-    ).to(x.dtype)
-
-
-class InstanceNormNoAffineRunningStatsFixture(FixtureBase):
-    PARAMS = [
-        ("n, c, spatial, dtype", [
-            pytest.param(2, 16, (8, 8), torch.float32, marks=pytest.mark.smoke),
-            pytest.param(2, 16, (8, 8), torch.float16, marks=pytest.mark.smoke),
-            pytest.param(2, 16, (8, 8), torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(4, 8, (4, 4), torch.float32, marks=pytest.mark.full),
-            pytest.param(2, 16, (16,), torch.float16, marks=pytest.mark.full),
-            pytest.param(2, 8, (4, 4, 4), torch.float16, marks=pytest.mark.full),
-        ]),
-    ]
-
-
-@InstanceNormNoAffineRunningStatsFixture
-def test_instance_norm_no_affine_running_stats_matches_torch(
-    n: int, c: int, spatial: tuple, dtype: torch.dtype,
-) -> None:
-    """`use_input_stats=False` normalizes with bound running stats."""
-    op = InstanceNormFwdOpNoAffine(
-        N=n, C=c, spatial=spatial, dtype=dtype, use_input_stats=False,
-    )
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    running_mean = torch.randn(c, dtype=dtype, device="cuda")
-    running_var = torch.rand(c, dtype=dtype, device="cuda") + 0.1
-    op.set_running_stats(running_mean, running_var)
-    y = op(x)
-    y_ref = _no_affine_running_stats_ref(x, running_mean, running_var, eps=1e-5)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
-        f"max err: {(y.float() - y_ref.float()).abs().max()}"
-
-
-@pytest.mark.smoke
-def test_instance_norm_no_affine_input_stats_path_unchanged() -> None:
-    """`use_input_stats=True` path is independent of any bound running stats."""
-    n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
-    op = InstanceNormFwdOpNoAffine(N=n, C=c, spatial=spatial, dtype=dtype)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    # Bind running stats; the per-instance-stats path must ignore them.
-    op.set_running_stats(
-        torch.randn(c, dtype=dtype, device="cuda"),
-        torch.rand(c, dtype=dtype, device="cuda") + 0.1,
-    )
-    y = op(x)
-    y_ref = F.instance_norm(x.float(), eps=1e-5).to(dtype)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
-
-
-@pytest.mark.smoke
-def test_instance_norm_no_affine_running_stats_validates_inputs() -> None:
-    """set_running_stats rejects tensors with wrong shape/dtype/device."""
-    n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
-    op = InstanceNormFwdOpNoAffine(
-        N=n, C=c, spatial=spatial, dtype=dtype, use_input_stats=False,
-    )
-    good_rm = torch.zeros(c, dtype=dtype, device="cuda")
-    good_rv = torch.ones(c, dtype=dtype, device="cuda")
-
-    bad_shape = torch.zeros(c + 1, dtype=dtype, device="cuda")
-    with pytest.raises(ValueError, match="running_mean"):
-        op.set_running_stats(bad_shape, good_rv)
-    with pytest.raises(ValueError, match="running_var"):
-        op.set_running_stats(good_rm, bad_shape)
-
-    bad_dtype = torch.zeros(c, dtype=torch.float32, device="cuda")
-    with pytest.raises(ValueError, match="running_mean"):
-        op.set_running_stats(bad_dtype, good_rv)
-
-
-@pytest.mark.smoke
-def test_instance_norm_no_affine_use_input_stats_false_requires_bound_stats() -> None:
-    """forward() raises when running stats are unbound on the running-stats path."""
-    op = InstanceNormFwdOpNoAffine(
-        N=2, C=16, spatial=(8, 8), dtype=torch.float16,
-        use_input_stats=False,
-    )
-    x = torch.randn((2, 16, 8, 8), dtype=torch.float16, device="cuda")
-    with pytest.raises(ValueError, match="set_running_stats"):
-        op(x)
-
-
-@pytest.mark.smoke
-def test_instance_norm_no_affine_accepts_use_input_stats_false_init() -> None:
-    """No-affine variant must allow `use_input_stats=False` at construction."""
-    op = InstanceNormFwdOpNoAffine(
-        N=2, C=16, spatial=(8, 8), dtype=torch.float16,
-        use_input_stats=False,
-    )
-    assert op.use_input_stats is False
 
 
 @pytest.mark.smoke
