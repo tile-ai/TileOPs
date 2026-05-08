@@ -1,15 +1,11 @@
 """Bidirectional-broadcast behavior tests for ``elementwise_binary`` ops.
 
-L1 signature/parity — forward arg names (C4), ``__init__`` defaults
-(C3), and structural ``__init__`` shape with ``kernel_map`` kwarg + a
-``self.dispatch_kernel(...)`` call (C5) — is enforced by
-``scripts/validate_manifest.py`` strict-parity gates; per-op pytest
-fanouts mirroring the manifest are redundant. The runtime invariant
-that ``kernel_map=`` is actually *forwarded* into ``dispatch_kernel``
-(which C5 does not verify) lives in
-``tests/ops/test_op_kernel_map_override.py``. What remains here is the
-load-bearing external behavior: bidirectional broadcast against a
-PyTorch reference.
+L1 signature/parity (forward arg names, ``__init__`` defaults, manifest
+entry resolution, construction smoke) is enforced by
+``scripts/validate_manifest.py`` strict-parity gates C3/C4/C5; per-op
+pytest fanouts mirroring the manifest are redundant. What remains here
+is the load-bearing external behavior: bidirectional broadcast against
+a PyTorch reference.
 """
 
 from __future__ import annotations
