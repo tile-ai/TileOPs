@@ -85,14 +85,14 @@ class InstanceNormFwdOp(Op):
 
     def __init__(
         self,
-        *,
         N: int,
         C: int,
         spatial: tuple,
         dtype: torch.dtype,
+        eps: float = 1e-5,
+        *,
         use_input_stats: bool = True,
         momentum: float = 0.1,
-        eps: float = 1e-5,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -315,14 +315,14 @@ class InstanceNormFwdOpNoAffine(Op):
 
     def __init__(
         self,
-        *,
         N: int,
         C: int,
         spatial: tuple,
         dtype: torch.dtype,
+        eps: float = 1e-5,
+        *,
         use_input_stats: bool = True,
         momentum: float = 0.1,
-        eps: float = 1e-5,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
