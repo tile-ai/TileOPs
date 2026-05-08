@@ -2,14 +2,14 @@
 """Pure-program anti-pattern detector for TileOPs PR diffs.
 
 This script scans a PR diff (or local file tree) for syntactic / structural
-anti-patterns derived from the W2 retro of seven alignment PRs (#1211, #1222,
-#1229, #1230, #1235, #1240, #1242). Each detector applies regex / AST / git-diff
-predicates only; **no LLM call, no model API, no agent dispatch**. The detector
-is the structural-fact source for the foundry articulation mechanism's source
-pair 2 (surface vs structure). Keeping detection pure-program is required by
-the D2 floor (same-class-disguise / detection isomorphism): an LLM judging the
-diff would be subject to the same reward-hacking pressure that produced the
-anti-pattern, so the judge must be a different class of system entirely.
+anti-patterns derived from the W2-alignment retrospective. Each detector
+applies regex / git-diff predicates only; **no LLM call, no model API, no
+agent dispatch**. The detector is the structural-fact source for the foundry
+articulation mechanism's source pair 2 (surface vs structure). Keeping
+detection pure-program is required by the D2 floor (same-class-disguise /
+detection isomorphism): an LLM judging the diff would be subject to the same
+reward-hacking pressure that produced the anti-pattern, so the judge must be
+a different class of system entirely.
 
 Output is structured JSON, ready for foundry agents to consume as Source B.
 
@@ -17,16 +17,14 @@ Example output (truncated):
 
     {
       "pr": 1211,
-      "base": "main",
-      "head": "feat/...",
       "hits": [
         {
           "pattern_id": "AP-01",
           "match_count": 3,
           "match_locations": [
-            "tests/ops/test_elementwise_unary_activation_alignment.py:42",
-            "tests/ops/test_elementwise_unary_activation_alignment.py:43",
-            "tests/ops/test_elementwise_unary_activation_alignment.py:44"
+            "tests/ops/test_x_alignment.py:42",
+            "tests/ops/test_x_alignment.py:43",
+            "tests/ops/test_x_alignment.py:44"
           ],
           "historical_PRs": [1211, 1222, 1229, 1235, 1240]
         },
@@ -34,17 +32,21 @@ Example output (truncated):
       ]
     }
 
+The ``historical_PRs`` field inside ``hits`` is diagnostic data (which past
+PRs exhibited this pattern), not source metadata; it travels with the
+detector definition.
+
 CLI surfaces:
 
     python scripts/detect_antipatterns.py --list
-    python scripts/detect_antipatterns.py --replay-pr 1211
+    python scripts/detect_antipatterns.py --replay-pr <N>
     python scripts/detect_antipatterns.py --scan <path>
     python scripts/detect_antipatterns.py --diff <diff_file>
 
-`--replay-pr <N>` shells out to ``gh pr diff <N>`` and ``gh pr view <N> --json
-body`` to fetch the diff and PR body; AP-04 / AP-07 use the body when
-available and fall back to body-less variants otherwise. `gh` must be
-installed and authenticated.
+``--replay-pr <N>`` shells out to ``gh pr diff <N>`` and ``gh pr view <N>
+--json body``; both let ``gh`` infer the repository from the local git
+context. AP-04 / AP-07 use the PR body when available and fall back to
+body-less variants otherwise. ``gh`` must be installed and authenticated.
 """
 
 from __future__ import annotations
@@ -73,27 +75,74 @@ class DiffFile:
     raw_added_text: str = ""  # all added '+' lines joined with '\n'
 
 
+_DIFF_GIT_QUOTED = re.compile(
+    r'^diff --git "a/(?P<a>(?:\\.|[^"\\])+)" "b/(?P<b>(?:\\.|[^"\\])+)"$'
+)
+_DIFF_GIT_PLAIN = re.compile(r"^diff --git a/(?P<a>.+) b/(?P<b>.+)$")
+
+
+def _parse_diff_git_header(raw: str) -> str:
+    """Extract the b-side path from a ``diff --git`` header.
+
+    Handles both bare (``diff --git a/path b/path``) and Git-quoted
+    (``diff --git "a/path with spaces" "b/path"``) forms. Quoted forms
+    use C-style escapes; we strip the surrounding quotes and decode
+    common escape sequences. Returns empty string on parse failure
+    (caller drops the file).
+    """
+    m = _DIFF_GIT_QUOTED.match(raw)
+    if m:
+        return m.group("b").encode("utf-8").decode("unicode_escape")
+    m = _DIFF_GIT_PLAIN.match(raw)
+    if not m:
+        return ""
+    # When both halves are unquoted, the longest plain path that ends in
+    # `/<other-path>` is ambiguous if either contains the literal " b/".
+    # Prefer the rightmost split that yields equal a/b sides (the common
+    # case: a-path == b-path); fall back to the greedy match otherwise.
+    full = m.group("a") + " b/" + m.group("b")
+    # Strip leading "a/" then split on " b/" preferring a halving split.
+    sep = " b/"
+    inner = full
+    pos = 0
+    best = None
+    while True:
+        idx = inner.find(sep, pos)
+        if idx < 0:
+            break
+        a, b = inner[:idx], inner[idx + len(sep):]
+        if a == b:
+            return b
+        best = b  # remember last seen split
+        pos = idx + 1
+    return best or m.group("b")
+
+
 def parse_unified_diff(diff_text: str) -> List[DiffFile]:
     """Parse a unified ``git diff`` into per-file added-line records.
 
     Only ``+`` lines (excluding the ``+++`` header) are retained. ``-`` and
     context lines are discarded — anti-pattern detection looks at what the PR
     introduces.
+
+    Per-file metadata (``index``, ``rename from/to``, ``similarity index``,
+    ``Binary files``, ``\\ No newline at end of file``, etc.) appears between
+    headers and inside hunks but is not part of the new-file line stream;
+    only lines inside an ``@@`` hunk advance the new-file line counter.
     """
     files: List[DiffFile] = []
     current: Optional[DiffFile] = None
     new_lineno = 0
+    in_hunk = False
     for raw in diff_text.splitlines():
         if raw.startswith("diff --git "):
             # New file block — finalize the previous one.
             if current is not None:
                 current.raw_added_text = "\n".join(c for _, c in current.added_lines)
                 files.append(current)
-            # Extract the b-side path; tolerant of spaces in paths is not required here.
-            m = re.match(r"^diff --git a/(.+?) b/(.+)$", raw)
-            path = m.group(2) if m else ""
-            current = DiffFile(path=path, is_new=False)
+            current = DiffFile(path=_parse_diff_git_header(raw), is_new=False)
             new_lineno = 0
+            in_hunk = False
             continue
         if current is None:
             continue
@@ -105,8 +154,15 @@ def parse_unified_diff(diff_text: str) -> List[DiffFile]:
             m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
             if m:
                 new_lineno = int(m.group(1)) - 1
+                in_hunk = True
             continue
         if raw.startswith("+++") or raw.startswith("---"):
+            continue
+        if not in_hunk:
+            # Pre-hunk metadata: ``index``, ``rename from/to``, etc.
+            continue
+        if raw.startswith("\\"):
+            # ``\\ No newline at end of file`` and similar in-hunk metadata.
             continue
         if raw.startswith("+"):
             new_lineno += 1
@@ -385,13 +441,15 @@ def detect_ap07(ctx: DetectorContext) -> List[str]:
         for stem in stems:
             if not stem:
                 continue
-            if any(stem in bp for bp in bench_paths):
+            # Each named op needs a bench file whose path mentions it.
+            # An unrelated NEW benchmarks/* file does NOT cover this op:
+            # if a bullet claims `OpA, OpB, OpC` and the diff only adds
+            # `benchmarks/op_a.py`, OpB and OpC stay unmatched.
+            covered_by_existing = any(stem in bp for bp in bench_paths)
+            covered_by_new = any(stem in bp for bp in new_bench_files)
+            if covered_by_existing or covered_by_new:
                 continue
             unmatched.append(stem)
-        # Any NEW bench file in the diff is treated as covering the family
-        # generally — clears the hit for this bullet.
-        if new_bench_files:
-            continue
         if unmatched:
             locs.append(f"<pr-body>:{idx}")
     return locs
@@ -550,8 +608,10 @@ def run_detectors(diff_text: str, pr_body: Optional[str]) -> List[Dict]:
 
 
 def _fetch_pr_diff(pr: int) -> str:
+    # No --repo flag: let gh infer from the local git context (works in
+    # forks and renamed checkouts; gh-cli already resolves origin/upstream).
     res = subprocess.run(
-        ["gh", "pr", "diff", str(pr), "--repo", "tile-ai/TileOPs"],
+        ["gh", "pr", "diff", str(pr)],
         capture_output=True,
         text=True,
         check=False,
@@ -563,7 +623,7 @@ def _fetch_pr_diff(pr: int) -> str:
 
 def _fetch_pr_body(pr: int) -> Optional[str]:
     res = subprocess.run(
-        ["gh", "pr", "view", str(pr), "--repo", "tile-ai/TileOPs", "--json", "body"],
+        ["gh", "pr", "view", str(pr), "--json", "body"],
         capture_output=True,
         text=True,
         check=False,
