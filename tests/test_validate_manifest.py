@@ -4096,31 +4096,6 @@ class TestValidatorHelperResolution:
 # ---------------------------------------------------------------------------
 
 
-def _make_strict_op(init_params=None, forward_params=("x",), kernel_map=None,
-                    name="StrictOp"):
-    """Build a synthetic Op subclass with controlled __init__ / forward."""
-    from tileops.ops.op_base import Op
-
-    init_src = "def __init__(self, " + ", ".join(init_params or []) + "): pass"
-    fwd_args = ", ".join(forward_params)
-    fwd_src = f"def forward(self, {fwd_args}): return None"
-    ns = {}
-    exec(init_src, ns)
-    exec(fwd_src, ns)
-
-    cls = type(
-        name, (Op,),
-        {
-            "__init__": ns["__init__"],
-            "forward": ns["forward"],
-            "default_kernel_map": property(
-                lambda self: kernel_map or {}
-            ),
-        },
-    )
-    return cls
-
-
 class TestStrictParityC3Ctor:
     """C3: ctor signature parity (defaults + kw-only)."""
 
