@@ -10,7 +10,7 @@
 ReluFwdOp:
   ref_api: "torch.nn.functional.relu"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -46,7 +46,7 @@ ReluFwdOp:
 GeluFwdOp:
   ref_api: "torch.nn.functional.gelu"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -81,7 +81,7 @@ GeluFwdOp:
 SiluFwdOp:
   ref_api: "torch.nn.functional.silu"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -115,7 +115,7 @@ SiluFwdOp:
 HardswishFwdOp:
   ref_api: "torch.nn.functional.hardswish"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -149,7 +149,7 @@ HardswishFwdOp:
 HardsigmoidFwdOp:
   ref_api: "torch.nn.functional.hardsigmoid"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -183,7 +183,7 @@ HardsigmoidFwdOp:
 MishFwdOp:
   ref_api: "torch.nn.functional.mish"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -217,7 +217,7 @@ MishFwdOp:
 SeluFwdOp:
   ref_api: "torch.nn.functional.selu"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -251,7 +251,7 @@ SeluFwdOp:
 LeakyReluFwdOp:
   ref_api: "torch.nn.functional.leaky_relu"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -286,7 +286,7 @@ LeakyReluFwdOp:
 EluFwdOp:
   ref_api: "torch.nn.functional.elu"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -321,7 +321,7 @@ EluFwdOp:
 HardtanhFwdOp:
   ref_api: "torch.nn.functional.hardtanh"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -358,7 +358,7 @@ HardtanhFwdOp:
 SoftplusFwdOp:
   ref_api: "torch.nn.functional.softplus"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -548,7 +548,7 @@ ClampMaxFwdOp:
 NanToNumFwdOp:
   ref_api: "torch.nan_to_num"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
