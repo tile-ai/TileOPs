@@ -56,6 +56,7 @@ from .arithmetic import (
     DivFwdOp,
     FloorDivideFwdOp,
     LerpFwdOp,
+    LerpTensorFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
     MulFwdOp,
@@ -72,7 +73,6 @@ from .bitwise import (
 from .clamp import ClampFwdOp, ClampMaxFwdOp, ClampMinFwdOp, ClampScalarFwdOp
 from .comparison import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
 from .fused_gated import GeluAndMulFwdOp, GeluTanhAndMulFwdOp, SiluAndMulFwdOp
-from .lerp_tensor import LerpTensorFwdOp
 from .logical import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
 from .masked_fill import MaskedFillFwdOp, MaskedFillScalarFwdOp
 from .math_unary import (

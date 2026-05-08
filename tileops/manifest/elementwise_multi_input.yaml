@@ -20,11 +20,11 @@ WhereFwdOp:
     shape_rules:
       # PyTorch's torch.where broadcasts condition/input/other together;
       # the output shape is the broadcast of all three.
-      - "output.shape == broadcast_shapes(condition.shape, input.shape, other.shape)"
+    - "output.shape == broadcast_shapes(condition.shape, input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     # Mixed-dtype op (bool condition + float input/other) — inline mode cannot
@@ -37,7 +37,7 @@ WhereFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       where: WhereFwdKernel
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/where.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
     bench_manifest_driven: false
@@ -61,11 +61,11 @@ LerpTensorFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     shape_rules:
-      - "output.shape == broadcast_shapes(input.shape, end.shape, weight.shape)"
+    - "output.shape == broadcast_shapes(input.shape, end.shape, weight.shape)"
 
   workloads:
-    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     func: "tileops.perf.formulas.lerp_tensor_fwd_roofline"
@@ -74,7 +74,7 @@ LerpTensorFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       lerp_tensor: LerpTensorFwdKernel
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_binary_arith.py
     bench_manifest_driven: false
