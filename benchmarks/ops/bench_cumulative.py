@@ -35,7 +35,9 @@ class _CumulativeWorkload(WorkloadBase):
         x_f32 = x.float()
         if self.op_kind == "cumsum":
             return x_f32.cumsum(dim=-1).to(x.dtype)
-        return x_f32.cumprod(dim=-1).to(x.dtype)
+        elif self.op_kind == "cumprod":
+            return x_f32.cumprod(dim=-1).to(x.dtype)
+        raise ValueError(f"Unknown op_kind: {self.op_kind!r}")
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMSUM_OP))
