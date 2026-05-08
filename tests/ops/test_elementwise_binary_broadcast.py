@@ -2,13 +2,15 @@
 
 L1 signature/parity (forward arg names, ``__init__`` defaults, manifest
 entry resolution, construction smoke) is specified by
-``scripts/validate_manifest.py`` strict-parity gates C3/C4/C5 — runnable
-in CI today as advisory warnings; flipped to blocking once #1372 clears
-the existing 83 violations. Per-op pytest fanouts mirroring the
-manifest don't add coverage beyond the structural rules and are
-redundant once those land as gates. What remains here is the
-load-bearing external behavior: bidirectional broadcast against a
-PyTorch reference.
+``scripts/validate_manifest.py`` strict-parity gates C3/C4/C5. Those
+gates are not currently invoked by CI on op-only PRs; wiring them in
+and flipping to ``--strict`` is paired with #1372's strict-mode
+rollout. The deleted per-op pytest fanouts mirroring the manifest
+don't add coverage beyond the structural rules already enforced by
+the manifest schema and the ``BinaryOp`` / base-class
+``__init_subclass__`` machinery; they were scaffolding from the
+manifest migration. What remains here is the load-bearing external
+behavior: bidirectional broadcast against a PyTorch reference.
 """
 
 from __future__ import annotations
