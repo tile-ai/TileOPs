@@ -170,6 +170,7 @@ jobs:
 
           add_target() {
             local target="$1"
+            [[ -e "$target" ]] || return 0
             if [[ -z "${seen_targets[$target]:-}" ]]; then
               selected_targets+=("$target")
               seen_targets["$target"]=1
