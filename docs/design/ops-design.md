@@ -197,7 +197,7 @@ class CumsumFwdOp(Op):
             raise ValueError(f"x.dtype must be float32/float16/bfloat16, got {x.dtype}")
 ```
 
-**Validation.** `python scripts/validate_manifest.py` exercises both methods at CI. **L2 parity:** `_infer_output_shapes(mock_inputs)` must agree with `shape_rules`. **L3 parity:** `_validate_dtypes` must accept exactly the declared `dtype` union / `dtype_combos` and reject everything else — disagreement is a hard error.
+**Validation.** `python scripts/validate_manifest.py` exercises both methods at CI on every op with `status: implemented`; `spec-only` entries skip L2/L3. **L2 parity:** `_infer_output_shapes(mock_inputs)` must agree with `shape_rules`. **L3 parity:** `_validate_dtypes` must accept exactly the declared `dtype` union / `dtype_combos` and reject everything else — disagreement is a hard error.
 
 **Reference.** [Slot S17](ops-design-reference.md#slot-s17), [S18](ops-design-reference.md#slot-s18).
 
