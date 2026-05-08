@@ -559,7 +559,7 @@ InstanceNormFwdOpNoAffine:
   # default for InstanceNorm. Split from the affine primary per the
   # "No Optional[Tensor]" rule (R16, .claude/domain-rules/manifest-spec.md).
   family: normalization
-  status: implemented
+  status: spec-only
   variant_of: InstanceNormFwdOp
 
   signature:

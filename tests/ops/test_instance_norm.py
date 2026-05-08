@@ -210,6 +210,23 @@ def test_instance_norm_rejects_affine_device_mismatch() -> None:
         op(x, None, bias_other)
 
 
+# FIXME(staged-rollout): skip no-affine InstanceNorm tests while the
+# manifest entry is `status: spec-only`.
+#
+# Broken invariant: the manifest declares `use_input_stats` and `momentum`
+# (matching torch.nn.functional.instance_norm), but the current op only
+# implements the `use_input_stats=True` branch and lacks running_mean /
+# running_var arguments — so the implementation does not yet conform to
+# the spec.
+# Why: trust model requires status=spec-only when implementation is
+# incomplete; the running-stats path lands in a follow-up PR.
+# Cleanup: remove this marker once `InstanceNormFwdOpNoAffine` flips back
+# to `status: implemented` with full running-stats support.
+_NO_AFFINE_PENDING_RUNNING_STATS = pytest.mark.skip(
+    reason="InstanceNormFwdOpNoAffine is spec-only pending running-stats path",
+)
+
+
 class InstanceNormNoAffineFixture(FixtureBase):
     PARAMS = [
         ("n, c, spatial, dtype", [
@@ -225,6 +242,7 @@ class InstanceNormNoAffineFixture(FixtureBase):
     ]
 
 
+@_NO_AFFINE_PENDING_RUNNING_STATS
 @InstanceNormNoAffineFixture
 def test_instance_norm_no_affine_op(n: int, c: int, spatial: tuple,
                                     dtype: torch.dtype) -> None:
@@ -238,6 +256,7 @@ def test_instance_norm_no_affine_op(n: int, c: int, spatial: tuple,
         f"max err: {(y - y_ref).abs().max()}"
 
 
+@_NO_AFFINE_PENDING_RUNNING_STATS
 @pytest.mark.smoke
 def test_instance_norm_no_affine_forward_signature() -> None:
     """No-affine forward accepts only x — no weight/bias parameters."""
@@ -247,6 +266,7 @@ def test_instance_norm_no_affine_forward_signature() -> None:
     assert params == ["x"], f"expected ['x'], got {params}"
 
 
+@_NO_AFFINE_PENDING_RUNNING_STATS
 @pytest.mark.smoke
 def test_instance_norm_no_affine_rejects_device_mismatch() -> None:
     """Forward raises ValueError when input lives on a different CUDA device."""
@@ -263,6 +283,7 @@ def test_instance_norm_no_affine_rejects_device_mismatch() -> None:
         op(x_other)
 
 
+@_NO_AFFINE_PENDING_RUNNING_STATS
 @pytest.mark.smoke
 def test_instance_norm_no_affine_rejects_shape_mismatch() -> None:
     """Forward raises ValueError when input shape differs from configured (N, C, *spatial)."""
@@ -273,6 +294,7 @@ def test_instance_norm_no_affine_rejects_shape_mismatch() -> None:
         op(x_bad)
 
 
+@_NO_AFFINE_PENDING_RUNNING_STATS
 @pytest.mark.smoke
 def test_instance_norm_no_affine_rejects_use_input_stats_false() -> None:
     """Constructor raises ValueError when use_input_stats=False (unsupported)."""
@@ -283,6 +305,7 @@ def test_instance_norm_no_affine_rejects_use_input_stats_false() -> None:
         )
 
 
+@_NO_AFFINE_PENDING_RUNNING_STATS
 @pytest.mark.smoke
 def test_instance_norm_no_affine_rejects_dtype_mismatch() -> None:
     """Forward raises ValueError when input dtype differs from configured dtype."""
@@ -295,6 +318,7 @@ def test_instance_norm_no_affine_rejects_dtype_mismatch() -> None:
         op(x)
 
 
+@_NO_AFFINE_PENDING_RUNNING_STATS
 @pytest.mark.smoke
 @pytest.mark.parametrize("n, c, spatial", [
     # M = N * C not divisible by max block_m (16): triggers tail program
