@@ -31,8 +31,9 @@ ReluFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # 1 compare + 1 select per element = 2 fp ops
-    flops: "2 * N"
+    # FLOPs: relu(x) = max(0, x). Per roofline.md §1.3 convention,
+    # one compare-and-select = 1 per elem.
+    flops: "N"
     # Read input + write output
     bytes: "2 * N * elem_bytes"
 
@@ -278,8 +279,9 @@ LeakyReluFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # compare + mul + select = 3 fp ops per element
-    flops: "3 * N"
+    # FLOPs: leaky_relu(x) = x if x>0 else negative_slope*x. Per
+    # roofline.md §1.3, compare-and-select(1) + mul(1) = 2 per elem.
+    flops: "2 * N"
     bytes: "2 * N * elem_bytes"
 
   source:

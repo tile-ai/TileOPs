@@ -1,0 +1,4 @@
+family,op,label,shape,dtype,flops_before,flops_after,flops_delta,bytes_before,bytes_after,bytes_delta
+activation,ReluFwdOp,hidden-state-prefill,2048x4096,float16,16777216,8388608,-8388608,33554432,33554432,0
+clamp,HardtanhFwdOp,hidden-state-prefill,2048x4096,float16,33554432,8388608,-25165824,33554432,33554432,0
+min-max,ClampFwdOp,elementwise-16M,4096x4096,float16,33554432,16777216,-16777216,134217728,134217728,0
