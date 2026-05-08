@@ -9,7 +9,9 @@ future drift between manifest and code surfaces immediately. Covers:
 - Every manifest-declared input name appears as a ``forward`` parameter.
 - Every manifest-declared param appears in ``__init__`` with the same
   default value.
-- CPU-side construction smoke for one workload per op (no autotune).
+- Construction-only smoke for one workload per op (no autotune); runs
+  wherever the test suite runs (GPU runner, since ``BinaryOp.__init__``
+  resolves an SM version via ``torch.cuda.get_device_capability``).
 
 Behavior tests (bidirectional broadcast) remain CUDA-only and live at the
 end of the file.
@@ -213,8 +215,8 @@ def _pick_dtype(
 
 def _binary_ctor_kwargs(
     spec: Dict[str, Any], workload: Dict[str, Any], dtype: torch.dtype,
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Build ``(args, kwargs)`` for a ``BinaryOp``-shaped ctor.
+) -> Dict[str, Any]:
+    """Build ctor ``kwargs`` for a ``BinaryOp``-shaped op.
 
     Uses ``input_shape`` for ``a_shape`` and a broadcast-compatible
     ``b_shape`` (or the workload's second-input shape if declared).
