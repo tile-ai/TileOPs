@@ -22,12 +22,6 @@ Closes #\{issue-number}
 
 <!-- Delete inapplicable optional sections entirely. Never leave empty headers. -->
 
-## Structural Readiness
-
-<!-- Required for kernel/op changes. Agent-generated — do not edit. -->
-
-All checks passed.
-
 ## Benchmark
 
 <!-- Required for kernel/op changes. Format: benchmark-template.md -->

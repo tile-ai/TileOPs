@@ -15,18 +15,7 @@ fi
 
 **If validation fails:** fix the title and re-validate. Do NOT proceed to `gh pr create`.
 
-## 2. Op/kernel readiness
-
-**Skip entirely** if PR does not touch kernel/op code.
-
-If PR introduces or modifies a kernel/op:
-
-1. Read [op-readiness-checklist.md](op-readiness-checklist.md).
-1. Verify every item → `PASS`, `FAIL (reason)`, or `SKIP (reason)`.
-
-**HARD GATE:** Any `[REQUIRED]` FAIL blocks the PR. `[RECOMMENDED]` may be skipped with reason. In `## Structural Readiness`, list only FAILs and SKIPs. All pass → "All checks passed."
-
-## 3. Test node delta
+## 2. Test node delta
 
 **Skip entirely** if PR does not modify files under `tests/`.
 
