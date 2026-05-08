@@ -365,6 +365,11 @@ class GroupNormFwdOpNoAffine(Op):
             raise ValueError(
                 f"Expected x.dtype {self.dtype}, got {x.dtype}"
             )
+        expected_shape = (self.N, self.C, *self.spatial)
+        if tuple(x.shape) != expected_shape:
+            raise ValueError(
+                f"Expected x shape {expected_shape}, got {tuple(x.shape)}"
+            )
 
         orig_shape = x.shape
         x = x.contiguous()

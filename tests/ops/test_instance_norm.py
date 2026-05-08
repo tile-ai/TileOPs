@@ -264,6 +264,26 @@ def test_instance_norm_no_affine_rejects_device_mismatch() -> None:
 
 
 @pytest.mark.smoke
+def test_instance_norm_no_affine_rejects_shape_mismatch() -> None:
+    """Forward raises ValueError when input shape differs from configured (N, C, *spatial)."""
+    n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
+    op = InstanceNormFwdOpNoAffine(N=n, C=c, spatial=spatial, dtype=dtype)
+    x_bad = torch.randn((n, c, 4, 8), dtype=dtype, device="cuda")
+    with pytest.raises(ValueError, match="shape"):
+        op(x_bad)
+
+
+@pytest.mark.smoke
+def test_instance_norm_no_affine_rejects_use_input_stats_false() -> None:
+    """Constructor raises ValueError when use_input_stats=False (unsupported)."""
+    with pytest.raises(ValueError, match="use_input_stats"):
+        InstanceNormFwdOpNoAffine(
+            N=2, C=16, spatial=(8, 8), dtype=torch.float16,
+            use_input_stats=False,
+        )
+
+
+@pytest.mark.smoke
 def test_instance_norm_no_affine_rejects_dtype_mismatch() -> None:
     """Forward raises ValueError when input dtype differs from configured dtype."""
     n, c, spatial = 2, 16, (8, 8)

@@ -284,6 +284,18 @@ def test_group_norm_no_affine_rejects_device_mismatch() -> None:
 
 
 @pytest.mark.smoke
+def test_group_norm_no_affine_rejects_shape_mismatch() -> None:
+    """Forward raises ValueError when input shape differs from configured (N, C, *spatial)."""
+    n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
+    op = GroupNormFwdOpNoAffine(
+        N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype,
+    )
+    x_bad = torch.randn((n, c, 4, 8), dtype=dtype, device="cuda")
+    with pytest.raises(ValueError, match="shape"):
+        op(x_bad)
+
+
+@pytest.mark.smoke
 def test_group_norm_no_affine_rejects_dtype_mismatch() -> None:
     """Forward raises ValueError when input dtype differs from configured dtype."""
     n, c, spatial, g = 2, 32, (8, 8), 8

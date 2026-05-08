@@ -293,8 +293,10 @@ class InstanceNormFwdOpNoAffine(Op):
         tune: bool = False,
     ):
         if not use_input_stats:
-            raise NotImplementedError(
-                "use_input_stats=False (running-stats path) is out of scope"
+            raise ValueError(
+                "use_input_stats=False (running-stats / eval-mode path) is "
+                "not supported by InstanceNormFwdOpNoAffine; only "
+                "use_input_stats=True (per-batch statistics) is implemented."
             )
         self.N = N
         self.C = C
@@ -353,6 +355,11 @@ class InstanceNormFwdOpNoAffine(Op):
         if x.dtype != self.dtype:
             raise ValueError(
                 f"Expected x.dtype {self.dtype}, got {x.dtype}"
+            )
+        expected_shape = (self.N, self.C, *self.spatial)
+        if tuple(x.shape) != expected_shape:
+            raise ValueError(
+                f"Expected x shape {expected_shape}, got {tuple(x.shape)}"
             )
 
         orig_shape = x.shape
