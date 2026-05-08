@@ -3,10 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.instance_norm import (
-    InstanceNormFwdOp,
-    InstanceNormFwdOpNoAffine,
-)
+from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.instance_norm import InstanceNormTest as _InstanceNormTestWorkload
 
 
@@ -208,137 +205,6 @@ def test_instance_norm_rejects_affine_device_mismatch() -> None:
         op(x, weight_other, bias_same)
     with pytest.raises(ValueError, match="bias on"):
         op(x, None, bias_other)
-
-
-# FIXME(staged-rollout): skip no-affine InstanceNorm tests while the
-# manifest entry is `status: spec-only`.
-#
-# Broken invariant: the manifest declares `use_input_stats` and `momentum`
-# (matching torch.nn.functional.instance_norm), but the current op only
-# implements the `use_input_stats=True` branch and lacks running_mean /
-# running_var arguments — so the implementation does not yet conform to
-# the spec.
-# Why: trust model requires status=spec-only when implementation is
-# incomplete; the running-stats path lands in a follow-up PR.
-# Cleanup: remove this marker once `InstanceNormFwdOpNoAffine` flips back
-# to `status: implemented` with full running-stats support.
-_NO_AFFINE_PENDING_RUNNING_STATS = pytest.mark.skip(
-    reason="InstanceNormFwdOpNoAffine is spec-only pending running-stats path",
-)
-
-
-class InstanceNormNoAffineFixture(FixtureBase):
-    PARAMS = [
-        ("n, c, spatial, dtype", [
-            pytest.param(2, 16, (8, 8), torch.float32, marks=pytest.mark.smoke),
-            pytest.param(2, 16, (8, 8), torch.float16, marks=pytest.mark.smoke),
-            pytest.param(2, 16, (8, 8), torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(4, 8, (4, 4), torch.float16, marks=pytest.mark.full),
-            # 1D spatial.
-            pytest.param(2, 16, (16,), torch.float16, marks=pytest.mark.full),
-            # 3D spatial.
-            pytest.param(2, 8, (4, 4, 4), torch.float16, marks=pytest.mark.full),
-        ]),
-    ]
-
-
-@_NO_AFFINE_PENDING_RUNNING_STATS
-@InstanceNormNoAffineFixture
-def test_instance_norm_no_affine_op(n: int, c: int, spatial: tuple,
-                                    dtype: torch.dtype) -> None:
-    """No-affine InstanceNorm op matches torch.nn.functional.instance_norm with weight=bias=None."""
-    op = InstanceNormFwdOpNoAffine(N=n, C=c, spatial=spatial, dtype=dtype)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    y = op(x)
-    y_ref = F.instance_norm(x.float(), weight=None, bias=None, eps=1e-5).to(dtype)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
-        f"max err: {(y - y_ref).abs().max()}"
-
-
-@_NO_AFFINE_PENDING_RUNNING_STATS
-@pytest.mark.smoke
-def test_instance_norm_no_affine_forward_signature() -> None:
-    """No-affine forward accepts only x — no weight/bias parameters."""
-    import inspect
-    sig = inspect.signature(InstanceNormFwdOpNoAffine.forward)
-    params = [p for p in sig.parameters if p != "self"]
-    assert params == ["x"], f"expected ['x'], got {params}"
-
-
-@_NO_AFFINE_PENDING_RUNNING_STATS
-@pytest.mark.smoke
-def test_instance_norm_no_affine_rejects_device_mismatch() -> None:
-    """Forward raises ValueError when input lives on a different CUDA device."""
-    if torch.cuda.device_count() < 2:
-        pytest.skip("device-mismatch test requires >= 2 CUDA devices")
-
-    n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
-    with torch.cuda.device(0):
-        op = InstanceNormFwdOpNoAffine(N=n, C=c, spatial=spatial, dtype=dtype)
-    x_other = torch.randn(
-        (n, c, *spatial), dtype=dtype, device=torch.device("cuda", 1),
-    )
-    with pytest.raises(ValueError, match="[Dd]evice mismatch"):
-        op(x_other)
-
-
-@_NO_AFFINE_PENDING_RUNNING_STATS
-@pytest.mark.smoke
-def test_instance_norm_no_affine_rejects_shape_mismatch() -> None:
-    """Forward raises ValueError when input shape differs from configured (N, C, *spatial)."""
-    n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
-    op = InstanceNormFwdOpNoAffine(N=n, C=c, spatial=spatial, dtype=dtype)
-    x_bad = torch.randn((n, c, 4, 8), dtype=dtype, device="cuda")
-    with pytest.raises(ValueError, match="shape"):
-        op(x_bad)
-
-
-@_NO_AFFINE_PENDING_RUNNING_STATS
-@pytest.mark.smoke
-def test_instance_norm_no_affine_rejects_use_input_stats_false() -> None:
-    """Constructor raises ValueError when use_input_stats=False (unsupported)."""
-    with pytest.raises(ValueError, match="use_input_stats"):
-        InstanceNormFwdOpNoAffine(
-            N=2, C=16, spatial=(8, 8), dtype=torch.float16,
-            use_input_stats=False,
-        )
-
-
-@_NO_AFFINE_PENDING_RUNNING_STATS
-@pytest.mark.smoke
-def test_instance_norm_no_affine_rejects_dtype_mismatch() -> None:
-    """Forward raises ValueError when input dtype differs from configured dtype."""
-    n, c, spatial = 2, 16, (8, 8)
-    op = InstanceNormFwdOpNoAffine(
-        N=n, C=c, spatial=spatial, dtype=torch.float16,
-    )
-    x = torch.randn((n, c, *spatial), dtype=torch.float32, device="cuda")
-    with pytest.raises(ValueError, match="dtype"):
-        op(x)
-
-
-@_NO_AFFINE_PENDING_RUNNING_STATS
-@pytest.mark.smoke
-@pytest.mark.parametrize("n, c, spatial", [
-    # M = N * C not divisible by max block_m (16): triggers tail program
-    # reading/writing rows >= M before the M-padding fix.
-    (1, 3, (4, 4)),    # M = 3
-    (3, 5, (2, 2)),    # M = 15
-    (1, 1, (8, 8)),    # M = 1
-])
-def test_instance_norm_no_affine_tail_block(n: int, c: int,
-                                            spatial: tuple) -> None:
-    """No-affine InstanceNorm handles M not divisible by the kernel's block_m."""
-    dtype = torch.float16
-    op = InstanceNormFwdOpNoAffine(N=n, C=c, spatial=spatial, dtype=dtype)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    y = op(x)
-    y_ref = F.instance_norm(x.float(), weight=None, bias=None,
-                            eps=1e-5).to(dtype)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
-        f"max err: {(y - y_ref).abs().max()}"
 
 
 if __name__ == "__main__":
