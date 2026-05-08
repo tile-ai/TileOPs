@@ -61,19 +61,18 @@ MAX_IDLE=20
 META_REPO=$(jq -r '.repo // empty' "$META")
 [[ -n "$META_REPO" ]] \
   || { echo "round-pre: meta.json missing .repo — re-run preflight.sh" >&2; exit 1; }
-PR_JSON=$(gh pr view "$PR" --repo "$META_REPO" --json state,headRefOid,isDraft,baseRepository 2>/dev/null) \
+[[ "$META_REPO" =~ ^[^/]+/[^/]+$ ]] \
+  || { echo "round-pre: meta.json .repo='$META_REPO' must be exactly 'owner/name' (single slash, both halves non-empty) — re-run preflight.sh" >&2; exit 1; }
+PR_JSON=$(gh pr view "$PR" --repo "$META_REPO" --json state,headRefOid,isDraft 2>/dev/null) \
   || { echo "round-pre: gh pr view failed" >&2; exit 1; }
 PR_STATE=$(echo "$PR_JSON" | jq -r .state)
 HEAD_SHA=$(echo "$PR_JSON" | jq -r .headRefOid)
-# `gh pr view --json baseRepository` returns owner as an object
-# `{login: "..."}`, not a bare string. Extract `.login` strictly; if it's
-# absent we cannot construct a valid owner/name pair, so fail rather than
-# stringify the object.
-REPO_OWNER=$(echo "$PR_JSON" | jq -r '.baseRepository.owner.login // empty')
-REPO_NAME=$(echo "$PR_JSON" | jq -r '.baseRepository.name // empty')
-if [[ -z "$REPO_OWNER" || -z "$REPO_NAME" ]]; then
-  echo "round-pre: could not derive base repo from gh pr view (need .baseRepository.owner.login and .baseRepository.name)" >&2; exit 1
-fi
+# Split META_REPO into owner/name for the downstream
+# `gh api repos/<OWNER>/<NAME>/...` calls. Older versions of this
+# script derived these from a `baseRepository` json field, which gh
+# CLI 2.88.1 dropped.
+REPO_OWNER="${META_REPO%%/*}"
+REPO_NAME="${META_REPO##*/}"
 REPO="$REPO_OWNER/$REPO_NAME"
 
 # Reviews + inline comments — paginate so PRs with >1 page don't
