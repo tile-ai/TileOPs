@@ -67,8 +67,9 @@ GeluFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # erf-based: ~8 fp ops per element (mul, erf, add, mul, mul); tanh approx similar
-    flops: "8 * N"
+    # FLOPs: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
+    # div(1) + erf(1) + add(1) + mul-by-half(1) + mul(1) = 5 per elem.
+    flops: "5 * N"
     bytes: "2 * N * elem_bytes"
 
   source:
@@ -101,8 +102,9 @@ SiluFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # sigmoid (exp + add + recip ~3) + mul = 4 fp ops per element
-    flops: "4 * N"
+    # FLOPs: silu(x) = x * sigmoid(x); sigmoid = neg + exp + add + recip = 4.
+    # silu adds one mul = 5 per elem.
+    flops: "5 * N"
     bytes: "2 * N * elem_bytes"
 
   source:
@@ -135,8 +137,9 @@ HardswishFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # add (1) + clamp (2 cmp + 2 sel = 4) + mul (1) + div (1) = 7 fp ops per element
-    flops: "7 * N"
+    # FLOPs: hardswish(x) = x * relu6(x + 3) / 6.
+    # add(1) + two-sided-clamp(1, per convention) + mul(1) + div(1) = 4 per elem.
+    flops: "4 * N"
     bytes: "2 * N * elem_bytes"
 
   source:
@@ -169,8 +172,9 @@ HardsigmoidFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # add (1) + clamp (2 cmp + 2 sel = 4) + div (1) = 6 fp ops per element
-    flops: "6 * N"
+    # FLOPs: hardsigmoid(x) = relu6(x + 3) / 6.
+    # add(1) + two-sided-clamp(1, per convention) + div(1) = 3 per elem.
+    flops: "3 * N"
     bytes: "2 * N * elem_bytes"
 
   source:
@@ -203,8 +207,9 @@ MishFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # softplus (exp + log1p ~ 3) + tanh (~3) + mul = 7 fp ops per element
-    flops: "7 * N"
+    # FLOPs: mish(x) = x * tanh(softplus(x)); softplus = exp + log1p = 2,
+    # tanh(1, transcendental) + final mul(1) = 4 per elem.
+    flops: "4 * N"
     bytes: "2 * N * elem_bytes"
 
   source:
@@ -237,7 +242,8 @@ SeluFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # branch select + (exp + sub + mul) on negative branch + mul by lambda ~ 5 fp ops per element
+    # FLOPs: selu(x) = lambda * (x if x>0 else alpha*(exp(x)-1)).
+    # compare-and-select(1) + exp(1) + sub(1) + mul-alpha(1) + mul-lambda(1) = 5 per elem.
     flops: "5 * N"
     bytes: "2 * N * elem_bytes"
 
@@ -307,8 +313,9 @@ EluFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # compare + (exp + sub + mul) on negative branch ~ 5 fp ops per element
-    flops: "5 * N"
+    # FLOPs: elu(x) = x if x>0 else alpha*(exp(x)-1).
+    # compare-and-select(1) + exp(1) + sub(1) + mul(1) = 4 per elem.
+    flops: "4 * N"
     bytes: "2 * N * elem_bytes"
 
   source:
@@ -344,8 +351,10 @@ HardtanhFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # 2 compares + 2 selects per element
-    flops: "4 * N"
+    # FLOPs: hardtanh = clamp(x, min_val, max_val).
+    # Two-sided clamp = 1 compare-and-select per output element under the
+    # roofline.md §1.3 convention. = 1 per elem.
+    flops: "N"
     bytes: "2 * N * elem_bytes"
 
   source:
@@ -379,8 +388,9 @@ SoftplusFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # mul (beta*x) + threshold compare + (exp + log1p + div) on log-branch ~ 6 fp ops per element
-    flops: "6 * N"
+    # FLOPs: softplus(x) = (1/beta) * log(1 + exp(beta*x)) with threshold guard.
+    # mul-beta(1) + threshold compare-and-select(1) + exp(1) + log1p(1) + div-by-beta(1) = 5 per elem.
+    flops: "5 * N"
     bytes: "2 * N * elem_bytes"
 
   source:
@@ -459,11 +469,10 @@ ClampScalarFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # min(max(x, lo), hi): 2 compares + 2 selects per element = 4 fp ops.
-    # When only one bound is provided (min=None or max=None) the actual
-    # cost halves to 2*N, but 4*N is the upper bound used as the roofline
-    # figure (matches HardtanhFwdOp's two-sided clamp convention).
-    flops: "4 * N"
+    # FLOPs: clamp = compare-and-select. Per roofline.md §1.3 convention,
+    # the clamp / min-max family collapses to 1 FLOP per output element
+    # regardless of one or two bounds. = 1 per elem.
+    flops: "N"
     bytes: "2 * N * elem_bytes"
 
   source:

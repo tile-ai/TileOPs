@@ -25,6 +25,21 @@ Inputs:
 
 Bound type is whichever term dominates `sol_time` (memory-bound if `memory_time > compute_time`, else compute-bound). It depends on shape, not on the op; the roofline tool computes it per-workload and the manifest does not declare it.
 
+## 1.3 Convention
+
+Dated: 2026-05-09.
+
+Per-element FLOP rule for elementwise ops:
+
+- One basic arithmetic op (add, sub, mul, div, neg, abs, recip) counts as 1 FLOP.
+- One transcendental call (`exp`, `log`, `log1p`, `erf`, `tanh`, `sin`, `cos`, `sqrt`, `rsqrt`, etc.) counts as 1 FLOP at the convention level. Hardware-specific cost models do not feed back into the manifest.
+- One compare-and-select (`max`, `min`, `maximum`, `minimum`, single-bound clamp, two-sided clamp, `relu`-style branch, `where`) counts as 1 FLOP per output element. Two-sided clamp counts the same as single-sided: 1 FLOP per element.
+- Predicate-only outputs (`eq`, `gt`, etc.) count as 1 FLOP per element.
+
+Composite ops sum the counts of their primitive steps under this convention. For example, `sigmoid(x) = recip(1 + exp(-x))` is `neg + exp + add + recip = 4` FLOPs/elem; `silu(x) = x * sigmoid(x)` is `5` FLOPs/elem; `tanh(x)` is `1` FLOP/elem because `tanh` is a single transcendental at the convention level.
+
+The clamp / min-max family — `hardtanh`, `clamp_scalar`, `clamp_min`, `clamp_max`, `maximum`, `minimum` — collapses to 1 FLOP per output element under this rule.
+
 ## 2. Field Specification
 
 ### 2.1 Output Contract
