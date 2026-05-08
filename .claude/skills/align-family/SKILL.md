@@ -1,6 +1,6 @@
 ---
 name: align-family
-description: Drive the full migration for an op family — audit, delegate per-op alignment to align-op, run cross-op cleanup. Two terminal outcomes: SUCCESS opens a PR; CLEANUP_REGRESSION exits blocked without a PR when post-cleanup tests fail.
+description: Drive the full migration for an op family — audit, delegate per-op alignment to align-op, run cross-op cleanup. Three terminal outcomes: SUCCESS opens a PR; CLEANUP_REGRESSION exits blocked without a PR when post-cleanup tests fail; NEEDS_AC_REWRITE exits blocked before any work when an incoming AC contradicts the family's manifest status.
 ---
 
 ## Arguments
@@ -10,10 +10,11 @@ Family name from `tileops/manifest/` (e.g., `reduction`, `norm`, `attention`).
 ## Contract
 
 - **Input**: `family` name
-- **Output** (two terminal outcomes):
+- **Output** (three terminal outcomes):
   - **SUCCESS**: PR URL + final report — all ops processed via `align-op` (promoted or blocked), cleanup succeeds, PR opens.
-  - **BLOCKED**: blocked report (no PR) — reached when CLEANUP detects a regression in a promoted op's tests after dual-path removal; see `CLEANUP_REGRESSION` terminal in the state diagram. Distinct from the non-terminal per-op `REPORT_BLOCKED` state.
-- **Termination**: all ops processed (promoted or blocked via `align-op`) and either (a) CLEANUP + CREATE_PR succeed, or (b) a promoted op's tests fail after CLEANUP's dual-path removal, causing the run to exit via `CLEANUP_REGRESSION` with the regression recorded. (`REPORT_BLOCKED` is the non-terminal per-op blocked state and never terminates the run.)
+  - **BLOCKED — `CLEANUP_REGRESSION`**: blocked report (no PR), reached when CLEANUP detects a regression in a promoted op's tests after dual-path removal. Distinct from the non-terminal per-op `REPORT_BLOCKED` state.
+  - **BLOCKED — `NEEDS_AC_REWRITE`**: blocked report (no PR), reached when AC_ARTICULATION (Step 0) detects an AC asserting runnable behavior on `spec-only` ops without a flip step in the plan. Exits before any per-op work runs.
+- **Termination**: either (a) AC_ARTICULATION fires `NEEDS_AC_REWRITE`, or (b) all ops processed via `align-op` and CLEANUP + CREATE_PR succeed, or (c) a promoted op's tests fail after CLEANUP's dual-path removal, causing the run to exit via `CLEANUP_REGRESSION`. (`REPORT_BLOCKED` is the non-terminal per-op blocked state and never terminates the run.)
 
 ## Trust Model
 
@@ -33,8 +34,8 @@ Family name from `tileops/manifest/` (e.g., `reduction`, `norm`, `attention`).
 ```mermaid
 stateDiagram-v2
     [*] --> AC_ARTICULATION
-    AC_ARTICULATION --> AUDIT: no AC contradicts manifest status (or no context.json)
-    AC_ARTICULATION --> CLEANUP_REGRESSION: AC requires runnable for spec-only op (NEEDS_AC_REWRITE)
+    AC_ARTICULATION --> AUDIT: AC consistent with family status (or no context.json)
+    AC_ARTICULATION --> NEEDS_AC_REWRITE: AC asserts runnable behavior on spec-only ops without flipping their status
     AUDIT --> GROUP_BY_BASE: gap report generated
     GROUP_BY_BASE --> ROUTE: ops grouped by base class
     ROUTE --> ALIGN_OP: ready (mode=minor) or semantic_gap (mode=redesign)
@@ -48,8 +49,14 @@ stateDiagram-v2
     ROUTE --> CREATE_PR: all ops processed
     CLEANUP --> CLEANUP_REGRESSION: promoted op test fails after cleanup
     CLEANUP_REGRESSION --> [*]: terminal blocked, no PR
+    NEEDS_AC_REWRITE --> [*]: terminal blocked, no PR
     CREATE_PR --> [*]
 ```
+
+`NEEDS_AC_REWRITE` and `CLEANUP_REGRESSION` are distinct terminal states:
+`NEEDS_AC_REWRITE` exits before any per-op work runs because the AC is
+unimplementable as written; `CLEANUP_REGRESSION` exits after work has
+landed because dual-path removal broke a promoted op's tests.
 
 ## Orchestrator Discipline
 
@@ -73,20 +80,28 @@ When `align-op` rewrites a base class during its per-op pipeline, it may create 
 
 <a id="ac_articulation"></a>### 0. AC_ARTICULATION (AC-vs-family-status gate)
 
-If `align-family` is invoked through a foundry pipeline run (i.e. `FOUNDRY_RUN_DIR` set and `$FOUNDRY_RUN_DIR/context.json` contains `acceptance_criteria[]`), articulate every incoming AC against the family's per-op manifest `status` BEFORE running AUDIT. This catches AC-text-vs-trust-model contradictions before any per-op work runs — the upstream root cause of the family-scope fake-impl observed in PR #1229 (cleanup tracked in #1237).
+If `align-family` is invoked through a foundry pipeline run (i.e. `FOUNDRY_RUN_DIR` set and `$FOUNDRY_RUN_DIR/context.json` contains `acceptance_criteria[]`), articulate every incoming AC against the family's per-op manifest `status` BEFORE running AUDIT. This catches the **AC-asserts-runnable-but-AC-does-not-flip-status** contradiction shape behind PR #1229's family-scope fake-impl (cleanup tracked in #1237). Asserting runnable behavior on `spec-only` ops while leaving their status untouched is impossible without faking outputs.
 
 For each AC in `context.json`:
 
 - **Source A**: AC text (cite `context.json:acceptance_criteria[<n>]`)
-- **Source B**: per-op manifest `status` for every op in `family` (cite `<manifest_yaml>:<line>` of each op's `status:` field) + `docs/design/trust-model.md` clause governing those statuses
+- **Source B**: per-op manifest `status` for every op in `family` (cite `<manifest_yaml>:<line>` of each op's `status:` field). The trust-model contract that gates `spec-only → implemented` flips lives in [`docs/design/manifest.md`](../../../docs/design/manifest.md) `R13` (status gating).
 - **Choice**: A | B | merge | `none + propose alternative`
 - **Reasoning**: citation-grounded; not paraphrase
 
-If ANY op in the family has `status: spec-only` AND the AC requires runnable artifacts (impl / runnable test / bench numbers) for those ops, `Choice` MUST be `none + propose alternative` and the alternative narrows the AC to "manifest entries valid + validator clean for spec-only ops; runnable artifacts required only for ops already at `status: implemented`". align-family then transitions to `CLEANUP_REGRESSION` (terminal) with reason `NEEDS_AC_REWRITE` — no per-op work runs. The proposed narrowed AC is surfaced in `.foundry/migrations/<family>-ac-articulation.json`.
+BLOCK with `NEEDS_AC_REWRITE` only when **all three** hold:
+
+1. At least one op in the family has `status: spec-only` at run start;
+1. The AC requires runnable artifacts (impl / runnable test / bench numbers) for those ops;
+1. The AC + plan do **not** include a `spec-only → implemented` flip step for them (no language like "flip to `implemented`", "promote", or `FLIP_STATUS`).
+
+`align-family`'s normal migration use case (drives `align-op` per op, each running its own `FLIP_STATUS`) trivially satisfies (3) and is **not** blocked. The gate fires only on PR #1229's shape: AC promises runnable behavior while the work plan never promotes the ops.
+
+When the gate fires, `Choice` MUST be `none + propose alternative` with two alternatives surfaced: (a) narrow the AC to "manifest entries valid + validator clean for spec-only ops; runnable artifacts required only for already-`implemented` ops"; (b) extend the AC + plan with explicit per-op flip steps. `align-family` records both in `.foundry/migrations/<family>-ac-articulation.json` and transitions to `NEEDS_AC_REWRITE` (terminal) — no per-op work runs.
 
 If no `context.json` or no `acceptance_criteria[]` field, skip this step. align-family invoked standalone (CLI) trusts the caller.
 
-Schema reference: `https://github.com/AIGCIC/foundry/blob/main/agents/articulation-schema.md` (consolidated by foundry#25 / PR #27). Citations MUST be specific (file:line, doc:section), not paraphrase.
+Schema reference: [`AIGCIC/foundry#27`](https://github.com/AIGCIC/foundry/pull/27). Until that PR merges, the inline rules above are authoritative. Citations MUST be specific (file:line, doc:section), not paraphrase.
 
 ### 1. AUDIT
 

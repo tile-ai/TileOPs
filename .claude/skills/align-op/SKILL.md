@@ -49,8 +49,8 @@ description: Per-op orchestrator that brings a single op into alignment with its
 ```mermaid
 stateDiagram-v2
     [*] --> AC_ARTICULATION
-    AC_ARTICULATION --> PRE_CHECK: no AC contradicts manifest status (or no context.json)
-    AC_ARTICULATION --> BLOCKED: AC requires runnable for spec-only op (NEEDS_AC_REWRITE)
+    AC_ARTICULATION --> PRE_CHECK: AC consistent with manifest status (or no context.json)
+    AC_ARTICULATION --> BLOCKED: AC asserts runnable behavior on spec-only op without flipping status (NEEDS_AC_REWRITE)
     PRE_CHECK --> CLASSIFY: manifest preconditions pass
     PRE_CHECK --> BLOCKED: prereq missing
     CLASSIFY --> CLASSIFY_ONLY_EXIT: --classify-only flag
@@ -83,20 +83,28 @@ stateDiagram-v2
 
 <a id="ac_articulation"></a>### 0. AC_ARTICULATION (AC-vs-manifest-status gate)
 
-If `align-op` is invoked through a foundry pipeline run (i.e. `FOUNDRY_RUN_DIR` set and `$FOUNDRY_RUN_DIR/context.json` contains `acceptance_criteria[]`), articulate every incoming AC against the op's manifest `status` before any work happens. This catches AC-text-vs-trust-model contradictions before fake-impl can ship — the upstream root cause of PR #1229's whole-Op fake (cleanup tracked in #1237).
+If `align-op` is invoked through a foundry pipeline run (i.e. `FOUNDRY_RUN_DIR` set and `$FOUNDRY_RUN_DIR/context.json` contains `acceptance_criteria[]`), articulate every incoming AC against the op's manifest `status` before any work happens. This catches **AC-asserts-runnable-but-AC-does-not-flip-status** — the contradiction shape behind PR #1229's whole-Op fake (cleanup tracked in #1237). Asserting runnable behavior on a `spec-only` op while leaving the status untouched is impossible without faking outputs.
 
 For each AC in `context.json`:
 
 - **Source A**: AC text (cite `context.json:acceptance_criteria[<n>]`)
-- **Source B**: op manifest `status` (cite `<manifest_yaml>:<line>` of the `status:` field) + `docs/design/trust-model.md` clause governing that status
+- **Source B**: op manifest `status` (cite `<manifest_yaml>:<line>` of the `status:` field). The trust-model contract that gates `spec-only → implemented` flips lives in [`docs/design/manifest.md`](../../../docs/design/manifest.md) `R13` (status gating) — the AC must be consistent with whichever status holds at run end.
 - **Choice**: A | B | merge | `none + propose alternative`
 - **Reasoning**: citation-grounded; not paraphrase
 
-If `status: spec-only` AND the AC requires runnable artifacts (impl producing real outputs / tests asserting real behavior / bench producing numbers / `forward()` call), `Choice` MUST be `none + propose alternative` and the alternative is "narrow the AC to manifest-only requirements (entry exists, validator clean, status unchanged)". align-op then BLOCKs with reason `NEEDS_AC_REWRITE` and surfaces the proposed narrowed AC in `.foundry/plan/<op_name>/ac-articulation.json`. Do NOT proceed to PRE_CHECK.
+BLOCK with `NEEDS_AC_REWRITE` only when **all three** hold:
+
+1. `status: spec-only` at run start;
+1. The AC requires runnable artifacts (impl producing real outputs / tests asserting real behavior / bench producing numbers / `forward()` call);
+1. The AC + plan do **not** include a `spec-only → implemented` flip step (no language like "flip to `implemented`", "promote", or `FLIP_STATUS`; no plan step that toggles the manifest `status` field).
+
+`align-op`'s normal migration use case (green / redesign / minor — all three include `FLIP_STATUS` per the state diagram below) trivially satisfies (3) and is **not** blocked. The gate fires only on PR #1229's shape: AC promises runnable behavior while the work plan never promotes the op.
+
+When the gate fires, `Choice` MUST be `none + propose alternative` and the alternative is either "narrow the AC to manifest-only requirements (entry exists, validator clean, status unchanged)" or "extend the AC + plan with an explicit `spec-only → implemented` flip step". align-op surfaces the proposed alternatives in `.foundry/plan/<op_name>/ac-articulation.json` and BLOCKs without entering PRE_CHECK.
 
 If no `context.json` (skill invoked outside foundry pipeline) or no `acceptance_criteria[]` field, skip this step. align-op invoked standalone (CLI) trusts the caller.
 
-Schema reference: `https://github.com/AIGCIC/foundry/blob/main/agents/articulation-schema.md` (consolidated by foundry#25 / PR #27). Until that PR merges, the inline rules above are sufficient. Citations MUST be specific (file:line, doc:section), not paraphrase.
+Schema reference: [`AIGCIC/foundry#27`](https://github.com/AIGCIC/foundry/pull/27). Until that PR merges, the inline rules above are authoritative. Citations MUST be specific (file:line, doc:section), not paraphrase.
 
 ### <a id="pre_check"></a>1. PRE_CHECK
 
