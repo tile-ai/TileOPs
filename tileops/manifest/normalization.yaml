@@ -7,7 +7,7 @@
 RMSNormFwdOp:
   ref_api: "torch.nn.functional.rms_norm"
   family: normalization
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -55,7 +55,7 @@ RMSNormFwdOp:
 LayerNormFwdOp:
   ref_api: "torch.nn.functional.layer_norm"
   family: normalization
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -105,7 +105,7 @@ LayerNormFwdOp:
 AdaLayerNormFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -150,7 +150,7 @@ AdaLayerNormFwdOp:
 AdaLayerNormZeroFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -197,7 +197,7 @@ AdaLayerNormZeroFwdOp:
 FusedAddLayerNormFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -247,7 +247,7 @@ FusedAddLayerNormFwdOp:
 FusedAddRMSNormFwdOp:
   ref_api: "none"
   family: normalization
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -302,7 +302,7 @@ FusedAddRMSNormFwdOp:
 BatchNormFwdOp:
   ref_api: "torch.nn.functional.batch_norm"
   family: normalization
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -356,7 +356,7 @@ BatchNormFwdOp:
 BatchNormBwdOp:
   ref_api: "torch.nn.functional.batch_norm"
   family: normalization
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -410,7 +410,7 @@ BatchNormBwdOp:
 GroupNormFwdOp:
   ref_api: "torch.nn.functional.group_norm"
   family: normalization
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -508,7 +508,7 @@ GroupNormFwdOpNoAffine:
 InstanceNormFwdOp:
   ref_api: "torch.nn.functional.instance_norm"
   family: normalization
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
