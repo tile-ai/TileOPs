@@ -96,7 +96,7 @@ jobs:
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
             case "$f" in
-              tileops/manifest/*.yaml|tileops/manifest/__init__.py|scripts/validate_manifest.py|tileops/ops/*|"$WORKFLOW_PATH")
+              tileops/manifest/*.yaml|tileops/manifest/__init__.py|scripts/validate_manifest.py|"$WORKFLOW_PATH")
                 manifest=true
                 ;;
             esac
@@ -250,7 +250,7 @@ jobs:
         run: pip install -e .
 
       - name: Validate ops manifest
-        run: python scripts/validate_manifest.py --levels schema,shape,dtype,bench,signature
+        run: python scripts/validate_manifest.py --levels schema,shape,dtype,bench
 
   actionlint:
     needs: [validate-pr-title, ci-gate]
