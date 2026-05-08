@@ -211,21 +211,24 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("is_causal, softcap", [
-    pytest.param(True, None, id="causal"),
-    pytest.param(False, None, id="noncausal"),
-    pytest.param(True, 2.0, id="causal-softcap"),
+@pytest.mark.parametrize("is_causal, softcap, dtype, page_size", [
+    pytest.param(True, None, torch.float16, 64, id="causal-fp16-page64"),
+    pytest.param(False, None, torch.float16, 64, id="noncausal-fp16-page64"),
+    pytest.param(True, 2.0, torch.float16, 64, id="causal-softcap-fp16-page64"),
+    pytest.param(True, None, torch.bfloat16, 64, id="causal-bf16-page64"),
+    pytest.param(True, None, torch.float16, 16, id="causal-fp16-page16"),
+    pytest.param(True, None, torch.float16, 128, id="causal-fp16-page128"),
 ])
 def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
     is_causal: bool,
     softcap: float | None,
+    dtype: torch.dtype,
+    page_size: int,
 ) -> None:
     q_lens = [33, 48]
     old_lens = [67, 80]
     batch, heads, heads_kv, dim = 2, 8, 2, 64
-    dtype = torch.float16
     cache_dtype = torch.float8_e4m3fn
-    page_size = 64
     max_pages_per_req = 8
     num_pages = batch * max_pages_per_req
     total_q = sum(q_lens)

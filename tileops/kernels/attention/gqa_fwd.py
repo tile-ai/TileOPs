@@ -2159,6 +2159,14 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
         fp8_min = -448.0
         fp8_max = 448.0
 
+        @T.macro
+        def quantize_fp8(value, scale_value):
+            return T.clamp(T.Cast("float32", value) / scale_value, fp8_min, fp8_max)
+
+        @T.macro
+        def dequantize_fp8(value, scale_value):
+            return T.Cast(dtype, T.Cast("float32", value) * scale_value)
+
         @T.prim_func
         def _gqa_prefill_paged_with_fp8_kv_cache_fwd_main(
                 q: T.Tensor(q_shape, dtype),  # type: ignore
@@ -2219,12 +2227,10 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                             page_offset = append_start - page_idx * page_size
                             physical_start = block_table[bz, page_idx] * page_size + page_offset
                             for i, d in T.Parallel(block_m, dim):
-                                k_pages[physical_start + i, by, d] = T.clamp(
-                                    T.Cast("float32", k_new[q_start + bx * block_m + i, by, d]) /
-                                    k_scale[0], fp8_min, fp8_max)
-                                v_pages[physical_start + i, by, d] = T.clamp(
-                                    T.Cast("float32", v_new[q_start + bx * block_m + i, by, d]) /
-                                    v_scale[0], fp8_min, fp8_max)
+                                k_pages[physical_start + i, by, d] = quantize_fp8(
+                                    k_new[q_start + bx * block_m + i, by, d], k_scale[0])
+                                v_pages[physical_start + i, by, d] = quantize_fp8(
+                                    v_new[q_start + bx * block_m + i, by, d], v_scale[0])
                         else:
                             for i, d in T.Parallel(block_m, dim):
                                 new_pos = bx * block_m + i
@@ -2232,12 +2238,10 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                                 page_idx = logical_pos >> T.int32(page_size_log2)
                                 page_offset = logical_pos - page_idx * page_size
                                 physical_pos = block_table[bz, page_idx] * page_size + page_offset
-                                k_pages[physical_pos, by, d] = T.clamp(
-                                    T.Cast("float32", k_new[q_start + new_pos, by, d]) /
-                                    k_scale[0], fp8_min, fp8_max)
-                                v_pages[physical_pos, by, d] = T.clamp(
-                                    T.Cast("float32", v_new[q_start + new_pos, by, d]) /
-                                    v_scale[0], fp8_min, fp8_max)
+                                k_pages[physical_pos, by, d] = quantize_fp8(
+                                    k_new[q_start + new_pos, by, d], k_scale[0])
+                                v_pages[physical_pos, by, d] = quantize_fp8(
+                                    v_new[q_start + new_pos, by, d], v_scale[0])
                     else:
                         for i, d in T.Parallel(block_m, dim):
                             new_pos = bx * block_m + i
@@ -2247,12 +2251,10 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                             page_offset = logical_pos - page_idx * page_size
                             if new_pos < q_len:
                                 physical_pos = block_table[bz, page_idx] * page_size + page_offset
-                                k_pages[physical_pos, by, d] = T.clamp(
-                                    T.Cast("float32", k_new[q_start + new_pos, by, d]) /
-                                    k_scale[0], fp8_min, fp8_max)
-                                v_pages[physical_pos, by, d] = T.clamp(
-                                    T.Cast("float32", v_new[q_start + new_pos, by, d]) /
-                                    v_scale[0], fp8_min, fp8_max)
+                                k_pages[physical_pos, by, d] = quantize_fp8(
+                                    k_new[q_start + new_pos, by, d], k_scale[0])
+                                v_pages[physical_pos, by, d] = quantize_fp8(
+                                    v_new[q_start + new_pos, by, d], v_scale[0])
 
                 T.clear(acc_o)
                 T.clear(logsum)
@@ -2271,14 +2273,10 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                             page_offset = tile_start - page_idx * page_size
                             physical_start = block_table[bz, page_idx] * page_size + page_offset
                             for j, d in T.Parallel(block_n, dim):
-                                k_shared[j, d] = T.Cast(
-                                    dtype,
-                                    T.Cast("float32", k_pages[physical_start + j, cur_kv_head, d])
-                                    * k_scale[0])
-                                v_shared[j, d] = T.Cast(
-                                    dtype,
-                                    T.Cast("float32", v_pages[physical_start + j, cur_kv_head, d])
-                                    * v_scale[0])
+                                k_shared[j, d] = dequantize_fp8(
+                                    k_pages[physical_start + j, cur_kv_head, d], k_scale[0])
+                                v_shared[j, d] = dequantize_fp8(
+                                    v_pages[physical_start + j, cur_kv_head, d], v_scale[0])
                         elif block_n % page_size == 0:
                             tile_page_start = tile_start >> T.int32(page_size_log2)
                             for p in range(block_n // page_size):
@@ -2286,30 +2284,22 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                                     bz, tile_page_start + p] * page_size
                                 for off, d in T.Parallel(page_size, dim):
                                     shared_row = p * page_size + off
-                                    k_shared[shared_row, d] = T.Cast(
-                                        dtype,
-                                        T.Cast(
-                                            "float32", k_pages[segment_physical_start + off,
-                                                               cur_kv_head, d]) * k_scale[0])
-                                    v_shared[shared_row, d] = T.Cast(
-                                        dtype,
-                                        T.Cast(
-                                            "float32", v_pages[segment_physical_start + off,
-                                                               cur_kv_head, d]) * v_scale[0])
+                                    k_shared[shared_row, d] = dequantize_fp8(
+                                        k_pages[segment_physical_start + off, cur_kv_head, d],
+                                        k_scale[0])
+                                    v_shared[shared_row, d] = dequantize_fp8(
+                                        v_pages[segment_physical_start + off, cur_kv_head, d],
+                                        v_scale[0])
                         else:
                             for j, d in T.Parallel(block_n, dim):
                                 kv_pos = tile_start + j
                                 page_idx = kv_pos >> T.int32(page_size_log2)
                                 page_offset = kv_pos - page_idx * page_size
                                 physical_pos = block_table[bz, page_idx] * page_size + page_offset
-                                k_shared[j, d] = T.Cast(
-                                    dtype,
-                                    T.Cast("float32", k_pages[physical_pos, cur_kv_head, d]) *
-                                    k_scale[0])
-                                v_shared[j, d] = T.Cast(
-                                    dtype,
-                                    T.Cast("float32", v_pages[physical_pos, cur_kv_head, d]) *
-                                    v_scale[0])
+                                k_shared[j, d] = dequantize_fp8(
+                                    k_pages[physical_pos, cur_kv_head, d], k_scale[0])
+                                v_shared[j, d] = dequantize_fp8(
+                                    v_pages[physical_pos, cur_kv_head, d], v_scale[0])
                     elif tile_start >= old_len and tile_end <= total_len:
                         new_start = tile_start - old_len
                         for j, d in T.Parallel(block_n, dim):
@@ -2324,14 +2314,10 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                             page_offset = safe_kv_pos - page_idx * page_size
                             physical_pos = block_table[bz, page_idx] * page_size + page_offset
                             if kv_pos < old_len:
-                                k_shared[j, d] = T.Cast(
-                                    dtype,
-                                    T.Cast("float32", k_pages[physical_pos, cur_kv_head, d]) *
-                                    k_scale[0])
-                                v_shared[j, d] = T.Cast(
-                                    dtype,
-                                    T.Cast("float32", v_pages[physical_pos, cur_kv_head, d]) *
-                                    v_scale[0])
+                                k_shared[j, d] = dequantize_fp8(
+                                    k_pages[physical_pos, cur_kv_head, d], k_scale[0])
+                                v_shared[j, d] = dequantize_fp8(
+                                    v_pages[physical_pos, cur_kv_head, d], v_scale[0])
                             elif kv_pos < total_len:
                                 k_shared[j, d] = k_new[q_start + new_pos, cur_kv_head, d]
                                 v_shared[j, d] = v_new[q_start + new_pos, cur_kv_head, d]
