@@ -4183,112 +4183,91 @@ class TestStrictParityC4Forward:
 
 
 class TestStrictParityC5Dispatch:
-    """C5: dispatch_kernel invariant — sentinel ``kernel_map`` override
-    must reach ``self.kernel_map``. Gated on non-empty ``default_kernel_map``
-    (composite ops are exempt). The runtime contract drives the gate, not
-    manifest ``source.kernel_map``."""
+    """C5: ``__init__`` complies with Slot S12 (kernel_map kwarg) + S13
+    (body calls ``self.dispatch_kernel``). Pure static check on the
+    Op subclass's source — no runtime construction."""
 
-    @pytest.fixture
-    def DummyKernel(self):
-        from tileops.kernels.kernel_base import Kernel
-
-        class _DummyKernel(Kernel):
-            supported_archs = list(range(70, 110))
-
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-
-            def forward(self, *args, **kwargs):
-                return None
-
-        return _DummyKernel
-
-    def test_composite_op_skipped(self, validator):
-        """Op with empty ``default_kernel_map`` is exempt."""
+    def test_compliant_op_passes(self, validator):
+        """Op with ``kernel_map`` kwarg and ``self.dispatch_kernel`` call passes."""
         from tileops.ops.op_base import Op
-
-        class CompositeOp(Op):
-            def __init__(self): pass
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
-
-        assert validator.check_c5_dispatch_kernel_invariant(
-            "CompositeOp", {}, CompositeOp,
-        ) == []
-
-    def test_honors_override_passes(self, validator, DummyKernel, monkeypatch):
-        """Op that routes through ``dispatch_kernel`` honors sentinel override.
-
-        ``Op.dispatch_kernel`` calls ``get_sm_version`` which raises on
-        CPU-only CI; monkeypatch it to a valid SM so the dispatch path
-        actually runs (otherwise C5 would degrade to advisory, returning
-        [] vacuously and never proving the sentinel arrived in
-        ``self.kernel_map``).
-        """
-        from tileops.ops.op_base import Op
-
-        monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
 
         class GoodOp(Op):
             def __init__(self, kernel_map=None):
                 self.dispatch_kernel(kernel_map)
             def forward(self, x): return None
             @property
-            def default_kernel_map(self): return {"k": DummyKernel}
+            def default_kernel_map(self): return {}
 
         assert validator.check_c5_dispatch_kernel_invariant(
             "GoodOp", {}, GoodOp,
         ) == []
 
-    def test_silently_drops_override_caught(self, validator, DummyKernel):
-        """Op that accepts ``kernel_map`` kwarg but does NOT route through
-        ``dispatch_kernel`` — the W2-audit bug shape — is caught."""
+    def test_silently_drops_override_caught(self, validator):
+        """Slot S13 violation: kwarg accepted but body never calls
+        ``self.dispatch_kernel`` — the W2-audit bug shape."""
         from tileops.ops.op_base import Op
 
         class SilentDropOp(Op):
             def __init__(self, kernel_map=None):
-                pass  # bug: accepts kwarg, never calls dispatch_kernel
+                pass  # bug: kwarg present, body skips dispatch_kernel
             def forward(self, x): return None
             @property
-            def default_kernel_map(self): return {"k": DummyKernel}
+            def default_kernel_map(self): return {}
 
         errs = validator.check_c5_dispatch_kernel_invariant(
             "SilentDropOp", {}, SilentDropOp,
         )
-        assert any("did not populate self.kernel_map" in e for e in errs), errs
+        assert any("Slot S13" in e for e in errs), errs
 
-    def test_partial_routing_caught(self, validator, DummyKernel):
-        """Op that builds ``self.kernel_map`` from defaults but ignores the
-        override is caught (kernel_map[k] is the default, not the sentinel)."""
-        from tileops.ops.op_base import Op
-
-        class PartialOp(Op):
-            def __init__(self, kernel_map=None):
-                self.kernel_map = dict(self.default_kernel_map)  # ignores override
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {"k": DummyKernel}
-
-        errs = validator.check_c5_dispatch_kernel_invariant(
-            "PartialOp", {}, PartialOp,
-        )
-        assert any("silently dropped" in e for e in errs), errs
-
-    def test_missing_kwarg_caught(self, validator, DummyKernel):
-        """Op whose ``__init__`` does not accept ``kernel_map`` kwarg is caught."""
+    def test_missing_kwarg_caught(self, validator):
+        """Slot S12 violation: ``__init__`` does not accept ``kernel_map``."""
         from tileops.ops.op_base import Op
 
         class NoKwargOp(Op):
             def __init__(self): pass
             def forward(self, x): return None
             @property
-            def default_kernel_map(self): return {"k": DummyKernel}
+            def default_kernel_map(self): return {}
 
         errs = validator.check_c5_dispatch_kernel_invariant(
             "NoKwargOp", {}, NoKwargOp,
         )
-        assert any("does not accept" in e and "kernel_map" in e for e in errs), errs
+        assert any("Slot S12" in e for e in errs), errs
+
+    def test_var_kwargs_satisfies_s12(self, validator):
+        """``**kwargs`` in ``__init__`` absorbs ``kernel_map`` and satisfies S12.
+        S13 still required."""
+        from tileops.ops.op_base import Op
+
+        class VarKwOp(Op):
+            def __init__(self, **kwargs):
+                self.dispatch_kernel(kwargs.get("kernel_map"))
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        assert validator.check_c5_dispatch_kernel_invariant(
+            "VarKwOp", {}, VarKwOp,
+        ) == []
+
+    def test_dispatch_kernel_call_in_nested_block_detected(self, validator):
+        """S13 walker is AST-recursive; dispatch_kernel inside a branch
+        still satisfies the contract."""
+        from tileops.ops.op_base import Op
+
+        class BranchOp(Op):
+            def __init__(self, kernel_map=None, fast=False):
+                if fast:
+                    self.dispatch_kernel(kernel_map)
+                else:
+                    self.dispatch_kernel(kernel_map)
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        assert validator.check_c5_dispatch_kernel_invariant(
+            "BranchOp", {}, BranchOp,
+        ) == []
 
 
 class TestStrictParityC6C7Stub:

@@ -27,6 +27,7 @@ import inspect
 import itertools
 import re
 import sys
+import textwrap
 import types
 import warnings as _warnings
 from pathlib import Path
@@ -3028,146 +3029,48 @@ _CTOR_INFRA_PARAMS = frozenset({"self", "kernel_map", "tune", "strategy"})
 _MISSING = object()
 
 
-def _sentinel_kernel_class():
-    """Build a Kernel subclass that survives ``dispatch_kernel`` arch + abstract checks.
+def _init_calls_dispatch_kernel(cls: type) -> "bool | None":
+    """Return True if ``cls.__init__`` body either calls
+    ``self.dispatch_kernel(...)`` directly or delegates via
+    ``super().__init__(...)``.
 
-    Defined lazily so importing this module never imports torch / tilelang for
-    callers that only run schema checks.
+    ``None`` means we could not parse the source (built-in / dynamically
+    generated ``__init__``); the caller treats that as inconclusive.
+
+    Pure-AST inspection per the Slot S13 contract in
+    ``docs/design/ops-design-reference.md``: the body must call
+    ``self.dispatch_kernel(kernel_map)`` to honor the routing override.
+    ``super().__init__(...)`` satisfies S13 transitively — the parent's
+    body owns the dispatch call. No runtime construction; no GPU.
     """
-    from tileops.kernels.kernel_base import Kernel as _Kernel
-
-    class _SentinelKernelImpl(_Kernel):
-        supported_archs = list(range(70, 110))
-
-        def __init__(self, *args, **kwargs) -> None:
-            super().__init__(*args, **kwargs)
-            self.output_dtype = kwargs.get("dtype")
-
-        def forward(self, *args, **kwargs):  # noqa: ANN001, ANN002
-            return None
-
-    return _SentinelKernelImpl
-
-
-# Sample values for synthesizing minimal ctor args to drive a probe
-# construction in C5. Keys are param names; values are CPU-friendly stand-ins.
-# Entries here must match real PyTorch / manifest semantics enough for an op's
-# ``__init__`` to run without GPU.
-_C5_SAMPLE_CTOR_VALUES: dict[str, "object"] = {}
-
-
-def _populate_c5_sample_values() -> None:
-    """Fill ``_C5_SAMPLE_CTOR_VALUES`` lazily once torch is importable."""
-    import torch
-    if _C5_SAMPLE_CTOR_VALUES:
-        return
-    _C5_SAMPLE_CTOR_VALUES.update({
-        "N_total": 64,
-        "N": 64,
-        "M": 32,
-        "K": 32,
-        "B": 1,
-        "S": 16,
-        "D": 16,
-        "H": 4,
-        "H_kv": 2,
-        "head_dim": 16,
-        "seq_len": 16,
-        "num_heads": 4,
-        "num_kv_heads": 2,
-        "page_size": 16,
-        "num_channels": 4,
-        "channels": 4,
-        "inner_size": 8,
-        "shape": (4, 16),
-        "input_shape": (4, 16),
-        "normalized_shape": (16,),
-        "num_groups": 4,
-        "dtype": torch.float16,
-        "input_dtype": torch.float16,
-        "output_dtype": torch.float16,
-        "weight_dtype": torch.float16,
-        "negative_slope": 0.01,
-        "alpha": 1.0,
-        "value": 0.0,
-        "scalar_value": 1.0,
-        "fill_value": 0.0,
-        "decimals": 0,
-        "rounding_mode": None,
-        "min": None,
-        "max": None,
-        "min_value": 0.0,
-        "max_value": 1.0,
-        "approximate": "none",
-        "eps": 1e-5,
-        "axis": -1,
-        "dim": -1,
-        "exponent": 2.0,
-        "p": 2,
-        "p_value": 2.0,
-        "use_input_stats": True,
-        "momentum": 0.1,
-        "is_causal": False,
-        "window_size": 16,
-    })
-
-
-def _c5_sample_ctor_args(cls: type) -> tuple[list, dict]:
-    """Synthesize (args, kwargs) for ``cls.__init__`` from sample values.
-
-    Skips ``_CTOR_INFRA_PARAMS``. Required params not in the sample table
-    raise ``KeyError`` so the caller can degrade to advisory instead of
-    fabricating wrong values.
-    """
-    _populate_c5_sample_values()
-    sig = inspect.signature(cls.__init__)
-    args: list = []
-    kwargs: dict = {}
-    for name, p in sig.parameters.items():
-        if name in _CTOR_INFRA_PARAMS:
+    try:
+        src = inspect.getsource(cls.__init__)
+    except (OSError, TypeError):
+        return None
+    try:
+        tree = ast.parse(textwrap.dedent(src))
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
-        if p.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
+        # self.dispatch_kernel(...)
+        if (
+            node.func.attr == "dispatch_kernel"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
         ):
-            continue
-        if name in _C5_SAMPLE_CTOR_VALUES:
-            val = _C5_SAMPLE_CTOR_VALUES[name]
-            if p.kind is inspect.Parameter.KEYWORD_ONLY:
-                kwargs[name] = val
-            else:
-                args.append(val)
-        elif p.default is not inspect.Parameter.empty:
-            continue
-        else:
-            raise KeyError(name)
-    return args, kwargs
-
-
-def _resolve_default_kernel_map_keys(cls: type) -> "list[str] | None":
-    """Return the list of keys in ``cls.default_kernel_map``.
-
-    ``default_kernel_map`` is a plain class attribute on some ops and a
-    ``@property`` on others; the latter requires an instance to evaluate.
-    Return ``None`` to signal "could not resolve" (caller treats as advisory).
-    """
-    raw = inspect.getattr_static(cls, "default_kernel_map", None)
-    if isinstance(raw, dict):
-        return list(raw.keys())
-    if isinstance(raw, property):
-        try:
-            args, kwargs = _c5_sample_ctor_args(cls)
-            probe = cls(*args, **kwargs)
-        except Exception:
-            return None
-        try:
-            dkm = probe.default_kernel_map or {}
-        except Exception:
-            return None
-        if not isinstance(dkm, dict):
-            return None
-        return list(dkm.keys())
-    return None
+            return True
+        # super().__init__(...): delegates to the parent's body which is
+        # expected to honor S13 itself.
+        if (
+            node.func.attr == "__init__"
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Name)
+            and node.func.value.func.id == "super"
+        ):
+            return True
+    return False
 
 
 def check_c3_ctor_signature_parity(
@@ -3338,85 +3241,63 @@ def check_c5_dispatch_kernel_invariant(
     *,
     warnings: list[str] | None = None,
 ) -> list[str]:
-    """C5: a sentinel kernel passed via ``kernel_map=`` reaches ``self.kernel_map``.
+    """C5: ``__init__`` complies with the dispatch-kernel slot contract.
 
-    Constructs the op with ``kernel_map={k: _SentinelKernel for k in cls.default_kernel_map}``
-    and asserts each entry of ``self.kernel_map`` is the sentinel. Catches the
-    real bug class — op accepts a ``kernel_map`` kwarg but never calls
-    ``self.dispatch_kernel(...)``, so the override is silently dropped.
+    Two static checks per ``docs/design/ops-design-reference.md``:
 
-    Composite ops (``default_kernel_map`` empty) are exempt — the gate is the
-    runtime contract, not the manifest ``source.kernel_map`` field.
-    Construction failures (missing sample ctor args, GPU-only ctor, etc.)
-    degrade to advisory; only post-construction routing failures are errors.
+    - **S12** — ``__init__`` accepts a ``kernel_map`` keyword (or
+      ``**kwargs`` that absorbs it).
+    - **S13** — ``__init__`` body contains a call ``self.dispatch_kernel(...)``.
+
+    Pure inspection: ``inspect.signature`` for S12, AST walk for S13.
+    No runtime construction, no GPU, no JIT — both contracts are
+    declarative properties of the source code.
+
+    Source-unavailable ``__init__`` (built-in / dynamically generated /
+    decorator-wrapped without ``__wrapped__``) degrades S13 to advisory;
+    S12 always runs.
     """
     errors: list[str] = []
     if cls is None:
         return errors
 
-    keys = _resolve_default_kernel_map_keys(cls)
-    if keys is None:
-        if warnings is not None:
-            warnings.append(
-                f"[dispatch] {op_name}: could not resolve default_kernel_map "
-                f"(probe construction failed); advisory"
-            )
-        return errors
-    if not keys:
-        return errors  # composite exemption
-
+    # S12: signature carries kernel_map (or **kwargs).
     try:
-        sample_args, sample_kwargs = _c5_sample_ctor_args(cls)
-    except KeyError as missing:
+        sig = inspect.signature(cls.__init__)
+    except (ValueError, TypeError) as exc:
         if warnings is not None:
             warnings.append(
-                f"[dispatch] {op_name}: no sample value for required ctor "
-                f"param {missing!s}; advisory"
+                f"[dispatch] {op_name}: inspect.signature(__init__) raised "
+                f"{exc.__class__.__name__}: {exc}; advisory"
             )
         return errors
-
-    sentinel_cls = _sentinel_kernel_class()
-    sentinel_map = {k: sentinel_cls for k in keys}
-    try:
-        op = cls(*sample_args, **sample_kwargs, kernel_map=sentinel_map)
-    except TypeError as exc:
-        msg = str(exc)
-        if "kernel_map" in msg and "unexpected keyword" in msg:
-            errors.append(
-                f"[dispatch] {op_name}: __init__ does not accept a "
-                f"'kernel_map' parameter — kernel injection / "
-                f"dispatch_kernel pass-through is unreachable"
-            )
-            return errors
-        if warnings is not None:
-            warnings.append(
-                f"[dispatch] {op_name}: sentinel construction raised "
-                f"TypeError: {exc}; advisory"
-            )
-        return errors
-    except Exception as exc:
-        if warnings is not None:
-            warnings.append(
-                f"[dispatch] {op_name}: sentinel construction raised "
-                f"{type(exc).__name__}: {exc}; advisory"
-            )
-        return errors
-
-    if not hasattr(op, "kernel_map") or not isinstance(op.kernel_map, dict):
+    has_kernel_map_kw = "kernel_map" in sig.parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD
+        for p in sig.parameters.values()
+    )
+    if not has_kernel_map_kw:
         errors.append(
-            f"[dispatch] {op_name}: __init__ did not populate self.kernel_map "
-            f"(likely never called self.dispatch_kernel)"
+            f"[dispatch] {op_name}: __init__ does not accept a "
+            f"'kernel_map' parameter (Slot S12) — kernel-map override is "
+            f"unreachable"
         )
         return errors
 
-    for k in keys:
-        actual = op.kernel_map.get(k)
-        if actual is not sentinel_cls:
-            actual_name = getattr(actual, "__name__", repr(actual))
-            errors.append(
-                f"[dispatch] {op_name}: kernel_map[{k!r}] override silently "
-                f"dropped — got {actual_name}, expected sentinel"
+    # S13: body calls self.dispatch_kernel(...).
+    body_calls = _init_calls_dispatch_kernel(cls)
+    if body_calls is None:
+        if warnings is not None:
+            warnings.append(
+                f"[dispatch] {op_name}: __init__ source unavailable "
+                f"(built-in or dynamically generated); S13 advisory"
             )
+        return errors
+    if not body_calls:
+        errors.append(
+            f"[dispatch] {op_name}: __init__ body does not call "
+            f"self.dispatch_kernel(...) (Slot S13) — kernel_map override "
+            f"is silently dropped"
+        )
     return errors
 
 
