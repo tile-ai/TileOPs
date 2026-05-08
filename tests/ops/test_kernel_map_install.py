@@ -12,6 +12,11 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="install_kernel_map tests query CUDA arch via get_sm_version()",
+)
+
 
 def _make_incompatible_arch_list() -> list[int]:
     """Return a ``supported_archs`` list that excludes the current device."""

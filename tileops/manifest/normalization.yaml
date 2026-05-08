@@ -594,7 +594,7 @@ InstanceNormFwdOpNoAffine:
     bytes: "2 * N * C * spatial_size * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/group_norm.py
+    kernel: tileops/kernels/norm/instance_norm.py
     kernel_map:
       instance_norm_no_affine: InstanceNormNoAffineKernel
     op: tileops/ops/norm/instance_norm.py
