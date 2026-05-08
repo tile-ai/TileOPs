@@ -3022,6 +3022,11 @@ def check_l4_benchmark(
 # Op interface contract.
 _CTOR_INFRA_PARAMS = frozenset({"self", "kernel_map", "tune", "strategy"})
 
+# Sentinel for "manifest did not declare this attribute" — distinct from
+# any legitimate manifest value (including the string "REQUIRED" used to
+# explicitly mark a parameter as required).
+_MISSING = object()
+
 
 def _sentinel_kernel_class():
     """Build a Kernel subclass that survives ``dispatch_kernel`` arch + abstract checks.
@@ -3217,20 +3222,33 @@ def check_c3_ctor_signature_parity(
             continue
         code_p = code_params[pname]
 
-        # Default-value parity: manifest default (when present) must
-        # match the ctor default. Manifest sentinel ``REQUIRED`` (or
-        # absent ``default``) means the param must be required in code.
-        manifest_has_default = "default" in pattrs
+        # Default-value parity: when the manifest declares a default the
+        # ctor default must match it value-for-value. Manifest sentinel
+        # ``REQUIRED`` (or absent ``default``) means the param has no
+        # default; the ctor must omit one too.
+        manifest_default = pattrs.get("default", _MISSING)
+        manifest_has_default = (
+            manifest_default is not _MISSING and manifest_default != "REQUIRED"
+        )
         code_has_default = code_p.default is not inspect.Parameter.empty
         if manifest_has_default and not code_has_default:
             errors.append(
                 f"[ctor] {op_name}: param {pname!r} has manifest default "
-                f"{pattrs['default']!r} but no default on __init__"
+                f"{manifest_default!r} but no default on __init__"
             )
         elif (not manifest_has_default) and code_has_default:
             errors.append(
                 f"[ctor] {op_name}: param {pname!r} has __init__ default "
                 f"{code_p.default!r} but no manifest default"
+            )
+        elif (
+            manifest_has_default
+            and code_has_default
+            and code_p.default != manifest_default
+        ):
+            errors.append(
+                f"[ctor] {op_name}: param {pname!r} default mismatch — "
+                f"manifest={manifest_default!r}, code={code_p.default!r}"
             )
 
         # Keyword-only parity: manifest may declare ``kw_only: true``.
@@ -3279,13 +3297,16 @@ def check_c4_forward_signature_parity(
             )
         return errors
 
+    # Only POSITIONAL_ONLY / POSITIONAL_OR_KEYWORD count as positional.
+    # KEYWORD_ONLY params (those after ``*``) are not part of the
+    # positional tuple manifest ``signature.inputs`` describes.
     positional: list[str] = []
     for pname, p in py_sig.parameters.items():
         if pname == "self":
             continue
-        if p.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
+        if p.kind not in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
         ):
             continue
         positional.append(pname)
@@ -3578,7 +3599,10 @@ def validate_manifest(
                 )
             )
 
-        # C3-C7: strict parity gates for status: implemented ops.
+        # C3-C7: strict parity gates for status: implemented ops, each
+        # gated by the level whose contract it enforces. ``--levels``
+        # therefore composes predictably: e.g. ``--levels schema``
+        # triggers no strict-parity work.
         # Routed to strict_errors so advisory mode can downgrade them
         # without losing visibility.
         if "signature" in levels:
@@ -3592,13 +3616,19 @@ def validate_manifest(
                     op_name, entry, op_cls, warnings=all_warnings,
                 )
             )
-        strict_errors.extend(
-            check_c5_dispatch_kernel_invariant(
-                op_name, entry, op_cls, warnings=all_warnings,
+            strict_errors.extend(
+                check_c5_dispatch_kernel_invariant(
+                    op_name, entry, op_cls, warnings=all_warnings,
+                )
             )
-        )
-        strict_errors.extend(check_c6_validate_dtypes_not_stub(op_name, entry, op_cls))
-        strict_errors.extend(check_c7_eval_roofline_not_stub(op_name, entry, op_cls))
+        if "dtype" in levels:
+            strict_errors.extend(
+                check_c6_validate_dtypes_not_stub(op_name, entry, op_cls)
+            )
+        if "bench" in levels:
+            strict_errors.extend(
+                check_c7_eval_roofline_not_stub(op_name, entry, op_cls)
+            )
 
         # bench: benchmark uses manifest workloads
         if "bench" in levels:
