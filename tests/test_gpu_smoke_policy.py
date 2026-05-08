@@ -1,13 +1,13 @@
 """Structural tests for the gpu-smoke / runner-maintenance CI wiring.
 
 These tests do NOT spin up a self-hosted runner — they parse the workflow
-YAML and assert the contract documented in the acceptance criteria:
+YAML and assert the contract:
 
-* AC-3: the ``security-policy`` job downgrades ``is_fork`` to ``false`` for
+* The ``security-policy`` job downgrades ``is_fork`` to ``false`` for
   OWNER/MEMBER/COLLABORATOR authors on head != base PRs.
-* AC-4: the ``gpu-smoke`` job passes ``skip-atomic-age-trim: "true"`` when
+* The ``gpu-smoke`` job passes ``skip-atomic-age-trim: "true"`` when
   invoking the ``reclaim-runner-disk`` composite action.
-* AC-5: the daily ``runner-maintenance.yml`` job does NOT pass
+* The daily ``runner-maintenance.yml`` job does NOT pass
   ``skip-atomic-age-trim``, so the full destructive trim still runs there.
 """
 
@@ -38,15 +38,14 @@ def _find_step(steps: list[dict], *, uses_contains: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# AC-3: member-fork demotion
+# Member-fork demotion
 # ---------------------------------------------------------------------------
 
 
 def test_security_policy_handles_member_fork_as_trusted() -> None:
-    """AC-3: PRs from OWNER/MEMBER/COLLABORATOR authors on a fork repo
-    must be treated as trusted (is_fork=false) by the security-policy
-    step so the gpu-smoke job uses the /home/ci-runner trusted runtime
-    layout."""
+    """PRs from OWNER/MEMBER/COLLABORATOR authors on a fork repo must be
+    treated as trusted (is_fork=false) by the security-policy step so the
+    gpu-smoke job uses the /home/ci-runner trusted runtime layout."""
     wf = _load(GPU_SMOKE)
     policy_job = wf["jobs"]["security-policy"]
     run_steps = [s for s in policy_job["steps"] if "run" in s and s.get("id") == "policy"]
@@ -67,7 +66,7 @@ def test_security_policy_handles_member_fork_as_trusted() -> None:
 
 
 # ---------------------------------------------------------------------------
-# AC-4: gpu-smoke opts out of atomic age-trim
+# gpu-smoke opts out of atomic age-trim
 # ---------------------------------------------------------------------------
 
 
@@ -77,13 +76,13 @@ def test_gpu_smoke_invokes_reclaim_with_skip_atomic_age_trim() -> None:
     reclaim_step = _find_step(steps, uses_contains="reclaim-runner-disk")
     with_ = reclaim_step.get("with") or {}
     assert str(with_.get("skip-atomic-age-trim")).lower() == "true", (
-        "AC-4: gpu-smoke must pass skip-atomic-age-trim: true so the daily "
+        "gpu-smoke must pass skip-atomic-age-trim: true so the daily "
         "maintenance job is the only place autotuner subdirs get evicted."
     )
 
 
 # ---------------------------------------------------------------------------
-# AC-5: daily maintenance preserves full-trim behaviour
+# Daily maintenance preserves full-trim behaviour
 # ---------------------------------------------------------------------------
 
 
@@ -92,10 +91,11 @@ def test_runner_maintenance_still_runs_full_atomic_trim() -> None:
     steps = wf["jobs"]["reclaim-disk"]["steps"]
     reclaim_step = _find_step(steps, uses_contains="reclaim-runner-disk")
     with_ = reclaim_step.get("with") or {}
-    # Absent OR explicitly "false". Presence of "true" would regress AC-5.
+    # Absent OR explicitly "false". Presence of "true" would regress this
+    # daily-maintenance contract.
     value = with_.get("skip-atomic-age-trim", "false")
     assert str(value).lower() == "false", (
-        "AC-5: runner-maintenance.yml must not opt out of the atomic age-trim "
+        "runner-maintenance.yml must not opt out of the atomic age-trim "
         "pass — that daily job is what ultimately reclaims stale autotuner "
         "entries."
     )

@@ -78,7 +78,7 @@ def test_hash_is_16_char_hex(tmp_path: Path) -> None:
 
 
 def test_hash_stable_when_tool_pytest_changes(tmp_path: Path) -> None:
-    """AC-1: mutating ``[tool.pytest]`` must NOT change the hash."""
+    """Mutating ``[tool.pytest]`` must NOT change the hash."""
     base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))
     mutated = BASE_PYPROJECT.replace(
         'markers = ["smoke", "full"]',
@@ -89,7 +89,7 @@ def test_hash_stable_when_tool_pytest_changes(tmp_path: Path) -> None:
 
 
 def test_hash_stable_when_tool_ruff_changes(tmp_path: Path) -> None:
-    """AC-1: mutating ``[tool.ruff]`` must NOT change the hash."""
+    """Mutating ``[tool.ruff]`` must NOT change the hash."""
     base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))
     mutated = BASE_PYPROJECT.replace("line-length = 100", "line-length = 120")
     new = CI_VENV_HASH.compute(_write(tmp_path, mutated))
@@ -97,7 +97,7 @@ def test_hash_stable_when_tool_ruff_changes(tmp_path: Path) -> None:
 
 
 def test_hash_changes_when_project_dependencies_change(tmp_path: Path) -> None:
-    """AC-2: adding a runtime dep MUST change the hash."""
+    """Adding a runtime dep MUST change the hash."""
     base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))
     mutated = BASE_PYPROJECT.replace(
         '"tilelang==0.1.9",',
@@ -108,7 +108,7 @@ def test_hash_changes_when_project_dependencies_change(tmp_path: Path) -> None:
 
 
 def test_hash_changes_when_build_system_requires_change(tmp_path: Path) -> None:
-    """AC-2: bumping ``[build-system].requires`` MUST change the hash."""
+    """Bumping ``[build-system].requires`` MUST change the hash."""
     base = CI_VENV_HASH.compute(_write(tmp_path, BASE_PYPROJECT))
     mutated = BASE_PYPROJECT.replace(
         'requires = ["setuptools>=68", "wheel"]',

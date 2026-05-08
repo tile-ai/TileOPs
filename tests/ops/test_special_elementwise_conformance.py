@@ -1,12 +1,10 @@
-"""Conformance tests for elementwise multi-input ops (issue #1107).
+"""Conformance tests for elementwise multi-input ops.
 
 Covers PyTorch-aligned signatures, broadcasting semantics, and split
 variants (Tensor-bound clamp / masked_fill, single-bound clamp_min /
-clamp_max) for the entries that landed as ``status: spec-only`` in
-PR #1109. After this PR lands, these ops conform to the manifest
-signatures and the manifest entries can flip to ``status: implemented``
-in a follow-up manifest-only PR per the manifest trust model
-(.claude/rules/manifest-trust-model.md).
+clamp_max). Once these tests pass, the corresponding manifest entries
+can flip from ``status: spec-only`` to ``status: implemented`` per the
+manifest trust model (.claude/rules/manifest-trust-model.md).
 """
 
 import inspect
@@ -15,7 +13,7 @@ import pytest
 import torch
 
 # ---------------------------------------------------------------------------
-# AC-1: WhereFwdOp full broadcasting
+# WhereFwdOp full broadcasting
 # ---------------------------------------------------------------------------
 
 
@@ -75,7 +73,7 @@ def test_where_rejects_non_bool_condition(bad_dtype):
 
 
 # ---------------------------------------------------------------------------
-# AC-2: ClampFwdOp Tensor min/max
+# ClampFwdOp Tensor min/max
 # ---------------------------------------------------------------------------
 
 
@@ -119,7 +117,7 @@ def test_clamp_init_signature_pytorch_aligned():
     assert fwd_params[1:] == ["input", "min", "max"], fwd_params
 
 
-# AC-2 (mixed): ClampFwdOp must accept Tensor min with max=None and
+# ClampFwdOp must accept Tensor min with max=None and
 # Tensor max with min=None, matching torch.clamp(input, min=tensor, max=None)
 # and torch.clamp(input, min=None, max=tensor) on CUDA. Single-bound shape
 # matrix is covered by test_clamp_min_tensor / test_clamp_max_tensor on the
@@ -231,7 +229,7 @@ def test_clamp_runtime_tensor_none_must_match_init():
 
 
 # ---------------------------------------------------------------------------
-# AC-3: ClampScalarFwdOp / ClampMinFwdOp / ClampMaxFwdOp
+# ClampScalarFwdOp / ClampMinFwdOp / ClampMaxFwdOp
 # ---------------------------------------------------------------------------
 
 
@@ -380,7 +378,7 @@ def test_clamp_max_nan_propagation(dtype):
 
 
 # ---------------------------------------------------------------------------
-# AC-4: MaskedFillFwdOp (0-dim Tensor) / MaskedFillScalarFwdOp (Number)
+# MaskedFillFwdOp (0-dim Tensor) / MaskedFillScalarFwdOp (Number)
 # ---------------------------------------------------------------------------
 
 
@@ -441,9 +439,8 @@ def test_masked_fill_scalar_init_signature_pytorch_aligned():
 
 
 # ---------------------------------------------------------------------------
-# AC-5: validator passes (the entries can flip to ``implemented`` in a
-# follow-up manifest-only PR — this test exercises the L1 signature check
-# directly so we don't depend on the YAML status flip.)
+# Validator passes: this test exercises the L1 signature check directly
+# so it doesn't depend on the manifest YAML ``status`` value.
 # ---------------------------------------------------------------------------
 
 

@@ -1,12 +1,12 @@
 """Tests for smoke-param tier validation in conftest.py.
 
 Verifies:
-- AC-1: Zero smoke params still fail.
-- AC-2: Multiple smoke params pass validation.
-- AC-3: Smoke params must appear as first N non-xfail cases; ordering
-         violation raises pytest.UsageError.
-- AC-4: Existing single-smoke fixtures pass unchanged (backward compat).
-- AC-5: tune=False and no-xfail constraints apply to every smoke case.
+- Zero smoke params still fail.
+- Multiple smoke params pass validation.
+- Smoke params must appear as first N non-xfail cases; ordering
+  violation raises pytest.UsageError.
+- Existing single-smoke fixtures pass unchanged (backward compat).
+- tune=False and no-xfail constraints apply to every smoke case.
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ class TestFreezeValue:
 
 
 # ===================================================================
-# AC-1: Zero smoke params still fail
+# Zero smoke params still fail
 # ===================================================================
 
 
@@ -94,7 +94,7 @@ class TestZeroSmokeFails:
 
 
 # ===================================================================
-# AC-2: Multiple smoke params pass validation
+# Multiple smoke params pass validation
 # ===================================================================
 
 
@@ -123,7 +123,7 @@ class TestMultiSmokePasses:
 
 
 # ===================================================================
-# AC-3: Smoke params must appear as the first N non-xfail cases
+# Smoke params must appear as the first N non-xfail cases
 # ===================================================================
 
 
@@ -172,7 +172,7 @@ class TestSmokeOrdering:
 
 
 # ===================================================================
-# AC-4: Backward compatibility -- single smoke still works
+# Backward compatibility -- single smoke still works
 # ===================================================================
 
 
@@ -191,7 +191,7 @@ class TestSingleSmokeBackwardCompat:
 
 
 # ===================================================================
-# AC-5: tune=False and no-xfail constraints for every smoke case
+# tune=False and no-xfail constraints for every smoke case
 # ===================================================================
 
 
@@ -297,7 +297,7 @@ class TestNonRuntimeOpsFileExemption:
         pytest_collection_modifyitems(items)
 
 # ===================================================================
-# AC-6: Every dtype needs smoke coverage
+# Every dtype needs smoke coverage
 # ===================================================================
 
 
@@ -354,7 +354,7 @@ class TestPerDtypeSmokeCoverage:
 
 
 # ===================================================================
-# AC-7: full must not only differ from smoke by dtype
+# full must not only differ from smoke by dtype
 # ===================================================================
 
 

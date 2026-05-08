@@ -54,7 +54,7 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    # AC-10: baseline uses torch.nn.functional.layer_norm
+    # Baseline uses torch.nn.functional.layer_norm
     def baseline_fn(x, weight, bias):
         return F.layer_norm(x, (n,), weight=weight, bias=bias, eps=1e-5)
 

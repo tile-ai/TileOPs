@@ -2556,7 +2556,7 @@ def check_l3_validate_dtypes_parity(
                 f"combo {candidate!r} (not in dtype_combos)"
             )
 
-        # --- Out-of-union negative probe (AC-3 rejection side) ---------
+        # --- Out-of-union negative probe (rejection side) -------------
         # Mirrors the probe in the no-dtype_combos branch. Picks a listed
         # combo as a baseline (known to be accepted) and substitutes an
         # out-of-union sentinel for each non-same_as-bound input in turn.
@@ -2730,7 +2730,7 @@ def check_l3_validate_dtypes_parity(
                     f"combo {candidate!r} drawn from manifest dtype unions"
                 )
 
-        # --- Out-of-union negative probe (AC-3 rejection side) ---------
+        # --- Out-of-union negative probe (rejection side) -------------
         # For each input, substitute one dtype outside its declared union
         # and assert _validate_dtypes rejects it. Candidates are built on
         # a same_as-honouring baseline so the only deviation is the
