@@ -250,7 +250,7 @@ jobs:
         run: pip install -e .
 
       - name: Validate ops manifest
-        run: python scripts/validate_manifest.py --levels schema,shape,dtype,bench
+        run: python scripts/validate_manifest.py --levels schema,shape,dtype,bench,signature
 
   actionlint:
     needs: [validate-pr-title, ci-gate]

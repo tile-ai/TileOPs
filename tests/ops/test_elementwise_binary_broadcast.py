@@ -15,116 +15,57 @@ import torch
 
 import tileops.ops.elementwise as elementwise_mod
 
-# (op_name, dtype, gen_a, gen_b, ref_fn) — float-kernel paths.
-_BROADCAST_FLOAT_OPS = [
-    ("AddFwdOp",
-     torch.float16,
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda a, b: a + b),
-    ("SubFwdOp",
-     torch.float16,
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda a, b: a - b),
-    ("MulFwdOp",
-     torch.float16,
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda a, b: a * b),
-    ("DivFwdOp",
-     torch.float16,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda a, b: a / b),
-    ("RemainderFwdOp",
-     torch.float16,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda a, b: torch.remainder(a, b)),
-    ("PowFwdOp",
-     torch.float16,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.5,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") * 2.0,
-     lambda a, b: torch.pow(a, b)),
-    ("FloorDivideFwdOp",
-     torch.float16,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda a, b: torch.floor_divide(a, b)),
-    ("LerpFwdOp",
-     torch.float16,
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda a, b: torch.lerp(a, b, 0.5)),
-    ("MaximumFwdOp",
-     torch.float16,
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda a, b: torch.maximum(a, b)),
-    ("MinimumFwdOp",
-     torch.float16,
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda a, b: torch.minimum(a, b)),
-    ("EqFwdOp",
-     torch.float16,
-     lambda s, d: (torch.randn(*s, dtype=d, device="cuda") > 0).to(d),
-     lambda s, d: (torch.randn(*s, dtype=d, device="cuda") > 0).to(d),
-     lambda a, b: a == b),
-    ("NeFwdOp",
-     torch.float16,
-     lambda s, d: (torch.randn(*s, dtype=d, device="cuda") > 0).to(d),
-     lambda s, d: (torch.randn(*s, dtype=d, device="cuda") > 0).to(d),
-     lambda a, b: a != b),
-    ("GtFwdOp",
-     torch.float16,
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda a, b: a > b),
-    ("LtFwdOp",
-     torch.float16,
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda a, b: a < b),
-    ("GeFwdOp",
-     torch.float16,
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda a, b: a >= b),
-    ("LeFwdOp",
-     torch.float16,
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda a, b: a <= b),
-    ("LogicalAndFwdOp",
-     torch.float16,
-     lambda s, d: (torch.randn(*s, dtype=d, device="cuda") > 0).to(d),
-     lambda s, d: (torch.randn(*s, dtype=d, device="cuda") > 0).to(d),
-     lambda a, b: torch.logical_and(a, b)),
-    ("LogicalOrFwdOp",
-     torch.float16,
-     lambda s, d: (torch.randn(*s, dtype=d, device="cuda") > 0).to(d),
-     lambda s, d: (torch.randn(*s, dtype=d, device="cuda") > 0).to(d),
-     lambda a, b: torch.logical_or(a, b)),
-]
 
-_BROADCAST_INT_OPS = [
-    ("BitwiseAndFwdOp",
-     torch.int32,
-     lambda s, d: torch.randint(-1000, 1000, s, dtype=d, device="cuda"),
-     lambda s, d: torch.randint(-1000, 1000, s, dtype=d, device="cuda"),
-     lambda a, b: torch.bitwise_and(a, b)),
-    ("BitwiseOrFwdOp",
-     torch.int32,
-     lambda s, d: torch.randint(-1000, 1000, s, dtype=d, device="cuda"),
-     lambda s, d: torch.randint(-1000, 1000, s, dtype=d, device="cuda"),
-     lambda a, b: torch.bitwise_or(a, b)),
-    ("BitwiseXorFwdOp",
-     torch.int32,
-     lambda s, d: torch.randint(-1000, 1000, s, dtype=d, device="cuda"),
-     lambda s, d: torch.randint(-1000, 1000, s, dtype=d, device="cuda"),
-     lambda a, b: torch.bitwise_xor(a, b)),
+def _randn(s, d):
+    return torch.randn(*s, dtype=d, device="cuda")
+
+
+def _rand_pos(s, d):
+    return torch.rand(*s, dtype=d, device="cuda") + 0.1
+
+
+def _rand_bool(s, d):
+    return (torch.randn(*s, dtype=d, device="cuda") > 0).to(d)
+
+
+def _randint(s, d):
+    return torch.randint(-1000, 1000, s, dtype=d, device="cuda")
+
+
+def _pow_base(s, d):
+    return torch.rand(*s, dtype=d, device="cuda") + 0.5
+
+
+def _pow_exp(s, d):
+    return torch.rand(*s, dtype=d, device="cuda") * 2.0
+
+
+# (op_name, dtype, gen_a, gen_b, ref_fn).
+_F16 = torch.float16
+_I32 = torch.int32
+
+_BROADCAST_OPS = [
+    ("AddFwdOp",         _F16, _randn,     _randn,     lambda a, b: a + b),
+    ("SubFwdOp",         _F16, _randn,     _randn,     lambda a, b: a - b),
+    ("MulFwdOp",         _F16, _randn,     _randn,     lambda a, b: a * b),
+    ("DivFwdOp",         _F16, _rand_pos,  _rand_pos,  lambda a, b: a / b),
+    ("RemainderFwdOp",   _F16, _rand_pos,  _rand_pos,  lambda a, b: torch.remainder(a, b)),
+    ("PowFwdOp",         _F16, _pow_base,  _pow_exp,   lambda a, b: torch.pow(a, b)),
+    ("FloorDivideFwdOp", _F16, _rand_pos,  _rand_pos,  lambda a, b: torch.floor_divide(a, b)),
+    ("LerpFwdOp",        _F16, _randn,     _randn,     lambda a, b: torch.lerp(a, b, 0.5)),
+    ("MaximumFwdOp",     _F16, _randn,     _randn,     lambda a, b: torch.maximum(a, b)),
+    ("MinimumFwdOp",     _F16, _randn,     _randn,     lambda a, b: torch.minimum(a, b)),
+    ("EqFwdOp",          _F16, _rand_bool, _rand_bool, lambda a, b: a == b),
+    ("NeFwdOp",          _F16, _rand_bool, _rand_bool, lambda a, b: a != b),
+    ("GtFwdOp",          _F16, _randn,     _randn,     lambda a, b: a > b),
+    ("LtFwdOp",          _F16, _randn,     _randn,     lambda a, b: a < b),
+    ("GeFwdOp",          _F16, _randn,     _randn,     lambda a, b: a >= b),
+    ("LeFwdOp",          _F16, _randn,     _randn,     lambda a, b: a <= b),
+    ("LogicalAndFwdOp",  _F16, _rand_bool, _rand_bool, lambda a, b: torch.logical_and(a, b)),
+    ("LogicalOrFwdOp",   _F16, _rand_bool, _rand_bool, lambda a, b: torch.logical_or(a, b)),
+    ("BitwiseAndFwdOp",  _I32, _randint,   _randint,   lambda a, b: torch.bitwise_and(a, b)),
+    ("BitwiseOrFwdOp",   _I32, _randint,   _randint,   lambda a, b: torch.bitwise_or(a, b)),
+    ("BitwiseXorFwdOp",  _I32, _randint,   _randint,   lambda a, b: torch.bitwise_xor(a, b)),
 ]
 
 
@@ -132,8 +73,8 @@ _BROADCAST_INT_OPS = [
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize(
     "op_name, dtype, gen_a, gen_b, ref_fn",
-    _BROADCAST_FLOAT_OPS + _BROADCAST_INT_OPS,
-    ids=lambda v: v if isinstance(v, str) else None,
+    _BROADCAST_OPS,
+    ids=[entry[0] for entry in _BROADCAST_OPS],
 )
 def test_binary_op_bidirectional_broadcast(
     op_name: str, dtype: torch.dtype, gen_a, gen_b, ref_fn,
