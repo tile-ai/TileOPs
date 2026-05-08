@@ -1,6 +1,9 @@
+import inspect
+
 import pytest
 import torch
 import torch.nn.functional as F
+import yaml
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
@@ -205,6 +208,69 @@ def test_instance_norm_rejects_affine_device_mismatch() -> None:
         op(x, weight_other, bias_same)
     with pytest.raises(ValueError, match="bias on"):
         op(x, None, bias_other)
+
+
+@pytest.mark.smoke
+def test_instance_norm_init_accepts_use_input_stats_and_momentum() -> None:
+    """`__init__` must expose the manifest-declared params so L1 parity holds.
+
+    The manifest entry declares `use_input_stats` and `momentum` (matching
+    PyTorch's `torch.nn.InstanceNorm{1,2,3}d` public API). The op must
+    accept both, defaulting to PyTorch's defaults.
+    """
+    init_params = inspect.signature(InstanceNormFwdOp.__init__).parameters
+    assert "use_input_stats" in init_params
+    assert "momentum" in init_params
+    assert init_params["use_input_stats"].default is True
+    assert init_params["momentum"].default == pytest.approx(0.1)
+
+
+@pytest.mark.smoke
+def test_instance_norm_init_signature_covers_manifest_params() -> None:
+    """Union of `__init__` and `forward` params must cover manifest params."""
+    from pathlib import Path
+
+    manifest_file = (
+        Path(__file__).resolve().parents[2]
+        / "tileops" / "manifest" / "normalization.yaml"
+    )
+    with open(manifest_file) as fp:
+        manifest = yaml.safe_load(fp) or {}
+    manifest_params = set(
+        manifest["InstanceNormFwdOp"]["signature"]["params"].keys()
+    )
+    init_params = set(inspect.signature(InstanceNormFwdOp.__init__).parameters)
+    forward_params = set(inspect.signature(InstanceNormFwdOp.forward).parameters)
+    code_params = (init_params | forward_params) - {"self"}
+    missing = manifest_params - code_params
+    assert not missing, f"manifest params not covered by code: {missing}"
+
+
+@pytest.mark.smoke
+def test_instance_norm_rejects_running_stats_path() -> None:
+    """`use_input_stats=False` (running-stats / eval-mode) is deferred."""
+    with pytest.raises(NotImplementedError, match="running-stats"):
+        InstanceNormFwdOp(
+            N=2, C=16, spatial=(8, 8), dtype=torch.float16,
+            use_input_stats=False,
+        )
+
+
+@pytest.mark.smoke
+def test_instance_norm_default_momentum_does_not_change_output() -> None:
+    """Per-batch path is independent of `momentum`; default value must match torch."""
+    n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
+    op_default = InstanceNormFwdOp(N=n, C=c, spatial=spatial, dtype=dtype)
+    op_other = InstanceNormFwdOp(
+        N=n, C=c, spatial=spatial, dtype=dtype, momentum=0.5,
+    )
+    assert op_default.momentum == pytest.approx(0.1)
+    assert op_other.momentum == pytest.approx(0.5)
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    y1 = op_default(x, None, None)
+    y2 = op_other(x, None, None)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
 
 
 if __name__ == "__main__":

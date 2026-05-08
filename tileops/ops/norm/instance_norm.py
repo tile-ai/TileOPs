@@ -66,9 +66,21 @@ class InstanceNormFwdOp(Op):
         spatial: Spatial dimensions tuple ``(H, W, ...)``.
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
+        use_input_stats: Mirrors ``torch.nn.InstanceNorm{1,2,3}d``. When
+            ``True`` (the default and only supported value), per-batch
+            statistics are computed from the input. ``False`` (the
+            running-stats / eval-mode path) is deferred and raises
+            ``NotImplementedError``.
+        momentum: Mirrors ``torch.nn.InstanceNorm{1,2,3}d``. Stored on
+            the op instance for API parity with PyTorch but unused on
+            the per-batch (``use_input_stats=True``) path.
         eps: Epsilon for numerical stability.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
+
+    Raises:
+        NotImplementedError: If ``use_input_stats=False`` is requested
+            (the deferred running-stats path).
     """
 
     def __init__(
@@ -77,15 +89,25 @@ class InstanceNormFwdOp(Op):
         C: int,
         spatial: tuple,
         dtype: torch.dtype,
+        use_input_stats: bool = True,
+        momentum: float = 0.1,
         eps: float = 1e-5,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        if not use_input_stats:
+            raise NotImplementedError(
+                "use_input_stats=False (the running-stats / eval-mode path) "
+                "is not supported by InstanceNormFwdOp; only "
+                "use_input_stats=True (per-batch statistics) is implemented."
+            )
         self.N = N
         self.C = C
         self.spatial = spatial
         self.dtype = dtype
+        self.use_input_stats = use_input_stats
+        self.momentum = momentum
         self.eps = eps
         self.spatial_size = math.prod(spatial)
         # InstanceNorm: each channel is its own group (num_groups = C)
