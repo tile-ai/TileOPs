@@ -61,8 +61,8 @@ MAX_IDLE=20
 META_REPO=$(jq -r '.repo // empty' "$META")
 [[ -n "$META_REPO" ]] \
   || { echo "round-pre: meta.json missing .repo — re-run preflight.sh" >&2; exit 1; }
-[[ "$META_REPO" == *"/"* ]] \
-  || { echo "round-pre: meta.json .repo='$META_REPO' must be 'owner/name' — re-run preflight.sh" >&2; exit 1; }
+[[ "$META_REPO" =~ ^[^/]+/[^/]+$ ]] \
+  || { echo "round-pre: meta.json .repo='$META_REPO' must be exactly 'owner/name' (single slash, both halves non-empty) — re-run preflight.sh" >&2; exit 1; }
 PR_JSON=$(gh pr view "$PR" --repo "$META_REPO" --json state,headRefOid,isDraft 2>/dev/null) \
   || { echo "round-pre: gh pr view failed" >&2; exit 1; }
 PR_STATE=$(echo "$PR_JSON" | jq -r .state)
