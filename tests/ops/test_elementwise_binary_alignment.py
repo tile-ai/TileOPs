@@ -9,9 +9,10 @@ future drift between manifest and code surfaces immediately. Covers:
 - Every manifest-declared input name appears as a ``forward`` parameter.
 - Every manifest-declared param appears in ``__init__`` with the same
   default value.
-- Construction-only smoke for one workload per op (no autotune); runs
-  wherever the test suite runs (GPU runner, since ``BinaryOp.__init__``
-  resolves an SM version via ``torch.cuda.get_device_capability``).
+- Construction-only smoke per op using test-owned shapes/dtypes (no
+  manifest workload reads, no autotune); runs wherever the test suite
+  runs (GPU runner, since ``BinaryOp.__init__`` resolves an SM version
+  via ``torch.cuda.get_device_capability``).
 
 Behavior tests (bidirectional broadcast) remain CUDA-only and live at the
 end of the file.
@@ -170,118 +171,71 @@ def test_init_includes_manifest_params(op_name: str) -> None:
 
 # Construction smoke ---------------------------------------------------------
 #
-# Drives the right __init__ kwargs from manifest workload zero. Pure-Python
-# instantiation; no CUDA tensors, no autotune. Some ops compile a TileLang
+# Pure-Python instantiation with test-owned shapes/dtypes — no manifest
+# workload reads. No CUDA tensors, no autotune. Some ops compile a TileLang
 # kernel at construction (Prelu, MaskedFill); that is a one-shot JIT compile,
 # not autotune, and runs on CPU CI.
+#
+# Manifest reads remain legitimate for signature/parity assertions elsewhere
+# in this file. Per .claude/domain-rules/testing-budget.md, fixtures must
+# not be generated from tileops/manifest/ workloads.
 
-_DTYPE_MAP = {
-    "float16": torch.float16,
-    "bfloat16": torch.bfloat16,
-    "float32": torch.float32,
-    "int32": torch.int32,
-    "int64": torch.int64,
-    "bool": torch.bool,
-}
+_SMOKE_SHAPE: Tuple[int, int] = (8, 8)
 
 
-def _pick_dtype(
-    workload: Dict[str, Any] | None,
-    cls: type | None = None,
-) -> torch.dtype:
-    """Pick a torch dtype from a workload, with a kernel-aware default.
+def _pick_smoke_dtype(cls: type) -> torch.dtype:
+    """Pick a test-owned smoke dtype.
 
-    For an empty workload, default to ``float32`` for general ops and to
-    the first supported dtype on ``cls.kernel_cls.SUPPORTED_DTYPES`` when
-    the kernel restricts dtypes (e.g. bitwise ops accept ints only). This
-    lets the construction smoke cover ops whose manifest has no workloads.
+    Default to ``float32``. For kernels that restrict dtypes (e.g. bitwise
+    ops accept ints only), fall back to the first supported integer dtype
+    from ``cls.kernel_cls.SUPPORTED_DTYPES``. The decision is taken in
+    test code from a curated preference list, not from manifest data.
     """
-    if not workload:
-        if cls is not None:
-            sup = getattr(getattr(cls, "kernel_cls", None), "SUPPORTED_DTYPES", None)
-            if sup and torch.float32 not in sup:
-                # Prefer int32 (or first non-bool int), falling back to sup[0].
-                for pref in (torch.int32, torch.int64, torch.int16, torch.int8):
-                    if pref in sup:
-                        return pref
-                return sup[0]
-        return torch.float32
-    dtypes = workload.get("dtypes") or ["float32"]
-    for d in dtypes:
-        if d in _DTYPE_MAP:
-            return _DTYPE_MAP[d]
-    pytest.skip(f"no torch dtype mapping for workload dtypes={dtypes!r}")
+    sup = getattr(getattr(cls, "kernel_cls", None), "SUPPORTED_DTYPES", None)
+    if sup and torch.float32 not in sup:
+        for pref in (torch.int32, torch.int64, torch.int16, torch.int8):
+            if pref in sup:
+                return pref
+        return sup[0]
+    return torch.float32
 
 
-def _binary_ctor_kwargs(
-    spec: Dict[str, Any], workload: Dict[str, Any], dtype: torch.dtype,
-) -> Dict[str, Any]:
-    """Build ctor ``kwargs`` for a ``BinaryOp``-shaped op.
-
-    Uses ``input_shape`` for ``a_shape`` and a broadcast-compatible
-    ``b_shape`` (or the workload's second-input shape if declared).
-    """
-    inputs = spec["signature"].get("inputs", {}) or {}
-    in_keys = list(inputs.keys())
-    a_shape = tuple(workload.get("input_shape", (8, 8)))
-    second_key = in_keys[1] if len(in_keys) > 1 else None
-    b_shape_key = f"{second_key}_shape" if second_key else None
-    b_shape = (
-        tuple(workload[b_shape_key])
-        if b_shape_key and b_shape_key in workload
-        else a_shape
-    )
-    return {"a_shape": a_shape, "b_shape": b_shape, "dtype": dtype}
-
-
-def _ctor_for(op_name: str, spec: Dict[str, Any]) -> Tuple[type, Dict[str, Any]]:
-    """Resolve ``(cls, kwargs)`` for the manifest's first workload."""
+def _ctor_for(op_name: str) -> Tuple[type, Dict[str, Any]]:
+    """Resolve ``(cls, kwargs)`` from test-owned smoke constants."""
     cls = getattr(elementwise_mod, op_name)
-    workloads = spec.get("workloads") or []
-    # Empty workloads: synthesize a default so construction smoke still
-    # covers the op. ``_pick_dtype({})`` returns float32 and
-    # ``_binary_ctor_kwargs`` falls back to a default ``(8, 8)`` shape.
-    workload: Dict[str, Any] = workloads[0] if workloads else {}
-    dtype = _pick_dtype(workload, cls)
+    dtype = _pick_smoke_dtype(cls)
+    shape = _SMOKE_SHAPE
 
-    # Special-shape ops (non-BinaryOp templates): manifest input set diverges
-    # from the standard (input, other) pair, so dispatch on op name. Each
-    # branch reads the workload directly — no hidden defaults.
+    # Special-shape ops (non-BinaryOp templates) take divergent kwargs.
     if op_name == "PreluFwdOp":
-        shape = tuple(workload.get("input_shape", (8, 8)))
-        default_weight = (shape[1] if len(shape) > 1 else 1,)
-        weight_shape = tuple(workload.get("weight_shape", default_weight))
-        num_channels = weight_shape[0] if weight_shape else 1
+        num_channels = shape[1] if len(shape) > 1 else 1
         return cls, {"shape": shape, "dtype": dtype, "num_channels": num_channels}
     if op_name == "MaskedFillFwdOp":
-        in_shape = tuple(workload.get("input_shape", (8, 8)))
         return cls, {
-            "input": in_shape,
-            "mask": tuple(workload.get("mask_shape", in_shape)),
-            "value": tuple(workload.get("value_shape", ())),
+            "input": shape,
+            "mask": shape,
+            "value": (),
             "dtype": dtype,
         }
     if op_name == "MaskedFillScalarFwdOp":
-        in_shape = tuple(workload.get("input_shape", (8, 8)))
         return cls, {
-            "input": in_shape,
-            "mask": tuple(workload.get("mask_shape", in_shape)),
+            "input": shape,
+            "mask": shape,
             "dtype": dtype,
         }
 
     # Standard BinaryOp shape: (a_shape, b_shape, dtype).
-    kwargs = _binary_ctor_kwargs(spec, workload, dtype)
-    return cls, kwargs
+    return cls, {"a_shape": shape, "b_shape": shape, "dtype": dtype}
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_name", _OP_NAMES)
 def test_construction_smoke(op_name: str) -> None:
-    """Each op constructs from manifest workload zero on CPU."""
+    """Each op constructs from test-owned smoke shapes/dtypes on CPU."""
     spec = _MANIFEST[op_name]
     if spec.get("parity_opt_out"):
         pytest.skip(f"{op_name} parity_opt_out: {spec['parity_opt_out']}")
-    cls, kwargs = _ctor_for(op_name, spec)
+    cls, kwargs = _ctor_for(op_name)
     op = cls(**kwargs)
     assert op is not None
     # Every op exposes the dtype it was built with.
