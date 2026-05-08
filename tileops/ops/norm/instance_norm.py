@@ -90,9 +90,9 @@ class InstanceNormFwdOp(Op):
         spatial: tuple,
         dtype: torch.dtype,
         eps: float = 1e-5,
-        *,
         use_input_stats: bool = True,
         momentum: float = 0.1,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -317,9 +317,9 @@ class InstanceNormFwdOpNoAffine(Op):
         spatial: tuple,
         dtype: torch.dtype,
         eps: float = 1e-5,
-        *,
         use_input_stats: bool = True,
         momentum: float = 0.1,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -358,6 +358,29 @@ class InstanceNormFwdOpNoAffine(Op):
             3 * self.N * self.C * self.spatial_size,
             2 * self.N * self.C * self.spatial_size * elem_bytes,
         )
+
+    def _validate_dtypes(self, x: torch.Tensor) -> None:
+        """Validate ``x.dtype`` against the manifest dtype union.
+
+        Manifest declares ``x.dtype`` as ``float32 | float16 | bfloat16``
+        and the configured op dtype must match the input.
+
+        Args:
+            x: Input tensor.
+
+        Raises:
+            ValueError: If ``x.dtype`` is outside the supported union or
+                does not match ``self.dtype``.
+        """
+        allowed = (torch.float32, torch.float16, torch.bfloat16)
+        if x.dtype not in allowed:
+            raise ValueError(
+                f"x.dtype must be one of {allowed}, got {x.dtype}"
+            )
+        if x.dtype != self.dtype:
+            raise ValueError(
+                f"Expected x.dtype {self.dtype}, got {x.dtype}"
+            )
 
     def set_running_stats(
         self,
@@ -423,6 +446,7 @@ class InstanceNormFwdOpNoAffine(Op):
                 if ``use_input_stats=False`` and running stats have not
                 been bound.
         """
+        self._validate_dtypes(x)
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.device != self._kernel_device:
@@ -430,10 +454,6 @@ class InstanceNormFwdOpNoAffine(Op):
                 f"Device mismatch: op was constructed for {self._kernel_device} "
                 f"but x is on {x.device}. Construct a separate op instance per "
                 f"CUDA device."
-            )
-        if x.dtype != self.dtype:
-            raise ValueError(
-                f"Expected x.dtype {self.dtype}, got {x.dtype}"
             )
         expected_shape = (self.N, self.C, *self.spatial)
         if tuple(x.shape) != expected_shape:
