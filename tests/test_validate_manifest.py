@@ -4208,49 +4208,103 @@ class TestStrictParityC4Forward:
 
 
 class TestStrictParityC5Dispatch:
-    """C5: dispatch_kernel invariant (kernel_map ctor pass-through)."""
+    """C5: dispatch_kernel invariant — sentinel ``kernel_map`` override
+    must reach ``self.kernel_map``. Gated on non-empty ``default_kernel_map``
+    (composite ops are exempt). The runtime contract drives the gate, not
+    manifest ``source.kernel_map``."""
 
-    def test_kernel_map_param_passes(self, validator):
+    @pytest.fixture
+    def DummyKernel(self):
+        from tileops.kernels.kernel_base import Kernel
+
+        class _DummyKernel(Kernel):
+            supported_archs = list(range(70, 110))
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+
+            def forward(self, *args, **kwargs):
+                return None
+
+        return _DummyKernel
+
+    def test_composite_op_skipped(self, validator):
+        """Op with empty ``default_kernel_map`` is exempt."""
         from tileops.ops.op_base import Op
 
-        class Op1(Op):
-            def __init__(self, kernel_map=None): pass
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
-
-        entry = {"source": {"kernel_map": {"k": "K"}}}
-        assert validator.check_c5_dispatch_kernel_invariant(
-            "Op1", entry, Op1,
-        ) == []
-
-    def test_missing_kernel_map_fails(self, validator):
-        from tileops.ops.op_base import Op
-
-        class Op2(Op):
-            def __init__(self): pass  # no kernel_map
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
-
-        entry = {"source": {"kernel_map": {"k": "K"}}}
-        errs = validator.check_c5_dispatch_kernel_invariant("Op2", entry, Op2)
-        assert any("does not accept" in e and "kernel_map" in e for e in errs), errs
-
-    def test_no_kernel_map_in_source_skips(self, validator):
-        """Composite ops (no source.kernel_map) skip C5."""
-        from tileops.ops.op_base import Op
-
-        class Op3(Op):
+        class CompositeOp(Op):
             def __init__(self): pass
             def forward(self, x): return None
             @property
             def default_kernel_map(self): return {}
 
-        entry = {"source": {}}
         assert validator.check_c5_dispatch_kernel_invariant(
-            "Op3", entry, Op3,
+            "CompositeOp", {}, CompositeOp,
         ) == []
+
+    def test_honors_override_passes(self, validator, DummyKernel):
+        """Op that routes through ``dispatch_kernel`` honors sentinel override."""
+        from tileops.ops.op_base import Op
+
+        class GoodOp(Op):
+            def __init__(self, kernel_map=None):
+                self.dispatch_kernel(kernel_map)
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {"k": DummyKernel}
+
+        assert validator.check_c5_dispatch_kernel_invariant(
+            "GoodOp", {}, GoodOp,
+        ) == []
+
+    def test_silently_drops_override_caught(self, validator, DummyKernel):
+        """Op that accepts ``kernel_map`` kwarg but does NOT route through
+        ``dispatch_kernel`` — the W2-audit bug shape — is caught."""
+        from tileops.ops.op_base import Op
+
+        class SilentDropOp(Op):
+            def __init__(self, kernel_map=None):
+                pass  # bug: accepts kwarg, never calls dispatch_kernel
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {"k": DummyKernel}
+
+        errs = validator.check_c5_dispatch_kernel_invariant(
+            "SilentDropOp", {}, SilentDropOp,
+        )
+        assert any("did not populate self.kernel_map" in e for e in errs), errs
+
+    def test_partial_routing_caught(self, validator, DummyKernel):
+        """Op that builds ``self.kernel_map`` from defaults but ignores the
+        override is caught (kernel_map[k] is the default, not the sentinel)."""
+        from tileops.ops.op_base import Op
+
+        class PartialOp(Op):
+            def __init__(self, kernel_map=None):
+                self.kernel_map = dict(self.default_kernel_map)  # ignores override
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {"k": DummyKernel}
+
+        errs = validator.check_c5_dispatch_kernel_invariant(
+            "PartialOp", {}, PartialOp,
+        )
+        assert any("silently dropped" in e for e in errs), errs
+
+    def test_missing_kwarg_caught(self, validator, DummyKernel):
+        """Op whose ``__init__`` does not accept ``kernel_map`` kwarg is caught."""
+        from tileops.ops.op_base import Op
+
+        class NoKwargOp(Op):
+            def __init__(self): pass
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {"k": DummyKernel}
+
+        errs = validator.check_c5_dispatch_kernel_invariant(
+            "NoKwargOp", {}, NoKwargOp,
+        )
+        assert any("does not accept" in e and "kernel_map" in e for e in errs), errs
 
 
 class TestStrictParityC6C7Stub:
