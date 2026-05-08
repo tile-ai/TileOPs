@@ -31,8 +31,6 @@ TILELANG_019_BENCH_PATHS = {
     "benchmarks/ops/attention/bench_gqa_sliding_window.py",
     "benchmarks/ops/attention/bench_gqa_sliding_window_varlen.py",
     "benchmarks/ops/attention/bench_mha.py",
-    "benchmarks/ops/attention/bench_mha_decode.py",
-    "benchmarks/ops/attention/bench_mha_decode_paged.py",
     # Other operators.
     "benchmarks/ops/bench_fft.py",
     "benchmarks/ops/bench_mhc_post.py",
