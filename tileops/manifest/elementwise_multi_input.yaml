@@ -8,7 +8,7 @@
 WhereFwdOp:
   ref_api: "torch.where"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
