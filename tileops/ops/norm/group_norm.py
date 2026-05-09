@@ -105,6 +105,19 @@ class GroupNormFwdOp(Op):
         # rather than letting the kernel layer surface an opaque
         # device-mismatch failure.
         self._kernel_device = torch.device("cuda", torch.cuda.current_device())
+        # Pre-allocate forward-time constants. The kernel binds 1D weight/bias
+        # row-broadcast inputs; GroupNorm needs per-group affine, so the kernel
+        # call uses identity (unit/zero) buffers and the per-channel affine is
+        # applied after. These tensors are immutable for the op's lifetime.
+        self._unit_weight = torch.ones(
+            self.D_padded, dtype=dtype, device=self._kernel_device,
+        )
+        self._zero_bias = torch.zeros(
+            self.D_padded, dtype=dtype, device=self._kernel_device,
+        )
+        self._expected_shape = (self.N, self.C, *self.spatial)
+        self._cpg = self.C // self.num_groups
+        self._affine_shape = (1, self.C) + (1,) * len(self.spatial)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -151,6 +164,10 @@ class GroupNormFwdOp(Op):
             raise ValueError(
                 f"Expected x.dtype {self.dtype}, got {x.dtype}"
             )
+        if tuple(x.shape) != self._expected_shape:
+            raise ValueError(
+                f"Expected x shape {self._expected_shape}, got {tuple(x.shape)}"
+            )
         if not isinstance(weight, torch.Tensor):
             raise ValueError(
                 "weight is required; use GroupNormFwdOpNoAffine for the "
@@ -191,46 +208,27 @@ class GroupNormFwdOp(Op):
             )
 
         orig_shape = x.shape
-        # Ensure contiguous and reshape to (N, num_groups, C/num_groups, *spatial)
         x = x.contiguous()
-
-        # Reshape: (N, C, *spatial)
-        # -> (N, num_groups, C/num_groups, *spatial)
-        # -> (N*num_groups, (C/num_groups)*spatial_size)
-        cpg = self.C // self.num_groups  # channels per group
-        x_reshaped = x.reshape(self.N, self.num_groups, cpg, *self.spatial)
+        x_reshaped = x.reshape(
+            self.N, self.num_groups, self._cpg, *self.spatial,
+        )
         x_2d = x_reshaped.reshape(self.M, self.D)
 
-        # The kernel broadcasts 1D weight/bias across all rows, but GroupNorm
-        # needs per-group affine parameters. Run kernel with unit weight/zero
-        # bias to normalize, then apply per-channel affine afterwards.
-        unit_weight = torch.ones(
-            self.D_padded, dtype=x.dtype, device=x.device,
-        )
-        zero_bias = torch.zeros(
-            self.D_padded, dtype=x.dtype, device=x.device,
-        )
-
-        # Pad to alignment
         if self.D_padded != self.D:
             x_2d = F.pad(x_2d, (0, self.D_padded - self.D))
 
-        # Run kernel: produces (x - mean) / sqrt(var + eps)
-        y_2d = self.kernel(x_2d, unit_weight, zero_bias)
+        # Kernel broadcasts 1D weight/bias row-wise; GroupNorm's per-group
+        # affine doesn't fit that layout, so run the kernel with identity
+        # (unit/zero) and apply per-channel affine after.
+        y_2d = self.kernel(x_2d, self._unit_weight, self._zero_bias)
 
-        # Trim padding
         if self.D_padded != self.D:
             y_2d = y_2d[:, :self.D]
 
-        # Reshape back: (N*num_groups, D) -> (N, num_groups, cpg, *spatial)
-        # -> (N, C, *spatial)
-        y = y_2d.reshape(self.N, self.num_groups, cpg, *self.spatial)
+        y = y_2d.reshape(self.N, self.num_groups, self._cpg, *self.spatial)
         y = y.reshape(orig_shape)
 
-        # Apply per-channel affine: y = y * weight + bias.
-        affine_shape = [1, self.C] + [1] * len(self.spatial)
-        y = y * weight.reshape(affine_shape) + bias.reshape(affine_shape)
-
+        y = y * weight.reshape(self._affine_shape) + bias.reshape(self._affine_shape)
         return y
 
 
