@@ -25,6 +25,17 @@ Inputs:
 
 Bound type is whichever term dominates `sol_time` (memory-bound if `memory_time > compute_time`, else compute-bound). It depends on shape, not on the op; the roofline tool computes it per-workload and the manifest does not declare it.
 
+## 1.3 Convention
+
+Per-element FLOP rule for elementwise ops:
+
+- One basic arithmetic op (add, sub, mul, div, neg, abs, recip) counts as 1 FLOP.
+- One transcendental call (`exp`, `log`, `log1p`, `erf`, `tanh`, `sin`, `cos`, `sqrt`, `rsqrt`, etc.) counts as 1 FLOP at the convention level. Hardware-specific cost models do not feed back into the manifest.
+- One compare-and-select (`max`, `min`, `maximum`, `minimum`, single- or two-bound clamp, `relu`-style branch, `where`) counts as 1 FLOP per output element.
+- Predicate-only outputs (`eq`, `gt`, etc.) count as 1 FLOP per element.
+
+Composite ops sum their primitives — `sigmoid = neg + exp + add + recip = 4` FLOPs/elem; `silu = sigmoid + mul = 5` FLOPs/elem.
+
 ## 2. Field Specification
 
 ### 2.1 Output Contract

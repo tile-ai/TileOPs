@@ -446,10 +446,10 @@ def clamp_fwd_roofline(op: "Op") -> tuple[int, int]:
     broadcasting across all three operands. Reads ``op.N_total`` (the
     post-broadcast element count) and ``op.dtype.itemsize``.
 
-    Per-output element: one ``max(input, min)`` then one ``min(.., max)``
-    → ``flops = 2 * N_total``. Bytes: read input + read min + read max +
-    write out, all post-broadcast at ``elem_bytes`` each →
-    ``bytes = 4 * N_total * elem_bytes``.
+    Per ``docs/design/roofline.md`` §1.3, two-sided clamp collapses to
+    one fused compare-and-select = ``flops = N_total``. Bytes: read
+    input + read min + read max + write out, all post-broadcast at
+    ``elem_bytes`` each → ``bytes = 4 * N_total * elem_bytes``.
 
     Args:
         op: bound ``ClampFwdOp`` instance exposing ``N_total`` and
@@ -460,7 +460,7 @@ def clamp_fwd_roofline(op: "Op") -> tuple[int, int]:
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
-    return 2 * n_total, 4 * n_total * elem_bytes
+    return n_total, 4 * n_total * elem_bytes
 
 
 def clamp_min_fwd_roofline(op: "Op") -> tuple[int, int]:
