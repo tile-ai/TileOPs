@@ -151,9 +151,8 @@ AddFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.add_fwd_roofline"
 
@@ -181,9 +180,8 @@ SubFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.sub_fwd_roofline"
 
@@ -209,9 +207,8 @@ MulFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.mul_fwd_roofline"
 
@@ -240,9 +237,8 @@ DivFwdOp:
       - "rounding_mode is None or rounding_mode in ('trunc', 'floor')"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.div_fwd_roofline"
 
@@ -268,9 +264,8 @@ RemainderFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.remainder_fwd_roofline"
 
@@ -296,9 +291,8 @@ PowFwdOp:
       - "output.shape == broadcast_shapes(input.shape, exponent.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], exponent_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], exponent_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.pow_fwd_roofline"
 
@@ -324,9 +318,8 @@ FloorDivideFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.floor_divide_fwd_roofline"
 
@@ -357,9 +350,8 @@ LerpFwdOp:
       - "output.shape == broadcast_shapes(input.shape, end.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], end_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], end_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.lerp_fwd_roofline"
 
@@ -385,9 +377,8 @@ MaximumFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.maximum_fwd_roofline"
 
@@ -413,9 +404,8 @@ MinimumFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.minimum_fwd_roofline"
 
@@ -445,9 +435,8 @@ EqFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.eq_fwd_roofline"
 
@@ -473,9 +462,8 @@ NeFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.ne_fwd_roofline"
 
@@ -501,9 +489,8 @@ GtFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.gt_fwd_roofline"
 
@@ -529,9 +516,8 @@ LtFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.lt_fwd_roofline"
 
@@ -557,9 +543,8 @@ GeFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.ge_fwd_roofline"
 
@@ -585,9 +570,8 @@ LeFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.le_fwd_roofline"
 
@@ -617,9 +601,8 @@ LogicalAndFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [bool], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [bool], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [bool, float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [bool, float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.logical_and_fwd_roofline"
 
@@ -645,9 +628,8 @@ LogicalOrFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [bool], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [bool], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [bool, float16, bfloat16, float32], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [bool, float16, bfloat16, float32], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.logical_or_fwd_roofline"
 
@@ -677,9 +659,8 @@ BitwiseAndFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [int32, int64], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [int32, int64], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [bool, int32, int64], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [bool, int32, int64], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.bitwise_and_fwd_roofline"
 
@@ -705,9 +686,8 @@ BitwiseOrFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [int32, int64], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [int32, int64], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [bool, int32, int64], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [bool, int32, int64], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.bitwise_or_fwd_roofline"
 
@@ -733,9 +713,8 @@ BitwiseXorFwdOp:
       - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [int32, int64], label: hidden-state-prefill}
-    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [int32, int64], label: cnn-feat-broadcast}
-
+    - {input_shape: [2048, 4096], other_shape: [2048, 4096], dtypes: [bool, int32, int64], label: hidden-state-prefill}
+    - {input_shape: [16, 256, 56, 56], other_shape: [256, 1, 1], dtypes: [bool, int32, int64], label: cnn-feat-broadcast}
   roofline:
     func: "tileops.perf.formulas.bitwise_xor_fwd_roofline"
 
