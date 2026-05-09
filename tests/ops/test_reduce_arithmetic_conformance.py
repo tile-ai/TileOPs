@@ -109,5 +109,39 @@ def test_dim_none_keepdim_false_returns_0d(op_cls: type, torch_fn: Callable) -> 
     torch.testing.assert_close(y, ref, atol=1e-4, rtol=1e-4)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls, torch_fn", _OP_CASES, ids=[c[0].__name__ for c in _OP_CASES],
+)
+@pytest.mark.parametrize(
+    "dim",
+    [
+        pytest.param(-1, id="dim=int"),
+        pytest.param((0, 2), id="dim=tuple"),
+        pytest.param(None, id="dim=None"),
+    ],
+)
+def test_arithmetic_reduce_unaligned_innermost(
+    op_cls: type, torch_fn: Callable, dim,
+) -> None:
+    """Unaligned innermost dim must still match PyTorch.
+
+    The aligned ``_SHAPE`` (innermost = 256, a kernel-tile multiple) bypasses
+    the simple-reduce kernel's masked-load boundary path. Use 255 to flush
+    the pad branch on every (op, dim-mode) cell.
+    """
+    torch.manual_seed(0)
+    unaligned_shape = (4, 8, 255)
+    dtype = torch.float16
+    x = torch.randn(*unaligned_shape, dtype=dtype, device="cuda")
+    op = op_cls(dtype=dtype, dim=dim, keepdim=False)
+    y = op(x)
+    ref = _ref(torch_fn, x, dim, False)
+    assert y.shape == ref.shape, (
+        f"{op_cls.__name__} dim={dim} unaligned: shape {y.shape} vs ref {ref.shape}"
+    )
+    torch.testing.assert_close(y, ref, **_tol(dtype))
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
