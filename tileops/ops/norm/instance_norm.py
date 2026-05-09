@@ -381,19 +381,27 @@ class InstanceNormFwdOpNoAffine(Op):
             2 * self.N * self.C * self.spatial_size * elem_bytes,
         )
 
-    def _validate_dtypes(self, x: torch.Tensor) -> None:
-        """Validate ``x.dtype`` and ``self.dtype`` against the manifest dtype union.
+    def _validate_dtypes(
+        self,
+        x: torch.Tensor,
+        running_mean: torch.Tensor,
+        running_var: torch.Tensor,
+    ) -> None:
+        """Validate input dtypes against the manifest dtype union.
 
-        Manifest declares ``x.dtype`` as ``float32 | float16 | bfloat16``
-        and the configured op dtype must be drawn from the same union and
+        Manifest declares ``x.dtype`` as ``float32 | float16 | bfloat16``;
+        ``running_mean`` and ``running_var`` are ``float32`` only. The
+        configured op dtype must be drawn from the same union as ``x`` and
         match the input.
 
         Args:
             x: Input tensor.
+            running_mean: Per-channel running mean tensor.
+            running_var: Per-channel running variance tensor.
 
         Raises:
-            ValueError: If ``self.dtype`` or ``x.dtype`` is outside the
-                supported union, or ``x.dtype`` does not match ``self.dtype``.
+            ValueError: If any dtype is outside its supported set, or
+                ``x.dtype`` does not match ``self.dtype``.
         """
         allowed = (torch.float32, torch.float16, torch.bfloat16)
         if self.dtype not in allowed:
@@ -407,6 +415,14 @@ class InstanceNormFwdOpNoAffine(Op):
         if x.dtype != self.dtype:
             raise ValueError(
                 f"Expected x.dtype {self.dtype}, got {x.dtype}"
+            )
+        if running_mean.dtype != torch.float32:
+            raise ValueError(
+                f"Expected running_mean.dtype torch.float32, got {running_mean.dtype}"
+            )
+        if running_var.dtype != torch.float32:
+            raise ValueError(
+                f"Expected running_var.dtype torch.float32, got {running_var.dtype}"
             )
 
     def _validate_running_stats(
@@ -454,7 +470,7 @@ class InstanceNormFwdOpNoAffine(Op):
             ValueError: If tensors are not on CUDA, dtypes mismatch, or
                 shapes are incompatible with the configured dimensions.
         """
-        self._validate_dtypes(x)
+        self._validate_dtypes(x, running_mean, running_var)
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.device != self._kernel_device:
