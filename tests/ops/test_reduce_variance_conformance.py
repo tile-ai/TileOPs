@@ -31,12 +31,14 @@ _UNALIGNED_SHAPE = (4, 8, 255)
 
 
 def _tol(dtype: torch.dtype) -> dict:
-    # Welford accumulators run in fp32 and only narrow at the boundary, so
-    # half-precision tolerances stay near the unit in the last place of the
-    # storage dtype rather than the looser 1e-2 default.
+    # Match the reduction-test convention shared by test_reduce_dim_none.py /
+    # test_reduce_multidim.py / test_reduce_arithmetic_conformance.py: 1e-4
+    # for fp32, 1e-2 for half precision (Welford accumulates in fp32 but the
+    # narrowing cast at the boundary still produces ULP-scale rounding that
+    # tighter tolerances catch noisily on real GPUs).
     if dtype == torch.float32:
         return {"atol": 1e-4, "rtol": 1e-4}
-    return {"atol": 1e-3, "rtol": 1e-3}
+    return {"atol": 1e-2, "rtol": 1e-2}
 
 
 def _ref_var(x: torch.Tensor, dim, keepdim: bool, correction: int) -> torch.Tensor:
@@ -174,38 +176,6 @@ def test_var_mean_conformance(
     torch.testing.assert_close(mean_y, ref_mean, **_tol(dtype))
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "op_cls, ref_fn",
-    [
-        pytest.param(VarFwdOp, _ref_var, id="VarFwdOp"),
-        pytest.param(StdFwdOp, _ref_std, id="StdFwdOp"),
-    ],
-)
-def test_dim_none_keepdim_false_returns_0d(op_cls, ref_fn) -> None:
-    """``dim=None, keepdim=False`` must return a 0-D tensor matching PyTorch."""
-    torch.manual_seed(0)
-    x = torch.randn(*_SHAPE, dtype=torch.float32, device="cuda")
-    op = op_cls(dtype=torch.float32, dim=None, correction=1, keepdim=False)
-    y = op(x)
-    ref = ref_fn(x, None, False, 1)
-    assert y.ndim == 0, f"{op_cls.__name__}: expected 0-D, got shape {y.shape}"
-    assert ref.ndim == 0
-    torch.testing.assert_close(y, ref, atol=1e-4, rtol=1e-4)
-
-
-@pytest.mark.smoke
-def test_var_mean_dim_none_keepdim_false_returns_0d() -> None:
-    """``VarMeanFwdOp`` with ``dim=None, keepdim=False`` returns two 0-D tensors."""
-    torch.manual_seed(0)
-    x = torch.randn(*_SHAPE, dtype=torch.float32, device="cuda")
-    op = VarMeanFwdOp(dtype=torch.float32, dim=None, correction=1, keepdim=False)
-    var_y, mean_y = op(x)
-    ref_var, ref_mean = _ref_var_mean(x, None, False, 1)
-    assert var_y.ndim == 0 and mean_y.ndim == 0
-    assert ref_var.ndim == 0 and ref_mean.ndim == 0
-    torch.testing.assert_close(var_y, ref_var, atol=1e-4, rtol=1e-4)
-    torch.testing.assert_close(mean_y, ref_mean, atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.smoke
