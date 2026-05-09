@@ -1168,6 +1168,13 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
         self, N_total, dtype, coalesced_shape, a_strides, b_strides,
         a_numel, b_numel, strategy=None, config=None, tune=False, alpha=1,
     ):
+        # PyTorch's torch.add / torch.sub reject a floating alpha when the
+        # input tensor is integral (or bool). Mirror that contract here so
+        # the kernel cannot silently truncate alpha through an fp32 cast.
+        if dtype in _BITWISE_DTYPES and float(alpha) != float(int(alpha)):
+            raise ValueError(
+                "alpha must be an integer when input dtype is integral"
+            )
         self._alpha = alpha
         super().__init__(
             N_total, dtype, coalesced_shape, a_strides, b_strides,
@@ -1177,19 +1184,31 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
     def _alpha_op_func(self):
         """Build a binary op_func with ``alpha`` baked in.
 
-        The scalar multiply lives in fp32 to avoid narrow-type literal
-        issues for fp16 / bf16; the boundary cast restores the storage dtype
-        before the combiner so the kernel still emits ``self.dtype``.
+        Floating inputs route the scalar multiply through fp32 to dodge
+        narrow-type literal issues for fp16 / bf16; integer inputs keep
+        native integer arithmetic so large int64 values stay exact.
         """
         alpha = self._alpha
         combine = type(self)._combine
 
         if alpha == 1:
-            # Identity multiplier: skip the fp32 round-trip so integer dtypes
-            # and the original fast path stay byte-identical to the pre-alpha
-            # kernel.
+            # Identity multiplier: skip the scalar multiply so the kernel
+            # stays byte-identical to the pre-alpha fast path. Bool inputs
+            # rely on this branch since alpha is constrained to 1.
             def op_func(a, b):
                 return combine(a, b)
+
+            return op_func
+
+        if self.dtype in _BITWISE_DTYPES:
+            # Native integer arithmetic: cast alpha to the input dtype so
+            # the multiply preserves int64 precision. Bool inputs never
+            # reach this branch (alpha must be 1 above).
+            int_alpha = int(alpha)
+
+            def op_func(a, b):
+                scaled_b = T.cast(int_alpha, a.dtype) * b
+                return combine(a, scaled_b)
 
             return op_func
 
