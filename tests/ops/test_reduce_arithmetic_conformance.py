@@ -39,9 +39,12 @@ _SHAPE = (4, 8, 256)
 
 
 def _tol(dtype: torch.dtype) -> dict:
+    # Reduce kernels accumulate in fp32 and only narrow at the boundary, so
+    # half-precision tolerances can stay close to the unit in the last place
+    # of the storage dtype rather than the looser 1e-2 default.
     if dtype == torch.float32:
         return {"atol": 1e-4, "rtol": 1e-4}
-    return {"atol": 1e-2, "rtol": 1e-2}
+    return {"atol": 1e-3, "rtol": 1e-3}
 
 
 def _ref(torch_fn: Callable, x: torch.Tensor, dim, keepdim: bool) -> torch.Tensor:
