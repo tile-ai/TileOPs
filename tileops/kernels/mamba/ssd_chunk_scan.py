@@ -161,7 +161,9 @@ def _ssd_chunk_scan_fwd_kernel(
                         )
 
                     # prev_states[b, c, h, p, n]  layout: [B, C, H, P, N]  float32
-                    for nn, pp in T.Parallel(block_n, block_p):
+                    # Iterate (block_p, block_n) so consecutive threads vary nn (the contiguous N
+                    # dim), giving coalesced 128-byte loads instead of strided-by-N accesses.
+                    for pp, nn in T.Parallel(block_p, block_n):
                         n_abs = n0 + nn
                         p_abs = p0 + pp
                         state_tile[nn, pp] = T.if_then_else(
@@ -388,8 +390,8 @@ class SSDChunkScanFwdKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         block_l = [32, 64]
         block_p = [32, 64]
-        block_n = [16, 32]
-        block_s = [32, 64]
+        block_n = [32, 64, 128]
+        block_s = [64, 128]
         threads = [128, 256]
         return [
             {"block_l": c[0], "block_p": c[1], "block_n": c[2], "block_s": c[3], "threads": c[4]}
