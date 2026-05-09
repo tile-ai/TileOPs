@@ -565,6 +565,8 @@ InstanceNormFwdOpNoAffine:
   signature:
     inputs:
       x: {dtype: "float32 | float16 | bfloat16"}
+      running_mean: {dtype: "float32"}
+      running_var: {dtype: "float32"}
     outputs:
       output: {dtype: "same_as(x)"}
     params:
@@ -574,13 +576,16 @@ InstanceNormFwdOpNoAffine:
     static_dims:
       C: "x.shape[1]"
     shape_rules:
+      - "running_mean.shape == (x.shape[1],)"
+      - "running_var.shape == (x.shape[1],)"
       - "output.shape == x.shape"
 
   workloads:
-    # Mirror the affine primary's CV shapes.
-    - {x_shape: [8, 128, 32, 32], dtypes: [float16, bfloat16], label: "image"}
-    - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "wider-channel"}
-    - {x_shape: [4, 64, 30, 30], dtypes: [float16], label: "tail-spatial"}
+    # Mirror the affine primary's CV shapes. running_mean / running_var
+    # are per-channel (shape [C]) per torch.nn.functional.instance_norm.
+    - {x_shape: [8, 128, 32, 32], running_mean_shape: [128], running_var_shape: [128], dtypes: [float16, bfloat16], label: "image"}
+    - {x_shape: [4, 256, 28, 28], running_mean_shape: [256], running_var_shape: [256], dtypes: [float16], label: "wider-channel"}
+    - {x_shape: [4, 64, 30, 30], running_mean_shape: [64], running_var_shape: [64], dtypes: [float16], label: "tail-spatial"}
 
   roofline:
     vars:
