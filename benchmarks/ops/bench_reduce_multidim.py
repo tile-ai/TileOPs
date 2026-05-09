@@ -17,14 +17,17 @@ These two groups cannot provide true multi-dim reduction cases.
 Shape conventions use LLaMA-family dimensions:
   - (batch=4, seq=128, hidden=4096): 7B inference context
   - (batch=2, seq=512, hidden=4096): 7B longer-context inference
-"""
 
-from typing import Optional
+Roofline metadata (FLOPs, bytes) comes from each op's ``eval_roofline()``
+via ``ManifestBenchmark``; the 3D multi-dim shapes themselves are declared
+inline because the manifest workload set for these ops only covers 2D
+last-axis reductions, which is a different test scenario.
+"""
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from workloads.workload_base import FixtureBase, WorkloadBase
 
 # ===================================================================
@@ -102,26 +105,7 @@ class ReduceMultidimTest(WorkloadBase):
         return ops[self.op_kind](x_f32).to(x.dtype)
 
 
-class ReduceMultidimBenchmark(BenchmarkBase[ReduceMultidimTest]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        total_elems = 1
-        for s in t.shape:
-            total_elems *= s
-        return total_elems
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        total_elems = 1
-        for s in t.shape:
-            total_elems *= s
-        # Output elements: product of kept dims
-        out_elems = 1
-        for i, s in enumerate(t.shape):
-            if i not in t.dim:
-                out_elems *= s
-        return (total_elems + out_elems) * elem_bytes
+_REDUCE_OP_NAMES = {"sum": "SumFwdOp", "mean": "MeanFwdOp", "amax": "AmaxFwdOp"}
 
 
 def _make_reduce_op(dtype, op_kind, dim, keepdim):
@@ -141,15 +125,21 @@ def test_reduce_multidim_bench(
     op_kind: str,
 ) -> None:
     test = ReduceMultidimTest(shape, dim, keepdim, dtype, op_kind)
-    bm = ReduceMultidimBenchmark(test)
     inputs = test.gen_inputs()
 
     op = _make_reduce_op(dtype, op_kind, dim, keepdim)
+    bm = ManifestBenchmark(_REDUCE_OP_NAMES[op_kind], op, test)
+    # Preserve legacy report column order: shape, keepdim, dtype, op_kind
+    # (dim is a list and was already silently dropped by the pre-PR
+    # serializability filter, so we omit it here too).
+    report_params = {
+        "shape": shape, "keepdim": keepdim, "dtype": dtype, "op_kind": op_kind,
+    }
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, report_params, result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
 # ===================================================================
@@ -221,22 +211,7 @@ class ArgreduceMultidimTest(WorkloadBase):
         return x.argmin(dim=self.dim, keepdim=self.keepdim)
 
 
-class ArgreduceMultidimBenchmark(BenchmarkBase[ArgreduceMultidimTest]):
-    def calculate_flops(self) -> Optional[float]:
-        total_elems = 1
-        for s in self.workload.shape:
-            total_elems *= s
-        return total_elems
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        total_elems = 1
-        for s in t.shape:
-            total_elems *= s
-        # Output: int64 (8 bytes) for each position
-        out_elems = total_elems // t.shape[t.dim]
-        return total_elems * elem_bytes + out_elems * 8
+_ARGREDUCE_OP_NAMES = {"argmax": "ArgmaxFwdOp", "argmin": "ArgminFwdOp"}
 
 
 def _make_argreduce_op(dtype, op_kind, dim, keepdim):
@@ -256,15 +231,21 @@ def test_argreduce_multidim_bench(
     op_kind: str,
 ) -> None:
     test = ArgreduceMultidimTest(shape, dim, keepdim, dtype, op_kind)
-    bm = ArgreduceMultidimBenchmark(test)
     inputs = test.gen_inputs()
 
     op = _make_argreduce_op(dtype, op_kind, dim, keepdim)
+    bm = ManifestBenchmark(_ARGREDUCE_OP_NAMES[op_kind], op, test)
+    # Preserve legacy report column order: shape, dim, keepdim, dtype, op_kind
+    # (dim is int here and was kept by the pre-PR filter).
+    report_params = {
+        "shape": shape, "dim": dim, "keepdim": keepdim,
+        "dtype": dtype, "op_kind": op_kind,
+    }
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, report_params, result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
 # ===================================================================
@@ -336,26 +317,9 @@ class LogicalReduceMultidimTest(WorkloadBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-class LogicalReduceMultidimBenchmark(BenchmarkBase[LogicalReduceMultidimTest]):
-    def calculate_flops(self) -> Optional[float]:
-        total_elems = 1
-        for s in self.workload.shape:
-            total_elems *= s
-        return total_elems
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        total_elems = 1
-        for s in t.shape:
-            total_elems *= s
-        out_elems = 1
-        dims = set(d % len(t.shape) for d in t.dim)
-        for i, s in enumerate(t.shape):
-            if i not in dims:
-                out_elems *= s
-        out_elem_bytes = 8 if t.op_kind == "count_nonzero" else 1
-        return total_elems * elem_bytes + out_elems * out_elem_bytes
+_LOGICAL_OP_NAMES = {
+    "any": "AnyFwdOp", "all": "AllFwdOp", "count_nonzero": "CountNonzeroFwdOp",
+}
 
 
 def _make_logical_op(dtype, op_kind, dim, keepdim):
@@ -380,15 +344,20 @@ def test_logical_reduce_multidim_bench(
     op_kind: str,
 ) -> None:
     test = LogicalReduceMultidimTest(shape, dim, keepdim, dtype, op_kind)
-    bm = LogicalReduceMultidimBenchmark(test)
     inputs = test.gen_inputs()
 
     op = _make_logical_op(dtype, op_kind, dim, keepdim)
+    bm = ManifestBenchmark(_LOGICAL_OP_NAMES[op_kind], op, test)
+    # Preserve legacy report column order: shape, keepdim, dtype, op_kind
+    # (dim list dropped by pre-PR filter).
+    report_params = {
+        "shape": shape, "keepdim": keepdim, "dtype": dtype, "op_kind": op_kind,
+    }
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, report_params, result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
 # ===================================================================
@@ -455,25 +424,9 @@ class VectorNormMultidimTest(WorkloadBase):
         )
 
 
-class VectorNormMultidimBenchmark(BenchmarkBase[VectorNormMultidimTest]):
-    def calculate_flops(self) -> Optional[float]:
-        total_elems = 1
-        for s in self.workload.shape:
-            total_elems *= s
-        return total_elems
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        total_elems = 1
-        for s in t.shape:
-            total_elems *= s
-        out_elems = 1
-        dims = set(d % len(t.shape) for d in t.dim)
-        for i, s in enumerate(t.shape):
-            if i not in dims:
-                out_elems *= s
-        return (total_elems + out_elems) * elem_bytes
+_VECTOR_NORM_OP_NAMES = {
+    "l1": "L1NormFwdOp", "l2": "L2NormFwdOp", "inf": "InfNormFwdOp",
+}
 
 
 def _make_norm_op(dtype, op_kind, dim, keepdim):
@@ -495,15 +448,20 @@ def test_vector_norm_multidim_bench(
     op_kind: str,
 ) -> None:
     test = VectorNormMultidimTest(shape, dim, keepdim, dtype, op_kind)
-    bm = VectorNormMultidimBenchmark(test)
     inputs = test.gen_inputs()
 
     op = _make_norm_op(dtype, op_kind, dim, keepdim)
+    bm = ManifestBenchmark(_VECTOR_NORM_OP_NAMES[op_kind], op, test)
+    # Preserve legacy report column order: shape, keepdim, dtype, op_kind
+    # (dim list dropped by pre-PR filter).
+    report_params = {
+        "shape": shape, "keepdim": keepdim, "dtype": dtype, "op_kind": op_kind,
+    }
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, report_params, result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
 # ===================================================================
@@ -567,16 +525,7 @@ class CumulativeMultidimTest(WorkloadBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-class CumulativeMultidimBenchmark(BenchmarkBase[CumulativeMultidimTest]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        return t.M * t.N
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Read + write: 2 * M * N
-        return 2 * t.M * t.N * elem_bytes
+_CUMULATIVE_OP_NAMES = {"cumsum": "CumsumFwdOp", "cumprod": "CumprodFwdOp"}
 
 
 def _make_cumulative_op(M, N, dtype, op_kind):
@@ -599,15 +548,17 @@ def test_cumulative_multidim_bench(
     op_kind: str,
 ) -> None:
     test = CumulativeMultidimTest(shape, dtype, op_kind)
-    bm = CumulativeMultidimBenchmark(test)
     inputs = test.gen_inputs()
 
     op = _make_cumulative_op(test.M, test.N, dtype, op_kind)
+    bm = ManifestBenchmark(_CUMULATIVE_OP_NAMES[op_kind], op, test)
+    # Preserve legacy report column order: shape, dtype, op_kind.
+    report_params = {"shape": shape, "dtype": dtype, "op_kind": op_kind}
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, report_params, result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
 # ===================================================================
@@ -680,26 +631,7 @@ class LogSumExpMultidimTest(WorkloadBase):
         )
 
 
-class LogSumExpMultidimBenchmark(BenchmarkBase[LogSumExpMultidimTest]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        total_elems = 1
-        for s in t.shape:
-            total_elems *= s
-        return total_elems
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        total_elems = 1
-        for s in t.shape:
-            total_elems *= s
-        out_elems = 1
-        dims = set(d % len(t.shape) for d in t.dim)
-        for i, s in enumerate(t.shape):
-            if i not in dims:
-                out_elems *= s
-        return (total_elems + out_elems) * elem_bytes
+_LOGSUMEXP_OP_NAME = "LogSumExpFwdOp"
 
 
 def _make_logsumexp_op(dtype, dim, keepdim):
@@ -716,15 +648,18 @@ def test_logsumexp_multidim_bench(
     dtype: torch.dtype,
 ) -> None:
     test = LogSumExpMultidimTest(shape, dim, keepdim, dtype)
-    bm = LogSumExpMultidimBenchmark(test)
     inputs = test.gen_inputs()
 
     op = _make_logsumexp_op(dtype, dim, keepdim)
+    bm = ManifestBenchmark(_LOGSUMEXP_OP_NAME, op, test)
+    # Preserve legacy report column order: shape, keepdim, dtype
+    # (dim list dropped by pre-PR filter).
+    report_params = {"shape": shape, "keepdim": keepdim, "dtype": dtype}
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, report_params, result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
 if __name__ == "__main__":

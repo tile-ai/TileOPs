@@ -24,9 +24,11 @@ class AdaLayerNormBenchmark(BenchmarkBase[AdaLayerNormTest]):
         self._op = op
 
     def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
+        cache = self._roofline_cache
+        if cache is None:
+            cache = self._op.eval_roofline()
+            self._roofline_cache = cache
+        return cache
 
     def calculate_flops(self) -> Optional[float]:
         return self._get_roofline()[0]
@@ -44,9 +46,11 @@ class AdaLayerNormZeroBenchmark(BenchmarkBase[AdaLayerNormZeroTest]):
         self._op = op
 
     def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
+        cache = self._roofline_cache
+        if cache is None:
+            cache = self._op.eval_roofline()
+            self._roofline_cache = cache
+        return cache
 
     def calculate_flops(self) -> Optional[float]:
         return self._get_roofline()[0]
@@ -55,9 +59,9 @@ class AdaLayerNormZeroBenchmark(BenchmarkBase[AdaLayerNormZeroTest]):
         return self._get_roofline()[1]
 
 
-def _manifest_params(op_name):
+def _to_params(workloads):
     params = []
-    for w in load_workloads(op_name):
+    for w in workloads:
         m, n = w["x_shape"]
         label = w.get("label", f"{m}x{n}")
         for dtype_str in w["dtypes"]:
@@ -67,7 +71,7 @@ def _manifest_params(op_name):
     return params
 
 
-@pytest.mark.parametrize("m, n, dtype", _manifest_params(_ADA_OP_NAME))
+@pytest.mark.parametrize("m, n, dtype", _to_params(load_workloads(_ADA_OP_NAME)))
 def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormTest(m, n, dtype)
     inputs = test.gen_inputs()
@@ -86,7 +90,7 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
-@pytest.mark.parametrize("m, n, dtype", _manifest_params(_ADA_ZERO_OP_NAME))
+@pytest.mark.parametrize("m, n, dtype", _to_params(load_workloads(_ADA_ZERO_OP_NAME)))
 def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormZeroTest(m, n, dtype)
     inputs = test.gen_inputs()
