@@ -1144,20 +1144,112 @@ class ReluFwdKernel(FloatUnaryKernel):
         return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
 
 
-class AddFwdKernel(BinaryKernel):
-    """Element-wise addition: y = a + b."""
+class _AlphaScaledBinaryKernel(BinaryKernel):
+    """Shared base for ``y = a (op) alpha * b`` kernels.
+
+    Subclasses set ``_combine`` to either addition or subtraction. ``alpha``
+    is baked in at kernel construction time (one specialization per distinct
+    ``alpha`` value, matching the lru_cache key shape used by the binary
+    builders) so the kernel surface stays scalar-free.
+    """
+
+    @staticmethod
+    def _combine(a_scaled, b_scaled):
+        raise NotImplementedError
 
     @staticmethod
     def op_func(a, b):
-        return a + b
+        raise NotImplementedError(
+            "_AlphaScaledBinaryKernel uses a per-instance op_func built from "
+            "alpha; use the kernel via __init__ instead of calling op_func."
+        )
+
+    def __init__(
+        self, N_total, dtype, coalesced_shape, a_strides, b_strides,
+        a_numel, b_numel, strategy=None, config=None, tune=False, alpha=1,
+    ):
+        self._alpha = alpha
+        super().__init__(
+            N_total, dtype, coalesced_shape, a_strides, b_strides,
+            a_numel, b_numel, strategy=strategy, config=config, tune=tune,
+        )
+
+    def _alpha_op_func(self):
+        """Build a binary op_func with ``alpha`` baked in.
+
+        The scalar multiply lives in fp32 to avoid narrow-type literal
+        issues for fp16 / bf16; the boundary cast restores the storage dtype
+        before the combiner so the kernel still emits ``self.dtype``.
+        """
+        alpha = self._alpha
+        combine = type(self)._combine
+
+        if alpha == 1:
+            # Identity multiplier: skip the fp32 round-trip so integer dtypes
+            # and the original fast path stay byte-identical to the pre-alpha
+            # kernel.
+            def op_func(a, b):
+                return combine(a, b)
+
+            return op_func
+
+        def op_func(a, b):
+            scaled_b = T.cast(T.cast(alpha, "float32") * T.cast(b, "float32"), a.dtype)
+            return combine(a, scaled_b)
+
+        return op_func
+
+    def _build_kernel(self, strategy):
+        """Override to inject the alpha-baked op_func."""
+        op_func = self._alpha_op_func()
+        effective_op = _wrap_fp8_accumulation(
+            op_func, self.dtype, self.dtype_str, arity=2,
+        )
+        kernel_output_dtype = (
+            self.dtype_to_str(self.OUTPUT_DTYPE) if self.OUTPUT_DTYPE is not None else None
+        )
+        if self._fp8_output_dtype is not None:
+            kernel_output_dtype = _fp8_accum_dtype_str()
+        cfg = self.default_config
+        if strategy == "direct":
+            return _make_binary_direct(
+                self.N_total, self.dtype_str, effective_op,
+                self.coalesced_shape, self.a_strides, self.b_strides,
+                self.a_numel, self.b_numel,
+                output_dtype=kernel_output_dtype, threads=cfg["threads"],
+            )
+        elif strategy == "explicit_parallel":
+            return _make_binary_explicit(
+                self.N_total, self.dtype_str, effective_op,
+                self.coalesced_shape, self.a_strides, self.b_strides,
+                self.a_numel, self.b_numel,
+                output_dtype=kernel_output_dtype,
+                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+            )
+        elif strategy == "register_copy":
+            return _make_binary_register_copy(
+                self.N_total, self.dtype_str, effective_op,
+                output_dtype=kernel_output_dtype,
+                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
+            )
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
 
 
-class SubFwdKernel(BinaryKernel):
-    """Element-wise subtraction: y = a - b."""
+class AddFwdKernel(_AlphaScaledBinaryKernel):
+    """Element-wise addition with scalar alpha: y = a + alpha * b."""
 
     @staticmethod
-    def op_func(a, b):
-        return a - b
+    def _combine(a, scaled_b):
+        return a + scaled_b
+
+
+class SubFwdKernel(_AlphaScaledBinaryKernel):
+    """Element-wise subtraction with scalar alpha: y = a - alpha * b."""
+
+    @staticmethod
+    def _combine(a, scaled_b):
+        return a - scaled_b
 
 
 class MulFwdKernel(BinaryKernel):

@@ -32,53 +32,25 @@ from ._base import (
 class AddFwdOp(_AlphaScaledBinaryOp):
     """Element-wise addition with broadcast: y = input + alpha * other.
 
-    Conforms to ``torch.add(input, other, *, alpha=1)``. Only ``alpha == 1``
-    dispatches to the kernel; non-default ``alpha`` raises
-    ``NotImplementedError`` until a kernel-side scalar multiplier lands
-    (tracked in a follow-up issue).
+    Conforms to ``torch.add(input, other, *, alpha=1)``. ``alpha`` is baked
+    into the kernel at construction time, so non-default ``alpha`` runs
+    through the same fast kernel as the default.
     """
 
     _op_name = "add"
     kernel_cls = AddFwdKernel
 
-    def forward(
-        self,
-        input: torch.Tensor,  # noqa: A002
-        other: torch.Tensor,
-    ) -> torch.Tensor:
-        if self.alpha != 1:
-            raise NotImplementedError(
-                "AddFwdOp(alpha != 1) is not yet implemented; the current "
-                "kernel only honors alpha == 1. A follow-up "
-                "issue tracks the kernel work."
-            )
-        return super().forward(input, other)
-
 
 class SubFwdOp(_AlphaScaledBinaryOp):
     """Element-wise subtraction with broadcast: y = input - alpha * other.
 
-    Conforms to ``torch.sub(input, other, *, alpha=1)``. Only ``alpha == 1``
-    dispatches to the kernel; non-default ``alpha`` raises
-    ``NotImplementedError`` until a kernel-side scalar multiplier lands
-    (tracked in a follow-up issue).
+    Conforms to ``torch.sub(input, other, *, alpha=1)``. ``alpha`` is baked
+    into the kernel at construction time, so non-default ``alpha`` runs
+    through the same fast kernel as the default.
     """
 
     _op_name = "sub"
     kernel_cls = SubFwdKernel
-
-    def forward(
-        self,
-        input: torch.Tensor,  # noqa: A002
-        other: torch.Tensor,
-    ) -> torch.Tensor:
-        if self.alpha != 1:
-            raise NotImplementedError(
-                "SubFwdOp(alpha != 1) is not yet implemented; the current "
-                "kernel only honors alpha == 1. A follow-up "
-                "issue tracks the kernel work."
-            )
-        return super().forward(input, other)
 
 
 class MulFwdOp(BinaryOp):
