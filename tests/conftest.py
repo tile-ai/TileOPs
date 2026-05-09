@@ -44,8 +44,6 @@ TILELANG_019_KNOWN_FAILING_NODEIDS = {
     "tests/ops/test_engram.py::test_engram_decode[4-1024-512-20-4-5-dtype2-False]",
     "tests/ops/test_engram.py::test_engram_decode[8-512-256-18-4-3-dtype3-False]",
     "tests/ops/test_engram.py::test_engram_decode_multi_step",
-    "tests/ops/attention/test_gqa_sliding_window_varlen.py::test_gqa_sliding_window_varlen_fwd_op[2-seqlens_q8-seqlens_k8-8-2-64-False-64-64-dtype8-False]",
-    "tests/ops/attention/test_gqa_sliding_window_varlen.py::test_gqa_sliding_window_varlen_fwd_op[2-seqlens_q13-seqlens_k13-8-2-64-True-0--1-dtype13-False]",
     "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode[1-4-64-64-dtype1-False]",
     "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode[1-4-64-64-dtype2-False]",
     "tests/ops/test_deltanet_recurrence.py::test_deltanet_decode[2-8-64-64-dtype5-False]",
