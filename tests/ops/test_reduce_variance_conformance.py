@@ -39,31 +39,25 @@ def _tol(dtype: torch.dtype) -> dict:
     return {"atol": 1e-3, "rtol": 1e-3}
 
 
-def _normalize_dims(dim, ndim: int):
-    if dim is None:
-        return list(range(ndim))
-    if isinstance(dim, tuple):
-        return list(dim)
-    return dim
-
-
 def _ref_var(x: torch.Tensor, dim, keepdim: bool, correction: int) -> torch.Tensor:
-    dims = _normalize_dims(dim, x.ndim)
-    return torch.var(x.float(), dim=dims, keepdim=keepdim, correction=correction).to(x.dtype)
+    return torch.var(
+        x.float(), dim=dim, keepdim=keepdim, correction=correction,
+    ).to(x.dtype)
 
 
 def _ref_std(x: torch.Tensor, dim, keepdim: bool, correction: int) -> torch.Tensor:
-    dims = _normalize_dims(dim, x.ndim)
-    return torch.std(x.float(), dim=dims, keepdim=keepdim, correction=correction).to(x.dtype)
+    return torch.std(
+        x.float(), dim=dim, keepdim=keepdim, correction=correction,
+    ).to(x.dtype)
 
 
 def _ref_var_mean(
     x: torch.Tensor, dim, keepdim: bool, correction: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    dims = _normalize_dims(dim, x.ndim)
-    var = torch.var(x.float(), dim=dims, keepdim=keepdim, correction=correction).to(x.dtype)
-    mean = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(x.dtype)
-    return var, mean
+    var, mean = torch.var_mean(
+        x.float(), dim=dim, keepdim=keepdim, correction=correction,
+    )
+    return var.to(x.dtype), mean.to(x.dtype)
 
 
 @pytest.mark.smoke
