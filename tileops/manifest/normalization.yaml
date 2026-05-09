@@ -565,6 +565,8 @@ InstanceNormFwdOpNoAffine:
   signature:
     inputs:
       x: {dtype: "float32 | float16 | bfloat16"}
+      running_mean: {dtype: "float32"}
+      running_var: {dtype: "float32"}
     outputs:
       output: {dtype: "same_as(x)"}
     params:
@@ -574,6 +576,8 @@ InstanceNormFwdOpNoAffine:
     static_dims:
       C: "x.shape[1]"
     shape_rules:
+      - "running_mean.shape == (x.shape[1],)"
+      - "running_var.shape == (x.shape[1],)"
       - "output.shape == x.shape"
 
   workloads:

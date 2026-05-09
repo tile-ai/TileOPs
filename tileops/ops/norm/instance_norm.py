@@ -322,20 +322,16 @@ class InstanceNormFwdOpNoAffine(Op):
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
         use_input_stats: Mirrors ``torch.nn.functional.instance_norm``. When
-            ``True`` (the default and only supported value), per-instance
-            statistics are computed from the input. ``False`` (the
-            running-stats / eval-mode path) is deferred and raises
-            ``NotImplementedError``.
+            ``True`` (the default), per-instance statistics are computed from
+            the input. When ``False``, the supplied ``running_mean`` and
+            ``running_var`` are used to normalize (eval-mode / inference path).
         momentum: Mirrors ``torch.nn.functional.instance_norm``. Stored on
             the op instance for API parity with PyTorch but unused on the
-            per-instance (``use_input_stats=True``) path.
+            forward path (no running-stat update on ``use_input_stats=True``;
+            no running-stat update on ``use_input_stats=False`` either).
         eps: Epsilon for numerical stability.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
-
-    Raises:
-        NotImplementedError: If ``use_input_stats=False`` is requested
-            (the deferred running-stats path).
     """
 
     def __init__(
@@ -351,12 +347,6 @@ class InstanceNormFwdOpNoAffine(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if not use_input_stats:
-            raise NotImplementedError(
-                "use_input_stats=False (the running-stats / eval-mode path) "
-                "is not supported by InstanceNormFwdOpNoAffine; only "
-                "use_input_stats=True (per-instance statistics) is implemented."
-            )
         self.N = N
         self.C = C
         self.spatial = spatial
@@ -417,11 +407,43 @@ class InstanceNormFwdOpNoAffine(Op):
                 f"Expected x.dtype {self.dtype}, got {x.dtype}"
             )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _validate_running_stats(
+        self, name: str, t: torch.Tensor, x_device: torch.device,
+    ) -> None:
+        """Validate device, dtype, and shape of a running-stats tensor."""
+        if not t.is_cuda:
+            raise ValueError(f"{name} must be a CUDA tensor")
+        if t.device != x_device:
+            raise ValueError(
+                f"Expected {name} on {x_device}, got {t.device}"
+            )
+        if t.dtype != torch.float32:
+            raise ValueError(
+                f"Expected {name}.dtype torch.float32, got {t.dtype}"
+            )
+        if t.ndim != 1 or t.shape[0] != self.C:
+            raise ValueError(
+                f"Expected {name} shape ({self.C},), got {tuple(t.shape)}"
+            )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        running_mean: torch.Tensor,
+        running_var: torch.Tensor,
+    ) -> torch.Tensor:
         """Apply instance normalization without affine.
 
         Args:
             x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
+            running_mean: Per-channel running mean of shape ``(C,)``, dtype
+                ``torch.float32``, on the same CUDA device as ``x``. Used
+                only when ``use_input_stats=False``; ignored otherwise but
+                must still be supplied (R16: no ``Optional[Tensor]``).
+            running_var: Per-channel running variance of shape ``(C,)``,
+                dtype ``torch.float32``, on the same CUDA device as ``x``.
+                Used only when ``use_input_stats=False``; ignored otherwise
+                but must still be supplied.
 
         Returns:
             Normalized tensor of the same shape as *x*.
@@ -444,6 +466,19 @@ class InstanceNormFwdOpNoAffine(Op):
             raise ValueError(
                 f"Expected x shape {expected_shape}, got {tuple(x.shape)}"
             )
+        self._validate_running_stats("running_mean", running_mean, x.device)
+        self._validate_running_stats("running_var", running_var, x.device)
+
+        if not self.use_input_stats:
+            # Eval-mode path: y = (x - running_mean[c]) / sqrt(running_var[c] + eps).
+            # Pure elementwise per-channel; matches torch.nn.functional.instance_norm
+            # (use_input_stats=False) numerics bit-for-bit (verified) by computing in
+            # fp32 then casting to x.dtype.
+            broadcast_shape = [1, self.C] + [1] * len(self.spatial)
+            mean_b = running_mean.reshape(broadcast_shape)
+            var_b = running_var.reshape(broadcast_shape)
+            y = (x.float() - mean_b) * torch.rsqrt(var_b + self.eps)
+            return y.to(x.dtype)
 
         orig_shape = x.shape
         x = x.contiguous()

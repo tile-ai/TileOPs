@@ -120,13 +120,38 @@ def test_instance_norm_no_affine_op(n: int, c: int, spatial: tuple,
     """Forward correctness for InstanceNormFwdOpNoAffine vs F.instance_norm(weight=None, bias=None)."""
     op = InstanceNormFwdOpNoAffine(N=n, C=c, spatial=spatial, dtype=dtype)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    y = op(x)
+    # Running stats are required positional args (R16) but ignored on the
+    # use_input_stats=True path; pass placeholders.
+    rm = torch.zeros(c, dtype=torch.float32, device="cuda")
+    rv = torch.ones(c, dtype=torch.float32, device="cuda")
+    y = op(x, rm, rv)
     y_ref = F.instance_norm(
         x.float(), weight=None, bias=None, eps=1e-5,
     ).to(dtype)
     atol, rtol = _get_tolerances(dtype)
     assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
         f"NoAffine forward mismatch, max err: {(y - y_ref).abs().max()}"
+
+
+@InstanceNormNoAffineFixture
+def test_instance_norm_no_affine_running_stats(
+    n: int, c: int, spatial: tuple, dtype: torch.dtype, tune: bool,
+) -> None:
+    """use_input_stats=False uses running_mean/running_var; matches torch reference."""
+    op = InstanceNormFwdOpNoAffine(
+        N=n, C=c, spatial=spatial, dtype=dtype, use_input_stats=False,
+    )
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    running_mean = torch.randn(c, dtype=torch.float32, device="cuda")
+    running_var = torch.rand(c, dtype=torch.float32, device="cuda") + 0.1
+    y = op(x, running_mean, running_var)
+    y_ref = F.instance_norm(
+        x, running_mean=running_mean, running_var=running_var,
+        weight=None, bias=None, use_input_stats=False, eps=1e-5,
+    )
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), \
+        f"NoAffine running-stats mismatch, max err: {(y - y_ref).abs().max()}"
 
 
 @pytest.mark.smoke
@@ -301,14 +326,33 @@ def test_instance_norm_init_signature_covers_manifest_params(
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_cls", [InstanceNormFwdOp, InstanceNormFwdOpNoAffine])
-def test_instance_norm_rejects_running_stats_path(op_cls: type) -> None:
-    """Both variants defer `use_input_stats=False` (running-stats path)."""
+def test_instance_norm_affine_rejects_running_stats_path() -> None:
+    """The affine variant still defers `use_input_stats=False`."""
     with pytest.raises(NotImplementedError, match="running-stats"):
-        op_cls(
+        InstanceNormFwdOp(
             N=2, C=16, spatial=(8, 8), dtype=torch.float16,
             use_input_stats=False,
         )
+
+
+@pytest.mark.smoke
+def test_instance_norm_no_affine_accepts_running_stats_path() -> None:
+    """No-affine variant supports `use_input_stats=False` end-to-end."""
+    n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
+    op = InstanceNormFwdOpNoAffine(
+        N=n, C=c, spatial=spatial, dtype=dtype, use_input_stats=False,
+    )
+    assert op.use_input_stats is False
+    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    running_mean = torch.randn(c, dtype=torch.float32, device="cuda")
+    running_var = torch.rand(c, dtype=torch.float32, device="cuda") + 0.1
+    y = op(x, running_mean, running_var)
+    y_ref = F.instance_norm(
+        x, running_mean=running_mean, running_var=running_var,
+        weight=None, bias=None, use_input_stats=False, eps=1e-5,
+    )
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
 
 
 @pytest.mark.smoke
