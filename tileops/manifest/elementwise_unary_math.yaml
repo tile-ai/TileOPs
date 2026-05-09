@@ -580,7 +580,8 @@ SigmoidFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # sigmoid(x) = 1 / (1 + exp(-x)): ~4 ops/elem
+    # FLOPs: sigmoid(x) = 1 / (1 + exp(-x)).
+    # neg(1) + exp(1) + add(1) + recip(1) = 4 per elem.
     flops: "4 * N"
     bytes: "2 * N * elem_bytes"
 
@@ -613,8 +614,9 @@ TanhFwdOp:
   roofline:
     vars:
       N: "product(input.shape)"
-    # tanh(x) = 2 * sigmoid(2x) - 1: ~5 ops/elem
-    flops: "5 * N"
+    # FLOPs: tanh is one transcendental call; per roofline.md §1.3
+    # convention, transcendentals count as 1 FLOP per element.
+    flops: "N"
     bytes: "2 * N * elem_bytes"
 
   source:
