@@ -226,25 +226,27 @@ def _clamp_to_dtype_range(value, dtype: torch.dtype):
 
     Prevents TVM FloatImm / IntImm range-check failures when a scalar literal
     exceeds the target dtype's maximum (e.g. 1e4 into float8_e4m3fn whose max
-    is 448, or 1e3 into int8). NaN values are passed through unchanged for
-    floating-point dtypes (NaN is a valid sentinel, not an out-of-range
-    finite value). Infinities are mapped to the dtype's max/min finite value
-    for floating-point dtypes; integer dtypes saturate to ``iinfo`` bounds.
-    The bool dtype coerces any non-zero value to 1 and zero to 0, matching
-    PyTorch's ``Tensor.masked_fill`` coercion semantics.
+    is 448). NaN values are passed through unchanged for floating-point
+    dtypes (NaN is a valid sentinel, not an out-of-range finite value).
+    Infinities are mapped to the dtype's max/min finite value for
+    floating-point dtypes. Integer dtypes truncate floats toward zero
+    (matching PyTorch ``Tensor.masked_fill`` coercion); the upstream
+    ``_validate_scalar_param_repr`` guarantees the truncated value lies
+    inside ``torch.iinfo(dtype)`` so saturation is unnecessary. The bool
+    dtype coerces any non-zero value to 1 and zero to 0.
     """
     if dtype == torch.bool:
         return 1 if bool(value) else 0
     if dtype in _BITWISE_DTYPES:
-        # Integer dtypes: saturate to iinfo range; bool handled above.
-        # Guard inf before int() — Python raises OverflowError on int(inf)
-        # even though the upstream _validate_scalar_param_repr already
-        # rejects non-finite values; keep the kernel utility self-contained.
-        iinfo = torch.iinfo(dtype)
+        # Integer dtypes: truncate toward zero. The upstream validator
+        # rejects NaN/Inf and out-of-range values, so saturation is a
+        # no-op here. Keep the inf guard as defense-in-depth in case a
+        # caller bypasses the validator: Python raises OverflowError on
+        # int(inf), so map +/-inf to the iinfo bounds instead.
         if isinstance(value, float) and math.isinf(value):
+            iinfo = torch.iinfo(dtype)
             return iinfo.max if value > 0 else iinfo.min
-        ivalue = int(value)
-        return max(iinfo.min, min(iinfo.max, ivalue))
+        return int(value)
     # Floating-point (incl. fp8) dtypes.
     fvalue = float(value)
     if math.isnan(fvalue):

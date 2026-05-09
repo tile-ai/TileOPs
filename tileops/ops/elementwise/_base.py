@@ -67,8 +67,9 @@ def _validate_scalar_param_repr(
 
     Integer and bool ``dtype`` mirror PyTorch's ``Tensor.masked_fill``
     coercion: bool accepts any int/float and reduces to ``{0, 1}``;
-    integer dtypes accept any int/float that is finite, has no
-    fractional part, and falls inside ``torch.iinfo(dtype)``.
+    integer dtypes accept any finite int/float and truncate floats
+    toward zero (e.g. ``1.5 -> 1``, ``-1.5 -> -1``). NaN/Inf raise.
+    The truncated integer must fall inside ``torch.iinfo(dtype)``.
     """
     if isinstance(value, bool):
         # ``bool`` is a subclass of ``int``; treat explicitly so the int
@@ -87,13 +88,13 @@ def _validate_scalar_param_repr(
                 f"{op_name} received {param_name}={value!r}, but {param_name} must be finite "
                 f"and representable in dtype {dtype}"
             )
-        if isinstance(value, float) and not value.is_integer():
-            raise ValueError(
-                f"{op_name} received {param_name}={value!r}, which is not representable in "
-                f"integer dtype {dtype}"
-            )
+        # PyTorch coerces a float scalar via the tensor dtype; for integer
+        # dtypes that means truncation toward zero (Python ``int(-1.5) ==
+        # -1``). Validate the truncated value against the dtype range so
+        # out-of-range integers raise -- matching PyTorch's behaviour.
+        truncated = int(value)
         iinfo = torch.iinfo(dtype)
-        if not (iinfo.min <= int(value) <= iinfo.max):
+        if not (iinfo.min <= truncated <= iinfo.max):
             raise ValueError(
                 f"{op_name} received {param_name}={value!r}, which is not representable in "
                 f"dtype {dtype} (valid integer range: [{iinfo.min}, {iinfo.max}])"
