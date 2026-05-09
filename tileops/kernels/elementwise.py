@@ -237,7 +237,12 @@ def _clamp_to_dtype_range(value, dtype: torch.dtype):
         return 1 if bool(value) else 0
     if dtype in _BITWISE_DTYPES:
         # Integer dtypes: saturate to iinfo range; bool handled above.
+        # Guard inf before int() — Python raises OverflowError on int(inf)
+        # even though the upstream _validate_scalar_param_repr already
+        # rejects non-finite values; keep the kernel utility self-contained.
         iinfo = torch.iinfo(dtype)
+        if isinstance(value, float) and math.isinf(value):
+            return iinfo.max if value > 0 else iinfo.min
         ivalue = int(value)
         return max(iinfo.min, min(iinfo.max, ivalue))
     # Floating-point (incl. fp8) dtypes.
