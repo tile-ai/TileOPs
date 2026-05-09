@@ -8,11 +8,21 @@ class DaCumsumFwdFixture(FixtureBase):
     def get_params(cls):
         import pytest
         return [
-            ("batch, num_chunks, chunk_len, n_heads, tune", [
-                pytest.param(1, 2, 64, 4, False, marks=pytest.mark.smoke),
-                pytest.param(2, 4, 64, 8, False, marks=pytest.mark.full),
-                pytest.param(1, 2, 128, 4, False, marks=pytest.mark.full),
-                pytest.param(2, 4, 128, 16, False, marks=pytest.mark.full),
+            ("batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, tune", [
+                # feature: no bias, no softplus (baseline path)
+                pytest.param(1, 2,  64,  4, False, False, False, marks=pytest.mark.smoke),
+                # feature: bias only (has_dt_bias branch, no softplus)
+                pytest.param(1, 2,  64,  4, True,  False, False, marks=pytest.mark.smoke),
+                # feature: softplus only (no bias, dt_softplus branch)
+                pytest.param(1, 2,  64,  4, False, True,  False, marks=pytest.mark.smoke),
+                # feature: bias + softplus (full pipeline)
+                pytest.param(1, 2,  64,  4, True,  True,  False, marks=pytest.mark.full),
+                # shape: larger batch and chunk count
+                pytest.param(2, 4,  64,  8, False, False, False, marks=pytest.mark.full),
+                # shape: larger chunk_len tile
+                pytest.param(1, 2, 128,  4, False, False, False, marks=pytest.mark.full),
+                # shape + feature: large shape with full pipeline
+                pytest.param(2, 4, 128, 16, True,  True,  False, marks=pytest.mark.full),
             ]),
         ]
 
@@ -23,19 +33,33 @@ class DaCumsumFwdTest(WorkloadBase):
         num_chunks: int,
         chunk_len: int,
         n_heads: int,
+        has_dt_bias: bool = False,
+        dt_softplus: bool = False,
+        dt_min: float = 0.0,
+        dt_max: float = float("inf"),
     ):
         self.batch = batch
         self.num_chunks = num_chunks
         self.chunk_len = chunk_len
         self.n_heads = n_heads
+        self.has_dt_bias = has_dt_bias
+        self.dt_softplus = dt_softplus
+        self.dt_min = dt_min
+        self.dt_max = dt_max
 
     def gen_inputs(self):
         b, C, Q, h = self.batch, self.num_chunks, self.chunk_len, self.n_heads
         seq_len = C * Q
-        # dt > 0 (softplus output in Mamba-2), A <= 0 (negative decay)
-        dt = torch.rand(b, seq_len, h, dtype=torch.float32, device="cuda") * 0.1 + 0.01
+        # Raw dt values; softplus maps R -> R+, so randn covers both sides of the nonlinearity.
+        # A <= 0 (negative decay)
+        dt_raw = torch.randn(b, seq_len, h, dtype=torch.float32, device="cuda")
         A = -torch.rand(h, dtype=torch.float32, device="cuda")
-        return dt, A
+        # dt_bias is random when used; zeros when not (kernel ignores it in that case).
+        if self.has_dt_bias:
+            dt_bias = torch.randn(h, dtype=torch.float32, device="cuda") * 0.5
+        else:
+            dt_bias = torch.zeros(h, dtype=torch.float32, device="cuda")
+        return dt_raw, A, dt_bias
 
 
 class SSDChunkScanFwdFixture(FixtureBase):
