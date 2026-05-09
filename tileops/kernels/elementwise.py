@@ -152,6 +152,19 @@ _FLOAT_DTYPES = (
 
 _LOGICAL_DTYPES = _BITWISE_DTYPES + _FLOAT_DTYPES
 
+# Binary arithmetic dtype unions, mirroring the manifest entries for
+# torch.add / torch.sub. fp8 is excluded because PyTorch does not define
+# add/sub for float8 storage; bool is excluded for sub because PyTorch
+# rejects bool subtraction.
+_BINARY_FULL_DTYPES = _BITWISE_DTYPES + (
+    torch.float16,
+    torch.bfloat16,
+    torch.float32,
+)
+_BINARY_NO_BOOL_DTYPES = tuple(
+    dt for dt in _BINARY_FULL_DTYPES if dt is not torch.bool
+)
+
 
 def _is_fp8(dtype: torch.dtype) -> bool:
     """Check if a torch dtype is an fp8 variant."""
@@ -1170,11 +1183,26 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
     ):
         # PyTorch's torch.add / torch.sub reject a floating alpha when the
         # input tensor is integral (or bool). Mirror that contract here so
-        # the kernel cannot silently truncate alpha through an fp32 cast.
-        if dtype in _BITWISE_DTYPES and float(alpha) != float(int(alpha)):
-            raise ValueError(
-                "alpha must be an integer when input dtype is integral"
-            )
+        # the kernel cannot silently truncate alpha through an fp32 cast,
+        # and additionally reject integer alphas that overflow the input
+        # dtype's representable range (e.g. uint8 alpha=300 wrapping to 44).
+        if dtype in _BITWISE_DTYPES:
+            if float(alpha) != float(int(alpha)):
+                raise ValueError(
+                    "alpha must be an integer when input dtype is integral"
+                )
+            int_alpha = int(alpha)
+            if dtype is torch.bool:
+                if int_alpha not in (0, 1):
+                    raise ValueError(
+                        f"alpha={alpha} out of range for dtype {dtype}"
+                    )
+            else:
+                info = torch.iinfo(dtype)
+                if not (info.min <= int_alpha <= info.max):
+                    raise ValueError(
+                        f"alpha={alpha} out of range for dtype {dtype}"
+                    )
         self._alpha = alpha
         super().__init__(
             N_total, dtype, coalesced_shape, a_strides, b_strides,
@@ -1229,6 +1257,8 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
 class AddFwdKernel(_AlphaScaledBinaryKernel):
     """Element-wise addition with scalar alpha: y = a + alpha * b."""
 
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+
     @staticmethod
     def _combine(a, scaled_b):
         return a + scaled_b
@@ -1236,6 +1266,8 @@ class AddFwdKernel(_AlphaScaledBinaryKernel):
 
 class SubFwdKernel(_AlphaScaledBinaryKernel):
     """Element-wise subtraction with scalar alpha: y = a - alpha * b."""
+
+    SUPPORTED_DTYPES = _BINARY_NO_BOOL_DTYPES
 
     @staticmethod
     def _combine(a, scaled_b):
