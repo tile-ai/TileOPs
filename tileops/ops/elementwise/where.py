@@ -71,6 +71,42 @@ class WhereFwdOp(Op):
     def default_kernel_map(self):
         return {"where": WhereFwdKernel}
 
+    def _infer_output_shapes(
+        self,
+        condition_shape: tuple,
+        input_shape: tuple,
+        other_shape: tuple,
+    ) -> Dict[str, tuple]:
+        out = tuple(
+            torch.broadcast_shapes(
+                tuple(condition_shape),
+                tuple(input_shape),
+                tuple(other_shape),
+            )
+        )
+        return {"output": out}
+
+    def _validate_dtypes(
+        self,
+        condition: torch.Tensor,
+        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        other: torch.Tensor,
+    ) -> None:
+        if condition.dtype != torch.bool:
+            raise ValueError(
+                f"Expected condition.dtype torch.bool, got {condition.dtype}"
+            )
+        if input.dtype not in self._SUPPORTED_DTYPES:
+            names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
+            raise ValueError(
+                f"Expected input.dtype in [{names}], got {input.dtype}"
+            )
+        if other.dtype != input.dtype:
+            raise ValueError(
+                f"Expected other.dtype == input.dtype ({input.dtype}), "
+                f"got {other.dtype}"
+            )
+
     @staticmethod
     def _expand_flat(t: torch.Tensor, target_shape: tuple) -> torch.Tensor:
         """Expand ``t`` to ``target_shape`` and return a contiguous flat view."""
