@@ -58,7 +58,7 @@ def _ref(torch_fn: Callable, x: torch.Tensor, dim, keepdim: bool) -> torch.Tenso
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_cls, torch_fn", _OP_CASES, ids=lambda p: getattr(p, "__name__", str(p)))
+@pytest.mark.parametrize("op_cls, torch_fn", _OP_CASES, ids=[c[0].__name__ for c in _OP_CASES])
 @pytest.mark.parametrize(
     "dim",
     [
@@ -94,7 +94,7 @@ def test_arithmetic_reduce_conformance(
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_cls, torch_fn", _OP_CASES, ids=lambda p: getattr(p, "__name__", str(p)))
+@pytest.mark.parametrize("op_cls, torch_fn", _OP_CASES, ids=[c[0].__name__ for c in _OP_CASES])
 def test_dim_none_keepdim_false_returns_0d(op_cls: type, torch_fn: Callable) -> None:
     """``dim=None, keepdim=False`` must return a 0-D tensor matching PyTorch."""
     x = torch.randn(*_SHAPE, dtype=torch.float32, device="cuda")
