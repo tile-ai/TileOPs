@@ -473,16 +473,21 @@ def ssd_state_passing_fwd_ref(
     dA_chunk_cumsum: torch.Tensor,
     initial_states: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """PyTorch reference for ssd_state_passing_fwd (benchmark-local copy)."""
+    """PyTorch reference for ssd_state_passing_fwd (benchmark-local copy).
+
+    Matches mamba convention: out[:,c] = state *before* processing chunk c,
+    so out[:,0] = initial_states and final_states = state after chunk C-1.
+    """
     b, c, h, d = states.shape
-    out = []
+    out = [initial_states.float().clone()]
     s = initial_states.float()
 
     for ci in range(c):
         scale = torch.exp(dA_chunk_cumsum[:, :, ci]).unsqueeze(-1)
         u = states[:, ci, :, :].float()
         s = scale * s + u
-        out.append(s.clone())
+        if ci < c - 1:
+            out.append(s.clone())
 
     return torch.stack(out, dim=1), s
 

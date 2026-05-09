@@ -64,6 +64,7 @@ Notation:
   N = d_state, C = num_chunks, Q = chunk_len
 """
 
+import functools
 import itertools
 from typing import Callable, Optional
 
@@ -76,6 +77,7 @@ from tileops.kernels.kernel_base import Kernel
 __all__ = ["SSDChunkStateFwdKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _ssd_chunk_state_fwd_kernel(
     batch: int,
     num_chunks: int,

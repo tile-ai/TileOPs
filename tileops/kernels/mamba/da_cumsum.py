@@ -32,6 +32,7 @@ Notation:
   B = batch, S = seq_len = C * Q, H = n_heads, C = num_chunks, Q = chunk_len
 """
 
+import functools
 from typing import Callable, Optional, Tuple
 
 import tilelang
@@ -43,6 +44,7 @@ from tileops.kernels.kernel_base import Kernel
 __all__ = ["DaCumsumFwdKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _da_cumsum_fwd_kernel(
     batch: int,
     num_chunks: int,
@@ -249,6 +251,8 @@ class DaCumsumFwdKernel(Kernel):
         """
         dt = dt.contiguous()
         A = A.contiguous()
+        if self.has_dt_bias and dt_bias is None:
+            raise ValueError("dt_bias is required when has_dt_bias=True")
         # Allocate a dummy zero bias when has_dt_bias=False so the kernel
         # signature stays fixed regardless of the compile-time flag.
         dt_bias = dt.new_zeros(self.n_heads) if dt_bias is None else dt_bias.contiguous()

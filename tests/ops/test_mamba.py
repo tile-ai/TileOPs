@@ -87,6 +87,20 @@ def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_so
     test.check(op, *inputs, atol=1e-5, rtol=1e-5)
 
 
+@pytest.mark.smoke
+def test_da_cumsum_fwd_missing_bias_raises():
+    """DaCumsumFwdKernel must raise when has_dt_bias=True but dt_bias is None."""
+    from tileops.kernels.mamba import DaCumsumFwdKernel
+    kernel = DaCumsumFwdKernel(
+        batch=1, num_chunks=2, chunk_len=64, n_heads=4,
+        seq_len=128, has_dt_bias=True,
+    )
+    dt = torch.randn(1, 128, 4, dtype=torch.float32, device="cuda")
+    A = -torch.rand(4, dtype=torch.float32, device="cuda")
+    with pytest.raises(ValueError, match="dt_bias is required"):
+        kernel(dt, A, dt_bias=None)
+
+
 def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
     """Official-aligned PyTorch reference for chunk scan.
 
@@ -228,16 +242,22 @@ def ssd_state_passing_fwd_ref(
     dA_chunk_cumsum: torch.Tensor,
     initial_states: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """PyTorch reference for the inter-chunk recurrent scan."""
+    """PyTorch reference for the inter-chunk recurrent scan.
+
+    Matches mamba convention: out[:,c] = state *before* processing chunk c,
+    so out[:,0] = initial_states and final_states = state after chunk C-1.
+    """
     b, c, h, d = states.shape
-    out = []
+    # out[:,0] = s_{-1} = initial_states (state before chunk 0)
+    out = [initial_states.float().clone()]
     s = initial_states.float()
 
     for ci in range(c):
         scale = torch.exp(dA_chunk_cumsum[:, :, ci]).unsqueeze(-1)
         u = states[:, ci, :, :].float()
         s = scale * s + u
-        out.append(s.clone())
+        if ci < c - 1:
+            out.append(s.clone())
 
     return torch.stack(out, dim=1), s
 
