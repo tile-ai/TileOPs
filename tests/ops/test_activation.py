@@ -320,6 +320,24 @@ def test_prelu_batch_dim() -> None:
 
 
 @pytest.mark.smoke
+def test_prelu_rejects_mismatched_shape_same_numel() -> None:
+    """PReLU bakes channel position into the kernel via ``inner_size`` at
+    construction; a same-numel tensor with a different layout would silently
+    apply the wrong per-channel weight. Reject before dispatch.
+    """
+    from tileops.ops.elementwise import PreluFwdOp
+
+    dtype = torch.float32
+    shape = (2, 4, 8)
+    C = 4
+    op = PreluFwdOp(shape=shape, dtype=dtype, num_channels=C)
+    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
+    bad = torch.randn((2, 8, 4), device="cuda", dtype=dtype)
+    with pytest.raises(ValueError, match=r"Expected input.shape"):
+        op(bad, weight)
+
+
+@pytest.mark.smoke
 def test_independent_activation_rejects_non_float_dtype() -> None:
     from tileops.kernels.elementwise import LeakyReluFwdKernel
     with pytest.raises(ValueError, match="only supports dtypes"):

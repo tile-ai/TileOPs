@@ -20,13 +20,13 @@ ReluFwdOp:
     params:
       inplace: {type: bool, default: false}
     shape_rules:
-      - "output.shape == input.shape"
+    - "output.shape == input.shape"
 
   workloads:
     # Hidden-state activation (Llama-3.1-8B prefill)
-    - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-prefill"}
+  - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-prefill"}
     # Decode (single token)
-    - {input_shape: [1, 4096], dtypes: [bfloat16], label: "hidden-state-decode"}
+  - {input_shape: [1, 4096], dtypes: [bfloat16], label: "hidden-state-decode"}
 
   roofline:
     vars:
@@ -38,7 +38,7 @@ ReluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
     bench_manifest_driven: false
@@ -56,13 +56,13 @@ GeluFwdOp:
     params:
       approximate: {type: str, default: "none"}
     shape_rules:
-      - "approximate in ('none', 'tanh')"
-      - "output.shape == input.shape"
+    - "approximate in ('none', 'tanh')"
+    - "output.shape == input.shape"
 
   workloads:
     # Llama-3.1-8B FFN intermediate (hidden_dim=14336)
-    - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-3.1-8b-ffn-prefill"}
-    - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-3.1-8b-ffn-decode"}
+  - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-3.1-8b-ffn-prefill"}
+  - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-3.1-8b-ffn-decode"}
 
   roofline:
     vars:
@@ -73,7 +73,7 @@ GeluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
     bench_manifest_driven: false
@@ -91,12 +91,12 @@ SiluFwdOp:
     params:
       inplace: {type: bool, default: false}
     shape_rules:
-      - "output.shape == input.shape"
+    - "output.shape == input.shape"
 
   workloads:
     # Llama-3.1-8B SwiGLU FFN intermediate
-    - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-3.1-8b-ffn-prefill"}
-    - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-3.1-8b-ffn-decode"}
+  - {input_shape: [2048, 14336], dtypes: [float16, bfloat16], label: "llama-3.1-8b-ffn-prefill"}
+  - {input_shape: [1, 14336], dtypes: [bfloat16], label: "llama-3.1-8b-ffn-decode"}
 
   roofline:
     vars:
@@ -107,7 +107,7 @@ SiluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
     bench_manifest_driven: false
@@ -125,12 +125,12 @@ HardswishFwdOp:
     params:
       inplace: {type: bool, default: false}
     shape_rules:
-      - "output.shape == input.shape"
+    - "output.shape == input.shape"
 
   workloads:
     # Mobile-style activation map (NHW C, e.g. MobileNetV3 stage)
-    - {input_shape: [32, 96, 56, 56], dtypes: [float16, bfloat16], label: "mbv3-stage2"}
-    - {input_shape: [32, 240, 28, 28], dtypes: [float16, bfloat16], label: "mbv3-stage3"}
+  - {input_shape: [32, 96, 56, 56], dtypes: [float16, bfloat16], label: "mbv3-stage2"}
+  - {input_shape: [32, 240, 28, 28], dtypes: [float16, bfloat16], label: "mbv3-stage3"}
 
   roofline:
     vars:
@@ -141,7 +141,7 @@ HardswishFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
     bench_manifest_driven: false
@@ -159,12 +159,12 @@ HardsigmoidFwdOp:
     params:
       inplace: {type: bool, default: false}
     shape_rules:
-      - "output.shape == input.shape"
+    - "output.shape == input.shape"
 
   workloads:
     # SE-block gating (B, C, 1, 1)
-    - {input_shape: [32, 240, 1, 1], dtypes: [float16, bfloat16], label: "mbv3-se-gate"}
-    - {input_shape: [32, 960, 1, 1], dtypes: [float16, bfloat16], label: "mbv3-se-gate-deep"}
+  - {input_shape: [32, 240, 1, 1], dtypes: [float16, bfloat16], label: "mbv3-se-gate"}
+  - {input_shape: [32, 960, 1, 1], dtypes: [float16, bfloat16], label: "mbv3-se-gate-deep"}
 
   roofline:
     vars:
@@ -175,7 +175,7 @@ HardsigmoidFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
     bench_manifest_driven: false
@@ -193,12 +193,12 @@ MishFwdOp:
     params:
       inplace: {type: bool, default: false}
     shape_rules:
-      - "output.shape == input.shape"
+    - "output.shape == input.shape"
 
   workloads:
     # YOLO-style feature map activation
-    - {input_shape: [16, 256, 80, 80], dtypes: [float16, bfloat16], label: "yolo-p3"}
-    - {input_shape: [16, 512, 40, 40], dtypes: [float16, bfloat16], label: "yolo-p4"}
+  - {input_shape: [16, 256, 80, 80], dtypes: [float16, bfloat16], label: "yolo-p3"}
+  - {input_shape: [16, 512, 40, 40], dtypes: [float16, bfloat16], label: "yolo-p4"}
 
   roofline:
     vars:
@@ -209,7 +209,7 @@ MishFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
     bench_manifest_driven: false
@@ -227,12 +227,12 @@ SeluFwdOp:
     params:
       inplace: {type: bool, default: false}
     shape_rules:
-      - "output.shape == input.shape"
+    - "output.shape == input.shape"
 
   workloads:
     # SNN-style fully connected activation
-    - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "snn-fc"}
-    - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "snn-fc-wide"}
+  - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "snn-fc"}
+  - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "snn-fc-wide"}
 
   roofline:
     vars:
@@ -243,7 +243,7 @@ SeluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
     bench_manifest_driven: false
@@ -262,12 +262,12 @@ LeakyReluFwdOp:
       negative_slope: {type: float, default: 0.01}
       inplace: {type: bool, default: false}
     shape_rules:
-      - "output.shape == input.shape"
+    - "output.shape == input.shape"
 
   workloads:
     # GAN feature map activation
-    - {input_shape: [16, 256, 64, 64], dtypes: [float16, bfloat16], label: "gan-feat"}
-    - {input_shape: [16, 512, 32, 32], dtypes: [float16, bfloat16], label: "gan-feat-deep"}
+  - {input_shape: [16, 256, 64, 64], dtypes: [float16, bfloat16], label: "gan-feat"}
+  - {input_shape: [16, 512, 32, 32], dtypes: [float16, bfloat16], label: "gan-feat-deep"}
 
   roofline:
     vars:
@@ -278,7 +278,7 @@ LeakyReluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
     bench_manifest_driven: false
@@ -297,12 +297,12 @@ EluFwdOp:
       alpha: {type: float, default: 1.0}
       inplace: {type: bool, default: false}
     shape_rules:
-      - "output.shape == input.shape"
+    - "output.shape == input.shape"
 
   workloads:
     # MLP hidden activation
-    - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "mlp-hidden"}
-    - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "mlp-hidden-wide"}
+  - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "mlp-hidden"}
+  - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "mlp-hidden-wide"}
 
   roofline:
     vars:
@@ -313,7 +313,7 @@ EluFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
     bench_manifest_driven: false
@@ -333,13 +333,13 @@ HardtanhFwdOp:
       max_val: {type: float, default: 1.0}
       inplace: {type: bool, default: false}
     shape_rules:
-      - "min_val <= max_val"
-      - "output.shape == input.shape"
+    - "min_val <= max_val"
+    - "output.shape == input.shape"
 
   workloads:
     # Quantization-friendly bounded activation
-    - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "bounded-hidden"}
-    - {input_shape: [16, 256, 56, 56], dtypes: [float16, bfloat16], label: "bounded-conv-feat"}
+  - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "bounded-hidden"}
+  - {input_shape: [16, 256, 56, 56], dtypes: [float16, bfloat16], label: "bounded-conv-feat"}
 
   roofline:
     vars:
@@ -350,7 +350,7 @@ HardtanhFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
     bench_manifest_driven: false
@@ -369,12 +369,12 @@ SoftplusFwdOp:
       beta: {type: float, default: 1.0}
       threshold: {type: float, default: 20.0}
     shape_rules:
-      - "output.shape == input.shape"
+    - "output.shape == input.shape"
 
   workloads:
     # Distribution-modeling MLP activation
-    - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "mlp-hidden"}
-    - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "mlp-hidden-wide"}
+  - {input_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "mlp-hidden"}
+  - {input_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "mlp-hidden-wide"}
 
   roofline:
     vars:
@@ -385,7 +385,7 @@ SoftplusFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
     bench: benchmarks/ops/bench_activation.py
     bench_manifest_driven: false
@@ -411,11 +411,11 @@ ClampFwdOp:
       output: {dtype: "same_as(input)"}
     shape_rules:
       # PyTorch broadcasts input/min/max together for tensor-bound clamp.
-      - "output.shape == broadcast_shapes(input.shape, min.shape, max.shape)"
+    - "output.shape == broadcast_shapes(input.shape, min.shape, max.shape)"
 
   workloads:
-    - {input_shape: [4096, 4096], min_shape: [4096, 4096], max_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], min_shape: [16384, 16384], max_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], min_shape: [4096, 4096], max_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], min_shape: [16384, 16384], max_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     # Func mode: post-broadcast N_total uses broadcast_shapes which is
@@ -427,7 +427,7 @@ ClampFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       clamp_tensor: ClampTensorFwdKernel
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
     bench_manifest_driven: false
@@ -450,11 +450,11 @@ ClampScalarFwdOp:
       min: {type: "Number | None", default: null}
       max: {type: "Number | None", default: null}
     shape_rules:
-      - "output.shape == input.shape"
+    - "output.shape == input.shape"
 
   workloads:
-    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -470,7 +470,7 @@ ClampScalarFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       clamp: ClampFwdKernel
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
     bench_manifest_driven: false
@@ -490,11 +490,11 @@ ClampMinFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     shape_rules:
-      - "output.shape == broadcast_shapes(input.shape, min.shape)"
+    - "output.shape == broadcast_shapes(input.shape, min.shape)"
 
   workloads:
-    - {input_shape: [4096, 4096], min_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], min_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], min_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], min_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     # Func mode: see ClampFwdOp.roofline for rationale (broadcast_shapes
@@ -505,7 +505,7 @@ ClampMinFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       clamp_tensor: ClampTensorFwdKernel
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
     bench_manifest_driven: false
@@ -525,11 +525,11 @@ ClampMaxFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     shape_rules:
-      - "output.shape == broadcast_shapes(input.shape, max.shape)"
+    - "output.shape == broadcast_shapes(input.shape, max.shape)"
 
   workloads:
-    - {input_shape: [4096, 4096], max_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], max_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], max_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], max_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     # Func mode: see ClampFwdOp.roofline for rationale (broadcast_shapes
@@ -540,7 +540,7 @@ ClampMaxFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       clamp_tensor: ClampTensorFwdKernel
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
     bench_manifest_driven: false
@@ -560,11 +560,11 @@ NanToNumFwdOp:
       posinf: {type: "float | None", default: null}
       neginf: {type: "float | None", default: null}
     shape_rules:
-      - "output.shape == input.shape"
+    - "output.shape == input.shape"
 
   workloads:
-    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -575,7 +575,7 @@ NanToNumFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    op: tileops/ops/elementwise/nan_to_num.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
     bench_manifest_driven: false
