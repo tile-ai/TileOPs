@@ -1183,26 +1183,15 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
     ):
         # PyTorch's torch.add / torch.sub reject a floating alpha when the
         # input tensor is integral (or bool). Mirror that contract here so
-        # the kernel cannot silently truncate alpha through an fp32 cast,
-        # and additionally reject integer alphas that overflow the input
-        # dtype's representable range (e.g. uint8 alpha=300 wrapping to 44).
-        if dtype in _BITWISE_DTYPES:
-            if float(alpha) != float(int(alpha)):
-                raise ValueError(
-                    "alpha must be an integer when input dtype is integral"
-                )
-            int_alpha = int(alpha)
-            if dtype is torch.bool:
-                if int_alpha not in (0, 1):
-                    raise ValueError(
-                        f"alpha={alpha} out of range for dtype {dtype}"
-                    )
-            else:
-                info = torch.iinfo(dtype)
-                if not (info.min <= int_alpha <= info.max):
-                    raise ValueError(
-                        f"alpha={alpha} out of range for dtype {dtype}"
-                    )
+        # the kernel cannot silently truncate alpha through an fp32 cast.
+        # Out-of-range integer alphas are not rejected: PyTorch coerces the
+        # scalar via the input dtype, so values wrap silently (uint8
+        # alpha=-1 → 255; bool alpha=2 → True via low-bit). The kernel's
+        # T.cast(int(alpha), a.dtype) reproduces that wrap.
+        if dtype in _BITWISE_DTYPES and float(alpha) != float(int(alpha)):
+            raise ValueError(
+                "alpha must be an integer when input dtype is integral"
+            )
         self._alpha = alpha
         super().__init__(
             N_total, dtype, coalesced_shape, a_strides, b_strides,
@@ -1213,26 +1202,35 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
         """Build a binary op_func with ``alpha`` baked in.
 
         Floating inputs route the scalar multiply through fp32 to dodge
-        narrow-type literal issues for fp16 / bf16; integer inputs keep
-        native integer arithmetic so large int64 values stay exact.
+        narrow-type literal issues for fp16 / bf16; integer/bool inputs
+        keep native integer arithmetic. Following PyTorch, the integral
+        alpha is coerced via the input dtype, so out-of-range values
+        wrap silently (uint8 alpha=-1 -> 255; bool alpha=2 -> low-bit).
         """
         alpha = self._alpha
         combine = type(self)._combine
 
         if alpha == 1:
             # Identity multiplier: skip the scalar multiply so the kernel
-            # stays byte-identical to the pre-alpha fast path. Bool inputs
-            # rely on this branch since alpha is constrained to 1.
+            # stays byte-identical to the pre-alpha fast path.
             def op_func(a, b):
                 return combine(a, b)
 
             return op_func
 
         if self.dtype in _BITWISE_DTYPES:
-            # Native integer arithmetic: cast alpha to the input dtype so
-            # the multiply preserves int64 precision. Bool inputs never
-            # reach this branch (alpha must be 1 above).
-            int_alpha = int(alpha)
+            # Native integer arithmetic. Coerce alpha into the input dtype's
+            # representable range in Python before T.cast: TVM rejects a
+            # negative literal cast to an unsigned dtype, so reproduce
+            # PyTorch's "scalar wraps via the input dtype" semantics here.
+            if self.dtype is torch.bool:
+                int_alpha = int(bool(alpha))
+            else:
+                info = torch.iinfo(self.dtype)
+                width = info.max - info.min + 1
+                int_alpha = int(alpha)
+                if int_alpha < info.min or int_alpha > info.max:
+                    int_alpha = ((int_alpha - info.min) % width) + info.min
 
             def op_func(a, b):
                 scaled_b = T.cast(int_alpha, a.dtype) * b
