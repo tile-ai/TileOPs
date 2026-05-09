@@ -7,7 +7,7 @@
 RMSNormFwdOp:
   ref_api: "torch.nn.functional.rms_norm"
   family: normalization
-  status: implemented
+  status: spec-only
 
   signature:
     inputs:
