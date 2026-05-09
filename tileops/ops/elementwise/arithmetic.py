@@ -7,7 +7,9 @@ import torch
 
 from tileops.kernels.elementwise import (
     AddFwdKernel,
+    DivFloorFwdKernel,
     DivFwdKernel,
+    DivTruncFwdKernel,
     FloorDivideFwdKernel,
     LerpFwdKernel,
     LerpTensorFwdKernel,
@@ -60,15 +62,20 @@ class MulFwdOp(BinaryOp):
     kernel_cls = MulFwdKernel
 
 
+_DIV_KERNEL_BY_ROUNDING_MODE = {
+    None: DivFwdKernel,
+    "trunc": DivTruncFwdKernel,
+    "floor": DivFloorFwdKernel,
+}
+
+
 class DivFwdOp(BinaryOp):
     """Element-wise division with broadcast: y = input / other.
 
     Conforms to ``torch.div(input, other, *, rounding_mode=None)``.
     ``rounding_mode`` accepts ``None`` (true division), ``"trunc"``
-    (truncation toward zero), or ``"floor"`` (floor division). Only
-    ``rounding_mode is None`` dispatches to the kernel; the trunc /
-    floor variants raise ``NotImplementedError`` until a rounded-divide
-    kernel lands (tracked in a follow-up issue). The leading ``*``
+    (truncation toward zero), or ``"floor"`` (floor division); each
+    value selects a dedicated kernel specialization. The leading ``*``
     makes ``rounding_mode`` and the existing ``strategy`` /
     ``kernel_map`` / ``tune`` parameters keyword-only; only the
     positional triplet ``(a_shape, b_shape, dtype)`` is shared with
@@ -89,29 +96,21 @@ class DivFwdOp(BinaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if rounding_mode is not None and rounding_mode not in ("trunc", "floor"):
+        if rounding_mode not in _DIV_KERNEL_BY_ROUNDING_MODE:
             raise ValueError(
                 f"DivFwdOp received rounding_mode={rounding_mode!r}; "
                 "manifest allows None, 'trunc', or 'floor'"
             )
+        self.rounding_mode = rounding_mode
+        # ``self.kernel_cls`` becomes an instance attribute that shadows the
+        # class attribute so ``BinaryOp.default_kernel_map`` (and the
+        # SUPPORTED_DTYPES check in ``BinaryOp.__init__``) pick the variant
+        # matching ``rounding_mode``.
+        self.kernel_cls = _DIV_KERNEL_BY_ROUNDING_MODE[rounding_mode]
         super().__init__(
             a_shape, b_shape, dtype, strategy=strategy,
             kernel_map=kernel_map, tune=tune,
         )
-        self.rounding_mode = rounding_mode
-
-    def forward(
-        self,
-        input: torch.Tensor,  # noqa: A002
-        other: torch.Tensor,
-    ) -> torch.Tensor:
-        if self.rounding_mode is not None:
-            raise NotImplementedError(
-                f"DivFwdOp(rounding_mode={self.rounding_mode!r}) is not yet "
-                "implemented; the current kernel only honors rounding_mode is "
-                "None. A follow-up issue tracks the kernel work."
-            )
-        return super().forward(input, other)
 
 
 class RemainderFwdOp(BinaryOp):

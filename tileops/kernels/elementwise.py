@@ -87,6 +87,8 @@ __all__ = [
     "SubFwdKernel",
     "MulFwdKernel",
     "DivFwdKernel",
+    "DivTruncFwdKernel",
+    "DivFloorFwdKernel",
     "RemainderFwdKernel",
     "PowFwdKernel",
     "FloorDivideFwdKernel",
@@ -1288,6 +1290,44 @@ class DivFwdKernel(BinaryKernel):
     @staticmethod
     def op_func(a, b):
         return a / b
+
+
+class DivTruncFwdKernel(BinaryKernel):
+    """Element-wise truncated division: y = trunc(a / b).
+
+    Matches ``torch.div(a, b, rounding_mode="trunc")`` semantics: rounds
+    the quotient toward zero. Division and ``trunc`` are computed in fp32
+    to avoid two sources of error: (1) ``htrunc`` is not available for
+    ``cutlass::half_t`` in CUDA, and (2) fp16 division rounds the
+    quotient before ``trunc`` sees it.
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        a_f32 = T.cast(a, "float32")
+        b_f32 = T.cast(b, "float32")
+        return T.Cast(a.dtype, T.trunc(a_f32 / b_f32))
+
+
+class DivFloorFwdKernel(BinaryKernel):
+    """Element-wise floor division: y = floor(a / b).
+
+    Matches ``torch.div(a, b, rounding_mode="floor")`` semantics: rounds
+    the quotient toward negative infinity. Division and ``floor`` are
+    computed in fp32 to avoid two sources of error: (1) ``hfloor`` is
+    not available for ``cutlass::half_t`` in CUDA, and (2) fp16 division
+    rounds the quotient before ``floor`` sees it.
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        a_f32 = T.cast(a, "float32")
+        b_f32 = T.cast(b, "float32")
+        return T.Cast(a.dtype, T.floor(a_f32 / b_f32))
 
 
 class RemainderFwdKernel(BinaryKernel):
