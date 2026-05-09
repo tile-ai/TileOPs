@@ -263,5 +263,26 @@ def test_var_mean_unaligned_innermost(dim) -> None:
     torch.testing.assert_close(mean_y, ref_mean, **_tol(dtype))
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dim",
+    [
+        pytest.param(-1, id="dim=int"),
+        pytest.param((0, 2), id="dim=tuple"),
+        pytest.param(None, id="dim=None"),
+    ],
+)
+def test_std_unaligned_innermost(dim) -> None:
+    """Unaligned innermost dim must still match torch.std."""
+    torch.manual_seed(0)
+    dtype = torch.float16
+    x = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device="cuda")
+    op = StdFwdOp(dtype=dtype, dim=dim, correction=1, keepdim=False)
+    y = op(x)
+    ref = _ref_std(x, dim, False, 1)
+    assert y.shape == ref.shape
+    torch.testing.assert_close(y, ref, **_tol(dtype))
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
