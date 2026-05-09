@@ -7,7 +7,6 @@ import torch
 
 from tileops.kernels.elementwise import (
     AddFwdKernel,
-    DivFloorFwdKernel,
     DivFwdKernel,
     DivTruncFwdKernel,
     FloorDivideFwdKernel,
@@ -65,7 +64,7 @@ class MulFwdOp(BinaryOp):
 _DIV_KERNEL_BY_ROUNDING_MODE = {
     None: DivFwdKernel,
     "trunc": DivTruncFwdKernel,
-    "floor": DivFloorFwdKernel,
+    "floor": FloorDivideFwdKernel,
 }
 
 
