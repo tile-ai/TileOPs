@@ -143,13 +143,25 @@ def _row_clamp_scalar() -> Row:
 
 
 def _row_clamp_tensor() -> Row:
-    """Tensor-bound 2-sided clamp (func mode in formulas.py)."""
+    """Tensor-bound 2-sided clamp (func mode in formulas.py).
+
+    `flops_after` / `bytes_after` are evaluated by calling
+    `tileops.perf.formulas.clamp_fwd_roofline` so the table tracks the
+    helper as the source of truth. A minimal stub op exposes the two
+    attributes the helper reads: `N_total` and `dtype.itemsize`.
+    """
+    from types import SimpleNamespace
+
+    from tileops.perf.formulas import clamp_fwd_roofline
+
     shape = (4096, 4096)
     n = _product(shape)
     elem_bytes = 2
-    # After convention: flops = N_total, bytes = 4 * N_total * elem_bytes.
-    flops_after = n
-    bytes_after = 4 * n * elem_bytes
+    stub_op = SimpleNamespace(
+        N_total=n,
+        dtype=SimpleNamespace(itemsize=elem_bytes),
+    )
+    flops_after, bytes_after = clamp_fwd_roofline(stub_op)  # type: ignore[arg-type]
     return Row(
         family="min-max",
         op_name="ClampFwdOp",
