@@ -357,6 +357,8 @@ class InstanceNormFwdOpNoAffine(Op):
         self.spatial_size = math.prod(spatial)
         self.D = self.spatial_size
         self.M = N * C
+        # Eval-mode broadcast layout for running stats: [1, C, 1, ...] (one 1 per spatial dim).
+        self._running_stats_broadcast_shape = [1, C] + [1] * len(spatial)
         self.D_padded = align_up(self.D, ALIGNMENT)
         # Kernel launches T.ceildiv(M, block_m) programs, each copying a full
         # block_m-row tile. Pad M to a multiple of the largest candidate
@@ -474,9 +476,8 @@ class InstanceNormFwdOpNoAffine(Op):
             # Pure elementwise per-channel; matches torch.nn.functional.instance_norm
             # (use_input_stats=False) numerics bit-for-bit (verified) by computing in
             # fp32 then casting to x.dtype.
-            broadcast_shape = [1, self.C] + [1] * len(self.spatial)
-            mean_b = running_mean.reshape(broadcast_shape)
-            var_b = running_var.reshape(broadcast_shape)
+            mean_b = running_mean.reshape(self._running_stats_broadcast_shape)
+            var_b = running_var.reshape(self._running_stats_broadcast_shape)
             y = (x.float() - mean_b) * torch.rsqrt(var_b + self.eps)
             return y.to(x.dtype)
 
