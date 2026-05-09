@@ -48,8 +48,13 @@ def _effective_scalar_kernel_dtype(dtype: torch.dtype) -> torch.dtype:
     return _FP8_NONSAT_OUTPUT_DTYPES.get(dtype, dtype)
 
 
+_MANIFEST_INT_SCALAR_DTYPES = (
+    torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
+)
+
+
 def _validate_scalar_param_repr(
-    param_name: str, value: float, dtype: torch.dtype, op_name: str,
+    param_name: str, value, dtype: torch.dtype, op_name: str,
 ) -> None:
     """Reject scalar params that cannot be represented in the user dtype.
 
@@ -59,9 +64,41 @@ def _validate_scalar_param_repr(
     only fits in fp16 would surface as ``+/-Inf`` after the final fp8
     post-cast. Validating against the user dtype keeps explicit
     replacements finite end-to-end.
+
+    Integer and bool ``dtype`` mirror PyTorch's ``Tensor.masked_fill``
+    coercion: bool accepts any int/float and reduces to ``{0, 1}``;
+    integer dtypes accept any int/float that is finite, has no
+    fractional part, and falls inside ``torch.iinfo(dtype)``.
     """
+    if isinstance(value, bool):
+        # ``bool`` is a subclass of ``int``; treat explicitly so the int
+        # range checks below operate on the integer/float branch.
+        return
     if not isinstance(value, (int, float)):
         raise TypeError(f"{op_name} expected scalar {param_name} to be int/float, got {type(value)}")
+
+    if dtype == torch.bool:
+        return
+
+    if dtype in _MANIFEST_INT_SCALAR_DTYPES:
+        value_f64 = float(value)
+        if math.isnan(value_f64) or math.isinf(value_f64):
+            raise ValueError(
+                f"{op_name} received {param_name}={value!r}, but {param_name} must be finite "
+                f"and representable in dtype {dtype}"
+            )
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(
+                f"{op_name} received {param_name}={value!r}, which is not representable in "
+                f"integer dtype {dtype}"
+            )
+        iinfo = torch.iinfo(dtype)
+        if not (iinfo.min <= int(value) <= iinfo.max):
+            raise ValueError(
+                f"{op_name} received {param_name}={value!r}, which is not representable in "
+                f"dtype {dtype} (valid integer range: [{iinfo.min}, {iinfo.max}])"
+            )
+        return
 
     finfo = torch.finfo(dtype)
     value_f64 = float(value)
