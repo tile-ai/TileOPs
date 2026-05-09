@@ -7,7 +7,8 @@
 RMSNormFwdOp:
   ref_api: "torch.nn.functional.rms_norm"
   family: normalization
-  status: implemented
+  # spec-only: shape_rules reference runtime-bound normalized_shape param without manifest default
+  status: spec-only
 
   signature:
     inputs:
