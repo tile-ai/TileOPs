@@ -751,13 +751,21 @@ class BinaryOp(Op):
         self.a_numel = prod(a_shape)
         self.b_numel = prod(b_shape)
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            self.N_total, dtype, coalesced_shape, a_strides, b_strides,
-            self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+        self.kernel = self._build_kernel_instance(
+            coalesced_shape, a_strides, b_strides, strategy, tune,
         )
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
+
+    def _build_kernel_instance(
+        self, coalesced_shape, a_strides, b_strides, strategy, tune,
+    ):
+        """Construct the kernel. Subclasses override to inject extra kwargs."""
+        return self.kernel_map[self._op_name](
+            self.N_total, self.dtype, coalesced_shape, a_strides, b_strides,
+            self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1044,36 +1052,19 @@ class _AlphaScaledBinaryOp(BinaryOp):
         tune: bool = False,
     ):
         self.alpha = alpha
-        # Replicate ``BinaryOp.__init__`` rather than calling ``super().__init__``
-        # so the kernel constructor receives the ``alpha`` kwarg directly,
-        # avoiding the build-then-discard cost of a post-hoc rebuild.
-        kernel_supported = self.kernel_cls.SUPPORTED_DTYPES
-        if kernel_supported is not None and dtype not in kernel_supported:
-            names = ", ".join(str(dt) for dt in kernel_supported)
-            raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. "
-                f"Supported: [{names}]"
-            )
-        self.dtype = dtype
-        self.a_shape = tuple(a_shape)
-        self.b_shape = tuple(b_shape)
-        self.strategy = strategy
-        out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
-            a_shape, b_shape,
+        super().__init__(
+            a_shape, b_shape, dtype,
+            strategy=strategy, kernel_map=kernel_map, tune=tune,
         )
-        self.out_shape = out_shape
-        self._out_shape_list = list(out_shape)
-        self.N_total = prod(out_shape)
-        self.a_numel = prod(a_shape)
-        self.b_numel = prod(b_shape)
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            self.N_total, dtype, coalesced_shape, a_strides, b_strides,
+
+    def _build_kernel_instance(
+        self, coalesced_shape, a_strides, b_strides, strategy, tune,
+    ):
+        return self.kernel_map[self._op_name](
+            self.N_total, self.dtype, coalesced_shape, a_strides, b_strides,
             self.a_numel, self.b_numel, strategy=strategy, tune=tune,
-            alpha=alpha,
+            alpha=self.alpha,
         )
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
 
 class _BoolOutputBinaryOp(BinaryOp):

@@ -1199,41 +1199,12 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
 
         return op_func
 
-    def _build_kernel(self, strategy):
-        """Override to inject the alpha-baked op_func."""
+    def _get_effective_op_func(self):
+        """Inject the alpha-baked op_func into the parent build pipeline."""
         op_func = self._alpha_op_func()
-        effective_op = _wrap_fp8_accumulation(
-            op_func, self.dtype, self.dtype_str, arity=2,
-        )
-        kernel_output_dtype = (
-            self.dtype_to_str(self.OUTPUT_DTYPE) if self.OUTPUT_DTYPE is not None else None
-        )
-        if self._fp8_output_dtype is not None:
-            kernel_output_dtype = _fp8_accum_dtype_str()
-        cfg = self.default_config
-        if strategy == "direct":
-            return _make_binary_direct(
-                self.N_total, self.dtype_str, effective_op,
-                self.coalesced_shape, self.a_strides, self.b_strides,
-                self.a_numel, self.b_numel,
-                output_dtype=kernel_output_dtype, threads=cfg["threads"],
-            )
-        elif strategy == "explicit_parallel":
-            return _make_binary_explicit(
-                self.N_total, self.dtype_str, effective_op,
-                self.coalesced_shape, self.a_strides, self.b_strides,
-                self.a_numel, self.b_numel,
-                output_dtype=kernel_output_dtype,
-                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
-            )
-        elif strategy == "register_copy":
-            return _make_binary_register_copy(
-                self.N_total, self.dtype_str, effective_op,
-                output_dtype=kernel_output_dtype,
-                threads=cfg["threads"], num_per_thread=cfg["num_per_thread"],
-            )
-        else:
-            raise ValueError(f"Unknown strategy: {strategy}")
+        if self.OUTPUT_DTYPE is not None:
+            return op_func
+        return _wrap_fp8_accumulation(op_func, self.dtype, self.dtype_str, arity=2)
 
 
 class AddFwdKernel(_AlphaScaledBinaryKernel):
