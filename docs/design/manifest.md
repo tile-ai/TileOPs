@@ -366,6 +366,8 @@ source:
 
 - Optional when `status: spec-only`. Required when `status: implemented`.
 
+> **Conditional dispatch.** The flat `dispatch_key: KernelClassName` form covers static (single or multi-key) dispatch. Conditional dispatch (Hopper vs non-Hopper, op-state branches, best-of-N selection) is described under design proposal [manifest-kernel-dispatch.md](manifest-kernel-dispatch.md) and not yet implemented in the validator.
+
 ## Entry Examples
 
 **Fixed rank — GEMM** \[R8, R11\]:
