@@ -5,6 +5,11 @@ y = x * rsqrt(mean(x^2) + eps) * weight
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared memory
 instructions. Padding zeros don't affect sum of squares; division uses original N
 for correct mean computation.
+
+Optional ``stride_M`` ctor arg lets callers pass a non-contiguous 2-D view
+(``stride_N`` is always 1, the inner-dim contiguity required for coalesced
+loads). When ``stride_M == N_padded`` (the contiguous default) codegen is
+bit-identical to the row-major path.
 """
 
 import functools
@@ -20,6 +25,7 @@ from tileops.kernels.kernel_base import Kernel
 __all__ = ["RMSNormKernel"]
 
 ALIGNMENT = 256
+_STRIDE_N = 1
 
 
 def _align_up(n: int, alignment: int) -> int:
@@ -27,15 +33,20 @@ def _align_up(n: int, alignment: int) -> int:
 
 
 @functools.lru_cache(maxsize=32)
-def _rms_norm_kernel(M, N, eps, dtype):
+def _rms_norm_kernel(M, N, eps, dtype, stride_M):
     N_padded = _align_up(N, ALIGNMENT)
+    if stride_M < N_padded:
+        raise ValueError(
+            f"stride_M ({stride_M}) must be >= N_padded ({N_padded}); "
+            "inner dim must be contiguous (stride_N == 1)"
+        )
 
     @tilelang.jit(out_idx=[2])
     def _func(block_m, threads):
 
         @T.prim_func
         def main(
-            x: T.Tensor[(M, N_padded), dtype],
+            x: T.StridedTensor((M, N_padded), (stride_M, _STRIDE_N), dtype),
             weight: T.Tensor[(N_padded,), dtype],
             y: T.Tensor[(M, N_padded), dtype],
         ):
@@ -86,14 +97,15 @@ def _rms_norm_wrapped(
     dtype_str: str,
     block_m: int,
     threads: int,
+    stride_M: int,
     x: torch.Tensor,
     weight: torch.Tensor,
 ) -> torch.Tensor:
-    return _rms_norm_kernel(M, N, eps, dtype_str)(block_m, threads)(x, weight)
+    return _rms_norm_kernel(M, N, eps, dtype_str, stride_M)(block_m, threads)(x, weight)
 
 
 @_rms_norm_wrapped.register_fake
-def _(M, N, eps, dtype_str, block_m, threads, x, weight):
+def _(M, N, eps, dtype_str, block_m, threads, stride_M, x, weight):
     N_padded = _align_up(N, ALIGNMENT)
     return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
 
@@ -116,6 +128,7 @@ class RMSNormKernel(Kernel):
         dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
+        stride_M: Optional[int] = None,
     ):
         super().__init__()
         self.M = M
@@ -123,7 +136,13 @@ class RMSNormKernel(Kernel):
         self.eps = eps
         self.dtype = dtype
         self.N_padded = _align_up(N, ALIGNMENT)
-        self.kernel = _rms_norm_kernel(self.M, self.N, self.eps, self.dtype_str)
+        # Default stride_M is N_padded (row-major contiguous layout). With this
+        # default the StridedTensor codegen is bit-identical to the original
+        # row-major Tensor codegen (verified by unit tests).
+        self.stride_M = self.N_padded if stride_M is None else int(stride_M)
+        self.kernel = _rms_norm_kernel(
+            self.M, self.N, self.eps, self.dtype_str, self.stride_M,
+        )
         self.init_config(config, tune)
 
     @property
@@ -154,6 +173,7 @@ class RMSNormKernel(Kernel):
             self.dtype_str,
             self.config["block_m"],
             self.config["threads"],
+            self.stride_M,
             x,
             weight,
         )

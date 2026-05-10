@@ -15,6 +15,31 @@ __all__ = ["RMSNormFwdOp"]
 _DEFAULT_EPS = 1e-6
 
 
+def _try_strided_2d_view(x: torch.Tensor, n: int) -> Optional[torch.Tensor]:
+    """Return a non-copying ``(M, N)`` view of ``x`` or ``None``.
+
+    The stride-aware kernel path requires (a) inner-dim stride 1 and (b) a
+    single ``stride_M`` that linearly indexes the flattened leading dims.
+    Condition (b) holds when each leading stride is the product of the next
+    axis's stride and size, i.e. the leading dims are contiguous in row-major
+    order even if the inner axis is sliced. ``torch.Tensor.view`` only
+    succeeds in stricter cases, so we use ``as_strided`` directly.
+    """
+    if x.stride(-1) != 1:
+        return None
+    if x.shape[-1] != n:
+        return None
+    inner_stride = x.stride(-2) if x.ndim >= 2 else 1
+    # Check leading-dim contiguity: stride[i] == size[i+1] * stride[i+1].
+    for i in range(x.ndim - 2):
+        if x.stride(i) != x.shape[i + 1] * x.stride(i + 1):
+            return None
+    m = 1
+    for d in x.shape[:-1]:
+        m *= int(d)
+    return x.as_strided((m, n), (inner_stride, 1))
+
+
 class RMSNormFwdOp(Op):
     """Standalone Root Mean Square (RMS) Norm operator.
 
@@ -59,19 +84,21 @@ class RMSNormFwdOp(Op):
         self.tune = tune
         self.N_padded = align_up(self.N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[int, Kernel] = {}
+        self._kernel_cache: Dict[Tuple[int, int], Kernel] = {}
         self._last_roofline_mn: Optional[Tuple[int, int]] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"rms_norm": RMSNormKernel}
 
-    def _get_kernel(self, m: int) -> Kernel:
-        if m not in self._kernel_cache:
-            self._kernel_cache[m] = self.kernel_map["rms_norm"](
+    def _get_kernel(self, m: int, stride_m: Optional[int] = None) -> Kernel:
+        key = (m, stride_m if stride_m is not None else self.N_padded)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["rms_norm"](
                 m, self.N, self.eps, self.dtype, tune=self.tune,
+                stride_M=stride_m,
             )
-        return self._kernel_cache[m]
+        return self._kernel_cache[key]
 
     def eval_roofline(self) -> Tuple[int, int]:
         if self._last_roofline_mn is None:
@@ -120,14 +147,27 @@ class RMSNormFwdOp(Op):
             )
 
         orig_shape = tuple(x.shape)
-        x_flat = x.contiguous().reshape(-1, self.N)
+        # Try a zero-copy strided 2-D view first; fall back to contiguous.
+        # Padding requires materialization, so the strided path applies only
+        # when N == N_padded (the aligned-N case).
+        strided_view = (
+            _try_strided_2d_view(x, self.N) if self.N_padded == self.N else None
+        )
         w_flat = weight.contiguous().reshape(self.N)
-        m = x_flat.shape[0]
         if self.N_padded != self.N:
-            x_flat = F.pad(x_flat, (0, self.N_padded - self.N))
             w_flat = F.pad(w_flat, (0, self.N_padded - self.N))
-        y = self._get_kernel(m)(x_flat, w_flat)
-        if self.N_padded != self.N:
-            y = y[:, : self.N]
+        if strided_view is not None and strided_view.stride(0) >= self.N_padded:
+            x_flat = strided_view
+            m = x_flat.shape[0]
+            stride_m = int(x_flat.stride(0))
+            y = self._get_kernel(m, stride_m=stride_m)(x_flat, w_flat)
+        else:
+            x_flat = x.contiguous().reshape(-1, self.N)
+            m = x_flat.shape[0]
+            if self.N_padded != self.N:
+                x_flat = F.pad(x_flat, (0, self.N_padded - self.N))
+            y = self._get_kernel(m)(x_flat, w_flat)
+            if self.N_padded != self.N:
+                y = y[:, : self.N]
         self._last_roofline_mn = (m, self.N)
         return y.reshape(orig_shape)
