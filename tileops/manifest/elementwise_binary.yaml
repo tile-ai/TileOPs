@@ -99,8 +99,7 @@ MaskedFillScalarFwdOp:
   # Per the "No Optional[Tensor]" manifest rule, this is split from the
   # 0-dim-Tensor-value primary entry above.
   family: elementwise
-  # spec-only: kernel only supports float dtypes; manifest declares int/bool union
-  status: spec-only
+  status: implemented
   variant_of: MaskedFillFwdOp
 
   signature:
