@@ -83,9 +83,9 @@ BenchmarkBase[W] (benchmarks/)          # generic over workload type
 
 ## Issue-authoring: declaring scope
 
-The trust model is enforced as a semantic review lens (see `.claude/review-checklists/pre-review.md`). The pipeline's write-scope gate reads the issue's `## Constraints` bullets to learn which stages the PR is allowed to touch. The author declares the shape; the reviewer judges semantic correctness against the stage contracts above. Together this catches same-agent fabrication of oracle + implementation at review time while letting honest cross-stage work proceed without syntactic blocks.
+The trust model is enforced as a semantic review lens (see `.claude/review-checklists/pre-review.md`). The pipeline's write-scope gate reads the issue's `## Constraints` bullets; the author declares the work's stage shape; the reviewer judges correctness against the stage contracts above. Same-agent fabrication of oracle + implementation is caught at review; honest cross-stage work proceeds without a syntactic block.
 
-| Work shape                 | Constraints bullet form                                                                                         | Result                                                |
+| Work shape                 | Constraints bullet form                                                                                         | Effect                                                |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | Joint change across stages | Behavioral / compatibility / perf bullets only                                                                  | Pipeline permits any stage; reviewer applies the lens |
 | Single stage               | `Implementation-only PR.` (or `Test-only PR.`, etc.)                                                            | Pipeline confines the diff to that stage              |
@@ -93,10 +93,10 @@ The trust model is enforced as a semantic review lens (see `.claude/review-check
 
 Authoring rules:
 
-- A new behavior branch with no pre-existing test coverage uses the joint form. The reviewer's new-path-coverage criterion requires the test to land in the same PR.
-- Constraints body is always bulleted. Prose-only Constraints is unparsable input and Phase A treats it as a block.
-- Cite this document as a positive reference only. Pairing the citation with "separate PR" / "own PR" / "standalone PR" in one bullet declares that stage forbidden — use only when that is genuinely intended.
+- A new behavior branch lacking pre-existing test coverage uses the joint form so the test lands with the impl in the same PR, satisfying the reviewer's new-path-coverage criterion.
+- Constraints is a bulleted list. Prose without `- ` items is unparsable and Phase A treats it as a block.
+- A `trust-model.md` citation combined with "separate PR" / "own PR" / "standalone PR" in one bullet declares the named stage forbidden — use that form when genuine, otherwise cite the document on its own line.
 
-When drafting from a brief description, Constraints defaults to one bullet stating the behavioral or compatibility expectation; insert `<stage>-only PR` only when the work is genuinely single-stage.
+Default when drafting from a brief: one Constraints bullet stating the behavioral or compatibility expectation. Reach for `<stage>-only PR` when the work is genuinely single-stage.
 
 → Template and per-section structural rules: [.foundry/mold/body-sections.md](../../.foundry/mold/body-sections.md)
