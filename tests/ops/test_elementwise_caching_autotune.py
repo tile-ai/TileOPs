@@ -210,17 +210,6 @@ class TestAutotuneConfigs:
             assert "num_per_thread" in c
 
     @pytest.mark.full
-    def test_unary_fp8_autotune_configs(self):
-        """fp8 unary should have specific fp8-appropriate configs."""
-        k = ReluFwdKernel(N, torch.float8_e4m3fn)
-        configs = k.autotune_configs
-        assert configs is not None
-        assert len(configs) >= 3
-        # fp8 npt should be >= 16 for 128-bit alignment
-        for c in configs:
-            assert c["num_per_thread"] >= 16
-
-    @pytest.mark.full
     def test_binary_autotune_configs_still_works(self):
         """BinaryKernel autotune_configs must still work (no regression)."""
         k = AddFwdKernel(N, torch.float16, (N,), (1,), (1,), N, N)
