@@ -226,13 +226,19 @@ def test_lerp_kernel_rejects_int():
 
 @pytest.mark.smoke
 def test_division_family_kernel_rejects_bool_and_int():
-    """Division family (float-only ``_FLOAT_DTYPES``) rejects bool and int."""
-    from tileops.kernels.elementwise import DivFwdKernel
+    """Division family (Div/FloorDivide/Remainder, float-only ``_FLOAT_DTYPES``)
+    rejects bool and int at the kernel layer."""
+    from tileops.kernels.elementwise import (
+        DivFwdKernel,
+        FloorDivideFwdKernel,
+        RemainderFwdKernel,
+    )
 
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        DivFwdKernel(**_binary_kwargs(torch.bool))
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        DivFwdKernel(**_binary_kwargs(torch.int32))
+    for cls in (DivFwdKernel, FloorDivideFwdKernel, RemainderFwdKernel):
+        with pytest.raises(ValueError, match="only supports dtypes"):
+            cls(**_binary_kwargs(torch.bool))
+        with pytest.raises(ValueError, match="only supports dtypes"):
+            cls(**_binary_kwargs(torch.int32))
 
 
 if __name__ == "__main__":
