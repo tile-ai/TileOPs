@@ -62,10 +62,14 @@ def test_binary_arith_kernel_rejects_fp8():
 
 @pytest.mark.smoke
 def test_no_concrete_kernel_inherits_none_supported_dtypes():
-    """AC-1 guard: every concrete ``Kernel`` subclass must declare
-    SUPPORTED_DTYPES (directly or via a non-None base). Inheriting the
-    ``None`` default from the abstract ``Kernel`` base hides the rejection
-    contract and lets fp8 slip through silently.
+    """Every concrete ``Kernel`` subclass must declare SUPPORTED_DTYPES as a
+    non-empty tuple that excludes every fp8 dtype.
+
+    The ``None`` default lives on the elementwise template bases
+    (``UnaryKernel`` / ``BinaryKernel`` and their float / logical / predicate
+    siblings), not on the abstract ``Kernel`` root. Inheriting that default
+    silently hides the rejection contract; admitting an fp8 entry would let
+    fp8 reach codegen paths that PR-time guards no longer cover.
     """
     import inspect
 
@@ -77,17 +81,34 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
         ew.FusedGatedKernel, ew.ParametricUnaryKernel,
         ew._AlphaScaledBinaryKernel,
     }
+    fp8_dtypes = set(ew._FP8_DTYPES)
     roots = (ew.Kernel,)
-    offenders = []
+    none_offenders = []
+    type_offenders = []
+    fp8_offenders = []
     for _name, cls in inspect.getmembers(ew, inspect.isclass):
         if cls in abstract:
             continue
         if not any(issubclass(cls, b) for b in roots):
             continue
-        if getattr(cls, "SUPPORTED_DTYPES", None) is None:
-            offenders.append(cls.__name__)
-    assert not offenders, (
-        f"Concrete kernels with SUPPORTED_DTYPES=None: {offenders}"
+        supported = getattr(cls, "SUPPORTED_DTYPES", None)
+        if supported is None:
+            none_offenders.append(cls.__name__)
+            continue
+        if not isinstance(supported, tuple):
+            type_offenders.append((cls.__name__, type(supported).__name__))
+            continue
+        leaked = [dt for dt in supported if dt in fp8_dtypes]
+        if leaked:
+            fp8_offenders.append((cls.__name__, leaked))
+    assert not none_offenders, (
+        f"Concrete kernels with SUPPORTED_DTYPES=None: {none_offenders}"
+    )
+    assert not type_offenders, (
+        f"Concrete kernels with non-tuple SUPPORTED_DTYPES: {type_offenders}"
+    )
+    assert not fp8_offenders, (
+        f"Concrete kernels admitting fp8 in SUPPORTED_DTYPES: {fp8_offenders}"
     )
 
 
@@ -100,12 +121,17 @@ def _binary_kwargs(dtype):
 
 
 @pytest.mark.smoke
-def test_comparison_kernel_rejects_fp8():
-    """Comparison family (Eq/Ne/Gt/Lt/Ge/Le) rejects fp8 at the kernel layer."""
-    from tileops.kernels.elementwise import EqFwdKernel
+def test_comparison_family_kernel_rejects_fp8():
+    """Comparison family (Eq/Lt/Ge representatives) rejects fp8 at the kernel layer."""
+    from tileops.kernels.elementwise import (
+        EqFwdKernel,
+        GeFwdKernel,
+        LtFwdKernel,
+    )
 
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        EqFwdKernel(**_binary_kwargs(torch.float8_e4m3fn))
+    for cls in (EqFwdKernel, LtFwdKernel, GeFwdKernel):
+        with pytest.raises(ValueError, match="only supports dtypes"):
+            cls(**_binary_kwargs(torch.float8_e4m3fn))
 
 
 @pytest.mark.smoke
@@ -120,10 +146,15 @@ def test_pow_kernel_rejects_fp8():
 @pytest.mark.smoke
 def test_division_family_kernel_rejects_fp8():
     """Division family (Div/FloorDivide/Remainder) rejects fp8 at the kernel layer."""
-    from tileops.kernels.elementwise import DivFwdKernel
+    from tileops.kernels.elementwise import (
+        DivFwdKernel,
+        FloorDivideFwdKernel,
+        RemainderFwdKernel,
+    )
 
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        DivFwdKernel(**_binary_kwargs(torch.float8_e4m3fn))
+    for cls in (DivFwdKernel, FloorDivideFwdKernel, RemainderFwdKernel):
+        with pytest.raises(ValueError, match="only supports dtypes"):
+            cls(**_binary_kwargs(torch.float8_e4m3fn))
 
 
 @pytest.mark.smoke
@@ -136,21 +167,23 @@ def test_lerp_kernel_rejects_fp8():
 
 
 @pytest.mark.smoke
-def test_maximum_minimum_kernel_rejects_fp8():
+def test_maximum_minimum_family_kernel_rejects_fp8():
     """Maximum/Minimum family rejects fp8 at the kernel layer."""
-    from tileops.kernels.elementwise import MaximumFwdKernel
+    from tileops.kernels.elementwise import MaximumFwdKernel, MinimumFwdKernel
 
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        MaximumFwdKernel(**_binary_kwargs(torch.float8_e4m3fn))
+    for cls in (MaximumFwdKernel, MinimumFwdKernel):
+        with pytest.raises(ValueError, match="only supports dtypes"):
+            cls(**_binary_kwargs(torch.float8_e4m3fn))
 
 
 @pytest.mark.smoke
-def test_logical_binary_kernel_rejects_fp8():
-    """LogicalAnd/Or family rejects fp8 at the kernel layer."""
-    from tileops.kernels.elementwise import LogicalAndFwdKernel
+def test_logical_binary_family_kernel_rejects_fp8():
+    """LogicalAnd/LogicalOr family rejects fp8 at the kernel layer."""
+    from tileops.kernels.elementwise import LogicalAndFwdKernel, LogicalOrFwdKernel
 
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        LogicalAndFwdKernel(**_binary_kwargs(torch.float8_e4m3fn))
+    for cls in (LogicalAndFwdKernel, LogicalOrFwdKernel):
+        with pytest.raises(ValueError, match="only supports dtypes"):
+            cls(**_binary_kwargs(torch.float8_e4m3fn))
 
 
 @pytest.mark.smoke
@@ -160,6 +193,39 @@ def test_logical_unary_kernel_rejects_fp8():
 
     with pytest.raises(ValueError, match="only supports dtypes"):
         LogicalNotFwdKernel(N_total=_N, dtype=torch.float8_e4m3fn)
+
+
+@pytest.mark.smoke
+def test_pow_kernel_rejects_bool():
+    """PowFwdKernel (float-only family) rejects bool inputs.
+
+    Companion sentinel to fp8 rejection: ``PowFwdKernel.SUPPORTED_DTYPES``
+    is ``_FLOAT_DTYPES``, so int/bool must also raise at the kernel layer.
+    """
+    from tileops.kernels.elementwise import PowFwdKernel
+
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        PowFwdKernel(**_binary_kwargs(torch.bool))
+
+
+@pytest.mark.smoke
+def test_lerp_kernel_rejects_int():
+    """LerpFwdKernel (float-only family) rejects int32 inputs."""
+    from tileops.kernels.elementwise import LerpFwdKernel
+
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        LerpFwdKernel(**_binary_kwargs(torch.int32))
+
+
+@pytest.mark.smoke
+def test_division_family_kernel_rejects_bool_and_int():
+    """Division family (float-only ``_FLOAT_DTYPES``) rejects bool and int."""
+    from tileops.kernels.elementwise import DivFwdKernel
+
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        DivFwdKernel(**_binary_kwargs(torch.bool))
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        DivFwdKernel(**_binary_kwargs(torch.int32))
 
 
 if __name__ == "__main__":
