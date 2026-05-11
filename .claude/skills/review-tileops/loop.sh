@@ -87,9 +87,18 @@ log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 # to init and keep running after the loop (or its tmux pane / SSH) exits.
 cleanup_and_exit() {
   trap - TERM INT HUP EXIT
-  kill -TERM 0 2>/dev/null || true
-  sleep 1
-  kill -KILL 0 2>/dev/null || true
+  # Kill direct children only. `kill 0` (pgroup) would also hit the
+  # user's interactive shell — foreground `review-loop` shares a pgroup
+  # with the calling tmux pane, and `nohup … &` does not create one.
+  # `timeout` forwards SIGTERM to codex, so one level is enough.
+  local pids
+  pids=$(pgrep -P $$ 2>/dev/null) || true
+  if [[ -n "$pids" ]]; then
+    kill -TERM $pids 2>/dev/null || true
+    sleep 1
+    kill -KILL $pids 2>/dev/null || true
+  fi
+  exit 130
 }
 trap cleanup_and_exit TERM INT HUP
 
