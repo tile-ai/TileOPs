@@ -43,5 +43,22 @@ def test_binary_bitwise_kernel_rejects_fp8():
         )
 
 
+@pytest.mark.smoke
+def test_binary_arith_kernel_rejects_fp8():
+    """MulFwdKernel raises ValueError for fp8 (not in _BINARY_FULL_DTYPES).
+
+    Regression sentinel: prevents MulFwdKernel.SUPPORTED_DTYPES from drifting
+    back to a dtype set that admits fp8 (e.g. None or _FLOAT_DTYPES superset).
+    """
+    from tileops.kernels.elementwise import MulFwdKernel
+
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        MulFwdKernel(
+            N_total=_N, dtype=torch.float8_e4m3fn,
+            coalesced_shape=(_N,), a_strides=(1,), b_strides=(1,),
+            a_numel=_N, b_numel=_N,
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
