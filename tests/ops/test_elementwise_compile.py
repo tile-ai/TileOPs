@@ -844,5 +844,37 @@ def test_masked_fill_scalar_compile_broadcast():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
+# --- DivFwdOp rounding_mode trunc/floor compile coverage ---
+
+
+_DIV_ROUNDING_COMPILE_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
+_DIV_ROUNDING_COMPILE_MODES = ["trunc", "floor"]
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("rounding_mode", _DIV_ROUNDING_COMPILE_MODES)
+@pytest.mark.parametrize("dtype", _DIV_ROUNDING_COMPILE_DTYPES)
+def test_div_rounding_mode_compile(rounding_mode: str, dtype: torch.dtype) -> None:
+    """torch.compile path matches torch.div for trunc and floor rounding modes."""
+    shape = _SMALL
+    a = torch.randn(shape, dtype=dtype, device="cuda") * 5.0
+    b = torch.randn(shape, dtype=dtype, device="cuda") * 2.0 + 1.0
+    b = torch.where(b.abs() < 0.5, torch.full_like(b, 1.0), b)
+    op = DivFwdOp(
+        a_shape=shape, b_shape=shape, dtype=dtype, rounding_mode=rounding_mode,
+    )
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(a, b)
+    ref = torch.div(a.float(), b.float(), rounding_mode=rounding_mode).to(dtype)
+    # rounding-mode divergence in reduced precision can flip by 1 unit at
+    # quotient boundaries; loosen tolerance for fp16/bf16 accordingly.
+    if dtype == torch.float32:
+        atol, rtol = 1e-5, 1e-5
+    else:
+        atol, rtol = 1.0, 0.0
+    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
