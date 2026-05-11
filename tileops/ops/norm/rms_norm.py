@@ -34,9 +34,7 @@ def _try_strided_2d_view(x: torch.Tensor, n: int) -> Optional[torch.Tensor]:
     for i in range(x.ndim - 2):
         if x.stride(i) != x.shape[i + 1] * x.stride(i + 1):
             return None
-    m = 1
-    for d in x.shape[:-1]:
-        m *= int(d)
+    m = math.prod(x.shape[:-1])
     return x.as_strided((m, n), (inner_stride, 1))
 
 

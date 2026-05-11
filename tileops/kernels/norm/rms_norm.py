@@ -37,8 +37,8 @@ def _rms_norm_kernel(M, N, eps, dtype, stride_M):
     N_padded = _align_up(N, ALIGNMENT)
     if stride_M < N_padded:
         raise ValueError(
-            f"stride_M ({stride_M}) must be >= N_padded ({N_padded}); "
-            "inner dim must be contiguous (stride_N == 1)"
+            f"stride_M ({stride_M}) must be >= N_padded ({N_padded}) "
+            "so adjacent rows do not overlap in memory"
         )
 
     @tilelang.jit(out_idx=[2])
