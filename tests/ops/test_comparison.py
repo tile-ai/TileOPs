@@ -357,7 +357,8 @@ def test_comparison_bool_dtype(op_cls, ref_fn) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Dtype rejection tests (fp8 is outside the manifest dtype union)
+# Dtype rejection tests (dtypes outside the manifest dtype union: fp8 and
+# complex must raise at construction time).
 # ---------------------------------------------------------------------------
 
 
@@ -370,6 +371,12 @@ class ComparisonRejectFixture(FixtureBase):
             pytest.param(LtFwdOp, torch.complex64, marks=pytest.mark.full),
             pytest.param(GeFwdOp, torch.complex64, marks=pytest.mark.full),
             pytest.param(LeFwdOp, torch.complex64, marks=pytest.mark.full),
+            pytest.param(EqFwdOp, torch.float8_e4m3fn, marks=pytest.mark.smoke),
+            pytest.param(NeFwdOp, torch.float8_e5m2, marks=pytest.mark.full),
+            pytest.param(GtFwdOp, torch.float8_e4m3fn, marks=pytest.mark.full),
+            pytest.param(LtFwdOp, torch.float8_e5m2, marks=pytest.mark.full),
+            pytest.param(GeFwdOp, torch.float8_e4m3fn, marks=pytest.mark.full),
+            pytest.param(LeFwdOp, torch.float8_e5m2, marks=pytest.mark.full),
         ]),
     ]
 

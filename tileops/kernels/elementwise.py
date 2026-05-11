@@ -834,6 +834,13 @@ class BinaryKernel(Kernel):
         self._same_shape = _is_contiguous_same_shape(
             coalesced_shape, a_strides, b_strides,
         )
+        # Validate a caller-provided strategy up front so typos raise the
+        # same ValueError regardless of dtype (the bool override below
+        # otherwise silently accepts an unknown strategy for bool inputs).
+        if strategy is not None and strategy not in self.STRATEGIES:
+            raise ValueError(
+                f"Unknown strategy '{strategy}', expected one of {self.STRATEGIES}"
+            )
         # torch.bool maps to TileLang ``boolx<N>`` for vectorised loads /
         # stores, which the CUDA codegen cannot lower. Force the scalar
         # ``direct`` strategy for bool inputs regardless of caller request.

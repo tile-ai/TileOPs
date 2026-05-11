@@ -1325,5 +1325,47 @@ def test_sub_rejects_bool_dtype() -> None:
         SubFwdOp(a_shape=shape, b_shape=shape, dtype=torch.bool)
 
 
+class FullUnionFp8RejectFixture(FixtureBase):
+    PARAMS = [
+        ("op_cls, dtype", [
+            pytest.param(AddFwdOp, torch.float8_e4m3fn, marks=pytest.mark.smoke),
+            pytest.param(SubFwdOp, torch.float8_e5m2, marks=pytest.mark.smoke),
+            pytest.param(MulFwdOp, torch.float8_e4m3fn, marks=pytest.mark.smoke),
+            pytest.param(MaximumFwdOp, torch.float8_e5m2, marks=pytest.mark.smoke),
+            pytest.param(MinimumFwdOp, torch.float8_e4m3fn, marks=pytest.mark.smoke),
+        ]),
+    ]
+
+
+@FullUnionFp8RejectFixture
+def test_full_union_binary_ops_reject_fp8_dtype(
+    op_cls, dtype: torch.dtype,
+) -> None:
+    """Add/Sub/Mul/Maximum/Minimum reject fp8 at the public op layer.
+
+    Pins the manifest dtype union: even though the kernel templates can
+    compile for fp8, the elementwise_binary manifest stops at float32,
+    so the public ops must refuse fp8 at construction time.
+    """
+    shape = (16,)
+    with pytest.raises(ValueError, match="does not support dtype"):
+        op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
+
+
+@pytest.mark.smoke
+def test_add_bool_broadcast() -> None:
+    """AddFwdOp(bool) with broadcast inputs lowers via the forced 'direct'
+    strategy and still matches torch.logical_or semantics."""
+    a_shape = (8, 16)
+    b_shape = (1, 16)
+    a = torch.randint(0, 2, a_shape, device="cuda").to(torch.bool)
+    b = torch.randint(0, 2, b_shape, device="cuda").to(torch.bool)
+    op = AddFwdOp(a_shape=a_shape, b_shape=b_shape, dtype=torch.bool)
+    ref = torch.logical_or(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    _exact_compare(out, ref)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
