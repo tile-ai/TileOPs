@@ -25,6 +25,13 @@ REPO="tile-ai/TileOPs"
 MAX_ROUNDS=15
 POLL_INTERVAL=180
 CODEX_RETRY=3
+# Per-round hard cap on the codex subprocess. Codex has been seen to wedge
+# indefinitely on MCP transport failures (endless "Reconnecting 1/5 → 5/5"
+# loop with no exit), which without this cap blocks the whole review loop
+# on a `wait` that never returns. 1800s comfortably exceeds a slow review
+# round on a large PR, low enough that a wedged codex falls back into the
+# existing CODEX_RETRY=3 path within an hour.
+CODEX_TIMEOUT_SEC=1800
 # Stall safety: terminate after this many consecutive idle polls (no new
 # commits / comments). MAX_IDLE * POLL_INTERVAL must comfortably exceed
 # the longest legitimate in-progress counterpart round (codex review on a
@@ -77,6 +84,20 @@ if [[ -z "$TILEOPS_REMOTE" ]]; then
 fi
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
+
+# Signal trap: kill the entire process group on Ctrl-C / SIGTERM / SIGHUP so
+# in-flight codex / gh / git subprocesses are reaped instead of being
+# reparented to init and quietly burning tokens after the loop exits.
+# Without this, terminating the loop (or its terminal/tmux pane) leaves
+# orphaned codex processes that keep retrying upstream APIs in the
+# background.
+cleanup_and_exit() {
+  trap - TERM INT HUP EXIT
+  kill -TERM 0 2>/dev/null || true
+  sleep 1
+  kill -KILL 0 2>/dev/null || true
+}
+trap cleanup_and_exit TERM INT HUP
 
 # ---------------------------------------------------------------------------
 # Step A: preflight (once per loop start)
@@ -441,18 +462,32 @@ run_codex_round() {
 
   local attempt=0
   while (( attempt < CODEX_RETRY )); do
+    # `timeout --kill-after=30` sends KILL 30s after the initial TERM so
+    # codex cannot ignore the deadline — observed during the MCP wedge
+    # ("timeout waiting for child process to exit"), the codex parent does
+    # not always drop its own children on TERM alone. rc=124 → TERM
+    # honored; rc=137 → KILL fired. Either route falls through to the
+    # existing empty-$lastmsg retry path.
+    local rc=0
     if [[ "$sid" == "null" || -z "$sid" ]]; then
-      codex --dangerously-bypass-approvals-and-sandbox exec \
-        --json --output-last-message "$lastmsg" --cd "$WORKTREE_DIR" \
-        "$(cat "$prompt_file")" > "$events" 2>&1 || true
+      timeout --kill-after=30 "$CODEX_TIMEOUT_SEC" \
+        codex --dangerously-bypass-approvals-and-sandbox exec \
+          --json --output-last-message "$lastmsg" --cd "$WORKTREE_DIR" \
+          "$(cat "$prompt_file")" > "$events" 2>&1 || rc=$?
     else
       # `codex exec resume` does not accept --cd; the session already
       # remembers its cwd from the initial `exec`, but cd anyway as a
       # belt-and-suspenders for source-file lookups.
       ( cd "$WORKTREE_DIR" && \
-        codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
-          --json --output-last-message "$lastmsg" \
-          "$(cat "$prompt_file")" ) > "$events" 2>&1 || true
+        timeout --kill-after=30 "$CODEX_TIMEOUT_SEC" \
+          codex --dangerously-bypass-approvals-and-sandbox exec resume "$sid" \
+            --json --output-last-message "$lastmsg" \
+            "$(cat "$prompt_file")" ) > "$events" 2>&1 || rc=$?
+    fi
+    if [[ $rc -eq 124 || $rc -eq 137 ]]; then
+      log "codex attempt $((attempt+1)) exceeded ${CODEX_TIMEOUT_SEC}s (rc=$rc) — killed"
+    elif [[ $rc -ne 0 ]]; then
+      log "codex attempt $((attempt+1)) exited rc=$rc"
     fi
 
     if [[ -s "$lastmsg" ]]; then
