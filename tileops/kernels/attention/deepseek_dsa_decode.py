@@ -232,9 +232,9 @@ def _sparse_mla_kernel(batch: int,
                         for h_i, bi_i in T.Parallel(h_per_block, i_block):
                             acc_s[h_i, bi_i] = T.if_then_else(is_kv_valid[bi_i], 0,
                                                               -T.infinity(acc_s.dtype))
-                        T.gemm(q_shared_l, kv_shared_0_l, acc_s, transpose_B=True, wg_wait=-1)
-                        T.gemm(q_shared_r, kv_shared_0_r, acc_s, transpose_B=True, wg_wait=-1)
-                        T.gemm(q_tail_shared, k_tail_shared_0, acc_s, transpose_B=True, wg_wait=-1)
+                        T.wgmma_gemm(q_shared_l, kv_shared_0_l, acc_s, transpose_B=True)
+                        T.wgmma_gemm(q_shared_r, kv_shared_0_r, acc_s, transpose_B=True)
+                        T.wgmma_gemm(q_tail_shared, k_tail_shared_0, acc_s, transpose_B=True)
 
                         T.wait_wgmma(0)
 
@@ -268,9 +268,9 @@ def _sparse_mla_kernel(batch: int,
                         for h_i, bi_i in T.Parallel(h_per_block, i_block):
                             acc_s[h_i, bi_i] = T.if_then_else(is_kv_valid[bi_i], 0,
                                                               -T.infinity(acc_s.dtype))
-                        T.gemm(q_shared_l, kv_shared_1_l, acc_s, transpose_B=True, wg_wait=-1)
-                        T.gemm(q_shared_r, kv_shared_1_r, acc_s, transpose_B=True, wg_wait=-1)
-                        T.gemm(q_tail_shared, k_tail_shared_1, acc_s, transpose_B=True, wg_wait=-1)
+                        T.wgmma_gemm(q_shared_l, kv_shared_1_l, acc_s, transpose_B=True)
+                        T.wgmma_gemm(q_shared_r, kv_shared_1_r, acc_s, transpose_B=True)
+                        T.wgmma_gemm(q_tail_shared, k_tail_shared_1, acc_s, transpose_B=True)
 
                         T.wait_wgmma(0)
 
