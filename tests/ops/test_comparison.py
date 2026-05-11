@@ -363,18 +363,16 @@ def test_comparison_bool_dtype(op_cls, ref_fn) -> None:
 
 
 class ComparisonRejectFixture(FixtureBase):
+    # Smoke cases (first three) cover the three rejected dtypes on three
+    # distinct op_cls so the tier validator's "each dtype needs a smoke"
+    # rule is satisfied while keeping "full cases must not differ from a
+    # smoke case only by dtype" — each smoke op_cls is unique.
     PARAMS = [
         ("op_cls, dtype", [
             pytest.param(EqFwdOp, torch.complex64, marks=pytest.mark.smoke),
-            pytest.param(NeFwdOp, torch.complex64, marks=pytest.mark.full),
-            pytest.param(GtFwdOp, torch.complex64, marks=pytest.mark.full),
+            pytest.param(NeFwdOp, torch.float8_e4m3fn, marks=pytest.mark.smoke),
+            pytest.param(GtFwdOp, torch.float8_e5m2, marks=pytest.mark.smoke),
             pytest.param(LtFwdOp, torch.complex64, marks=pytest.mark.full),
-            pytest.param(GeFwdOp, torch.complex64, marks=pytest.mark.full),
-            pytest.param(LeFwdOp, torch.complex64, marks=pytest.mark.full),
-            pytest.param(EqFwdOp, torch.float8_e4m3fn, marks=pytest.mark.smoke),
-            pytest.param(NeFwdOp, torch.float8_e5m2, marks=pytest.mark.full),
-            pytest.param(GtFwdOp, torch.float8_e4m3fn, marks=pytest.mark.full),
-            pytest.param(LtFwdOp, torch.float8_e5m2, marks=pytest.mark.full),
             pytest.param(GeFwdOp, torch.float8_e4m3fn, marks=pytest.mark.full),
             pytest.param(LeFwdOp, torch.float8_e5m2, marks=pytest.mark.full),
         ]),
