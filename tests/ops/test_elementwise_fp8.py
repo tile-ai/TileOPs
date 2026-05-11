@@ -62,8 +62,8 @@ def test_binary_arith_kernel_rejects_fp8():
 
 @pytest.mark.smoke
 def test_no_concrete_kernel_inherits_none_supported_dtypes():
-    """AC-1 guard: every concrete BinaryKernel / UnaryKernel subclass must
-    declare SUPPORTED_DTYPES (directly or via a non-None base). Inheriting the
+    """AC-1 guard: every concrete ``Kernel`` subclass must declare
+    SUPPORTED_DTYPES (directly or via a non-None base). Inheriting the
     ``None`` default from the abstract ``Kernel`` base hides the rejection
     contract and lets fp8 slip through silently.
     """
@@ -72,12 +72,12 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
     import tileops.kernels.elementwise as ew
 
     abstract = {
-        ew.BinaryKernel, ew.UnaryKernel, ew.FloatUnaryKernel,
+        ew.Kernel, ew.BinaryKernel, ew.UnaryKernel, ew.FloatUnaryKernel,
         ew.LogicalUnaryKernel, ew.FloatPredicateKernel,
         ew.FusedGatedKernel, ew.ParametricUnaryKernel,
         ew._AlphaScaledBinaryKernel,
     }
-    roots = (ew.BinaryKernel, ew.UnaryKernel)
+    roots = (ew.Kernel,)
     offenders = []
     for _name, cls in inspect.getmembers(ew, inspect.isclass):
         if cls in abstract:
