@@ -79,9 +79,15 @@ def _validate_scalar_param_repr(
       ``Tensor.masked_fill(mask, -1) -> 255``). Float scalars must still
       lie in ``[0, 255]`` (PyTorch rejects ``-1.0``).
 
-    Floating-point dtypes accept ``+/-Inf`` (PyTorch preserves them) and
-    ``NaN``; the only rejection is a finite value outside
-    ``[finfo.min, finfo.max]``.
+    Floating-point dtypes always accept ``NaN``; finite values must lie
+    in ``[finfo.min, finfo.max]``. ``+/-Inf`` is gated on
+    ``allow_nonfinite_float``:
+
+    - default (``False``): reject ``+/-Inf``. Used by ops whose scalar
+      must be finite (elu ``alpha``, softplus ``beta``, clamp bounds).
+    - opt-in (``True``): pass ``+/-Inf`` through. Used by
+      ``MaskedFillScalarFwdOp``, which writes the scalar directly into
+      tensor storage and must mirror PyTorch's Inf-preservation.
     """
     if isinstance(value, bool):
         # ``bool`` is a subclass of ``int``; treat explicitly so the int
