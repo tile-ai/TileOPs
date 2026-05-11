@@ -85,6 +85,7 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
     roots = (ew.Kernel,)
     none_offenders = []
     type_offenders = []
+    empty_offenders = []
     fp8_offenders = []
     for _name, cls in inspect.getmembers(ew, inspect.isclass):
         if cls in abstract:
@@ -98,6 +99,9 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
         if not isinstance(supported, tuple):
             type_offenders.append((cls.__name__, type(supported).__name__))
             continue
+        if len(supported) == 0:
+            empty_offenders.append(cls.__name__)
+            continue
         leaked = [dt for dt in supported if dt in fp8_dtypes]
         if leaked:
             fp8_offenders.append((cls.__name__, leaked))
@@ -106,6 +110,9 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
     )
     assert not type_offenders, (
         f"Concrete kernels with non-tuple SUPPORTED_DTYPES: {type_offenders}"
+    )
+    assert not empty_offenders, (
+        f"Concrete kernels with empty SUPPORTED_DTYPES tuple: {empty_offenders}"
     )
     assert not fp8_offenders, (
         f"Concrete kernels admitting fp8 in SUPPORTED_DTYPES: {fp8_offenders}"
