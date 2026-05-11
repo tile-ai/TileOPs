@@ -18,9 +18,12 @@ command -v gh >/dev/null 2>&1 || { echo "round-post: missing gh" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "round-post: missing jq" >&2; exit 1; }
 
 REPO="tile-ai/TileOPs"
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Anchor state lookup to the main checkout (see preflight.sh).
-REPO_PATH="$(git worktree list --porcelain 2>/dev/null | head -n 1 | sed 's/^worktree //')" \
-  || { echo "round-post: not in a git repo" >&2; exit 1; }
+GIT_COMMON_DIR="$(git -C "$SKILL_DIR" rev-parse --git-common-dir 2>/dev/null)" \
+  || { echo "round-post: cannot resolve repo root from \$SKILL_DIR=$SKILL_DIR" >&2; exit 1; }
+[[ "$GIT_COMMON_DIR" != /* ]] && GIT_COMMON_DIR="$SKILL_DIR/$GIT_COMMON_DIR"
+REPO_PATH="$(cd "$GIT_COMMON_DIR/.." && pwd)"
 
 META=""
 for m in "$REPO_PATH/.foundry/runs"/*/resolve/meta.json; do

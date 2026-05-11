@@ -43,8 +43,11 @@ LOOP_START_EPOCH=$(date +%s)
 #
 # - REPO_PATH is the *state root* — main checkout. Used for `.foundry/
 #   runs/`, fetches, refs, and managed worktrees so state is shared
-#   across all worktrees of one repo. `git worktree list --porcelain 2>/dev/null`
-#   always lists the main worktree first.
+#   across all worktrees of one repo. Resolved via
+#   `git rev-parse --git-common-dir`, whose parent is the main
+#   worktree regardless of which worktree we launch from. Single
+#   command — no pipe — so `set -o pipefail` cannot misfire on
+#   SIGPIPE when the repo has many linked worktrees.
 # - SOURCE_ROOT is the *source/policy root* — the repo that contains
 #   this script. Used for `loading.yaml`, `criteria.md`, `procedure.md`,
 #   and `.claude/review-checklists/` so the loop reads policy files
@@ -52,8 +55,10 @@ LOOP_START_EPOCH=$(date +%s)
 #   a loop launched from a linked worktree would mix policy files
 #   (criteria/procedure/loading from worktree branch via SKILL_DIR,
 #   checklists from main branch via REPO_PATH).
-REPO_PATH="$(git worktree list --porcelain 2>/dev/null | head -n 1 | sed 's/^worktree //')" \
-  || { echo "loop.sh: not in a git repo" >&2; exit 1; }
+GIT_COMMON_DIR="$(git -C "$SKILL_DIR" rev-parse --git-common-dir 2>/dev/null)" \
+  || { echo "loop.sh: cannot resolve repo root from \$SKILL_DIR=$SKILL_DIR" >&2; exit 1; }
+[[ "$GIT_COMMON_DIR" != /* ]] && GIT_COMMON_DIR="$SKILL_DIR/$GIT_COMMON_DIR"
+REPO_PATH="$(cd "$GIT_COMMON_DIR/.." && pwd)"
 SOURCE_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
 
 CRITERIA_PATH="$SKILL_DIR/criteria.md"
