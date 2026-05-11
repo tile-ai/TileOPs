@@ -146,8 +146,6 @@ _FLOAT_DTYPES = (
     torch.float16,
     torch.bfloat16,
     torch.float32,
-    torch.float8_e4m3fn,
-    torch.float8_e5m2,
 )
 
 _LOGICAL_DTYPES = _BITWISE_DTYPES + _FLOAT_DTYPES
