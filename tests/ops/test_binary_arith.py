@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.elementwise import DivTruncFwdKernel, FloorDivideFwdKernel
 from tileops.ops.elementwise import (
     AddFwdOp,
     DivFwdOp,
@@ -23,6 +24,7 @@ from tileops.ops.elementwise import (
     SubFwdOp,
     coalesce_broadcast_dims,
 )
+from tileops.ops.elementwise.arithmetic import _DIV_KERNEL_BY_ROUNDING_MODE
 from workloads.binary_arith import AddSameShapeTest as _AddSameShapeTestWorkload
 
 
@@ -1113,6 +1115,55 @@ def test_lerp_tensor_dtype_mismatch_rejected() -> None:
     w_bad = torch.rand(shape, device="cuda", dtype=torch.float16)
     with pytest.raises(ValueError, match="weight.dtype"):
         op(a, b, w_bad)
+
+
+# ---------------------------------------------------------------------------
+# DivFwdOp rounding_mode trunc/floor coverage
+# ---------------------------------------------------------------------------
+
+
+_DIV_ROUNDING_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
+_DIV_ROUNDING_MODES = ["trunc", "floor"]
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("rounding_mode", _DIV_ROUNDING_MODES)
+@pytest.mark.parametrize("dtype", _DIV_ROUNDING_DTYPES)
+def test_div_rounding_mode_eager(rounding_mode: str, dtype: torch.dtype) -> None:
+    """DivFwdOp(rounding_mode=...) matches torch.div for trunc and floor."""
+    shape = (64, 256)
+    # Both positive and negative quotients naturally arise from randn inputs;
+    # clamp ``b`` away from zero so division is well-defined.
+    a = torch.randn(*shape, dtype=dtype, device="cuda") * 5.0
+    b = torch.randn(*shape, dtype=dtype, device="cuda") * 2.0 + 1.0
+    b = torch.where(b.abs() < 0.5, torch.full_like(b, 1.0), b)
+    op = DivFwdOp(
+        a_shape=shape, b_shape=shape, dtype=dtype, rounding_mode=rounding_mode,
+    )
+    with torch.no_grad():
+        out = op(a, b)
+    ref = torch.div(a.float(), b.float(), rounding_mode=rounding_mode).to(dtype)
+    atol, rtol = _get_tolerances(dtype)
+    # rounding-mode divergence in reduced precision can flip by 1 unit at
+    # quotient boundaries; mirror the floor_divide convention.
+    if dtype != torch.float32:
+        atol = 1.0
+        rtol = 0.0
+    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+def test_div_rounding_mode_dispatch() -> None:
+    """DivFwdOp wires rounding_mode to the right kernel class and rejects unknown modes."""
+    assert _DIV_KERNEL_BY_ROUNDING_MODE["trunc"] is DivTruncFwdKernel
+    assert _DIV_KERNEL_BY_ROUNDING_MODE["floor"] is FloorDivideFwdKernel
+    shape = (16,)
+    with pytest.raises(ValueError, match="rounding_mode"):
+        DivFwdOp(
+            a_shape=shape, b_shape=shape, dtype=torch.float16,
+            rounding_mode="invalid",
+        )
 
 
 if __name__ == "__main__":
