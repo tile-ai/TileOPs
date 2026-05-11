@@ -33,6 +33,7 @@ fp8 dtype support (e4m3fn, e5m2):
 
 import functools
 import math
+import warnings
 
 import tilelang
 import tilelang.language as T
@@ -833,7 +834,21 @@ class BinaryKernel(Kernel):
         self._same_shape = _is_contiguous_same_shape(
             coalesced_shape, a_strides, b_strides,
         )
-        if strategy is not None:
+        # torch.bool maps to TileLang ``boolx<N>`` for vectorised loads /
+        # stores, which the CUDA codegen cannot lower. Force the scalar
+        # ``direct`` strategy for bool inputs regardless of caller request.
+        bool_input = dtype == torch.bool
+        if bool_input:
+            if strategy is not None and strategy != "direct":
+                warnings.warn(
+                    f"BinaryKernel: dtype=torch.bool requires strategy="
+                    f"'direct' (TileLang cannot lower vectorised boolx<N> "
+                    f"loads); overriding requested strategy={strategy!r}.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            self.strategy = "direct"
+        elif strategy is not None:
             # register_copy requires same-shape contiguous inputs (no
             # broadcast); silently downgrade to explicit_parallel when
             # the caller requests register_copy on broadcast shapes.
@@ -1272,7 +1287,14 @@ class SubFwdKernel(_AlphaScaledBinaryKernel):
 
 
 class MulFwdKernel(BinaryKernel):
-    """Element-wise multiplication: y = a * b."""
+    """Element-wise multiplication: y = a * b.
+
+    Supports the manifest dtype union (bool / unsigned / signed integer /
+    half / single precision floats). Bool multiplication is logical AND
+    (PyTorch semantics).
+    """
+
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
 
@@ -1435,26 +1457,46 @@ class LerpFwdKernel(BinaryKernel):
             raise ValueError(f"Unknown strategy: {strategy}")
 
 
-class MaximumFwdKernel(BinaryKernel):
-    """Element-wise maximum: y = max(a, b) with NaN propagation.
+def _is_float_dtype_str(dtype_str: str) -> bool:
+    """Return True for floating-point TileLang dtype strings.
 
-    Matches torch.maximum semantics:
+    TileLang IR exposes operand dtypes only as strings (``"float16"``,
+    ``"bfloat16"``, ``"float32"``, ``"float8_e4m3fn"`` ...), so prefix
+    matching is the established convention for float detection inside
+    ``op_func`` kernel bodies. All TileLang float dtype names start
+    with ``"float"`` or ``"bfloat"``; integer / bool dtype names
+    (``"int*"``, ``"uint*"``, ``"bool"``) do not.
+    """
+    return dtype_str.startswith(("float", "bfloat"))
+
+
+class MaximumFwdKernel(BinaryKernel):
+    """Element-wise maximum: y = max(a, b).
+
+    For float dtypes, matches torch.maximum semantics:
     - If either operand is NaN, the result is NaN.
     - maximum(+0.0, -0.0) = +0.0 (IEEE 754 signed-zero).
 
-    Performance: uses T.max for the fast path (correct signed-zero on CUDA
-    -- fmaxf returns +0 for max(+0,-0)) plus two isnan guards for NaN
-    propagation. Total IR: 1 max + 2 fp32 casts + 2 isnan + 2 select.
+    For integer / bool dtypes (no NaN representation), uses ``T.max``
+    directly without the NaN guards.
+
+    Performance (float path): uses T.max for the fast path (correct
+    signed-zero on CUDA -- fmaxf returns +0 for max(+0,-0)) plus two
+    isnan guards for NaN propagation. Total IR: 1 max + 2 fp32 casts +
+    2 isnan + 2 select.
     """
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        # T.max handles signed-zero correctly (returns +0 for max(+0,-0))
-        # but does NOT propagate NaN -- it returns the non-NaN operand.
         result = T.max(a, b)
-        # NaN propagation: cast to fp32 for isnan (bfloat16 lacks native isnan).
+        if not _is_float_dtype_str(str(a.dtype)):
+            # Integer / bool: no NaN representation, T.max is sufficient.
+            return result
+        # Float path: T.max handles signed-zero correctly but does NOT
+        # propagate NaN -- it returns the non-NaN operand. Cast to fp32
+        # for isnan (bfloat16 lacks native isnan).
         a_is_nan = T.isnan(T.Cast("float32", a))
         b_is_nan = T.isnan(T.Cast("float32", b))
         result = T.if_then_else(b_is_nan, b, result)
@@ -1463,25 +1505,28 @@ class MaximumFwdKernel(BinaryKernel):
 
 
 class MinimumFwdKernel(BinaryKernel):
-    """Element-wise minimum: y = min(a, b) with NaN propagation.
+    """Element-wise minimum: y = min(a, b).
 
-    Matches torch.minimum semantics:
+    For float dtypes, matches torch.minimum semantics:
     - If either operand is NaN, the result is NaN.
     - minimum(-0.0, +0.0) = -0.0 (IEEE 754 signed-zero).
 
-    Performance: uses T.min for the fast path (correct signed-zero on CUDA
-    -- fminf returns -0 for min(-0,+0)) plus two isnan guards for NaN
-    propagation. See MaximumFwdKernel for full rationale.
+    For integer / bool dtypes (no NaN representation), uses ``T.min``
+    directly without the NaN guards.
+
+    Performance (float path): uses T.min for the fast path (correct
+    signed-zero on CUDA -- fminf returns -0 for min(-0,+0)) plus two
+    isnan guards for NaN propagation. See MaximumFwdKernel for full
+    rationale.
     """
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        # T.min handles signed-zero correctly (returns -0 for min(+0,-0))
-        # but does NOT propagate NaN -- it returns the non-NaN operand.
         result = T.min(a, b)
-        # NaN propagation: cast to fp32 for isnan (bfloat16 lacks native isnan).
+        if not _is_float_dtype_str(str(a.dtype)):
+            return result
         a_is_nan = T.isnan(T.Cast("float32", a))
         b_is_nan = T.isnan(T.Cast("float32", b))
         result = T.if_then_else(b_is_nan, b, result)
@@ -1497,7 +1542,7 @@ class MinimumFwdKernel(BinaryKernel):
 class EqFwdKernel(BinaryKernel):
     """Element-wise equality: y = (a == b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.int8
 
     @staticmethod
@@ -1510,7 +1555,7 @@ class EqFwdKernel(BinaryKernel):
 class NeFwdKernel(BinaryKernel):
     """Element-wise not-equal: y = (a != b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.int8
 
     @staticmethod
@@ -1523,7 +1568,7 @@ class NeFwdKernel(BinaryKernel):
 class GtFwdKernel(BinaryKernel):
     """Element-wise greater-than: y = (a > b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.int8
 
     @staticmethod
@@ -1536,7 +1581,7 @@ class GtFwdKernel(BinaryKernel):
 class LtFwdKernel(BinaryKernel):
     """Element-wise less-than: y = (a < b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.int8
 
     @staticmethod
@@ -1549,7 +1594,7 @@ class LtFwdKernel(BinaryKernel):
 class GeFwdKernel(BinaryKernel):
     """Element-wise greater-equal: y = (a >= b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.int8
 
     @staticmethod
@@ -1562,7 +1607,7 @@ class GeFwdKernel(BinaryKernel):
 class LeFwdKernel(BinaryKernel):
     """Element-wise less-equal: y = (a <= b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.int8
 
     @staticmethod
