@@ -408,7 +408,7 @@ class SSDChunkScanFwdKernel(Kernel):
         return {
             "block_l": 64,
             "block_p": 64,
-            "block_n": 32,
+            "block_n": min(128, self.d_state),
             "block_s": 64,
             "threads": 128,
         }
