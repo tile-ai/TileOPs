@@ -1273,6 +1273,8 @@ class SubFwdKernel(_AlphaScaledBinaryKernel):
 class MulFwdKernel(BinaryKernel):
     """Element-wise multiplication: y = a * b."""
 
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
     @staticmethod
     def op_func(a, b):
         return a * b
