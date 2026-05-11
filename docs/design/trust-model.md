@@ -83,7 +83,7 @@ BenchmarkBase[W] (benchmarks/)          # generic over workload type
 
 ## Issue-authoring: declaring scope
 
-The trust model is enforced as a semantic review lens (see `.claude/review-checklists/pre-review.md`). The pipeline's write-scope gate reads the issue's `## Constraints` bullets; the author declares the work's stage shape; the reviewer judges correctness against the stage contracts above. Same-agent fabrication of oracle + implementation is caught at review; honest cross-stage work proceeds without a syntactic block.
+The trust model is a semantic review lens (`.claude/review-checklists/pre-review.md`). The pipeline's write-scope gate reads `## Constraints` bullets to learn the work's stage shape; the reviewer judges correctness against the stage contracts above. This catches same-agent fabrication of oracle + implementation while honest cross-stage work proceeds.
 
 | Work shape                 | Constraints bullet form                                                                                         | Effect                                                |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
@@ -94,8 +94,8 @@ The trust model is enforced as a semantic review lens (see `.claude/review-check
 Authoring rules:
 
 - A new behavior branch lacking pre-existing test coverage uses the joint form so the test lands with the impl in the same PR, satisfying the reviewer's new-path-coverage criterion.
-- Constraints is a bulleted list. Prose without `- ` items is unparsable and Phase A treats it as a block.
-- A `trust-model.md` citation combined with "separate PR" / "own PR" / "standalone PR" in one bullet declares the named stage forbidden — use that form when genuine, otherwise cite the document on its own line.
+- Constraints is written as bulleted items — the gate parses bullets to derive declared scope.
+- Pair a `trust-model.md` citation with "separate PR" / "own PR" / "standalone PR" in one bullet to declare the named stage forbidden. Place the citation on its own bullet when no such restriction is intended.
 
 Default when drafting from a brief: one Constraints bullet stating the behavioral or compatibility expectation. Reach for `<stage>-only PR` when the work is genuinely single-stage.
 

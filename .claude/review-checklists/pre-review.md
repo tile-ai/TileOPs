@@ -7,7 +7,7 @@ Common rules for every checklist in this folder. Load before any title-specific 
 
 ## Review lens
 
-Apply trust-model rules as a review lens. Surface cross-layer diffs as comments with a concrete citation; the author supplies rationale; judge on content. Provenance labels (`automated` / `needs-review` / `nightshift`) mark origin only — rule semantics are identical across labels.
+Apply trust-model rules as a review lens: surface cross-layer diffs as comments with a concrete citation; the author replies with rationale; the reviewer judges on content. Provenance labels (`automated` / `needs-review` / `nightshift`) record origin; review criteria apply uniformly.
 
 ## Cross-layer review criteria
 
@@ -21,11 +21,11 @@ Cite the failing criterion by name.
 
 ## Comment quality
 
-| Rule               | Required form                                                                                                                                           |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Concrete pointer   | `file:line`, entry path, field name, parametrize axis, ref URL, test name, or the offending diff line                                                   |
-| Decidable language | Concrete claim with the pointer above. Vague forms — "looks reasonable", "may want to verify", "consider revising", "could be clearer" — fail this rule |
-| Reviewer restraint | Suggestions stay within fixes for flagged items                                                                                                         |
+| Rule             | Required form                                                                                                                                        |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Concrete pointer | `file:line`, entry path, field name, parametrize axis, ref URL, test name, or the offending diff line                                                |
+| Decidable claim  | A concrete claim about that pointer. Hedged forms ("looks reasonable", "may want to verify", "consider revising", "could be clearer") fail this rule |
+| Suggestion scope | Suggestions stay within fixes for flagged items                                                                                                      |
 
 ## Scope
 
