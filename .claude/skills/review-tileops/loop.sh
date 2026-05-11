@@ -25,10 +25,10 @@ REPO="tile-ai/TileOPs"
 MAX_ROUNDS=15
 POLL_INTERVAL=180
 CODEX_RETRY=3
-# Per-round hard cap on the codex subprocess. Codex can wedge on MCP
-# transport failures (endless "Reconnecting 1/5 → 5/5" with no exit),
-# blocking the loop on `wait`; this bounds the round so CODEX_RETRY=3
-# stays reachable.
+# Per-round hard cap on the synchronous codex invocation. Codex can wedge
+# on MCP transport failures (endless "Reconnecting 1/5 → 5/5" with no
+# exit); without this cap bash sits in waitpid forever and CODEX_RETRY=3
+# is unreachable. Worst case: 3 × 1800s ≈ 90 min before status=error.
 CODEX_TIMEOUT_SEC=1800
 # Stall safety: terminate after this many consecutive idle polls (no new
 # commits / comments). MAX_IDLE * POLL_INTERVAL must comfortably exceed
@@ -83,17 +83,24 @@ fi
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
-# Reap the process group on signal; otherwise codex/gh/git get reparented
-# to init and keep running after the loop (or its tmux pane / SSH) exits.
+# Reap descendant subprocesses on signal. The full chain is
+# `loop.sh → timeout → node(codex) → codex-rust`, and node does not
+# always forward TERM to its rust child, so a one-level kill orphans
+# codex. We can't use `kill 0` (pgroup) either: foreground `review-loop`
+# shares a pgroup with the calling tmux pane, and `nohup … &` does not
+# create one — pgroup-wide TERM would kill the user's shell.
+_collect_descendants() {
+  local p=$1 c
+  for c in $(pgrep -P "$p" 2>/dev/null); do
+    printf '%s\n' "$c"
+    _collect_descendants "$c"
+  done
+}
 cleanup_and_exit() {
   trap - TERM INT HUP EXIT
-  # Kill direct children only. `kill 0` (pgroup) would also hit the
-  # user's interactive shell — foreground `review-loop` shares a pgroup
-  # with the calling tmux pane, and `nohup … &` does not create one.
-  # `timeout` forwards SIGTERM to codex, so one level is enough.
   local pids
-  pids=$(pgrep -P $$ 2>/dev/null) || true
-  if [[ -n "$pids" ]]; then
+  pids=$(_collect_descendants $$ | tr '\n' ' ')
+  if [[ -n "${pids// }" ]]; then
     kill -TERM $pids 2>/dev/null || true
     sleep 1
     kill -KILL $pids 2>/dev/null || true
