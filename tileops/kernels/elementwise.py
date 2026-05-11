@@ -152,6 +152,19 @@ _FLOAT_DTYPES = (
 
 _LOGICAL_DTYPES = _BITWISE_DTYPES + _FLOAT_DTYPES
 
+# Binary arithmetic dtype unions, mirroring the manifest entries for
+# torch.add / torch.sub. fp8 is excluded because PyTorch does not define
+# add/sub for float8 storage; bool is excluded for sub because PyTorch
+# rejects bool subtraction.
+_BINARY_FULL_DTYPES = _BITWISE_DTYPES + (
+    torch.float16,
+    torch.bfloat16,
+    torch.float32,
+)
+_BINARY_NO_BOOL_DTYPES = tuple(
+    dt for dt in _BINARY_FULL_DTYPES if dt is not torch.bool
+)
+
 
 def _is_fp8(dtype: torch.dtype) -> bool:
     """Check if a torch dtype is an fp8 variant."""
@@ -1144,20 +1157,119 @@ class ReluFwdKernel(FloatUnaryKernel):
         return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
 
 
-class AddFwdKernel(BinaryKernel):
-    """Element-wise addition: y = a + b."""
+class _AlphaScaledBinaryKernel(BinaryKernel):
+    """Shared base for ``y = a (op) alpha * b`` kernels.
+
+    Subclasses set ``_combine`` to either addition or subtraction. ``alpha``
+    is baked in at kernel construction time (one specialization per distinct
+    ``alpha`` value, matching the lru_cache key shape used by the binary
+    builders) so the kernel surface stays scalar-free.
+    """
+
+    @staticmethod
+    def _combine(a_scaled, b_scaled):
+        raise NotImplementedError
 
     @staticmethod
     def op_func(a, b):
-        return a + b
+        raise NotImplementedError(
+            "_AlphaScaledBinaryKernel uses a per-instance op_func built from "
+            "alpha; use the kernel via __init__ instead of calling op_func."
+        )
+
+    def __init__(
+        self, N_total, dtype, coalesced_shape, a_strides, b_strides,
+        a_numel, b_numel, strategy=None, config=None, tune=False, alpha=1,
+    ):
+        # PyTorch's torch.add / torch.sub reject a floating alpha when the
+        # input tensor is integral (or bool). Mirror that contract here so
+        # the kernel cannot silently truncate alpha through an fp32 cast.
+        # Out-of-range integer alphas are not rejected: PyTorch coerces the
+        # scalar via the input dtype, so values wrap silently (uint8
+        # alpha=-1 → 255; bool alpha=2 → True via low-bit). The kernel's
+        # T.cast(int(alpha), a.dtype) reproduces that wrap.
+        if dtype in _BITWISE_DTYPES and float(alpha) != float(int(alpha)):
+            raise ValueError(
+                "alpha must be an integer when input dtype is integral"
+            )
+        self._alpha = alpha
+        super().__init__(
+            N_total, dtype, coalesced_shape, a_strides, b_strides,
+            a_numel, b_numel, strategy=strategy, config=config, tune=tune,
+        )
+
+    def _alpha_op_func(self):
+        """Build a binary op_func with ``alpha`` baked in.
+
+        Floating inputs route the scalar multiply through fp32 to dodge
+        narrow-type literal issues for fp16 / bf16; integer/bool inputs
+        keep native integer arithmetic. Following PyTorch, the integral
+        alpha is coerced via the input dtype, so out-of-range values
+        wrap silently (uint8 alpha=-1 -> 255; bool alpha=2 -> low-bit).
+        """
+        alpha = self._alpha
+        combine = type(self)._combine
+
+        if alpha == 1:
+            # Identity multiplier: skip the scalar multiply so the kernel
+            # stays byte-identical to the pre-alpha fast path.
+            def op_func(a, b):
+                return combine(a, b)
+
+            return op_func
+
+        if self.dtype in _BITWISE_DTYPES:
+            # Native integer arithmetic. Coerce alpha into the input dtype's
+            # representable range in Python before T.cast: TVM rejects a
+            # negative literal cast to an unsigned dtype, so reproduce
+            # PyTorch's "scalar wraps via the input dtype" semantics here.
+            if self.dtype is torch.bool:
+                int_alpha = int(bool(alpha))
+            else:
+                info = torch.iinfo(self.dtype)
+                width = info.max - info.min + 1
+                int_alpha = int(alpha)
+                if int_alpha < info.min or int_alpha > info.max:
+                    int_alpha = ((int_alpha - info.min) % width) + info.min
+
+            def op_func(a, b):
+                scaled_b = T.cast(int_alpha, a.dtype) * b
+                return combine(a, scaled_b)
+
+            return op_func
+
+        def op_func(a, b):
+            scaled_b = T.cast(T.cast(alpha, "float32") * T.cast(b, "float32"), a.dtype)
+            return combine(a, scaled_b)
+
+        return op_func
+
+    def _get_effective_op_func(self):
+        """Inject the alpha-baked op_func into the parent build pipeline."""
+        op_func = self._alpha_op_func()
+        if self.OUTPUT_DTYPE is not None:
+            return op_func
+        return _wrap_fp8_accumulation(op_func, self.dtype, self.dtype_str, arity=2)
 
 
-class SubFwdKernel(BinaryKernel):
-    """Element-wise subtraction: y = a - b."""
+class AddFwdKernel(_AlphaScaledBinaryKernel):
+    """Element-wise addition with scalar alpha: y = a + alpha * b."""
+
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
 
     @staticmethod
-    def op_func(a, b):
-        return a - b
+    def _combine(a, scaled_b):
+        return a + scaled_b
+
+
+class SubFwdKernel(_AlphaScaledBinaryKernel):
+    """Element-wise subtraction with scalar alpha: y = a - alpha * b."""
+
+    SUPPORTED_DTYPES = _BINARY_NO_BOOL_DTYPES
+
+    @staticmethod
+    def _combine(a, scaled_b):
+        return a - scaled_b
 
 
 class MulFwdKernel(BinaryKernel):
