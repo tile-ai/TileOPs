@@ -637,6 +637,105 @@ def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
         op(x, mask)
 
 
+# ---------------------------------------------------------------------------
+# MaskedFillScalar: int / uint / bool dtype coverage
+# ---------------------------------------------------------------------------
+
+
+_MASKED_FILL_INT_CASES = [
+    pytest.param(torch.uint8, 200, id="uint8-pos"),
+    pytest.param(torch.uint8, -1, id="uint8-neg-wrap"),
+    pytest.param(torch.uint8, -255, id="uint8-neg-wrap-max"),
+    pytest.param(torch.int8, -128, id="int8-min"),
+    pytest.param(torch.int8, 127, id="int8-max"),
+    pytest.param(torch.int16, -32768, id="int16-min"),
+    pytest.param(torch.int16, 12345, id="int16"),
+    pytest.param(torch.int32, -(2**31), id="int32-min"),
+    pytest.param(torch.int32, 2**31 - 1, id="int32-max"),
+    pytest.param(torch.int64, -(2**62), id="int64"),
+    pytest.param(torch.int32, 1.5, id="int32-trunc-pos"),
+    pytest.param(torch.int32, -1.5, id="int32-trunc-neg"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype, fill_value", _MASKED_FILL_INT_CASES)
+def test_masked_fill_int_dtypes(dtype: torch.dtype, fill_value) -> None:
+    """L1: int/uint masked_fill matches PyTorch incl. uint8 negative wrap."""
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
+
+    n_total = 4096
+    iinfo = torch.iinfo(dtype)
+    x = torch.randint(
+        max(iinfo.min, -1000), min(iinfo.max, 1000) + 1,
+        (n_total,), device="cuda", dtype=dtype,
+    )
+    mask = torch.randint(0, 2, (n_total,), device="cuda").bool()
+    ref = x.masked_fill(mask, fill_value)
+    op = MaskedFillScalarFwdOp(
+        input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype,
+    )
+    out = op(x, mask)
+    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("fill_value", [True, False, 1, 0, -1, 7])
+def test_masked_fill_bool(fill_value) -> None:
+    """L1: bool masked_fill coerces non-zero -> True via uint8 storage view."""
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
+
+    n_total = 4096
+    x = torch.randint(0, 2, (n_total,), device="cuda").bool()
+    mask = torch.randint(0, 2, (n_total,), device="cuda").bool()
+    ref = x.masked_fill(mask, fill_value)
+    op = MaskedFillScalarFwdOp(
+        input=(n_total,), mask=(n_total,), value=fill_value, dtype=torch.bool,
+    )
+    out = op(x, mask)
+    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("fill_value", [float("inf"), float("-inf"), float("nan")])
+def test_masked_fill_float_nonfinite(dtype: torch.dtype, fill_value: float) -> None:
+    """L4: +/-Inf and NaN fill values pass through unchanged (no clamp)."""
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
+
+    n_total = 4096
+    x = torch.randn(n_total, device="cuda", dtype=dtype)
+    mask = torch.randint(0, 2, (n_total,), device="cuda").bool()
+    ref = x.masked_fill(mask, fill_value)
+    op = MaskedFillScalarFwdOp(
+        input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype,
+    )
+    out = op(x, mask)
+    torch.testing.assert_close(out, ref, atol=0, rtol=0, equal_nan=True)
+
+
+_MASKED_FILL_REJECT_CASES = [
+    pytest.param(torch.int8, 200, "integer range", id="int8-overflow"),
+    pytest.param(torch.int8, 127.5, "finite range", id="int8-float-just-over"),
+    pytest.param(torch.uint8, -256, "wraparound", id="uint8-neg-too-low"),
+    pytest.param(torch.uint8, -1.0, "finite range", id="uint8-neg-float-rejected"),
+    pytest.param(torch.int32, float("inf"), "finite", id="int32-inf"),
+    pytest.param(torch.int32, float("nan"), "finite", id="int32-nan"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype, fill_value, match", _MASKED_FILL_REJECT_CASES)
+def test_masked_fill_rejects_out_of_range(
+    dtype: torch.dtype, fill_value, match: str,
+) -> None:
+    """Validator must reject values PyTorch's masked_fill also rejects."""
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
+
+    with pytest.raises(ValueError, match=match):
+        MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=fill_value, dtype=dtype)
+
+
 @pytest.mark.smoke
 def test_elu_rejects_infinite_alpha() -> None:
     """EluFwdOp must reject infinite alpha."""

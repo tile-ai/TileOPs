@@ -129,9 +129,12 @@ class MaskedFillScalarFwdOp(Op):
         input: Shape of the input tensor.
         mask: Shape of the mask tensor (bool).
         value: Scalar fill value (bool / int / float). Range-validated
-            against ``dtype`` (PyTorch ``Tensor.masked_fill`` coercion
-            semantics: bool reduces non-zero to ``True``; integer dtypes
-            require a finite integral value within ``torch.iinfo``).
+            against ``dtype`` with PyTorch ``Tensor.masked_fill``
+            coercion: bool reduces non-zero to ``True``; integer dtypes
+            range-check the real value against ``torch.iinfo`` and
+            truncate floats toward zero (``1.5 -> 1``); ``torch.uint8``
+            additionally wraps Python ints in ``[-255, 0)`` via two's
+            complement.
         dtype: Torch dtype. Must be a manifest-declared dtype.
         kernel_map: Optional dispatch override mapping kernel keys to
             ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
@@ -149,10 +152,10 @@ class MaskedFillScalarFwdOp(Op):
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
-        # The kernel handles ints + floats + fp8 directly. The bool dtype
-        # is supported here at the Op layer via uint8 storage view, since
-        # TileLang's bool tensor codegen is not vectorized; the user-facing
-        # contract still exposes ``torch.bool``.
+        # The kernel handles ints and fp16/bf16/fp32 directly. The bool
+        # dtype is supported here at the Op layer via uint8 storage view,
+        # since TileLang's bool tensor codegen is not vectorized; the
+        # user-facing contract still exposes ``torch.bool``.
         kernel_supported = MaskedFillFwdKernel.SUPPORTED_DTYPES
         if (
             dtype != torch.bool
@@ -178,7 +181,9 @@ class MaskedFillScalarFwdOp(Op):
         self._needs_broadcast = (
             self.input_shape != self.out_shape or self.mask_shape != self.out_shape
         )
-        _validate_scalar_param_repr("value", value, dtype, self._op_name)
+        _validate_scalar_param_repr(
+            "value", value, dtype, self._op_name, allow_nonfinite_float=True,
+        )
         self.dispatch_kernel(kernel_map)
         # Bool input path: the kernel runs in uint8 storage.
         self._bool_storage = dtype == torch.bool

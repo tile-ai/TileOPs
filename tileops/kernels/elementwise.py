@@ -222,38 +222,43 @@ def _get_fp8_output_dtypes(dtype: torch.dtype):
 
 
 def _clamp_to_dtype_range(value, dtype: torch.dtype):
-    """Clamp *value* to the finite representable range of *dtype*.
+    """Normalize *value* into the storage representation of *dtype*.
 
-    Prevents TVM FloatImm / IntImm range-check failures when a scalar literal
-    exceeds the target dtype's maximum (e.g. 1e4 into float8_e4m3fn whose max
-    is 448). NaN values are passed through unchanged for floating-point
-    dtypes (NaN is a valid sentinel, not an out-of-range finite value).
-    Infinities are mapped to the dtype's max/min finite value for
-    floating-point dtypes. Integer dtypes truncate floats toward zero
-    (matching PyTorch ``Tensor.masked_fill`` coercion); the upstream
-    ``_validate_scalar_param_repr`` guarantees the truncated value lies
-    inside ``torch.iinfo(dtype)`` so saturation is unnecessary. The bool
-    dtype coerces any non-zero value to 1 and zero to 0.
+    Mirrors PyTorch ``Tensor.masked_fill`` scalar coercion so the kernel
+    receives a literal that lands as the same bit pattern PyTorch would
+    write:
+
+    - bool: any non-zero coerces to ``1``, else ``0``.
+    - Signed int: truncate toward zero. The upstream validator
+      guarantees the value is in ``iinfo`` range; ``+/-Inf`` is mapped
+      to ``iinfo.max/min`` as defense-in-depth so a bypassed validator
+      cannot trigger ``OverflowError`` on ``int(inf)``.
+    - ``torch.uint8``: negatives in ``[-255, 0)`` wrap via
+      ``value & 0xFF`` (PyTorch ``masked_fill(mask, -1) -> 255``);
+      non-negatives truncate as for signed ints.
+    - ``fp16 / bf16 / fp32`` and ``fp8_e5m2`` (Inf-representable):
+      ``NaN`` and ``+/-Inf`` pass through; finite values clamp to
+      ``finfo``.
+    - ``fp8_e4m3fn`` (no Inf representation): ``+/-Inf`` saturates to
+      ``finfo.max/min`` to avoid a TVM ``FloatImm`` overflow.
     """
     if dtype == torch.bool:
         return 1 if bool(value) else 0
     if dtype in _BITWISE_DTYPES:
-        # Integer dtypes: truncate toward zero. The upstream validator
-        # rejects NaN/Inf and out-of-range values, so saturation is a
-        # no-op here. Keep the inf guard as defense-in-depth in case a
-        # caller bypasses the validator: Python raises OverflowError on
-        # int(inf), so map +/-inf to the iinfo bounds instead.
         if isinstance(value, float) and math.isinf(value):
             iinfo = torch.iinfo(dtype)
             return iinfo.max if value > 0 else iinfo.min
+        if dtype == torch.uint8 and isinstance(value, int) and not isinstance(value, bool) and value < 0:
+            return value & 0xFF
         return int(value)
-    # Floating-point (incl. fp8) dtypes.
     fvalue = float(value)
     if math.isnan(fvalue):
         return fvalue
     finfo = torch.finfo(dtype)
     if math.isinf(fvalue):
-        return finfo.max if fvalue > 0 else finfo.min
+        if dtype in _FP8_DTYPES and not _fp8_needs_nonsaturating_cast(dtype):
+            return finfo.max if fvalue > 0 else finfo.min
+        return fvalue
     return max(finfo.min, min(finfo.max, fvalue))
 
 
@@ -3166,7 +3171,7 @@ class MaskedFillFwdKernel(ParametricUnaryKernel):
     """
 
     _DEFAULT_THREADS = 512
-    SUPPORTED_DTYPES = _BITWISE_DTYPES[1:] + _FLOAT_DTYPES  # ints + floats + fp8
+    SUPPORTED_DTYPES = _BITWISE_DTYPES[1:] + _FLOAT_DTYPES  # uint8/intN + fp16/bf16/fp32
 
     def __init__(self, N_total, dtype, fill_value, config=None, tune=False):
         self._raw_fill_value = fill_value
