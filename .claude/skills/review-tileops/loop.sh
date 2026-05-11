@@ -25,12 +25,10 @@ REPO="tile-ai/TileOPs"
 MAX_ROUNDS=15
 POLL_INTERVAL=180
 CODEX_RETRY=3
-# Per-round hard cap on the codex subprocess. Codex has been seen to wedge
-# indefinitely on MCP transport failures (endless "Reconnecting 1/5 → 5/5"
-# loop with no exit), which without this cap blocks the whole review loop
-# on a `wait` that never returns. 1800s comfortably exceeds a slow review
-# round on a large PR, low enough that a wedged codex falls back into the
-# existing CODEX_RETRY=3 path within an hour.
+# Per-round hard cap on the codex subprocess. Codex can wedge on MCP
+# transport failures (endless "Reconnecting 1/5 → 5/5" with no exit),
+# blocking the loop on `wait`; this bounds the round so CODEX_RETRY=3
+# stays reachable.
 CODEX_TIMEOUT_SEC=1800
 # Stall safety: terminate after this many consecutive idle polls (no new
 # commits / comments). MAX_IDLE * POLL_INTERVAL must comfortably exceed
@@ -85,12 +83,8 @@ fi
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
-# Signal trap: kill the entire process group on Ctrl-C / SIGTERM / SIGHUP so
-# in-flight codex / gh / git subprocesses are reaped instead of being
-# reparented to init and quietly burning tokens after the loop exits.
-# Without this, terminating the loop (or its terminal/tmux pane) leaves
-# orphaned codex processes that keep retrying upstream APIs in the
-# background.
+# Reap the process group on signal; otherwise codex/gh/git get reparented
+# to init and keep running after the loop (or its tmux pane / SSH) exits.
 cleanup_and_exit() {
   trap - TERM INT HUP EXIT
   kill -TERM 0 2>/dev/null || true
@@ -462,12 +456,7 @@ run_codex_round() {
 
   local attempt=0
   while (( attempt < CODEX_RETRY )); do
-    # `timeout --kill-after=30` sends KILL 30s after the initial TERM so
-    # codex cannot ignore the deadline — observed during the MCP wedge
-    # ("timeout waiting for child process to exit"), the codex parent does
-    # not always drop its own children on TERM alone. rc=124 → TERM
-    # honored; rc=137 → KILL fired. Either route falls through to the
-    # existing empty-$lastmsg retry path.
+    # --kill-after: codex doesn't always honor TERM under the MCP wedge.
     local rc=0
     if [[ "$sid" == "null" || -z "$sid" ]]; then
       timeout --kill-after=30 "$CODEX_TIMEOUT_SEC" \
