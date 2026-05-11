@@ -52,8 +52,8 @@ LOOP_START_EPOCH=$(date +%s)
 #   a loop launched from a linked worktree would mix policy files
 #   (criteria/procedure/loading from worktree branch via SKILL_DIR,
 #   checklists from main branch via REPO_PATH).
-REPO_PATH="$(git worktree list --porcelain 2>/dev/null | head -n 1 | sed 's/^worktree //')" \
-  || { echo "loop.sh: not in a git repo" >&2; exit 1; }
+REPO_PATH="$(git -C "$SKILL_DIR" worktree list --porcelain 2>/dev/null | head -n 1 | sed 's/^worktree //')" \
+  || { echo "loop.sh: cannot resolve repo root from \$SKILL_DIR=$SKILL_DIR" >&2; exit 1; }
 SOURCE_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
 
 CRITERIA_PATH="$SKILL_DIR/criteria.md"

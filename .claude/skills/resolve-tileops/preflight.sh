@@ -20,14 +20,15 @@ REPO="tile-ai/TileOPs"
 command -v gh >/dev/null 2>&1 || { echo "preflight: missing gh" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "preflight: missing jq" >&2; exit 1; }
 
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Anchor state to the main checkout's `.foundry/runs/`, not cwd. When
 # invoked from a linked worktree (e.g. via foundry pipeline HANDOFF),
 # `--show-toplevel` returns the worktree path; using it would scatter
 # resolve state across worktrees. `git worktree list --porcelain 2>/dev/null`
 # always emits the main worktree first, so its leading entry is the
 # main checkout regardless of which worktree we run from.
-REPO_PATH="$(git worktree list --porcelain 2>/dev/null | head -n 1 | sed 's/^worktree //')" \
-  || { echo "preflight: not in a git repo" >&2; exit 1; }
+REPO_PATH="$(git -C "$SKILL_DIR" worktree list --porcelain 2>/dev/null | head -n 1 | sed 's/^worktree //')" \
+  || { echo "preflight: cannot resolve repo root from \$SKILL_DIR=$SKILL_DIR" >&2; exit 1; }
 
 # Round 2+ fast path: an existing run dir's meta.json already pins this PR.
 META=""
