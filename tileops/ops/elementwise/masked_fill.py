@@ -119,18 +119,23 @@ class MaskedFillScalarFwdOp(Op):
     shape follows the bidirectional broadcast of ``input`` and ``mask``.
 
     The manifest declares the PyTorch dtype union (``bool | uint8 |
-    int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``). The
-    current TileLang kernel only supports float dtypes; integer and
-    bool dtypes are rejected at construction time with ``ValueError``
-    until a real int / bool kernel lands (tracked in a follow-up issue).
+    int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``); every
+    union member dispatches to a real kernel. The bool dtype path views
+    ``input`` as ``uint8`` before dispatch and the result as ``bool`` on
+    return, so the kernel itself only handles the integer and floating-
+    point storage dtypes.
 
     Args:
         input: Shape of the input tensor.
         mask: Shape of the mask tensor (bool).
         value: Scalar fill value (bool / int / float). Range-validated
-            against ``dtype``.
-        dtype: Torch dtype. Must be a kernel-supported floating-point
-            dtype.
+            against ``dtype`` with PyTorch ``Tensor.masked_fill``
+            coercion: bool reduces non-zero to ``True``; integer dtypes
+            range-check the real value against ``torch.iinfo`` and
+            truncate floats toward zero (``1.5 -> 1``); ``torch.uint8``
+            additionally wraps Python ints in ``[-255, 0)`` via two's
+            complement.
+        dtype: Torch dtype. Must be a manifest-declared dtype.
         kernel_map: Optional dispatch override mapping kernel keys to
             ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
@@ -147,9 +152,17 @@ class MaskedFillScalarFwdOp(Op):
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        # The kernel handles ints and fp16/bf16/fp32 directly. The bool
+        # dtype is supported here at the Op layer via uint8 storage view,
+        # since TileLang's bool tensor codegen is not vectorized; the
+        # user-facing contract still exposes ``torch.bool``.
         kernel_supported = MaskedFillFwdKernel.SUPPORTED_DTYPES
-        if kernel_supported is not None and dtype not in kernel_supported:
-            names = ", ".join(str(dt) for dt in kernel_supported)
+        if (
+            dtype != torch.bool
+            and kernel_supported is not None
+            and dtype not in kernel_supported
+        ):
+            names = ", ".join(str(dt) for dt in (torch.bool, *kernel_supported))
             raise ValueError(
                 f"{self._op_name} does not support dtype {dtype}. "
                 f"Supported: [{names}]"
@@ -168,9 +181,17 @@ class MaskedFillScalarFwdOp(Op):
         self._needs_broadcast = (
             self.input_shape != self.out_shape or self.mask_shape != self.out_shape
         )
-        _validate_scalar_param_repr("value", value, dtype, self._op_name)
+        _validate_scalar_param_repr(
+            "value", value, dtype, self._op_name, allow_nonfinite_float=True,
+        )
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["masked_fill"](self.N_total, dtype, value)
+        # Bool input path: the kernel runs in uint8 storage.
+        self._bool_storage = dtype == torch.bool
+        kernel_dtype = torch.uint8 if self._bool_storage else dtype
+        kernel_value = (1 if bool(value) else 0) if self._bool_storage else value
+        self.kernel = self.kernel_map["masked_fill"](
+            self.N_total, kernel_dtype, kernel_value,
+        )
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
@@ -187,9 +208,14 @@ class MaskedFillScalarFwdOp(Op):
     def _eager_forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:  # noqa: A002
         out_shape = self.out_shape if self.out_shape else (1,)
         x_flat = self._expand_flat(input, out_shape)
+        if self._bool_storage:
+            x_flat = x_flat.view(torch.uint8)
         mask_b = mask if mask.dtype == torch.bool else mask.bool()
         mask_flat = self._expand_flat(mask_b, out_shape).view(torch.uint8)
-        result = self.kernel(x_flat, mask_flat).view(self.out_shape if self.out_shape else ())
+        result = self.kernel(x_flat, mask_flat)
+        if self._bool_storage:
+            result = result.view(torch.bool)
+        result = result.view(self.out_shape if self.out_shape else ())
         return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:  # noqa: A002
