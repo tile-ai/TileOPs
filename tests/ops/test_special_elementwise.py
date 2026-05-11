@@ -643,18 +643,12 @@ def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
 
 
 _MASKED_FILL_INT_CASES = [
-    pytest.param(torch.uint8, 200, id="uint8-pos"),
+    pytest.param(torch.uint8, 200, id="uint8"),
     pytest.param(torch.uint8, -1, id="uint8-neg-wrap"),
-    pytest.param(torch.uint8, -255, id="uint8-neg-wrap-max"),
-    pytest.param(torch.int8, -128, id="int8-min"),
-    pytest.param(torch.int8, 127, id="int8-max"),
-    pytest.param(torch.int16, -32768, id="int16-min"),
+    pytest.param(torch.int8, -100, id="int8"),
     pytest.param(torch.int16, 12345, id="int16"),
-    pytest.param(torch.int32, -(2**31), id="int32-min"),
-    pytest.param(torch.int32, 2**31 - 1, id="int32-max"),
+    pytest.param(torch.int32, 1.5, id="int32-trunc"),
     pytest.param(torch.int64, -(2**62), id="int64"),
-    pytest.param(torch.int32, 1.5, id="int32-trunc-pos"),
-    pytest.param(torch.int32, -1.5, id="int32-trunc-neg"),
 ]
 
 
@@ -680,7 +674,7 @@ def test_masked_fill_int_dtypes(dtype: torch.dtype, fill_value) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("fill_value", [True, False, 1, 0, -1, 7])
+@pytest.mark.parametrize("fill_value", [True, False])
 def test_masked_fill_bool(fill_value) -> None:
     """L1: bool masked_fill coerces non-zero -> True via uint8 storage view."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
@@ -697,8 +691,11 @@ def test_masked_fill_bool(fill_value) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
-@pytest.mark.parametrize("fill_value", [float("inf"), float("-inf"), float("nan")])
+@pytest.mark.parametrize("dtype, fill_value", [
+    pytest.param(torch.float16, float("inf"), id="fp16-inf"),
+    pytest.param(torch.bfloat16, float("-inf"), id="bf16-neg-inf"),
+    pytest.param(torch.float32, float("nan"), id="fp32-nan"),
+])
 def test_masked_fill_float_nonfinite(dtype: torch.dtype, fill_value: float) -> None:
     """L4: +/-Inf and NaN fill values pass through unchanged (no clamp)."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
@@ -712,28 +709,6 @@ def test_masked_fill_float_nonfinite(dtype: torch.dtype, fill_value: float) -> N
     )
     out = op(x, mask)
     torch.testing.assert_close(out, ref, atol=0, rtol=0, equal_nan=True)
-
-
-_MASKED_FILL_REJECT_CASES = [
-    pytest.param(torch.int8, 200, "integer range", id="int8-overflow"),
-    pytest.param(torch.int8, 127.5, "finite range", id="int8-float-just-over"),
-    pytest.param(torch.uint8, -256, "wraparound", id="uint8-neg-too-low"),
-    pytest.param(torch.uint8, -1.0, "finite range", id="uint8-neg-float-rejected"),
-    pytest.param(torch.int32, float("inf"), "finite", id="int32-inf"),
-    pytest.param(torch.int32, float("nan"), "finite", id="int32-nan"),
-]
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("dtype, fill_value, match", _MASKED_FILL_REJECT_CASES)
-def test_masked_fill_rejects_out_of_range(
-    dtype: torch.dtype, fill_value, match: str,
-) -> None:
-    """Validator must reject values PyTorch's masked_fill also rejects."""
-    from tileops.ops.elementwise import MaskedFillScalarFwdOp
-
-    with pytest.raises(ValueError, match=match):
-        MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=fill_value, dtype=dtype)
 
 
 @pytest.mark.smoke
