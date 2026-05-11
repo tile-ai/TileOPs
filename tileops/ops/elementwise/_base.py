@@ -751,13 +751,21 @@ class BinaryOp(Op):
         self.a_numel = prod(a_shape)
         self.b_numel = prod(b_shape)
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            self.N_total, dtype, coalesced_shape, a_strides, b_strides,
-            self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+        self.kernel = self._build_kernel_instance(
+            coalesced_shape, a_strides, b_strides, strategy, tune,
         )
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
+
+    def _build_kernel_instance(
+        self, coalesced_shape, a_strides, b_strides, strategy, tune,
+    ):
+        """Construct the kernel. Subclasses override to inject extra kwargs."""
+        return self.kernel_map[self._op_name](
+            self.N_total, self.dtype, coalesced_shape, a_strides, b_strides,
+            self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1022,9 +1030,10 @@ class _AlphaScaledBinaryOp(BinaryOp):
 
     PyTorch ``torch.add(input, other, alpha=1)`` and ``torch.sub(input,
     other, alpha=1)`` scale ``other`` by ``alpha`` before the binary op.
-    The current kernel only honors the manifest-declared default
-    (``alpha == 1``); non-default ``alpha`` values raise
-    ``NotImplementedError`` until a kernel-side scalar multiplier lands.
+    ``alpha`` is baked into the kernel at construction time (one
+    specialization per distinct alpha value), so non-default alpha runs
+    through the same fast kernel as the default.
+
     The leading ``*`` makes ``alpha`` and the existing
     ``strategy`` / ``kernel_map`` / ``tune`` parameters keyword-only;
     only the positional triplet ``(a_shape, b_shape, dtype)`` is shared
@@ -1042,11 +1051,20 @@ class _AlphaScaledBinaryOp(BinaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        super().__init__(
-            a_shape, b_shape, dtype, strategy=strategy,
-            kernel_map=kernel_map, tune=tune,
-        )
         self.alpha = alpha
+        super().__init__(
+            a_shape, b_shape, dtype,
+            strategy=strategy, kernel_map=kernel_map, tune=tune,
+        )
+
+    def _build_kernel_instance(
+        self, coalesced_shape, a_strides, b_strides, strategy, tune,
+    ):
+        return self.kernel_map[self._op_name](
+            self.N_total, self.dtype, coalesced_shape, a_strides, b_strides,
+            self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+            alpha=self.alpha,
+        )
 
 
 class _BoolOutputBinaryOp(BinaryOp):
