@@ -80,3 +80,23 @@ BenchmarkBase[W] (benchmarks/)          # generic over workload type
 ```
 
 → Cross-refs: [architecture.md](architecture.md), [testing.md](testing.md)
+
+## Issue-authoring: declaring scope
+
+The trust model is enforced as a semantic review lens (see `.claude/review-checklists/pre-review.md`). The pipeline's write-scope gate reads the issue's `## Constraints` bullets to learn which stages the PR is allowed to touch. The author declares the shape; the reviewer judges semantic correctness against the stage contracts above. Together this catches same-agent fabrication of oracle + implementation at review time while letting honest cross-stage work proceed without syntactic blocks.
+
+| Work shape                 | Constraints bullet form                                                                                         | Result                                                |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Joint change across stages | Behavioral / compatibility / perf bullets only                                                                  | Pipeline permits any stage; reviewer applies the lens |
+| Single stage               | `Implementation-only PR.` (or `Test-only PR.`, etc.)                                                            | Pipeline confines the diff to that stage              |
+| Multiple stages, declared  | One bullet per stage: `Implementation-only PR for kernel widening.` + `Test-only PR for parametrize expansion.` | Pipeline permits the named stages' union              |
+
+Authoring rules:
+
+- A new behavior branch with no pre-existing test coverage uses the joint form. The reviewer's new-path-coverage criterion requires the test to land in the same PR.
+- Constraints body is always bulleted. Prose-only Constraints is unparsable input and Phase A treats it as a block.
+- Cite this document as a positive reference only. Pairing the citation with "separate PR" / "own PR" / "standalone PR" in one bullet declares that stage forbidden — use only when that is genuinely intended.
+
+When drafting from a brief description, Constraints defaults to one bullet stating the behavioral or compatibility expectation; insert `<stage>-only PR` only when the work is genuinely single-stage.
+
+→ Template and per-section structural rules: [.foundry/mold/body-sections.md](../../.foundry/mold/body-sections.md)
