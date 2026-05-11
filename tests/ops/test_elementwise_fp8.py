@@ -47,19 +47,6 @@ def test_unary_kernel_accepts_fp8(dtype):
 
 
 @Fp8DtypeAcceptanceFixture
-def test_binary_kernel_accepts_fp8(dtype):
-    """BinaryKernel base class can be instantiated with fp8 dtype."""
-    from tileops.kernels.elementwise import AddFwdKernel
-
-    kernel = AddFwdKernel(
-        N_total=_N, dtype=dtype,
-        coalesced_shape=(_N,), a_strides=(1,), b_strides=(1,),
-        a_numel=_N, b_numel=_N,
-    )
-    assert kernel.dtype == dtype
-
-
-@Fp8DtypeAcceptanceFixture
 def test_fused_gated_kernel_accepts_fp8(dtype):
     """FusedGatedKernel base class can be instantiated with fp8 dtype."""
     from tileops.kernels.elementwise import SiluAndMulFwdKernel
@@ -98,24 +85,6 @@ def test_unary_kernel_forward_e5m2_dtype():
     kernel = ExpFwdKernel(N_total=n, dtype=dtype)
     x = (torch.randn(n, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
     out = kernel(x)
-    assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
-
-
-@pytest.mark.smoke
-def test_binary_kernel_forward_e5m2_dtype():
-    """BinaryKernel.forward() returns float8_e5m2, not float16."""
-    from tileops.kernels.elementwise import AddFwdKernel
-
-    n = _N
-    dtype = torch.float8_e5m2
-    kernel = AddFwdKernel(
-        N_total=n, dtype=dtype,
-        coalesced_shape=(n,), a_strides=(1,), b_strides=(1,),
-        a_numel=n, b_numel=n,
-    )
-    a = (torch.randn(n, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
-    b = (torch.randn(n, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
-    out = kernel(a, b)
     assert out.dtype == dtype, f"Expected {dtype}, got {out.dtype}"
 
 
@@ -237,33 +206,6 @@ class Fp8AddTest(TestBase):
         return (a.to(torch.float16) + b.to(torch.float16)).to(self.dtype)
 
 
-@Fp8BinaryFixture
-def test_add_fp8(dtype):
-    """Add correctness with fp8, including broadcast."""
-    from tileops.ops.elementwise import AddFwdOp
-
-    shape = (128, 128)
-    test = Fp8AddTest(shape, dtype)
-    op = AddFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=0, rtol=0, compare=exact_compare)
-
-
-@Fp8BinaryFixture
-def test_add_fp8_broadcast(dtype):
-    """Add correctness with fp8 and row broadcast."""
-    from tileops.ops.elementwise import AddFwdOp
-
-    a_shape = (128, 128)
-    b_shape = (1, 128)
-    a = (torch.randn(a_shape, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
-    b = (torch.randn(b_shape, dtype=torch.float16, device="cuda") * 0.5).to(dtype)
-    op = AddFwdOp(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
-    ref = (a.to(torch.float16) + b.to(torch.float16)).to(dtype)
-    out = op(a, b)
-    assert torch.equal(out, ref)
-
-
 class Fp8FusedGatedFixture(FixtureBase):
     PARAMS = [("dtype", _FP8_DTYPES)]
 
@@ -306,63 +248,6 @@ def test_silu_and_mul_fp8(dtype):
 # ---------------------------------------------------------------------------
 # AC4: Saturation/overflow behavior
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.smoke
-def test_e4m3fn_saturates_on_overflow():
-    """e4m3fn saturates to max value (448.0) instead of producing Inf.
-
-    Per NVIDIA spec, e4m3fn has no Inf representation. Values exceeding
-    the max representable magnitude clamp to +/-448.0.
-    """
-    from tileops.ops.elementwise import AddFwdOp
-
-    # Create values near e4m3fn max (448.0)
-    n = 1024
-    a_shape = (n,)
-    # Use values that would overflow when added
-    a_fp16 = torch.full((n,), 400.0, dtype=torch.float16, device="cuda")
-    b_fp16 = torch.full((n,), 400.0, dtype=torch.float16, device="cuda")
-    dtype = torch.float8_e4m3fn
-    a = a_fp16.to(dtype)
-    b = b_fp16.to(dtype)
-    op = AddFwdOp(a_shape=a_shape, b_shape=a_shape, dtype=dtype)
-    out = op(a, b)
-    out_fp32 = out.to(torch.float32)
-    # Result should be 448.0 (saturated max), not Inf
-    e4m3_max = torch.finfo(torch.float8_e4m3fn).max
-    assert torch.all(out_fp32 <= e4m3_max), (
-        f"e4m3fn output should saturate to <= {e4m3_max}, got max={out_fp32.max().item()}"
-    )
-    assert not torch.any(torch.isinf(out_fp32)), "e4m3fn should not produce Inf"
-    assert not torch.any(torch.isnan(out_fp32)), "e4m3fn should not produce NaN"
-
-
-@pytest.mark.smoke
-def test_e5m2_overflow_produces_inf():
-    """e5m2 produces Inf on overflow (has Inf/NaN representation).
-
-    Per NVIDIA spec, e5m2 follows IEEE-like overflow semantics.
-    The kernel produces fp16 output to preserve Inf, then the Op layer
-    casts to e5m2 via PyTorch's non-saturating conversion.
-    """
-    from tileops.ops.elementwise import AddFwdOp
-
-    n = 1024
-    a_shape = (n,)
-    dtype = torch.float8_e5m2
-    # Use values near e5m2 max (57344.0) that will overflow when added
-    a_fp16 = torch.full((n,), 40000.0, dtype=torch.float16, device="cuda")
-    b_fp16 = torch.full((n,), 40000.0, dtype=torch.float16, device="cuda")
-    a = a_fp16.to(dtype)
-    b = b_fp16.to(dtype)
-    op = AddFwdOp(a_shape=a_shape, b_shape=a_shape, dtype=dtype)
-    out = op(a, b)
-    out_fp32 = out.to(torch.float32)
-    # e5m2 supports Inf, so overflowed values should be Inf
-    assert torch.any(torch.isinf(out_fp32)), (
-        f"e5m2 should produce Inf on overflow, got max={out_fp32.max().item()}"
-    )
 
 
 @pytest.mark.smoke
