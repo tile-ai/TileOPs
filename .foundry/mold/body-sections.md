@@ -1,8 +1,10 @@
 # Issue Body Sections
 
-## Required sections
+The template and rules here keep the trust model enforceable as a semantic review lens, not as a directory-level syntactic block. Constraints are authored to declare the work's actual cross-stage shape so the pipeline and the reviewer judge the same diff against the same intent.
 
-All five top-level sections must be present. Constraints content MUST be list items, not prose — the foundry write-scope gate fails closed on a prose-only Constraints section.
+## 1. Template
+
+Copy verbatim. Replace each `{...}`. Keep all five top-level sections.
 
 ```markdown
 ## Description
@@ -17,55 +19,56 @@ All five top-level sections must be present. Constraints content MUST be list it
 {key files, functions, or configs}
 
 ## Goal
-{concrete objective — must not be empty}
+{concrete objective}
 
 ## Plan
 <!-- type: {proposal | fixed} -->
 1. {at least one step}
 
 ## Constraints
-- {behavioral / compatibility constraints, bullet form}
+- {behavioral / compatibility / perf constraint, bullet form}
 
 ## Acceptance Criteria
 - [ ] Modified files pass unit tests
 - [ ] {additional criteria as needed}
 ```
 
-## Validation rules
+## 2. Per-section rules
 
-| Section             | Rule                                                         |
-| ------------------- | ------------------------------------------------------------ |
-| Description         | All three subsections present and non-empty                  |
-| Goal                | Non-empty                                                    |
-| Plan                | ≥1 step (`- ` or `1.`) + `<!-- type: -->` comment            |
-| Constraints         | ≥1 list item; prose-only body fails the write-scope gate     |
-| Acceptance Criteria | ≥1 checkbox; always include "Modified files pass unit tests" |
+| Section             | Required form                                                                                      |
+| ------------------- | -------------------------------------------------------------------------------------------------- |
+| Description         | Three subsections (`Symptom / Motivation`, `Root Cause Analysis`, `Related Files`), each non-empty |
+| Goal                | Non-empty single-paragraph objective                                                               |
+| Plan                | `<!-- type: proposal \| fixed -->` comment plus at least one step (`- ` or `1.`)                   |
+| Constraints         | At least one list item (`- `)                                                                      |
+| Acceptance Criteria | At least one checkbox, including `- [ ] Modified files pass unit tests`                            |
 
-## Write-scope declaration in Constraints
+## 3. Constraints declares cross-stage shape
 
-The write-scope gate (`foundry/scripts/check-write-scope.sh`) parses Constraints list items for three signal classes. Pick the one that matches the work — do not default to `<stage>-only PR` for joint impl+test changes.
+The pipeline reads Constraints bullets to learn which stages the PR is allowed to touch. The author declares the shape; the reviewer judges semantic correctness against `docs/design/trust-model.md`. Together this preserves the trust model — same-agent fabrication of oracle + impl is caught at review, while honest cross-stage work proceeds without syntactic blocks.
 
-| Intent                               | Constraints bullet form                                                                                                                          | Gate effect                                                                                                                                                       |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Joint change across stages (default) | Bullets state behavioral / compatibility / perf constraints. No `<stage>-only PR` phrasing. No `trust-model.md` anchor + "separate PR" phrasing. | `declared=[]`, gate inactive. Dev may touch any stage. Reviewer judges via review-lens (`docs/design/trust-model.md`, `.claude/review-checklists/pre-review.md`). |
-| Genuinely single-stage               | `Implementation-only PR.` (or `Test-only PR.`, etc.)                                                                                             | `declared=[<stage>]`. Dev's diff must stay in that stage.                                                                                                         |
-| Genuinely multi-stage by enumeration | Each stage on its own bullet: `Implementation-only PR for kernel widening.` + `Test-only PR for parametrize expansion.`                          | `declared=[impl, test]`. Dev free within that union.                                                                                                              |
+| Work shape                 | Constraints bullet                                                                                              | Result                                                |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Joint change across stages | Behavioral / compatibility / perf bullets only                                                                  | Pipeline permits any stage; reviewer applies the lens |
+| Single stage               | `Implementation-only PR.` (or `Test-only PR.`, etc.)                                                            | Pipeline confines the diff to that stage              |
+| Multiple stages, declared  | One bullet per stage: `Implementation-only PR for kernel widening.` + `Test-only PR for parametrize expansion.` | Pipeline permits the named stages' union              |
 
-### Anti-patterns
+Rules:
 
-- `Implementation-only PR.` on a PR that adds a new behavior branch with no pre-existing test coverage. Forces the dev into an unsatisfiable state: kernel-only diff fails reviewer's new-path-coverage criterion; joint diff fails the write-scope gate. Use the joint-change form instead.
-- Constraints body containing only prose (no `- ` bullets). Parses as zero list items → `policy=unclear_block` → Phase A FATAL.
-- Citing `docs/design/trust-model.md` together with "separate PR" / "own PR" / "standalone PR" in the same bullet. That combination marks the named stage as `forbidden`, even when the rest of the issue allows it.
+- A new behavior branch with no pre-existing test coverage uses the joint form. The reviewer's new-path-coverage criterion requires the test to land in the same PR.
+- Constraints body is always bulleted. Prose-only Constraints is unparsable input and Phase A treats it as a block.
+- `docs/design/trust-model.md` is cited only as a positive reference. Pairing the citation with "separate PR" / "own PR" / "standalone PR" in one bullet declares that stage forbidden — use only when that is genuinely intended.
 
-## Cross-references
+## 4. Defaults when drafting from a brief description
 
-- Review-side criteria: [.claude/review-checklists/pre-review.md](../../.claude/review-checklists/pre-review.md)
-- Trust-model semantics (review lens): [docs/design/trust-model.md](../../docs/design/trust-model.md)
-- Gate implementation: `foundry/scripts/check-write-scope.sh` + `foundry/conventions/scope-map.json`
+| Field               | Default                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Goal                | Extracted from the description                                                                                                 |
+| Plan                | `<!-- type: proposal -->`; steps inferred                                                                                      |
+| Constraints         | One bullet stating the behavioral or compatibility expectation. `<stage>-only PR` only when the work is genuinely single-stage |
+| Acceptance Criteria | `- [ ] Modified files pass unit tests`                                                                                         |
 
-## Defaults (when creating from brief description)
+## 5. Cross-references
 
-- Goal → extract from description
-- Plan → `proposal` type, infer steps
-- Constraints → one bullet stating the behavioral / compatibility expectation. Do not insert `<stage>-only PR` unless the work genuinely requires it.
-- Acceptance Criteria → "Modified files pass unit tests"
+- Reviewer-side criteria: [.claude/review-checklists/pre-review.md](../../.claude/review-checklists/pre-review.md)
+- Trust-model semantics: [docs/design/trust-model.md](../../docs/design/trust-model.md)
