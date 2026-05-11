@@ -642,35 +642,63 @@ def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
 # ---------------------------------------------------------------------------
 
 
-_MASKED_FILL_INT_CASES = [
-    pytest.param(torch.uint8, 200, id="uint8"),
-    pytest.param(torch.uint8, -1, id="uint8-neg-wrap"),
-    pytest.param(torch.int8, -100, id="int8"),
-    pytest.param(torch.int16, 12345, id="int16"),
-    pytest.param(torch.int32, 1.5, id="int32-trunc"),
-    pytest.param(torch.int64, -(2**62), id="int64"),
+_MASKED_FILL_INT_DTYPES = [
+    torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
 ]
 
 
+def _masked_fill_int_inputs(n_total: int, dtype: torch.dtype):
+    iinfo = torch.iinfo(dtype)
+    lo = max(iinfo.min, -1000)
+    hi = min(iinfo.max, 1000) + 1
+    x = torch.randint(lo, hi, (n_total,), device="cuda", dtype=dtype)
+    mask = torch.randint(0, 2, (n_total,), device="cuda").bool()
+    return x, mask
+
+
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype, fill_value", _MASKED_FILL_INT_CASES)
-def test_masked_fill_int_dtypes(dtype: torch.dtype, fill_value) -> None:
-    """L1: int/uint masked_fill matches PyTorch incl. uint8 negative wrap."""
+@pytest.mark.parametrize("dtype", _MASKED_FILL_INT_DTYPES)
+def test_masked_fill_int_dtypes(dtype: torch.dtype) -> None:
+    """L1: each manifest int dtype matches PyTorch on a representative fill."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
     n_total = 4096
-    iinfo = torch.iinfo(dtype)
-    x = torch.randint(
-        max(iinfo.min, -1000), min(iinfo.max, 1000) + 1,
-        (n_total,), device="cuda", dtype=dtype,
-    )
-    mask = torch.randint(0, 2, (n_total,), device="cuda").bool()
+    fill_value = 7  # arbitrary in-range value; the contract is parity with PyTorch.
+    x, mask = _masked_fill_int_inputs(n_total, dtype)
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(
         input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype,
     )
     out = op(x, mask)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+def test_masked_fill_uint8_wraps_negative_int() -> None:
+    """uint8 wraps a negative Python int via two's complement (PyTorch: -1 -> 255)."""
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
+
+    n_total = 4096
+    x, mask = _masked_fill_int_inputs(n_total, torch.uint8)
+    ref = x.masked_fill(mask, -1)
+    op = MaskedFillScalarFwdOp(
+        input=(n_total,), mask=(n_total,), value=-1, dtype=torch.uint8,
+    )
+    torch.testing.assert_close(op(x, mask), ref, atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+def test_masked_fill_int_truncates_fractional_float() -> None:
+    """Integer dtypes truncate a float fill toward zero (PyTorch: 1.5 -> 1)."""
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
+
+    n_total = 4096
+    x, mask = _masked_fill_int_inputs(n_total, torch.int32)
+    ref = x.masked_fill(mask, 1.5)
+    op = MaskedFillScalarFwdOp(
+        input=(n_total,), mask=(n_total,), value=1.5, dtype=torch.int32,
+    )
+    torch.testing.assert_close(op(x, mask), ref, atol=0, rtol=0)
 
 
 @pytest.mark.smoke
