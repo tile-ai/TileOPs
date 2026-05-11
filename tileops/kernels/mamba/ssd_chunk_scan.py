@@ -175,14 +175,15 @@ def _ssd_chunk_scan_fwd_kernel(
                     # hist_acc += c_tile @ state_tile
                     T.gemm(c_tile, state_tile, hist_acc)
 
-                # Load dA_l here, just before it's needed (avoids a sync before the N-loop)
-                dA_l = T.alloc_shared((block_l,), accum_dtype)
+                # Precompute exp(dA_l[ll]) once per l-tile.
+                # Used both to scale hist_acc and in Part 2 inner loop.
+                exp_dA_l = T.alloc_shared((block_l,), accum_dtype)
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
-                    dA_l[ll] = T.if_then_else(
+                    exp_dA_l[ll] = T.if_then_else(
                         l_abs < Q,
-                        dA_cumsum[bz, bh, bc, l_abs],
-                        T.float32(0.0),
+                        T.exp(dA_cumsum[bz, bh, bc, l_abs]),
+                        T.float32(1.0),
                     )
                 T.sync_threads()
 
@@ -191,21 +192,32 @@ def _ssd_chunk_scan_fwd_kernel(
                     l_abs = l0 + ll
                     p_abs = p0 + pp
                     if (l_abs < Q) and (p_abs < P):
-                        acc[ll, pp] += hist_acc[ll, pp] * T.exp(dA_l[ll])
+                        acc[ll, pp] += hist_acc[ll, pp] * exp_dA_l[ll]
 
                 # =====================================================
                 # PART 2: intra-chunk causal path
                 #   acc[l,p] += sum_{s<=l} cb[c,g,l,s]
                 #               * exp(dA_l[l] - dA_s[s]) * dt[h,c,s] * x[s,h,p]
+                #
+                # exp(dA_l[l] - dA_s[s]) = exp_dA_l[l] * exp(-dA_s[s])
+                # Factoring reduces MUFU from block_l*block_s to block_l+block_s
+                # per s-block (32x reduction at default block_l=block_s=64).
+                #
+                # s-blocks are split into two paths:
+                #   full-lower  (s0 + block_s <= l0): causal mask always true,
+                #               no predicate needed — eliminates branch divergence.
+                #   diagonal    (s0 <= l0 < s0 + block_s): mixed mask, guarded path.
+                # Upper-triangle blocks are skipped entirely by the loop bound.
                 # =====================================================
                 cb_tile  = T.alloc_shared((block_l, block_s), dtype)
                 x_tile   = T.alloc_shared((block_s, block_p), dtype)
-                dA_s     = T.alloc_shared((block_s,), accum_dtype)
-                dt_s     = T.alloc_shared((block_s,), accum_dtype)
-                lcb      = T.alloc_fragment((block_l, block_s), accum_dtype)
+                dA_s        = T.alloc_shared((block_s,), accum_dtype)
+                dt_s        = T.alloc_shared((block_s,), accum_dtype)
+                exp_neg_dA_s = T.alloc_shared((block_s,), accum_dtype)
                 lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
 
-                for s_blk in T.serial(T.ceildiv(Q, block_s)):
+                # Only iterate over s-blocks that have at least one s <= l_max.
+                for s_blk in T.serial(T.ceildiv(l0 + block_l, block_s)):
                     s0 = s_blk * block_s
 
                     # cb[b, c, g, l, s]  layout: [B, C, G, L, L]
@@ -229,6 +241,7 @@ def _ssd_chunk_scan_fwd_kernel(
                         )
 
                     # dA_cumsum[b,h,c,s] and dt[b,h,c,s]  layout: [B,H,C,L]
+                    # Also precompute exp(-dA_s[ss]) here to amortise MUFU cost.
                     for ss in T.Parallel(block_s):
                         s_abs = s0 + ss
                         dA_s[ss] = T.if_then_else(
@@ -241,23 +254,37 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
                             T.float32(0.0),
                         )
+                        exp_neg_dA_s[ss] = T.exp(-dA_s[ss])
                     T.sync_threads()
 
-                    # lcb[l,s] = cb[l,s] * exp(dA_l[l] - dA_s[s]) * dt[s]  if s<=l else 0
-                    for ll, ss in T.Parallel(block_l, block_s):
-                        l_abs = l0 + ll
-                        s_abs = s0 + ss
-                        valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
-                        lcb[ll, ss] = T.if_then_else(
-                            valid,
-                            T.cast(cb_tile[ll, ss], accum_dtype)
-                            * T.exp(dA_l[ll] - dA_s[ss])
-                            * dt_s[ss],
-                            T.float32(0.0),
-                        )
-
-                    # cast to dtype for gemm (both operands must share dtype)
-                    T.copy(lcb, lcb_cast)
+                    # full-lower path: s0 + block_s <= l0 means every (ll,ss) has
+                    # s_abs <= l_abs, so the causal mask is unconditionally true.
+                    if s0 + block_s <= l0:
+                        for ll, ss in T.Parallel(block_l, block_s):
+                            lcb_cast[ll, ss] = T.cast(
+                                T.cast(cb_tile[ll, ss], accum_dtype)
+                                * exp_dA_l[ll]
+                                * exp_neg_dA_s[ss]
+                                * dt_s[ss],
+                                dtype,
+                            )
+                    else:
+                        # diagonal path: mixed mask, guard each element
+                        for ll, ss in T.Parallel(block_l, block_s):
+                            l_abs = l0 + ll
+                            s_abs = s0 + ss
+                            valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
+                            lcb_cast[ll, ss] = T.if_then_else(
+                                valid,
+                                T.cast(
+                                    T.cast(cb_tile[ll, ss], accum_dtype)
+                                    * exp_dA_l[ll]
+                                    * exp_neg_dA_s[ss]
+                                    * dt_s[ss],
+                                    dtype,
+                                ),
+                                T.cast(T.float32(0.0), dtype),
+                            )
 
                     # acc += lcb_cast @ x_tile
                     T.gemm(lcb_cast, x_tile, acc)
