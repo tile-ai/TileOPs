@@ -1,14 +1,32 @@
-Common rules for every checklist in this folder. Load this file before any specific checklist.
+Common rules for every checklist in this folder. Load before any title-specific checklist.
 
-**Load `docs/design/trust-model.md` first.** It defines the layered trust boundaries (manifest → test (incl. `workloads/`) → implementation → benchmark) that every title-specific checklist enforces. Read it before any other checklist in this folder so cross-layer rules can be cited concretely rather than paraphrased.
+## Load order
 
-**Trust enforcement strictness by PR provenance.** The labels `automated`, `needs-review`, `nightshift` mark a PR as fully agent-driven. The set is closed: do not extend it with historical labels (e.g. `all-ai-powered`), project-local labels, or non-label heuristics (author identity, commit-message shape, branch name).
+1. `docs/design/trust-model.md` — stage contracts (`manifest → test → implementation → benchmark`).
+1. The title-specific checklist.
 
-- **Strict mode** — PR carries any of `automated` / `needs-review` / `nightshift`. Cross-layer touches forbidden by `docs/design/trust-model.md` are blockers; the reviewer rejects the PR with a rule citation rather than negotiating rationale.
-- **Principled mode** — PR carries none of those labels (human-authored). The same trust-model rules apply as a review lens: cross-layer touches surface as comments with rule citations, and the author's stated rationale is acceptance grounds (not bypass). Reviewer documents the rationale in the review thread.
+## Review lens
 
-When in doubt about which mode applies, default to principled mode.
+Apply trust-model rules as a review lens: surface cross-layer diffs as comments with a concrete citation; the author replies with rationale; the reviewer judges on content. Provenance labels (`automated` / `needs-review` / `nightshift`) record origin; review criteria apply uniformly.
 
-- **Open set, not exhaustive.** The items in each checklist are the floor; add PR-specific checks as needed.
-- **Concrete and decidable.** Every flag cites a concrete pointer — file:line, entry path, field name, parametrize axis, reference URL, test name, or the offending diff line. "Looks reasonable", "may want to verify", "consider revising", "could be clearer" do not qualify.
-- **Reviewer restraint.** Verify alignment with the existing reference, spec, or convention; do not propose new content beyond what fixes a flagged item.
+## Cross-layer review criteria
+
+| Criterion         | Pass                                                                              | Fail                                                                |
+| ----------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Oracle origin     | `ref_program` resolves to PyTorch / NumPy / closed-form / IEEE-754                | Agent-fabricated literal as expected value                          |
+| Coverage set      | Unchanged or strictly expanded; deletions target code paths the same diff removes | dtype / shape / sign cells removed with the code path still present |
+| New-path coverage | Every added behavior branch is exercised by at least one test                     | New branch lands with no test reaching it                           |
+
+Cite the failing criterion by name.
+
+## Comment quality
+
+| Rule             | Required form                                                                                                                                        |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Concrete pointer | `file:line`, entry path, field name, parametrize axis, ref URL, test name, or the offending diff line                                                |
+| Decidable claim  | A concrete claim about that pointer. Hedged forms ("looks reasonable", "may want to verify", "consider revising", "could be clearer") fail this rule |
+| Suggestion scope | Suggestions stay within fixes for flagged items                                                                                                      |
+
+## Scope
+
+Checklists are the floor. Add PR-specific checks when the diff warrants them.
