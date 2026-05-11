@@ -49,7 +49,6 @@ TILELANG_019_BENCH_PATHS = {
 }
 
 TILELANG_019_BENCH_PREFIXES = (
-    "benchmarks/ops/attention/bench_gqa.py::test_gqa_bwd_bench",
     "benchmarks/ops/bench_convolution.py::test_conv2d_bench",
     "benchmarks/ops/bench_convolution.py::test_conv3d_bench",
 )
