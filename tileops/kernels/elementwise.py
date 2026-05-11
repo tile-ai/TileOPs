@@ -221,21 +221,45 @@ def _get_fp8_output_dtypes(dtype: torch.dtype):
     return None, dtype
 
 
-def _clamp_to_dtype_range(value: float, dtype: torch.dtype) -> float:
-    """Clamp *value* to the finite representable range of *dtype*.
+def _clamp_to_dtype_range(value, dtype: torch.dtype):
+    """Normalize *value* into the storage representation of *dtype*.
 
-    Prevents TVM FloatImm range-check failures when a scalar literal exceeds
-    the target dtype's maximum (e.g. 1e4 into float8_e4m3fn whose max is 448).
-    NaN values are passed through unchanged (NaN is a valid sentinel, not an
-    out-of-range finite value).  Infinities are mapped to the dtype's
-    max/min finite value.
+    Mirrors PyTorch ``Tensor.masked_fill`` scalar coercion so the kernel
+    receives a literal that lands as the same bit pattern PyTorch would
+    write:
+
+    - bool: any non-zero coerces to ``1``, else ``0``.
+    - Signed int: truncate toward zero. The upstream validator
+      guarantees the value is in ``iinfo`` range; ``+/-Inf`` is mapped
+      to ``iinfo.max/min`` as defense-in-depth so a bypassed validator
+      cannot trigger ``OverflowError`` on ``int(inf)``.
+    - ``torch.uint8``: negatives in ``[-255, 0)`` wrap via
+      ``value & 0xFF`` (PyTorch ``masked_fill(mask, -1) -> 255``);
+      non-negatives truncate as for signed ints.
+    - ``fp16 / bf16 / fp32`` and ``fp8_e5m2`` (Inf-representable):
+      ``NaN`` and ``+/-Inf`` pass through; finite values clamp to
+      ``finfo``.
+    - ``fp8_e4m3fn`` (no Inf representation): ``+/-Inf`` saturates to
+      ``finfo.max/min`` to avoid a TVM ``FloatImm`` overflow.
     """
-    if math.isnan(value):
-        return value
+    if dtype == torch.bool:
+        return 1 if bool(value) else 0
+    if dtype in _BITWISE_DTYPES:
+        if isinstance(value, float) and math.isinf(value):
+            iinfo = torch.iinfo(dtype)
+            return iinfo.max if value > 0 else iinfo.min
+        if dtype == torch.uint8 and isinstance(value, int) and not isinstance(value, bool) and value < 0:
+            return value & 0xFF
+        return int(value)
+    fvalue = float(value)
+    if math.isnan(fvalue):
+        return fvalue
     finfo = torch.finfo(dtype)
-    if math.isinf(value):
-        return finfo.max if value > 0 else finfo.min
-    return max(finfo.min, min(finfo.max, float(value)))
+    if math.isinf(fvalue):
+        if dtype in _FP8_DTYPES and not _fp8_needs_nonsaturating_cast(dtype):
+            return finfo.max if fvalue > 0 else finfo.min
+        return fvalue
+    return max(finfo.min, min(finfo.max, fvalue))
 
 
 def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
@@ -3135,9 +3159,17 @@ def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
 
 
 class MaskedFillFwdKernel(ParametricUnaryKernel):
-    """MaskedFill: out = mask ? fill_value : x."""
+    """MaskedFill: out = mask ? fill_value : x.
+
+    Supports the PyTorch ``Tensor.masked_fill(mask, value: Number)`` dtype
+    union of integer and floating-point input dtypes. The bool dtype path
+    is handled at the Op layer by viewing the input as uint8 and casting
+    the result back to bool, so the kernel itself only sees integer and
+    floating-point storage dtypes.
+    """
 
     _DEFAULT_THREADS = 512
+    SUPPORTED_DTYPES = _BITWISE_DTYPES[1:] + _FLOAT_DTYPES  # uint8/intN + fp16/bf16/fp32
 
     def __init__(self, N_total, dtype, fill_value, config=None, tune=False):
         self._raw_fill_value = fill_value

@@ -48,8 +48,14 @@ def _effective_scalar_kernel_dtype(dtype: torch.dtype) -> torch.dtype:
     return _FP8_NONSAT_OUTPUT_DTYPES.get(dtype, dtype)
 
 
+_MANIFEST_INT_SCALAR_DTYPES = (
+    torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
+)
+
+
 def _validate_scalar_param_repr(
-    param_name: str, value: float, dtype: torch.dtype, op_name: str,
+    param_name: str, value, dtype: torch.dtype, op_name: str,
+    *, allow_nonfinite_float: bool = False,
 ) -> None:
     """Reject scalar params that cannot be represented in the user dtype.
 
@@ -59,15 +65,86 @@ def _validate_scalar_param_repr(
     only fits in fp16 would surface as ``+/-Inf`` after the final fp8
     post-cast. Validating against the user dtype keeps explicit
     replacements finite end-to-end.
+
+    Integer and bool ``dtype`` mirror PyTorch's ``Tensor.masked_fill``
+    coercion:
+
+    - bool accepts any int/float and reduces to ``{0, 1}``.
+    - Signed integer dtypes accept any int/float whose real value lies in
+      ``[iinfo.min, iinfo.max]``; floats are then truncated toward zero
+      (``1.5 -> 1``, ``-1.5 -> -1``). NaN/Inf and out-of-range values
+      raise, matching PyTorch.
+    - ``torch.uint8`` additionally accepts Python ints in
+      ``[-255, 255]``; negative ints wrap via ``value & 0xFF`` (PyTorch
+      ``Tensor.masked_fill(mask, -1) -> 255``). Float scalars must still
+      lie in ``[0, 255]`` (PyTorch rejects ``-1.0``).
+
+    Floating-point dtypes always accept ``NaN``; finite values must lie
+    in ``[finfo.min, finfo.max]``. ``+/-Inf`` is gated on
+    ``allow_nonfinite_float``:
+
+    - default (``False``): reject ``+/-Inf``. Used by ops whose scalar
+      must be finite (elu ``alpha``, softplus ``beta``, clamp bounds).
+    - opt-in (``True``): pass ``+/-Inf`` through. Used by
+      ``MaskedFillScalarFwdOp``, which writes the scalar directly into
+      tensor storage and must mirror PyTorch's Inf-preservation.
     """
+    if isinstance(value, bool):
+        # ``bool`` is a subclass of ``int``; treat explicitly so the int
+        # range checks below operate on the integer/float branch.
+        return
     if not isinstance(value, (int, float)):
         raise TypeError(f"{op_name} expected scalar {param_name} to be int/float, got {type(value)}")
+
+    if dtype == torch.bool:
+        return
+
+    if dtype in _MANIFEST_INT_SCALAR_DTYPES:
+        iinfo = torch.iinfo(dtype)
+        if isinstance(value, float):
+            if math.isnan(value) or math.isinf(value):
+                raise ValueError(
+                    f"{op_name} received {param_name}={value!r}, but {param_name} must be finite "
+                    f"and representable in dtype {dtype}"
+                )
+            # PyTorch range-checks the real float value, then truncates
+            # toward zero. Negative float scalars never wrap into uint8
+            # (``uint8.masked_fill(mask, -1.0)`` raises in PyTorch).
+            if not (iinfo.min <= value <= iinfo.max):
+                raise ValueError(
+                    f"{op_name} received {param_name}={value!r}, which is not representable in "
+                    f"dtype {dtype} (valid finite range: [{iinfo.min}, {iinfo.max}])"
+                )
+            return
+        # Python int branch. uint8 wraps negatives in [-255, 255] via
+        # two's complement, matching PyTorch.
+        if dtype == torch.uint8 and value < 0:
+            if value < -255:
+                raise ValueError(
+                    f"{op_name} received {param_name}={value!r}, which is not representable in "
+                    f"dtype {dtype} (valid integer range: [-255, 255] with wraparound, "
+                    f"or [0, 255] direct)"
+                )
+            return
+        if not (iinfo.min <= value <= iinfo.max):
+            raise ValueError(
+                f"{op_name} received {param_name}={value!r}, which is not representable in "
+                f"dtype {dtype} (valid integer range: [{iinfo.min}, {iinfo.max}])"
+            )
+        return
 
     finfo = torch.finfo(dtype)
     value_f64 = float(value)
     if math.isnan(value_f64):
         return
     if math.isinf(value_f64):
+        # PyTorch preserves +/-Inf for fp16/bf16/fp32 tensor scalars.
+        # Ops whose scalar must be finite (elu alpha, softplus beta,
+        # etc.) leave ``allow_nonfinite_float=False`` and reject here;
+        # masked_fill (writes the scalar directly into tensor storage)
+        # opts in via ``allow_nonfinite_float=True``.
+        if allow_nonfinite_float:
+            return
         raise ValueError(
             f"{op_name} received {param_name}={value!r}, but {param_name} must be finite and "
             f"representable in dtype {dtype}"
