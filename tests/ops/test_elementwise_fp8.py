@@ -75,22 +75,20 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
 
     import tileops.kernels.elementwise as ew
 
-    abstract = {
-        ew.Kernel, ew.BinaryKernel, ew.UnaryKernel, ew.FloatUnaryKernel,
-        ew.LogicalUnaryKernel, ew.FloatPredicateKernel,
-        ew.FusedGatedKernel, ew.ParametricUnaryKernel,
-        ew._AlphaScaledBinaryKernel,
-    }
     fp8_dtypes = set(ew._FP8_DTYPES)
-    roots = (ew.Kernel,)
     none_offenders = []
     type_offenders = []
     empty_offenders = []
     fp8_offenders = []
-    for _name, cls in inspect.getmembers(ew, inspect.isclass):
-        if cls in abstract:
+    # Audit every concrete kernel reachable from the elementwise module.
+    # Concrete kernels follow the ``<Op>FwdKernel`` / ``<Op>BwdKernel`` naming
+    # convention; abstract template bases (BinaryKernel, FloatUnaryKernel, etc.)
+    # do not. Filtering by suffix keeps this guard stable when new templates are
+    # introduced — no manual allowlist to maintain.
+    for cls_name, cls in inspect.getmembers(ew, inspect.isclass):
+        if not issubclass(cls, ew.Kernel):
             continue
-        if not any(issubclass(cls, b) for b in roots):
+        if not (cls_name.endswith("FwdKernel") or cls_name.endswith("BwdKernel")):
             continue
         supported = getattr(cls, "SUPPORTED_DTYPES", None)
         if supported is None:
@@ -203,16 +201,18 @@ def test_logical_unary_kernel_rejects_fp8():
 
 
 @pytest.mark.smoke
-def test_pow_kernel_rejects_bool():
-    """PowFwdKernel (float-only family) rejects bool inputs.
+def test_pow_kernel_rejects_bool_and_int():
+    """PowFwdKernel (float-only family) rejects both bool and int inputs.
 
     Companion sentinel to fp8 rejection: ``PowFwdKernel.SUPPORTED_DTYPES``
-    is ``_FLOAT_DTYPES``, so int/bool must also raise at the kernel layer.
+    is ``_FLOAT_DTYPES``, so int and bool must also raise at the kernel layer.
     """
     from tileops.kernels.elementwise import PowFwdKernel
 
     with pytest.raises(ValueError, match="only supports dtypes"):
         PowFwdKernel(**_binary_kwargs(torch.bool))
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        PowFwdKernel(**_binary_kwargs(torch.int32))
 
 
 @pytest.mark.smoke
