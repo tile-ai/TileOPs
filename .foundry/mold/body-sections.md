@@ -39,7 +39,7 @@ Copy verbatim. Replace each `{...}`. Keep all five top-level sections.
 | ------------------- | -------------------------------------------------------------------------------------------------- |
 | Description         | Three subsections (`Symptom / Motivation`, `Root Cause Analysis`, `Related Files`), each non-empty |
 | Goal                | Non-empty single-paragraph objective                                                               |
-| Plan                | `<!-- type: proposal \| fixed -->` comment plus at least one step (`- ` or `1.`)                   |
+| Plan                | `<!-- type: -->` comment (value `proposal` or `fixed`) plus at least one step (`- ` or `1.`)       |
 | Constraints         | At least one list item (`- `)                                                                      |
 | Acceptance Criteria | At least one checkbox, including `- [ ] Modified files pass unit tests`                            |
 
