@@ -47,7 +47,12 @@ output/
 output*/
 profile_out/
 tmp/
+.tmp/
 debug/
+
+# Local lock / scheduler state
+/.lock
+.claude/*.lock
 
 # Exception: keep the debug folder for tests
 !testing/python/debug
