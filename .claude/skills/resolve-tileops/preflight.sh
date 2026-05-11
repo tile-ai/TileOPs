@@ -24,11 +24,17 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Anchor state to the main checkout's `.foundry/runs/`, not cwd. When
 # invoked from a linked worktree (e.g. via foundry pipeline HANDOFF),
 # `--show-toplevel` returns the worktree path; using it would scatter
-# resolve state across worktrees. `git worktree list --porcelain 2>/dev/null`
-# always emits the main worktree first, so its leading entry is the
-# main checkout regardless of which worktree we run from.
-REPO_PATH="$(git -C "$SKILL_DIR" worktree list --porcelain 2>/dev/null | head -n 1 | sed 's/^worktree //')" \
+# resolve state across worktrees. `git rev-parse --git-common-dir`
+# returns the main worktree's `.git` directory regardless of which
+# worktree we run from; its parent is the main checkout. Single
+# command, no pipe — avoids SIGPIPE under `set -o pipefail`.
+GIT_COMMON_DIR="$(git -C "$SKILL_DIR" rev-parse --git-common-dir 2>/dev/null)" \
   || { echo "preflight: cannot resolve repo root from \$SKILL_DIR=$SKILL_DIR" >&2; exit 1; }
+# --git-common-dir is relative to the invoking worktree when that
+# worktree is the main one, absolute when invoked from a linked
+# worktree. Normalize to absolute, then take parent.
+[[ "$GIT_COMMON_DIR" != /* ]] && GIT_COMMON_DIR="$SKILL_DIR/$GIT_COMMON_DIR"
+REPO_PATH="$(cd "$GIT_COMMON_DIR/.." && pwd)"
 
 # Round 2+ fast path: an existing run dir's meta.json already pins this PR.
 META=""
