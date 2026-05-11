@@ -739,6 +739,39 @@ def test_masked_fill_float_nonfinite(dtype: torch.dtype, fill_value: float) -> N
     torch.testing.assert_close(out, ref, atol=0, rtol=0, equal_nan=True)
 
 
+_MASKED_FILL_REJECT_CASES = [
+    pytest.param(torch.int8, 200, id="signed-int-overflow"),
+    pytest.param(torch.int8, 127.5, id="signed-int-float-just-over"),
+    pytest.param(torch.uint8, -256, id="uint8-int-wrap-too-low"),
+    pytest.param(torch.uint8, -1.0, id="uint8-float-negative"),
+    pytest.param(torch.int32, float("inf"), id="int-inf"),
+    pytest.param(torch.int32, float("nan"), id="int-nan"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype, fill_value", _MASKED_FILL_REJECT_CASES)
+def test_masked_fill_rejects_when_pytorch_rejects(
+    dtype: torch.dtype, fill_value,
+) -> None:
+    """Op must reject every scalar that PyTorch's own masked_fill rejects.
+
+    The contract is parity, not the error message; assert both call sites
+    raise, leaving wording to the implementation.
+    """
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
+
+    pytorch_mask = torch.tensor([True], device="cuda")
+    pytorch_tensor = torch.zeros(1, device="cuda", dtype=dtype)
+    with pytest.raises(Exception):  # noqa: B017
+        pytorch_tensor.masked_fill(pytorch_mask, fill_value)
+
+    with pytest.raises(Exception):  # noqa: B017
+        MaskedFillScalarFwdOp(
+            input=(1024,), mask=(1024,), value=fill_value, dtype=dtype,
+        )
+
+
 @pytest.mark.smoke
 def test_elu_rejects_infinite_alpha() -> None:
     """EluFwdOp must reject infinite alpha."""
