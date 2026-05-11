@@ -26,7 +26,7 @@ Copy verbatim. Replace each `{...}`. Keep all five top-level sections.
 1. {at least one step}
 
 ## Constraints
-- {behavioral / compatibility / perf constraint, bullet form}
+- {one bullet per constraint or scope declaration — see trust-model.md §Issue-authoring for the three work-shape forms}
 
 ## Acceptance Criteria
 - [ ] Modified files pass unit tests
