@@ -1,21 +1,34 @@
-Common rules for every checklist in this folder. Load this file before any specific checklist.
+Common rules for every checklist in this folder. Load before any title-specific checklist.
 
-**Load `docs/design/trust-model.md` first.** It defines the layered trust boundaries (manifest → test (incl. `workloads/`) → implementation → benchmark) that every title-specific checklist enforces. Read it before any other checklist in this folder so cross-layer rules can be cited concretely rather than paraphrased.
+## Load order
 
-**Trust-model rules apply uniformly as a review lens.** Cross-layer touches surface as review comments with concrete citation (file:line, parametrize axis, rule pointer). The author responds with rationale; the reviewer judges on content. There is no auto-reject path keyed on directory layout.
+1. `docs/design/trust-model.md` — defines `manifest → test → implementation → benchmark` boundaries.
+1. The title-specific checklist.
 
-The labels `automated`, `needs-review`, `nightshift` mark PR provenance (fully agent-driven). They do not change rule semantics — the same review criteria apply regardless of label set.
+## Trust-model is a review lens, not an auto-reject
 
-Substantive criteria the reviewer cites when a cross-layer diff appears:
+Cross-layer diffs do not auto-reject on directory layout. Surface them as review comments with a concrete citation; the author replies with rationale; judge on content.
 
-- **Oracle origin** — `ref_program` resolves to external authority (PyTorch / NumPy / closed-form / IEEE-754), not an agent-fabricated literal.
+Provenance labels `automated`, `needs-review`, `nightshift` mark origin only. Rule semantics are identical across labels.
 
-- **Coverage set** — not narrowed; deletions only target code paths that no longer exist.
+## Cross-layer review criteria
 
-- **New-path coverage** — any added behavior branch is exercised by at least one test.
+| Criterion         | Pass                                                                             | Fail                                                                         |
+| ----------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Oracle origin     | `ref_program` resolves to PyTorch / NumPy / closed-form / IEEE-754               | Agent-fabricated literal as expected value                                   |
+| Coverage set      | Unchanged or strictly expanded; deletions target code paths that no longer exist | dtype / shape / sign cells removed without a corresponding code-path removal |
+| New-path coverage | Every added behavior branch is exercised by at least one test                    | New branch lands with no test reaching it                                    |
 
-- **Open set, not exhaustive.** The items in each checklist are the floor; add PR-specific checks as needed.
+Cite the failing criterion by name in the comment.
 
-- **Concrete and decidable.** Every flag cites a concrete pointer — file:line, entry path, field name, parametrize axis, reference URL, test name, or the offending diff line. "Looks reasonable", "may want to verify", "consider revising", "could be clearer" do not qualify.
+## Comment quality
 
-- **Reviewer restraint.** Verify alignment with the existing reference, spec, or convention; do not propose new content beyond what fixes a flagged item.
+| Rule               | Required form                                                                                                      |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| Concrete pointer   | `file:line`, entry path, field name, parametrize axis, ref URL, test name, or the offending diff line              |
+| No hedging         | Reject "looks reasonable", "may want to verify", "consider revising", "could be clearer"                           |
+| Reviewer restraint | Verify against existing reference / spec / convention. Do not propose new content beyond what fixes a flagged item |
+
+## Scope
+
+Checklists are the floor. Add PR-specific checks when warranted.
