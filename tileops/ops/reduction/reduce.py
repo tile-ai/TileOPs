@@ -1,7 +1,8 @@
 """Reduce ops: SumFwdOp, MeanFwdOp, AminFwdOp, AmaxFwdOp, ProdFwdOp, StdFwdOp, VarFwdOp, VarMeanFwdOp.
 
 Each op reduces along the configured ``dim`` and supports arbitrary-rank input.
-The ``dim`` parameter accepts ``int`` or ``list[int]`` for multi-dim reduction.
+The ``dim`` parameter accepts ``int``, ``list[int]``, or ``tuple[int, ...]``
+for multi-dim reduction.
 The Op layer validates inputs, reshapes to 2D (M, N), and calls the kernel.
 For simple, Welford, logical reduce, and vector norm ops, alignment padding is
 handled inside the kernel via masked loads with identity-element fills,
@@ -75,7 +76,7 @@ class _ReduceOpBase(Op):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = None,
+        dim: Union[int, List[int], Tuple[int, ...], None] = None,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -85,7 +86,8 @@ class _ReduceOpBase(Op):
         Args:
             dtype: Input data type.
             dim: Reduction dimension (default ``None``, i.e. full reduction).
-                Accepts ``int``, ``list[int]``, or ``None``.
+                Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
+                ``None``.
             keepdim: Whether to retain reduced dims as size 1.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
@@ -120,7 +122,8 @@ class _ReduceOpBase(Op):
                 )
             return
         raise TypeError(
-            f"dim must be int, list[int], or None, got {type(dim).__name__}"
+            f"dim must be int, list[int], tuple[int, ...], or None, "
+            f"got {type(dim).__name__}"
         )
 
     @property
@@ -196,6 +199,19 @@ class _ReduceOpBase(Op):
         """
         return None
 
+    def _validate_input_tensor(self, x: torch.Tensor) -> None:
+        """Validate device, dtype, and rank of the forward input.
+
+        Shared by ``_prepare_input`` and the ``dim=[]`` noop short-circuit
+        so both paths enforce the same forward contract.
+        """
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.ndim == 0:
+            raise ValueError("Input tensor must be at least 1D")
+
     def _maybe_noop(self, x: torch.Tensor) -> Optional[torch.Tensor]:
         """Return *x* (cast to the manifest output dtype) when ``dim`` is
         an empty list/tuple and the op's ``_empty_dim_policy`` is
@@ -211,14 +227,7 @@ class _ReduceOpBase(Op):
             return None
         if not isinstance(self.dim, (list, tuple)) or len(self.dim) != 0:
             return None
-        # Input validation -- mirrors _prepare_input so dim=[] cannot
-        # bypass the contract.
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.ndim == 0:
-            raise ValueError("Input tensor must be at least 1D")
+        self._validate_input_tensor(x)
         # Bind roofline state. No reduction happens, so model the cost as
         # touching every element with zero reduction work: M = numel,
         # N = 0 -> flops 0, mem_bytes = M for op_kinds that add an output
@@ -308,12 +317,7 @@ class _ReduceOpBase(Op):
         via masked loads.  Otherwise, host-side ``F.pad`` is applied for
         backward compatibility with kernels that expect ``(M, N_padded)``.
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.ndim == 0:
-            raise ValueError("Input tensor must be at least 1D")
+        self._validate_input_tensor(x)
 
         orig_shape = x.shape
 
@@ -407,7 +411,8 @@ class _SimpleReduceOp(_ReduceOpBase):
     Args:
         dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default ``None``, i.e. full reduction).
-            Accepts ``int`` or ``list[int]`` for multi-dim reduction.
+            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
+            multi-dim reduction.
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
@@ -457,7 +462,7 @@ class ProdFwdOp(_SimpleReduceOp):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = -1,
+        dim: Union[int, List[int], Tuple[int, ...], None] = -1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -467,7 +472,7 @@ class ProdFwdOp(_SimpleReduceOp):
         Args:
             dtype: Input data type.
             dim: Reduction dimension (default ``-1``). Accepts ``int``,
-                ``list[int]``, or ``None``.
+                ``list[int]``, ``tuple[int, ...]``, or ``None``.
             keepdim: Whether to retain reduced dims as size 1.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
@@ -496,7 +501,8 @@ class _WelfordReduceOp(_ReduceOpBase):
     Args:
         dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default ``None``, i.e. full reduction).
-            Accepts ``int`` or ``list[int]`` for multi-dim reduction.
+            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
+            multi-dim reduction.
         correction: Bessel's correction (default 1).
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional override for kernel dispatch.
@@ -510,7 +516,7 @@ class _WelfordReduceOp(_ReduceOpBase):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = None,
+        dim: Union[int, List[int], Tuple[int, ...], None] = None,
         correction: int = 1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -521,7 +527,8 @@ class _WelfordReduceOp(_ReduceOpBase):
         Args:
             dtype: Input data type.
             dim: Reduction dimension (default ``None``, i.e. full reduction).
-                Accepts ``int``, ``list[int]``, or ``None``.
+                Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
+                ``None``.
             correction: Bessel's correction (default 1).
             keepdim: Whether to retain reduced dims as size 1.
             kernel_map: Optional override for kernel dispatch.

@@ -51,7 +51,8 @@ class AllFwdOp(_ReduceOpBase):
         dtype: Input data type (float16, bfloat16, float32, int32, int64,
                bool, complex64, complex128).
         dim: Reduction dimension (default ``None``, i.e. full reduction).
-            Accepts ``int`` or ``list[int]`` for multi-dim reduction.
+            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
+            multi-dim reduction.
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
@@ -67,7 +68,7 @@ class AllFwdOp(_ReduceOpBase):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = None,
+        dim: Union[int, List[int], Tuple[int, ...], None] = None,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -77,6 +78,8 @@ class AllFwdOp(_ReduceOpBase):
         Args:
             dtype: Input data type.
             dim: Reduction dimension (default ``None``, i.e. full reduction).
+                Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
+                ``None``.
             keepdim: Whether to retain reduced dims as size 1.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
