@@ -513,6 +513,10 @@ python scripts/validate_manifest.py
 python scripts/validate_manifest.py --check-op SoftmaxFwdOp
 ```
 
+### Generative-op carve-out
+
+An op whose `ref_api` is `"none"` AND whose `forward()` takes zero positional args is a **generative op**: its output is synthesized from construction-time params alone, with no semantic tensor argument. L1 and C4 skip the `signature.inputs` vs `forward()` positional-name alignment for such entries. The manifest still carries `>= 1` entry under `signature.inputs` (a carrier scalar) to satisfy `test_every_signature_has_inputs_and_outputs`; the carrier's `dtype` is the channel for `same_as(...)` on the output. ALiBi and sinusoidal position encodings are the current cases.
+
 ## Exclusions
 
 The manifest does NOT describe: multi-kernel execution ordering, accumulator dtypes, persistent state, tile sizes, or autotuning config.
