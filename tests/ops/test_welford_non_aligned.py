@@ -201,7 +201,7 @@ def test_var_non_aligned(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
     test = WelfordNonAlignedTest((m, n), dtype, "var", correction=1)
-    op = VarFwdOp(dtype=dtype)
+    op = VarFwdOp(dim=-1, dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -216,7 +216,7 @@ def test_std_non_aligned(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import StdFwdOp
 
     test = WelfordNonAlignedTest((m, n), dtype, "std", correction=1)
-    op = StdFwdOp(dtype=dtype)
+    op = StdFwdOp(dim=-1, dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -231,7 +231,7 @@ def test_var_mean_non_aligned(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
     test = WelfordNonAlignedTest((m, n), dtype, "var_mean", correction=1)
-    op = VarMeanFwdOp(dtype=dtype)
+    op = VarMeanFwdOp(dim=-1, dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -246,7 +246,7 @@ def test_var_3d_non_aligned(batch: int, seq: int, hidden: int, dtype: torch.dtyp
     from tileops.ops.reduction.reduce import VarFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = VarFwdOp(dtype=dtype)
+    op = VarFwdOp(dim=-1, dtype=dtype)
     ref = x.float().var(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -259,7 +259,7 @@ def test_std_3d_non_aligned(batch: int, seq: int, hidden: int, dtype: torch.dtyp
     from tileops.ops.reduction.reduce import StdFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = StdFwdOp(dtype=dtype)
+    op = StdFwdOp(dim=-1, dtype=dtype)
     ref = x.float().std(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -272,7 +272,7 @@ def test_var_mean_3d_non_aligned(batch: int, seq: int, hidden: int, dtype: torch
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = VarMeanFwdOp(dtype=dtype, correction=1)
+    op = VarMeanFwdOp(dim=-1, dtype=dtype, correction=1)
     ref_var = x.float().var(dim=-1, correction=1).to(dtype)
     ref_mean = x.float().mean(dim=-1).to(dtype)
     var_out, mean_out = op(x)
