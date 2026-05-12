@@ -151,24 +151,15 @@ def test_amin_dim_none(
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
 
-@DimNoneFixture
-def test_prod_dim_none(
-    shape: tuple, keepdim: bool, dtype: torch.dtype,
-) -> None:
+@pytest.mark.smoke
+def test_prod_dim_none_rejected() -> None:
+    """ProdFwdOp narrows ``dim`` to ``int`` per its manifest signature, so
+    ``dim=None`` (the full-reduction overload offered by the base) is
+    rejected at construction time."""
     from tileops.ops.reduction.reduce import ProdFwdOp
 
-    # Use small uniform values to avoid overflow/underflow in prod
-    x = torch.rand(*shape, dtype=dtype, device="cuda") * 0.5 + 0.75
-    op = ProdFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
-    # PyTorch prod: reduce all dims manually (prod doesn't accept list[int])
-    ref = x.float()
-    for d in sorted(_all_dims(shape), reverse=True):
-        ref = torch.prod(ref, dim=d, keepdim=keepdim)
-    ref = ref.to(dtype)
-    y = op(x)
-    tol = _tol(dtype)
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    with pytest.raises(TypeError, match="ProdFwdOp.dim must be int"):
+        ProdFwdOp(dtype=torch.float16, dim=None)
 
 
 # ---------------------------------------------------------------------------
