@@ -539,6 +539,7 @@ def check_l1_signature(
     *,
     init_params: list[str] | None = None,
     manifest_static_dims: dict | None = None,
+    is_generative: bool = False,
 ) -> list[str]:
     """Check that forward() params match manifest inputs + params.
 
@@ -555,6 +556,14 @@ def check_l1_signature(
         init_params: List of parameter names from Op.__init__() (excluding 'self').
             When None, treated as empty (only forward is checked).
         manifest_static_dims: The signature.static_dims dict from manifest (may be None).
+        is_generative: When True, skip the forward()-order check against
+            ``manifest_inputs``. Set by ``check_l1`` for entries whose
+            ``ref_api`` is ``"none"`` and whose ``forward()`` takes zero
+            positional args — i.e. generative ops whose manifest inputs
+            are carriers (device/dtype scalars) rather than semantic
+            tensors, kept only because
+            ``tests/test_ops_manifest.py::test_every_signature_has_inputs_and_outputs``
+            requires ``len(signature.inputs) >= 1``.
 
     Returns:
         List of error strings (empty if OK).
@@ -572,15 +581,19 @@ def check_l1_signature(
     if init_params is None:
         init_params = []
 
-    # 1. forward() order check: manifest inputs + forward-visible params, in order
-    expected = list(manifest_inputs.keys()) + [
-        name for name in manifest_params.keys() if name in forward_params
-    ]
-    if forward_params != expected:
-        errors.append(
-            f"[signature] {op_name}: forward() params {forward_params} do not match "
-            f"manifest order {expected}"
-        )
+    # 1. forward() order check: manifest inputs + forward-visible params, in order.
+    # Generative-op carve-out: when ``is_generative`` is True the manifest
+    # inputs are carriers, not arguments threaded through ``forward()``, so
+    # there is no order to enforce.
+    if not is_generative:
+        expected = list(manifest_inputs.keys()) + [
+            name for name in manifest_params.keys() if name in forward_params
+        ]
+        if forward_params != expected:
+            errors.append(
+                f"[signature] {op_name}: forward() params {forward_params} do not match "
+                f"manifest order {expected}"
+            )
 
     # 2. Strict subset check: every manifest param must exist in init OR forward
     code_params = set(forward_params) | set(init_params)
@@ -789,10 +802,20 @@ def check_l1(
     manifest_static_dims = sig.get("static_dims")
     init_params = _get_init_params(result.cls)
 
+    # Generative-op detection: ``ref_api: "none"`` + zero-arg ``forward()``
+    # signals a kernel that synthesizes its output from construction-time
+    # params alone (e.g. ALiBi/Sinusoidal position encodings). The manifest
+    # still carries >= 1 entry under ``signature.inputs`` to satisfy
+    # ``tests/test_ops_manifest.py::test_every_signature_has_inputs_and_outputs``;
+    # under this carve-out the forward()-order check is skipped because
+    # those manifest "inputs" are carriers, not semantic tensor arguments.
+    is_generative = entry.get("ref_api") == "none" and not forward_params
+
     return check_l1_signature(
         op_name, manifest_inputs, manifest_params, forward_params,
         init_params=init_params,
         manifest_static_dims=manifest_static_dims,
+        is_generative=is_generative,
     )
 
 
@@ -3332,6 +3355,15 @@ def check_c4_forward_signature_parity(
         ):
             continue
         positional.append(pname)
+
+    # Generative-op carve-out: ``ref_api: "none"`` plus zero forward()
+    # positional args signals a kernel that synthesizes its output from
+    # construction-time params alone. Its manifest inputs are carriers
+    # kept to satisfy
+    # ``tests/test_ops_manifest.py::test_every_signature_has_inputs_and_outputs``;
+    # there is no positional argument to align against them.
+    if entry.get("ref_api") == "none" and not positional:
+        return errors
 
     actual_prefix = positional[: len(expected)]
     if actual_prefix != expected:
