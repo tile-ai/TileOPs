@@ -75,11 +75,21 @@ class _ReduceOpBase(Op):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = -1,
+        dim: Union[int, List[int], None] = None,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Construct a reduce op.
+
+        Args:
+            dtype: Input data type.
+            dim: Reduction dimension (default ``None``, i.e. full reduction).
+                Accepts ``int``, ``list[int]``, or ``None``.
+            keepdim: Whether to retain reduced dims as size 1.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default ``False``).
+        """
         self.dtype = dtype
         self.dim = dim
         self.keepdim = keepdim
@@ -164,11 +174,42 @@ class _ReduceOpBase(Op):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the reduce op on *x* along the configured dim."""
+        noop_out = self._maybe_noop(x)
+        if noop_out is not None:
+            return noop_out
         x, orig_shape, dim_info, kernel = self._prepare_input(x)
         x, ctx = self._pre_kernel(x)
         y = kernel(x)
         y = self._post_kernel(y, ctx)
         return self._reshape_output(y, orig_shape, dim_info)
+
+    # ------------------------------------------------------------------
+    # Empty-dim no-op short-circuit
+    # ------------------------------------------------------------------
+
+    def _noop_output_dtype(self) -> Optional[torch.dtype]:
+        """Manifest-declared output dtype for the no-op short-circuit.
+
+        Subclasses with a fixed output dtype (e.g. All/Any -> bool) MUST
+        override so the short-circuit honors the manifest contract. The
+        default ``None`` means "preserve input dtype".
+        """
+        return None
+
+    def _maybe_noop(self, x: torch.Tensor) -> Optional[torch.Tensor]:
+        """Return *x* (cast to the manifest output dtype) when ``dim`` is
+        an empty list/tuple and the op's ``_empty_dim_policy`` is
+        ``"noop"``; return ``None`` otherwise so the caller proceeds with
+        the normal kernel path.
+        """
+        if self._empty_dim_policy != "noop":
+            return None
+        if not isinstance(self.dim, (list, tuple)) or len(self.dim) != 0:
+            return None
+        out_dtype = self._noop_output_dtype()
+        if out_dtype is None:
+            return x
+        return x.to(out_dtype)
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_mn is None:
@@ -338,7 +379,7 @@ class _ReduceOpBase(Op):
 class _SimpleReduceOp(_ReduceOpBase):
     """Base for single-output reduce ops (sum, mean, amin, amax, prod).
 
-    Construction: ``op(dtype=..., dim=-1, keepdim=False)``.  M and N are
+    Construction: ``op(dtype=..., dim=None, keepdim=False)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 
@@ -347,8 +388,8 @@ class _SimpleReduceOp(_ReduceOpBase):
 
     Args:
         dtype: Data type (float32, float16, or bfloat16).
-        dim: Reduction dimension (default -1).  Accepts ``int`` or
-            ``list[int]`` for multi-dim reduction.
+        dim: Reduction dimension (default ``None``, i.e. full reduction).
+            Accepts ``int`` or ``list[int]`` for multi-dim reduction.
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
@@ -386,9 +427,37 @@ class AmaxFwdOp(_SimpleReduceOp):
 
 
 class ProdFwdOp(_SimpleReduceOp):
-    """Product reduction along dim=-1."""
+    """Product reduction.
+
+    Unlike the other simple reduce ops, ``ProdFwdOp`` defaults to
+    ``dim=-1`` (manifest declares ``default: -1`` for ``prod``).
+    """
 
     _op_kind = "prod"
+
+    def __init__(
+        self,
+        *,
+        dtype: torch.dtype,
+        dim: Union[int, List[int], None] = -1,
+        keepdim: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        """Construct ProdFwdOp.
+
+        Args:
+            dtype: Input data type.
+            dim: Reduction dimension (default ``-1``). Accepts ``int``,
+                ``list[int]``, or ``None``.
+            keepdim: Whether to retain reduced dims as size 1.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default ``False``).
+        """
+        super().__init__(
+            dtype=dtype, dim=dim, keepdim=keepdim,
+            kernel_map=kernel_map, tune=tune,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +468,7 @@ class ProdFwdOp(_SimpleReduceOp):
 class _WelfordReduceOp(_ReduceOpBase):
     """Base for Welford-based reduce ops (std, var, var_mean).
 
-    Construction: ``op(dtype=..., dim=-1, correction=1, keepdim=False)``.
+    Construction: ``op(dtype=..., dim=None, correction=1, keepdim=False)``.
     M and N are derived from the input tensor at forward time, and kernels
     are cached by ``(M, N)`` to avoid rebuilds.
 
@@ -408,8 +477,8 @@ class _WelfordReduceOp(_ReduceOpBase):
 
     Args:
         dtype: Data type (float32, float16, or bfloat16).
-        dim: Reduction dimension (default -1).  Accepts ``int`` or
-            ``list[int]`` for multi-dim reduction.
+        dim: Reduction dimension (default ``None``, i.e. full reduction).
+            Accepts ``int`` or ``list[int]`` for multi-dim reduction.
         correction: Bessel's correction (default 1).
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional override for kernel dispatch.
@@ -423,12 +492,23 @@ class _WelfordReduceOp(_ReduceOpBase):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = -1,
+        dim: Union[int, List[int], None] = None,
         correction: int = 1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Construct a Welford-based reduce op.
+
+        Args:
+            dtype: Input data type.
+            dim: Reduction dimension (default ``None``, i.e. full reduction).
+                Accepts ``int``, ``list[int]``, or ``None``.
+            correction: Bessel's correction (default 1).
+            keepdim: Whether to retain reduced dims as size 1.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default ``False``).
+        """
         self.correction = correction
         super().__init__(
             dtype=dtype, dim=dim, keepdim=keepdim,
