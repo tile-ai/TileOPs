@@ -2,7 +2,9 @@
 
 Each op reduces along the configured ``dim`` and supports arbitrary-rank input.
 The ``dim`` parameter accepts ``int``, ``list[int]``, or ``tuple[int, ...]``
-for multi-dim reduction.
+for multi-dim reduction. Constructor ``dim`` defaults to ``None`` (full
+reduction) for the ten ops whose manifest declares ``default: null``;
+``ProdFwdOp`` preserves ``dim=-1``.
 The Op layer validates inputs, reshapes to 2D (M, N), and calls the kernel.
 For simple, Welford, logical reduce, and vector norm ops, alignment padding is
 handled inside the kernel via masked loads with identity-element fills,
@@ -230,9 +232,11 @@ class _ReduceOpBase(Op):
         self._validate_input_tensor(x)
         # Bind roofline state. The noop performs no reduction but still
         # reads every input element and writes an equal-shape result
-        # (cast to bool for All/Any/CountNonzero, identity for Sum-style
-        # ops). Model this as a degenerate reduction over an axis of
-        # length 1: M = numel, N = 1. Under the existing per-op-kind
+        # (cast to bool for All/Any, the only ops whose ``_empty_dim_policy``
+        # is ``"noop"``; other reduce ops, including ``CountNonzero``, keep
+        # ``"full"`` and never enter this branch). Model this as a
+        # degenerate reduction over an axis of length 1: M = numel, N = 1.
+        # Under the existing per-op-kind
         # formulas this yields mem_bytes proportional to numel * elem_bytes
         # for the read plus the output term, instead of collapsing to
         # zero, which would under-count the actual data-movement cost.
@@ -475,8 +479,7 @@ class ProdFwdOp(_SimpleReduceOp):
 
         Args:
             dtype: Input data type.
-            dim: Reduction dimension (default ``-1``). Accepts ``int``,
-                ``list[int]``, ``tuple[int, ...]``, or ``None``.
+            dim (int): reduction dimension (default ``-1``).
             keepdim: Whether to retain reduced dims as size 1.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
