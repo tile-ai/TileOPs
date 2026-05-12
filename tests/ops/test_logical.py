@@ -186,5 +186,114 @@ def test_logical_not(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=exact_compare)
 
 
+# ---------------------------------------------------------------------------
+# Per-dtype correctness across the manifest dtype union for binary logical
+# ops. The manifest declares
+# ``bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``
+# for both LogicalAndFwdOp and LogicalOrFwdOp; the float path is covered
+# above. The int / bool cells exercise the kernel's non-zero truthiness
+# path on every manifest-declared integral dtype.
+# ---------------------------------------------------------------------------
+
+_INT_DTYPES = [torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64]
+_LOGICAL_OP_CASES = [
+    (LogicalAndFwdOp, torch.logical_and),
+    (LogicalOrFwdOp, torch.logical_or),
+]
+
+
+def _gen_int_logical_inputs(
+    n: int, dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Generate int inputs sprinkled with zeros to exercise both truthy
+    and falsy lanes of the non-zero truthiness path.
+    """
+    if dtype == torch.uint8:
+        lo, hi = 0, 8
+    elif dtype == torch.int8:
+        lo, hi = -8, 8
+    else:
+        lo, hi = -32, 32
+    a = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
+    b = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
+    # Force a mix of zeros so non-zero truthiness is non-trivial.
+    a[::3] = 0
+    b[::5] = 0
+    return a, b
+
+
+# Dtype-coverage axis: exercise every manifest-declared int dtype on a
+# single representative op (LogicalAndFwdOp). The op-coverage axis below
+# fixes dtype = int32 and varies op_cls. Decoupling the axes avoids the
+# dtype x op cross product.
+class LogicalIntDtypeFixture(FixtureBase):
+    PARAMS = [
+        ("dtype", [
+            pytest.param(dt, marks=pytest.mark.smoke)
+            for dt in _INT_DTYPES
+        ]),
+    ]
+
+
+@LogicalIntDtypeFixture
+def test_logical_integer_dtype_and(dtype: torch.dtype) -> None:
+    """LogicalAndFwdOp matches torch.logical_and on every int dtype."""
+    n = 4_096
+    shape = (n,)
+    a, b = _gen_int_logical_inputs(n, dtype)
+    op = LogicalAndFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch.logical_and(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    _bool_compare(out, ref)
+
+
+# Op-coverage axis: at fixed dtype = int32, every binary logical op must
+# match its torch reference.
+class LogicalOpIntFixture(FixtureBase):
+    PARAMS = [
+        ("op_cls, ref_fn", [
+            pytest.param(op_cls, ref_fn, marks=pytest.mark.smoke)
+            for op_cls, ref_fn in _LOGICAL_OP_CASES
+        ]),
+    ]
+
+
+@LogicalOpIntFixture
+def test_logical_op_int32(op_cls, ref_fn) -> None:
+    """Each binary logical op matches its torch reference on int32 inputs."""
+    n = 4_096
+    shape = (n,)
+    a, b = _gen_int_logical_inputs(n, torch.int32)
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.int32)
+    ref = ref_fn(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    _bool_compare(out, ref)
+
+
+class LogicalBoolDtypeFixture(FixtureBase):
+    PARAMS = [
+        ("op_cls, ref_fn", [
+            pytest.param(op_cls, ref_fn, marks=pytest.mark.smoke)
+            for op_cls, ref_fn in _LOGICAL_OP_CASES
+        ]),
+    ]
+
+
+@LogicalBoolDtypeFixture
+def test_logical_bool_dtype(op_cls, ref_fn) -> None:
+    """LogicalAnd/LogicalOr match torch reference on torch.bool inputs."""
+    n = 4_096
+    shape = (n,)
+    a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+    b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.bool)
+    ref = ref_fn(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    _bool_compare(out, ref)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
