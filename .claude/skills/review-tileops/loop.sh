@@ -684,33 +684,25 @@ while true; do
     "$LATEST_ISSUE_ID" "$LAST_ISSUE_ID_PREV" \
     "$LATEST_REVIEW_ID" "$LAST_REVIEW_ID_PREV" \
     "$INBOX_PRESENT")
-  COMMENTS_CHANGED=0
-  if [[ "$LATEST_ISSUE_ID" != "$LAST_ISSUE_ID_PREV" \
-        || "$LATEST_REVIEW_ID" != "$LAST_REVIEW_ID_PREV" ]]; then
-    COMMENTS_CHANGED=1
-  fi
 
   # Resume / restart: if local meta says we approved last time, converge
-  # only if GitHub still shows APPROVED, HEAD has not moved, *and* no new
-  # human comments have arrived since the approval. New commits auto-
-  # dismiss approvals (state goes DISMISSED), but comments do not — and
-  # at the convergence boundary the loop is about to exit, so a comment
-  # that landed during the prior round's codex window would be silently
-  # lost forever if we converged without checking. The trigger policy in
-  # the idle path (HEAD-only, no comment trigger) does NOT apply here:
-  # idle keeps the loop alive so a future commit can still be reviewed,
-  # whereas convergence is terminal. Falling through on comment changes
-  # gives the human's late-arriving feedback exactly one re-review pass
-  # before the loop exits.
+  # only if GitHub still shows APPROVED *and* no externally observable
+  # signal has changed since the approval. `TRIGGER_REASON` (computed
+  # above from the same signature_diff_reason helper used by the idle
+  # path) is the single source of truth for "is this round fresh" — any
+  # non-empty value means some signal (HEAD, body, labels, non-reviewer
+  # comments, inbox) moved and the loop must run a fresh review pass
+  # instead of converging. New commits auto-dismiss approvals (state
+  # goes DISMISSED), but body / label / comment edits do not — and at
+  # the convergence boundary the loop is about to exit, so any of those
+  # late-arriving signals would be silently lost forever if we converged
+  # without re-evaluating the trigger signature.
   if [[ "$LAST_EVENT" == "APPROVE" ]]; then
     GH_REVIEW_STATE=$(latest_reviewer_review_state)
-    if [[ "$GH_REVIEW_STATE" == "APPROVED" \
-          && "$HEAD_UNCHANGED" -eq 1 \
-          && "$COMMENTS_CHANGED" -eq 0 \
-          && "$INBOX_PRESENT" -eq 0 ]]; then
+    if [[ "$GH_REVIEW_STATE" == "APPROVED" && -z "$TRIGGER_REASON" ]]; then
       converge_and_exit
     fi
-    log "prior APPROVE no longer current (gh=$GH_REVIEW_STATE, head_changed=$([[ "$HEAD_UNCHANGED" -eq 0 ]] && echo y || echo n), comments_changed=$([[ "$COMMENTS_CHANGED" -eq 1 ]] && echo y || echo n), inbox=$([[ "$INBOX_PRESENT" -eq 1 ]] && echo y || echo n)) — re-reviewing current head"
+    log "prior APPROVE no longer current (gh=$GH_REVIEW_STATE, trigger='${TRIGGER_REASON:-none}') — re-reviewing current head"
     jq '.last_codex_event="DISMISSED" | .last_reviewed_sha=null' \
       "$META" > "$META.tmp" && mv "$META.tmp" "$META"
     LAST_EVENT="DISMISSED"
