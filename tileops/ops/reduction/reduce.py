@@ -409,18 +409,20 @@ class _ReduceOpBase(Op):
 class _SimpleReduceOp(_ReduceOpBase):
     """Base for single-output reduce ops (sum, mean, amin, amax, prod).
 
-    Construction: ``op(dtype=..., dim=None, keepdim=False)``.  M and N are
-    derived from the input tensor at forward time, and kernels are cached
-    by ``(M, N)`` to avoid rebuilds.
+    M and N are derived from the input tensor at forward time, and kernels
+    are cached by ``(M, N)`` to avoid rebuilds. Alignment padding is handled
+    inside the kernel via masked loads with identity-element fills, so no
+    host-side ``F.pad`` is needed.
 
-    Alignment padding is handled inside the kernel via masked loads with
-    identity-element fills, so no host-side ``F.pad`` is needed.
+    The ``dim`` default follows each op's manifest entry: ``sum``, ``mean``,
+    ``amin``, and ``amax`` default to ``None`` (full reduction); ``prod``
+    overrides to ``dim=-1`` and restricts the type to ``int``.
 
     Args:
         dtype: Data type (float32, float16, or bfloat16).
-        dim: Reduction dimension (default ``None``, i.e. full reduction).
-            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
-            multi-dim reduction.
+        dim: Reduction dimension. Accepts ``int``, ``list[int]``,
+            ``tuple[int, ...]``, or ``None`` on the base class; subclasses
+            may narrow this (see ``ProdFwdOp``).
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
@@ -470,7 +472,7 @@ class ProdFwdOp(_SimpleReduceOp):
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], Tuple[int, ...], None] = -1,
+        dim: int = -1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -488,6 +490,15 @@ class ProdFwdOp(_SimpleReduceOp):
             dtype=dtype, dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
+
+    def _validate_dim(self) -> None:
+        # Manifest declares prod.signature.params.dim as int; reject the
+        # multi-dim and full-reduction overloads inherited from the base.
+        if not isinstance(self.dim, int) or isinstance(self.dim, bool):
+            raise TypeError(
+                f"ProdFwdOp.dim must be int, got "
+                f"{type(self.dim).__name__}"
+            )
 
 
 # ---------------------------------------------------------------------------
