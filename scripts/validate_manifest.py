@@ -717,6 +717,31 @@ def _get_forward_params(cls) -> list[str] | None:
         return None
 
 
+_POSITIONAL_KINDS = (
+    inspect.Parameter.POSITIONAL_ONLY,
+    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+)
+
+
+def _forward_positional_params(cls) -> list[str] | None:
+    """Get positional parameter names of cls.forward(), excluding 'self'.
+
+    Only POSITIONAL_ONLY / POSITIONAL_OR_KEYWORD count. KEYWORD_ONLY
+    params (those after ``*``) are not part of the positional tuple
+    that manifest ``signature.inputs`` aligns against. Used by both
+    the generative-op carve-out in check_l1 and the C4 forward-signature
+    parity check so the two stay in lockstep.
+    """
+    try:
+        sig = inspect.signature(cls.forward)
+        return [
+            p for p, v in sig.parameters.items()
+            if p != "self" and v.kind in _POSITIONAL_KINDS
+        ]
+    except (ValueError, TypeError):
+        return None
+
+
 def _get_init_params(cls) -> list[str]:
     """Get explicit parameter names of cls.__init__(), excluding 'self'.
 
@@ -802,14 +827,21 @@ def check_l1(
     manifest_static_dims = sig.get("static_dims")
     init_params = _get_init_params(result.cls)
 
-    # Generative-op detection: ``ref_api: "none"`` + zero-arg ``forward()``
-    # signals a kernel that synthesizes its output from construction-time
-    # params alone (e.g. ALiBi/Sinusoidal position encodings). The manifest
-    # still carries >= 1 entry under ``signature.inputs`` to satisfy
+    # Generative-op detection: ``ref_api: "none"`` + zero **positional**
+    # forward() args signals a kernel that synthesizes its output from
+    # construction-time params alone (e.g. ALiBi/Sinusoidal position
+    # encodings). The manifest still carries >= 1 entry under
+    # ``signature.inputs`` to satisfy
     # ``tests/test_ops_manifest.py::test_every_signature_has_inputs_and_outputs``;
     # under this carve-out the forward()-order check is skipped because
     # those manifest "inputs" are carriers, not semantic tensor arguments.
-    is_generative = entry.get("ref_api") == "none" and not forward_params
+    # Filter to positional-only kinds so the L1 carve-out matches
+    # check_c4_forward_signature_parity exactly — keyword-only params
+    # (those after ``*``) are not aligned positionally either.
+    positional_forward_params = _forward_positional_params(result.cls) or []
+    is_generative = (
+        entry.get("ref_api") == "none" and not positional_forward_params
+    )
 
     return check_l1_signature(
         op_name, manifest_inputs, manifest_params, forward_params,
@@ -3332,29 +3364,13 @@ def check_c4_forward_signature_parity(
         return errors
     expected = list(manifest_inputs.keys())
 
-    try:
-        py_sig = inspect.signature(cls.forward)
-    except (ValueError, TypeError) as exc:
+    positional = _forward_positional_params(cls)
+    if positional is None:
         if warnings is not None:
             warnings.append(
-                f"[forward] {op_name}: inspect.signature(forward) raised "
-                f"{exc.__class__.__name__}: {exc}"
+                f"[forward] {op_name}: inspect.signature(forward) failed"
             )
         return errors
-
-    # Only POSITIONAL_ONLY / POSITIONAL_OR_KEYWORD count as positional.
-    # KEYWORD_ONLY params (those after ``*``) are not part of the
-    # positional tuple manifest ``signature.inputs`` describes.
-    positional: list[str] = []
-    for pname, p in py_sig.parameters.items():
-        if pname == "self":
-            continue
-        if p.kind not in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        ):
-            continue
-        positional.append(pname)
 
     # Generative-op carve-out: ``ref_api: "none"`` plus zero forward()
     # positional args signals a kernel that synthesizes its output from
