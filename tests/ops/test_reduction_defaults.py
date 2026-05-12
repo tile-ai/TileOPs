@@ -249,3 +249,75 @@ def test_empty_dim_policy_class_attrs() -> None:
         assert cls._empty_dim_policy == "full", cls.__name__
     # ProdFwdOp inherits default (reject); empty dim is not in its contract
     assert ProdFwdOp._empty_dim_policy == "reject"
+
+
+# ---------------------------------------------------------------------------
+# Empty-dim noop must NOT bypass input validation or roofline binding
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_all_empty_dim_noop_rejects_cpu_tensor() -> None:
+    """dim=[] must still validate device; non-CUDA input must raise."""
+    from tileops.ops.reduction.all_op import AllFwdOp
+
+    x = (torch.randint(-1, 2, _LOGICAL_SHAPE)).to(torch.float16)  # cpu
+    op = AllFwdOp(dtype=torch.float16, dim=[])
+    with pytest.raises(ValueError, match="CUDA tensor"):
+        op(x)
+
+
+@pytest.mark.smoke
+def test_any_empty_dim_noop_rejects_cpu_tensor() -> None:
+    from tileops.ops.reduction.any_op import AnyFwdOp
+
+    x = (torch.randint(-1, 2, _LOGICAL_SHAPE)).to(torch.float16)  # cpu
+    op = AnyFwdOp(dtype=torch.float16, dim=[])
+    with pytest.raises(ValueError, match="CUDA tensor"):
+        op(x)
+
+
+@pytest.mark.smoke
+def test_all_empty_dim_noop_rejects_wrong_dtype() -> None:
+    """dim=[] must still validate dtype against the op's declared dtype."""
+    from tileops.ops.reduction.all_op import AllFwdOp
+
+    x = _make_logical(_LOGICAL_SHAPE, torch.float32)  # cuda, fp32
+    op = AllFwdOp(dtype=torch.float16, dim=[])
+    with pytest.raises(ValueError, match="Expected x.dtype"):
+        op(x)
+
+
+@pytest.mark.smoke
+def test_any_empty_dim_noop_rejects_wrong_dtype() -> None:
+    from tileops.ops.reduction.any_op import AnyFwdOp
+
+    x = _make_logical(_LOGICAL_SHAPE, torch.float32)
+    op = AnyFwdOp(dtype=torch.float16, dim=[])
+    with pytest.raises(ValueError, match="Expected x.dtype"):
+        op(x)
+
+
+@pytest.mark.smoke
+def test_all_empty_dim_noop_binds_roofline() -> None:
+    """eval_roofline() must succeed after a dim=[] noop forward."""
+    from tileops.ops.reduction.all_op import AllFwdOp
+
+    x = _make_logical(_LOGICAL_SHAPE, torch.float16)
+    op = AllFwdOp(dtype=torch.float16, dim=[])
+    op(x)
+    flops, mem_bytes = op.eval_roofline()
+    # No reduction happens -> no flops; mem term may be 0 or M depending
+    # on op_kind formula. Only contract here is "does not raise".
+    assert flops == 0
+
+
+@pytest.mark.smoke
+def test_any_empty_dim_noop_binds_roofline() -> None:
+    from tileops.ops.reduction.any_op import AnyFwdOp
+
+    x = _make_logical(_LOGICAL_SHAPE, torch.float16)
+    op = AnyFwdOp(dtype=torch.float16, dim=[])
+    op(x)
+    flops, _mem_bytes = op.eval_roofline()
+    assert flops == 0

@@ -201,11 +201,29 @@ class _ReduceOpBase(Op):
         an empty list/tuple and the op's ``_empty_dim_policy`` is
         ``"noop"``; return ``None`` otherwise so the caller proceeds with
         the normal kernel path.
+
+        Runs the same input validation as ``_prepare_input`` (CUDA / dtype
+        / ndim) and binds ``_last_roofline_mn`` before short-circuiting, so
+        the noop path still honors the public forward contract -- bad
+        inputs raise, and ``eval_roofline()`` works after a noop forward.
         """
         if self._empty_dim_policy != "noop":
             return None
         if not isinstance(self.dim, (list, tuple)) or len(self.dim) != 0:
             return None
+        # Input validation -- mirrors _prepare_input so dim=[] cannot
+        # bypass the contract.
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.ndim == 0:
+            raise ValueError("Input tensor must be at least 1D")
+        # Bind roofline state. No reduction happens, so model the cost as
+        # touching every element with zero reduction work: M = numel,
+        # N = 0 -> flops 0, mem_bytes = M for op_kinds that add an output
+        # term, 0 otherwise.
+        self._last_roofline_mn = (x.numel(), 0)
         out_dtype = self._noop_output_dtype()
         if out_dtype is None:
             return x
