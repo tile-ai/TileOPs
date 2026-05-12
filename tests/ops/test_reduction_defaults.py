@@ -339,3 +339,21 @@ def test_any_empty_dim_noop_binds_roofline() -> None:
     assert mem_bytes >= expected_lower
     assert mem_bytes <= expected_upper
     assert flops >= 0
+
+@pytest.mark.smoke
+def test_validate_dim_rejects_bool_scalar() -> None:
+    """`bool` subclasses `int`, but a boolean dim is never a valid axis;
+    `_validate_dim` must reject it explicitly."""
+    from tileops.ops.reduction.reduce import SumFwdOp
+
+    with pytest.raises(TypeError, match="dim must not be bool"):
+        SumFwdOp(dtype=torch.float16, dim=True)
+
+
+@pytest.mark.smoke
+def test_validate_dim_rejects_bool_in_list() -> None:
+    """Same guard applies element-wise to `list[int]` / `tuple[int, ...]`."""
+    from tileops.ops.reduction.reduce import SumFwdOp
+
+    with pytest.raises(TypeError, match="must be int .not bool"):
+        SumFwdOp(dtype=torch.float16, dim=[True, 0])

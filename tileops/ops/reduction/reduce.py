@@ -113,15 +113,27 @@ class _ReduceOpBase(Op):
         Default: accept ``int``, ``list[int]``/``tuple[int]``, or ``None``.
         Subclasses that only support single-dim reduction (e.g. argreduce)
         should override to reject non-scalar values.
+
+        ``bool`` values are rejected explicitly. Python's ``bool`` subclasses
+        ``int`` (so ``isinstance(True, int)`` is true), but a boolean dim has
+        no meaningful interpretation as a tensor axis and almost always
+        signals a caller bug.
         """
         dim = self.dim
+        if isinstance(dim, bool):
+            raise TypeError(
+                f"dim must not be bool (subclasses int but is not a valid "
+                f"axis), got {dim!r}"
+            )
         if dim is None or isinstance(dim, int):
             return
         if isinstance(dim, (list, tuple)):
-            if not all(isinstance(d, int) for d in dim):
-                raise TypeError(
-                    f"All elements of dim must be int, got {dim}"
-                )
+            for d in dim:
+                if isinstance(d, bool) or not isinstance(d, int):
+                    raise TypeError(
+                        f"All elements of dim must be int (not bool), "
+                        f"got {dim!r}"
+                    )
             return
         raise TypeError(
             f"dim must be int, list[int], tuple[int, ...], or None, "
