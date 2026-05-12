@@ -844,9 +844,15 @@ def check_l1(
     # Filter to positional-only kinds so the L1 carve-out matches
     # check_c4_forward_signature_parity exactly — keyword-only params
     # (those after ``*``) are not aligned positionally either.
-    positional_forward_params = _forward_positional_params(result.cls) or []
+    # Distinguish ``None`` (introspection failed) from ``[]`` (forward()
+    # has zero positional args). Only the latter qualifies for the
+    # generative-op carve-out; an introspection failure must NOT silently
+    # skip the L1 alignment check.
+    positional_forward_params = _forward_positional_params(result.cls)
     is_generative = (
-        entry.get("ref_api") == "none" and not positional_forward_params
+        entry.get("ref_api") == "none"
+        and positional_forward_params is not None
+        and len(positional_forward_params) == 0
     )
 
     return check_l1_signature(
@@ -3395,7 +3401,11 @@ def check_c4_forward_signature_parity(
     # kept to satisfy
     # ``tests/test_ops_manifest.py::test_every_signature_has_inputs_and_outputs``;
     # there is no positional argument to align against them.
-    if entry.get("ref_api") == "none" and not positional:
+    #
+    # ``positional`` is guaranteed non-None here (introspection failure
+    # returned early above). Use explicit ``len(...) == 0`` so the carve-
+    # out cannot be confused with the introspection-failed path.
+    if entry.get("ref_api") == "none" and len(positional) == 0:
         return errors
 
     actual_prefix = positional[: len(expected)]
