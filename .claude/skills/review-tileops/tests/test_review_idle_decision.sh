@@ -36,6 +36,11 @@ decide() {
   local issue_now="$8" issue_prev="$9"
   local review_now="${10}" review_prev="${11}"
   local inbox_present="${12}"
+  # Optional: simulate the APPROVE convergence branch. When provided,
+  # last_event=APPROVE + gh_state=APPROVED triggers converge-vs-rereview
+  # based on the same TRIGGER_REASON signature used by the idle path.
+  local last_event="${13:-DISMISSED}"
+  local gh_state="${14:-DISMISSED}"
 
   local trigger_reason
   trigger_reason=$(signature_diff_reason \
@@ -48,6 +53,19 @@ decide() {
 
   local head_unchanged=0
   [[ "$head_now" == "$head_prev" ]] && head_unchanged=1
+
+  # APPROVE convergence guard: reuses TRIGGER_REASON so any fresh
+  # signal (body / labels / comments / head / inbox) blocks convergence.
+  if [[ "$last_event" == "APPROVE" ]]; then
+    if [[ "$gh_state" == "APPROVED" && -z "$trigger_reason" ]]; then
+      echo "CONVERGE"
+      return 0
+    fi
+    # Fall through to fresh review.
+    local fired_a="${trigger_reason:-head changed}"
+    echo "FIRE: $fired_a"
+    return 0
+  fi
 
   if [[ "$round" -gt 0 && "$head_unchanged" -eq 1 \
         && "$inbox_present" -eq 0 && -z "$trigger_reason" ]]; then
@@ -100,6 +118,26 @@ assert_contains "labels change fires" "FIRE: labels changed" "$R"
 # NOT spuriously fire on first post-upgrade poll.
 R=$(decide 3 "shaX" "shaX" "newbody" "" "lh1" "lh1" 42 42 99 99 0)
 assert_contains "legacy meta no spurious body fire" "IDLE" "$R"
+
+# APPROVE convergence guard: prior round was APPROVE and GH still shows
+# APPROVED. With no fresh signal → converge. With a body edit on the
+# same HEAD → must fall through to a fresh review pass, NOT converge.
+
+# Baseline: nothing changed since approval → converge.
+R=$(decide 3 "shaX" "shaX" "bh1" "bh1" "lh1" "lh1" 42 42 99 99 0 APPROVE APPROVED)
+assert_contains "APPROVE + no signal → converge" "CONVERGE" "$R"
+
+# Bug regression: body edit after APPROVE → fresh review, NOT converge.
+R=$(decide 3 "shaX" "shaX" "bodyHASH2" "bodyHASH1" "lh1" "lh1" 42 42 99 99 0 APPROVE APPROVED)
+assert_contains "APPROVE + body edit → fresh review" "FIRE: body changed" "$R"
+
+# Labels change after APPROVE → fresh review.
+R=$(decide 3 "shaX" "shaX" "bh1" "bh1" "lh2" "lh1" 42 42 99 99 0 APPROVE APPROVED)
+assert_contains "APPROVE + labels change → fresh review" "FIRE: labels changed" "$R"
+
+# New review comment after APPROVE → fresh review (pre-existing guard).
+R=$(decide 3 "shaX" "shaX" "bh1" "bh1" "lh1" "lh1" 42 42 105 99 0 APPROVE APPROVED)
+assert_contains "APPROVE + review comment → fresh review" "FIRE: review comment" "$R"
 
 printf '\n%d passed, %d failed\n' "$PASSES" "$FAILS"
 exit $(( FAILS > 0 ? 1 : 0 ))
