@@ -23,6 +23,8 @@ AlibiFwdOp:
       # Generative op: no semantic tensor input. ``device_carrier`` is a
       # 0-dim scalar tensor carrying the target device/dtype through the
       # torch.compile tracing path (see _register_generative_custom_op).
+      # Modelled as a manifest input because schema invariants currently
+      # require >= 1 entry under ``signature.inputs``.
       device_carrier: {dtype: "float16 | bfloat16 | float32", shape: []}
     outputs:
       output: {dtype: "same_as(device_carrier)", shape: [num_heads, seq_len, seq_len]}
@@ -76,6 +78,8 @@ SinusoidalFwdOp:
       # Generative op: no semantic tensor input. ``device_carrier`` is a
       # 0-dim scalar tensor carrying the target device/dtype through the
       # torch.compile tracing path (see _register_generative_custom_op).
+      # Modelled as a manifest input because schema invariants currently
+      # require >= 1 entry under ``signature.inputs``.
       device_carrier: {dtype: "float16 | bfloat16 | float32", shape: []}
     outputs:
       output: {dtype: "same_as(device_carrier)", shape: [seq_len, d_model]}
