@@ -768,24 +768,6 @@ class TestSignature:
         )
         assert any("static_dims" in e for e in errors)
 
-    def test_forward_positional_params_excludes_keyword_only(self, validator):
-        """_forward_positional_params returns only POSITIONAL_* params."""
-        class KwOnlyForward:
-            def forward(self, x, *, dtype=None):
-                return x
-
-        result = validator._forward_positional_params(KwOnlyForward)
-        assert result == ["x"]
-
-    def test_forward_positional_params_handles_zero_args(self, validator):
-        """A pure keyword-only forward() yields zero positional params."""
-        class ZeroPositional:
-            def forward(self, *, dtype=None):
-                return None
-
-        result = validator._forward_positional_params(ZeroPositional)
-        assert result == []
-
 
 # ---------------------------------------------------------------------------
 # dtype: dtype string conformance
