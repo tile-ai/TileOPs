@@ -21,6 +21,8 @@ PR="${1:?usage: loop.sh <PR_NUMBER>}"
 # Constants & paths
 # ---------------------------------------------------------------------------
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=signals.sh
+source "$SKILL_DIR/signals.sh"
 REPO="tile-ai/TileOPs"
 MAX_ROUNDS=15
 POLL_INTERVAL=180
@@ -288,6 +290,8 @@ if [[ ! -f "$META" ]]; then
     last_reviewed_sha: null,
     last_issue_comment_id: 0,
     last_review_comment_id: 0,
+    last_body_hash: "",
+    last_labels_hash: "",
     last_codex_event: null,
     last_criteria_mtime: 0,
     consecutive_codex_failures: 0,
@@ -625,11 +629,17 @@ while true; do
     exit 6
   fi
 
-  # External / hard-cutoff terminations come first.
-  PR_VIEW=$(gh pr view "$PR" --repo "$REPO" --json state,headRefOid,isDraft 2>/dev/null) \
+  # External / hard-cutoff terminations come first. We also fetch body
+  # and labels in the same call so the per-poll signal computation does
+  # not need an extra API round-trip (bounded GitHub API cost per tick).
+  PR_VIEW=$(gh pr view "$PR" --repo "$REPO" --json state,headRefOid,isDraft,body,labels 2>/dev/null) \
     || { log "gh pr view failed; sleeping ${POLL_INTERVAL}s"; sleep "$POLL_INTERVAL"; continue; }
   PR_STATE=$(printf '%s' "$PR_VIEW" | jq -r .state)
   HEAD_SHA=$(printf '%s' "$PR_VIEW" | jq -r .headRefOid)
+  PR_BODY=$(printf '%s' "$PR_VIEW" | jq -r '.body // ""')
+  PR_LABELS_JSON=$(printf '%s' "$PR_VIEW" | jq -c '.labels // []')
+  BODY_HASH=$(pr_body_hash "$PR_BODY")
+  LABELS_HASH=$(pr_labels_hash "$PR_LABELS_JSON")
 
   if [[ "$PR_STATE" == "MERGED" || "$PR_STATE" == "CLOSED" ]]; then
     log "PR is $PR_STATE — exiting"
@@ -651,25 +661,29 @@ while true; do
   # comments default to 0 since the legacy field never tracked them.
   LAST_ISSUE_ID_PREV=$(jq -r '.last_issue_comment_id // .last_human_comment_id // 0' "$META")
   LAST_REVIEW_ID_PREV=$(jq -r '.last_review_comment_id // 0' "$META")
+  LAST_BODY_HASH_PREV=$(jq -r '.last_body_hash // ""' "$META")
+  LAST_LABELS_HASH_PREV=$(jq -r '.last_labels_hash // ""' "$META")
   LATEST_ISSUE_ID=$(latest_issue_comment_id)
   LATEST_REVIEW_ID=$(latest_review_comment_id)
 
-  # Trigger policy: a fresh codex round fires only on a HEAD change or an
-  # explicit human prompt in inbox.md. Comment-only deltas (replies,
-  # discussion on a previous blocker) are absorbed — the tracked comment
-  # ids advance so the loop stops re-firing, but no new review runs.
-  #
-  # Why not re-review on comment changes: when a human pushes back on a
-  # blocker without changing code, re-running the full review on the same
-  # SHA tends to mine *new* nits the prior round didn't flag, drifting
-  # away from the original disagreement and looking to the developer like
-  # the bot is hunting for something to complain about. If the human
-  # genuinely wants a fresh pass on unchanged code, they write to
-  # inbox.md (the existing per-round guidance channel).
+  # Trigger policy: a fresh codex round fires when any externally
+  # observable PR signal has materially changed — HEAD sha, PR body,
+  # label set, non-reviewer issue/review comments, or an explicit
+  # inbox.md prompt. `signature_diff_reason` returns a stable short
+  # token naming which signal fired (used both in log lines and for
+  # AC-4 operator visibility); empty string means nothing changed and
+  # the loop sleeps.
   INBOX_PRESENT=0
   [[ -s "$RUN_DIR/inbox.md" ]] && INBOX_PRESENT=1
   HEAD_UNCHANGED=0
   [[ "$HEAD_SHA" == "$LAST_SHA" ]] && HEAD_UNCHANGED=1
+  TRIGGER_REASON=$(signature_diff_reason \
+    "$HEAD_SHA" "${LAST_SHA:-}" \
+    "$BODY_HASH" "$LAST_BODY_HASH_PREV" \
+    "$LABELS_HASH" "$LAST_LABELS_HASH_PREV" \
+    "$LATEST_ISSUE_ID" "$LAST_ISSUE_ID_PREV" \
+    "$LATEST_REVIEW_ID" "$LAST_REVIEW_ID_PREV" \
+    "$INBOX_PRESENT")
   COMMENTS_CHANGED=0
   if [[ "$LATEST_ISSUE_ID" != "$LAST_ISSUE_ID_PREV" \
         || "$LATEST_REVIEW_ID" != "$LAST_REVIEW_ID_PREV" ]]; then
@@ -704,25 +718,14 @@ while true; do
     HEAD_UNCHANGED=0
   fi
 
-  # Idle path: HEAD unchanged AND no inbox prompt. Absorb any comment-id
-  # advances and sleep. ROUND==0 (first poll, never reviewed) always
-  # falls through to a fresh round.
-  #
-  # Comment activity does NOT count toward the stall counter — an active
-  # discussion (replies flowing back and forth without a push) is engaged
-  # work, not a dead PR. The stall counter is meant to catch a truly
-  # quiet counterpart, so reset it whenever comments advance even though
-  # we're not running codex this poll.
-  if [[ "$ROUND" -gt 0 && "$HEAD_UNCHANGED" -eq 1 && "$INBOX_PRESENT" -eq 0 ]]; then
-    if [[ "$COMMENTS_CHANGED" -eq 1 ]]; then
-      jq --argjson iid "$LATEST_ISSUE_ID" --argjson rid "$LATEST_REVIEW_ID" \
-         '.last_issue_comment_id=$iid | .last_review_comment_id=$rid
-          | .consecutive_idle=0' \
-         "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-      log "comment-only update on unchanged HEAD ${HEAD_SHA:0:7} — absorbed; not re-reviewing (write inbox.md to force a round)"
-      sleep "$POLL_INTERVAL"
-      continue
-    fi
+  # Idle path: HEAD unchanged, no inbox prompt, AND no other observable
+  # signal changed (body / labels / non-reviewer comments). ROUND==0
+  # (first poll, never reviewed) always falls through to a fresh round.
+  # When any of the additional signals changed, TRIGGER_REASON is
+  # non-empty and we drop through to run a real round — the operator
+  # log line below names which signal fired (AC-4).
+  if [[ "$ROUND" -gt 0 && "$HEAD_UNCHANGED" -eq 1 \
+        && "$INBOX_PRESENT" -eq 0 && -z "$TRIGGER_REASON" ]]; then
     CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
     NEW_IDLE=$((CONSECUTIVE_IDLE + 1))
     jq --argjson n "$NEW_IDLE" '.consecutive_idle=$n' "$META" \
@@ -741,6 +744,16 @@ while true; do
   NEXT_ROUND=$((ROUND + 1))
   N=$(printf '%02d' "$NEXT_ROUND")
   SNAP="$RUN_DIR/rounds/round-$N"
+  # AC-4: name which signal fired this round so operators can tell
+  # idle-trigger reasons apart in the loop log. ROUND==0 has no prior
+  # state to diff against; report "first round" instead of an empty
+  # token.
+  if [[ "$ROUND" -eq 0 ]]; then
+    FIRED_REASON="first round"
+  else
+    FIRED_REASON="${TRIGGER_REASON:-head changed}"
+  fi
+  log "round $NEXT_ROUND — fired by '$FIRED_REASON' since prior_sha=${LAST_SHA:0:7} (head=${HEAD_SHA:0:7})"
   log "round $NEXT_ROUND — gathering inputs (head=${HEAD_SHA:0:7})"
 
   # Move the worktree forward to this round's HEAD so Codex reads source from
@@ -827,10 +840,12 @@ while true; do
     NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     jq --argjson r "$NEXT_ROUND" --arg sha "$HEAD_SHA" --arg now "$NOW" \
        --argjson iid "$LATEST_ISSUE_ID" --argjson rid "$LATEST_REVIEW_ID" \
+       --arg bh "$BODY_HASH" --arg lh "$LABELS_HASH" \
        --arg ev "$EVENT" \
        --argjson cm "$CRITERIA_MTIME" \
        '.round=$r | .last_reviewed_sha=$sha
         | .last_issue_comment_id=$iid | .last_review_comment_id=$rid
+        | .last_body_hash=$bh | .last_labels_hash=$lh
         | .last_codex_event=$ev | .last_criteria_mtime=$cm
         | .consecutive_request_changes=0
         | .consecutive_codex_failures=0
@@ -883,10 +898,12 @@ while true; do
   fi
   jq --argjson r "$NEXT_ROUND" --arg sha "$HEAD_SHA" --arg now "$NOW" \
      --argjson iid "$LATEST_ISSUE_ID" --argjson rid "$LATEST_REVIEW_ID" \
+     --arg bh "$BODY_HASH" --arg lh "$LABELS_HASH" \
      --arg ev "$EVENT" \
      --argjson cm "$CRITERIA_MTIME" --argjson rc "$NEW_RC" \
      '.round=$r | .last_reviewed_sha=$sha
       | .last_issue_comment_id=$iid | .last_review_comment_id=$rid
+      | .last_body_hash=$bh | .last_labels_hash=$lh
       | .last_codex_event=$ev | .last_criteria_mtime=$cm
       | .consecutive_request_changes=$rc
       | .consecutive_codex_failures=0
