@@ -404,7 +404,7 @@ ProdFwdOp:
 VarFwdOp:
   ref_api: "torch.var"
   family: reduction
-  status: spec-only  # dim=None not yet implemented; update when impl lands
+  status: implemented
 
   signature:
     inputs:
@@ -449,7 +449,7 @@ VarFwdOp:
 StdFwdOp:
   ref_api: "torch.std"
   family: reduction
-  status: spec-only  # dim=None not yet implemented; update when impl lands
+  status: implemented
 
   signature:
     inputs:
@@ -494,7 +494,7 @@ StdFwdOp:
 VarMeanFwdOp:
   ref_api: "torch.var_mean"
   family: reduction
-  status: spec-only  # dim=None not yet implemented; update when impl lands
+  status: implemented
 
   signature:
     inputs:
