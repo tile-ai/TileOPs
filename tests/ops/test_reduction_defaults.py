@@ -300,16 +300,28 @@ def test_any_empty_dim_noop_rejects_wrong_dtype() -> None:
 
 @pytest.mark.smoke
 def test_all_empty_dim_noop_binds_roofline() -> None:
-    """eval_roofline() must succeed after a dim=[] noop forward."""
+    """eval_roofline() must succeed after a dim=[] noop forward and
+    report non-zero data-movement (the noop still reads the input and
+    writes an equal-shape cast result)."""
     from tileops.ops.reduction.all_op import AllFwdOp
 
     x = _make_logical(_LOGICAL_SHAPE, torch.float16)
     op = AllFwdOp(dtype=torch.float16, dim=[])
     op(x)
     flops, mem_bytes = op.eval_roofline()
-    # No reduction happens -> no flops; mem term may be 0 or M depending
-    # on op_kind formula. Only contract here is "does not raise".
-    assert flops == 0
+    numel = x.numel()
+    elem_bytes = x.element_size()
+    # Noop binds (M=numel, N=1); for the "all" op_kind this gives
+    # mem_bytes = numel * elem_bytes + numel (input read + bool write).
+    expected_lower = numel * elem_bytes
+    expected_upper = 2 * numel * elem_bytes + numel
+    assert mem_bytes >= expected_lower, (
+        f"noop bandwidth {mem_bytes} under-counts input read "
+        f"({expected_lower} bytes)"
+    )
+    assert mem_bytes <= expected_upper
+    # flops are degenerate (one op per element); contract is non-negative.
+    assert flops >= 0
 
 
 @pytest.mark.smoke
@@ -319,5 +331,11 @@ def test_any_empty_dim_noop_binds_roofline() -> None:
     x = _make_logical(_LOGICAL_SHAPE, torch.float16)
     op = AnyFwdOp(dtype=torch.float16, dim=[])
     op(x)
-    flops, _mem_bytes = op.eval_roofline()
-    assert flops == 0
+    flops, mem_bytes = op.eval_roofline()
+    numel = x.numel()
+    elem_bytes = x.element_size()
+    expected_lower = numel * elem_bytes
+    expected_upper = 2 * numel * elem_bytes + numel
+    assert mem_bytes >= expected_lower
+    assert mem_bytes <= expected_upper
+    assert flops >= 0
