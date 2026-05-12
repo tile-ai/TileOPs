@@ -52,6 +52,7 @@ class LogicalAndFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
             pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
@@ -74,6 +75,7 @@ class LogicalOrFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
             pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
