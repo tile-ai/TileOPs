@@ -636,7 +636,7 @@ ArgminFwdOp:
 AllFwdOp:
   ref_api: "torch.all"
   family: reduction
-  status: spec-only  # dim=None not yet implemented; update when impl lands
+  status: implemented
 
   signature:
     inputs:
@@ -682,7 +682,7 @@ AllFwdOp:
 AnyFwdOp:
   ref_api: "torch.any"
   family: reduction
-  status: spec-only  # dim=None not yet implemented; update when impl lands
+  status: implemented
 
   signature:
     inputs:
@@ -728,7 +728,7 @@ AnyFwdOp:
 CountNonzeroFwdOp:
   ref_api: "torch.count_nonzero"
   family: reduction
-  status: spec-only  # dim=None not yet implemented; update when impl lands
+  status: implemented
 
   signature:
     inputs:
