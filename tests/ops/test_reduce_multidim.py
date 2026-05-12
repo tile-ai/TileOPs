@@ -112,23 +112,17 @@ def test_amax_multidim(
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
 
-@MultiDimFixture
-def test_prod_multidim(
-    shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
-) -> None:
+@pytest.mark.smoke
+def test_prod_multidim_rejected() -> None:
+    """ProdFwdOp narrows ``dim`` to ``int`` per its manifest signature, so
+    the multi-dim (``list[int]`` / ``tuple[int, ...]``) overload is rejected
+    at construction time."""
     from tileops.ops.reduction.reduce import ProdFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = ProdFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
-    # PyTorch doesn't support list[int] for prod, so iterate dims manually.
-    ref = x.float()
-    for d in sorted(dims, reverse=True):
-        ref = torch.prod(ref, dim=d, keepdim=keepdim)
-    ref = ref.to(dtype)
-    y = op(x)
-    tol = _tol(dtype)
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
+    with pytest.raises(TypeError, match="ProdFwdOp.dim must be int"):
+        ProdFwdOp(dtype=torch.float16, dim=[0, 1])
+    with pytest.raises(TypeError, match="ProdFwdOp.dim must be int"):
+        ProdFwdOp(dtype=torch.float16, dim=(0, 1))
 
 
 @MultiDimFixture
@@ -476,12 +470,13 @@ def test_var_mean_empty_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_prod_empty_dim_rejects() -> None:
+    """ProdFwdOp narrows ``dim`` to ``int`` per its manifest signature, so
+    ``dim=[]`` is rejected by ``_validate_dim`` at construction (before
+    reaching the base class's ``empty_dim_policy`` branch)."""
     from tileops.ops.reduction.reduce import ProdFwdOp
 
-    x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
-    op = ProdFwdOp(dtype=torch.float16, dim=[], keepdim=False)
-    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
-        op(x)
+    with pytest.raises(TypeError, match="ProdFwdOp.dim must be int"):
+        ProdFwdOp(dtype=torch.float16, dim=[], keepdim=False)
 
 
 @pytest.mark.smoke
