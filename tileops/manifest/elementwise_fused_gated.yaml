@@ -18,17 +18,17 @@ SiluAndMulFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: [M, two_N]}
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
     outputs:
-      output: {dtype: "same_as(x)", shape: [M, N]}
+      output: {dtype: "same_as(x)", shape: "[M, N]"}
     shape_rules:
     - "x.shape[1] == 2 * output.shape[1]"
     - "x.shape[0] == output.shape[0]"
 
   workloads:
     # SwiGLU FFN intermediate (Llama-3.1-8B, hidden_dim=14336)
-  - {M: 2048, N: 14336, dtypes: [float16, bfloat16], label: "llama-3.1-8b-swiglu-prefill"}
-  - {M: 1, N: 14336, dtypes: [bfloat16], label: "llama-3.1-8b-swiglu-decode"}
+  - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "llama-3.1-8b-swiglu-prefill"}
+  - {x_shape: [1, 28672], dtypes: [bfloat16], label: "llama-3.1-8b-swiglu-decode"}
 
   roofline:
     vars:
@@ -60,16 +60,16 @@ GeluAndMulFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: [M, two_N]}
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
     outputs:
-      output: {dtype: "same_as(x)", shape: [M, N]}
+      output: {dtype: "same_as(x)", shape: "[M, N]"}
     shape_rules:
     - "x.shape[1] == 2 * output.shape[1]"
     - "x.shape[0] == output.shape[0]"
 
   workloads:
-  - {M: 2048, N: 14336, dtypes: [float16, bfloat16], label: "ffn-gelu-prefill"}
-  - {M: 1, N: 14336, dtypes: [bfloat16], label: "ffn-gelu-decode"}
+  - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "ffn-gelu-prefill"}
+  - {x_shape: [1, 28672], dtypes: [bfloat16], label: "ffn-gelu-decode"}
 
   roofline:
     vars:
@@ -100,16 +100,16 @@ GeluTanhAndMulFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32", shape: [M, two_N]}
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
     outputs:
-      output: {dtype: "same_as(x)", shape: [M, N]}
+      output: {dtype: "same_as(x)", shape: "[M, N]"}
     shape_rules:
     - "x.shape[1] == 2 * output.shape[1]"
     - "x.shape[0] == output.shape[0]"
 
   workloads:
-  - {M: 2048, N: 14336, dtypes: [float16, bfloat16], label: "ffn-gelu-tanh-prefill"}
-  - {M: 1, N: 14336, dtypes: [bfloat16], label: "ffn-gelu-tanh-decode"}
+  - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "ffn-gelu-tanh-prefill"}
+  - {x_shape: [1, 28672], dtypes: [bfloat16], label: "ffn-gelu-tanh-decode"}
 
   roofline:
     vars:
