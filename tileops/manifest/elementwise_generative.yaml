@@ -29,9 +29,9 @@ AlibiFwdOp:
 
   signature:
     inputs:
-      device_carrier: {dtype: "float16 | bfloat16 | float32", shape: []}
+      device_carrier: {dtype: "float16 | bfloat16 | float32", shape: "[]"}
     outputs:
-      output: {dtype: "same_as(device_carrier)", shape: [num_heads, seq_len, seq_len]}
+      output: {dtype: "same_as(device_carrier)", shape: "[num_heads, seq_len, seq_len]"}
     params:
       seq_len: {type: int}
       num_heads: {type: int}
@@ -41,8 +41,8 @@ AlibiFwdOp:
 
   workloads:
     # Llama-style attention bias dimensions
-  - {seq_len: 2048, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-2k"}
-  - {seq_len: 4096, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-4k"}
+  - {device_carrier_shape: [], seq_len: 2048, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-2k"}
+  - {device_carrier_shape: [], seq_len: 4096, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-4k"}
 
   roofline:
     vars:
@@ -76,9 +76,9 @@ SinusoidalFwdOp:
 
   signature:
     inputs:
-      device_carrier: {dtype: "float16 | bfloat16 | float32", shape: []}
+      device_carrier: {dtype: "float16 | bfloat16 | float32", shape: "[]"}
     outputs:
-      output: {dtype: "same_as(device_carrier)", shape: [seq_len, d_model]}
+      output: {dtype: "same_as(device_carrier)", shape: "[seq_len, d_model]"}
     params:
       seq_len: {type: int}
       d_model: {type: int}
@@ -89,8 +89,8 @@ SinusoidalFwdOp:
 
   workloads:
     # Transformer-style positional encodings
-  - {seq_len: 2048, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-2k-4k"}
-  - {seq_len: 4096, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-4k-4k"}
+  - {device_carrier_shape: [], seq_len: 2048, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-2k-4k"}
+  - {device_carrier_shape: [], seq_len: 4096, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-4k-4k"}
 
   roofline:
     vars:

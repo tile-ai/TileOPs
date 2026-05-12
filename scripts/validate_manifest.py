@@ -738,7 +738,13 @@ def _forward_positional_params(cls) -> list[str] | None:
             p for p, v in sig.parameters.items()
             if p != "self" and v.kind in _POSITIONAL_KINDS
         ]
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
+        # Stash exception text so callers that surface diagnostics can
+        # report ``exc.__class__.__name__: exc`` without changing the
+        # ``None`` return contract for "not inspectable".
+        _forward_positional_params._last_error = (  # type: ignore[attr-defined]
+            f"{exc.__class__.__name__}: {exc}"
+        )
         return None
 
 
@@ -3367,9 +3373,20 @@ def check_c4_forward_signature_parity(
     positional = _forward_positional_params(cls)
     if positional is None:
         if warnings is not None:
-            warnings.append(
-                f"[forward] {op_name}: inspect.signature(forward) failed"
+            detail = getattr(
+                _forward_positional_params, "_last_error", None
             )
+            if detail:
+                warnings.append(
+                    f"[forward] {op_name}: inspect.signature(forward) "
+                    f"raised {detail}"
+                )
+                # Clear so a later call site sees only its own failure.
+                _forward_positional_params._last_error = None  # type: ignore[attr-defined]
+            else:
+                warnings.append(
+                    f"[forward] {op_name}: inspect.signature(forward) failed"
+                )
         return errors
 
     # Generative-op carve-out: ``ref_api: "none"`` plus zero forward()
