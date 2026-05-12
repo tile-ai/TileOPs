@@ -52,6 +52,19 @@ L_EMPTY1=$(pr_labels_hash '[]')
 L_EMPTY2=$(pr_labels_hash '')
 assert_eq "labels_hash empty array == empty input" "$L_EMPTY1" "$L_EMPTY2"
 
+# Regression: a label name containing a comma must not collide with a
+# label set obtained by splitting that name on commas. Under a naive
+# `join(",")` scheme, [{"a,b"},{"c"}] and [{"a"},{"b","c"}] both hash
+# the string "a,b,c"; structured serialization must distinguish them.
+L_COMMA_A=$(pr_labels_hash '[{"name":"a,b"},{"name":"c"}]')
+L_COMMA_B=$(pr_labels_hash '[{"name":"a"},{"name":"b,c"}]')
+assert_eq "labels_hash no comma-name collision" 1 \
+  "$([[ "$L_COMMA_A" != "$L_COMMA_B" ]] && echo 1 || echo 0)"
+
+L_COMMA_C=$(pr_labels_hash '[{"name":"a"},{"name":"b"},{"name":"c"}]')
+assert_eq "labels_hash 3-label set differs from 2-label-with-comma" 1 \
+  "$([[ "$L_COMMA_A" != "$L_COMMA_C" ]] && echo 1 || echo 0)"
+
 # ---- signature_diff_reason -------------------------------------------------
 
 # helper: call with positional args matching the function signature.
