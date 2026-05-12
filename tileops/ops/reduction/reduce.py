@@ -228,11 +228,15 @@ class _ReduceOpBase(Op):
         if not isinstance(self.dim, (list, tuple)) or len(self.dim) != 0:
             return None
         self._validate_input_tensor(x)
-        # Bind roofline state. No reduction happens, so model the cost as
-        # touching every element with zero reduction work: M = numel,
-        # N = 0 -> flops 0, mem_bytes = M for op_kinds that add an output
-        # term, 0 otherwise.
-        self._last_roofline_mn = (x.numel(), 0)
+        # Bind roofline state. The noop performs no reduction but still
+        # reads every input element and writes an equal-shape result
+        # (cast to bool for All/Any/CountNonzero, identity for Sum-style
+        # ops). Model this as a degenerate reduction over an axis of
+        # length 1: M = numel, N = 1. Under the existing per-op-kind
+        # formulas this yields mem_bytes proportional to numel * elem_bytes
+        # for the read plus the output term, instead of collapsing to
+        # zero, which would under-count the actual data-movement cost.
+        self._last_roofline_mn = (x.numel(), 1)
         out_dtype = self._noop_output_dtype()
         if out_dtype is None:
             return x
