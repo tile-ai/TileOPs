@@ -119,9 +119,72 @@ assert_contains "labels change fires" "FIRE: labels changed" "$R"
 R=$(decide 3 "shaX" "shaX" "newbody" "" "lh1" "lh1" 42 42 99 99 0)
 assert_contains "legacy meta no spurious body fire" "IDLE" "$R"
 
-# APPROVE convergence guard: prior round was APPROVE and GH still shows
-# APPROVED. With no fresh signal → converge. With a body edit on the
-# same HEAD → must fall through to a fresh review pass, NOT converge.
+# Post-round convergence guard (Rule-1 skipped-APPROVE and post-codex
+# APPROVE branches in loop.sh). After a round produces APPROVE, the
+# loop re-snapshots HEAD + body + labels + non-reviewer comments +
+# inbox and re-runs signature_diff_reason against the pre-round
+# snapshot. Empty reason → converge; non-empty → fall through to
+# another review pass. Both Rule-1 and post-codex paths share this
+# logic via `post_approve_trigger_reason`; mirror it here.
+post_approve_decide() {
+  local pre_head="$1" pre_body="$2" pre_labels="$3" pre_issue="$4" pre_review="$5"
+  local post_head="$6" post_body="$7" post_labels="$8" post_issue="$9" post_review="${10}"
+  local inbox="${11}"
+  local reason
+  reason=$(signature_diff_reason \
+    "$post_head" "$pre_head" \
+    "$post_body" "$pre_body" \
+    "$post_labels" "$pre_labels" \
+    "$post_issue" "$pre_issue" \
+    "$post_review" "$pre_review" \
+    "$inbox")
+  if [[ -z "$reason" ]]; then
+    echo "CONVERGE"
+  else
+    echo "FIRE: $reason"
+  fi
+}
+
+# Post-APPROVE / Rule-1-skip / post-codex convergence — nothing moved.
+R=$(post_approve_decide "shaX" "bh1" "lh1" 42 99   "shaX" "bh1" "lh1" 42 99   0)
+assert_contains "post-codex APPROVE + no signal → converge" "CONVERGE" "$R"
+R=$(post_approve_decide "shaX" "bh1" "lh1" 42 99   "shaX" "bh1" "lh1" 42 99   0)
+assert_contains "Rule-1 skipped-APPROVE + no signal → converge" "CONVERGE" "$R"
+
+# Post-codex APPROVE + body edit during codex review → fresh review (T004).
+R=$(post_approve_decide "shaX" "bh1" "lh1" 42 99   "shaX" "bh2" "lh1" 42 99   0)
+assert_contains "post-codex APPROVE + body edit → fresh review" "FIRE: body changed" "$R"
+
+# Post-codex APPROVE + label change during codex review → fresh review (T004).
+R=$(post_approve_decide "shaX" "bh1" "lh1" 42 99   "shaX" "bh1" "lh2" 42 99   0)
+assert_contains "post-codex APPROVE + labels change → fresh review" "FIRE: labels changed" "$R"
+
+# Rule-1 skipped-APPROVE + body edit during round-pre → fresh review (T005).
+R=$(post_approve_decide "shaX" "bh1" "lh1" 42 99   "shaX" "bh2" "lh1" 42 99   0)
+assert_contains "Rule-1 skipped-APPROVE + body edit → fresh review" "FIRE: body changed" "$R"
+
+# Rule-1 skipped-APPROVE + label change during round-pre → fresh review (T005).
+R=$(post_approve_decide "shaX" "bh1" "lh1" 42 99   "shaX" "bh1" "lh2" 42 99   0)
+assert_contains "Rule-1 skipped-APPROVE + labels change → fresh review" "FIRE: labels changed" "$R"
+
+# Post-codex APPROVE + new non-reviewer comment → fresh review.
+R=$(post_approve_decide "shaX" "bh1" "lh1" 42 99   "shaX" "bh1" "lh1" 42 105 0)
+assert_contains "post-codex APPROVE + review comment → fresh review" "FIRE: review comment" "$R"
+R=$(post_approve_decide "shaX" "bh1" "lh1" 42 99   "shaX" "bh1" "lh1" 55 99  0)
+assert_contains "post-codex APPROVE + issue comment → fresh review" "FIRE: issue comment" "$R"
+
+# Post-codex APPROVE + head changed (push during codex) → fresh review.
+R=$(post_approve_decide "shaX" "bh1" "lh1" 42 99   "shaY" "bh1" "lh1" 42 99  0)
+assert_contains "post-codex APPROVE + head changed → fresh review" "FIRE: head changed" "$R"
+
+# Post-codex APPROVE + inbox prompt arrived → fresh review.
+R=$(post_approve_decide "shaX" "bh1" "lh1" 42 99   "shaX" "bh1" "lh1" 42 99  1)
+assert_contains "post-codex APPROVE + inbox prompt → fresh review" "FIRE: inbox prompt" "$R"
+
+# Pre-loop APPROVE convergence guard (existing): prior round was APPROVE
+# and GH still shows APPROVED. With no fresh signal → converge. With a
+# body edit on the same HEAD → must fall through to a fresh review pass,
+# NOT converge.
 
 # Baseline: nothing changed since approval → converge.
 R=$(decide 3 "shaX" "shaX" "bh1" "bh1" "lh1" "lh1" 42 42 99 99 0 APPROVE APPROVED)

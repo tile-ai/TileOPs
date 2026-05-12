@@ -535,6 +535,46 @@ latest_reviewer_review_state() {
     2>/dev/null || echo NONE
 }
 
+# Re-snapshot externally observable PR signals after a round completes
+# and return the same `signature_diff_reason` token used by the idle /
+# pre-loop APPROVE guards. Empty string means nothing moved since the
+# pre-round snapshot (caller may converge); a non-empty token names the
+# fresh signal and the caller must fall through to another review pass.
+#
+# Args (positional, all from the pre-round snapshot the caller already
+# computed):
+#   $1  pre-round HEAD sha
+#   $2  pre-round body hash
+#   $3  pre-round labels hash
+#   $4  pre-round latest issue-comment id
+#   $5  pre-round latest review-comment id
+#
+# Reads $REPO, $PR, $RUN_DIR from the surrounding loop scope.
+post_approve_trigger_reason() {
+  local pre_head="$1" pre_body_hash="$2" pre_labels_hash="$3"
+  local pre_issue="$4" pre_review="$5"
+  local post_view post_head post_body post_labels_json
+  local post_body_hash post_labels_hash post_issue post_review inbox_present
+  post_view=$(gh pr view "$PR" --repo "$REPO" \
+    --json headRefOid,body,labels 2>/dev/null) || post_view='{}'
+  post_head=$(printf '%s' "$post_view" | jq -r '.headRefOid // ""')
+  post_body=$(printf '%s' "$post_view" | jq -r '.body // ""')
+  post_labels_json=$(printf '%s' "$post_view" | jq -c '.labels // []')
+  post_body_hash=$(pr_body_hash "$post_body")
+  post_labels_hash=$(pr_labels_hash "$post_labels_json")
+  post_issue=$(latest_issue_comment_id)
+  post_review=$(latest_review_comment_id)
+  inbox_present=0
+  [[ -s "$RUN_DIR/inbox.md" ]] && inbox_present=1
+  signature_diff_reason \
+    "$post_head" "$pre_head" \
+    "$post_body_hash" "$pre_body_hash" \
+    "$post_labels_hash" "$pre_labels_hash" \
+    "$post_issue" "$pre_issue" \
+    "$post_review" "$pre_review" \
+    "$inbox_present"
+}
+
 # Final convergence path: introspection + retrospective + worktree cleanup, exit 0.
 converge_and_exit() {
   log "converged — APPROVE on PR #$PR. running introspection + retrospective"
@@ -853,15 +893,18 @@ while true; do
       bash "$SKILL_DIR/round-post.sh" 2>&1 || true
     log "round $NEXT_ROUND done (codex skipped) — event=$EVENT blockers=$BLOCKERS sha=${HEAD_SHA:0:7}"
     if [[ "$EVENT" == "APPROVE" ]]; then
-      POST_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-      POST_ISSUE_ID=$(latest_issue_comment_id)
-      POST_REVIEW_ID=$(latest_review_comment_id)
-      if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" \
-            && "$POST_ISSUE_ID" == "$LATEST_ISSUE_ID" \
-            && "$POST_REVIEW_ID" == "$LATEST_REVIEW_ID" \
-            && ! -s "$RUN_DIR/inbox.md" ]]; then
+      # Re-snapshot HEAD + body + labels + non-reviewer comments + inbox
+      # via the same signature helper the idle / pre-loop APPROVE guards
+      # use. Any non-empty token means a signal moved while round-pre
+      # was running and we must not converge — convergence is terminal,
+      # so a body / label / comment edit dropped here is lost forever.
+      POST_TRIGGER=$(post_approve_trigger_reason \
+        "$HEAD_SHA" "$BODY_HASH" "$LABELS_HASH" \
+        "$LATEST_ISSUE_ID" "$LATEST_REVIEW_ID")
+      if [[ -z "$POST_TRIGGER" ]]; then
         converge_and_exit
       fi
+      log "Rule-1 APPROVE skip produced but state moved during round-pre (trigger=$POST_TRIGGER) — falling through"
     fi
     sleep "$POLL_INTERVAL"
     continue
@@ -952,16 +995,18 @@ while true; do
   # keeps the loop alive (a future commit will trigger), convergence is
   # terminal (one re-review pass to absorb late feedback before exit).
   if [[ "$EVENT" == "APPROVE" ]]; then
-    POST_HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-    POST_ISSUE_ID=$(latest_issue_comment_id)
-    POST_REVIEW_ID=$(latest_review_comment_id)
-    if [[ "$POST_HEAD_SHA" == "$HEAD_SHA" \
-          && "$POST_ISSUE_ID" == "$LATEST_ISSUE_ID" \
-          && "$POST_REVIEW_ID" == "$LATEST_REVIEW_ID" \
-          && ! -s "$RUN_DIR/inbox.md" ]]; then
+    # Re-snapshot HEAD + body + labels + non-reviewer comments + inbox
+    # via the same signature helper the idle / pre-loop APPROVE guards
+    # use. Any non-empty token means a signal moved during the codex
+    # review and we must not converge — convergence is terminal, so a
+    # body / label / comment edit dropped here is lost forever.
+    POST_TRIGGER=$(post_approve_trigger_reason \
+      "$HEAD_SHA" "$BODY_HASH" "$LABELS_HASH" \
+      "$LATEST_ISSUE_ID" "$LATEST_REVIEW_ID")
+    if [[ -z "$POST_TRIGGER" ]]; then
       converge_and_exit
     fi
-    log "APPROVE produced but state moved during review (head_changed=$([[ "$POST_HEAD_SHA" != "$HEAD_SHA" ]] && echo y || echo n), issue_comments_changed=$([[ "$POST_ISSUE_ID" != "$LATEST_ISSUE_ID" ]] && echo y || echo n), review_comments_changed=$([[ "$POST_REVIEW_ID" != "$LATEST_REVIEW_ID" ]] && echo y || echo n), inbox=$([[ -s "$RUN_DIR/inbox.md" ]] && echo y || echo n)) — falling through"
+    log "APPROVE produced but state moved during review (trigger=$POST_TRIGGER) — falling through"
   fi
 
   sleep "$POLL_INTERVAL"
