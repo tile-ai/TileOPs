@@ -159,7 +159,7 @@ LogSumExpFwdOp:
 SumFwdOp:
   ref_api: "torch.sum"
   family: reduction
-  status: spec-only  # dim=None not yet implemented; update when impl lands
+  status: implemented
 
   signature:
     inputs:
@@ -211,7 +211,7 @@ SumFwdOp:
 MeanFwdOp:
   ref_api: "torch.mean"
   family: reduction
-  status: spec-only  # dim=None not yet implemented; update when impl lands
+  status: implemented
 
   signature:
     inputs:
@@ -259,7 +259,7 @@ MeanFwdOp:
 AmaxFwdOp:
   ref_api: "torch.amax"
   family: reduction
-  status: spec-only  # dim=None not yet implemented; update when impl lands
+  status: implemented
 
   signature:
     inputs:
@@ -303,7 +303,7 @@ AmaxFwdOp:
 AminFwdOp:
   ref_api: "torch.amin"
   family: reduction
-  status: spec-only  # dim=None not yet implemented; update when impl lands
+  status: implemented
 
   signature:
     inputs:
