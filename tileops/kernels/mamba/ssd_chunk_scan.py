@@ -53,6 +53,7 @@ Notation:
 """
 
 import functools
+import itertools
 from typing import Callable, Optional
 
 import tilelang
@@ -210,11 +211,9 @@ def _ssd_chunk_scan_fwd_kernel(
                 # =====================================================
                 cb_tile  = T.alloc_shared((block_l, block_s), dtype)
                 x_tile   = T.alloc_shared((block_s, block_p), dtype)
-                dA_s         = T.alloc_shared((block_s,), accum_dtype)
-                # decay_dt_s[ss] = exp(-dA_s[ss]) * dt_s[ss]
-                # Merging the two scalars into one saves one shared buffer and
-                # one multiply per (ll, ss) element in the lcb_cast loop.
-                decay_dt_s   = T.alloc_shared((block_s,), accum_dtype)
+                dA_s        = T.alloc_shared((block_s,), accum_dtype)
+                dt_s        = T.alloc_shared((block_s,), accum_dtype)
+                exp_neg_dA_s = T.alloc_shared((block_s,), accum_dtype)
                 lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
 
                 # Only iterate over s-blocks that have at least one s <= l_max.
@@ -241,9 +240,8 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # Precompute decay_dt_s[ss] = exp(-dA_s[ss]) * dt[ss].
-                    # One MUFU (exp) + one multiply per ss, amortised across
-                    # all block_l rows of the lcb_cast loop below.
+                    # dA_cumsum[b,h,c,s] and dt[b,h,c,s]  layout: [B,H,C,L]
+                    # Also precompute exp(-dA_s[ss]) here to amortise MUFU cost.
                     for ss in T.Parallel(block_s):
                         s_abs = s0 + ss
                         dA_s[ss] = T.if_then_else(
@@ -251,12 +249,12 @@ def _ssd_chunk_scan_fwd_kernel(
                             dA_cumsum[bz, bh, bc, s_abs],
                             T.float32(0.0),
                         )
-                        dt_val = T.if_then_else(
+                        dt_s[ss] = T.if_then_else(
                             s_abs < Q,
                             T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
                             T.float32(0.0),
                         )
-                        decay_dt_s[ss] = T.exp(-dA_s[ss]) * dt_val
+                        exp_neg_dA_s[ss] = T.exp(-dA_s[ss])
                     T.sync_threads()
 
                     # full-lower path: s0 + block_s <= l0 means every (ll,ss) has
@@ -266,7 +264,8 @@ def _ssd_chunk_scan_fwd_kernel(
                             lcb_cast[ll, ss] = T.cast(
                                 T.cast(cb_tile[ll, ss], accum_dtype)
                                 * exp_dA_l[ll]
-                                * decay_dt_s[ss],
+                                * exp_neg_dA_s[ss]
+                                * dt_s[ss],
                                 dtype,
                             )
                     else:
@@ -280,7 +279,8 @@ def _ssd_chunk_scan_fwd_kernel(
                                 T.cast(
                                     T.cast(cb_tile[ll, ss], accum_dtype)
                                     * exp_dA_l[ll]
-                                    * decay_dt_s[ss],
+                                    * exp_neg_dA_s[ss]
+                                    * dt_s[ss],
                                     dtype,
                                 ),
                                 T.cast(T.float32(0.0), dtype),
@@ -415,32 +415,14 @@ class SSDChunkScanFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # Focused search around the known-good default (block_l=64, block_p=64,
-        # block_n=128, block_s=64, threads=128).
-        #
-        # NCU evidence:
-        #   - block_l=64, block_p=64 anchors GEMM tile efficiency; smaller tiles
-        #     hurt more than they help (tested: shape-aware default was slower).
-        #   - block_n only affects the history-path loop count; vary minimally.
-        #   - block_s and threads are the primary levers: block_s controls causal
-        #     GEMM tile size and s-loop iteration count; threads controls warps/block
-        #     and latency-hiding capacity.
-        #
-        # 16 configs total — practical compile budget.
-        block_n = min(128, self.d_state)
+        block_l = [32, 64]
+        block_p = [32, 64]
+        block_n = [32, 64, 128]
+        block_s = [64, 128]
+        threads = [128, 256]
         return [
-            {"block_l": 64, "block_p": 64, "block_n": block_n, "block_s": bs, "threads": t}
-            for bs in [64, 128]
-            for t  in [128, 256]
-        ] + [
-            # block_n sweep at fixed block_s=64, threads=128
-            {"block_l": 64, "block_p": 64, "block_n": bn, "block_s": 64, "threads": 128}
-            for bn in [32, 64]
-            if bn <= self.d_state
-        ] + [
-            # threads=64 (2 warps/block) — more blocks/SM at cost of less ILP
-            {"block_l": 64, "block_p": 64, "block_n": block_n, "block_s": bs, "threads": 64}
-            for bs in [64, 128]
+            {"block_l": c[0], "block_p": c[1], "block_n": c[2], "block_s": c[3], "threads": c[4]}
+            for c in itertools.product(block_l, block_p, block_n, block_s, threads)
         ]
 
     def forward(
