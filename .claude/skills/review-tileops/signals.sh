@@ -49,7 +49,14 @@ set -uo pipefail
 sha256_text() {
   # printf '%s' avoids the implicit trailing newline of echo which would
   # otherwise make `sha256_text ""` differ from a true-empty hash.
-  printf '%s' "$1" | sha256sum | cut -c1-16
+  # Prefer GNU `sha256sum`; fall back to BSD/macOS `shasum -a 256`.
+  local out
+  if command -v sha256sum >/dev/null 2>&1; then
+    out=$(printf '%s' "$1" | sha256sum)
+  else
+    out=$(printf '%s' "$1" | shasum -a 256)
+  fi
+  printf '%s' "$out" | cut -c1-16
 }
 
 pr_body_hash() {
@@ -61,13 +68,15 @@ pr_body_hash() {
 
 pr_labels_hash() {
   local labels_json="${1:-[]}"
-  # Sort label names so the hash is order-independent. `jq -e` would
-  # exit non-zero on empty input; default to "[]" so the empty-labels
-  # case yields a stable, deterministic hash.
+  # Sort label names so the hash is order-independent. Serialize as
+  # compact JSON (not join(",")) so a label name containing a comma
+  # cannot collide with two labels split on commas. `jq -e` would exit
+  # non-zero on empty input; default to "[]" so the empty-labels case
+  # yields a stable, deterministic hash.
   local sorted
   sorted=$(printf '%s' "$labels_json" \
-    | jq -r 'if type=="array" then [.[].name] | sort | join(",") else "" end' \
-    2>/dev/null) || sorted=""
+    | jq -c 'if type=="array" then [.[].name] | sort else [] end' \
+    2>/dev/null) || sorted="[]"
   sha256_text "$sorted"
 }
 
