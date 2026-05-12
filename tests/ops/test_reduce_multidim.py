@@ -495,13 +495,17 @@ def test_logsumexp_empty_dim_rejects() -> None:
 
 
 @pytest.mark.smoke
-def test_all_empty_dim_rejects() -> None:
+def test_all_empty_dim_is_noop() -> None:
+    """AllFwdOp honors the spec's ``dim=[]`` no-op contract: output equals
+    ``x.bool()`` with the input shape."""
     from tileops.ops.reduction.all_op import AllFwdOp
 
     x = (torch.randn(2, 3, 4, device="cuda") > 0).to(torch.float16)
     op = AllFwdOp(dtype=torch.float16, dim=[], keepdim=False)
-    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
-        op(x)
+    y = op(x)
+    assert y.shape == x.shape
+    assert y.dtype == torch.bool
+    assert torch.equal(y, x.bool())
 
 
 @pytest.mark.smoke
