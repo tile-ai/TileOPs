@@ -222,73 +222,31 @@ def _gen_int_logical_inputs(
     return a, b
 
 
-# Dtype-coverage axis: exercise every manifest-declared int dtype on a
-# single representative op (LogicalAndFwdOp). The op-coverage axis below
-# fixes dtype = int32 and varies op_cls. Decoupling the axes avoids the
-# dtype x op cross product.
-class LogicalIntDtypeFixture(FixtureBase):
+# Full (op_cls, dtype) product: every binary logical op must match its
+# torch reference on every manifest-declared integral dtype and on bool.
+class LogicalIntBoolMatrixFixture(FixtureBase):
     PARAMS = [
-        ("dtype", [
-            pytest.param(dt, marks=pytest.mark.smoke)
-            for dt in _INT_DTYPES
-        ]),
-    ]
-
-
-@LogicalIntDtypeFixture
-def test_logical_integer_dtype_and(dtype: torch.dtype) -> None:
-    """LogicalAndFwdOp matches torch.logical_and on every int dtype."""
-    n = 4_096
-    shape = (n,)
-    a, b = _gen_int_logical_inputs(n, dtype)
-    op = LogicalAndFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    ref = torch.logical_and(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
-
-
-# Op-coverage axis: at fixed dtype = int32, every binary logical op must
-# match its torch reference.
-class LogicalOpIntFixture(FixtureBase):
-    PARAMS = [
-        ("op_cls, ref_fn", [
-            pytest.param(op_cls, ref_fn, marks=pytest.mark.smoke)
+        ("op_cls, ref_fn, dtype", [
+            pytest.param(op_cls, ref_fn, dt, marks=pytest.mark.smoke)
             for op_cls, ref_fn in _LOGICAL_OP_CASES
+            for dt in (*_INT_DTYPES, torch.bool)
         ]),
     ]
 
 
-@LogicalOpIntFixture
-def test_logical_op_int32(op_cls, ref_fn) -> None:
-    """Each binary logical op matches its torch reference on int32 inputs."""
+@LogicalIntBoolMatrixFixture
+def test_logical_int_bool_matrix(
+    op_cls, ref_fn, dtype: torch.dtype,
+) -> None:
+    """Each binary logical op matches torch on every int / bool dtype."""
     n = 4_096
     shape = (n,)
-    a, b = _gen_int_logical_inputs(n, torch.int32)
-    op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.int32)
-    ref = ref_fn(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    _bool_compare(out, ref)
-
-
-class LogicalBoolDtypeFixture(FixtureBase):
-    PARAMS = [
-        ("op_cls, ref_fn", [
-            pytest.param(op_cls, ref_fn, marks=pytest.mark.smoke)
-            for op_cls, ref_fn in _LOGICAL_OP_CASES
-        ]),
-    ]
-
-
-@LogicalBoolDtypeFixture
-def test_logical_bool_dtype(op_cls, ref_fn) -> None:
-    """LogicalAnd/LogicalOr match torch reference on torch.bool inputs."""
-    n = 4_096
-    shape = (n,)
-    a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
-    b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
-    op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.bool)
+    if dtype == torch.bool:
+        a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+        b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+    else:
+        a, b = _gen_int_logical_inputs(n, dtype)
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
