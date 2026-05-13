@@ -2,9 +2,9 @@
 # Sourced, never executed; no shebang on purpose.
 #
 # The review loop fires a fresh round whenever the PR's externally
-# observable state has materially changed. Sourced by `loop.sh` and
-# exercised standalone by `tests/test_review_signals.sh`. Pure: no gh /
-# git / network calls; callers pass the raw GitHub fields in.
+# observable state has materially changed. Sourced by `loop.sh`.
+# Pure: no gh / git / network calls; callers pass the raw GitHub
+# fields in.
 #
 # Public functions:
 #
@@ -73,9 +73,13 @@ pr_labels_hash() {
   # cannot collide with two labels split on commas. `jq -e` would exit
   # non-zero on empty input; default to "[]" so the empty-labels case
   # yields a stable, deterministic hash.
+  #
+  # ``agent-stuck`` is loop-owned (round-post.sh applies it); excluding
+  # it keeps the loop from observing its own write as a fresh label
+  # signal on the next poll.
   local sorted
   sorted=$(printf '%s' "$labels_json" \
-    | jq -c 'if type=="array" then [.[].name] | sort else [] end' \
+    | jq -c 'if type=="array" then [.[].name | select(. != "agent-stuck")] | sort else [] end' \
     2>/dev/null) || sorted="[]"
   sha256_text "$sorted"
 }

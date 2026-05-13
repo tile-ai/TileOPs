@@ -349,6 +349,9 @@ compose_prompt() {
   local last_event="$9"
   local inbox_block="${10}"
   local consecutive_rc="${11}"
+  local pr_body="${12-}"
+  local pr_labels_json="${13-[]}"
+  local trigger_reason="${14-}"
   local out="$snap.prompt.md"
 
   {
@@ -424,7 +427,29 @@ ANCHOR
     echo "- PR state: \`$pr_state\`"
     echo "- Previous reviewed sha: \`${last_sha:-(first round)}\`"
     echo "- Previous review event: \`${last_event:-(first round)}\`"
+    if [[ -n "$trigger_reason" ]]; then
+      echo "- Fresh-round trigger: \`$trigger_reason\`"
+    fi
     echo ""
+
+    # When the round fires on a body/label edit (HEAD unchanged), the
+    # snap diff is empty — surface the actual PR body and label set so
+    # the reviewer has the changed information to inspect.
+    if [[ "$trigger_reason" == "body changed" || "$trigger_reason" == "labels changed" ]]; then
+      echo "### Current PR body"
+      echo ""
+      if [[ -n "$pr_body" ]]; then
+        printf '%s\n' "$pr_body"
+      else
+        echo "_(empty)_"
+      fi
+      echo ""
+      echo "### Current labels"
+      echo ""
+      printf '%s\n' "$pr_labels_json" \
+        | jq -r 'if type=="array" then [.[].name] | sort | (if length == 0 then "_(none)_" else "- " + join("\n- ") end) else "_(none)_" end'
+      echo ""
+    fi
 
     echo "## Inputs (already prepared at the listed paths — do not re-fetch)"
     echo "- Diff: \`$diff_file\`"
@@ -760,8 +785,16 @@ while true; do
         && "$INBOX_PRESENT" -eq 0 && -z "$TRIGGER_REASON" ]]; then
     CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
     NEW_IDLE=$((CONSECUTIVE_IDLE + 1))
-    jq --argjson n "$NEW_IDLE" '.consecutive_idle=$n' "$META" \
-      > "$META.tmp" && mv "$META.tmp" "$META"
+    # Seed body/label baselines from current values if absent. Without
+    # this, an idling loop on an upgraded or freshly-tracked PR keeps
+    # last_body_hash / last_labels_hash anchored at "" forever, so the
+    # signature_diff_reason empty-prev guard suppresses every later
+    # body/label edit.
+    jq --argjson n "$NEW_IDLE" --arg bh "$BODY_HASH" --arg lh "$LABELS_HASH" \
+      '.consecutive_idle=$n
+       | .last_body_hash   = (if .last_body_hash   == "" then $bh else .last_body_hash   end)
+       | .last_labels_hash = (if .last_labels_hash == "" then $lh else .last_labels_hash end)' \
+      "$META" > "$META.tmp" && mv "$META.tmp" "$META"
     if (( NEW_IDLE >= MAX_IDLE )); then
       log "idle for $NEW_IDLE consecutive polls (MAX_IDLE=$MAX_IDLE) — stalled, exiting"
       set_meta_status "stalled"
@@ -857,7 +890,7 @@ while true; do
   CONSECUTIVE_RC=$(jq -r '.consecutive_request_changes // 0' "$META")
   compose_prompt "$SNAP" "$NEXT_ROUND" "$INCLUDE_CRITERIA" "$INCLUDE_PROCEDURE" \
     "$DIFF_FILE" "$PR_STATE" "$HEAD_SHA" "$LAST_SHA" "$LAST_EVENT" "$INBOX_BLOCK" \
-    "$CONSECUTIVE_RC"
+    "$CONSECUTIVE_RC" "$PR_BODY" "$PR_LABELS_JSON" "${FIRED_REASON:-${TRIGGER_REASON:-}}"
 
   # Convergence Rule 1 — same-SHA APPROVE skip. If a prior round in
   # this loop run already APPROVED the current HEAD, reuse that
