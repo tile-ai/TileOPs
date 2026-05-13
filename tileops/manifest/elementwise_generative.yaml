@@ -14,7 +14,7 @@ AlibiFwdOp:
     params:
       seq_len: {type: int}
       num_heads: {type: int}
-      dtype: {type: torch.dtype}
+      dtype: {type: torch.dtype, default: float16}
     shape_rules:
     - "seq_len > 0"
     - "num_heads > 0"
@@ -61,7 +61,7 @@ SinusoidalFwdOp:
     params:
       seq_len: {type: int}
       d_model: {type: int}
-      dtype: {type: torch.dtype}
+      dtype: {type: torch.dtype, default: float16}
     shape_rules:
     - "seq_len > 0"
     - "d_model > 0"
