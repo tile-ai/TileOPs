@@ -396,6 +396,10 @@ class MoeGroupedGemmNopadKernel(Kernel):
         # rows starting at numel — past the end of A.  Pad with block_m zero rows so
         # the T.copy lands in valid memory; the epilogue guard prevents writing those
         # zeros to C.  Overhead: block_m × K elements (e.g. 64×2048×bf16 = 256 KB).
+        #
+        # TODO: replace F.pad with TMA's built-in OOB zero-fill once TileLang
+        # exposes that knob via T.copy.  The extra copy here is O(block_m × K),
+        # small vs the O(numel × K) main tensor but still worth eliminating.
         if self.K % block_k == 0:
             A = torch.nn.functional.pad(A, (0, 0, 0, block_m))
 

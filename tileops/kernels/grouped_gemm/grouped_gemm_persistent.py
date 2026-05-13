@@ -43,7 +43,7 @@ _DEFAULT_CONFIG = {
     "block_n": 256,
     "block_k": 64,
     "num_stages": 2,
-    "threads": 128,
+    "threads": 256,
     "group_size_m": 1,
 }
 
@@ -83,6 +83,13 @@ def _persistent_grouped_gemm_kernel(
             compile_flags=["-O3", "-DENABLE_BF16", "-include", _ANCHOR_HELPER_PATH],
         )
         def _func(block_m, block_n, block_k, num_stages, threads, group_size_m):
+            # K-aligned path is a manual 2-warpgroup WS double-buffer; barrier
+            # arrive_counts (128 each) are bound to this layout, so threads
+            # must be exactly 256.  Fail early if a caller overrides it.
+            assert threads == 256, (
+                f"K-aligned persistent grouped GEMM requires threads=256 "
+                f"(1 producer WG + 1 consumer WG); got threads={threads}"
+            )
             _num_pid_n = math.ceil(N / block_n)
             _max_tiles = numel // block_m + num_experts
             _total_ctas_ub = _max_tiles * _num_pid_n
@@ -99,7 +106,7 @@ def _persistent_grouped_gemm_kernel(
                 C: T.Tensor((numel, N), dtype),                    # type: ignore  # noqa: F821
                 tile_counter: T.Tensor((1,), "int32"),             # noqa: F821
             ):
-                with T.Kernel(sm_count, threads=256) as (pid,):
+                with T.Kernel(sm_count, threads=threads) as (pid,):
                     # ── Double-buffered SMEM ──
                     A_smem_0 = T.alloc_shared((block_m, block_k), dtype)
                     A_smem_1 = T.alloc_shared((block_m, block_k), dtype)
@@ -447,7 +454,7 @@ class GroupedGemmPersistentKernel(Kernel):
         N: int,
         K: int,
         dtype: torch.dtype = torch.bfloat16,
-        sm_count: int = 132,
+        sm_count: int | None = None,
         config=None,
         tune: bool = False,
     ):
@@ -457,10 +464,16 @@ class GroupedGemmPersistentKernel(Kernel):
         self.N = N
         self.K = K
         self.dtype = dtype
+        if sm_count is None:
+            sm_count = torch.cuda.get_device_properties(
+                torch.cuda.current_device()
+            ).multi_processor_count
         self.sm_count = sm_count
         self.init_config(config, tune)
-        # Persistent global tile counter (re-zeroed on every forward).
-        self._tile_counter = torch.zeros(1, dtype=torch.int32, device="cuda")
+        # Lazy-allocated persistent global tile counter; device is set on the
+        # first forward() based on the input tensor's device so multi-GPU
+        # callers (e.g. caller on cuda:1) don't get a cross-device error.
+        self._tile_counter: torch.Tensor | None = None
 
     @property
     def default_config(self) -> dict:
@@ -478,7 +491,7 @@ class GroupedGemmPersistentKernel(Kernel):
                             "block_n": block_n,
                             "block_k": block_k,
                             "num_stages": num_stages,
-                            "threads": 128,
+                            "threads": 256,
                             "group_size_m": 1,
                         })
         return configs
@@ -501,7 +514,13 @@ class GroupedGemmPersistentKernel(Kernel):
         Returns:
             C: [numel, N] GEMM output.
         """
-        self._tile_counter.zero_()
+        # (Re)allocate the tile counter on the input's device so multi-GPU
+        # callers work correctly.  Zero it every forward — it's the shared
+        # atomic that every CTA increments to claim tiles.
+        if self._tile_counter is None or self._tile_counter.device != A.device:
+            self._tile_counter = torch.zeros(1, dtype=torch.int32, device=A.device)
+        else:
+            self._tile_counter.zero_()
         # Pre-allocate output and zero-fill so that M-tiles/N-tiles skipped by
         # the work-stealing loop (e.g. total_tiles == 0, ragged final M-tile)
         # contribute genuine zeros instead of uninitialised memory.
@@ -511,6 +530,10 @@ class GroupedGemmPersistentKernel(Kernel):
         # at numel — past the end of A.  Pad with block_m zero rows so the
         # T.copy lands in valid memory; the epilogue guard prevents writing
         # those zeros to C.  Overhead: block_m × K elements (tiny).
+        #
+        # TODO: replace F.pad with TMA's built-in OOB zero-fill once TileLang
+        # exposes that knob via T.tma_copy.  F.pad allocates numel*K + block_m*K
+        # bytes every forward; TMA OOB would drop the extra copy.
         block_m = self.config["block_m"]
         block_k = self.config["block_k"]
         if self.K % block_k == 0:
