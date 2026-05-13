@@ -255,10 +255,13 @@ class _ReduceOpBase(Op):
     def _validate_scalar_dim(self) -> None:
         """Validate that ``self.dim`` is an accepted form for a 0-D input.
 
-        PyTorch accepts ``None``, ``0``, ``-1``, ``()``, ``[]``, and any
-        list or tuple whose entries are all in ``(0, -1)`` (e.g. ``[0]``,
-        ``(-1,)``) on a 0-D tensor; integers outside ``{0, -1}`` and dim
-        sequences containing such entries raise ``IndexError``.
+        PyTorch accepts ``None``, ``0``, ``-1``, ``()``, and ``[]`` on a
+        0-D tensor, plus singleton list/tuple forms (``[0]``, ``(0,)``,
+        ``[-1]``, ``(-1,)``). Integers outside ``{0, -1}`` raise
+        ``IndexError`` here; multi-entry sequences (e.g. ``[0, -1]``)
+        are passed through to torch, which may raise ``RuntimeError`` on
+        duplicate dims because ``0`` and ``-1`` alias the same axis on a
+        0-D tensor.
         """
         dim = self.dim
         if dim is None:
