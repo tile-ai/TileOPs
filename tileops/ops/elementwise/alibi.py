@@ -16,6 +16,13 @@ class AlibiFwdOp(Op):
 
     Generates the full (num_heads, seq_len, seq_len) bias tensor.
 
+    Note:
+        Eager-only. Unlike the other elementwise ops in this package,
+        ``AlibiFwdOp`` is not registered as a ``torch.library.custom_op``,
+        so ``torch.compile`` graph capture is not supported. The op has
+        zero tensor inputs and constructs its output entirely from
+        ``__init__`` parameters; no compile-time wrapping is needed.
+
     Args:
         seq_len: Sequence length.
         num_heads: Number of attention heads.
