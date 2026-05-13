@@ -482,42 +482,6 @@ def _register_clamp_max_custom_op(op_cls):
     op_cls._wrapped = _wrapped
 
 
-def _register_generative_custom_op(op_cls, out_shape_fn):
-    """Register a generative op (no tensor input -> out) for torch.compile.
-
-    A scalar ``device_carrier`` tensor is passed so that ``register_fake``
-    can derive the correct device and dtype from a real tensor reference,
-    which is required by the torch.compile tracing infrastructure.
-
-    Args:
-        op_cls: The Op subclass to register.
-        out_shape_fn: Callable(carrier, num_a, num_b) -> Tensor returning
-            the output metadata so register_fake can produce the right shape.
-    """
-    op_name = op_cls._op_name
-
-    @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
-    def _wrapped(
-        device_carrier: torch.Tensor,
-        num_a: int,
-        num_b: int,
-        instance_key: int,
-    ) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
-        return instance._eager_forward()
-
-    @_wrapped.register_fake
-    def _(
-        device_carrier: torch.Tensor,
-        num_a: int,
-        num_b: int,
-        instance_key: int,
-    ) -> torch.Tensor:
-        return out_shape_fn(device_carrier, num_a, num_b)
-
-    op_cls._wrapped = _wrapped
-
-
 def _register_fused_gated_custom_op(op_cls):
     """Register a fused gated elementwise op for torch.compile.
 

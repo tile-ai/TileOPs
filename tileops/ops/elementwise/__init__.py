@@ -25,7 +25,6 @@ from ._base import (
     _register_clamp_min_custom_op,
     _register_clamp_tensor_custom_op,
     _register_fused_gated_custom_op,
-    _register_generative_custom_op,
     _register_lerp_tensor_custom_op,
     _register_masked_fill_custom_op,
     _register_masked_fill_tensor_value_custom_op,
@@ -180,7 +179,11 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# torch.compile registration for all 66 concrete ops
+# torch.compile registration for the concrete elementwise ops.
+#
+# ``AlibiFwdOp`` and ``SinusoidalFwdOp`` are intentionally excluded: they
+# have zero tensor inputs (output is fully derived from ``__init__``
+# params), so they bypass the custom-op wrapper and run eager-only.
 # ---------------------------------------------------------------------------
 
 # --- Unary ops: float-preserving output (1 + 17 + 8 + 1 = 27 ops) ---
@@ -275,20 +278,6 @@ _register_where_custom_op(WhereFwdOp)
 # function is broadcast-aware so torch.compile(fullgraph=True) traces
 # correctly for both same-shape and broadcasting inputs.
 _register_lerp_tensor_custom_op(LerpTensorFwdOp)
-
-# --- Generative ops (2 ops: no tensor input -> out) ---
-_register_generative_custom_op(
-    AlibiFwdOp,
-    out_shape_fn=lambda carrier, num_heads, seq_len: carrier.new_empty(
-        (num_heads, seq_len, seq_len),
-    ),
-)
-_register_generative_custom_op(
-    SinusoidalFwdOp,
-    out_shape_fn=lambda carrier, seq_len, d_model: carrier.new_empty(
-        (seq_len, d_model),
-    ),
-)
 
 # Clean up loop variable
 del _cls

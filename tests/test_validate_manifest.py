@@ -47,8 +47,8 @@ def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
     ``kernel_map`` is placed under ``source`` per the manifest spec.
     """
     sig = {
-        "inputs": inputs or {"x": {"dtype": "float16"}},
-        "outputs": outputs or {"y": {"dtype": "same_as(x)"}},
+        "inputs": inputs if inputs is not None else {"x": {"dtype": "float16"}},
+        "outputs": outputs if outputs is not None else {"y": {"dtype": "same_as(x)"}},
     }
     if params is not None:
         sig["params"] = params
@@ -529,6 +529,60 @@ class TestSchema:
         assert len(matching) == 1, (
             f"Expected one schema error for the duplicated unknown callable, "
             f"got {len(matching)}: {matching}"
+        )
+
+    def test_signature_inputs_may_be_empty_when_params_present(self, validator):
+        """signature.inputs == {} is accepted when signature.params is non-empty.
+
+        Generative ops (ALiBi / sinusoidal positional encodings) synthesize
+        their output entirely from construction-time parameters; they declare
+        no input tensors. The schema gate requires
+        ``len(outputs) >= 1 AND (len(inputs) >= 1 OR len(params) >= 1)``
+        rather than the older ``len(inputs) >= 1`` invariant.
+        """
+        entry = _make_entry(
+            inputs={},
+            outputs={"output": {"dtype": "float16 | bfloat16 | float32"}},
+            params={
+                "seq_len": {"type": "int"},
+                "dtype": {"type": "torch.dtype"},
+            },
+        )
+        errors = validator.check_l0("inputs_empty_op", entry)
+        assert errors == [], (
+            f"signature.inputs == {{}} with non-empty params must pass schema, "
+            f"got: {errors}"
+        )
+
+    def test_signature_both_inputs_and_params_empty_fails(self, validator):
+        """An op with no inputs AND no params has no construction surface."""
+        entry = _make_entry(
+            inputs={},
+            outputs={"output": {"dtype": "float16"}},
+            params={},
+        )
+        errors = validator.check_l0("vacuous_op", entry)
+        assert any(
+            "[schema]" in e and "input" in e and "param" in e
+            for e in errors
+        ), (
+            f"Expected schema error when both inputs and params are empty, "
+            f"got: {errors}"
+        )
+
+    def test_signature_outputs_empty_fails(self, validator):
+        """An op must declare at least one output tensor."""
+        entry = _make_entry(
+            outputs={},
+            params={"dtype": {"type": "torch.dtype"}},
+        )
+        errors = validator.check_l0("no_output_op", entry)
+        assert any(
+            "[schema]" in e and "outputs must declare at least one tensor" in e
+            for e in errors
+        ), (
+            f"Expected schema error when signature.outputs is empty, "
+            f"got: {errors}"
         )
 
 
