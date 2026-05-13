@@ -570,6 +570,21 @@ class TestSchema:
             f"got: {errors}"
         )
 
+    def test_signature_outputs_empty_fails(self, validator):
+        """An op must declare at least one output tensor."""
+        entry = _make_entry(
+            outputs={},
+            params={"dtype": {"type": "torch.dtype"}},
+        )
+        errors = validator.check_l0("no_output_op", entry)
+        assert any(
+            "[schema]" in e and "outputs must declare at least one tensor" in e
+            for e in errors
+        ), (
+            f"Expected schema error when signature.outputs is empty, "
+            f"got: {errors}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # variant_of: cross-entry consistency (R16)
