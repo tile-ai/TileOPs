@@ -557,13 +557,8 @@ def check_l1_signature(
             When None, treated as empty (only forward is checked).
         manifest_static_dims: The signature.static_dims dict from manifest (may be None).
         is_generative: When True, skip the forward()-order check against
-            ``manifest_inputs``. Set by ``check_l1`` for entries whose
-            ``ref_api`` is ``"none"`` and whose ``forward()`` takes zero
-            positional args — i.e. generative ops whose manifest inputs
-            are carriers (device/dtype scalars) rather than semantic
-            tensors, kept only because
-            ``tests/test_ops_manifest.py::test_every_signature_has_inputs_and_outputs``
-            requires ``len(signature.inputs) >= 1``.
+            ``manifest_inputs`` because those manifest inputs are not
+            threaded through ``forward()`` (see caller for detection).
 
     Returns:
         List of error strings (empty if OK).
@@ -582,9 +577,6 @@ def check_l1_signature(
         init_params = []
 
     # 1. forward() order check: manifest inputs + forward-visible params, in order.
-    # Generative-op carve-out: when ``is_generative`` is True the manifest
-    # inputs are carriers, not arguments threaded through ``forward()``, so
-    # there is no order to enforce.
     if not is_generative:
         expected = list(manifest_inputs.keys()) + [
             name for name in manifest_params.keys() if name in forward_params
@@ -728,9 +720,8 @@ def _forward_positional_params(cls) -> list[str] | None:
 
     Only POSITIONAL_ONLY / POSITIONAL_OR_KEYWORD count. KEYWORD_ONLY
     params (those after ``*``) are not part of the positional tuple
-    that manifest ``signature.inputs`` aligns against. Used by both
-    the generative-op carve-out in check_l1 and the C4 forward-signature
-    parity check so the two stay in lockstep.
+    that manifest ``signature.inputs`` aligns against. Shared by check_l1
+    and the C4 forward-signature parity check so they stay in lockstep.
     """
     try:
         sig = inspect.signature(cls.forward)
@@ -833,21 +824,13 @@ def check_l1(
     manifest_static_dims = sig.get("static_dims")
     init_params = _get_init_params(result.cls)
 
-    # Generative-op detection: ``ref_api: "none"`` + zero **positional**
-    # forward() args signals a kernel that synthesizes its output from
-    # construction-time params alone (e.g. ALiBi/Sinusoidal position
-    # encodings). The manifest still carries >= 1 entry under
-    # ``signature.inputs`` to satisfy
-    # ``tests/test_ops_manifest.py::test_every_signature_has_inputs_and_outputs``;
-    # under this carve-out the forward()-order check is skipped because
-    # those manifest "inputs" are carriers, not semantic tensor arguments.
-    # Filter to positional-only kinds so the L1 carve-out matches
-    # check_c4_forward_signature_parity exactly — keyword-only params
-    # (those after ``*``) are not aligned positionally either.
-    # Distinguish ``None`` (introspection failed) from ``[]`` (forward()
-    # has zero positional args). Only the latter qualifies for the
-    # generative-op carve-out; an introspection failure must NOT silently
-    # skip the L1 alignment check.
+    # ``ref_api: "none"`` + zero positional forward() args ⇒ the manifest
+    # inputs are not threaded through forward() and the L1 order check
+    # is skipped.
+    #
+    # Why: introspection-failure (``None``) must NOT silently match the
+    # zero-args case. Compare ``len(...) == 0`` explicitly on the non-None
+    # branch, so a broken ``inspect.signature`` surfaces as an L1 error.
     positional_forward_params = _forward_positional_params(result.cls)
     is_generative = (
         entry.get("ref_api") == "none"
@@ -3395,16 +3378,10 @@ def check_c4_forward_signature_parity(
                 )
         return errors
 
-    # Generative-op carve-out: ``ref_api: "none"`` plus zero forward()
-    # positional args signals a kernel that synthesizes its output from
-    # construction-time params alone. Its manifest inputs are carriers
-    # kept to satisfy
-    # ``tests/test_ops_manifest.py::test_every_signature_has_inputs_and_outputs``;
-    # there is no positional argument to align against them.
-    #
-    # ``positional`` is guaranteed non-None here (introspection failure
-    # returned early above). Use explicit ``len(...) == 0`` so the carve-
-    # out cannot be confused with the introspection-failed path.
+    # ``ref_api: "none"`` + zero positional forward() args ⇒ no positional
+    # argument to align against manifest inputs. ``positional`` is
+    # non-None here (introspection failure returned early above), so
+    # ``len(...) == 0`` cannot be confused with the failure path.
     if entry.get("ref_api") == "none" and len(positional) == 0:
         return errors
 

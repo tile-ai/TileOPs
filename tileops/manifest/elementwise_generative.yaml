@@ -1,22 +1,9 @@
 # elementwise_generative.yaml -- manifest entries for elementwise generative
 # ops: ops whose forward() takes no input tensors and synthesizes a tensor
-# from integer / dtype construction-time parameters.
-#
-# These are TileOPs-private kernels with no single ``torch.*`` symbol they
-# mirror (PyTorch exposes ALiBi and sinusoidal position encodings only as
-# composite Python helpers, not as standalone tensor APIs), so ``ref_api`` is
-# ``"none"`` per .claude/domain-rules/manifest-spec.md. Source of truth for op
-# interfaces in this family. Loaded and merged with other family files by
-# tileops.manifest at runtime. See docs/design/manifest.md for the schema.
-#
-# Generative-op carve-out: each entry below declares a single ``device_carrier``
-# input -- a 0-dim scalar tensor that carries the target device/dtype through
-# the torch.compile tracing path (see ``_register_generative_custom_op``).
-# It is modelled as a manifest input only because the schema invariant
-# ``test_every_signature_has_inputs_and_outputs`` requires
-# ``len(signature.inputs) >= 1``. The op's ``forward()`` takes no positional
-# args; the validator detects the generative pattern from ``ref_api: "none"``
-# + zero-arg ``forward()`` and skips the input/forward-arity alignment.
+# from integer / dtype construction-time parameters. ``ref_api`` is
+# ``"none"`` because PyTorch exposes ALiBi and sinusoidal position encodings
+# only as composite Python helpers, not as standalone tensor APIs. See
+# docs/design/manifest.md for the schema.
 
 AlibiFwdOp:
   # ALiBi position-encoding bias: out[h, i, j] = -slope_h * |i - j|, where
