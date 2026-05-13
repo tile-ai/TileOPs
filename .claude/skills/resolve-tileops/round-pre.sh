@@ -1,0 +1,360 @@
+#!/usr/bin/env bash
+# round-pre.sh <PR_NUMBER>
+#
+# Pre-round work for resolve-tileops: locate state, snapshot the current
+# PR view, decide action (continue/idle/terminate). On 'continue', gather
+# this round's input snapshots and archive any inbox.
+#
+# Prerequisite: preflight.sh must have already initialized state for this
+# PR. round-pre.sh does NOT init; it errors if state is missing.
+#
+# Stdout: single JSON object describing the action and (on continue) the
+#         snapshot prefix the skill body should read.
+# Stderr: human-readable status / errors.
+# Exit 0: action ready (skill body should branch on .action).
+# Exit non-zero: missing state or upstream failure.
+
+set -euo pipefail
+
+PR="${1:?usage: round-pre.sh <PR_NUMBER>}"
+[[ "$PR" =~ ^[0-9]+$ ]] || { echo "round-pre: PR must be a positive integer" >&2; exit 1; }
+command -v gh >/dev/null 2>&1 || { echo "round-pre: missing gh" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "round-pre: missing jq" >&2; exit 1; }
+
+REVIEWER_LOGIN="${RESOLVE_REVIEWER_LOGIN:-Ibuki-wind}"
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Anchor state lookup to the main checkout (see preflight.sh).
+GIT_COMMON_DIR="$(git -C "$SKILL_DIR" rev-parse --git-common-dir 2>/dev/null)" \
+  || { echo "round-pre: cannot resolve repo root from \$SKILL_DIR=$SKILL_DIR" >&2; exit 1; }
+[[ "$GIT_COMMON_DIR" != /* ]] && GIT_COMMON_DIR="$SKILL_DIR/$GIT_COMMON_DIR"
+REPO_PATH="$(cd "$GIT_COMMON_DIR/.." && pwd)"
+
+# Locate state. preflight.sh must have created it.
+META=""
+for m in "$REPO_PATH/.foundry/runs"/*/resolve/meta.json; do
+  [[ -f "$m" ]] || continue
+  if [[ "$(jq -r '.pr_number' "$m" 2>/dev/null)" = "$PR" ]]; then
+    META="$m"
+    break
+  fi
+done
+[[ -n "$META" ]] \
+  || { echo "round-pre: no state for PR #$PR — run preflight.sh first" >&2; exit 1; }
+
+RUN_DIR=$(dirname "$META")
+
+ROUND=$(jq -r '.round' "$META")
+MAX_ROUNDS=$(jq -r '.max_rounds' "$META")
+LAST_REVIEW_ID_PREV=$(jq -r '.last_processed_review_id' "$META")
+LAST_REVIEW_COMMENT_ID_PREV=$(jq -r '.last_processed_review_comment_id' "$META")
+# Stall safety net. Increment on idle (no progress this round), reset on
+# continue. Hitting MAX_IDLE terminates the loop so a dead counterpart
+# (e.g. review-loop crashed) doesn't leave us polling forever. Hardcoded
+# rather than read from meta.json so a state file from an older skill
+# version with a stricter threshold doesn't silently override the
+# current floor.
+CONSECUTIVE_IDLE=$(jq -r '.consecutive_idle // 0' "$META")
+MAX_IDLE=20
+
+# Pin `gh pr view` to the repo recorded in meta.json. Preflight already
+# stamped this to the canonical base repo; without `--repo`, gh defaults
+# to the worktree's origin remote, which in a fork checkout points at
+# the contributor's fork and either fails or fetches the wrong PR.
+META_REPO=$(jq -r '.repo // empty' "$META")
+[[ -n "$META_REPO" ]] \
+  || { echo "round-pre: meta.json missing .repo — re-run preflight.sh" >&2; exit 1; }
+[[ "$META_REPO" =~ ^[^/]+/[^/]+$ ]] \
+  || { echo "round-pre: meta.json .repo='$META_REPO' must be exactly 'owner/name' (single slash, both halves non-empty) — re-run preflight.sh" >&2; exit 1; }
+PR_JSON=$(gh pr view "$PR" --repo "$META_REPO" --json state,headRefOid,isDraft 2>/dev/null) \
+  || { echo "round-pre: gh pr view failed" >&2; exit 1; }
+PR_STATE=$(echo "$PR_JSON" | jq -r .state)
+HEAD_SHA=$(echo "$PR_JSON" | jq -r .headRefOid)
+# Split META_REPO into owner/name for the downstream
+# `gh api repos/<OWNER>/<NAME>/...` calls. Older versions of this
+# script derived these from a `baseRepository` json field, which gh
+# CLI 2.88.1 dropped.
+REPO_OWNER="${META_REPO%%/*}"
+REPO_NAME="${META_REPO##*/}"
+REPO="$REPO_OWNER/$REPO_NAME"
+
+# Reviews + inline comments — paginate so PRs with >1 page don't
+# silently lose the latest IDs / state.
+# --slurp + --jq are mutually exclusive in `gh api`; pipe through
+# external jq instead. --paginate --slurp produces an array of pages
+# (each page is itself an array of items), so jq flattens with [.[][]].
+ALL_REVIEWS=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews")
+ALL_COMMENTS=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/comments")
+LATEST_REVIEWER_STATE=$(printf '%s' "$ALL_REVIEWS" \
+  | jq -r "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")] | sort_by(.submitted_at) | last | .state // \"NONE\"")
+LATEST_REVIEW_ID=$(printf '%s' "$ALL_REVIEWS" \
+  | jq -r "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")|.id]|max // 0")
+LATEST_REVIEW_COMMENT_ID=$(printf '%s' "$ALL_COMMENTS" \
+  | jq -r "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\")|.id]|max // 0")
+
+# Unresolved review thread count — paginate via cursor so PRs with
+# >100 threads don't undercount.
+count_unresolved() {
+  local cursor='' total=0 page page_unresolved has_next
+  while :; do
+    page=$(gh api graphql -f query='
+      query($owner:String!,$repo:String!,$pr:Int!,$after:String){
+        repository(owner:$owner,name:$repo){
+          pullRequest(number:$pr){
+            reviewThreads(first:100, after:$after){
+              nodes{ isResolved }
+              pageInfo{ hasNextPage endCursor }
+            }
+          }
+        }
+      }' -F owner="$REPO_OWNER" -F repo="$REPO_NAME" -F pr="$PR" \
+        ${cursor:+-f after="$cursor"})
+    page_unresolved=$(printf '%s' "$page" \
+      | jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length')
+    total=$((total + page_unresolved))
+    has_next=$(printf '%s' "$page" \
+      | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+    [[ "$has_next" == "true" ]] || break
+    cursor=$(printf '%s' "$page" \
+      | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+  done
+  echo "$total"
+}
+UNRESOLVED=$(count_unresolved)
+
+# Decide action — first match wins. PR_STATE==DRAFT does not stop.
+ACTION=""; MESSAGE=""
+case "$PR_STATE" in
+  MERGED|CLOSED) ACTION="terminate-external"; MESSAGE="PR #$PR is $PR_STATE — stopping." ;;
+esac
+if [[ -z "$ACTION" && "$ROUND" -ge "$MAX_ROUNDS" ]]; then
+  ACTION="terminate-diverged"
+  MESSAGE="Reached max rounds ($MAX_ROUNDS) — human attention needed."
+fi
+if [[ -z "$ACTION" \
+      && "$UNRESOLVED" -eq 0 \
+      && "$LATEST_REVIEWER_STATE" == "APPROVED" \
+      && "$LATEST_REVIEW_ID" == "$LAST_REVIEW_ID_PREV" \
+      && "$LATEST_REVIEW_COMMENT_ID" == "$LAST_REVIEW_COMMENT_ID_PREV" ]]; then
+  # Approve + everything processed → exit. Watermark equality on both
+  # review-id and comment-id ensures we don't skip a not-yet-processed
+  # APPROVE review body that has no inline comments.
+  ACTION="terminate-success"
+  MESSAGE="PR #$PR converged — all threads resolved, reviewer approved."
+fi
+
+# Idle gate: only sleep when there's nothing to do. Unresolved threads
+# (from any source) override idle — the dev should still process them
+# even if the canonical reviewer hasn't posted new activity.
+if [[ -z "$ACTION" \
+      && "$UNRESOLVED" -eq 0 \
+      && "$LATEST_REVIEW_ID" == "$LAST_REVIEW_ID_PREV" \
+      && "$LATEST_REVIEW_COMMENT_ID" == "$LAST_REVIEW_COMMENT_ID_PREV" ]]; then
+  ACTION="idle"
+  MESSAGE="No new review feedback for PR #$PR — sleeping."
+fi
+
+[[ -z "$ACTION" ]] && ACTION="continue"
+
+# Stall counter: increment on idle, reset on continue. If idle persists
+# beyond max_idle, escalate to terminate-stalled — protects against the
+# review-loop dying silently while we poll forever.
+if [[ "$ACTION" == "idle" ]]; then
+  NEW_IDLE=$((CONSECUTIVE_IDLE + 1))
+  if (( NEW_IDLE >= MAX_IDLE )); then
+    ACTION="terminate-stalled"
+    MESSAGE="No reviewer activity for $NEW_IDLE consecutive rounds (max_idle=$MAX_IDLE) — terminating."
+  fi
+  jq --argjson n "$NEW_IDLE" '.consecutive_idle=$n' "$META" \
+    > "$META.tmp" && mv "$META.tmp" "$META"
+elif [[ "$ACTION" == "continue" ]]; then
+  if (( CONSECUTIVE_IDLE != 0 )); then
+    jq '.consecutive_idle=0' "$META" \
+      > "$META.tmp" && mv "$META.tmp" "$META"
+  fi
+fi
+
+NEXT_ROUND=$((ROUND + 1))
+SNAP_PREFIX=""
+
+if [[ "$ACTION" == "continue" ]]; then
+  N=$(printf '%02d' "$NEXT_ROUND")
+  SNAP_PREFIX="$RUN_DIR/rounds/round-$N"
+  mkdir -p "$RUN_DIR/rounds"
+
+  printf '%s' "$ALL_REVIEWS" \
+    | jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_ID_PREV)|{id,state,body,submitted_at}]" \
+    > "$SNAP_PREFIX.new-reviews.json"
+
+  printf '%s' "$ALL_COMMENTS" \
+    | jq "[.[][]|select(.user.login==\"$REVIEWER_LOGIN\" and .id>$LAST_REVIEW_COMMENT_ID_PREV)|{id,path,line,body,in_reply_to_id,created_at}]" \
+    > "$SNAP_PREFIX.new-inline-comments.json"
+
+  # Snapshot ALL unresolved threads (paginated). Inner comments() is
+  # also paginated below: the auto-resolver's whole-thread author check
+  # depends on seeing every comment, so a thread that overflows the
+  # first 100 comments would otherwise look bot-only and get
+  # mis-resolved.
+  : > "$SNAP_PREFIX.unresolved-threads.json"
+  collected=()
+  cursor=''
+  while :; do
+    page=$(gh api graphql -f query='
+      query($owner:String!,$repo:String!,$pr:Int!,$after:String){
+        repository(owner:$owner,name:$repo){
+          pullRequest(number:$pr){
+            reviewThreads(first:100, after:$after){
+              nodes{
+                id isResolved
+                comments(first:100){
+                  pageInfo{ hasNextPage endCursor }
+                  nodes{
+                    id databaseId author{login} body path line
+                    commit{ oid }
+                  }
+                }
+              }
+              pageInfo{ hasNextPage endCursor }
+            }
+          }
+        }
+      }' -F owner="$REPO_OWNER" -F repo="$REPO_NAME" -F pr="$PR" \
+        ${cursor:+-f after="$cursor"})
+    items=$(printf '%s' "$page" \
+      | jq -c '.data.repository.pullRequest.reviewThreads.nodes|map(select(.isResolved==false))[]')
+    if [[ -n "$items" ]]; then
+      while IFS= read -r line; do
+        collected+=("$line")
+      done <<< "$items"
+    fi
+    has_next=$(printf '%s' "$page" \
+      | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+    [[ "$has_next" == "true" ]] || break
+    cursor=$(printf '%s' "$page" \
+      | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+  done
+
+  # Per-thread comments completion: any thread whose first comments page
+  # was truncated gets follow-up node(id) queries until exhausted, then
+  # the new nodes are merged into the thread's comments.nodes array.
+  # Without this, the whole-thread author check in auto-resolve-stale.sh
+  # could miss a human reply that landed past comment #100.
+  for i in "${!collected[@]}"; do
+    thread="${collected[$i]}"
+    has_more=$(printf '%s' "$thread" | jq -r '.comments.pageInfo.hasNextPage // false')
+    [[ "$has_more" != "true" ]] && continue
+    cursor=$(printf '%s' "$thread" | jq -r '.comments.pageInfo.endCursor')
+    thread_id=$(printf '%s' "$thread" | jq -r '.id')
+    extra_nodes='[]'
+    while :; do
+      page=$(gh api graphql -f query='
+        query($id:ID!,$after:String){
+          node(id:$id){
+            ... on PullRequestReviewThread{
+              comments(first:100, after:$after){
+                pageInfo{ hasNextPage endCursor }
+                nodes{
+                  id databaseId author{login} body path line
+                  commit{ oid }
+                }
+              }
+            }
+          }
+        }' -F id="$thread_id" -f after="$cursor")
+      page_nodes=$(printf '%s' "$page" | jq -c '.data.node.comments.nodes')
+      extra_nodes=$(jq -nc --argjson a "$extra_nodes" --argjson b "$page_nodes" '$a + $b')
+      has_next=$(printf '%s' "$page" | jq -r '.data.node.comments.pageInfo.hasNextPage')
+      [[ "$has_next" == "true" ]] || break
+      cursor=$(printf '%s' "$page" | jq -r '.data.node.comments.pageInfo.endCursor')
+    done
+    collected[$i]=$(printf '%s' "$thread" \
+      | jq -c --argjson extra "$extra_nodes" \
+          '.comments.nodes = (.comments.nodes + $extra) | .comments.pageInfo.hasNextPage = false')
+  done
+
+  # Emit the final array.
+  if (( ${#collected[@]} == 0 )); then
+    echo '[]' > "$SNAP_PREFIX.unresolved-threads.json"
+  else
+    {
+      echo '['
+      first_page=1
+      for thread in "${collected[@]}"; do
+        [[ "$first_page" -eq 1 ]] && first_page=0 || echo ','
+        printf '%s' "$thread"
+      done
+      echo ']'
+    } > "$SNAP_PREFIX.unresolved-threads.json"
+  fi
+
+  # Stale-bot auto-resolve: scoped to known bot identities anchored to a
+  # commit older than current HEAD. Humans and bots-at-HEAD are skipped;
+  # unknown bot-like logins are recorded for human triage. The classifier
+  # consumes the unresolved-threads snapshot directly so the pagination
+  # contract above is the single source of truth.
+  # Contract: $SNAP_PREFIX.auto-resolve.json is ALWAYS present after
+  # round-pre completes. Downstream consumers may rely on the file
+  # existing with the standard shape `{resolve, unknown_bot_like, skip}`.
+  # On classifier-missing or classifier-crash we still emit a valid empty
+  # plan plus an `error` field so the failure is visible without breaking
+  # the consumer's jq pipeline.
+  AR_OUT="$SNAP_PREFIX.auto-resolve.json"
+  if [[ -x "$SKILL_DIR/auto-resolve-stale.sh" && -f "$SKILL_DIR/known-bots.json" ]]; then
+    AR_INPUT="$SNAP_PREFIX.auto-resolve-input.json"
+    jq -n --arg sha "$HEAD_SHA" \
+      --slurpfile threads "$SNAP_PREFIX.unresolved-threads.json" \
+      '{head_sha:$sha, threads:$threads[0]}' > "$AR_INPUT"
+    # Write to a tmpfile and only mv into place on success — guarantees
+    # downstream readers never consume a half-written / empty file when
+    # the classifier crashes mid-emit.
+    AR_TMP="$AR_OUT.tmp"
+    if "$SKILL_DIR/auto-resolve-stale.sh" \
+        --threads "$AR_INPUT" \
+        --bots "$SKILL_DIR/known-bots.json" \
+        --run-dir "$RUN_DIR" \
+        --round "$N" \
+        > "$AR_TMP"; then
+      mv "$AR_TMP" "$AR_OUT"
+    else
+      echo "round-pre: auto-resolve-stale exited non-zero" >&2
+      rm -f "$AR_TMP"
+      jq -n --arg err "auto-resolve-stale exited non-zero" \
+        '{resolve:[], unknown_bot_like:[], skip:[], error:$err}' > "$AR_OUT"
+    fi
+  else
+    jq -n --arg err "auto-resolve-stale.sh or known-bots.json missing" \
+      '{resolve:[], unknown_bot_like:[], skip:[], error:$err}' > "$AR_OUT"
+  fi
+
+  gh pr checks "$PR" --repo "$REPO" --json name,state,conclusion \
+    > "$SNAP_PREFIX.ci.json" 2>/dev/null || echo '[]' > "$SNAP_PREFIX.ci.json"
+
+  # Archive inbox for this round, then clear it. Skill body reads the
+  # archived copy if it wants this round's guidance. Ensure inbox-history
+  # exists in case the state dir was partially deleted/corrupted.
+  if [[ -s "$RUN_DIR/inbox.md" ]]; then
+    mkdir -p "$RUN_DIR/inbox-history"
+    mv "$RUN_DIR/inbox.md" "$RUN_DIR/inbox-history/round-$N.md"
+    : > "$RUN_DIR/inbox.md"
+  fi
+
+  # Persist baseline so round-post.sh can compute deltas without
+  # re-querying. Critically, persist LATEST_REVIEW_ID and
+  # LATEST_REVIEW_COMMENT_ID so round-post advances the watermark to the
+  # PRE-round max — items that arrive mid-round get picked up next round.
+  jq -n --arg sha "$HEAD_SHA" \
+    --argjson unresolved "$UNRESOLVED" \
+    --arg state "$LATEST_REVIEWER_STATE" \
+    --argjson rid "$LATEST_REVIEW_ID" \
+    --argjson cid "$LATEST_REVIEW_COMMENT_ID" \
+    '{head_sha:$sha, unresolved_before:$unresolved, reviewer_state_before:$state,
+      latest_review_id:$rid, latest_review_comment_id:$cid}' \
+    > "$RUN_DIR/.round-pre.json"
+fi
+
+jq -n \
+  --arg action "$ACTION" \
+  --arg run_dir "$RUN_DIR" \
+  --arg snap_prefix "$SNAP_PREFIX" \
+  --argjson round "$NEXT_ROUND" \
+  --arg message "$MESSAGE" \
+  '{action:$action, round:$round, run_dir:$run_dir, snap_prefix:$snap_prefix, message:$message}'

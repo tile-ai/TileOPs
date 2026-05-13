@@ -14,11 +14,11 @@ import torch.nn.functional as F
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import (
     AlibiFwdOp,
-    ClampFwdOp,
+    ClampScalarFwdOp,
     EluFwdOp,
     HardtanhFwdOp,
     LeakyReluFwdOp,
-    MaskedFillFwdOp,
+    MaskedFillScalarFwdOp,
     NanToNumFwdOp,
     PreluFwdOp,
     SinusoidalFwdOp,
@@ -27,9 +27,10 @@ from tileops.ops.elementwise import (
 )
 from workloads.workload_base import FixtureBase
 
-# DNN-realistic shapes: (tokens, hidden_dim)
-# small=4096, medium=10240, large=20480 (pow2 + non-pow2 mix)
-_UNARY_SHAPES = [(1024, 4096), (1024, 10240), (1024, 20480)]
+# DNN-realistic shapes: (tokens, hidden_dim).
+# small=4096 (pow2), medium=10240 (pow2), large=11008 (non-pow2,
+# LLaMA-7B intermediate) so each op exercises a non-pow2 shape.
+_UNARY_SHAPES = [(1024, 4096), (1024, 10240), (1024, 11008)]
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 
@@ -78,7 +79,7 @@ _UNARY_OPS = {
     "elu": (EluFwdOp, lambda x: F.elu(x, 1.0), {}),
     "hardtanh": (HardtanhFwdOp, lambda x: F.hardtanh(x, -1.0, 1.0), {"min_val": -1.0, "max_val": 1.0}),
     "softplus": (SoftplusFwdOp, lambda x: F.softplus(x, 1.0, 20.0), {}),
-    "clamp": (ClampFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min_val": -0.5, "max_val": 0.5}),
+    "clamp": (ClampScalarFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min": -0.5, "max": 0.5}),
     "nan_to_num": (NanToNumFwdOp, lambda x: torch.nan_to_num(x, 0.0, 1e4, -1e4), {}),
 }
 
@@ -91,7 +92,10 @@ def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype)
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
+    if op_cls.__name__ == "ClampScalarFwdOp":
+        op = op_cls(input=(n_total,), dtype=dtype, **extra_kwargs)
+    else:
+        op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 
@@ -103,7 +107,7 @@ def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype)
 # prelu (2 inputs: x + weight)
 # ---------------------------------------------------------------------------
 
-_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 10240), (1024, 20480)]
+_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 10240), (1024, 11008)]
 
 
 class PreluBenchCase:
@@ -204,7 +208,7 @@ def test_where_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = WhereBenchmark(test)
     cond, x, y = test.gen_inputs()
 
-    op = WhereFwdOp(N_total=n_total, dtype=dtype)
+    op = WhereFwdOp(condition=tuple(shape), input=tuple(shape), other=tuple(shape), dtype=dtype)
     result = bm.profile(op, cond, x, y)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -248,7 +252,7 @@ def test_masked_fill_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = MaskedFillBenchmark(test)
     x, mask = test.gen_inputs()
 
-    op = MaskedFillFwdOp(N_total=n_total, dtype=dtype, fill_value=-65000.0)
+    op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-65000.0, dtype=dtype)
     result = bm.profile(op, x, mask)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -325,13 +329,16 @@ def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dty
     test = GenerativeBenchCase(seq_len, dim, dtype)
 
     if op_name == "alibi":
-        # ALiBi outputs (num_heads, seq_len, seq_len); override n_total
+        # ALiBi outputs (num_heads, seq_len, seq_len); override n_total.
         test.n_total = dim * seq_len * seq_len
+        shape = (dim, seq_len, seq_len)
         op = AlibiFwdOp(seq_len=seq_len, num_heads=dim, dtype=dtype)
 
         def baseline_fn():
             return _alibi_reference(seq_len, dim, dtype)
     else:
+        # Sinusoidal positional embedding: (seq_len, d_model).
+        shape = (seq_len, dim)
         op = SinusoidalFwdOp(seq_len=seq_len, d_model=dim, dtype=dtype)
 
         def baseline_fn():
@@ -376,7 +383,7 @@ class Fp8UnaryBenchmark(BenchmarkBase[Fp8UnaryBenchCase]):
 _FP8_UNARY_OPS = {
     "leaky_relu": (LeakyReluFwdOp, lambda x: F.leaky_relu(x, 0.01), {}),
     "elu": (EluFwdOp, lambda x: F.elu(x, 1.0), {}),
-    "clamp": (ClampFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min_val": -0.5, "max_val": 0.5}),
+    "clamp": (ClampScalarFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min": -0.5, "max": 0.5}),
 }
 
 
@@ -408,7 +415,10 @@ def test_fp8_unary_independent_bench(
     bm = Fp8UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
+    if op_cls.__name__ == "ClampScalarFwdOp":
+        op = op_cls(input=(n_total,), dtype=dtype, **extra_kwargs)
+    else:
+        op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(f"{op_name}_fp8", locals(), result, tag="tileops")
 
@@ -499,26 +509,26 @@ def test_fp8_selection_bench(
     n_total = prod(shape)
 
     if op_name == "where":
+        # WhereFwdOp manifest does not declare fp8 dtype support, so this
+        # branch records only the torch.where baseline. Instantiating
+        # WhereFwdOp with an fp8 dtype here would violate the manifest
+        # contract; the manifest is the spec, not the code.
         test = Fp8WhereBenchCase(shape, dtype)
         bm = Fp8WhereBenchmark(test)
         cond, x, y = test.gen_inputs()
-
-        op = WhereFwdOp(N_total=n_total, dtype=dtype)
-        result = bm.profile(op, cond, x, y)
-        BenchmarkReport.record(op, locals(), result, tag="tileops")
 
         # torch.where supports fp8 natively (pure selection, no arithmetic)
         def baseline(cond, x, y):
             return torch.where(cond, x, y)
 
         result_bl = bm.profile(baseline, cond, x, y)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+        BenchmarkReport.record("where_fp8", locals(), result_bl, tag="torch-ref")
     else:
         test = Fp8MaskedFillBenchCase(shape, dtype)
         bm = Fp8MaskedFillBenchmark(test)
         x, mask = test.gen_inputs()
 
-        op = MaskedFillFwdOp(N_total=n_total, dtype=dtype, fill_value=-100.0)
+        op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-100.0, dtype=dtype)
         result = bm.profile(op, x, mask)
         BenchmarkReport.record(op, locals(), result, tag="tileops")
 

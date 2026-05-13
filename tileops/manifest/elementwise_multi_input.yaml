@@ -8,31 +8,23 @@
 WhereFwdOp:
   ref_api: "torch.where"
   family: elementwise
-  # status: spec-only — current tileops/ops/elementwise.py:WhereFwdOp does
-  # not conform to this spec:
-  #   - __init__ signature is (N_total, dtype) instead of the
-  #     PyTorch-aligned (condition, input, other) form.
-  #   - forward parameter names are (cond, x, y) instead of
-  #     (condition, input, other).
-  # Code conforms to this spec in a follow-up PR per the manifest trust
-  # model (.claude/rules/manifest-trust-model.md).
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
       condition: {dtype: "bool"}
-      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
+      input: {dtype: "float16 | bfloat16 | float32"}
       other: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "condition.shape == input.shape"
-      - "other.shape == input.shape"
-      - "out.shape == input.shape"
+      # PyTorch's torch.where broadcasts condition/input/other together;
+      # the output shape is the broadcast of all three.
+    - "output.shape == broadcast_shapes(condition.shape, input.shape, other.shape)"
 
   workloads:
-    - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-    - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     # Mixed-dtype op (bool condition + float input/other) — inline mode cannot
@@ -43,7 +35,9 @@ WhereFwdOp:
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    kernel_map:
+      where: WhereFwdKernel
+    op: tileops/ops/elementwise/where.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
     bench_manifest_driven: false
@@ -52,9 +46,11 @@ LerpTensorFwdOp:
   ref_api: "torch.lerp"
   # Tensor-weight variant: weight is a tensor that broadcasts together
   # with input and end (PyTorch's torch.lerp(input, end, weight: Tensor)
-  # overload). No kernel implementation yet — spec-only placeholder.
+  # overload). Implements the 3-way tensor broadcast variant; the Op
+  # layer pre-broadcasts/expands to contiguous 1-D tensors before kernel
+  # dispatch.
   family: elementwise
-  status: spec-only
+  status: implemented
   variant_of: LerpFwdOp
 
   signature:
@@ -63,22 +59,22 @@ LerpTensorFwdOp:
       end: {dtype: "same_as(input)"}
       weight: {dtype: "same_as(input)"}
     outputs:
-      out: {dtype: "same_as(input)"}
+      output: {dtype: "same_as(input)"}
     shape_rules:
-      - "out.shape == tuple(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
+    - "output.shape == broadcast_shapes(input.shape, end.shape, weight.shape)"
 
-  workloads: []
+  workloads:
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(torch.broadcast_shapes(input.shape, end.shape, weight.shape))"
-    # sub + mul + add per element
-    flops: "3 * N"
-    bytes: "(product(input.shape) + product(end.shape) + product(weight.shape) + N) * elem_bytes"
+    func: "tileops.perf.formulas.lerp_tensor_fwd_roofline"
 
   source:
     kernel: tileops/kernels/elementwise.py
-    op: tileops/ops/elementwise.py
+    kernel_map:
+      lerp_tensor: LerpTensorFwdKernel
+    op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
     bench: benchmarks/ops/bench_binary_arith.py
     bench_manifest_driven: false

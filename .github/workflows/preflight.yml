@@ -7,10 +7,10 @@ permissions:
 
 on:
   push:
-    branches: [main]
+    branches: [main, testbed]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    branches: [main, testbed]
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
@@ -139,10 +139,14 @@ jobs:
             exit 0
           fi
 
-          if [[ "$TARGET_BRANCH" != "main" || "$IS_DRAFT" == "true" ]]; then
+          if [[ "$IS_DRAFT" == "true" ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          case "$TARGET_BRANCH" in
+            main|testbed) ;;
+            *) echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
 
           if [[ "$EVENT_ACTION" != "ready_for_review" ]]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"

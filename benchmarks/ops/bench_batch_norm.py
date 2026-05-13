@@ -145,18 +145,22 @@ def _manifest_bwd_params():
 
 @pytest.mark.parametrize("N, C, spatial, dtype, training, tune", _manifest_fwd_params())
 def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
-    inputs = _make_inputs(N, C, spatial, dtype)
+    x, weight, bias, running_mean, running_var = _make_inputs(N, C, spatial, dtype)
+    # Manifest input order: (x, running_mean, running_var, weight, bias).
+    inputs = (x, running_mean, running_var, weight, bias)
 
-    op = BatchNormFwdOp(N, C, *spatial, dtype=dtype, tune=tune)
+    op = BatchNormFwdOp(N, C, *spatial, dtype=dtype, training=training, tune=tune)
 
     test = BatchNormFwdTest(N, C, spatial, dtype, training)
     bm = BatchNormFwdBenchmark(test, op)
 
-    result = bm.profile(lambda *a: op(*a, training=training), *inputs)
+    result = bm.profile(lambda *a: op(*a), *inputs)
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(_torch_bn_fwd, *inputs)
+    result_bl = bm.profile(
+        lambda x, rm, rv, w, b: _torch_bn_fwd(x, w, b, rm, rv), *inputs,
+    )
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-cudnn")
 
 

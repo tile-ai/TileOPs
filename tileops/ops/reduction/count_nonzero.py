@@ -1,8 +1,9 @@
 """CountNonzeroFwdOp: counts non-zero elements along ``dim``, returning int64.
 
 The Op layer validates inputs, normalizes ``dim``, reshapes to 2D (M, N),
-pads to alignment (with 0, which is neutral for sum/count), calls the kernel,
-and reshapes the output back.  Output dtype is always int64.
+calls the kernel, and reshapes the output back.  Alignment padding is handled
+inside the kernel with 0, which is neutral for sum/count.  Output dtype is
+always int64.
 
 Supports any numeric dtype as input including torch.bool, int32, int64, and
 complex types. Inputs with unsupported TileLang storage dtypes (bool, int32,
@@ -27,6 +28,7 @@ from tileops.kernels.reduction.logical_reduce import (
     to_logical_float32,
 )
 
+from ._multidim import EmptyDimPolicy
 from .reduce import _ReduceOpBase
 
 __all__ = ["CountNonzeroFwdOp"]
@@ -35,7 +37,7 @@ __all__ = ["CountNonzeroFwdOp"]
 class CountNonzeroFwdOp(_ReduceOpBase):
     """Count nonzero reduction along ``dim``, returning int64.
 
-    Construction: ``CountNonzeroFwdOp(dtype=..., dim=-1)``.  M and N are
+    Construction: ``CountNonzeroFwdOp(dtype=..., dim=None)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 
@@ -51,8 +53,9 @@ class CountNonzeroFwdOp(_ReduceOpBase):
     Args:
         dtype: Input data type (float16, bfloat16, float32, int32, int64,
                bool, complex64, complex128).
-        dim: Reduction dimension (default -1).  Accepts ``int`` or
-            ``list[int]`` for multi-dim reduction.
+        dim: Reduction dimension (default ``None``, i.e. full reduction).
+            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
+            multi-dim reduction.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
@@ -60,12 +63,14 @@ class CountNonzeroFwdOp(_ReduceOpBase):
     _op_kind = "count_nonzero"
     _kernel_key = "logical_reduce"
     _kernel_cls = LogicalReduceKernel
+    _empty_dim_policy: EmptyDimPolicy = "full"
+    _kernel_handles_padding = True
 
     def __init__(
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = -1,
+        dim: Union[int, List[int], Tuple[int, ...], None] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):

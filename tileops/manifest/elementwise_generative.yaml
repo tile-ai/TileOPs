@@ -1,0 +1,98 @@
+# elementwise_generative.yaml -- manifest entries for elementwise generative
+# ops: ops whose forward() takes no input tensors and synthesizes a tensor
+# from integer / dtype construction-time parameters. ``ref_api`` is
+# ``"none"`` because PyTorch exposes ALiBi and sinusoidal position encodings
+# only as composite Python helpers, not as standalone tensor APIs. See
+# docs/design/manifest.md for the schema.
+
+AlibiFwdOp:
+  # ALiBi position-encoding bias: out[h, i, j] = -slope_h * |i - j|, where
+  # slope_h = 2^(-8 * (h + 1) / num_heads). No tensor input -- the full
+  # (num_heads, seq_len, seq_len) bias is synthesized from the
+  # construction-time integer parameters.
+  ref_api: "none"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      device_carrier: {dtype: "float16 | bfloat16 | float32", shape: "[]"}
+    outputs:
+      output: {dtype: "same_as(device_carrier)", shape: "[num_heads, seq_len, seq_len]"}
+    params:
+      seq_len: {type: int}
+      num_heads: {type: int}
+    shape_rules:
+    - "seq_len > 0"
+    - "num_heads > 0"
+
+  workloads:
+    # Llama-style attention bias dimensions
+  - {device_carrier_shape: [], seq_len: 2048, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-2k"}
+  - {device_carrier_shape: [], seq_len: 4096, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-4k"}
+
+  roofline:
+    vars:
+      H: "output.shape[0]"
+      S: "output.shape[1]"
+    # FLOPs: per output element compute |i - j| (sub + abs = 2) and
+    # multiply by -slope_h (1) = 3. Slope precomputation is O(H) and
+    # negligible vs the H * S * S body.
+    flops: "3 * H * S * S"
+    # Write-only output (no semantic input tensor read).
+    bytes: "H * S * S * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      alibi: AlibiFwdKernel
+    op: tileops/ops/elementwise/alibi.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_independent_elementwise.py
+    bench_manifest_driven: false
+
+SinusoidalFwdOp:
+  # Sinusoidal positional encoding (Vaswani et al. 2017):
+  #   PE(pos, 2i)   = sin(pos / 10000^(2i / d_model))
+  #   PE(pos, 2i+1) = cos(pos / 10000^(2i / d_model))
+  # No tensor input -- the full (seq_len, d_model) encoding is synthesized
+  # from the construction-time integer parameters. d_model must be even.
+  ref_api: "none"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      device_carrier: {dtype: "float16 | bfloat16 | float32", shape: "[]"}
+    outputs:
+      output: {dtype: "same_as(device_carrier)", shape: "[seq_len, d_model]"}
+    params:
+      seq_len: {type: int}
+      d_model: {type: int}
+    shape_rules:
+    - "seq_len > 0"
+    - "d_model > 0"
+    - "d_model % 2 == 0"
+
+  workloads:
+    # Transformer-style positional encodings
+  - {device_carrier_shape: [], seq_len: 2048, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-2k-4k"}
+  - {device_carrier_shape: [], seq_len: 4096, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-4k-4k"}
+
+  roofline:
+    vars:
+      S: "output.shape[0]"
+      D: "output.shape[1]"
+    # FLOPs per output element: dim_pair (1) + 2 * dim_pair / d_model (2) +
+    # pow (1) + div (1) + sin/cos select (1) = 6 per element.
+    flops: "6 * S * D"
+    bytes: "S * D * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      sinusoidal: SinusoidalFwdKernel
+    op: tileops/ops/elementwise/sinusoidal.py
+    test: tests/ops/test_special_elementwise.py
+    bench: benchmarks/ops/bench_independent_elementwise.py
+    bench_manifest_driven: false

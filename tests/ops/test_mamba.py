@@ -1,5 +1,6 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
 from tests.test_base import TestBase, allclose_compare
 from tileops.ops.da_cumsum import DaCumsumFwdOp
@@ -28,32 +29,76 @@ def da_cumsum_fwd_ref(
     A: torch.Tensor,
     num_chunks: int,
     chunk_len: int,
-) -> torch.Tensor:
-    """PyTorch reference for da_cumsum_fwd."""
+    dt_bias: torch.Tensor | None = None,
+    dt_softplus: bool = False,
+    dt_min: float = 0.0,
+    dt_max: float = float("inf"),
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """PyTorch reference for da_cumsum_fwd.
+
+    Applies the same bias / softplus / clamp pipeline as the kernel, then
+    computes dt_out and the chunk-local inclusive prefix sum of dA = dt_out * A.
+
+    Returns:
+        dt_out:    (batch, n_heads, num_chunks, chunk_len) float32
+        dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32
+    """
     b, S, h = dt.shape
     Q = chunk_len
     C = num_chunks
-    dt_chunked = dt.float().reshape(b, C, Q, h)
-    dA = dt_chunked * A.float()
-    dA_cumsum = dA.cumsum(dim=2)
-    return dA_cumsum.permute(0, 3, 1, 2).contiguous()
+    dt_val = dt.float()
+    if dt_bias is not None:
+        dt_val = dt_val + dt_bias.float()
+    if dt_softplus:
+        dt_val = F.softplus(dt_val)
+    dt_val = torch.clamp(dt_val, min=dt_min, max=dt_max)
+    dt_chunked = dt_val.reshape(b, C, Q, h)           # (b, C, Q, h)
+    dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
+    dA = dt_chunked * A.float()                        # (b, C, Q, h)
+    dA_cumsum = dA.cumsum(dim=2).permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
+    return dt_out, dA_cumsum
 
 
 class DaCumsumFwdTest(_DaCumsumFwdTestWorkload, TestBase):
-    def ref_program(self, dt, A):
-        return da_cumsum_fwd_ref(dt, A, self.num_chunks, self.chunk_len)
+    def ref_program(self, dt, A, dt_bias):
+        return da_cumsum_fwd_ref(
+            dt, A, self.num_chunks, self.chunk_len,
+            dt_bias=dt_bias if self.has_dt_bias else None,
+            dt_softplus=self.dt_softplus,
+            dt_min=self.dt_min,
+            dt_max=self.dt_max,
+        )
 
 
 @DaCumsumFwdFixture
-def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, tune):
-    test = DaCumsumFwdTest(batch, num_chunks, chunk_len, n_heads)
+def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, tune):
+    test = DaCumsumFwdTest(
+        batch, num_chunks, chunk_len, n_heads,
+        has_dt_bias=has_dt_bias, dt_softplus=dt_softplus,
+    )
     op = DaCumsumFwdOp(
         batch, num_chunks, chunk_len, n_heads,
         seq_len=num_chunks * chunk_len,
+        has_dt_bias=has_dt_bias,
+        dt_softplus=dt_softplus,
         tune=tune,
     )
     inputs = test.gen_inputs()
     test.check(op, *inputs, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_da_cumsum_fwd_missing_bias_raises():
+    """DaCumsumFwdKernel must raise when has_dt_bias=True but dt_bias is None."""
+    from tileops.kernels.mamba import DaCumsumFwdKernel
+    kernel = DaCumsumFwdKernel(
+        batch=1, num_chunks=2, chunk_len=64, n_heads=4,
+        seq_len=128, has_dt_bias=True,
+    )
+    dt = torch.randn(1, 128, 4, dtype=torch.float32, device="cuda")
+    A = -torch.rand(4, dtype=torch.float32, device="cuda")
+    with pytest.raises(ValueError, match="dt_bias is required"):
+        kernel(dt, A, dt_bias=None)
 
 
 def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
@@ -197,16 +242,22 @@ def ssd_state_passing_fwd_ref(
     dA_chunk_cumsum: torch.Tensor,
     initial_states: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """PyTorch reference for the inter-chunk recurrent scan."""
+    """PyTorch reference for the inter-chunk recurrent scan.
+
+    Matches mamba convention: out[:,c] = state *before* processing chunk c,
+    so out[:,0] = initial_states and final_states = state after chunk C-1.
+    """
     b, c, h, d = states.shape
-    out = []
+    # out[:,0] = s_{-1} = initial_states (state before chunk 0)
+    out = [initial_states.float().clone()]
     s = initial_states.float()
 
     for ci in range(c):
         scale = torch.exp(dA_chunk_cumsum[:, :, ci]).unsqueeze(-1)
         u = states[:, ci, :, :].float()
         s = scale * s + u
-        out.append(s.clone())
+        if ci < c - 1:
+            out.append(s.clone())
 
     return torch.stack(out, dim=1), s
 

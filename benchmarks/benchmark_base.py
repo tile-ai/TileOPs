@@ -513,13 +513,23 @@ class BenchmarkReport:
             op_module = op_or_name.__class__.__module__
             op_config = _extract_op_config(op_or_name)
 
-        # Filter params to only include serializable benchmark parameters
+        # Filter params to only include serializable benchmark parameters.
+        # Tuples of primitives (e.g. ``shape=(4096, 4096)``) are preserved
+        # verbatim so the profile log carries the original input geometry
+        # rather than a flattened element count.
+        def _is_serializable(v: Any) -> bool:
+            if isinstance(v, (int, float, bool, str, torch.dtype)):
+                return True
+            if isinstance(v, tuple):
+                return all(_is_serializable(x) for x in v)
+            return False
+
         filtered_params = {
             k: v for k, v in params.items()
             if k not in ("test", "bm", "op", "inputs", "result", "result_bl",
                          "baseline_fn", "tune")
             and not k.startswith("_")
-            and isinstance(v, (int, float, bool, str, torch.dtype))
+            and _is_serializable(v)
         }
         record_entry = {
             "params": filtered_params,

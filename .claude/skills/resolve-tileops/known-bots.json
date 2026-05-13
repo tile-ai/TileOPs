@@ -1,0 +1,11 @@
+{
+  "review_bot_logins": [
+    "copilot-pull-request-reviewer",
+    "Copilot",
+    "gemini-code-assist",
+    "github-actions"
+  ],
+  "policy": {
+    "unknown_bot_like_login": "log_for_manual_triage"
+  }
+}

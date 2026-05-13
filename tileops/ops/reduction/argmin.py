@@ -20,13 +20,16 @@ __all__ = ["ArgminFwdOp"]
 class ArgminFwdOp(_ReduceOpBase):
     """Argmin reduction along an arbitrary dim, returning int64 indices.
 
-    Construction: ``ArgminFwdOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
+    Construction: ``ArgminFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 
     Args:
         dtype: Input data type.
-        dim: Reduction dimension (default -1).
+        dim: Reduction dimension. ``None`` (the default) matches
+            ``torch.argmin(x)`` semantics: the input is treated as a
+            contiguous flattened 1D buffer and the returned index is into
+            that flattened tensor.
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
@@ -40,7 +43,7 @@ class ArgminFwdOp(_ReduceOpBase):
         self,
         *,
         dtype: torch.dtype,
-        dim: int = -1,
+        dim: Optional[int] = None,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -51,12 +54,18 @@ class ArgminFwdOp(_ReduceOpBase):
         )
 
     def _validate_dim(self) -> None:
-        """Argmin only supports single-dim reduction."""
-        if not isinstance(self.dim, int):
-            raise ValueError(
-                f"ArgminFwdOp only supports scalar dim (int), "
-                f"got {type(self.dim).__name__}: {self.dim!r}"
-            )
+        """Argmin accepts a scalar ``int`` dim or ``None`` (full-tensor reduction).
+
+        ``dim=None`` matches ``torch.argmin(x)`` semantics: the input is
+        treated as a contiguous flattened 1D buffer and the returned index
+        is into that flattened tensor.
+        """
+        if self.dim is None or isinstance(self.dim, int):
+            return
+        raise ValueError(
+            f"ArgminFwdOp only supports scalar dim (int) or None, "
+            f"got {type(self.dim).__name__}: {self.dim!r}"
+        )
 
     def _pad_value(self) -> float:
         """Pad with +inf so padded positions never win argmin."""

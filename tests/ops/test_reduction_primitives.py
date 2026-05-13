@@ -317,12 +317,12 @@ class TestMakeCumulativeScan:
 
 
 # -----------------------------------------------------------------------
-# __init__.py re-exports (AC-2)
+# __init__.py re-exports
 # -----------------------------------------------------------------------
 
 
 class TestInitReExports:
-    """Tests for __init__.py re-exports (AC-2)."""
+    """Tests for __init__.py re-exports."""
 
     @pytest.mark.smoke
     def test_kernel_init_has_all(self):

@@ -362,22 +362,20 @@ def _mha_bwd_wgmma_pipelined_kernel(batch: int,
                 for k_idx in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
                     T.copy(q[bz, k_idx * block_n:(k_idx + 1) * block_n, bx, :], q_frag)
                     T.clear(qkt)
-                    T.gemm(
+                    T.wgmma_gemm(
                         k_shared,
                         q_frag,
                         qkt,
                         transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow,
-                        wg_wait=-1)
+                        policy=T.GemmWarpPolicy.FullRow)
                     T.copy(do[bz, k_idx * block_n:(k_idx + 1) * block_n, bx, :], do_shared)
                     T.clear(dst)
-                    T.gemm(
+                    T.wgmma_gemm(
                         v_shared,
                         do_shared,
                         dst,
                         transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow,
-                        wg_wait=-1)
+                        policy=T.GemmWarpPolicy.FullRow)
 
                     T.copy(lse[bz, bx, k_idx * block_n:(k_idx + 1) * block_n], lse_shared)
                     T.wait_wgmma(1)
@@ -389,18 +387,20 @@ def _mha_bwd_wgmma_pipelined_kernel(batch: int,
                                                        qkt[i, j], 0)
                     T.wait_wgmma(0)
                     T.copy(qkt, qkt_cast)
-                    T.gemm(
-                        qkt_cast, do_shared, dv_frag, policy=T.GemmWarpPolicy.FullRow, wg_wait=-1)
+                    T.wgmma_gemm(
+                        qkt_cast, do_shared, dv_frag, policy=T.GemmWarpPolicy.FullRow)
 
                     T.copy(delta[bz, bx, k_idx * block_n:(k_idx + 1) * block_n], delta_shared)
 
                     for i, j in T.Parallel(block_m, block_n):
                         dst_cast[i, j] = qkt[i, j] * (dst[i, j] - delta_shared[j]) * sm_scale
-                    T.gemm(dst_cast, q_frag, dk_frag, policy=T.GemmWarpPolicy.FullRow, wg_wait=1)
+                    T.wgmma_gemm(dst_cast, q_frag, dk_frag, policy=T.GemmWarpPolicy.FullRow)
+                    T.wait_wgmma(1)
 
                     T.copy(dst_cast, dst_shared)
                     T.clear(dq_frag)
-                    T.gemm(dst_shared, k_shared, dq_frag, transpose_A=True, wg_wait=1)
+                    T.wgmma_gemm(dst_shared, k_shared, dq_frag, transpose_A=True)
+                    T.wait_wgmma(1)
                     T.wait_wgmma(0)
                     T.copy(dq_frag, dq_shared)
                     T.atomic_add(dq[bz, k_idx * block_n:(k_idx + 1) * block_n, bx, :], dq_shared)
@@ -444,15 +444,15 @@ class MHABwdWgmmaPipelinedKernel(Kernel):
     def default_config(self) -> dict:
         return {
             "block_m": 128,
-            "block_n": 128 if self.dim <= 64 else 32,
+            "block_n": 64,
             "num_stages": 2,
             "threads": 256
         }
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
+        block_m = [64, 128]
+        block_n = [64, 128]
         num_stages = [1, 2, 3]
         threads = [128, 256]
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))
@@ -710,13 +710,12 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch: int,
                 for k_idx in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
                     T.copy(q[bz, k_idx * block_n:(k_idx + 1) * block_n, bx, :], q_frag)
                     T.clear(qkt)
-                    T.gemm(
+                    T.wgmma_gemm(
                         k_shared,
                         q_frag,
                         qkt,
                         transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow,
-                        wg_wait=-1)
+                        policy=T.GemmWarpPolicy.FullRow)
                     T.copy(lse[bz, bx, k_idx * block_n:(k_idx + 1) * block_n], lse_shared)
                     for i, j in T.Parallel(block_m, block_n):
                         qkt[i, j] = T.exp2(qkt[i, j] * scale - lse_shared[j])
@@ -726,28 +725,29 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch: int,
                                                        qkt[i, j], 0)
                     T.copy(do[bz, k_idx * block_n:(k_idx + 1) * block_n, bx, :], do_shared)
                     T.clear(dst)
-                    T.gemm(
+                    T.wgmma_gemm(
                         v_shared,
                         do_shared,
                         dst,
                         transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow,
-                        wg_wait=-1)
+                        policy=T.GemmWarpPolicy.FullRow)
                     T.wait_wgmma(1)
                     T.copy(qkt, qkt_cast)
-                    T.gemm(
-                        qkt_cast, do_shared, dv_frag, policy=T.GemmWarpPolicy.FullRow, wg_wait=-1)
+                    T.wgmma_gemm(
+                        qkt_cast, do_shared, dv_frag, policy=T.GemmWarpPolicy.FullRow)
 
                     T.copy(delta[bz, bx, k_idx * block_n:(k_idx + 1) * block_n], delta_shared)
 
                     for i, j in T.Parallel(block_m, block_n):
                         dst_cast[i, j] = qkt[i, j] * (dst[i, j] - delta_shared[j]) * sm_scale
                     T.wait_wgmma(0)
-                    T.gemm(dst_cast, q_frag, dk_frag, policy=T.GemmWarpPolicy.FullRow, wg_wait=1)
+                    T.wgmma_gemm(dst_cast, q_frag, dk_frag, policy=T.GemmWarpPolicy.FullRow)
+                    T.wait_wgmma(1)
 
                     T.copy(dst_cast, dst_shared)
                     T.clear(dq_frag)
-                    T.gemm(dst_shared, k_shared, dq_frag, transpose_A=True, wg_wait=1)
+                    T.wgmma_gemm(dst_shared, k_shared, dq_frag, transpose_A=True)
+                    T.wait_wgmma(1)
                     T.wait_wgmma(0)
                     T.copy(dq_frag, dq_shared)
                     T.atomic_add(dq[bz, k_idx * block_n:(k_idx + 1) * block_n, bx, :], dq_shared)
@@ -793,15 +793,15 @@ class GQABwdWgmmaPipelinedKernel(Kernel):
     def default_config(self) -> dict:
         return {
             "block_m": 128,
-            "block_n": 128 if self.dim <= 64 else 32,
+            "block_n": 64,
             "num_stages": 2,
             "threads": 256
         }
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
+        block_m = [64, 128]
+        block_n = [64, 128]
         num_stages = [1, 2, 3]
         threads = [128, 256]
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))

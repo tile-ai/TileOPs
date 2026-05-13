@@ -197,7 +197,7 @@ class CumsumFwdOp(Op):
             raise ValueError(f"x.dtype must be float32/float16/bfloat16, got {x.dtype}")
 ```
 
-**Validation.** `python scripts/validate_manifest.py` exercises both methods at CI (PR #1005). **L2 parity:** `_infer_output_shapes(mock_inputs)` must agree with `shape_rules`. **L3 parity:** `_validate_dtypes` must accept exactly the declared `dtype` union / `dtype_combos` and reject everything else — disagreement is a hard error. Opting out (for GPU-only ops whose methods cannot be invoked in a CPU-only validator context) requires the manifest entry to declare `parity_opt_out: [shape_parity, dtype_parity]`; do not use it to silence a real disagreement.
+**Validation.** `python scripts/validate_manifest.py` exercises both methods at CI on every op with `status: implemented`; `spec-only` entries skip L2/L3. **L2 parity:** `_infer_output_shapes(mock_inputs)` must agree with `shape_rules`. **L3 parity:** `_validate_dtypes` must accept exactly the declared `dtype` union / `dtype_combos` and reject everything else. Parity disagreements route to `strict_errors`; advisory mode (default) reports them as warnings, `--strict` / `MANIFEST_STRICT_BLOCKING=1` makes them blocking.
 
 **Reference.** [Slot S17](ops-design-reference.md#slot-s17), [S18](ops-design-reference.md#slot-s18).
 
@@ -342,5 +342,5 @@ The scaffold emits T2 (L1-direct) ops only. Once a family accumulates 2-3 ops sh
 - [Base Class Protocol](ops-design-reference.md#base-class-protocol) — `Op` and `Kernel` base class attributes
 - [Naming Conventions](ops-design-reference.md#naming-conventions) — class / `kernel_map` / builder function rules
 - [Parameter Design](ops-design-reference.md#parameter-design) — static vs dynamic op comparison
-- [manifest.md](manifest.md) — manifest entry structure, `static_dims`, `shape_rules`, `roofline`, `parity_opt_out`
+- [manifest.md](manifest.md) — manifest entry structure, `static_dims`, `shape_rules`, `roofline`
 - [roofline.md](roofline.md) — roofline formula syntax, codegen, evaluator surface boundary

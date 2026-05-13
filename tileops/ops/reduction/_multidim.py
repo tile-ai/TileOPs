@@ -11,7 +11,7 @@ without keepdim.
 
 from __future__ import annotations
 
-from typing import Union
+from typing import Literal, Union
 
 import torch
 
@@ -21,22 +21,36 @@ __all__ = [
     "restore_multidim_shape",
 ]
 
+EmptyDimPolicy = Literal["reject", "full", "noop"]
+
 
 def normalize_dim(
-    dim: Union[int, list[int], None], ndim: int,
+    dim: Union[int, list[int], None],
+    ndim: int,
+    *,
+    empty_dim_policy: EmptyDimPolicy = "reject",
 ) -> list[int]:
     """Normalize and validate a dim specification.
 
     Args:
         dim: Single int, list of ints, or ``None`` (reduce all dims).
         ndim: Number of dimensions in the input tensor.
+        empty_dim_policy: ``"reject"`` (default) raises on ``dim=[] / ()``;
+            ``"full"`` returns ``list(range(ndim))``; ``"noop"`` returns
+            ``[]``, signaling the caller to short-circuit and return the
+            input unchanged (modulo manifest-declared output-dtype cast).
+            Each op opts in explicitly because shared callers have
+            different empty-dim contracts.
 
     Returns:
-        Sorted list of non-negative dim indices (ascending).
+        Sorted list of non-negative dim indices (ascending). An empty
+        list is returned only when ``empty_dim_policy="noop"`` and the
+        caller passed ``dim=[]`` / ``dim=()``.
 
     Raises:
         IndexError: If any dim is out of range.
-        ValueError: If duplicate dims are given or dim is an empty list.
+        ValueError: If duplicate dims are given, or if ``dim`` is an
+            empty list / tuple and ``empty_dim_policy="reject"``.
     """
     if dim is None:
         return list(range(ndim))
@@ -44,9 +58,17 @@ def normalize_dim(
     dims = [dim] if isinstance(dim, int) else list(dim)
 
     if len(dims) == 0:
+        if empty_dim_policy == "full":
+            return list(range(ndim))
+        if empty_dim_policy == "noop":
+            # Caller MUST detect [] and short-circuit before entering kernel
+            # paths -- the kernel does not handle a zero-dim reduction.
+            return []
         raise ValueError(
-            "dim=[] is not supported. Provide at least one dimension to reduce, "
-            "or omit dim to reduce over all dimensions."
+            "dim=[] is not supported by this op; pass "
+            "empty_dim_policy=\"full\" to opt in to full-reduction "
+            "or empty_dim_policy=\"noop\" to opt in to the identity "
+            "(return-input) contract."
         )
 
     normalized = []

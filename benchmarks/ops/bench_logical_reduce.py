@@ -32,7 +32,7 @@ def test_any_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = AnyTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = AnyFwdOp(dtype=dtype)
+    op = AnyFwdOp(dtype=dtype, dim=-1)
     bm = ManifestBenchmark(_ANY_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -59,7 +59,7 @@ def test_all_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = AllTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = AllFwdOp(dtype=dtype)
+    op = AllFwdOp(dtype=dtype, dim=-1)
     bm = ManifestBenchmark(_ALL_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -86,7 +86,7 @@ def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = CountNonzeroTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = CountNonzeroFwdOp(dtype=dtype)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     bm = ManifestBenchmark(_COUNT_NONZERO_OP, op, test)
     try:
         result = bm.profile(op, *inputs)

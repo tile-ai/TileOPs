@@ -59,7 +59,7 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = _RMSNormTestBaseline(m, n, dtype)
     inputs = test.gen_inputs()
 
-    op = RMSNormFwdOp(N=n, dtype=dtype, tune=tune)
+    op = RMSNormFwdOp(normalized_shape=(n,), dtype=dtype, tune=tune)
     bm = RMSNormBenchmark(test, op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

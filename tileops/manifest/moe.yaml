@@ -7,7 +7,7 @@
 MoePermutePaddedFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -65,7 +65,7 @@ MoePermutePaddedFwdOp:
 MoePermuteAlignFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only  # impl uses numel instead of total_tokens/top_k; fix in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -115,7 +115,7 @@ MoePermuteAlignFwdOp:
 MoePermuteNopadFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
+  status: spec-only
 
   signature:
     inputs:
@@ -173,7 +173,7 @@ MoePermuteNopadFwdOp:
 MoeUnpermuteFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only  # impl uses num_tokens instead of total_tokens; fix in follow-up PR
+  status: spec-only
 
   signature:
     inputs:

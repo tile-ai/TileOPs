@@ -52,6 +52,7 @@ Notation:
   N = d_state, C = num_chunks, Q = chunk_len
 """
 
+import functools
 import itertools
 from typing import Callable, Optional
 
@@ -64,6 +65,7 @@ from tileops.kernels.kernel_base import Kernel
 __all__ = ["SSDChunkScanFwdKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _ssd_chunk_scan_fwd_kernel(
     batch: int,
     num_chunks: int,
@@ -135,18 +137,6 @@ def _ssd_chunk_scan_fwd_kernel(
                 acc = T.alloc_fragment((block_l, block_p), accum_dtype)
                 T.clear(acc)
 
-                # load target-side dA_cumsum[b,h,c,l] for this l-tile
-                # alloc_shared so it is visible across all thread-parallel loops
-                dA_l = T.alloc_shared((block_l,), accum_dtype)
-                for ll in T.Parallel(block_l):
-                    l_abs = l0 + ll
-                    dA_l[ll] = T.if_then_else(
-                        l_abs < Q,
-                        dA_cumsum[bz, bh, bc, l_abs],
-                        T.float32(0.0),
-                    )
-                T.sync_threads()
-
                 # =====================================================
                 # PART 1: history path
                 #   acc[l,p] += exp(dA_l[l]) * sum_n C[l,g,n] * prev_states[h,p,n]
@@ -171,7 +161,9 @@ def _ssd_chunk_scan_fwd_kernel(
                         )
 
                     # prev_states[b, c, h, p, n]  layout: [B, C, H, P, N]  float32
-                    for nn, pp in T.Parallel(block_n, block_p):
+                    # Iterate (block_p, block_n) so consecutive threads vary nn (the contiguous N
+                    # dim), giving coalesced 128-byte loads instead of strided-by-N accesses.
+                    for pp, nn in T.Parallel(block_p, block_n):
                         n_abs = n0 + nn
                         p_abs = p0 + pp
                         state_tile[nn, pp] = T.if_then_else(
@@ -182,6 +174,17 @@ def _ssd_chunk_scan_fwd_kernel(
 
                     # hist_acc += c_tile @ state_tile
                     T.gemm(c_tile, state_tile, hist_acc)
+
+                # Load dA_l here, just before it's needed (avoids a sync before the N-loop)
+                dA_l = T.alloc_shared((block_l,), accum_dtype)
+                for ll in T.Parallel(block_l):
+                    l_abs = l0 + ll
+                    dA_l[ll] = T.if_then_else(
+                        l_abs < Q,
+                        dA_cumsum[bz, bh, bc, l_abs],
+                        T.float32(0.0),
+                    )
+                T.sync_threads()
 
                 # scale by exp(dA_l[l]) and accumulate into acc
                 for ll, pp in T.Parallel(block_l, block_p):
@@ -387,8 +390,8 @@ class SSDChunkScanFwdKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         block_l = [32, 64]
         block_p = [32, 64]
-        block_n = [16, 32]
-        block_s = [32, 64]
+        block_n = [32, 64, 128]
+        block_s = [64, 128]
         threads = [128, 256]
         return [
             {"block_l": c[0], "block_p": c[1], "block_n": c[2], "block_s": c[3], "threads": c[4]}

@@ -27,11 +27,18 @@ import inspect
 import itertools
 import re
 import sys
+import textwrap
 import types
 import warnings as _warnings
 from pathlib import Path
 
 import yaml
+
+from tileops.manifest.shape_rules import (
+    dim_range_validity,
+    dim_uniqueness,
+    reduced_axes,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
@@ -47,6 +54,25 @@ _TORCH_DTYPES = {
 }
 
 _SAME_AS_RE = re.compile(r"^same_as\(\s*(\w+)\s*\)$")
+# ``promote_int_to_float(ref)``: output dtype is ``float32`` when ``ref``'s
+# dtype is integral (uint8 / int8 / int16 / int32 / int64), else
+# ``same_as(ref)``. Models PyTorch-style int-input promotion for ops like
+# ``torch.reciprocal`` whose float32 result cannot be expressed by
+# ``same_as(input)`` alone.
+_PROMOTE_INT_TO_FLOAT_RE = re.compile(
+    r"^promote_int_to_float\(\s*(\w+)\s*\)$"
+)
+
+# Integral torch dtypes that ``promote_int_to_float`` rewrites to ``float32``.
+# Restricted to the dtypes PyTorch's int-input promotion treats as integral
+# (bool is excluded — it is not part of the integral promotion contract).
+_PROMOTE_INT_DTYPES: frozenset[str] = frozenset({
+    "uint8", "int8", "int16", "int32", "int64",
+})
+
+# Target dtype for integral inputs under ``promote_int_to_float``. Matches
+# PyTorch's default scalar type.
+_PROMOTE_TARGET_DTYPE: str = "float32"
 
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
@@ -120,6 +146,63 @@ def _check_static_dims(op_name: str, sdims: object, sig: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 # schema: YAML structure validation
 # ---------------------------------------------------------------------------
+
+def _check_shape_rule_callables(
+    op_name: str, index: int, rule_str: str,
+) -> list[str]:
+    """Validate that bare-name calls in a shape_rule reference known helpers.
+
+    Parses ``rule_str`` as a Python expression and walks the AST. For each
+    ``ast.Call`` whose ``func`` is a bare ``ast.Name``, verify the name is
+    registered in ``_SHAPE_RULE_BUILTINS``. Method calls
+    (``x.foo(y)`` -> ``func`` is ``ast.Attribute``) and subscript calls
+    (``f[0](x)``) are skipped — only direct name lookups are validated.
+
+    A ``SyntaxError`` on parse surfaces as a single ``[schema]`` error so
+    typos and malformed rules are rejected at L0 without requiring the L2
+    eval context.
+
+    Args:
+        op_name: Op key being validated, used in error messages.
+        index: Index of the rule within ``signature.shape_rules`` for the
+            ``shape_rules[<i>]`` locator in error messages.
+        rule_str: The shape_rule expression source.
+
+    Returns:
+        A list of ``[schema]``-prefixed error strings. Empty when the rule
+        parses cleanly and every bare-name call resolves to a registered
+        builtin.
+    """
+    errors: list[str] = []
+    try:
+        tree = ast.parse(rule_str, mode="eval")
+    except SyntaxError as exc:
+        errors.append(
+            f"[schema] {op_name}: shape_rules[{index}] invalid syntax: "
+            f"{rule_str!r} ({exc})"
+        )
+        return errors
+    # _SHAPE_RULE_BUILTINS is defined later in the module; the forward
+    # reference is intentional. The dict resolves at call time (validation
+    # runs after import), and keeping its single source of truth alongside
+    # the helper callables it maps to avoids splitting the registry.
+    seen_unknown: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Name):
+            continue
+        if func.id in _SHAPE_RULE_BUILTINS or func.id in seen_unknown:
+            continue
+        seen_unknown.add(func.id)
+        errors.append(
+            f"[schema] {op_name}: shape_rules[{index}] calls unknown "
+            f"helper {func.id!r}; allowed callables are "
+            f"{', '.join(sorted(_SHAPE_RULE_BUILTINS))}"
+        )
+    return errors
+
 
 def check_l0(
     op_name: str, entry: dict, *, warnings: list[str] | None = None,
@@ -233,6 +316,10 @@ def check_l0(
                         errors.append(
                             f"[schema] {op_name}: shape_rules[{i}] must be a string"
                         )
+                        continue
+                    errors.extend(
+                        _check_shape_rule_callables(op_name, i, rule)
+                    )
 
         # Reject the deprecated `init_dims` key explicitly (R20 rename).
         # L0 doesn't flag unknown signature keys, so without this check an
@@ -308,6 +395,16 @@ def check_l0(
             )
     elif "source" in entry:
         errors.append(f"[schema] {op_name}: source must be a mapping")
+
+    # parity_opt_out: removed. Manifest entries must not declare it.
+    # Demote the op to ``status: spec-only`` instead of opting out of parity.
+    if _has_parity_opt_out_field(entry):
+        errors.append(
+            f"[schema] {op_name}: 'parity_opt_out' is no longer a valid "
+            f"manifest field. Demote the op to 'status: spec-only' if its "
+            f"manifest-derived methods cannot be exercised by the CPU "
+            f"validator."
+        )
 
     # variant_of: must be a string if present (R16); cross-entry checks in
     # check_variant_of_consistency()
@@ -442,6 +539,7 @@ def check_l1_signature(
     *,
     init_params: list[str] | None = None,
     manifest_static_dims: dict | None = None,
+    is_generative: bool = False,
 ) -> list[str]:
     """Check that forward() params match manifest inputs + params.
 
@@ -458,6 +556,9 @@ def check_l1_signature(
         init_params: List of parameter names from Op.__init__() (excluding 'self').
             When None, treated as empty (only forward is checked).
         manifest_static_dims: The signature.static_dims dict from manifest (may be None).
+        is_generative: When True, skip the forward()-order check against
+            ``manifest_inputs`` because those manifest inputs are not
+            threaded through ``forward()`` (see caller for detection).
 
     Returns:
         List of error strings (empty if OK).
@@ -475,15 +576,16 @@ def check_l1_signature(
     if init_params is None:
         init_params = []
 
-    # 1. forward() order check: manifest inputs + forward-visible params, in order
-    expected = list(manifest_inputs.keys()) + [
-        name for name in manifest_params.keys() if name in forward_params
-    ]
-    if forward_params != expected:
-        errors.append(
-            f"[signature] {op_name}: forward() params {forward_params} do not match "
-            f"manifest order {expected}"
-        )
+    # 1. forward() order check: manifest inputs + forward-visible params, in order.
+    if not is_generative:
+        expected = list(manifest_inputs.keys()) + [
+            name for name in manifest_params.keys() if name in forward_params
+        ]
+        if forward_params != expected:
+            errors.append(
+                f"[signature] {op_name}: forward() params {forward_params} do not match "
+                f"manifest order {expected}"
+            )
 
     # 2. Strict subset check: every manifest param must exist in init OR forward
     code_params = set(forward_params) | set(init_params)
@@ -607,6 +709,36 @@ def _get_forward_params(cls) -> list[str] | None:
         return None
 
 
+_POSITIONAL_KINDS = (
+    inspect.Parameter.POSITIONAL_ONLY,
+    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+)
+
+
+def _forward_positional_params(cls) -> list[str] | None:
+    """Get positional parameter names of cls.forward(), excluding 'self'.
+
+    Only POSITIONAL_ONLY / POSITIONAL_OR_KEYWORD count. KEYWORD_ONLY
+    params (those after ``*``) are not part of the positional tuple
+    that manifest ``signature.inputs`` aligns against. Shared by check_l1
+    and the C4 forward-signature parity check so they stay in lockstep.
+    """
+    try:
+        sig = inspect.signature(cls.forward)
+        return [
+            p for p, v in sig.parameters.items()
+            if p != "self" and v.kind in _POSITIONAL_KINDS
+        ]
+    except (ValueError, TypeError) as exc:
+        # Stash exception text so callers that surface diagnostics can
+        # report ``exc.__class__.__name__: exc`` without changing the
+        # ``None`` return contract for "not inspectable".
+        _forward_positional_params._last_error = (  # type: ignore[attr-defined]
+            f"{exc.__class__.__name__}: {exc}"
+        )
+        return None
+
+
 def _get_init_params(cls) -> list[str]:
     """Get explicit parameter names of cls.__init__(), excluding 'self'.
 
@@ -692,10 +824,25 @@ def check_l1(
     manifest_static_dims = sig.get("static_dims")
     init_params = _get_init_params(result.cls)
 
+    # ``ref_api: "none"`` + zero positional forward() args ⇒ the manifest
+    # inputs are not threaded through forward() and the L1 order check
+    # is skipped.
+    #
+    # Why: introspection-failure (``None``) must NOT silently match the
+    # zero-args case. Compare ``len(...) == 0`` explicitly on the non-None
+    # branch, so a broken ``inspect.signature`` surfaces as an L1 error.
+    positional_forward_params = _forward_positional_params(result.cls)
+    is_generative = (
+        entry.get("ref_api") == "none"
+        and positional_forward_params is not None
+        and len(positional_forward_params) == 0
+    )
+
     return check_l1_signature(
         op_name, manifest_inputs, manifest_params, forward_params,
         init_params=init_params,
         manifest_static_dims=manifest_static_dims,
+        is_generative=is_generative,
     )
 
 
@@ -710,6 +857,8 @@ def check_l2(op_name: str, entry: dict) -> list[str]:
     rules = sig.get("shape_rules", [])
 
     for i, rule in enumerate(rules):
+        if not isinstance(rule, str):
+            continue
         try:
             ast.parse(rule, mode="eval")
         except SyntaxError as exc:
@@ -733,9 +882,23 @@ def _parse_dtype_expr(dtype_str: str) -> list[str]:
 
 
 def _validate_dtype_token(
-    op_name: str, context: str, token: str, tensor_names: set[str],
+    op_name: str,
+    context: str,
+    token: str,
+    tensor_names: set[str],
+    *,
+    allow_promote_int_to_float: bool = True,
+    input_tensor_names: set[str] | None = None,
 ) -> str | None:
-    """Validate a single dtype token. Returns an error string or None."""
+    """Validate a single dtype token. Returns an error string or None.
+
+    ``promote_int_to_float(ref)`` is an output-side-only construct per
+    docs/design/manifest.md R3a. Callers validating input tensors set
+    ``allow_promote_int_to_float=False`` to reject it on the input side.
+    When ``allow_promote_int_to_float`` is True, ``input_tensor_names``
+    must be supplied: ``ref`` must name a signature input tensor — not
+    an output, and not the tensor itself.
+    """
     m = _SAME_AS_RE.match(token)
     if m:
         ref = m.group(1)
@@ -744,7 +907,23 @@ def _validate_dtype_token(
                 f"[dtype] {op_name}: {context} dtype same_as({ref}) "
                 f"references unknown tensor"
             )
-    elif token not in _TORCH_DTYPES:
+        return None
+    m = _PROMOTE_INT_TO_FLOAT_RE.match(token)
+    if m:
+        if not allow_promote_int_to_float:
+            return (
+                f"[dtype] {op_name}: {context} uses promote_int_to_float "
+                f"— this construct is output-side only"
+            )
+        ref = m.group(1)
+        if input_tensor_names is None or ref not in input_tensor_names:
+            return (
+                f"[dtype] {op_name}: {context} dtype "
+                f"promote_int_to_float({ref}) must reference a signature "
+                f"input tensor"
+            )
+        return None
+    if token not in _TORCH_DTYPES:
         return f"[dtype] {op_name}: {context} has unrecognized dtype '{token}'"
     return None
 
@@ -805,18 +984,31 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     """
     errors: list[str] = []
     sig = entry.get("signature", {})
+    raw_inputs = sig.get("inputs")
+    raw_outputs = sig.get("outputs")
+    inputs = raw_inputs if isinstance(raw_inputs, dict) else {}
+    outputs = raw_outputs if isinstance(raw_outputs, dict) else {}
     all_tensors = {}
-    all_tensors.update(sig.get("inputs", {}))
-    all_tensors.update(sig.get("outputs", {}))
+    all_tensors.update(inputs)
+    all_tensors.update(outputs)
 
     tensor_names = set(all_tensors.keys())
+    input_names = set(inputs.keys())
 
-    # Validate signature tensor dtypes
+    # Validate signature tensor dtypes. ``promote_int_to_float`` is an
+    # output-side-only construct (R3a) — reject it on input tensors.
     for tname, attrs in all_tensors.items():
+        if not isinstance(attrs, dict):
+            continue
         dtype_str = attrs.get("dtype", "")
         tokens = _parse_dtype_expr(dtype_str)
+        is_input = tname in input_names
         for token in tokens:
-            err = _validate_dtype_token(op_name, tname, token, tensor_names)
+            err = _validate_dtype_token(
+                op_name, tname, token, tensor_names,
+                allow_promote_int_to_float=not is_input,
+                input_tensor_names=input_names,
+            )
             if err:
                 errors.append(err)
 
@@ -856,6 +1048,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
                     err = _validate_dtype_token(
                         op_name, f"workloads[{i}].dtypes[{j}]",
                         token, tensor_names,
+                        allow_promote_int_to_float=False,
                     )
                     if err:
                         errors.append(err)
@@ -1028,6 +1221,20 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
                     f"dtype, not a union"
                 )
                 continue
+            # promote_int_to_float(ref) is an output-side construct that
+            # may expand to multiple concrete dtypes (e.g. {float32,
+            # float16, bfloat16}). Combo rows must pin a single concrete
+            # dtype per tensor, so reject this DSL form on the combo-value
+            # side. Authors should expand the rows manually or use
+            # same_as(ref) when the dtype is genuinely identity-bound.
+            if _PROMOTE_INT_TO_FLOAT_RE.match(val):
+                errors.append(
+                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
+                    f"{val!r} — combo values must be a single concrete "
+                    f"dtype; promote_int_to_float(...) is allowed only on "
+                    f"signature.outputs"
+                )
+                continue
             opts = _dtype_options_for_tensor(key, val, dtype_options)
             if opts is None:
                 errors.append(
@@ -1180,8 +1387,9 @@ def _input_bound_symbols(sig: dict) -> set[str]:
     shape_eq_re = re.compile(
         r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.shape\s*==\s*\(([^)]*)\)\s*$"
     )
-    inputs = sig.get("inputs") or {}
-    input_names = set(inputs.keys()) if isinstance(inputs, dict) else set()
+    inputs_raw = sig.get("inputs")
+    inputs = inputs_raw if isinstance(inputs_raw, dict) else {}
+    input_names = set(inputs.keys())
     for rule in rules:
         if not isinstance(rule, str):
             continue
@@ -1379,21 +1587,15 @@ def _static_dim_values(
     return out
 
 
-def _parity_opted_out(entry: dict, check: str) -> bool:
-    """Return True when the manifest entry opts out of *check*.
+def _has_parity_opt_out_field(entry: dict) -> bool:
+    """Return True when the (now-removed) ``parity_opt_out`` field is set.
 
-    Recognises two shapes for the ``parity_opt_out`` field:
-      - ``parity_opt_out: true`` — opt out of every parity check.
-      - ``parity_opt_out: [shape_parity, dtype_parity]`` — opt out of
-        specific checks only.
-
-    Used for documented GPU-only ops where the manifest-derived method
-    cannot be invoked from a CPU-only validator context.
+    The field has been removed from the validator and schema. This
+    helper exists so the schema check can surface a hard error pointing
+    reviewers at the migration: demote the op to ``status: spec-only``
+    instead of opting out of parity.
     """
-    opt = entry.get("parity_opt_out")
-    if opt is True:
-        return True
-    return bool(isinstance(opt, list) and check in opt)
+    return "parity_opt_out" in entry
 
 
 def _class_overrides_method(cls: type, name: str) -> bool:
@@ -1411,24 +1613,129 @@ def _class_overrides_method(cls: type, name: str) -> bool:
     return False
 
 
+def _broadcast_shapes(*shapes: object) -> tuple:
+    """Pure-Python equivalent of ``torch.broadcast_shapes``.
+
+    Computes the broadcasted output shape from one or more input shapes
+    using NumPy/PyTorch broadcasting rules: shapes are right-aligned,
+    each dimension must be equal, or one of them must be 1 (or missing).
+
+    Args:
+        *shapes: Iterables of integers (typically tuples or lists)
+            representing tensor shapes. May be empty (scalar shape).
+
+    Returns:
+        The broadcasted shape as a tuple of ints. Returns ``()`` when
+        called with no arguments.
+
+    Raises:
+        ValueError: If the shapes are not broadcast-compatible.
+    """
+    if not shapes:
+        return ()
+    normalized = [tuple(int(d) for d in s) for s in shapes]
+    ndim = max((len(s) for s in normalized), default=0)
+    out: list[int] = []
+    for axis in range(ndim):
+        # Right-align: walk from the trailing dim back.
+        dim = 1
+        for s in normalized:
+            i = len(s) - ndim + axis
+            if i < 0:
+                # This shape has no entry at this axis (treat as 1).
+                continue
+            d = s[i]
+            if d == 1 or d == dim:
+                continue
+            if dim == 1:
+                dim = d
+                continue
+            raise ValueError(
+                f"shapes {shapes!r} are not broadcast-compatible at axis {axis}",
+            )
+        out.append(dim)
+    return tuple(out)
+
+
+def _is_broadcastable_to(src: object, dst: object) -> bool:
+    """Return True if ``src`` is broadcastable *to* ``dst`` (unidirectional).
+
+    Unlike ``broadcast_shapes`` which is symmetric, this predicate fixes
+    the destination shape and asks whether ``src`` can expand into it
+    without shrinking ``dst``: each ``src`` dim (right-aligned) must be
+    equal to the matching ``dst`` dim or be 1, and ``src`` may not have
+    more dimensions than ``dst``.
+
+    Args:
+        src: Source shape (iterable of ints).
+        dst: Destination shape (iterable of ints).
+
+    Returns:
+        True iff ``src`` broadcasts to ``dst``.
+    """
+    src_t = tuple(int(d) for d in src)
+    dst_t = tuple(int(d) for d in dst)
+    if len(src_t) > len(dst_t):
+        return False
+    offset = len(dst_t) - len(src_t)
+    for i, s_dim in enumerate(src_t):
+        d_dim = dst_t[offset + i]
+        if s_dim == d_dim or s_dim == 1:
+            continue
+        return False
+    return True
+
+
 # Safe builtins allowed in shape_rules eval — matches the R11 / R11a
 # documented helper set (see docs/design/ops-design-reference.md). Keep this list
 # aligned with manifest spec; widening it changes the rule language.
-_SHAPE_RULE_BUILTINS: dict = {
-    "len": len,
-    "isinstance": isinstance,
-    "int": int,
-    "tuple": tuple,
-    "list": list,
-    "type": type,
-    "all": all,
-    "any": any,
-    "range": range,
-    "set": set,
-    "abs": abs,
-    "min": min,
-    "max": max,
-}
+#
+# Three name groups live here together: Python primitives (``len`` etc.),
+# broadcasting helpers (``broadcast_shapes`` / ``is_broadcastable_to``,
+# pure-Python so the validator does not require ``torch``), and
+# reduction-dim helpers from ``tileops.manifest.shape_rules``. All three
+# share the same eval-scope contract — callable by bare name from any
+# rule body. Group membership is editorial; the eval scope sees one
+# flat namespace.
+#
+# The dict is built from an explicit (name, callable) list so a name
+# collision between groups raises at validator import time. Silent
+# dict-merge override would let a future helper shadow a Python primitive
+# (or an existing broadcasting helper) without surfacing the conflict.
+_SHAPE_RULE_BUILTIN_PAIRS = [
+    ("len", len),
+    ("isinstance", isinstance),
+    ("int", int),
+    # ``float`` is part of the rule language so manifest rules can spell
+    # sentinel values like ``ord == float('inf')``. Adding new callables
+    # here widens the L2 eval scope; do so only when an existing manifest
+    # rule needs it and the addition has obvious bounded semantics.
+    ("float", float),
+    ("tuple", tuple),
+    ("list", list),
+    ("type", type),
+    ("all", all),
+    ("any", any),
+    ("range", range),
+    ("set", set),
+    ("abs", abs),
+    ("min", min),
+    ("max", max),
+    ("broadcast_shapes", _broadcast_shapes),
+    ("is_broadcastable_to", _is_broadcastable_to),
+    ("dim_range_validity", dim_range_validity),
+    ("dim_uniqueness", dim_uniqueness),
+    ("reduced_axes", reduced_axes),
+]
+_SHAPE_RULE_BUILTINS: dict = {}
+for _entry_name, _entry_fn in _SHAPE_RULE_BUILTIN_PAIRS:
+    if _entry_name in _SHAPE_RULE_BUILTINS:
+        raise RuntimeError(
+            f"shape_rule builtin name collision: {_entry_name!r} is "
+            f"registered twice. Two callables cannot share the same "
+            f"name in the rule eval scope; rename one or unify them."
+        )
+    _SHAPE_RULE_BUILTINS[_entry_name] = _entry_fn
 
 
 def _eval_shape_rule(
@@ -1442,8 +1749,10 @@ def _eval_shape_rule(
     parity error).
 
     The eval globals expose the ``_SHAPE_RULE_BUILTINS`` helper set
-    (``len``, ``isinstance``, ``int``, ``tuple``, ``list``, ``type``,
-    ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``, ``max``) so
+    (``len``, ``isinstance``, ``int``, ``float``, ``tuple``, ``list``,
+    ``type``, ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``,
+    ``max``, ``broadcast_shapes``, ``is_broadcastable_to``,
+    ``dim_range_validity``, ``dim_uniqueness``, ``reduced_axes``) so
     R11 / R11a-style rules that use these helpers can be evaluated
     against the mock context instead of being silently skipped.
 
@@ -1560,20 +1869,10 @@ def check_l2_infer_parity(
         manifest-derived method. The parity check itself is skipped
         because there is no concrete method to compare against, but the
         gap is surfaced (no silent pass).
-      - Honors ``parity_opt_out: [shape_parity]`` (or a bare
-        ``parity_opt_out: true``) declared in the manifest entry — used
-        for documented GPU-only cases where the method cannot be called
-        outside a GPU context. Opt-out suppresses the missing-method
-        warning entirely.
       - An exception raised from the body of ``_infer_output_shapes``
-        (i.e. after argument binding succeeds) is a hard L2 error unless
-        the manifest entry declares ``parity_opt_out: [shape_parity]``
-        (or a bare ``parity_opt_out: true``). This is a policy change
-        from earlier revisions, which downgraded body exceptions to
-        warnings and let real bugs pass silently. Opt-out is reserved
-        for documented GPU-only methods that cannot be exercised outside
-        a GPU context; an introspection-level failure (signature binding
-        mismatch) is still reported separately as a signature error.
+        (i.e. after argument binding succeeds) is a hard L2 error.
+        An introspection-level failure (signature binding mismatch)
+        is still reported separately as a signature error.
       - Produces L2 errors for concrete disagreement: the method returns
         shapes that fail one or more ``shape_rules`` or disagree with a
         declared ``signature.outputs[*].shape``.
@@ -1600,13 +1899,13 @@ def check_l2_infer_parity(
         return errors
 
     if not _class_overrides_method(cls, "_infer_output_shapes"):
-        if not _parity_opted_out(entry, "shape_parity") and warnings is not None:
+        if warnings is not None:
             warnings.append(
                 f"[shape] {op_name}: class does not override "
                 f"_infer_output_shapes — manifest-derived method not yet "
-                f"generated; parity check skipped. Declare "
-                f"'parity_opt_out: [shape_parity]' on the manifest entry "
-                f"to suppress this warning for documented GPU-only ops."
+                f"generated; parity check skipped. Demote the op to "
+                f"'status: spec-only' if the method genuinely cannot be "
+                f"exercised from the CPU validator."
             )
         return errors
 
@@ -1663,21 +1962,10 @@ def check_l2_infer_parity(
     try:
         result = infer_fn(mock_self, **shape_kwargs)
     except Exception as exc:  # noqa: BLE001
-        # Signature is valid but the body raised. This is a genuine
-        # implementation bug: a correct manifest-derived
-        # ``_infer_output_shapes`` must succeed on manifest-compatible
-        # mock inputs. Surface as a hard L2 parity error unless the
-        # entry explicitly opts out via ``parity_opt_out: [shape_parity]``
-        # (documented GPU-only cases). Previously downgraded to a
-        # warning — that let real bugs pass L2.
-        if _parity_opted_out(entry, "shape_parity"):
-            if warnings is not None:
-                warnings.append(
-                    f"[shape] {op_name}: _infer_output_shapes parity "
-                    f"skipped (opt-out) — call raised "
-                    f"{exc.__class__.__name__}: {exc}"
-                )
-            return errors
+        # Signature is valid but the body raised. A correct manifest-
+        # derived ``_infer_output_shapes`` must succeed on manifest-
+        # compatible mock inputs; treat any body-level exception as a
+        # hard L2 parity error.
         errors.append(
             f"[shape] {op_name}: _infer_output_shapes raised "
             f"{exc.__class__.__name__} under mock inputs "
@@ -1924,6 +2212,23 @@ def check_l2_infer_parity(
 # ---------------------------------------------------------------------------
 
 
+def _expand_promote_int_to_float(ref_options: list[str]) -> list[str]:
+    """Resolve ``promote_int_to_float(ref)`` against ``ref``'s dtype options.
+
+    Each integral token in ``ref_options`` (uint8 / int8 / int16 / int32 /
+    int64) maps to ``float32``; non-integral tokens pass through unchanged.
+    Result is de-duplicated, preserving first-seen order.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for opt in ref_options:
+        target = _PROMOTE_TARGET_DTYPE if opt in _PROMOTE_INT_DTYPES else opt
+        if target not in seen:
+            seen.add(target)
+            out.append(target)
+    return out
+
+
 def _dtype_options_for_tensor(
     tname: str, dtype_str: str, resolved: dict[str, list[str]],
 ) -> list[str] | None:
@@ -1949,6 +2254,12 @@ def _dtype_options_for_tensor(
                 # contract. Returning [] here would silently disable parity.
                 return None
             return list(resolved[ref])
+        m = _PROMOTE_INT_TO_FLOAT_RE.match(tokens[0])
+        if m:
+            ref = m.group(1)
+            if ref not in resolved:
+                return None
+            return _expand_promote_int_to_float(resolved[ref])
     out: list[str] = []
     for tok in tokens:
         m = _SAME_AS_RE.match(tok)
@@ -1957,7 +2268,15 @@ def _dtype_options_for_tensor(
             if ref not in resolved:
                 return None
             out.extend(resolved[ref])
-        elif tok in _TORCH_DTYPES:
+            continue
+        m = _PROMOTE_INT_TO_FLOAT_RE.match(tok)
+        if m:
+            ref = m.group(1)
+            if ref not in resolved:
+                return None
+            out.extend(_expand_promote_int_to_float(resolved[ref]))
+            continue
+        if tok in _TORCH_DTYPES:
             out.append(tok)
         else:
             return None
@@ -2157,7 +2476,7 @@ def _combo_accepted(
         # ``_validate_dtypes`` must either accept or raise
         # ValueError/TypeError, never e.g. RuntimeError). Callers
         # enforce this as a hard L3 parity error unless the entry opts
-        # out via ``parity_opt_out: [dtype_parity]``.
+        # without opt-out (parity is unconditional for implemented ops).
         return False, f"unexpected {exc.__class__.__name__}: {exc}"
     return True, None
 
@@ -2180,22 +2499,20 @@ def check_l3_validate_dtypes_parity(
 
     For ops whose class does not override ``_validate_dtypes``, emits a
     warning reporting the missing manifest-derived method (no silent
-    pass). Honors ``parity_opt_out: [dtype_parity]`` (or a bare
-    ``parity_opt_out: true``) declared in the manifest entry to suppress
-    the warning for documented GPU-only cases.
+    pass).
     """
     errors: list[str] = []
     if cls is None:
         return errors
 
     if not _class_overrides_method(cls, "_validate_dtypes"):
-        if not _parity_opted_out(entry, "dtype_parity") and warnings is not None:
+        if warnings is not None:
             warnings.append(
                 f"[dtype] {op_name}: class does not override "
                 f"_validate_dtypes — manifest-derived method not yet "
-                f"generated; parity check skipped. Declare "
-                f"'parity_opt_out: [dtype_parity]' on the manifest entry "
-                f"to suppress this warning for documented GPU-only ops."
+                f"generated; parity check skipped. Demote the op to "
+                f"'status: spec-only' if the method genuinely cannot be "
+                f"exercised from the CPU validator."
             )
         return errors
 
@@ -2279,18 +2596,7 @@ def check_l3_validate_dtypes_parity(
                 continue
             if reason and reason.startswith("unexpected"):
                 # Body-level exception that is not ValueError / TypeError
-                # — a real implementation bug. Surface as a hard L3
-                # parity error unless the entry opts out. Previously
-                # downgraded to warning, which let broken implementations
-                # pass.
-                if _parity_opted_out(entry, "dtype_parity"):
-                    if warnings is not None:
-                        warnings.append(
-                            f"[dtype] {op_name}: _validate_dtypes parity "
-                            f"skipped (opt-out) for dtype_combos[{i}] — "
-                            f"{reason}"
-                        )
-                    continue
+                # — a real implementation bug. Hard L3 parity error.
                 errors.append(
                     f"[dtype] {op_name}: _validate_dtypes raised "
                     f"unexpected exception on dtype_combos[{i}] "
@@ -2360,10 +2666,7 @@ def check_l3_validate_dtypes_parity(
             ):
                 continue
             if reason and reason.startswith("unexpected"):
-                # Body-level unexpected exception — hard error unless
-                # opt-out (parity policy tightened).
-                if _parity_opted_out(entry, "dtype_parity"):
-                    continue
+                # Body-level unexpected exception — hard error.
                 errors.append(
                     f"[dtype] {op_name}: _validate_dtypes raised "
                     f"unexpected exception on non-listed combo "
@@ -2380,7 +2683,7 @@ def check_l3_validate_dtypes_parity(
                 f"combo {candidate!r} (not in dtype_combos)"
             )
 
-        # --- Out-of-union negative probe (AC-3 rejection side) ---------
+        # --- Out-of-union negative probe (rejection side) -------------
         # Mirrors the probe in the no-dtype_combos branch. Picks a listed
         # combo as a baseline (known to be accepted) and substitutes an
         # out-of-union sentinel for each non-same_as-bound input in turn.
@@ -2449,8 +2752,6 @@ def check_l3_validate_dtypes_parity(
                     ):
                         continue
                     if reason and reason.startswith("unexpected"):
-                        if _parity_opted_out(entry, "dtype_parity"):
-                            continue
                         errors.append(
                             f"[dtype] {op_name}: _validate_dtypes raised "
                             f"unexpected exception on out-of-union probe "
@@ -2532,16 +2833,8 @@ def check_l3_validate_dtypes_parity(
                     )
                 continue
             if reason and reason.startswith("unexpected"):
-                # Body-level unexpected exception — hard error unless
-                # opt-out. See ``_combo_accepted`` docstring.
-                if _parity_opted_out(entry, "dtype_parity"):
-                    if warnings is not None:
-                        warnings.append(
-                            f"[dtype] {op_name}: _validate_dtypes parity "
-                            f"skipped (opt-out) for combo {candidate!r} — "
-                            f"{reason}"
-                        )
-                    continue
+                # Body-level unexpected exception — hard error.
+                # See ``_combo_accepted`` docstring.
                 errors.append(
                     f"[dtype] {op_name}: _validate_dtypes raised "
                     f"unexpected exception on combo {candidate!r} — "
@@ -2554,7 +2847,7 @@ def check_l3_validate_dtypes_parity(
                     f"combo {candidate!r} drawn from manifest dtype unions"
                 )
 
-        # --- Out-of-union negative probe (AC-3 rejection side) ---------
+        # --- Out-of-union negative probe (rejection side) -------------
         # For each input, substitute one dtype outside its declared union
         # and assert _validate_dtypes rejects it. Candidates are built on
         # a same_as-honouring baseline so the only deviation is the
@@ -2618,8 +2911,6 @@ def check_l3_validate_dtypes_parity(
                     ):
                         continue
                     if reason and reason.startswith("unexpected"):
-                        if _parity_opted_out(entry, "dtype_parity"):
-                            continue
                         errors.append(
                             f"[dtype] {op_name}: _validate_dtypes raised "
                             f"unexpected exception on out-of-union probe "
@@ -2671,8 +2962,6 @@ def check_l3_validate_dtypes_parity(
                     ):
                         continue
                     if reason and reason.startswith("unexpected"):
-                        if _parity_opted_out(entry, "dtype_parity"):
-                            continue
                         errors.append(
                             f"[dtype] {op_name}: _validate_dtypes raised "
                             f"unexpected exception on same_as probe "
@@ -2872,6 +3161,362 @@ def check_l4_benchmark(
 
 
 # ---------------------------------------------------------------------------
+# Strict parity checks (C1-C7) for status: implemented ops
+# ---------------------------------------------------------------------------
+#
+# C1 (shape parity)  and C2 (dtype parity) are implemented by
+# ``check_l2_infer_parity`` and ``check_l3_validate_dtypes_parity``
+# respectively; the orchestrator wires those in directly.
+#
+# This block adds the four remaining contracts:
+#
+#   C3 — ctor signature parity   (defaults + kw-only beyond L1 names)
+#   C4 — forward signature parity (positional names match
+#        ``signature.inputs`` order; complements L1)
+#   C5 — ``dispatch_kernel`` invariant (sentinel kernel pass-through)
+#   C6 — ``_validate_dtypes`` is not the ``Op`` base stub
+#   C7 — ``eval_roofline``     is not the ``Op`` base stub
+
+# Infrastructure params that the validator filters out of ctor parity:
+# they never appear in manifest ``signature.params`` but are part of the
+# Op interface contract.
+_CTOR_INFRA_PARAMS = frozenset({"self", "kernel_map", "tune", "strategy"})
+
+# Sentinel for "manifest did not declare this attribute" — distinct from
+# any legitimate manifest value (including the string "REQUIRED" used to
+# explicitly mark a parameter as required).
+_MISSING = object()
+
+
+def _init_calls_dispatch_kernel(cls: type) -> "bool | None":
+    """Return True if ``cls.__init__`` body either calls
+    ``self.dispatch_kernel(...)`` directly or delegates via
+    ``super().__init__(...)``.
+
+    ``None`` means we could not parse the source (built-in / dynamically
+    generated ``__init__``); the caller treats that as inconclusive.
+
+    Pure-AST inspection per the Slot S13 contract in
+    ``docs/design/ops-design-reference.md``: the body must call
+    ``self.dispatch_kernel(kernel_map)`` to honor the routing override.
+    ``super().__init__(...)`` satisfies S13 transitively — the parent's
+    body owns the dispatch call. No runtime construction; no GPU.
+    """
+    try:
+        src = inspect.getsource(cls.__init__)
+    except (OSError, TypeError):
+        return None
+    try:
+        tree = ast.parse(textwrap.dedent(src))
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        # self.dispatch_kernel(...)
+        if (
+            node.func.attr == "dispatch_kernel"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+        ):
+            return True
+        # super().__init__(...): delegates to the parent's body which is
+        # expected to honor S13 itself.
+        if (
+            node.func.attr == "__init__"
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Name)
+            and node.func.value.func.id == "super"
+        ):
+            return True
+    return False
+
+
+def check_c3_ctor_signature_parity(
+    op_name: str,
+    entry: dict,
+    cls: type | None,
+    *,
+    warnings: list[str] | None = None,
+) -> list[str]:
+    """C3: ctor parameters match manifest ``signature.params``.
+
+    Compares the names, defaults, and keyword-only flag of every
+    ``__init__`` parameter (after stripping ``_CTOR_INFRA_PARAMS``)
+    against ``signature.params``. L1 already covers presence; this
+    check adds the default-value and kw-only contracts.
+    """
+    errors: list[str] = []
+    if cls is None:
+        return errors
+
+    sig = entry.get("signature", {})
+    manifest_params = sig.get("params") or {}
+    if not isinstance(manifest_params, dict):
+        return errors
+
+    try:
+        py_sig = inspect.signature(cls.__init__)
+    except (ValueError, TypeError) as exc:
+        if warnings is not None:
+            warnings.append(
+                f"[ctor] {op_name}: inspect.signature(__init__) raised "
+                f"{exc.__class__.__name__}: {exc}"
+            )
+        return errors
+
+    code_params: dict[str, inspect.Parameter] = {}
+    for pname, p in py_sig.parameters.items():
+        if pname in _CTOR_INFRA_PARAMS:
+            continue
+        if p.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            continue
+        code_params[pname] = p
+
+    for pname, pattrs in manifest_params.items():
+        if pname not in code_params:
+            # L1 already reports missing params; do not double-fire.
+            continue
+        if not isinstance(pattrs, dict):
+            continue
+        code_p = code_params[pname]
+
+        # Default-value parity: when the manifest declares a default the
+        # ctor default must match it value-for-value. Manifest sentinel
+        # ``REQUIRED`` (or absent ``default``) means the param has no
+        # default; the ctor must omit one too.
+        manifest_default = pattrs.get("default", _MISSING)
+        manifest_has_default = (
+            manifest_default is not _MISSING and manifest_default != "REQUIRED"
+        )
+        code_has_default = code_p.default is not inspect.Parameter.empty
+        if manifest_has_default and not code_has_default:
+            errors.append(
+                f"[ctor] {op_name}: param {pname!r} has manifest default "
+                f"{manifest_default!r} but no default on __init__"
+            )
+        elif (not manifest_has_default) and code_has_default:
+            errors.append(
+                f"[ctor] {op_name}: param {pname!r} has __init__ default "
+                f"{code_p.default!r} but no manifest default"
+            )
+        elif (
+            manifest_has_default
+            and code_has_default
+            and code_p.default != manifest_default
+        ):
+            errors.append(
+                f"[ctor] {op_name}: param {pname!r} default mismatch — "
+                f"manifest={manifest_default!r}, code={code_p.default!r}"
+            )
+
+        # Keyword-only parity: manifest may declare ``kw_only: true``.
+        manifest_kw_only = bool(pattrs.get("kw_only", False))
+        code_kw_only = code_p.kind is inspect.Parameter.KEYWORD_ONLY
+        if manifest_kw_only != code_kw_only:
+            errors.append(
+                f"[ctor] {op_name}: param {pname!r} kw_only mismatch — "
+                f"manifest={manifest_kw_only}, code={code_kw_only}"
+            )
+
+    # Code-only extras detection deferred: a faithful "this kwarg is
+    # not declared anywhere in the manifest" rule needs to consult
+    # ``signature.params`` AND ``signature.static_dims`` AND shape /
+    # dtype variables exposed by the op protocol (e.g. ``N_total``,
+    # ``dtype`` in elementwise). Computing the protocol-derived
+    # allowed set requires interpretation of manifest
+    # ``signature.inputs`` shape strings + the op family's convention,
+    # which is out of scope for the C3 helper as written. Tracked as
+    # a strict-parity follow-up.
+
+    return errors
+
+
+def check_c4_forward_signature_parity(
+    op_name: str,
+    entry: dict,
+    cls: type | None,
+    *,
+    warnings: list[str] | None = None,
+) -> list[str]:
+    """C4: forward positional names match ``signature.inputs`` order.
+
+    L1 already enforces this for the legacy signature path; the C4
+    function exists so the strict gate can run independently of the
+    older ``check_l1`` and report under the ``[forward]`` tag for
+    follow-up triage.
+    """
+    errors: list[str] = []
+    if cls is None:
+        return errors
+
+    sig = entry.get("signature", {})
+    manifest_inputs = sig.get("inputs") or {}
+    if not isinstance(manifest_inputs, dict):
+        return errors
+    expected = list(manifest_inputs.keys())
+
+    positional = _forward_positional_params(cls)
+    if positional is None:
+        if warnings is not None:
+            detail = getattr(
+                _forward_positional_params, "_last_error", None
+            )
+            if detail:
+                warnings.append(
+                    f"[forward] {op_name}: inspect.signature(forward) "
+                    f"raised {detail}"
+                )
+                # Clear so a later call site sees only its own failure.
+                _forward_positional_params._last_error = None  # type: ignore[attr-defined]
+            else:
+                warnings.append(
+                    f"[forward] {op_name}: inspect.signature(forward) failed"
+                )
+        return errors
+
+    # ``ref_api: "none"`` + zero positional forward() args ⇒ no positional
+    # argument to align against manifest inputs. ``positional`` is
+    # non-None here (introspection failure returned early above), so
+    # ``len(...) == 0`` cannot be confused with the failure path.
+    if entry.get("ref_api") == "none" and len(positional) == 0:
+        return errors
+
+    actual_prefix = positional[: len(expected)]
+    if actual_prefix != expected:
+        errors.append(
+            f"[forward] {op_name}: forward() positional names "
+            f"{positional!r} do not start with manifest inputs "
+            f"{expected!r}"
+        )
+    return errors
+
+
+def check_c5_dispatch_kernel_invariant(
+    op_name: str,
+    entry: dict,
+    cls: type | None,
+    *,
+    warnings: list[str] | None = None,
+) -> list[str]:
+    """C5: ``__init__`` complies with the dispatch-kernel slot contract.
+
+    Two static checks per ``docs/design/ops-design-reference.md``:
+
+    - **S12** — ``__init__`` accepts a ``kernel_map`` keyword (or
+      ``**kwargs`` that absorbs it).
+    - **S13** — ``__init__`` body contains a call ``self.dispatch_kernel(...)``.
+
+    Pure inspection: ``inspect.signature`` for S12, AST walk for S13.
+    No runtime construction, no GPU, no JIT — both contracts are
+    declarative properties of the source code.
+
+    Source-unavailable ``__init__`` (built-in / dynamically generated /
+    decorator-wrapped without ``__wrapped__``) degrades S13 to advisory;
+    S12 always runs.
+    """
+    errors: list[str] = []
+    if cls is None:
+        return errors
+
+    # S12: signature carries kernel_map (or **kwargs).
+    try:
+        sig = inspect.signature(cls.__init__)
+    except (ValueError, TypeError) as exc:
+        if warnings is not None:
+            warnings.append(
+                f"[dispatch] {op_name}: inspect.signature(__init__) raised "
+                f"{exc.__class__.__name__}: {exc}; advisory"
+            )
+        return errors
+    has_kernel_map_kw = "kernel_map" in sig.parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD
+        for p in sig.parameters.values()
+    )
+    if not has_kernel_map_kw:
+        errors.append(
+            f"[dispatch] {op_name}: __init__ does not accept a "
+            f"'kernel_map' parameter (Slot S12) — kernel-map override is "
+            f"unreachable"
+        )
+        return errors
+
+    # S13: body calls self.dispatch_kernel(...).
+    body_calls = _init_calls_dispatch_kernel(cls)
+    if body_calls is None:
+        if warnings is not None:
+            warnings.append(
+                f"[dispatch] {op_name}: __init__ source unavailable "
+                f"(built-in or dynamically generated); S13 advisory"
+            )
+        return errors
+    if not body_calls:
+        errors.append(
+            f"[dispatch] {op_name}: __init__ body does not call "
+            f"self.dispatch_kernel(...) (Slot S13) — kernel_map override "
+            f"is silently dropped"
+        )
+    return errors
+
+
+def check_c6_validate_dtypes_not_stub(
+    op_name: str, entry: dict, cls: type | None,
+) -> list[str]:
+    """C6: ``_validate_dtypes`` is not the base ``Op`` stub."""
+    if cls is None:
+        return []
+    from tileops.ops.op_base import Op as _OpBase
+    if cls._validate_dtypes is _OpBase._validate_dtypes:
+        return [
+            f"[stub] {op_name}: _validate_dtypes is the Op base stub "
+            f"(not implemented by the concrete class)"
+        ]
+    return []
+
+
+def check_c7_eval_roofline_not_stub(
+    op_name: str, entry: dict, cls: type | None,
+) -> list[str]:
+    """C7: ``eval_roofline`` is not the base ``Op`` stub."""
+    if cls is None:
+        return []
+    from tileops.ops.op_base import Op as _OpBase
+    if cls.eval_roofline is _OpBase.eval_roofline:
+        return [
+            f"[stub] {op_name}: eval_roofline is the Op base stub "
+            f"(not implemented by the concrete class)"
+        ]
+    return []
+
+
+# Tag prefixes that strict-parity checks (C1-C7) emit.
+#
+# Routing is structural, not tag-based: the orchestrator unconditionally
+# extends ``strict_errors`` with the return of each strict check. The
+# tags below are documentation / triage aids, not the routing key.
+#
+# ``[shape]`` and ``[dtype]`` are also emitted by the non-strict L2 / L3
+# checks (``check_l2`` / ``check_l3`` for shape_rules / dtype_combos
+# parsing); when those entries appear in ``errors`` it is not a strict
+# leak — they are non-strict errors that always stay in ``errors``
+# regardless of mode. Use ``STRICT_ONLY_TAGS`` for leakage assertions
+# (tags exclusive to C1-C7's parity / structural checks).
+STRICT_TAGS: tuple[str, ...] = (
+    "[shape]", "[dtype]", "[ctor]", "[forward]", "[dispatch]", "[stub]",
+)
+
+# Subset of ``STRICT_TAGS`` that only strict-parity checks emit. Used by
+# tests asserting that strict-parity failures are routed to ``warnings``
+# (advisory mode) instead of ``errors``.
+STRICT_ONLY_TAGS: tuple[str, ...] = (
+    "[ctor]", "[forward]", "[dispatch]", "[stub]",
+)
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -2902,6 +3547,7 @@ def validate_manifest(
     verbose: bool = False,
     levels: frozenset[str] | None = None,
     check_op: str | None = None,
+    strict_parity: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Run applicable validation levels on the manifest.
 
@@ -2956,6 +3602,10 @@ def validate_manifest(
 
     all_errors: list[str] = []
     all_warnings: list[str] = []
+    # Strict-parity (C1-C7) failures: collected separately so the
+    # orchestrator can route them to either errors (strict mode) or
+    # warnings (advisory mode) once all per-op checks have run.
+    strict_errors: list[str] = []
 
     # Cross-entry checks (must run before per-entry checks).
     # When --check-op is set, scope cross-entry checks to the variant family
@@ -2999,22 +3649,53 @@ def validate_manifest(
         if "signature" in levels:
             all_errors.extend(check_l1(op_name, entry, warnings=all_warnings))
 
-        # shape: shape_rules syntax + _infer_output_shapes parity (L2 extension)
+        # shape: shape_rules syntax + _infer_output_shapes parity (C1)
         if "shape" in levels:
             all_errors.extend(check_l2(op_name, entry))
-            all_errors.extend(
+            strict_errors.extend(
                 check_l2_infer_parity(
                     op_name, entry, op_cls, warnings=all_warnings,
                 )
             )
 
-        # dtype: dtype string conformance + _validate_dtypes parity (L3 extension)
+        # dtype: dtype string conformance + _validate_dtypes parity (C2)
         if "dtype" in levels:
             all_errors.extend(check_l3(op_name, entry))
-            all_errors.extend(
+            strict_errors.extend(
                 check_l3_validate_dtypes_parity(
                     op_name, entry, op_cls, warnings=all_warnings,
                 )
+            )
+
+        # C3-C7: strict parity gates for status: implemented ops, each
+        # gated by the level whose contract it enforces. ``--levels``
+        # therefore composes predictably: e.g. ``--levels schema``
+        # triggers no strict-parity work.
+        # Routed to strict_errors so advisory mode can downgrade them
+        # without losing visibility.
+        if "signature" in levels:
+            strict_errors.extend(
+                check_c3_ctor_signature_parity(
+                    op_name, entry, op_cls, warnings=all_warnings,
+                )
+            )
+            strict_errors.extend(
+                check_c4_forward_signature_parity(
+                    op_name, entry, op_cls, warnings=all_warnings,
+                )
+            )
+            strict_errors.extend(
+                check_c5_dispatch_kernel_invariant(
+                    op_name, entry, op_cls, warnings=all_warnings,
+                )
+            )
+        if "dtype" in levels:
+            strict_errors.extend(
+                check_c6_validate_dtypes_not_stub(op_name, entry, op_cls)
+            )
+        if "bench" in levels:
+            strict_errors.extend(
+                check_c7_eval_roofline_not_stub(op_name, entry, op_cls)
             )
 
         # bench: benchmark uses manifest workloads
@@ -3040,6 +3721,15 @@ def validate_manifest(
             seen.add(item)
             out.append(item)
         return out
+
+    # Route strict-parity (C1-C7) failures: in strict mode they are
+    # blocking errors; in advisory mode they downgrade to warnings so
+    # the gate can land before all current main violations are fixed.
+    if strict_parity:
+        all_errors.extend(strict_errors)
+    else:
+        for s in strict_errors:
+            all_warnings.append(f"STRICT-PARITY (advisory): {s}")
 
     return _dedup(all_errors), _dedup(all_warnings)
 
@@ -3089,19 +3779,33 @@ def _parse_check_op(argv: list[str]) -> str | None:
 
 
 def main() -> int:
+    import os
+
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
     levels = _parse_levels(sys.argv)
     check_op = _parse_check_op(sys.argv)
+    strict_parity = (
+        "--strict" in sys.argv
+        or os.environ.get("MANIFEST_STRICT_BLOCKING", "") == "1"
+    )
 
     level_label = ",".join(sorted(levels)) if levels else "all"
     check_op_label = f", check-op: {check_op}" if check_op else ""
+    mode_label = "STRICT" if strict_parity else "ADVISORY"
     print(
         f"Validating {MANIFEST_DIR.relative_to(REPO_ROOT)}/*.yaml "
-        f"(levels: {level_label}{check_op_label})..."
+        f"(levels: {level_label}{check_op_label}, parity-mode: {mode_label})..."
     )
+    if not strict_parity:
+        print(
+            "ADVISORY MODE — strict-parity (C1-C7) failures are reported "
+            "as warnings and do NOT block. Pass --strict (or set "
+            "MANIFEST_STRICT_BLOCKING=1) to make them blocking."
+        )
 
     errors, warnings = validate_manifest(
         verbose=verbose, levels=levels, check_op=check_op,
+        strict_parity=strict_parity,
     )
 
     if warnings:

@@ -1,17 +1,16 @@
 ## Boundary
 
 - **OWNS**: `tileops/ops/`, `tileops/kernels/`
-- **MUST NOT modify**: `tests/`, `benchmarks/`, `workloads/`, `tileops/manifest/`
-- **MAY READ**: `tests/` (behavior understanding), `workloads/`, `tileops/manifest/`
+- **MUST NOT WRITE**: `tests/`, `benchmarks/`, `workloads/`, `tileops/manifest/`
 
 → [trust-model.md §Implementation](../../docs/design/trust-model.md#implementation) | [ops-design.md](../../docs/design/ops-design.md)
 
 ______________________________________________________________________
 
-- Op class names use PascalCase: `{PascalCaseName}{Direction}Op` (e.g., `RMSNormFwdOp`). Direction suffix is mandatory. No abbreviation rules — the manifest author determines the name.
-- Kernel class names use PascalCase with `Kernel` suffix: `{PascalCaseName}{Direction}Kernel` (e.g., `RMSNormFwdKernel`). Builder functions remain snake_case.
-- `kernel_map` is the Op→Kernel dispatch registration table. Keys are snake_case dispatch identifiers, decoupled from class names (convention for new ops — some existing ops use PascalCase keys). Values are Kernel class names. The manifest declares this table; agents implement the listed Kernels. See [ops-design-reference.md § Kernel Dispatch](../../docs/design/ops-design-reference.md#kernel-dispatch-kernel_map).
-- Op `__init__` parameters must be keyword-only (`def __init__(self, *, ...)`). Parameter names come from manifest: `shape` dimension names (fixed-rank), `static_dims` keys (arbitrary-rank), and `params` keys. Information not declared in the manifest must not appear in `__init__`.
-- For arbitrary-rank ops, use `static_dims` in the manifest to declare values the user commits to at construction time. Each entry is a single-axis reference `<tensor>.shape[<const_or_param>]`. Dimensions not in `static_dims` are derived from tensors at forward time. See [manifest.md R20](../../docs/design/manifest.md).
-- When adding or modifying an intermediate base class, changing kernel dispatch patterns, or introducing new class variable protocols, update `docs/design/ops-design.md` to reflect the change.
-- When adding a new op family that inherits `Op` directly, evaluate whether it shares `forward()` flow with an existing family before creating a new base class. Document the decision in the PR.
+- Class names: PascalCase `{Name}{Direction}Op` (Op layer) or `{Name}{Direction}Kernel` (Kernel layer); direction suffix mandatory. Manifest author chooses `{Name}`. Builder functions stay snake_case.
+- `kernel_map` is the Op→Kernel dispatch registration table: snake_case dispatch keys (decoupled from class names) → Kernel class names. Manifest declares it; agents implement the listed Kernels. See [ops-design-reference.md § Kernel Dispatch](../../docs/design/ops-design-reference.md#kernel-dispatch-kernel_map).
+- Op `__init__` is keyword-only (`def __init__(self, *, ...)`). Parameter names come from the manifest: `shape` dim names (fixed-rank), `static_dims` keys (arbitrary-rank), `params` keys. Only manifest-declared information belongs in `__init__`.
+- Arbitrary-rank ops declare construction-time values via manifest `static_dims`. Each entry is a single-axis reference `<tensor>.shape[<const_or_param>]`; other dims come from tensors at forward time. See [manifest.md R20](../../docs/design/manifest.md).
+- Update `docs/design/ops-design.md` whenever you add/modify an intermediate base class, change a kernel-dispatch pattern, or introduce a new class-variable protocol.
+- A new op family inheriting `Op` directly: first check whether an existing family's `forward()` flow already fits before creating a new base class. Record the decision in the PR.
+- Per-op workarounds MUST NOT be promoted to a base-class shared mechanism (mixin, class attribute, shared method, opt-out flag) within the same op-family migration PR — even when multiple ops share the workaround. Promote only via a separate design PR that shows the mechanism is a genuine family invariant (would belong in the base even if no op had taken a shortcut), not a shared shortcut.

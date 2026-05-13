@@ -1,14 +1,22 @@
-- Every `tileops/kernels/*` subpackage must have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
+- Every `tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
 
-- Relative imports for intra-package references (e.g. `from .op import Op`); absolute `tileops.*` imports for cross-package references.
+- Intra-package imports: relative (`from .op import Op`). Cross-package: absolute (`tileops.foo.bar`).
 
-- Do not use file-level lint suppressions (`# ruff: noqa`, `# flake8: noqa`). Use targeted inline `# noqa: XXXX` only when genuinely needed.
+- No file-level lint suppressions (`# ruff: noqa`, `# flake8: noqa`). Use targeted inline `# noqa: XXXX` only.
 
-- Use `T.Tensor(shape, dtype)` for TIR function parameters, not the deprecated `T.Buffer(shape, dtype)`.
+- TIR parameter type: `T.Tensor(shape, dtype)`, never the deprecated `T.Buffer`.
 
-- Use `T.reinterpret(value, dtype)` (value first), not the deprecated `T.reinterpret(dtype, value)`.
+- Reinterpret cast: `T.reinterpret(value, dtype)` (value first), never the deprecated dtype-first form.
 
-- When a PR intentionally degrades a test (xfail, skip, weakened assertion) due to a process constraint (e.g. trust model requiring separate manifest and code PRs), mark it with `FIXME(staged-rollout)` using this template:
+- Each TileLang kernel is one `@T.prim_func` whose body opens `with T.Kernel(...)`; sub-routines use `@T.macro`, never nested `prim_func`.
+
+- No narrow-type literal casts (`T.cast(1.0, "float16")`). Reference `x.dtype`, or compute in a wider intermediate and cast at the boundary.
+
+- Promote overflow-prone fp16/bf16 math (cubic, division, `exp`, softmax accumulators) to fp32; cast back to storage dtype at the boundary.
+
+- Decorate each `_<op>_kernel` builder (the `@tilelang.jit`-wrapping `Callable`) with `@functools.lru_cache(maxsize=<N>)`; every parameter must be hashable. Default `maxsize=32`; use `64` only when the distinct-config working set demands it; `maxsize=None` only for intrinsically bounded config spaces. Document any non-default choice at the call site.
+
+- Tag tests degraded by a process constraint (e.g. trust model splitting manifest and code PRs) with `FIXME(staged-rollout)`. Cleanup line names the invariant to restore — never a PR number. Scan: `grep -rn 'FIXME(staged-rollout)'`.
 
   ```python
   # FIXME(staged-rollout): <one-line summary of what's degraded>
@@ -18,17 +26,14 @@
   # Cleanup: <concrete condition that triggers removal of this marker>
   ```
 
-  Cleanup must describe the invariant to restore, not reference a specific PR. Scan with `grep -rn 'FIXME(staged-rollout)'`.
+- PascalCase abbreviations stay fully uppercase: `RMSNormKernel`, `SSDDecodeOp`, `FusedAddRMSNormFwdOp`.
 
-- **Abbreviation casing in PascalCase symbols**: Standard abbreviations must be fully uppercase — `RMS`, not `Rms`; `SSD`, not `Ssd`; `SSM`, not `Ssm`. Examples: `RMSNormKernel`, `SSDDecodeOp`, `FusedAddRMSNormFwdOp`.
+- Filenames: all-lowercase with underscores. Multi-letter abbreviations stay lowercase (`rms_norm.py`, `ssd_decode.py`); never capitalize a single letter. Never contract norm names (`rms_norm`, not `rmsnorm`).
 
-- **Abbreviation casing in filenames**: Filenames use all-lowercase with underscores. Multi-word abbreviations keep all letters lowercase — `rms_norm.py`, `ssd_decode.py`. Do not capitalize a single letter (e.g. `Ssd_decode.py` is wrong).
+- Docstrings: Google style. One-line summary, blank line, then optional `Args:` / `Returns:` / `Raises:` / `Example:`. Internal helpers may use a single-line summary. Never mix Sphinx (`:param:`) or NumPy headers in one file.
 
-- **Docstring style: Google**. All Python docstrings (modules, classes, public functions / methods) follow Google style: one-sentence summary on the opening line, blank line, then optional sections `Args:`, `Returns:`, `Raises:`, `Example:`. Internal helpers may use a single-line summary docstring. Do NOT mix Sphinx-style (`:param x:`) or NumPy-style (separate header lines for each param) into the same file.
+- Expand domain abbreviations on first use in a docstring: `State Space Model (SSM)`, `State-Space Dual (SSD)`. Later uses may abbreviate.
 
-- **Expand abbreviations on first use in docstrings**: When SSM, SSD, or other domain abbreviations first appear in a module or class docstring, write the full form followed by the abbreviation in parentheses. Subsequent uses in the same file can use the abbreviation alone.
+- Shipped source (code, docstrings, manifest YAML) must not reference issue/PR numbers, AC labels, round numbers, reviewer names, or `Follow-up: #N`. See [domain-rules/manifest-spec.md](../domain-rules/manifest-spec.md).
 
-  - SSM → State Space Model (SSM)
-  - SSD → State-Space Dual (SSD)
-
-- **Underscore-separated naming for norm files**: All norm-related filenames use underscore separation — `rms_norm`, `layer_norm`, `batch_norm`, `fused_add_rms_norm`. Do not contract (e.g. `rmsnorm`, `layernorm`, `batchnorm`).
+  Discovery scan: `grep -rnE '(^|[^[:alnum:]])#[0-9]{3,}|AC-[0-9]+|round-[0-9]+ review|[Ff]ollow-up:[[:space:]]*#' --exclude-dir=manifest tileops/ tests/ benchmarks/ scripts/`

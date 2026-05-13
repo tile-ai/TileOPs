@@ -89,7 +89,7 @@ class GatedDeltaNetDecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.smoke,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 0.1.9 (#1039)."
+                        reason="Low-precision gated deltanet decode fails under tilelang 0.1.9 due to numerics regression; re-enable when decode produces correct results."
                     ),
                 ],
             ),
@@ -103,7 +103,7 @@ class GatedDeltaNetDecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.smoke,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 0.1.9 (#1039)."
+                        reason="Low-precision gated deltanet decode fails under tilelang 0.1.9 due to numerics regression; re-enable when decode produces correct results."
                     ),
                 ],
             ),
@@ -119,7 +119,7 @@ class GatedDeltaNetDecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.full,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 0.1.9 (#1039)."
+                        reason="Low-precision gated deltanet decode fails under tilelang 0.1.9 due to numerics regression; re-enable when decode produces correct results."
                     ),
                 ],
             ),
@@ -133,7 +133,7 @@ class GatedDeltaNetDecodeFixture(FixtureBase):
                 marks=[
                     pytest.mark.full,
                     pytest.mark.skip(
-                        reason="Temporarily skipped while isolating low-precision gated deltanet decode failures under TileLang 0.1.9 (#1039)."
+                        reason="Low-precision gated deltanet decode fails under tilelang 0.1.9 due to numerics regression; re-enable when decode produces correct results."
                     ),
                 ],
             ),

@@ -17,10 +17,18 @@ from .gqa_decode_paged import GQADecodePagedKernel
 from .gqa_fwd import (
     GQAFwdKernel,
     GQAFwdWgmmaPipelinedKernel,
+    GQAPrefillFwdKernel,
+    GQAPrefillPagedWithKVCacheFwdKernel,
+    GQAPrefillPagedWithKVCacheRopeAppendKernel,
+    GQAPrefillPagedWithKVCacheRopeFwdKernel,
+    GQAPrefillWithKVCacheFwdKernel,
+    GQAPrefillWithKVCacheRopeAppendKernel,
+    GQAPrefillWithKVCacheRopeFwdKernel,
     MHAFwdKernel,
     MHAFwdWgmmaPipelinedKernel,
 )
 from .gqa_fwd_ws import GQAFwdWsPersistentCausalKernel, GQAFwdWsPersistentKernel
+from .gqa_prefill_varlen_fwd import GQAPrefillVarlenFwdKernel
 from .gqa_sliding_window_fwd import (
     GQASlidingWindowFwdKernel,
     GQASlidingWindowFwdWgmmaPipelinedKernel,
@@ -43,6 +51,14 @@ __all__ = [
     "GQAFwdWgmmaPipelinedKernel",
     "GQAFwdWsPersistentCausalKernel",
     "GQAFwdWsPersistentKernel",
+    "GQAPrefillFwdKernel",
+    "GQAPrefillPagedWithKVCacheFwdKernel",
+    "GQAPrefillPagedWithKVCacheRopeAppendKernel",
+    "GQAPrefillPagedWithKVCacheRopeFwdKernel",
+    "GQAPrefillVarlenFwdKernel",
+    "GQAPrefillWithKVCacheFwdKernel",
+    "GQAPrefillWithKVCacheRopeAppendKernel",
+    "GQAPrefillWithKVCacheRopeFwdKernel",
     "GQASlidingWindowFwdKernel",
     "GQASlidingWindowFwdWgmmaPipelinedKernel",
     "GQASlidingWindowVarlenFwdKernel",

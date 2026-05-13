@@ -34,6 +34,7 @@ Notation:
   B = batch, C = num_chunks, H = n_heads, D = d_state
 """
 
+import functools
 import itertools
 from typing import Callable, Optional
 
@@ -46,6 +47,7 @@ from tileops.kernels.kernel_base import Kernel
 __all__ = ["SSDStatePassingFwdKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _ssd_state_passing_fwd_kernel(
     batch: int,
     num_chunks: int,
@@ -97,6 +99,8 @@ def _ssd_state_passing_fwd_kernel(
 
                 # ------------------------------------------------------------
                 # 2) Initialize running state from initial_states (or zero)
+                #    and write s_{-1} = initial_states to out[:,0,:,:]
+                #    (mamba convention: out[:,c] = state *before* chunk c)
                 # ------------------------------------------------------------
                 for i in T.Parallel(block_d):
                     di = d0 + i
@@ -109,9 +113,17 @@ def _ssd_state_passing_fwd_kernel(
                     else:
                         s_frag[i] = T.float32(0.0)
 
+                # Write s_{-1} to out[:,0,:,:]
+                for i in T.Parallel(block_d):
+                    di = d0 + i
+                    if di < D:
+                        out[bb, 0, bh, di] = s_frag[i]
+
                 # ------------------------------------------------------------
                 # 3) Scan over chunks serially
                 #    s_c = exp(dA_c) * s_{c-1} + u_c
+                #    out[:,c+1] = s_c  for c in [0, C-2]
+                #    final_states = s_{C-1}
                 # ------------------------------------------------------------
                 for c in T.serial(C):
                     # load scalar dA_c and compute scale
@@ -127,18 +139,19 @@ def _ssd_state_passing_fwd_kernel(
                             T.float32(0.0),
                         )
 
-                    # recurrent update
+                    # recurrent update: s_c = scale * s_{c-1} + u_c
                     for i in T.Parallel(block_d):
                         s_frag[i] = scale * s_frag[i] + u_frag[i]
 
-                    # write per-chunk output
-                    for i in T.Parallel(block_d):
-                        di = d0 + i
-                        if di < D:
-                            out[bb, c, bh, di] = s_frag[i]
+                    # write s_c to out[:,c+1,:,:] for c < C-1
+                    if c < C - 1:
+                        for i in T.Parallel(block_d):
+                            di = d0 + i
+                            if di < D:
+                                out[bb, c + 1, bh, di] = s_frag[i]
 
                 # ------------------------------------------------------------
-                # 4) Write final state
+                # 4) Write final state s_{C-1}
                 # ------------------------------------------------------------
                 for i in T.Parallel(block_d):
                     di = d0 + i
@@ -148,6 +161,7 @@ def _ssd_state_passing_fwd_kernel(
         return main
 
     return kernel_func
+
 
 
 @torch.library.custom_op("top::ssd_state_passing_fwd", mutates_args=())
@@ -165,9 +179,8 @@ def _ssd_state_passing_fwd_wrapped(
     initial_states: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return _ssd_state_passing_fwd_kernel(
-        batch, num_chunks, n_heads, d_state, has_initial_states, dtype)(
-        block_d, threads,
-    )(states, dA_chunk_cumsum, initial_states)
+        batch, num_chunks, n_heads, d_state, has_initial_states, dtype,
+    )(block_d, threads)(states, dA_chunk_cumsum, initial_states)
 
 
 @_ssd_state_passing_fwd_wrapped.register_fake

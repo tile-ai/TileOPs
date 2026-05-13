@@ -52,6 +52,7 @@ class LogicalAndFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
             pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
@@ -74,6 +75,7 @@ class LogicalOrFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
             pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
@@ -184,6 +186,73 @@ def test_logical_not(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalNotTest(n_total, dtype)
     op = LogicalNotFwdOp(N_total=n_total, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=exact_compare)
+
+
+# ---------------------------------------------------------------------------
+# Per-dtype correctness across the manifest dtype union for binary logical
+# ops. The manifest declares
+# ``bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``
+# for both LogicalAndFwdOp and LogicalOrFwdOp; the float path is covered
+# above. The int / bool cells exercise the kernel's non-zero truthiness
+# path on every manifest-declared integral dtype.
+# ---------------------------------------------------------------------------
+
+_INT_DTYPES = [torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64]
+_LOGICAL_OP_CASES = [
+    (LogicalAndFwdOp, torch.logical_and),
+    (LogicalOrFwdOp, torch.logical_or),
+]
+
+
+def _gen_int_logical_inputs(
+    n: int, dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Generate int inputs sprinkled with zeros to exercise both truthy
+    and falsy lanes of the non-zero truthiness path.
+    """
+    if dtype == torch.uint8:
+        lo, hi = 0, 8
+    elif dtype == torch.int8:
+        lo, hi = -8, 8
+    else:
+        lo, hi = -32, 32
+    a = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
+    b = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
+    # Force a mix of zeros so non-zero truthiness is non-trivial.
+    a[::3] = 0
+    b[::5] = 0
+    return a, b
+
+
+# Full (op_cls, dtype) product: every binary logical op must match its
+# torch reference on every manifest-declared integral dtype and on bool.
+class LogicalIntBoolMatrixFixture(FixtureBase):
+    PARAMS = [
+        ("op_cls, ref_fn, dtype", [
+            pytest.param(op_cls, ref_fn, dt, marks=pytest.mark.smoke)
+            for op_cls, ref_fn in _LOGICAL_OP_CASES
+            for dt in (*_INT_DTYPES, torch.bool)
+        ]),
+    ]
+
+
+@LogicalIntBoolMatrixFixture
+def test_logical_int_bool_matrix(
+    op_cls, ref_fn, dtype: torch.dtype,
+) -> None:
+    """Each binary logical op matches torch on every int / bool dtype."""
+    n = 4_096
+    shape = (n,)
+    if dtype == torch.bool:
+        a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+        b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+    else:
+        a, b = _gen_int_logical_inputs(n, dtype)
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = ref_fn(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    _bool_compare(out, ref)
 
 
 if __name__ == "__main__":

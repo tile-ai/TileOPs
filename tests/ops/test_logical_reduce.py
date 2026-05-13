@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
 from workloads.logical_reduce import AnyTest as _AnyWorkload
 
 # ---------------------------------------------------------------------------
@@ -153,6 +154,22 @@ class LogicalReduceTest(_AnyWorkload, TestBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
+class _TailBlockLogicalReduceKernel(LogicalReduceKernel):
+    """Force tiled tests to cover tail-M masking with block_m > M."""
+
+    _TAIL_BLOCK_M = 4
+    _TAIL_TILE_N = 8192
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self._needs_tiling, "tail-M regression test must use the tiled kernel"
+        self.config = {
+            "block_m": self._TAIL_BLOCK_M,
+            "threads": 128,
+            "tile_n": self._TAIL_TILE_N,
+        }
+
+
 def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     """Exact match comparison using torch.equal."""
     assert output.dtype == torch.bool, f"Expected bool dtype, got {output.dtype}"
@@ -208,7 +225,7 @@ def test_any_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyFwdOp(dtype=dtype)
+    op = AnyFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -218,7 +235,7 @@ def test_any_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
-    op = AnyFwdOp(dtype=dtype)
+    op = AnyFwdOp(dtype=dtype, dim=-1)
     ref = x.contiguous().bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -230,7 +247,7 @@ def test_any_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = AnyFwdOp(dtype=dtype)
+    op = AnyFwdOp(dtype=dtype, dim=-1)
     ref = x.bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -242,7 +259,7 @@ def test_any_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    op = AnyFwdOp(dtype=dtype)
+    op = AnyFwdOp(dtype=dtype, dim=-1)
     ref = x.bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -254,7 +271,7 @@ def test_any_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
     x = _make_1d_input(n, dtype)
-    op = AnyFwdOp(dtype=dtype)
+    op = AnyFwdOp(dtype=dtype, dim=-1)
     ref = x.bool().any(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -297,7 +314,7 @@ def test_all_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllFwdOp(dtype=dtype)
+    op = AllFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -307,7 +324,7 @@ def test_all_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
-    op = AllFwdOp(dtype=dtype)
+    op = AllFwdOp(dtype=dtype, dim=-1)
     ref = x.contiguous().bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -319,7 +336,7 @@ def test_all_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = AllFwdOp(dtype=dtype)
+    op = AllFwdOp(dtype=dtype, dim=-1)
     ref = x.bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -331,7 +348,7 @@ def test_all_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    op = AllFwdOp(dtype=dtype)
+    op = AllFwdOp(dtype=dtype, dim=-1)
     ref = x.bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -343,7 +360,7 @@ def test_all_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
     x = _make_1d_input(n, dtype)
-    op = AllFwdOp(dtype=dtype)
+    op = AllFwdOp(dtype=dtype, dim=-1)
     ref = x.bool().all(dim=-1)
     y = op(x)
     assert y.dtype == torch.bool
@@ -386,7 +403,7 @@ def test_count_nonzero_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroFwdOp(dtype=dtype)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 
@@ -396,7 +413,7 @@ def test_count_nonzero_non_contiguous(m: int, n: int, dtype: torch.dtype) -> Non
 
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
-    op = CountNonzeroFwdOp(dtype=dtype)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     ref = torch.count_nonzero(x.contiguous(), dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
@@ -408,7 +425,7 @@ def test_count_nonzero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype)
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = CountNonzeroFwdOp(dtype=dtype)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
@@ -420,7 +437,7 @@ def test_count_nonzero_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype)
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    op = CountNonzeroFwdOp(dtype=dtype)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
@@ -432,7 +449,7 @@ def test_count_nonzero_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     x = _make_1d_input(n, dtype)
-    op = CountNonzeroFwdOp(dtype=dtype)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
     assert y.dtype == torch.int64
@@ -491,7 +508,7 @@ def test_any_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyFwdOp(dtype=dtype)
+    op = AnyFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -500,7 +517,7 @@ def test_any_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyFwdOp(dtype=dtype)
+    op = AnyFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -509,7 +526,7 @@ def test_any_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyFwdOp(dtype=dtype)
+    op = AnyFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -518,7 +535,7 @@ def test_any_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyFwdOp(dtype=dtype)
+    op = AnyFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -527,7 +544,7 @@ def test_any_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyFwdOp(dtype=dtype)
+    op = AnyFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -536,7 +553,7 @@ def test_all_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllFwdOp(dtype=dtype)
+    op = AllFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -545,7 +562,7 @@ def test_all_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllFwdOp(dtype=dtype)
+    op = AllFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -554,7 +571,7 @@ def test_all_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllFwdOp(dtype=dtype)
+    op = AllFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -563,7 +580,7 @@ def test_all_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllFwdOp(dtype=dtype)
+    op = AllFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -572,7 +589,7 @@ def test_all_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllFwdOp(dtype=dtype)
+    op = AllFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -581,7 +598,7 @@ def test_count_nonzero_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroFwdOp(dtype=dtype)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 
@@ -590,7 +607,7 @@ def test_count_nonzero_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> Non
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroFwdOp(dtype=dtype)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 
@@ -599,7 +616,7 @@ def test_count_nonzero_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroFwdOp(dtype=dtype)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 
@@ -608,7 +625,7 @@ def test_count_nonzero_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroFwdOp(dtype=dtype)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
 
 
@@ -617,8 +634,90 @@ def test_count_nonzero_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroFwdOp(dtype=dtype)
+    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     test.check(op, *test.gen_inputs(), compare=_exact_compare_int64)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_kind, dtype",
+    [
+        ("any", torch.bool),
+        ("all", torch.bool),
+        ("count_nonzero", torch.float16),
+    ],
+)
+def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) -> None:
+    """Exercise the N-tiled path with a tail-M block."""
+    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+
+    op_map = {
+        "any": AnyFwdOp,
+        "all": AllFwdOp,
+        "count_nonzero": CountNonzeroFwdOp,
+    }
+    test = LogicalReduceTest(3, 33024, dtype, op_kind)
+    op = op_map[op_kind](
+        dtype=dtype,
+        dim=-1,
+        kernel_map={"logical_reduce": _TailBlockLogicalReduceKernel},
+    )
+    compare = _exact_compare_int64 if op_kind == "count_nonzero" else _exact_compare
+    test.check(op, *test.gen_inputs(), compare=compare)
+    kernel = op._kernel_cache[(3, 33024)]
+    assert kernel.config["block_m"] > test.shape[0]
+    assert kernel.config["tile_n"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Manifest dtype contract: bool input + int64 / bool output dtypes.
+# ---------------------------------------------------------------------------
+
+_M = 64
+_N = 256
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("op_name", ["AllFwdOp", "AnyFwdOp"])
+def test_logical_reduce_accepts_bool(op_name: str) -> None:
+    """All / Any must accept bool inputs (manifest dtype contract)."""
+    import tileops.ops.reduction as mod
+
+    cls = getattr(mod, op_name)
+    op = cls(dtype=torch.bool, dim=-1)
+    x = torch.randint(0, 2, (_M, _N), device="cuda").bool()
+    out = op(x)
+    assert out.dtype == torch.bool
+    assert out.shape == (_M,)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_count_nonzero_returns_int64() -> None:
+    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+
+    op = CountNonzeroFwdOp(dtype=torch.float16, dim=-1)
+    x = torch.randn(_M, _N, dtype=torch.float16, device="cuda")
+    out = op(x)
+    assert out.dtype == torch.int64, (
+        f"CountNonzero output dtype {out.dtype} != int64"
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("op_name", ["AllFwdOp", "AnyFwdOp"])
+def test_logical_reduce_returns_bool(op_name: str) -> None:
+    import tileops.ops.reduction as mod
+
+    cls = getattr(mod, op_name)
+    op = cls(dtype=torch.float16, dim=-1)
+    x = torch.randn(_M, _N, dtype=torch.float16, device="cuda")
+    out = op(x)
+    assert out.dtype == torch.bool
 
 
 if __name__ == "__main__":

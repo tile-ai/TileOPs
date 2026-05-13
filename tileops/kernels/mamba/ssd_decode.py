@@ -39,6 +39,7 @@ Notation:
   B = batch, H = n_heads, P = d_head, N = d_state, G = n_groups
 """
 
+import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -107,6 +108,7 @@ __all__ = ["SSDDecodeKernel"]
 #               matching the behaviour of the optimised selective_state_update path.
 # =============================================================================
 
+@functools.lru_cache(maxsize=32)
 def _ssd_decode_kernel(
     batch: int,
     n_heads: int,

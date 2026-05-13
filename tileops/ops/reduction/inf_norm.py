@@ -1,9 +1,9 @@
 """InfNormFwdOp: computes infinity norm (max absolute value) along a given dim.
 
-The Op layer validates inputs, reshapes to 2D (M, N), pads to alignment
-(with 0.0, which is neutral for max of absolute values), calls the kernel,
-and reshapes the output back. Output dtype matches input dtype; internal
-computation in fp32.
+The Op layer validates inputs, reshapes to 2D (M, N), calls the kernel, and
+reshapes the output back. Alignment padding is handled inside the kernel with
+0.0, which is neutral for max of absolute values. Output dtype matches input
+dtype; internal computation in fp32.
 
 NaN propagation: T.reduce_max in TileLang does not propagate NaN (it drops
 NaN values). To match torch.linalg.vector_norm(ord=inf) semantics, the Op
@@ -19,6 +19,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 
+from ._multidim import EmptyDimPolicy
 from .reduce import _ReduceOpBase
 
 __all__ = ["InfNormFwdOp"]
@@ -27,8 +28,8 @@ __all__ = ["InfNormFwdOp"]
 class InfNormFwdOp(_ReduceOpBase):
     """Infinity norm reduction along a configurable dim.
 
-    Construction: ``InfNormFwdOp(dtype=..., dim=-1, keepdim=False)``.  M and N are
-    derived from the input tensor at forward time, and kernels are cached
+    Construction: ``InfNormFwdOp(dtype=..., dim=None, keepdim=False)``.  M and
+    N are derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 
     NaN handling: rows containing any NaN produce NaN output, matching
@@ -36,8 +37,9 @@ class InfNormFwdOp(_ReduceOpBase):
 
     Args:
         dtype: Input data type (float16, bfloat16, float32).
-        dim: Reduction dimension (default -1).  Accepts ``int`` or
-            ``list[int]`` for multi-dim reduction.
+        dim: Reduction dimension (default ``None`` -> full reduction, matching
+            ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
+            ``None``.
         keepdim: Whether to retain the reduced dimension as size 1.
         ord: Norm order. Must equal ``float('inf')`` for ``InfNormFwdOp``
             (manifest fixes ``ord == float('inf')``); accepted as a kwarg to
@@ -49,13 +51,15 @@ class InfNormFwdOp(_ReduceOpBase):
     _op_kind = "inf"
     _kernel_key = "vector_norm"
     _kernel_cls = VectorNormKernel
+    _kernel_handles_padding = True
     _required_ord: Union[int, float] = inf
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
     def __init__(
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = -1,
+        dim: Union[int, List[int], None] = None,
         keepdim: bool = False,
         ord: Union[int, float] = inf,
         kernel_map: Optional[Dict[str, Kernel]] = None,

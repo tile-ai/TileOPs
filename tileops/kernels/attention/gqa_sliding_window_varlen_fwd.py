@@ -514,7 +514,9 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                 for i, j in T.Parallel(block_m, dim):
                     acc_o[i, j] = T.if_then_else(
                         logsum[i] > 0, acc_o[i, j] / logsum[i], 0.0)
+                T.sync_threads(3, threads)
                 T.copy(acc_o, o_shared)
+                T.sync_threads(3, threads)
                 for i, j in T.Parallel(block_m, dim):
                     if bx * block_m + i < q_len:
                         output[q_start + bx * block_m + i, by,

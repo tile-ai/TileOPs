@@ -18,13 +18,14 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.elementwise import AddFwdOp
 from workloads.workload_base import FixtureBase
 
-# DNN-realistic 2D shapes — same-shape (no broadcast) for clean strategy comparison
+# DNN-realistic 2D shapes — same-shape (no broadcast) for clean strategy
+# comparison. The third entry is non-pow2 in the hidden dim to exercise
+# tail-handling code paths.
 _SHAPES_2D = [
     (1024, 4096),   # 4M  — small transformer hidden dim
     (1024, 10240),  # 10M — medium (e.g. Llama-2 intermediate)
-    (1024, 20480),  # 20M — large (e.g. Llama-2 70B intermediate)
+    (1024, 11008),  # 11M — non-pow2 LLaMA-7B intermediate
 ]
-_SHAPES = [prod(s) for s in _SHAPES_2D]
 
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
@@ -39,14 +40,15 @@ _BINARY_STRATEGIES = ("direct", "explicit_parallel")
 class BinaryStrategyBenchCase:
     """Minimal test harness for binary strategy benchmarks."""
 
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
+    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
+        self.shape = shape
+        self.n_total = prod(shape)
         self.dtype = dtype
         self.output_dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
-        b = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
+        a = torch.randn(*self.shape, device="cuda", dtype=self.dtype)
+        b = torch.randn(*self.shape, device="cuda", dtype=self.dtype)
         return a, b
 
 
@@ -68,106 +70,46 @@ class BinaryStrategyBenchmark(BenchmarkBase[BinaryStrategyBenchCase]):
 # ---------------------------------------------------------------------------
 
 
+def _shape_id(shape: tuple[int, ...]) -> str:
+    return "x".join(str(s) for s in shape)
+
+
+def _binary_strategy_params() -> list:
+    params = []
+    smoke_shape = _SHAPES_2D[0]
+    for shape in _SHAPES_2D:
+        for dtype in _DTYPES:
+            for strategy in _BINARY_STRATEGIES:
+                is_smoke = shape == smoke_shape and dtype == torch.float16
+                mark = pytest.mark.smoke if is_smoke else pytest.mark.full
+                params.append(pytest.param(
+                    shape, dtype, strategy,
+                    id=f"{_shape_id(shape)}-{dtype}-{strategy}",
+                    marks=mark,
+                ))
+    return params
+
+
 class BinaryStrategyFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, shape_label, dtype, strategy", [
-            # --- (1024, 4096) = 4_194_304 ---
-            pytest.param(
-                _SHAPES[0], "1024x4096", torch.float16, "direct",
-                marks=pytest.mark.smoke,
-            ),
-            pytest.param(
-                _SHAPES[0], "1024x4096", torch.float16, "explicit_parallel",
-                marks=pytest.mark.smoke,
-            ),
-            pytest.param(
-                _SHAPES[0], "1024x4096", torch.bfloat16, "direct",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[0], "1024x4096", torch.bfloat16, "explicit_parallel",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[0], "1024x4096", torch.float32, "direct",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[0], "1024x4096", torch.float32, "explicit_parallel",
-                marks=pytest.mark.full,
-            ),
-            # --- (1024, 10240) = 10_485_760 ---
-            pytest.param(
-                _SHAPES[1], "1024x10240", torch.float16, "direct",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[1], "1024x10240", torch.float16, "explicit_parallel",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[1], "1024x10240", torch.bfloat16, "direct",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[1], "1024x10240", torch.bfloat16, "explicit_parallel",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[1], "1024x10240", torch.float32, "direct",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[1], "1024x10240", torch.float32, "explicit_parallel",
-                marks=pytest.mark.full,
-            ),
-            # --- (1024, 20480) = 20_971_520 ---
-            pytest.param(
-                _SHAPES[2], "1024x20480", torch.float16, "direct",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[2], "1024x20480", torch.float16, "explicit_parallel",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[2], "1024x20480", torch.bfloat16, "direct",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[2], "1024x20480", torch.bfloat16, "explicit_parallel",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[2], "1024x20480", torch.float32, "direct",
-                marks=pytest.mark.full,
-            ),
-            pytest.param(
-                _SHAPES[2], "1024x20480", torch.float32, "explicit_parallel",
-                marks=pytest.mark.full,
-            ),
-        ]),
-    ]
+    PARAMS = [("shape, dtype, strategy", _binary_strategy_params())]
 
 
 @BinaryStrategyFixture
 def test_binary_strategy_bench(
-    n_total: int,
-    shape_label: str,
+    shape: tuple[int, ...],
     dtype: torch.dtype,
     strategy: str,
 ) -> None:
     """Benchmark BinaryKernel (add) per strategy to validate DEFAULT_STRATEGY."""
-    test = BinaryStrategyBenchCase(n_total, dtype)
+    test = BinaryStrategyBenchCase(shape, dtype)
     bm = BinaryStrategyBenchmark(test)
     inputs = test.gen_inputs()
 
-    shape = (n_total,)
     op = AddFwdOp(a_shape=shape, b_shape=shape, dtype=dtype, strategy=strategy)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(
         "binary_strategy",
-        locals(),
+        {"shape": shape, "dtype": dtype, "strategy": strategy},
         result,
         tag=f"add_{strategy}",
     )

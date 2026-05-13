@@ -72,7 +72,7 @@ class TestBase(WorkloadBase):
 
     def check(self,
               op,
-              *inputs: tuple[torch.Tensor],
+              *inputs: torch.Tensor,
               compare=None,
               atol: float = 1e-08,
               rtol: float = 1e-05) -> None:

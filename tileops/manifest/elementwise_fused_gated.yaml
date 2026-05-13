@@ -1,0 +1,132 @@
+# elementwise_fused_gated.yaml -- manifest entries for fused gated activation
+# ops: y = activation(gate) * value, with gate/value packed as the two halves
+# of a single (M, 2*N) input tensor.
+#
+# These are TileOPs-private fused kernels with no single ``torch.*`` symbol
+# they mirror (the PyTorch composite expression for SiluAndMulFwdOp is
+# ``F.silu(a) * b``, etc.), so ``ref_api`` is ``"none"`` per
+# .claude/domain-rules/manifest-spec.md. Source of truth for op interfaces
+# in this family. Loaded and merged with other family files by
+# tileops.manifest at runtime. See docs/design/manifest.md for the schema.
+
+SiluAndMulFwdOp:
+  # Composite expression: F.silu(gate) * value where x = [gate, value] along
+  # the last dim, x.shape == (M, 2*N). No single torch.* symbol.
+  ref_api: "none"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
+    outputs:
+      output: {dtype: "same_as(x)", shape: "[M, N]"}
+    shape_rules:
+    - "x.shape[1] == 2 * output.shape[1]"
+    - "x.shape[0] == output.shape[0]"
+
+  workloads:
+    # SwiGLU FFN intermediate (Llama-3.1-8B, hidden_dim=14336)
+  - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "llama-3.1-8b-swiglu-prefill"}
+  - {x_shape: [1, 28672], dtypes: [bfloat16], label: "llama-3.1-8b-swiglu-decode"}
+
+  roofline:
+    vars:
+      M: "x.shape[0]"
+      N: "output.shape[1]"
+    # FLOPs: silu(gate) = gate * sigmoid(gate); sigmoid = neg + exp + add +
+    # recip = 4. silu adds one mul (= 5). Final mul-by-value = 1. Total 6
+    # per output element. N output elements per row, M rows.
+    flops: "6 * M * N"
+    # Read 2*M*N gate+value, write M*N output.
+    bytes: "3 * M * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      silu_and_mul: SiluAndMulFwdKernel
+    op: tileops/ops/elementwise/fused_gated.py
+    test: tests/ops/test_fused_gated.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+GeluAndMulFwdOp:
+  # Composite expression: F.gelu(gate, approximate='none') * value where
+  # x = [gate, value] along the last dim, x.shape == (M, 2*N). Exact GELU
+  # (erf-based). No single torch.* symbol.
+  ref_api: "none"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
+    outputs:
+      output: {dtype: "same_as(x)", shape: "[M, N]"}
+    shape_rules:
+    - "x.shape[1] == 2 * output.shape[1]"
+    - "x.shape[0] == output.shape[0]"
+
+  workloads:
+  - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "ffn-gelu-prefill"}
+  - {x_shape: [1, 28672], dtypes: [bfloat16], label: "ffn-gelu-decode"}
+
+  roofline:
+    vars:
+      M: "x.shape[0]"
+      N: "output.shape[1]"
+    # FLOPs: gelu(gate) = gate * 0.5 * (1 + erf(gate / sqrt(2))).
+    # div(1) + erf(1) + add(1) + mul-by-half(1) + mul-by-gate(1) = 5;
+    # final mul-by-value = 1. Total 6 per output element.
+    flops: "6 * M * N"
+    bytes: "3 * M * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      gelu_and_mul: GeluAndMulFwdKernel
+    op: tileops/ops/elementwise/fused_gated.py
+    test: tests/ops/test_fused_gated.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false
+
+GeluTanhAndMulFwdOp:
+  # Composite expression: F.gelu(gate, approximate='tanh') * value where
+  # x = [gate, value] along the last dim, x.shape == (M, 2*N). tanh-based
+  # GELU approximation. No single torch.* symbol.
+  ref_api: "none"
+  family: elementwise
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
+    outputs:
+      output: {dtype: "same_as(x)", shape: "[M, N]"}
+    shape_rules:
+    - "x.shape[1] == 2 * output.shape[1]"
+    - "x.shape[0] == output.shape[0]"
+
+  workloads:
+  - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "ffn-gelu-tanh-prefill"}
+  - {x_shape: [1, 28672], dtypes: [bfloat16], label: "ffn-gelu-tanh-decode"}
+
+  roofline:
+    vars:
+      M: "x.shape[0]"
+      N: "output.shape[1]"
+    # FLOPs: gelu_tanh(g) = 0.5 * g * (1 + tanh(sqrt(2/pi) * (g + 0.044715 * g^3))).
+    # cube(2 muls) + mul-coeff(1) + add(1) + mul-sqrt(1) + tanh(1) + add(1)
+    # + mul-half(1) + mul-by-gate(1) = 9; final mul-by-value = 1. Total 10
+    # per output element.
+    flops: "10 * M * N"
+    bytes: "3 * M * N * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/elementwise.py
+    kernel_map:
+      gelu_tanh_and_mul: GeluTanhAndMulFwdKernel
+    op: tileops/ops/elementwise/fused_gated.py
+    test: tests/ops/test_fused_gated.py
+    bench: benchmarks/ops/bench_binary_elementwise.py
+    bench_manifest_driven: false

@@ -58,6 +58,7 @@ def test_sum_bench(
     test = SumTest(shape, dtype)
     inputs = test.gen_inputs()
 
+    op_params.setdefault("dim", -1)  # baseline below reduces dim=-1
     op = SumFwdOp(dtype=dtype, **op_params)
     bm = ManifestBenchmark(_SUM_OP, op, test)
     try:
@@ -88,7 +89,7 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = MeanTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = MeanFwdOp(dtype=dtype)
+    op = MeanFwdOp(dtype=dtype, dim=-1)
     bm = ManifestBenchmark(_MEAN_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -115,7 +116,7 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = AmaxTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = AmaxFwdOp(dtype=dtype)
+    op = AmaxFwdOp(dtype=dtype, dim=-1)
     bm = ManifestBenchmark(_AMAX_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -142,7 +143,7 @@ def test_amin_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = AminTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = AminFwdOp(dtype=dtype)
+    op = AminFwdOp(dtype=dtype, dim=-1)
     bm = ManifestBenchmark(_AMIN_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -196,7 +197,7 @@ def test_std_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = StdTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = StdFwdOp(dtype=dtype, correction=1)
+    op = StdFwdOp(dtype=dtype, dim=-1, correction=1)
     bm = ManifestBenchmark(_STD_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -223,7 +224,7 @@ def test_var_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = VarTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = VarFwdOp(dtype=dtype, correction=1)
+    op = VarFwdOp(dtype=dtype, dim=-1, correction=1)
     bm = ManifestBenchmark(_VAR_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -250,7 +251,7 @@ def test_var_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = VarMeanTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = VarMeanFwdOp(dtype=dtype, correction=1)
+    op = VarMeanFwdOp(dtype=dtype, dim=-1, correction=1)
     bm = ManifestBenchmark(_VAR_MEAN_OP, op, test)
     try:
         result = bm.profile(op, *inputs)

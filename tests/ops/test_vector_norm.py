@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare
+from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from workloads.vector_norm import L1NormTest as _L1NormWorkload
 
 # ---------------------------------------------------------------------------
@@ -109,6 +110,22 @@ class VectorNormTest(_L1NormWorkload, TestBase):
         return ref.to(self.dtype)
 
 
+class _TailBlockVectorNormKernel(VectorNormKernel):
+    """Force tiled tests to cover tail-M masking with block_m > M."""
+
+    _TAIL_BLOCK_M = 4
+    _TAIL_TILE_N = 8192
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self._needs_tiling, "tail-M regression test must use the tiled kernel"
+        self.config = {
+            "block_m": self._TAIL_BLOCK_M,
+            "threads": 128,
+            "tile_n": self._TAIL_TILE_N,
+        }
+
+
 def _get_tolerances(dtype: torch.dtype):
     """Return (atol, rtol) for the given dtype."""
     if dtype == torch.float32:
@@ -132,7 +149,13 @@ def _make_1d_input(n: int, dtype: torch.dtype) -> torch.Tensor:
     return torch.randn(n, dtype=dtype, device="cuda")
 
 
-def _make_op(dtype: torch.dtype, op_kind: str, dim: int = -1, keepdim: bool = False):
+def _make_op(
+    dtype: torch.dtype,
+    op_kind: str,
+    dim: int = -1,
+    keepdim: bool = False,
+    kernel_map=None,
+):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.inf_norm import InfNormFwdOp
     from tileops.ops.reduction.l1_norm import L1NormFwdOp
@@ -144,7 +167,7 @@ def _make_op(dtype: torch.dtype, op_kind: str, dim: int = -1, keepdim: bool = Fa
         "inf": InfNormFwdOp,
     }
     cls = op_map[op_kind]
-    return cls(dtype=dtype, dim=dim, keepdim=keepdim)
+    return cls(dtype=dtype, dim=dim, keepdim=keepdim, kernel_map=kernel_map)
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +543,64 @@ def test_inf_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
     op = _make_op(dtype, "inf")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+# ---------------------------------------------------------------------------
+# Empty-dim full-reduction (dim=[])
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
+@pytest.mark.parametrize("keepdim", [False, True])
+def test_empty_dim_full_reduction_keepdim(op_kind: str, keepdim: bool) -> None:
+    dtype = torch.float16
+    x = torch.randn(32, 256, dtype=dtype, device="cuda")
+    op = _make_op(dtype, op_kind, dim=[], keepdim=keepdim)
+    ref = torch.linalg.vector_norm(
+        x.float(), ord=_ORD_MAP[op_kind], dim=[], keepdim=keepdim,
+    ).to(dtype)
+    y = op(x)
+    assert y.shape == ref.shape
+    atol, rtol = _get_tolerances(dtype)
+    allclose_compare(y, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
+@pytest.mark.parametrize(
+    "dtype", [torch.float16, torch.bfloat16, torch.float32],
+)
+def test_empty_dim_full_reduction_3d_dtypes(
+    op_kind: str, dtype: torch.dtype,
+) -> None:
+    x = torch.randn(2, 16, 128, dtype=dtype, device="cuda")
+    op = _make_op(dtype, op_kind, dim=[], keepdim=False)
+    ref = torch.linalg.vector_norm(
+        x.float(), ord=_ORD_MAP[op_kind], dim=[], keepdim=False,
+    ).to(dtype)
+    y = op(x)
+    assert y.shape == ref.shape
+    atol, rtol = _get_tolerances(dtype)
+    allclose_compare(y, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
+def test_vector_norm_long_sequence_tiled(op_kind: str) -> None:
+    """Exercise the N-tiled path with a tail-M block."""
+    dtype = torch.bfloat16
+    test = VectorNormTest(3, 33024, dtype, op_kind)
+    op = _make_op(
+        dtype,
+        op_kind,
+        kernel_map={"vector_norm": _TailBlockVectorNormKernel},
+    )
+    atol, rtol = _get_tolerances(dtype)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    kernel = op._kernel_cache[(3, 33024)]
+    assert kernel.config["block_m"] > test.shape[0]
+    assert kernel.config["tile_n"] > 0
 
 
 if __name__ == "__main__":

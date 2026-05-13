@@ -1,13 +1,16 @@
 """Reduce ops: SumFwdOp, MeanFwdOp, AminFwdOp, AmaxFwdOp, ProdFwdOp, StdFwdOp, VarFwdOp, VarMeanFwdOp.
 
 Each op reduces along the configured ``dim`` and supports arbitrary-rank input.
-The ``dim`` parameter accepts ``int`` or ``list[int]`` for multi-dim reduction.
+The ``dim`` parameter accepts ``int``, ``list[int]``, or ``tuple[int, ...]``
+for multi-dim reduction. Constructor ``dim`` defaults to ``None`` (full
+reduction) for the ten ops whose manifest declares ``default: null``;
+``ProdFwdOp`` preserves ``dim=-1``.
 The Op layer validates inputs, reshapes to 2D (M, N), and calls the kernel.
-For simple and Welford reduce ops, alignment padding is handled inside the
-kernel via masked loads with identity-element fills, eliminating host-side
-``F.pad`` from the forward path.  Other ops that inherit ``_ReduceOpBase``
-(argreduce, logical, vector_norm) continue to use host-side padding until
-their kernels are converted.
+For simple, Welford, logical reduce, and vector norm ops, alignment padding is
+handled inside the kernel via masked loads with identity-element fills,
+eliminating host-side ``F.pad`` from the forward path. Other ops that inherit
+``_ReduceOpBase`` continue to use host-side padding until their kernels are
+converted.
 Kernels are cached by ``(M, N)`` so that the same op instance can handle
 varying shapes.
 """
@@ -23,7 +26,7 @@ from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.reduce import ReduceKernel
 
 from ..op_base import Op
-from ._multidim import flatten_for_multidim, normalize_dim, restore_multidim_shape
+from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
 
 __all__ = [
     "AmaxFwdOp",
@@ -69,16 +72,28 @@ class _ReduceOpBase(Op):
     _kernel_key: str = "reduce"  # overridden by subclasses for different kernel families
     _kernel_cls: type = ReduceKernel  # overridden by subclasses for different kernel classes
     _kernel_handles_padding: bool = False  # True when kernel accepts (M, N) with masked loads
+    _empty_dim_policy: EmptyDimPolicy = "reject"
 
     def __init__(
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = -1,
+        dim: Union[int, List[int], Tuple[int, ...], None] = None,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Construct a reduce op.
+
+        Args:
+            dtype: Input data type.
+            dim: Reduction dimension (default ``None``, i.e. full reduction).
+                Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
+                ``None``.
+            keepdim: Whether to retain reduced dims as size 1.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default ``False``).
+        """
         self.dtype = dtype
         self.dim = dim
         self.keepdim = keepdim
@@ -98,18 +113,31 @@ class _ReduceOpBase(Op):
         Default: accept ``int``, ``list[int]``/``tuple[int]``, or ``None``.
         Subclasses that only support single-dim reduction (e.g. argreduce)
         should override to reject non-scalar values.
+
+        ``bool`` values are rejected explicitly. Python's ``bool`` subclasses
+        ``int`` (so ``isinstance(True, int)`` is true), but a boolean dim has
+        no meaningful interpretation as a tensor axis and almost always
+        signals a caller bug.
         """
         dim = self.dim
+        if isinstance(dim, bool):
+            raise TypeError(
+                f"dim must not be bool (subclasses int but is not a valid "
+                f"axis), got {dim!r}"
+            )
         if dim is None or isinstance(dim, int):
             return
         if isinstance(dim, (list, tuple)):
-            if not all(isinstance(d, int) for d in dim):
-                raise TypeError(
-                    f"All elements of dim must be int, got {dim}"
-                )
+            for d in dim:
+                if isinstance(d, bool) or not isinstance(d, int):
+                    raise TypeError(
+                        f"All elements of dim must be int (not bool), "
+                        f"got {dim!r}"
+                    )
             return
         raise TypeError(
-            f"dim must be int, list[int], or None, got {type(dim).__name__}"
+            f"dim must be int, list[int], tuple[int, ...], or None, "
+            f"got {type(dim).__name__}"
         )
 
     @property
@@ -163,11 +191,72 @@ class _ReduceOpBase(Op):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the reduce op on *x* along the configured dim."""
+        noop_out = self._maybe_noop(x)
+        if noop_out is not None:
+            return noop_out
         x, orig_shape, dim_info, kernel = self._prepare_input(x)
         x, ctx = self._pre_kernel(x)
         y = kernel(x)
         y = self._post_kernel(y, ctx)
         return self._reshape_output(y, orig_shape, dim_info)
+
+    # ------------------------------------------------------------------
+    # Empty-dim no-op short-circuit
+    # ------------------------------------------------------------------
+
+    def _noop_output_dtype(self) -> Optional[torch.dtype]:
+        """Manifest-declared output dtype for the no-op short-circuit.
+
+        Subclasses with a fixed output dtype (e.g. All/Any -> bool) MUST
+        override so the short-circuit honors the manifest contract. The
+        default ``None`` means "preserve input dtype".
+        """
+        return None
+
+    def _validate_input_tensor(self, x: torch.Tensor) -> None:
+        """Validate device, dtype, and rank of the forward input.
+
+        Shared by ``_prepare_input`` and the ``dim=[]`` noop short-circuit
+        so both paths enforce the same forward contract.
+        """
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.ndim == 0:
+            raise ValueError("Input tensor must be at least 1D")
+
+    def _maybe_noop(self, x: torch.Tensor) -> Optional[torch.Tensor]:
+        """Return *x* (cast to the manifest output dtype) when ``dim`` is
+        an empty list/tuple and the op's ``_empty_dim_policy`` is
+        ``"noop"``; return ``None`` otherwise so the caller proceeds with
+        the normal kernel path.
+
+        Runs the same input validation as ``_prepare_input`` (CUDA / dtype
+        / ndim) and binds ``_last_roofline_mn`` before short-circuiting, so
+        the noop path still honors the public forward contract -- bad
+        inputs raise, and ``eval_roofline()`` works after a noop forward.
+        """
+        if self._empty_dim_policy != "noop":
+            return None
+        if not isinstance(self.dim, (list, tuple)) or len(self.dim) != 0:
+            return None
+        self._validate_input_tensor(x)
+        # Bind roofline state. The noop performs no reduction but still
+        # reads every input element and writes an equal-shape result
+        # (cast to bool for All/Any, the only ops whose ``_empty_dim_policy``
+        # is ``"noop"``; other reduce ops, including ``CountNonzero``, keep
+        # ``"full"`` and never enter this branch). Model this as a
+        # degenerate reduction over an axis of length 1: M = numel, N = 1.
+        # Under the existing per-op-kind
+        # formulas this yields mem_bytes proportional to numel * elem_bytes
+        # for the read plus the output term, instead of collapsing to
+        # zero, which would under-count the actual data-movement cost.
+        self._last_roofline_mn = (x.numel(), 1)
+        out_dtype = self._noop_output_dtype()
+        if out_dtype is None:
+            return x
+        return x.to(out_dtype)
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_mn is None:
@@ -248,18 +337,15 @@ class _ReduceOpBase(Op):
         via masked loads.  Otherwise, host-side ``F.pad`` is applied for
         backward compatibility with kernels that expect ``(M, N_padded)``.
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.ndim == 0:
-            raise ValueError("Input tensor must be at least 1D")
+        self._validate_input_tensor(x)
 
         orig_shape = x.shape
 
         # --- multi-dim path (includes dim=None for full reduction) ---
         if isinstance(self.dim, (list, tuple)) or self.dim is None:
-            dims = normalize_dim(self.dim, x.ndim)
+            dims = normalize_dim(
+                self.dim, x.ndim, empty_dim_policy=self._empty_dim_policy,
+            )
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
             M = prod(x.shape[:-1])
@@ -335,17 +421,20 @@ class _ReduceOpBase(Op):
 class _SimpleReduceOp(_ReduceOpBase):
     """Base for single-output reduce ops (sum, mean, amin, amax, prod).
 
-    Construction: ``op(dtype=..., dim=-1, keepdim=False)``.  M and N are
-    derived from the input tensor at forward time, and kernels are cached
-    by ``(M, N)`` to avoid rebuilds.
+    M and N are derived from the input tensor at forward time, and kernels
+    are cached by ``(M, N)`` to avoid rebuilds. Alignment padding is handled
+    inside the kernel via masked loads with identity-element fills, so no
+    host-side ``F.pad`` is needed.
 
-    Alignment padding is handled inside the kernel via masked loads with
-    identity-element fills, so no host-side ``F.pad`` is needed.
+    The ``dim`` default follows each op's manifest entry: ``sum``, ``mean``,
+    ``amin``, and ``amax`` default to ``None`` (full reduction); ``prod``
+    overrides to ``dim=-1`` and restricts the type to ``int``.
 
     Args:
         dtype: Data type (float32, float16, or bfloat16).
-        dim: Reduction dimension (default -1).  Accepts ``int`` or
-            ``list[int]`` for multi-dim reduction.
+        dim: Reduction dimension. Accepts ``int``, ``list[int]``,
+            ``tuple[int, ...]``, or ``None`` on the base class; subclasses
+            may narrow this (see ``ProdFwdOp``).
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
@@ -358,30 +447,70 @@ class SumFwdOp(_SimpleReduceOp):
     """Sum reduction along dim=-1."""
 
     _op_kind = "sum"
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
 
 class MeanFwdOp(_SimpleReduceOp):
     """Mean reduction along dim=-1."""
 
     _op_kind = "mean"
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
 
 class AminFwdOp(_SimpleReduceOp):
     """Amin (element-wise minimum) reduction along dim=-1."""
 
     _op_kind = "amin"
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
 
 class AmaxFwdOp(_SimpleReduceOp):
     """Amax (element-wise maximum) reduction along dim=-1."""
 
     _op_kind = "amax"
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
 
 class ProdFwdOp(_SimpleReduceOp):
-    """Product reduction along dim=-1."""
+    """Product reduction.
+
+    Unlike the other simple reduce ops, ``ProdFwdOp`` defaults to
+    ``dim=-1`` (manifest declares ``default: -1`` for ``prod``).
+    """
 
     _op_kind = "prod"
+
+    def __init__(
+        self,
+        *,
+        dtype: torch.dtype,
+        dim: int = -1,
+        keepdim: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        """Construct ProdFwdOp.
+
+        Args:
+            dtype: Input data type.
+            dim (int): reduction dimension (default ``-1``).
+            keepdim: Whether to retain reduced dims as size 1.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default ``False``).
+        """
+        super().__init__(
+            dtype=dtype, dim=dim, keepdim=keepdim,
+            kernel_map=kernel_map, tune=tune,
+        )
+
+    def _validate_dim(self) -> None:
+        # Manifest declares prod.signature.params.dim as int; reject the
+        # multi-dim and full-reduction overloads inherited from the base.
+        if not isinstance(self.dim, int) or isinstance(self.dim, bool):
+            raise TypeError(
+                f"ProdFwdOp.dim must be int, got "
+                f"{type(self.dim).__name__}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +521,7 @@ class ProdFwdOp(_SimpleReduceOp):
 class _WelfordReduceOp(_ReduceOpBase):
     """Base for Welford-based reduce ops (std, var, var_mean).
 
-    Construction: ``op(dtype=..., dim=-1, correction=1, keepdim=False)``.
+    Construction: ``op(dtype=..., dim=None, correction=1, keepdim=False)``.
     M and N are derived from the input tensor at forward time, and kernels
     are cached by ``(M, N)`` to avoid rebuilds.
 
@@ -401,8 +530,9 @@ class _WelfordReduceOp(_ReduceOpBase):
 
     Args:
         dtype: Data type (float32, float16, or bfloat16).
-        dim: Reduction dimension (default -1).  Accepts ``int`` or
-            ``list[int]`` for multi-dim reduction.
+        dim: Reduction dimension (default ``None``, i.e. full reduction).
+            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
+            multi-dim reduction.
         correction: Bessel's correction (default 1).
         keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional override for kernel dispatch.
@@ -410,17 +540,30 @@ class _WelfordReduceOp(_ReduceOpBase):
     """
 
     _kernel_handles_padding = True
+    _empty_dim_policy: EmptyDimPolicy = "full"
 
     def __init__(
         self,
         *,
         dtype: torch.dtype,
-        dim: Union[int, List[int], None] = -1,
+        dim: Union[int, List[int], Tuple[int, ...], None] = None,
         correction: int = 1,
         keepdim: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        """Construct a Welford-based reduce op.
+
+        Args:
+            dtype: Input data type.
+            dim: Reduction dimension (default ``None``, i.e. full reduction).
+                Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
+                ``None``.
+            correction: Bessel's correction (default 1).
+            keepdim: Whether to retain reduced dims as size 1.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default ``False``).
+        """
         self.correction = correction
         super().__init__(
             dtype=dtype, dim=dim, keepdim=keepdim,

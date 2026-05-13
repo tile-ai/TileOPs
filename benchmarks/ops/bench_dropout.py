@@ -15,7 +15,9 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.dropout import DropoutOp
 from workloads.workload_base import FixtureBase
 
-_SHAPES = [(1024, 4096), (1024, 10240), (1024, 20480)]
+# DNN-realistic shapes: (tokens, hidden_dim). The third entry is non-pow2
+# (LLaMA-7B intermediate=11008) so the op exercises a non-pow2 shape.
+_SHAPES = [(1024, 4096), (1024, 10240), (1024, 11008)]
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 _P = 0.5
 
