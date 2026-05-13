@@ -38,7 +38,6 @@ _TORCH_SCALAR_REF = {
     "mean": torch.mean,
     "amin": torch.amin,
     "amax": torch.amax,
-    "prod": torch.prod,
     "std": torch.std,
     "var": torch.var,
     "var_mean": torch.var_mean,
@@ -256,8 +255,10 @@ class _ReduceOpBase(Op):
     def _validate_scalar_dim(self) -> None:
         """Validate that ``self.dim`` is an accepted form for a 0-D input.
 
-        PyTorch accepts ``None``, ``0``, ``-1``, ``()``, ``[]`` on a 0-D
-        tensor and rejects any other integer or non-empty dim sequence.
+        PyTorch accepts ``None``, ``0``, ``-1``, ``()``, ``[]``, and any
+        list or tuple whose entries are all in ``(0, -1)`` (e.g. ``[0]``,
+        ``(-1,)``) on a 0-D tensor; integers outside ``{0, -1}`` and dim
+        sequences containing such entries raise ``IndexError``.
         """
         dim = self.dim
         if dim is None:

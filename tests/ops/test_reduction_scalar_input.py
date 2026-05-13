@@ -222,6 +222,7 @@ _UNCOVERED_OPS = [
     ("l1_norm", "tileops.ops.reduction.l1_norm", "L1NormFwdOp"),
     ("l2_norm", "tileops.ops.reduction.l2_norm", "L2NormFwdOp"),
     ("inf_norm", "tileops.ops.reduction.inf_norm", "InfNormFwdOp"),
+    ("prod", "tileops.ops.reduction.reduce", "ProdFwdOp"),
 ]
 
 
