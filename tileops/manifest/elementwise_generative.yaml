@@ -1,10 +1,3 @@
-# elementwise_generative.yaml -- manifest entries for elementwise generative
-# ops: ops whose forward() takes no input tensors and synthesizes a tensor
-# from integer / dtype construction-time parameters. ``ref_api`` is
-# ``"none"`` because PyTorch exposes ALiBi and sinusoidal position encodings
-# only as composite Python helpers, not as standalone tensor APIs. See
-# docs/design/manifest.md for the schema.
-
 AlibiFwdOp:
   # ALiBi position-encoding bias: out[h, i, j] = -slope_h * |i - j|, where
   # slope_h = 2^(-8 * (h + 1) / num_heads). No tensor input -- the full
@@ -15,21 +8,21 @@ AlibiFwdOp:
   status: spec-only
 
   signature:
-    inputs:
-      device_carrier: {dtype: "float16 | bfloat16 | float32", shape: "[]"}
+    inputs: {}
     outputs:
-      output: {dtype: "same_as(device_carrier)", shape: "[num_heads, seq_len, seq_len]"}
+      output: {dtype: "float16 | bfloat16 | float32", shape: "[num_heads, seq_len, seq_len]"}
     params:
       seq_len: {type: int}
       num_heads: {type: int}
+      dtype: {type: torch.dtype}
     shape_rules:
     - "seq_len > 0"
     - "num_heads > 0"
 
   workloads:
     # Llama-style attention bias dimensions
-  - {device_carrier_shape: [], seq_len: 2048, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-2k"}
-  - {device_carrier_shape: [], seq_len: 4096, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-4k"}
+  - {seq_len: 2048, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-2k"}
+  - {seq_len: 4096, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-4k"}
 
   roofline:
     vars:
@@ -62,13 +55,13 @@ SinusoidalFwdOp:
   status: spec-only
 
   signature:
-    inputs:
-      device_carrier: {dtype: "float16 | bfloat16 | float32", shape: "[]"}
+    inputs: {}
     outputs:
-      output: {dtype: "same_as(device_carrier)", shape: "[seq_len, d_model]"}
+      output: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, d_model]"}
     params:
       seq_len: {type: int}
       d_model: {type: int}
+      dtype: {type: torch.dtype}
     shape_rules:
     - "seq_len > 0"
     - "d_model > 0"
@@ -76,8 +69,8 @@ SinusoidalFwdOp:
 
   workloads:
     # Transformer-style positional encodings
-  - {device_carrier_shape: [], seq_len: 2048, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-2k-4k"}
-  - {device_carrier_shape: [], seq_len: 4096, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-4k-4k"}
+  - {seq_len: 2048, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-2k-4k"}
+  - {seq_len: 4096, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-4k-4k"}
 
   roofline:
     vars:

@@ -8,7 +8,7 @@ from tileops.kernels.elementwise import SinusoidalFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _OP_REGISTRY, _apply_fp8_post_cast
+from ._base import _apply_fp8_post_cast
 
 
 class SinusoidalFwdOp(Op):
@@ -25,7 +25,6 @@ class SinusoidalFwdOp(Op):
     """
 
     _op_name = "sinusoidal"
-    _wrapped = None
 
     def __init__(
         self,
@@ -40,26 +39,12 @@ class SinusoidalFwdOp(Op):
         self.dtype = dtype
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map[self._op_name](seq_len, d_model, dtype)
-        # Scalar tensor used as device/dtype carrier for torch.compile tracing
-        self._device_carrier = torch.empty((), dtype=dtype, device="cuda")
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
         return {"sinusoidal": SinusoidalFwdKernel}
 
-    def _eager_forward(self) -> torch.Tensor:
+    def forward(self) -> torch.Tensor:
         out = self.kernel()
         result = out.reshape(self.seq_len, self.d_model)
         return _apply_fp8_post_cast(result, self.kernel)
-
-    def forward(self) -> torch.Tensor:
-        wrapped = type(self)._wrapped
-        if wrapped is not None:
-            return wrapped(
-                self._device_carrier,
-                self.seq_len, self.d_model,
-                self._instance_key,
-            )
-        return self._eager_forward()

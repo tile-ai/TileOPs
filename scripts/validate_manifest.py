@@ -279,6 +279,29 @@ def check_l0(
                             f"[schema] {op_name}: params.{pname} missing 'type'"
                         )
 
+        # Surface invariant: every op produces at least one output, and every
+        # op has at least one construction handle — either a tensor input or
+        # a manifest-declared param. ``inputs: {}`` is permitted (generative
+        # ops synthesize the output from params alone); an op with neither
+        # inputs nor params has no surface the validator or codegen can act
+        # on.
+        raw_inputs = sig.get("inputs")
+        raw_outputs = sig.get("outputs")
+        raw_params = sig.get("params")
+        inputs_count = len(raw_inputs) if isinstance(raw_inputs, dict) else 0
+        outputs_count = len(raw_outputs) if isinstance(raw_outputs, dict) else 0
+        params_count = len(raw_params) if isinstance(raw_params, dict) else 0
+        if outputs_count < 1:
+            errors.append(
+                f"[schema] {op_name}: signature.outputs must declare at "
+                f"least one tensor"
+            )
+        if inputs_count < 1 and params_count < 1:
+            errors.append(
+                f"[schema] {op_name}: signature must declare at least one "
+                f"input tensor or one param (both are empty)"
+            )
+
         # dtype_combos must be a list of dicts if present (R4)
         if "dtype_combos" in sig:
             combos = sig["dtype_combos"]
@@ -539,7 +562,6 @@ def check_l1_signature(
     *,
     init_params: list[str] | None = None,
     manifest_static_dims: dict | None = None,
-    is_generative: bool = False,
 ) -> list[str]:
     """Check that forward() params match manifest inputs + params.
 
@@ -556,9 +578,6 @@ def check_l1_signature(
         init_params: List of parameter names from Op.__init__() (excluding 'self').
             When None, treated as empty (only forward is checked).
         manifest_static_dims: The signature.static_dims dict from manifest (may be None).
-        is_generative: When True, skip the forward()-order check against
-            ``manifest_inputs`` because those manifest inputs are not
-            threaded through ``forward()`` (see caller for detection).
 
     Returns:
         List of error strings (empty if OK).
@@ -576,16 +595,17 @@ def check_l1_signature(
     if init_params is None:
         init_params = []
 
-    # 1. forward() order check: manifest inputs + forward-visible params, in order.
-    if not is_generative:
-        expected = list(manifest_inputs.keys()) + [
-            name for name in manifest_params.keys() if name in forward_params
-        ]
-        if forward_params != expected:
-            errors.append(
-                f"[signature] {op_name}: forward() params {forward_params} do not match "
-                f"manifest order {expected}"
-            )
+    # forward() order check: manifest inputs + forward-visible params, in
+    # order. Empty manifest inputs collapses to a forward-visible-params
+    # equality check (no inputs to align).
+    expected = list(manifest_inputs.keys()) + [
+        name for name in manifest_params.keys() if name in forward_params
+    ]
+    if forward_params != expected:
+        errors.append(
+            f"[signature] {op_name}: forward() params {forward_params} do not match "
+            f"manifest order {expected}"
+        )
 
     # 2. Strict subset check: every manifest param must exist in init OR forward
     code_params = set(forward_params) | set(init_params)
@@ -824,25 +844,10 @@ def check_l1(
     manifest_static_dims = sig.get("static_dims")
     init_params = _get_init_params(result.cls)
 
-    # ``ref_api: "none"`` + zero positional forward() args ⇒ the manifest
-    # inputs are not threaded through forward() and the L1 order check
-    # is skipped.
-    #
-    # Why: introspection-failure (``None``) must NOT silently match the
-    # zero-args case. Compare ``len(...) == 0`` explicitly on the non-None
-    # branch, so a broken ``inspect.signature`` surfaces as an L1 error.
-    positional_forward_params = _forward_positional_params(result.cls)
-    is_generative = (
-        entry.get("ref_api") == "none"
-        and positional_forward_params is not None
-        and len(positional_forward_params) == 0
-    )
-
     return check_l1_signature(
         op_name, manifest_inputs, manifest_params, forward_params,
         init_params=init_params,
         manifest_static_dims=manifest_static_dims,
-        is_generative=is_generative,
     )
 
 
@@ -3376,13 +3381,6 @@ def check_c4_forward_signature_parity(
                 warnings.append(
                     f"[forward] {op_name}: inspect.signature(forward) failed"
                 )
-        return errors
-
-    # ``ref_api: "none"`` + zero positional forward() args ⇒ no positional
-    # argument to align against manifest inputs. ``positional`` is
-    # non-None here (introspection failure returned early above), so
-    # ``len(...) == 0`` cannot be confused with the failure path.
-    if entry.get("ref_api") == "none" and len(positional) == 0:
         return errors
 
     actual_prefix = positional[: len(expected)]
