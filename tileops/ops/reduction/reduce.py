@@ -310,6 +310,11 @@ class _ReduceOpBase(Op):
         """
         if x.ndim != 0:
             return None
+        if self._op_kind not in _TORCH_SCALAR_REF:
+            # Subclasses without a scalar reference (e.g. argmax/argmin/
+            # l1/l2/inf) fall through to the kernel path, which raises the
+            # pre-existing ``ValueError("Input tensor must be at least 1D")``.
+            return None
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.dtype != self.dtype:
