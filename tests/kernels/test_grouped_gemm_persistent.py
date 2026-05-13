@@ -1,16 +1,14 @@
-"""Correctness tests for MoeGroupedGemmPersistentKernel.
+"""Correctness tests for GroupedGemmPersistentKernel.
 
 Verifies that the persistent kernel produces the same output as
 MoeGroupedGemmNopadKernel across shapes, distributions, and dtypes.
 """
-import math
 
 import pytest
 import torch
-import torch.nn.functional as F
 
+from tileops.kernels.grouped_gemm import GroupedGemmPersistentKernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
-from tileops.kernels.moe.moe_grouped_gemm_persistent import MoeGroupedGemmPersistentKernel
 
 
 def make_inputs(T: int, E: int, top_k: int, N: int, K: int,
@@ -62,8 +60,8 @@ def make_inputs(T: int, E: int, top_k: int, N: int, K: int,
 
 @pytest.mark.smoke
 def test_import():
-    """MoeGroupedGemmPersistentKernel can be imported."""
-    from tileops.kernels.moe.moe_grouped_gemm_persistent import MoeGroupedGemmPersistentKernel  # noqa: F401
+    """GroupedGemmPersistentKernel can be imported."""
+    from tileops.kernels.grouped_gemm import GroupedGemmPersistentKernel  # noqa: F401
 
 
 @pytest.mark.smoke
@@ -74,7 +72,7 @@ def test_output_shape(dtype):
     numel = T * top_k
     A, B, sizes, offsets, _ = make_inputs(T, E, top_k, N, K, dtype)
     sm_count = torch.cuda.get_device_properties(0).multi_processor_count
-    kernel = MoeGroupedGemmPersistentKernel(
+    kernel = GroupedGemmPersistentKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=dtype, sm_count=sm_count)
     C = kernel(A, B, sizes, offsets)
     assert C.shape == (numel, N), f"Expected ({numel}, {N}), got {C.shape}"
@@ -105,7 +103,7 @@ def test_matches_nopad_kernel(T, E, top_k, N, K, dtype, distribution):
         numel=numel, num_experts=E, N=N, K=K, dtype=dtype)
     C_ref = ref_kernel(A, B, sizes, offsets)
 
-    persistent_kernel = MoeGroupedGemmPersistentKernel(
+    persistent_kernel = GroupedGemmPersistentKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=dtype, sm_count=sm_count)
     C_out = persistent_kernel(A, B, sizes, offsets)
 
@@ -128,7 +126,7 @@ def test_large_expert_count(E):
     ref_kernel = MoeGroupedGemmNopadKernel(numel=numel, num_experts=E, N=N, K=K, dtype=dtype)
     C_ref = ref_kernel(A, B, sizes, offsets)
 
-    persistent_kernel = MoeGroupedGemmPersistentKernel(
+    persistent_kernel = GroupedGemmPersistentKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=dtype, sm_count=sm_count)
     C_out = persistent_kernel(A, B, sizes, offsets)
 
@@ -154,7 +152,7 @@ def test_zero_tokens_some_experts():
     ref_kernel = MoeGroupedGemmNopadKernel(numel=numel, num_experts=E, N=N, K=K, dtype=dtype)
     C_ref = ref_kernel(A, B, sizes, offsets)
 
-    persistent_kernel = MoeGroupedGemmPersistentKernel(
+    persistent_kernel = GroupedGemmPersistentKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=dtype, sm_count=sm_count)
     C_out = persistent_kernel(A, B, sizes, offsets)
 
@@ -173,10 +171,9 @@ def test_all_zero_tokens():
     # A and B with valid shapes (kernel should not read A at all since total_tiles=0)
     A = torch.randn(numel, K, dtype=dtype, device="cuda")
     B = torch.randn(E, N, K, dtype=dtype, device="cuda")
-    C_expected = torch.zeros(numel, N, dtype=dtype, device="cuda")
 
     sm_count = torch.cuda.get_device_properties(0).multi_processor_count
-    persistent_kernel = MoeGroupedGemmPersistentKernel(
+    persistent_kernel = GroupedGemmPersistentKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=dtype, sm_count=sm_count)
     C_out = persistent_kernel(A, B, sizes, offsets)
 

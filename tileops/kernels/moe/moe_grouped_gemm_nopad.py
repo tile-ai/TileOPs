@@ -47,7 +47,7 @@ from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["MoeGroupedGemmNopadKernel"]
 
-_DEFAULT_CONFIG = {"block_m": 64, "block_n": 256, "block_k": 64, "num_stages": 2, "threads": 128,
+_DEFAULT_CONFIG = {"block_m": 64, "block_n": 256, "block_k": 64, "num_stages": 3, "threads": 128,
                    "group_size_m": 1}
 _SCHED_THREADS = 256  # threads per block in the tile scheduler kernel
 
@@ -154,7 +154,6 @@ def _moe_grouped_gemm_kernel(numel: int, max_tiles: int, num_experts: int,
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(block_m, block_n, block_k, num_stages, threads, group_size_m):
-        A_shape = (numel, K)
         B_shape = (num_experts, N, K)
         C_shape = (numel, N)
         A_shared_shape = (block_m, block_k)
@@ -162,8 +161,14 @@ def _moe_grouped_gemm_kernel(numel: int, max_tiles: int, num_experts: int,
 
         # Compile-time constants (all Python ints, baked in at JIT time).
         _k_aligned = (K % block_k == 0)
-        _n_aligned = (N % block_n == 0)
-        _b_copy_ok = _k_aligned and _n_aligned
+        # _b_copy_ok: use T.copy (TMA-eligible) for both A and B inside T.Pipelined.
+        # Requires K alignment so there are no partial K-tiles to predicate.
+        # N boundary is handled by TMA zero-fill OOB; epilogue guards the C store.
+        # A is declared with block_m extra rows so the last tile's T.copy is in-bounds.
+        _b_copy_ok = _k_aligned
+        # A_shape includes block_m padding rows (used only in _b_copy_ok path so that
+        # T.copy on the last M-tile does not read past the end of the tensor).
+        A_shape = (numel + block_m, K) if _b_copy_ok else (numel, K)
         _num_pid_n = math.ceil(N / block_n)           # N-tile count
         _total_ctas = max_tiles * _num_pid_n          # 1-D grid size
         _num_pid_in_group = group_size_m * _num_pid_n  # CTAs per GROUP_SIZE_M group
@@ -212,20 +217,21 @@ def _moe_grouped_gemm_kernel(numel: int, max_tiles: int, num_experts: int,
                         n_start      = by * T.int32(block_n)
                         actual_rows  = T.min(T.int32(block_m),
                                              true_sizes[expert_id] - row_in_expert)
+                        actual_cols  = T.min(T.int32(block_n), T.int32(N) - n_start)
                         T.clear(C_local)
 
+                        # T.copy lets TileLang's WarpSpecialized pass split threads into
+                        # producer (TMA-eligible) and consumer (WGMMA) warpgroups when
+                        # threads=256 on SM90.  No predicates here; epilogue guards writes.
                         for k in T.Pipelined(T.ceildiv(K, block_k), num_stages=num_stages):
-                            for i, j in T.Parallel(block_m, block_k):
-                                A_shared[i, j] = T.if_then_else(
-                                    i < actual_rows,
-                                    A[m_start + i, k * block_k + j], 0)
-                            for i, j in T.Parallel(block_n, block_k):
-                                B_shared[i, j] = B[expert_id, n_start + i,
-                                                    k * block_k + j]
+                            T.copy(A[m_start:m_start + block_m,
+                                     k * block_k:(k + 1) * block_k], A_shared)
+                            T.copy(B[expert_id, n_start:n_start + block_n,
+                                     k * block_k:(k + 1) * block_k], B_shared)
                             T.gemm(A_shared, B_shared, C_local, transpose_B=True)
 
                         for i, j in T.Parallel(block_m, block_n):
-                            if i < actual_rows:
+                            if i < actual_rows and j < actual_cols:
                                 C[m_start + i, n_start + j] = C_local[i, j]
         else:
             @T.prim_func
@@ -348,7 +354,7 @@ class MoeGroupedGemmNopadKernel(Kernel):
         block_m = [32, 64, 128]
         block_n = [64, 128, 256]
         block_k = [32, 64, 128]
-        num_stages = [1, 2, 3]
+        num_stages = [1, 2, 3, 4, 5]
         threads = [128, 256]
         return [
             {"block_m": c[0], "block_n": c[1], "block_k": c[2],
@@ -382,7 +388,16 @@ class MoeGroupedGemmNopadKernel(Kernel):
             C: [numel, N] GEMM output.
         """
         block_m = self.config["block_m"]
+        block_k = self.config["block_k"]
         max_tiles = self._max_tiles(block_m)
+
+        # When K is block_k-aligned the fast path uses T.copy (TMA-eligible) with no
+        # row predicate on A.  The last M-tile of the last expert reads up to block_m
+        # rows starting at numel — past the end of A.  Pad with block_m zero rows so
+        # the T.copy lands in valid memory; the epilogue guard prevents writing those
+        # zeros to C.  Overhead: block_m × K elements (e.g. 64×2048×bf16 = 256 KB).
+        if self.K % block_k == 0:
+            A = torch.nn.functional.pad(A, (0, 0, 0, block_m))
 
         # Phase 1: build tile schedule — total_tiles stays on GPU (no .item())
         sched_fn = _tile_scheduler_kernel(self.num_experts, max_tiles, block_m)(_SCHED_THREADS)
@@ -392,7 +407,7 @@ class MoeGroupedGemmNopadKernel(Kernel):
         gemm_fn = _moe_grouped_gemm_kernel(
             self.numel, max_tiles, self.num_experts, self.N, self.K, self.dtype_str
         )(
-            block_m, self.config["block_n"], self.config["block_k"],
+            block_m, self.config["block_n"], block_k,
             self.config["num_stages"], self.config["threads"],
             self.config.get("group_size_m", 1),
         )
