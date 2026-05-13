@@ -155,15 +155,15 @@ def test_var_scalar_input(dim) -> None:
     x = torch.tensor(1.5, dtype=torch.float32, device="cuda")
     op = VarFwdOp(dtype=torch.float32, dim=dim)
     expect_warn = _expect_var_warning()
-    with warnings.catch_warnings(record=True) as caught:
+    with warnings.catch_warnings(record=True) as op_caught:
         warnings.simplefilter("always")
         y = op(x)
-        ref = torch.var(x, dim=dim) if dim is not None else torch.var(x)
+    ref = torch.var(x, dim=dim) if dim is not None else torch.var(x)
     assert y.shape == ref.shape == ()
     assert torch.isnan(y).item()
     assert torch.isnan(ref).item()
     if expect_warn:
-        assert any(issubclass(w.category, UserWarning) for w in caught)
+        assert any(issubclass(w.category, UserWarning) for w in op_caught)
 
 
 @pytest.mark.smoke
@@ -174,15 +174,15 @@ def test_std_scalar_input(dim) -> None:
     x = torch.tensor(-0.75, dtype=torch.float32, device="cuda")
     op = StdFwdOp(dtype=torch.float32, dim=dim)
     expect_warn = _expect_var_warning()
-    with warnings.catch_warnings(record=True) as caught:
+    with warnings.catch_warnings(record=True) as op_caught:
         warnings.simplefilter("always")
         y = op(x)
-        ref = torch.std(x, dim=dim) if dim is not None else torch.std(x)
+    ref = torch.std(x, dim=dim) if dim is not None else torch.std(x)
     assert y.shape == ref.shape == ()
     assert torch.isnan(y).item()
     assert torch.isnan(ref).item()
     if expect_warn:
-        assert any(issubclass(w.category, UserWarning) for w in caught)
+        assert any(issubclass(w.category, UserWarning) for w in op_caught)
 
 
 @pytest.mark.smoke
@@ -193,16 +193,16 @@ def test_var_mean_scalar_input(dim) -> None:
     x = torch.tensor(2.25, dtype=torch.float32, device="cuda")
     op = VarMeanFwdOp(dtype=torch.float32, dim=dim)
     expect_warn = _expect_var_warning()
-    with warnings.catch_warnings(record=True) as caught:
+    with warnings.catch_warnings(record=True) as op_caught:
         warnings.simplefilter("always")
         var_out, mean_out = op(x)
-        var_ref, mean_ref = (
-            torch.var_mean(x, dim=dim) if dim is not None else torch.var_mean(x)
-        )
+    var_ref, mean_ref = (
+        torch.var_mean(x, dim=dim) if dim is not None else torch.var_mean(x)
+    )
     assert var_out.shape == var_ref.shape == ()
     assert mean_out.shape == mean_ref.shape == ()
     assert torch.isnan(var_out).item()
     assert torch.isnan(var_ref).item()
     torch.testing.assert_close(mean_out, mean_ref)
     if expect_warn:
-        assert any(issubclass(w.category, UserWarning) for w in caught)
+        assert any(issubclass(w.category, UserWarning) for w in op_caught)
