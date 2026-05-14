@@ -87,6 +87,19 @@ def test_amin_scalar_input(dim) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("dim", [0, -1], ids=["prod-dim=0", "prod-dim=-1"])
+def test_prod_scalar_input(dim) -> None:
+    from tileops.ops.reduction.reduce import ProdFwdOp
+
+    x = torch.tensor(3.0, dtype=torch.float32, device="cuda")
+    op = ProdFwdOp(dtype=torch.float32, dim=dim)
+    y = op(x)
+    ref = torch.prod(x, dim=dim)
+    assert y.shape == ref.shape
+    torch.testing.assert_close(y, ref)
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("all"))
 def test_all_scalar_input(dim) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp

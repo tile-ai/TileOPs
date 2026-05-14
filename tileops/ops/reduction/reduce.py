@@ -35,7 +35,7 @@ from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, rest
 # invoking PyTorch's reduction ops. Mapping a degenerate single-element
 # reduction to its closed-form result is pure arithmetic, not a fallback.
 _SCALAR_REDUCE_KINDS = frozenset({
-    "sum", "mean", "amin", "amax", "std", "var", "var_mean",
+    "sum", "mean", "amin", "amax", "prod", "std", "var", "var_mean",
     "all", "any", "count_nonzero",
 })
 
