@@ -16,6 +16,10 @@ V2 phase 1: pingpong (atomic_add scheduler, parity drop-in).
 Literal port of GroupedGemmPersistent3WGKernel; only names differ.  Future
 phases will swap the scheduler, replace the double-buffer with a
 num_stages ring, add TMA-store epilogue, and add a cooperative template.
+
+Defaults differ from 3WG: ``num_stages`` is 2 (phase-1 baseline for the
+upcoming ring-buffer phase) and ``autotune_configs`` returns a single
+config; both will expand in later phases.
 """
 import functools
 import math
@@ -139,6 +143,10 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
         _num_pid_n = math.ceil(N / block_n)
         _max_tiles = numel // block_m + num_experts
         _total_ctas_ub = _max_tiles * _num_pid_n
+        # Each iteration claims 2 tiles per CTA (atomic_add(+2)); slack of 2
+        # absorbs the case where total_ctas_ub is not a multiple of 2*sm_count.
+        # Each iteration claims 2 tiles per CTA (atomic_add(+2)); slack of 2
+        # absorbs the case where total_ctas_ub is not a multiple of 2*sm_count.
         _max_iters = (_total_ctas_ub + 2 * sm_count - 1) // (2 * sm_count) + 2
         _k_iters = K // block_k
         A_shape = (numel + block_m, K)
@@ -153,6 +161,7 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
             tile_counter: T.Tensor((1,), "int32"),              # noqa: F821
         ):
             with T.Kernel(sm_count, threads=threads) as (pid,):
+                # ── Per-WG double-buffered SMEM (independent tiles) ──
                 A_smem_wg0_0 = T.alloc_shared((block_m, block_k), dtype)
                 A_smem_wg0_1 = T.alloc_shared((block_m, block_k), dtype)
                 B_smem_wg0_0 = T.alloc_shared((block_n, block_k), dtype)
@@ -164,11 +173,17 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                 C_local_wg0 = T.alloc_fragment((block_m, block_n), accum_dtype)
                 C_local_wg1 = T.alloc_fragment((block_m, block_n), accum_dtype)
 
+                # ── Scheduler SMEM ──
                 s_cum = T.alloc_shared((num_experts + 1,), "int32")
                 s_total = T.alloc_shared((1,), "int32")
+                # Two consecutive tile IDs claimed per producer iteration.
                 s_tile_pair = T.alloc_shared((2,), "int32")
                 lo = T.alloc_local((1,), "int32")
                 hi = T.alloc_local((1,), "int32")
+                # Per-tile metadata hoisted to alloc_local so the interleaved
+                # K-loop body can read m_start/n_start/expert_id across
+                # IfFrame boundaries (TileLang ir_builder forbids cross-frame
+                # reads of immutable Vars; Buffer loads are exempt).
                 ms0 = T.alloc_local((1,), "int32")
                 ns0 = T.alloc_local((1,), "int32")
                 ex0 = T.alloc_local((1,), "int32")
@@ -189,6 +204,7 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                     B_smem_wg1_1: tilelang.layout.make_swizzled_layout(B_smem_wg1_1),
                 })
 
+                # ── Per-WG producer/consumer barriers (arrive_count=128) ──
                 ab_full_wg0_0 = T.alloc_barrier(arrive_count=128)
                 ab_full_wg0_1 = T.alloc_barrier(arrive_count=128)
                 ab_empty_wg0_0 = T.alloc_barrier(arrive_count=128)
@@ -198,6 +214,7 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                 ab_empty_wg1_0 = T.alloc_barrier(arrive_count=128)
                 ab_empty_wg1_1 = T.alloc_barrier(arrive_count=128)
 
+                # ── Phase counters: monotonic, never reset ──
                 gi_prod_0 = T.alloc_var("int32", init=0)
                 gi_prod_1 = T.alloc_var("int32", init=0)
                 gi_cons_0 = T.alloc_var("int32", init=0)
@@ -205,7 +222,16 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
 
                 tx = T.get_thread_binding()
 
+                # ════════════════════════════════════════════════════════
                 # Producer WG: tx < 128
+                # ════════════════════════════════════════════════════════
+                # CUTLASS pingpong producer pattern: a *single* K-loop body
+                # issues the WG0 TMA pair followed by the WG1 TMA pair at
+                # each k, so WG1's first stage is ready right after WG0's
+                # first stage — both consumers start in parallel.  The
+                # previous "feed WG0 K-loop fully, then WG1 K-loop fully"
+                # form forced WG1 to wait K_iters TMAs before its first
+                # WGMMA could dispatch, defeating pingpong.
                 if tx < 128:
                     T.dec_max_nreg(24)
 
@@ -218,6 +244,10 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
 
                     for _iter in T.serial(_max_iters):
                         if tx == 0:
+                            # atomic_add(+2) → atomic claim of both tiles in
+                            # one transaction.  Two separate +1 adds would
+                            # let outsider CTAs interleave and break tile-
+                            # pair adjacency (Known trap #4).
                             s_tile_pair[0] = T.atomic_add(
                                 tile_counter[0], T.int32(2), return_prev=True
                             )
@@ -226,6 +256,7 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
 
                         total = s_total[0]
 
+                        # ── Resolve WG0 tile metadata into alloc_local ──
                         flat_id_0 = s_tile_pair[0]
                         if flat_id_0 < total:
                             if group_size_m == 1:
@@ -258,6 +289,7 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                         else:
                             v0[0] = T.int32(0)
 
+                        # ── Resolve WG1 tile metadata into alloc_local ──
                         flat_id_1 = s_tile_pair[1]
                         if flat_id_1 < total:
                             if group_size_m == 1:
@@ -290,9 +322,11 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                         else:
                             v1[0] = T.int32(0)
 
+                        # ── Interleaved K-loop: WG0 then WG1 each k ──
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             k_start = k * block_k
 
+                            # WG0 stream
                             if v0[0] != 0:
                                 if gi_prod_0 % 2 == 0:
                                     T.barrier_wait(ab_empty_wg0_0,
@@ -326,6 +360,7 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                                     T.barrier_arrive(ab_full_wg0_1)
                                 gi_prod_0 = gi_prod_0 + 1
 
+                            # WG1 stream
                             if v1[0] != 0:
                                 if gi_prod_1 % 2 == 0:
                                     T.barrier_wait(ab_empty_wg1_0,
@@ -359,7 +394,19 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                                     T.barrier_arrive(ab_full_wg1_1)
                                 gi_prod_1 = gi_prod_1 + 1
 
-                # Consumer WG0: 128 <= tx < 256
+                # ════════════════════════════════════════════════════════
+                # Consumer WG0: 128 ≤ tx < 256 — processes s_tile_pair[0]
+                # ════════════════════════════════════════════════════════
+                # Since cons0 and cons1 own *independent* SMEM buffers and
+                # *independent* ab_full/ab_empty barrier pairs, the two math
+                # WGs never collide on shared resources and no math-WG
+                # ordering protocol is needed.  An earlier version added a
+                # `math_wg_order_{0,1}` mbarrier pair (CUTLASS-style) but it
+                # introduced a phase-tracking race: a single-bit mbarrier
+                # parity cannot tolerate `arrive` running ahead of `wait` by
+                # more than one iteration, which happens whenever the two
+                # WGs' mainloop+epilogue durations diverge (e.g. one WG
+                # claims an invalid tile and skips its mainloop).
                 elif tx < 256:
                     T.inc_max_nreg(240)
                     T.sync_threads()
@@ -434,7 +481,9 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                                 if i < arows_0 and j < acols_0:
                                     C[m_start_0 + i, n_start_0 + j] = C_local_wg0[i, j]
 
-                # Consumer WG1: tx >= 256
+                # ════════════════════════════════════════════════════════
+                # Consumer WG1: tx ≥ 256 — processes s_tile_pair[1]
+                # ════════════════════════════════════════════════════════
                 else:
                     T.inc_max_nreg(240)
                     T.sync_threads()
