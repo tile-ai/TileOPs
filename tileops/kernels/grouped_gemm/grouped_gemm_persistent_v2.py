@@ -158,15 +158,11 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
             C: T.Tensor((numel, N), dtype),                     # type: ignore  # noqa: F821
         ):
             with T.Kernel(sm_count, threads=threads) as (pid,):
-                # ── Per-WG double-buffered SMEM (independent tiles) ──
-                A_smem_wg0_0 = T.alloc_shared((block_m, block_k), dtype)
-                A_smem_wg0_1 = T.alloc_shared((block_m, block_k), dtype)
-                B_smem_wg0_0 = T.alloc_shared((block_n, block_k), dtype)
-                B_smem_wg0_1 = T.alloc_shared((block_n, block_k), dtype)
-                A_smem_wg1_0 = T.alloc_shared((block_m, block_k), dtype)
-                A_smem_wg1_1 = T.alloc_shared((block_m, block_k), dtype)
-                B_smem_wg1_0 = T.alloc_shared((block_n, block_k), dtype)
-                B_smem_wg1_1 = T.alloc_shared((block_n, block_k), dtype)
+                # ── Per-WG ring-buffered SMEM (num_stages slots) ──
+                A_smem_wg0 = T.alloc_shared((num_stages, block_m, block_k), dtype)
+                B_smem_wg0 = T.alloc_shared((num_stages, block_n, block_k), dtype)
+                A_smem_wg1 = T.alloc_shared((num_stages, block_m, block_k), dtype)
+                B_smem_wg1 = T.alloc_shared((num_stages, block_n, block_k), dtype)
                 C_local_wg0 = T.alloc_fragment((block_m, block_n), accum_dtype)
                 C_local_wg1 = T.alloc_fragment((block_m, block_n), accum_dtype)
 
@@ -189,25 +185,17 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                 v1 = T.alloc_local((1,), "int32")
 
                 T.annotate_layout({
-                    A_smem_wg0_0: tilelang.layout.make_swizzled_layout(A_smem_wg0_0),
-                    A_smem_wg0_1: tilelang.layout.make_swizzled_layout(A_smem_wg0_1),
-                    B_smem_wg0_0: tilelang.layout.make_swizzled_layout(B_smem_wg0_0),
-                    B_smem_wg0_1: tilelang.layout.make_swizzled_layout(B_smem_wg0_1),
-                    A_smem_wg1_0: tilelang.layout.make_swizzled_layout(A_smem_wg1_0),
-                    A_smem_wg1_1: tilelang.layout.make_swizzled_layout(A_smem_wg1_1),
-                    B_smem_wg1_0: tilelang.layout.make_swizzled_layout(B_smem_wg1_0),
-                    B_smem_wg1_1: tilelang.layout.make_swizzled_layout(B_smem_wg1_1),
+                    A_smem_wg0: tilelang.layout.make_swizzled_layout(A_smem_wg0),
+                    B_smem_wg0: tilelang.layout.make_swizzled_layout(B_smem_wg0),
+                    A_smem_wg1: tilelang.layout.make_swizzled_layout(A_smem_wg1),
+                    B_smem_wg1: tilelang.layout.make_swizzled_layout(B_smem_wg1),
                 })
 
                 # ── Per-WG producer/consumer barriers (arrive_count=128) ──
-                ab_full_wg0_0 = T.alloc_barrier(arrive_count=128)
-                ab_full_wg0_1 = T.alloc_barrier(arrive_count=128)
-                ab_empty_wg0_0 = T.alloc_barrier(arrive_count=128)
-                ab_empty_wg0_1 = T.alloc_barrier(arrive_count=128)
-                ab_full_wg1_0 = T.alloc_barrier(arrive_count=128)
-                ab_full_wg1_1 = T.alloc_barrier(arrive_count=128)
-                ab_empty_wg1_0 = T.alloc_barrier(arrive_count=128)
-                ab_empty_wg1_1 = T.alloc_barrier(arrive_count=128)
+                ab_full_wg0 = T.alloc_barrier([128] * num_stages)
+                ab_empty_wg0 = T.alloc_barrier([128] * num_stages)
+                ab_full_wg1 = T.alloc_barrier([128] * num_stages)
+                ab_empty_wg1 = T.alloc_barrier([128] * num_stages)
 
                 # ── Phase counters: monotonic, never reset ──
                 gi_prod_0 = T.alloc_var("int32", init=0)
@@ -288,72 +276,48 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             k_start = k * block_k
 
-                            # WG0 stream
+                            # WG0 stream (ring slot = gi_prod_0 % num_stages)
                             if v0[0] != 0:
-                                if gi_prod_0 % 2 == 0:
-                                    T.barrier_wait(ab_empty_wg0_0,
-                                                   (gi_prod_0 // 2 + 1) % 2)
-                                    T.tma_copy(
-                                        A[ms0[0]:ms0[0] + block_m,
-                                          k_start:k_start + block_k],
-                                        A_smem_wg0_0, barrier=ab_full_wg0_0,
-                                    )
-                                    T.tma_copy(
-                                        B[ex0[0],
-                                          ns0[0]:ns0[0] + block_n,
-                                          k_start:k_start + block_k],
-                                        B_smem_wg0_0, barrier=ab_full_wg0_0,
-                                    )
-                                    T.barrier_arrive(ab_full_wg0_0)
-                                else:
-                                    T.barrier_wait(ab_empty_wg0_1,
-                                                   (gi_prod_0 // 2 + 1) % 2)
-                                    T.tma_copy(
-                                        A[ms0[0]:ms0[0] + block_m,
-                                          k_start:k_start + block_k],
-                                        A_smem_wg0_1, barrier=ab_full_wg0_1,
-                                    )
-                                    T.tma_copy(
-                                        B[ex0[0],
-                                          ns0[0]:ns0[0] + block_n,
-                                          k_start:k_start + block_k],
-                                        B_smem_wg0_1, barrier=ab_full_wg0_1,
-                                    )
-                                    T.barrier_arrive(ab_full_wg0_1)
+                                slot0 = gi_prod_0 % num_stages
+                                T.barrier_wait(
+                                    ab_empty_wg0[slot0],
+                                    ((gi_prod_0 // num_stages) & 1) ^ 1)
+                                T.tma_copy(
+                                    A[ms0[0]:ms0[0] + block_m,
+                                      k_start:k_start + block_k],
+                                    A_smem_wg0[slot0, :, :],
+                                    barrier=ab_full_wg0[slot0],
+                                )
+                                T.tma_copy(
+                                    B[ex0[0],
+                                      ns0[0]:ns0[0] + block_n,
+                                      k_start:k_start + block_k],
+                                    B_smem_wg0[slot0, :, :],
+                                    barrier=ab_full_wg0[slot0],
+                                )
+                                T.barrier_arrive(ab_full_wg0[slot0])
                                 gi_prod_0 = gi_prod_0 + 1
 
-                            # WG1 stream
+                            # WG1 stream (ring slot = gi_prod_1 % num_stages)
                             if v1[0] != 0:
-                                if gi_prod_1 % 2 == 0:
-                                    T.barrier_wait(ab_empty_wg1_0,
-                                                   (gi_prod_1 // 2 + 1) % 2)
-                                    T.tma_copy(
-                                        A[ms1[0]:ms1[0] + block_m,
-                                          k_start:k_start + block_k],
-                                        A_smem_wg1_0, barrier=ab_full_wg1_0,
-                                    )
-                                    T.tma_copy(
-                                        B[ex1[0],
-                                          ns1[0]:ns1[0] + block_n,
-                                          k_start:k_start + block_k],
-                                        B_smem_wg1_0, barrier=ab_full_wg1_0,
-                                    )
-                                    T.barrier_arrive(ab_full_wg1_0)
-                                else:
-                                    T.barrier_wait(ab_empty_wg1_1,
-                                                   (gi_prod_1 // 2 + 1) % 2)
-                                    T.tma_copy(
-                                        A[ms1[0]:ms1[0] + block_m,
-                                          k_start:k_start + block_k],
-                                        A_smem_wg1_1, barrier=ab_full_wg1_1,
-                                    )
-                                    T.tma_copy(
-                                        B[ex1[0],
-                                          ns1[0]:ns1[0] + block_n,
-                                          k_start:k_start + block_k],
-                                        B_smem_wg1_1, barrier=ab_full_wg1_1,
-                                    )
-                                    T.barrier_arrive(ab_full_wg1_1)
+                                slot1 = gi_prod_1 % num_stages
+                                T.barrier_wait(
+                                    ab_empty_wg1[slot1],
+                                    ((gi_prod_1 // num_stages) & 1) ^ 1)
+                                T.tma_copy(
+                                    A[ms1[0]:ms1[0] + block_m,
+                                      k_start:k_start + block_k],
+                                    A_smem_wg1[slot1, :, :],
+                                    barrier=ab_full_wg1[slot1],
+                                )
+                                T.tma_copy(
+                                    B[ex1[0],
+                                      ns1[0]:ns1[0] + block_n,
+                                      k_start:k_start + block_k],
+                                    B_smem_wg1[slot1, :, :],
+                                    barrier=ab_full_wg1[slot1],
+                                )
+                                T.barrier_arrive(ab_full_wg1[slot1])
                                 gi_prod_1 = gi_prod_1 + 1
 
                 # ═════════════════════════════════════════════════════════
@@ -393,28 +357,20 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                             T.clear(C_local_wg0)
 
                             for k in T.Pipelined(_k_iters, num_stages=0):
-                                if gi_cons_0 % 2 == 0:
-                                    T.barrier_wait(ab_full_wg0_0, gi_cons_0 // 2 % 2)
-                                    T.wgmma_gemm(
-                                        A_smem_wg0_0, B_smem_wg0_0, C_local_wg0,
-                                        transpose_B=True,
-                                        policy=T.GemmWarpPolicy.FullRow,
-                                        clear_accum=(k == 0),
-                                    )
-                                    T.wait_wgmma(0)
-                                    T.warpgroup_fence_operand(C_local_wg0, num_regs=64)
-                                    T.barrier_arrive(ab_empty_wg0_0)
-                                else:
-                                    T.barrier_wait(ab_full_wg0_1, gi_cons_0 // 2 % 2)
-                                    T.wgmma_gemm(
-                                        A_smem_wg0_1, B_smem_wg0_1, C_local_wg0,
-                                        transpose_B=True,
-                                        policy=T.GemmWarpPolicy.FullRow,
-                                        clear_accum=(k == 0),
-                                    )
-                                    T.wait_wgmma(0)
-                                    T.warpgroup_fence_operand(C_local_wg0, num_regs=64)
-                                    T.barrier_arrive(ab_empty_wg0_1)
+                                slot = gi_cons_0 % num_stages
+                                T.barrier_wait(ab_full_wg0[slot],
+                                               (gi_cons_0 // num_stages) & 1)
+                                T.wgmma_gemm(
+                                    A_smem_wg0[slot, :, :],
+                                    B_smem_wg0[slot, :, :],
+                                    C_local_wg0,
+                                    transpose_B=True,
+                                    policy=T.GemmWarpPolicy.FullRow,
+                                    clear_accum=(k == 0),
+                                )
+                                T.wait_wgmma(0)
+                                T.warpgroup_fence_operand(C_local_wg0, num_regs=64)
+                                T.barrier_arrive(ab_empty_wg0[slot])
                                 gi_cons_0 = gi_cons_0 + 1
 
                             for i, j in T.Parallel(block_m, block_n):
@@ -458,28 +414,20 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                             T.clear(C_local_wg1)
 
                             for k in T.Pipelined(_k_iters, num_stages=0):
-                                if gi_cons_1 % 2 == 0:
-                                    T.barrier_wait(ab_full_wg1_0, gi_cons_1 // 2 % 2)
-                                    T.wgmma_gemm(
-                                        A_smem_wg1_0, B_smem_wg1_0, C_local_wg1,
-                                        transpose_B=True,
-                                        policy=T.GemmWarpPolicy.FullRow,
-                                        clear_accum=(k == 0),
-                                    )
-                                    T.wait_wgmma(0)
-                                    T.warpgroup_fence_operand(C_local_wg1, num_regs=64)
-                                    T.barrier_arrive(ab_empty_wg1_0)
-                                else:
-                                    T.barrier_wait(ab_full_wg1_1, gi_cons_1 // 2 % 2)
-                                    T.wgmma_gemm(
-                                        A_smem_wg1_1, B_smem_wg1_1, C_local_wg1,
-                                        transpose_B=True,
-                                        policy=T.GemmWarpPolicy.FullRow,
-                                        clear_accum=(k == 0),
-                                    )
-                                    T.wait_wgmma(0)
-                                    T.warpgroup_fence_operand(C_local_wg1, num_regs=64)
-                                    T.barrier_arrive(ab_empty_wg1_1)
+                                slot = gi_cons_1 % num_stages
+                                T.barrier_wait(ab_full_wg1[slot],
+                                               (gi_cons_1 // num_stages) & 1)
+                                T.wgmma_gemm(
+                                    A_smem_wg1[slot, :, :],
+                                    B_smem_wg1[slot, :, :],
+                                    C_local_wg1,
+                                    transpose_B=True,
+                                    policy=T.GemmWarpPolicy.FullRow,
+                                    clear_accum=(k == 0),
+                                )
+                                T.wait_wgmma(0)
+                                T.warpgroup_fence_operand(C_local_wg1, num_regs=64)
+                                T.barrier_arrive(ab_empty_wg1[slot])
                                 gi_cons_1 = gi_cons_1 + 1
 
                             for i, j in T.Parallel(block_m, block_n):
