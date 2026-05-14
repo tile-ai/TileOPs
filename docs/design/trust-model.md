@@ -93,7 +93,7 @@ The trust model is a semantic review lens ([`.claude/review-checklists/pre-revie
 
 Authoring rules:
 
-- A new behavior branch lacking pre-existing test coverage uses the joint form so the test lands with the impl in the same PR, satisfying the reviewer's new-path-coverage criterion.
+- A diff-added code path with an output-distinguishing input lacking pre-existing test coverage uses the joint form so the test lands with the impl in the same PR, satisfying the reviewer's new-path-coverage criterion. Aliases (paths with no output-distinguishing input) do not force the joint form.
 - Constraints is written as bulleted items — the gate parses bullets to derive declared scope.
 - Pair a [`trust-model.md`](trust-model.md) citation with "separate PR" / "own PR" / "standalone PR" in one bullet to declare the named stage forbidden. Place the citation on its own bullet when no such restriction is intended.
 

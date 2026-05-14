@@ -28,6 +28,25 @@ from tileops.kernels.reduction.reduce import ReduceKernel
 from ..op_base import Op
 from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
 
+# Map ``_op_kind`` to the PyTorch reference used on the 0-D scalar fast path.
+# Scalar inputs short-circuit to these refs because the kernels assume
+# ``ndim >= 1`` (and the Welford kernel's Bessel correction is undefined for
+# ``N == 1``). Each entry must accept ``(x, dim=...)`` with PyTorch's accepted
+# dim forms (``None``, ``0``, ``-1``, ``()``, ``[]``) on a 0-D input.
+_TORCH_SCALAR_REF = {
+    "sum": torch.sum,
+    "mean": torch.mean,
+    "amin": torch.amin,
+    "amax": torch.amax,
+    "std": torch.std,
+    "var": torch.var,
+    "var_mean": torch.var_mean,
+    "all": torch.all,
+    "any": torch.any,
+    "count_nonzero": torch.count_nonzero,
+}
+
+
 __all__ = [
     "AmaxFwdOp",
     "AminFwdOp",
@@ -191,6 +210,9 @@ class _ReduceOpBase(Op):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the reduce op on *x* along the configured dim."""
+        scalar_out = self._maybe_scalar(x)
+        if scalar_out is not None:
+            return scalar_out
         noop_out = self._maybe_noop(x)
         if noop_out is not None:
             return noop_out
@@ -225,6 +247,85 @@ class _ReduceOpBase(Op):
             raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
         if x.ndim == 0:
             raise ValueError("Input tensor must be at least 1D")
+
+    # ------------------------------------------------------------------
+    # Scalar (0-D) input fast path
+    # ------------------------------------------------------------------
+
+    def _validate_scalar_dim(self) -> None:
+        """Validate that ``self.dim`` is an accepted form for a 0-D input.
+
+        PyTorch accepts ``None``, ``0``, ``-1``, ``()``, and ``[]`` on a
+        0-D tensor, plus singleton list/tuple forms (``[0]``, ``(0,)``,
+        ``[-1]``, ``(-1,)``). Integers outside ``{0, -1}`` raise
+        ``IndexError`` here; multi-entry sequences (e.g. ``[0, -1]``)
+        are passed through to torch, which may raise ``RuntimeError`` on
+        duplicate dims because ``0`` and ``-1`` alias the same axis on a
+        0-D tensor.
+        """
+        dim = self.dim
+        if dim is None:
+            return
+        if isinstance(dim, int):
+            if dim not in (0, -1):
+                raise IndexError(
+                    f"Dimension out of range (expected to be in range of "
+                    f"[-1, 0], but got {dim})"
+                )
+            return
+        if isinstance(dim, (list, tuple)):
+            for d in dim:
+                if d not in (0, -1):
+                    raise IndexError(
+                        f"Dimension out of range (expected to be in range of "
+                        f"[-1, 0], but got {d})"
+                    )
+            return
+
+    def _torch_scalar_reference(self, x: torch.Tensor) -> torch.Tensor:
+        """Delegate a 0-D input forward to the matching PyTorch op.
+
+        The op-layer scalar path is a pure pass-through to the reference
+        implementation; the kernel is undefined for ``N == 1`` (notably the
+        Welford family's Bessel correction). Subclasses with non-standard
+        return shapes (e.g. ``VarMeanFwdOp``) override ``_scalar_forward``.
+        """
+        ref = _TORCH_SCALAR_REF[self._op_kind]
+        dim = self.dim
+        if dim is None:
+            return ref(x)
+        return ref(x, dim=dim)
+
+    def _scalar_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Return the forward result for a 0-D input.
+
+        Default: delegate to ``_torch_scalar_reference``. Subclasses with
+        non-standard returns may override.
+        """
+        return self._torch_scalar_reference(x)
+
+    def _maybe_scalar(self, x: torch.Tensor):
+        """Short-circuit a 0-D input to the PyTorch reference.
+
+        Returns the scalar-path output when ``x.ndim == 0``; returns
+        ``None`` otherwise so the caller proceeds with the kernel path.
+        The roofline state is bound to ``(1, 1)`` so ``eval_roofline()``
+        after a scalar forward stays well-defined.
+        """
+        if x.ndim != 0:
+            return None
+        if self._op_kind not in _TORCH_SCALAR_REF:
+            # Subclasses without a scalar reference (e.g. argmax/argmin/
+            # l1/l2/inf) fall through to the kernel path, which raises the
+            # pre-existing ``ValueError("Input tensor must be at least 1D")``.
+            return None
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        self._validate_scalar_dim()
+        self._last_roofline_mn = (1, 1)
+        return self._scalar_forward(x)
 
     def _maybe_noop(self, x: torch.Tensor) -> Optional[torch.Tensor]:
         """Return *x* (cast to the manifest output dtype) when ``dim`` is
@@ -574,6 +675,19 @@ class _WelfordReduceOp(_ReduceOpBase):
         """Pass correction to the kernel constructor."""
         return {"correction": self.correction}
 
+    def _torch_scalar_reference(self, x: torch.Tensor):
+        """Welford scalar path delegates to torch with ``correction`` plumbed.
+
+        On a 0-D input the kernel's Bessel correction is undefined; the
+        PyTorch ref produces ``nan`` and emits the standard
+        ``UserWarning`` when ``correction >= N``. Preserve that behavior.
+        """
+        ref = _TORCH_SCALAR_REF[self._op_kind]
+        dim = self.dim
+        if dim is None:
+            return ref(x, correction=self.correction)
+        return ref(x, dim=dim, correction=self.correction)
+
 
 class StdFwdOp(_WelfordReduceOp):
     """Standard deviation reduction with Bessel's correction."""
@@ -593,6 +707,9 @@ class VarMeanFwdOp(_WelfordReduceOp):
     _op_kind = "var_mean"
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        scalar_out = self._maybe_scalar(x)
+        if scalar_out is not None:
+            return scalar_out
         x, orig_shape, dim_info, kernel = self._prepare_input(x)
         var_out, mean_out = kernel(x)
         return (
