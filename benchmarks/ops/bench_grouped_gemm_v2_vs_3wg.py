@@ -3,6 +3,7 @@
 Phase-2 V2 (pingpong + static-wave scheduler) sanity check: confirm the
 new kernel is within +/-5% of the 3-WG kernel at block_m=64 on the
 default Qwen3-235B-prefill-style shape, on uniform and skewed routing.
+Reports ``torch._grouped_mm`` (CUTLASS-backed) as the non-tileops baseline.
 
 Shape: T=4096, E=128, top_k=8, N=4096, K=2048 (Qwen3-235B prefill, MoE
 up-projection w13). Tiles: block_m=64 (pingpong), block_n=256, block_k=64.
@@ -22,6 +23,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import torch  # noqa: E402
+from tilelang.profiler import do_bench  # noqa: E402
 
 from tileops.kernels.grouped_gemm import (  # noqa: E402
     GroupedGemmPersistent3WGKernel,
@@ -29,8 +31,8 @@ from tileops.kernels.grouped_gemm import (  # noqa: E402
 )
 
 _DTYPE = torch.bfloat16
-_WARMUP = 5
-_REP = 20
+_WARMUP = 25
+_REP = 100
 
 
 def gen_inputs(T, E, K_top, N, K_hidden, distribution):
@@ -59,18 +61,13 @@ def gen_inputs(T, E, K_top, N, K_hidden, distribution):
     return A, B, sizes, offsets, numel
 
 
-def bench_ms(fn, warmup=_WARMUP, rep=_REP):
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(rep):
-        fn()
-    end.record()
-    torch.cuda.synchronize()
-    return start.elapsed_time(end) / rep
+def pytorch_grouped_gemm(A, B_KN, offs_cumsum):
+    """torch._grouped_mm baseline (CUTLASS-backed grouped GEMM in PyTorch 2.10+).
+
+    Expects A: [numel, K], B_KN: [E, K, N] (pre-transposed from NT layout
+    [E, N, K]), offs: [E] int32 cumulative sizes (no leading 0).
+    """
+    return torch._grouped_mm(A, B_KN, offs_cumsum)
 
 
 def tflops(ms, numel, N, K):
@@ -82,36 +79,49 @@ def run_case(T, E, K_top, N, K, label):
     flops = 2.0 * numel * N * K
     sm = torch.cuda.get_device_properties(0).multi_processor_count
 
-    print(f"\n{'=' * 92}")
+    print(f"\n{'=' * 100}")
     print(f"  {label}")
     print(f"  Grouped GEMM: M_total={numel}, N={N}, K={K}, groups={E}, bf16")
     print(f"  (T={T}, top_k={K_top}, E={E}; sm_count={sm})")
     print(f"  FLOPs = {flops / 1e12:.3f} TFLOPs")
-    print(f"{'=' * 92}")
+    print(f"{'=' * 100}")
 
     k3 = GroupedGemmPersistent3WGKernel(numel=numel, num_experts=E, N=N, K=K,
                                         dtype=_DTYPE, sm_count=sm)
     kv2 = GroupedGemmPersistentV2Kernel(numel=numel, num_experts=E, N=N, K=K,
                                         dtype=_DTYPE, sm_count=sm)
 
-    header = f"  {'distribution':<10}  {'3WG ms':>8}  {'V2 ms':>8}  {'speedup':>8}  {'3WG TFLOPs':>11}  {'V2 TFLOPs':>10}  {'max_diff':>10}"
+    header = (f"  {'distribution':<10}  {'3WG ms':>8}  {'V2 ms':>8}  {'torch ms':>9}  "
+              f"{'V2/torch':>9}  {'V2/3WG':>8}  {'TFLOPs (3WG/V2/torch)':>24}  {'max_diff':>10}")
     print(header)
     print("  " + "-" * (len(header) - 2))
 
     for dist in ("uniform", "skewed"):
         A, B, sizes, offsets, _ = gen_inputs(T, E, K_top, N, K, dist)
 
+        # Prepare torch._grouped_mm inputs: B in [E, K, N] layout, cumulative offsets.
+        B_KN = B.transpose(1, 2).contiguous()
+        offs_cumsum = torch.cumsum(sizes, dim=0).to(torch.int32)
+
         C_3wg = k3(A, B, sizes, offsets)
         C_v2 = kv2(A, B, sizes, offsets)
         torch.cuda.synchronize()
         md = (C_3wg - C_v2).abs().max().item()
 
-        t_3wg = bench_ms(lambda: k3(A, B, sizes, offsets))  # noqa: B023
-        t_v2 = bench_ms(lambda: kv2(A, B, sizes, offsets))  # noqa: B023
+        t_3wg = do_bench(lambda: k3(A, B, sizes, offsets),  # noqa: B023
+                         warmup=_WARMUP, rep=_REP)
+        t_v2 = do_bench(lambda: kv2(A, B, sizes, offsets),  # noqa: B023
+                        warmup=_WARMUP, rep=_REP)
+        t_pt = do_bench(
+            lambda: pytorch_grouped_gemm(A, B_KN, offs_cumsum),  # noqa: B023
+            warmup=_WARMUP, rep=_REP)
 
-        spd = f"{t_3wg / t_v2:.3f}x"
-        print(f"  {dist:<10}  {t_3wg:>8.3f}  {t_v2:>8.3f}  {spd:>8}  "
-              f"{tflops(t_3wg, numel, N, K):>11.2f}  {tflops(t_v2, numel, N, K):>10.2f}  {md:>10.2e}")
+        tf3 = tflops(t_3wg, numel, N, K)
+        tfv2 = tflops(t_v2, numel, N, K)
+        tfpt = tflops(t_pt, numel, N, K)
+        tf_str = f"{tf3:.1f}/{tfv2:.1f}/{tfpt:.1f}"
+        print(f"  {dist:<10}  {t_3wg:>8.3f}  {t_v2:>8.3f}  {t_pt:>9.3f}  "
+              f"{t_v2/t_pt:>9.3f}  {t_v2/t_3wg:>8.3f}  {tf_str:>24}  {md:>10.2e}")
 
 
 def main():
