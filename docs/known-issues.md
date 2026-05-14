@@ -13,11 +13,16 @@ ______________________________________________________________________
 **Ops**: `AllFwdOp`, `AnyFwdOp`, `CountNonzeroFwdOp`
 (`tileops/manifest/reduction.yaml`, `tileops/kernels/reduction/logical_reduce.py`)
 
-**Gap**: manifest accepts `bool | int32 | int64 | complex64 | complex128`
-(aligned with PyTorch in #1451), but the TileLang kernel only ingests
-`float16 | bfloat16 | float32`. The op layer bridges via
-`to_logical_float32` (`logical_reduce.py:51`), materializing a
-full-sized `float32` intermediate before dispatch.
+**Gap**: PyTorch's `torch.all` / `torch.any` / `torch.count_nonzero`
+accept `bool | int32 | int64 | complex64 | complex128` in addition to
+the floating dtypes; the manifest currently lists only
+`float16 | bfloat16 | float32 | bool` (`AllFwdOp` / `AnyFwdOp`) and
+`float16 | bfloat16 | float32` (`CountNonzeroFwdOp`). Once the
+manifest is expanded to match the PyTorch surface (tracked in #1451),
+the int / complex inputs will be admissible but the TileLang kernel
+still only ingests `float16 | bfloat16 | float32`. The op layer
+bridges via `to_logical_float32` (`logical_reduce.py:51`),
+materializing a full-sized `float32` intermediate before dispatch.
 
 **Per-dtype cost of the materialization**:
 
