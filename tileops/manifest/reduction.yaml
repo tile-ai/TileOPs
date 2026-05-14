@@ -640,7 +640,7 @@ AllFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | bool"}
+      x: {dtype: "float16 | bfloat16 | float32 | bool | int32 | int64 | complex64 | complex128"}
     outputs:
       output: {dtype: "bool"}
     params:
@@ -686,7 +686,7 @@ AnyFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | bool"}
+      x: {dtype: "float16 | bfloat16 | float32 | bool | int32 | int64 | complex64 | complex128"}
     outputs:
       output: {dtype: "bool"}
     params:
@@ -732,7 +732,7 @@ CountNonzeroFwdOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
+      x: {dtype: "float16 | bfloat16 | float32 | bool | int32 | int64 | complex64 | complex128"}
     outputs:
       output: {dtype: "int64"}
     params:
