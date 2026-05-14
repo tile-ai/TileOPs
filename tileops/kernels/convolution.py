@@ -82,19 +82,26 @@ def _conv1d_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
-
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
-                    T.copy(weight_flat[by * block_m, k_iter * block_k], weight_shared)
+                    for i, j in T.Parallel(block_m, block_k):
+                        oc = by * block_m + i
+                        k_idx = k_iter * block_k + j
+                        kw = k_idx // c_in
+                        ci = k_idx % c_in
+                        weight_shared[i, j] = T.if_then_else(
+                            (oc < c_out) & (k_idx < k_total),
+                            weight[oc, ci, kw],
+                            T.cast(0.0, dtype),
+                        )
 
                     for i, j in T.Parallel(block_k, block_n):
                         k_idx = k_iter * block_k + i
                         m_idx = bx * block_n + j
-                        ci = k_idx // kernel_l
-                        kw = k_idx % kernel_l
+                        kw = k_idx // c_in
+                        ci = k_idx % c_in
                         batch = m_idx // out_l
                         ol = m_idx % out_l
                         il = ol * stride_l + kw * dilation_l - pad_l
@@ -246,7 +253,7 @@ class Conv1dKernel(Kernel):
             return {
                 "block_m": 64,
                 "block_n": 128,
-                "block_k": 64,
+                "block_k": 128,
                 "num_stages": 3,
                 "threads": 128,
                 "enable_rasterization": True,
@@ -254,7 +261,7 @@ class Conv1dKernel(Kernel):
         return {
             "block_m": 64,
             "block_n": 128,
-            "block_k": 64,
+            "block_k": 128,
             "num_stages": 2,
             "threads": 128,
             "enable_rasterization": True,
