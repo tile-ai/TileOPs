@@ -688,6 +688,35 @@ class _WelfordReduceOp(_ReduceOpBase):
             return ref(x, correction=self.correction)
         return ref(x, dim=dim, correction=self.correction)
 
+    def _invalid_dof_output(self, x: torch.Tensor) -> Optional[torch.Tensor]:
+        """Return PyTorch-compatible NaNs when ``N - correction <= 0``.
+
+        The TileLang Welford kernel bakes ``N`` and ``correction`` into the
+        generated code, so a zero denominator fails at compile time. PyTorch
+        defines this degree-of-freedom case as NaN; handle it before kernel
+        dispatch.
+        """
+        if self._last_roofline_mn is None:
+            return None
+        M, N = self._last_roofline_mn
+        if self.correction < N:
+            return None
+        return torch.full((M,), float("nan"), dtype=x.dtype, device=x.device)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        scalar_out = self._maybe_scalar(x)
+        if scalar_out is not None:
+            return scalar_out
+        noop_out = self._maybe_noop(x)
+        if noop_out is not None:
+            return noop_out
+        x, orig_shape, dim_info, kernel = self._prepare_input(x)
+        invalid_dof = self._invalid_dof_output(x)
+        if invalid_dof is not None:
+            return self._reshape_output(invalid_dof, orig_shape, dim_info)
+        y = kernel(x)
+        return self._reshape_output(y, orig_shape, dim_info)
+
 
 class StdFwdOp(_WelfordReduceOp):
     """Standard deviation reduction with Bessel's correction."""
@@ -711,6 +740,13 @@ class VarMeanFwdOp(_WelfordReduceOp):
         if scalar_out is not None:
             return scalar_out
         x, orig_shape, dim_info, kernel = self._prepare_input(x)
+        invalid_dof = self._invalid_dof_output(x)
+        if invalid_dof is not None:
+            mean_out = x.float().mean(dim=-1).to(x.dtype)
+            return (
+                self._reshape_output(invalid_dof, orig_shape, dim_info),
+                self._reshape_output(mean_out, orig_shape, dim_info),
+            )
         var_out, mean_out = kernel(x)
         return (
             self._reshape_output(var_out, orig_shape, dim_info),
