@@ -69,12 +69,16 @@ def test_against_2wg_reference(dist):
 
 @pytest.mark.nightly
 def test_max_waves_edge_case():
-    """Validate static-wave slack: numel just over sm_count * block_m
-    forces an extra wave compared to the bulk case."""
+    """Validate static-wave slack: cross the 2*sm CTA-pair boundary AND
+    end on a partial last wave with an odd tile count, exercising the
+    `if valid_1:` guard (WG1-OOB on the final pair claim)."""
     sm = torch.cuda.get_device_properties(0).multi_processor_count
-    block_m, _, K, N = 64, 256, 128, 256
+    block_m, block_n, K, N = 64, 256, 128, 768
     E, top_k = 4, 1
-    numel = sm * block_m + 1  # forces an extra wave
+    # numel = 3 * sm * 64 + 31; per-expert ceil-rounded -> ~3*sm M-tiles plus a few; num_pid_n=3
+    # total tiles ~= 3 * (3*sm + small) ~ 9*sm; CTA pairs ~= 4.5*sm -> _max_waves ~ 5+slack
+    # odd numel ensures a trailing tile triggers `valid_1=False` on the last claim
+    numel = 3 * sm * block_m + 31
     T_count = numel  # numel = T * top_k with top_k=1
     A, B, sizes, offsets, _ = make_inputs(T_count, E, top_k, N, K, torch.bfloat16, "uniform")
     ref = GroupedGemmPersistentKernel(
