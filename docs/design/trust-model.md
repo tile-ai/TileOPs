@@ -47,6 +47,8 @@ Kernel (L1) + Op (L2). Developer reads manifest + ref_program for behavior; high
 - **OWNS**: TileLang kernels, op dispatch, class variable protocol
 - **MUST NOT WRITE**: workload shape definitions, correctness assertions, manifest entries
 
+PyTorch is the spec oracle, not a runtime path. The Op layer implements results through TileLang kernels or tensor primitives; delegating to higher-level PyTorch operators (`torch.sum`, `F.softmax`, ...) at forward time is forbidden. Narrow fallback exceptions live in [ops-design.md](../../.claude/domain-rules/ops-design.md).
+
 → Rules: [ops-design.md](../../.claude/domain-rules/ops-design.md) | Guide: [ops-design.md](ops-design.md)
 
 ## Benchmark

@@ -47,6 +47,8 @@ ______________________________________________________________________
 
 - Never modify manifest to match non-conforming code. Code drift → `status: spec-only` and fix code in a follow-up PR. Never remove `params`, roofline `vars`, or `shape_rules` to silence validator errors.
 
+- `ref_api` is the spec oracle for the manifest signature, not an Op-layer dispatch target at forward time.
+
 - **Manifest comment policy.** Comments may carry technical content the DSL can't express (schema clarifications, edge cases, conventions, file headers); they MUST NOT carry process metadata bound to a specific issue, PR, commit, or round. Keep only if meaningful after every issue/PR is renumbered; otherwise move to commit message, PR description, or follow-up issue.
 
   Discovery scan: `grep -rnE '#[0-9]{3,}|[Ff]ollow.?up|AC-[0-9]+' tileops/manifest/*.yaml`

@@ -55,6 +55,24 @@ def test_scalar_arithmetic_reductions(dim, keepdim: bool, dtype: torch.dtype) ->
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("dim", [0, -1], ids=["dim=0", "dim=-1"])
+@pytest.mark.parametrize("keepdim", [False, True], ids=["keepdim=False", "keepdim=True"])
+@pytest.mark.parametrize("dtype", _FLOAT_DTYPES, ids=["fp16", "bf16", "fp32"])
+def test_scalar_prod_reduction(dim: int, keepdim: bool, dtype: torch.dtype) -> None:
+    from tileops.ops.reduction.reduce import ProdFwdOp
+
+    x = _make_scalar(dtype)
+    op = ProdFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    y = op(x)
+    ref = torch.prod(x.float(), dim=dim, keepdim=keepdim).to(dtype)
+    assert y.shape == ref.shape, (
+        f"ProdFwdOp scalar dim={dim} keepdim={keepdim} dtype={dtype}: "
+        f"shape {y.shape} vs ref {ref.shape}"
+    )
+    torch.testing.assert_close(y, ref, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("dim", _DIMS, ids=_DIM_IDS)
 @pytest.mark.parametrize("keepdim", [False, True], ids=["keepdim=False", "keepdim=True"])
 @pytest.mark.parametrize("dtype", _FLOAT_DTYPES, ids=["fp16", "bf16", "fp32"])

@@ -15,6 +15,7 @@ Kernels are cached by ``(M, N)`` so that the same op instance can handle
 varying shapes.
 """
 
+import warnings
 from math import prod
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -28,23 +29,15 @@ from tileops.kernels.reduction.reduce import ReduceKernel
 from ..op_base import Op
 from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
 
-# Map ``_op_kind`` to the PyTorch reference used on the 0-D scalar fast path.
-# Scalar inputs short-circuit to these refs because the kernels assume
+# Op kinds that accept 0-D (scalar) input. The kernel path assumes
 # ``ndim >= 1`` (and the Welford kernel's Bessel correction is undefined for
-# ``N == 1``). Each entry must accept ``(x, dim=...)`` with PyTorch's accepted
-# dim forms (``None``, ``0``, ``-1``, ``()``, ``[]``) on a 0-D input.
-_TORCH_SCALAR_REF = {
-    "sum": torch.sum,
-    "mean": torch.mean,
-    "amin": torch.amin,
-    "amax": torch.amax,
-    "std": torch.std,
-    "var": torch.var,
-    "var_mean": torch.var_mean,
-    "all": torch.all,
-    "any": torch.any,
-    "count_nonzero": torch.count_nonzero,
-}
+# ``N == 1``), so the Op layer computes the scalar result directly without
+# invoking PyTorch's reduction ops. Mapping a degenerate single-element
+# reduction to its closed-form result is pure arithmetic, not a fallback.
+_SCALAR_REDUCE_KINDS = frozenset({
+    "sum", "mean", "amin", "amax", "prod", "std", "var", "var_mean",
+    "all", "any", "count_nonzero",
+})
 
 
 __all__ = [
@@ -227,11 +220,14 @@ class _ReduceOpBase(Op):
     # ------------------------------------------------------------------
 
     def _noop_output_dtype(self) -> Optional[torch.dtype]:
-        """Manifest-declared output dtype for the no-op short-circuit.
+        """Manifest-declared output dtype for the dtype-altering short-circuits.
 
-        Subclasses with a fixed output dtype (e.g. All/Any -> bool) MUST
-        override so the short-circuit honors the manifest contract. The
-        default ``None`` means "preserve input dtype".
+        Consulted by both the empty-dim no-op path (``_maybe_noop``) and
+        the scalar 0-D path (``_scalar_forward``) so the manifest output
+        dtype contract is honored without dispatching to the kernel.
+        Subclasses with a fixed output dtype (e.g. All/Any -> bool,
+        CountNonzero -> int64) MUST override. The default ``None`` means
+        "preserve input dtype".
         """
         return None
 
@@ -258,10 +254,10 @@ class _ReduceOpBase(Op):
         PyTorch accepts ``None``, ``0``, ``-1``, ``()``, and ``[]`` on a
         0-D tensor, plus singleton list/tuple forms (``[0]``, ``(0,)``,
         ``[-1]``, ``(-1,)``). Integers outside ``{0, -1}`` raise
-        ``IndexError`` here; multi-entry sequences (e.g. ``[0, -1]``)
-        are passed through to torch, which may raise ``RuntimeError`` on
-        duplicate dims because ``0`` and ``-1`` alias the same axis on a
-        0-D tensor.
+        ``IndexError``. Multi-entry sequences whose canonical dims
+        collide (``0`` and ``-1`` both alias axis ``0`` on a 0-D tensor)
+        raise ``RuntimeError`` to match PyTorch's
+        ``"dim 0 appears multiple times in the list of dims"``.
         """
         dim = self.dim
         if dim is None:
@@ -274,38 +270,46 @@ class _ReduceOpBase(Op):
                 )
             return
         if isinstance(dim, (list, tuple)):
+            seen: set = set()
             for d in dim:
                 if d not in (0, -1):
                     raise IndexError(
                         f"Dimension out of range (expected to be in range of "
                         f"[-1, 0], but got {d})"
                     )
+                canon = 0  # 0 and -1 alias the same axis on a 0-D tensor.
+                if canon in seen:
+                    raise RuntimeError(
+                        f"dim {canon} appears multiple times in the list of dims"
+                    )
+                seen.add(canon)
             return
 
-    def _torch_scalar_reference(self, x: torch.Tensor) -> torch.Tensor:
-        """Delegate a 0-D input forward to the matching PyTorch op.
-
-        The op-layer scalar path is a pure pass-through to the reference
-        implementation; the kernel is undefined for ``N == 1`` (notably the
-        Welford family's Bessel correction). Subclasses with non-standard
-        return shapes (e.g. ``VarMeanFwdOp``) override ``_scalar_forward``.
-        """
-        ref = _TORCH_SCALAR_REF[self._op_kind]
-        dim = self.dim
-        if dim is None:
-            return ref(x)
-        return ref(x, dim=dim)
-
     def _scalar_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Return the forward result for a 0-D input.
+        """Compute the forward result for a 0-D input natively.
 
-        Default: delegate to ``_torch_scalar_reference``. Subclasses with
-        non-standard returns may override.
+        Single-element reductions are degenerate: every arithmetic family
+        collapses to the input value, the logical families collapse to
+        ``x != 0`` cast to the manifest output dtype, and the Welford
+        family follows a closed form in ``correction``. This method
+        computes the closed-form result directly so the kernel path
+        (undefined for ``N == 1``) is bypassed without delegating to
+        PyTorch's reduction ops.
+
+        Arithmetic reductions (``sum``, ``mean``, ``amin``, ``amax``,
+        ``prod``) over one element return the element itself. Logical /
+        count ops override ``_noop_output_dtype`` so this default applies
+        the ``x != 0`` predicate and casts to the declared output dtype.
+        Welford ops (``std``, ``var``, ``var_mean``) override this hook
+        because their result depends on ``correction``.
         """
-        return self._torch_scalar_reference(x)
+        out_dtype = self._noop_output_dtype()
+        if out_dtype is None:
+            return x.clone()
+        return (x != 0).to(out_dtype)
 
     def _maybe_scalar(self, x: torch.Tensor):
-        """Short-circuit a 0-D input to the PyTorch reference.
+        """Short-circuit a 0-D input to the native scalar forward.
 
         Returns the scalar-path output when ``x.ndim == 0``; returns
         ``None`` otherwise so the caller proceeds with the kernel path.
@@ -314,8 +318,8 @@ class _ReduceOpBase(Op):
         """
         if x.ndim != 0:
             return None
-        if self._op_kind not in _TORCH_SCALAR_REF:
-            # Subclasses without a scalar reference (e.g. argmax/argmin/
+        if self._op_kind not in _SCALAR_REDUCE_KINDS:
+            # Subclasses without a defined 0-D contract (e.g. argmax/argmin/
             # l1/l2/inf) fall through to the kernel path, which raises the
             # pre-existing ``ValueError("Input tensor must be at least 1D")``.
             return None
@@ -675,18 +679,39 @@ class _WelfordReduceOp(_ReduceOpBase):
         """Pass correction to the kernel constructor."""
         return {"correction": self.correction}
 
-    def _torch_scalar_reference(self, x: torch.Tensor):
-        """Welford scalar path delegates to torch with ``correction`` plumbed.
+    def _scalar_forward(self, x: torch.Tensor):
+        """Compute Welford ops on a 0-D input from closed-form.
 
-        On a 0-D input the kernel's Bessel correction is undefined; the
-        PyTorch ref produces ``nan`` and emits the standard
-        ``UserWarning`` when ``correction >= N``. Preserve that behavior.
+        For a single-element reduction with reduction factor ``N = 1`` and
+        Bessel ``correction``:
+
+        Both branches construct the result as an operation on ``x`` so
+        the output keeps a ``grad_fn`` when ``x.requires_grad`` is
+        true, matching the PyTorch backward contract.
+
+        - ``N - correction <= 0`` (i.e. ``correction >= 1``): variance
+          and standard deviation are mathematically undefined; the
+          contract returns ``nan`` (computed as ``x * nan`` so the
+          output stays connected to ``x``).
+        - ``correction == 0``: the unbiased denominator is ``N``, so the
+          deviation from the mean (which equals the element itself) is
+          zero for finite inputs. The result is computed as ``x - x``
+          so non-finite inputs propagate (``nan`` / ``inf`` → ``nan``)
+          and autograd history on ``x`` is preserved.
+
+        ``VarMeanFwdOp`` overrides this hook to additionally return the
+        mean (the input element).
         """
-        ref = _TORCH_SCALAR_REF[self._op_kind]
-        dim = self.dim
-        if dim is None:
-            return ref(x, correction=self.correction)
-        return ref(x, dim=dim, correction=self.correction)
+        if self.correction >= 1:
+            warnings.warn(
+                f"{self._op_kind}(): degrees of freedom is <= 0. Correction "
+                "should be strictly less than the reduction factor (input "
+                "numel divided by output numel).",
+                UserWarning,
+                stacklevel=2,
+            )
+            return x * float("nan")
+        return x - x
 
     def _invalid_dof_output(self, x: torch.Tensor) -> Optional[torch.Tensor]:
         """Return PyTorch-compatible NaNs when ``N - correction <= 0``.
@@ -734,6 +759,16 @@ class VarMeanFwdOp(_WelfordReduceOp):
     """Variance and mean reduction."""
 
     _op_kind = "var_mean"
+
+    def _scalar_forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return ``(var, mean)`` on a 0-D input.
+
+        Variance follows the Welford closed form (``nan`` when
+        ``correction >= 1``, ``0`` otherwise); the mean of a single element
+        is the element itself.
+        """
+        var_out = super()._scalar_forward(x)
+        return var_out, x.clone()
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         scalar_out = self._maybe_scalar(x)
