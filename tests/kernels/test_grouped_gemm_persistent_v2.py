@@ -74,7 +74,7 @@ def test_correctness_stages(num_stages):
     numel = T_count * top_k
     A, B, sizes, offsets, _ = make_inputs(T_count, E, top_k, N, K, torch.bfloat16, "uniform")
     sm = torch.cuda.get_device_properties(0).multi_processor_count
-    cfg = {"block_m": 64, "block_n": 256, "block_k": 64,
+    cfg = {"block_m": 64, "block_n": 128, "block_k": 64,    # block_n reduced from 256 to fit num_stages>=3
            "num_stages": num_stages, "threads": 384, "group_size_m": 1}
     ref = GroupedGemmPersistentKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
@@ -92,7 +92,7 @@ def test_correctness_stages(num_stages):
     numel = T_count * top_k
     A, B, sizes, offsets, _ = make_inputs(T_count, E, top_k, N, K, torch.bfloat16, "uniform")
     sm = torch.cuda.get_device_properties(0).multi_processor_count
-    cfg = {"block_m": 64, "block_n": 256, "block_k": 64,
+    cfg = {"block_m": 64, "block_n": 128, "block_k": 64,    # block_n reduced from 256 to fit num_stages>=3
            "num_stages": num_stages, "threads": 384, "group_size_m": 1}
     ref = GroupedGemmPersistentKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
