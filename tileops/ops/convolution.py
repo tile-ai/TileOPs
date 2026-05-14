@@ -212,7 +212,7 @@ class Conv1dFwdOp(Op):
         input: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
-        _validate_tensor_shape("Conv1d", "input", input, (self.n, self.l_in, self.c_in))
+        _validate_tensor_shape("Conv1d", "input", input, (self.n, self.c_in, self.l_in))
         _validate_tensor_shape(
             "Conv1d",
             "weight",
@@ -272,7 +272,7 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ) -> torch.Tensor:
-        _validate_tensor_shape("Conv1d", "input", input, (self.n, self.l_in, self.c_in))
+        _validate_tensor_shape("Conv1d", "input", input, (self.n, self.c_in, self.l_in))
         _validate_tensor_shape(
             "Conv1d",
             "weight",

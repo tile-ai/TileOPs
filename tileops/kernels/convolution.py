@@ -54,7 +54,7 @@ def _conv1d_kernel(
 ):
     accum_dtype = "float"
     out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
-    k_total = kernel_l * c_in
+    k_total = c_in * kernel_l
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _conv1d_func(
@@ -67,72 +67,74 @@ def _conv1d_kernel(
     ):
         @T.prim_func
         def _conv1d_main(
-            x: T.Tensor((n, l_in, c_in), dtype),  # type: ignore
-            weight: T.Tensor((kernel_l, c_in, c_out), dtype),  # type: ignore
-            out: T.Tensor((n, out_l, c_out), dtype),  # type: ignore
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_l), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
             bias: T.Tensor((c_out,), dtype),  # type: ignore
         ):
             with T.Kernel(
-                T.ceildiv(c_out, block_n),
-                T.ceildiv(n * out_l, block_m),
+                T.ceildiv(n * out_l, block_n),
+                T.ceildiv(c_out, block_m),
                 threads=threads,
             ) as (bx, by):
-                data_shared = T.alloc_shared((block_m, block_k), dtype)
-                weight_shared = T.alloc_shared((block_k, block_n), dtype)
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                weight_flat = T.Tensor((k_total, c_out), dtype, weight.data)
-                out_flat = T.Tensor((n * out_l, c_out), dtype, out.data)
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
 
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
-                    for i, j in T.Parallel(block_m, block_k):
-                        m_idx = by * block_m + i
-                        k_idx = k_iter * block_k + j
-                        kw = k_idx // c_in
-                        ci = k_idx % c_in
+                    T.copy(weight_flat[by * block_m, k_iter * block_k], weight_shared)
+
+                    for i, j in T.Parallel(block_k, block_n):
+                        k_idx = k_iter * block_k + i
+                        m_idx = bx * block_n + j
+                        ci = k_idx // kernel_l
+                        kw = k_idx % kernel_l
                         batch = m_idx // out_l
                         ol = m_idx % out_l
                         il = ol * stride_l + kw * dilation_l - pad_l
                         in_bound = (
-                            (m_idx < n * out_l)
-                            & (k_idx < k_total)
+                            (k_idx < k_total)
+                            & (m_idx < n * out_l)
                             & (il >= 0)
                             & (il < l_in)
                         )
                         data_shared[i, j] = T.if_then_else(
                             in_bound,
-                            x[batch, il, ci],
+                            x[batch, ci, il],
                             T.cast(0.0, dtype),
                         )
 
-                    T.copy(weight_flat[k_iter * block_k, bx * block_n], weight_shared)
-                    T.gemm(data_shared, weight_shared, out_local)
+                    T.gemm(weight_shared, data_shared, out_local)
 
                 for i, j in T.Parallel(block_m, block_n):
-                    m_idx = by * block_m + i
-                    oc = bx * block_n + j
+                    oc = by * block_m + i
+                    m_idx = bx * block_n + j
                     if has_bias:
                         out_shared[i, j] = T.if_then_else(
-                            (m_idx < n * out_l) & (oc < c_out),
+                            (oc < c_out) & (m_idx < n * out_l),
                             T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
                             T.cast(0.0, dtype),
                         )
                     else:
                         out_shared[i, j] = T.if_then_else(
-                            (m_idx < n * out_l) & (oc < c_out),
+                            (oc < c_out) & (m_idx < n * out_l),
                             T.cast(out_local[i, j], dtype),
                             T.cast(0.0, dtype),
                         )
 
                 for i, j in T.Parallel(block_m, block_n):
-                    m_idx = by * block_m + i
-                    oc = bx * block_n + j
-                    if m_idx < n * out_l and oc < c_out:
-                        out_flat[m_idx, oc] = out_shared[i, j]
+                    oc = by * block_m + i
+                    m_idx = bx * block_n + j
+                    batch = m_idx // out_l
+                    ol = m_idx % out_l
+                    if oc < c_out and m_idx < n * out_l:
+                        out[batch, oc, ol] = out_shared[i, j]
 
         return _conv1d_main
 
@@ -187,7 +189,7 @@ def _(
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
     out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
-    return torch.empty((n, out_l, c_out), dtype=inputs[0].dtype, device=inputs[0].device)
+    return torch.empty((n, c_out, out_l), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
 class Conv1dKernel(Kernel):
@@ -242,16 +244,16 @@ class Conv1dKernel(Kernel):
         sm_version = get_sm_version()
         if sm_version in {90}:
             return {
-                "block_m": 128,
-                "block_n": 64,
+                "block_m": 64,
+                "block_n": 128,
                 "block_k": 64,
                 "num_stages": 3,
                 "threads": 128,
                 "enable_rasterization": True,
             }
         return {
-            "block_m": 128,
-            "block_n": 64,
+            "block_m": 64,
+            "block_n": 128,
             "block_k": 64,
             "num_stages": 2,
             "threads": 128,
@@ -262,8 +264,8 @@ class Conv1dKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         shared_memory_limit_bytes = get_shared_memory_limit_bytes()
         configs = itertools.product(
+            [32, 64, 128],
             [64, 128, 256],
-            [64, 128],
             [32, 64, 128],
             [2, 3],
             [128, 256],
@@ -293,8 +295,6 @@ class Conv1dKernel(Kernel):
     ) -> torch.Tensor:
         if bias is None:
             bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        # OIK -> KIO so the kernel can flatten weights into [K_total, C_out].
-        weight_kio = weight.permute(2, 1, 0).contiguous()
         return _conv1d_wrapped_kernel(
             self.n,
             self.c_in,
@@ -313,7 +313,7 @@ class Conv1dKernel(Kernel):
             self.config["threads"],
             self.config["enable_rasterization"],
             x,
-            weight_kio,
+            weight,
             bias,
         )
 

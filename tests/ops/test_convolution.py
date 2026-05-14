@@ -86,7 +86,7 @@ class Conv1dTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(self.n, self.l_in, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size,
             device="cuda", dtype=self.dtype,
@@ -101,7 +101,7 @@ class Conv1dTest(TestBase):
         bias: Optional[torch.Tensor],
     ) -> torch.Tensor:
         out = F.conv1d(
-            x.permute(0, 2, 1).contiguous(),
+            x,
             weight,
             bias=bias,
             stride=self.stride,
@@ -109,7 +109,7 @@ class Conv1dTest(TestBase):
             dilation=self.dilation,
             groups=1,
         )
-        return out.permute(0, 2, 1).contiguous()
+        return out.contiguous()
 
 
 @Conv1dFixture
@@ -153,11 +153,10 @@ def test_conv1d_no_bias_matches_torch() -> None:
         stride=2,
         padding=2,
     )
-    x = torch.randn(1, 256, 32, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 32, 256, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 5, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight)
-    ref = F.conv1d(x.permute(0, 2, 1).contiguous(), weight, bias=None, stride=2, padding=2)
-    ref = ref.permute(0, 2, 1).contiguous()
+    ref = F.conv1d(x, weight, bias=None, stride=2, padding=2).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
@@ -172,12 +171,11 @@ def test_conv1d_bias_requires_bias_tensor() -> None:
         stride=2,
         padding=2,
     )
-    x = torch.randn(1, 256, 32, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 32, 256, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 5, device="cuda", dtype=torch.float16).contiguous()
     bias = torch.zeros(64, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight, bias)
-    ref = F.conv1d(x.permute(0, 2, 1).contiguous(), weight, bias=bias, stride=2, padding=2)
-    ref = ref.permute(0, 2, 1).contiguous()
+    ref = F.conv1d(x, weight, bias=bias, stride=2, padding=2).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
@@ -203,7 +201,7 @@ def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None
         dilation=dilation,
         **op_kwargs,
     )
-    x = torch.randn(n, l_in, c_in, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(n, c_in, l_in, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(c_out, c_in, kernel_size, device="cuda", dtype=torch.float16).contiguous()
     bias = (
         torch.randn(c_out, device="cuda", dtype=torch.float16).contiguous()
@@ -211,14 +209,14 @@ def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None
     )
     out = op(x, weight, bias) if use_bias else op(x, weight)
     ref = F.conv1d(
-        x.permute(0, 2, 1).contiguous(),
+        x,
         weight,
         bias=bias,
         stride=stride,
         padding=padding,
         dilation=2,
     )
-    ref = ref.permute(0, 2, 1).contiguous()
+    ref = ref.contiguous()
     torch.testing.assert_close(out, ref, atol=2e-3, rtol=3e-3)
 
 

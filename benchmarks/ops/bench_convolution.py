@@ -33,7 +33,7 @@ class Conv1dBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(self.n, self.l_in, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size,
             device="cuda", dtype=self.dtype,
@@ -106,7 +106,6 @@ def test_conv1d_bench(
     bm = Conv1dBenchmark(test)
     inputs = test.gen_inputs()
     x, weight, bias = inputs
-    x_ncl = x.permute(0, 2, 1).contiguous()
 
     op = Conv1dBiasFwdOp(
         n=n,
@@ -123,7 +122,7 @@ def test_conv1d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("conv1d", locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, x_ncl, weight, bias)
+    result_bl = bm.profile(test.ref_program, x, weight, bias)
     BenchmarkReport.record("conv1d", locals(), result_bl, tag="torch")
 
 
