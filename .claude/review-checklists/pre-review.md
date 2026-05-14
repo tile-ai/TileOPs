@@ -11,11 +11,11 @@ Apply trust-model rules as a review lens: surface cross-layer diffs as comments 
 
 ## Cross-layer review criteria
 
-| Criterion         | Pass                                                                              | Fail                                                                |
-| ----------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Oracle origin     | `ref_program` resolves to PyTorch / NumPy / closed-form / IEEE-754                | Agent-fabricated literal as expected value                          |
-| Coverage set      | Unchanged or strictly expanded; deletions target code paths the same diff removes | dtype / shape / sign cells removed with the code path still present |
-| New-path coverage | Every added behavior branch is exercised by at least one test                     | New branch lands with no test reaching it                           |
+| Criterion         | Pass                                                                                                                                                                    | Fail                                                                |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Oracle origin     | `ref_program` resolves to PyTorch / NumPy / closed-form / IEEE-754                                                                                                      | Agent-fabricated literal as expected value                          |
+| Coverage set      | Unchanged or strictly expanded; deletions target code paths the same diff removes                                                                                       | dtype / shape / sign cells removed with the code path still present |
+| New-path coverage | A test reaches each diff-added code path on an input that makes its output differ from the alternative. Aliases (paths with no output-distinguishing input) are exempt. | A diff-added path's output-distinguishing input has no test         |
 
 Cite the failing criterion by name.
 
