@@ -254,10 +254,10 @@ class _ReduceOpBase(Op):
         PyTorch accepts ``None``, ``0``, ``-1``, ``()``, and ``[]`` on a
         0-D tensor, plus singleton list/tuple forms (``[0]``, ``(0,)``,
         ``[-1]``, ``(-1,)``). Integers outside ``{0, -1}`` raise
-        ``IndexError`` here; multi-entry sequences (e.g. ``[0, -1]``)
-        are passed through to torch, which may raise ``RuntimeError`` on
-        duplicate dims because ``0`` and ``-1`` alias the same axis on a
-        0-D tensor.
+        ``IndexError``. Multi-entry sequences whose canonical dims
+        collide (``0`` and ``-1`` both alias axis ``0`` on a 0-D tensor)
+        raise ``RuntimeError`` to match PyTorch's
+        ``"dim 0 appears multiple times in the list of dims"``.
         """
         dim = self.dim
         if dim is None:
@@ -270,12 +270,19 @@ class _ReduceOpBase(Op):
                 )
             return
         if isinstance(dim, (list, tuple)):
+            seen: set = set()
             for d in dim:
                 if d not in (0, -1):
                     raise IndexError(
                         f"Dimension out of range (expected to be in range of "
                         f"[-1, 0], but got {d})"
                     )
+                canon = 0  # 0 and -1 alias the same axis on a 0-D tensor.
+                if canon in seen:
+                    raise RuntimeError(
+                        f"dim {canon} appears multiple times in the list of dims"
+                    )
+                seen.add(canon)
             return
 
     def _scalar_forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -678,14 +685,19 @@ class _WelfordReduceOp(_ReduceOpBase):
         For a single-element reduction with reduction factor ``N = 1`` and
         Bessel ``correction``:
 
-        - ``N - correction <= 0`` (i.e. ``correction >= 1``): variance and
-          standard deviation are mathematically undefined; the contract
-          returns ``nan`` to match the standard reduction convention.
+        Both branches construct the result as an operation on ``x`` so
+        the output keeps a ``grad_fn`` when ``x.requires_grad`` is
+        true, matching the PyTorch backward contract.
+
+        - ``N - correction <= 0`` (i.e. ``correction >= 1``): variance
+          and standard deviation are mathematically undefined; the
+          contract returns ``nan`` (computed as ``x * nan`` so the
+          output stays connected to ``x``).
         - ``correction == 0``: the unbiased denominator is ``N``, so the
           deviation from the mean (which equals the element itself) is
-          zero for finite inputs. The result is computed as ``x - x`` so
-          non-finite inputs propagate (``nan`` / ``inf`` → ``nan``) and
-          autograd history on ``x`` is preserved.
+          zero for finite inputs. The result is computed as ``x - x``
+          so non-finite inputs propagate (``nan`` / ``inf`` → ``nan``)
+          and autograd history on ``x`` is preserved.
 
         ``VarMeanFwdOp`` overrides this hook to additionally return the
         mean (the input element).
@@ -698,7 +710,7 @@ class _WelfordReduceOp(_ReduceOpBase):
                 UserWarning,
                 stacklevel=2,
             )
-            return torch.full((), float("nan"), dtype=x.dtype, device=x.device)
+            return x * float("nan")
         return x - x
 
     def _invalid_dof_output(self, x: torch.Tensor) -> Optional[torch.Tensor]:
