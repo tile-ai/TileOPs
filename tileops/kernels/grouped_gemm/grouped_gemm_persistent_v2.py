@@ -12,20 +12,17 @@ Two compile-time templates routed by ``block_m``:
 
 K-aligned only.  K-unaligned use ``GroupedGemmPersistentKernel``.
 
-V2 phase 2: pingpong + *static-wave scheduler* (no atomic counter).  Each
-CTA enumerates its tile IDs as ``flat_id_0 = 2*(sm_count*w + pid)`` and
+Uses a *static-wave scheduler* (no atomic counter): each CTA enumerates
+its tile IDs as ``flat_id_0 = 2*(sm_count*w + pid)`` and
 ``flat_id_1 = flat_id_0 + 1`` for wave ``w ∈ [0, _max_waves)``.  Tiles past
-``s_total`` are skipped via the same valid mask the atomic version used.
-This removes scheduler latency (one int divide + compare vs an atomic-add
-round-trip per iteration) and produces a deterministic tile-to-CTA map,
-which Phase 3 will leverage for L2-friendly swizzling.  Group-size=8
-threadblock swizzle is deferred to a follow-up: the M tile axis is
-partitioned by expert via prefix-sum/binary-search, so naive swizzle
-across expert boundaries is unsafe.
+``s_total`` are skipped via a valid mask.  This removes scheduler latency
+and produces a deterministic tile-to-CTA map (group-size=8 threadblock
+swizzle is deferred: the M axis is partitioned by expert via prefix-sum/
+binary-search, so naive swizzle across expert boundaries is unsafe).
 
-Defaults differ from 3WG: ``num_stages`` is 2 (phase-1 baseline for the
-upcoming ring-buffer phase) and ``autotune_configs`` returns a single
-config; both will expand in later phases.
+A per-WG ring buffer with ``num_stages`` slots overlaps TMA loads with
+WGMMA.  Default ``num_stages=4`` (autotuned over {2..6} with H100 SMEM
+limit pruning).
 """
 import functools
 import math
@@ -45,10 +42,10 @@ _ANCHOR_HELPER_PATH = os.path.abspath(
 __all__ = ["GroupedGemmPersistentV2Kernel"]
 
 _DEFAULT_CONFIG = {
-    "block_m": 64,         # phase 1: bm=64 (pingpong) only
-    "block_n": 256,
+    "block_m": 64,         # bm=64 pingpong; cooperative bm=128 in phase 5
+    "block_n": 128,
     "block_k": 64,
-    "num_stages": 2,
+    "num_stages": 4,
     "threads": 384,
     "group_size_m": 1,
 }
@@ -83,7 +80,28 @@ class GroupedGemmPersistentV2Kernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return [dict(_DEFAULT_CONFIG)]  # phase 2: single config
+        SMEM_LIMIT = 228 * 1024
+        bytes_per_elem = 2  # bf16/fp16
+        configs = []
+        for block_m in (64,):                       # bm=64 pingpong only; cooperative bm=128 in phase 5
+            for block_n in (128, 256):
+                for block_k in (64,):
+                    for num_stages in (2, 3, 4, 5, 6):
+                        # Pingpong layout: 4 independent SMEM streams
+                        # (A_wg0, B_wg0, A_wg1, B_wg1) each of shape
+                        # (num_stages, block_{m or n}, block_k)
+                        smem = (
+                            2 * num_stages * block_m * block_k * bytes_per_elem  # A_wg0 + A_wg1
+                            + 2 * num_stages * block_n * block_k * bytes_per_elem  # B_wg0 + B_wg1
+                        )
+                        if smem > SMEM_LIMIT:
+                            continue
+                        configs.append({
+                            "block_m": block_m, "block_n": block_n,
+                            "block_k": block_k, "num_stages": num_stages,
+                            "threads": 384, "group_size_m": 1,
+                        })
+        return configs
 
     def forward(self, A, B, true_sizes, true_offsets):
         C = torch.zeros(self.numel, self.N, dtype=self.dtype, device=A.device)
@@ -113,7 +131,8 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                                        sm_count, block_k):
     """Build a V2 persistent grouped-GEMM JIT factory.
 
-    V2 phase 2: pingpong + static-wave scheduler.
+    Pingpong (1 producer + 2 consumer WGs) + static-wave scheduler +
+    per-WG ring buffer (num_stages slots).
     """
     accum_dtype = "float"
     log2_up = max(1, math.ceil(math.log2(num_experts + 1)))
