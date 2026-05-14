@@ -1,13 +1,12 @@
 """Correctness tests for GroupedGemmPersistentV2Kernel.
 
-Verifies V2 produces same output as the 2WG reference and current 3WG kernel.
+Verifies V2 produces same output as the 2WG reference. 3WG cross-check will be added in a later phase.
 """
 import pytest
 import torch
 
 from tileops.kernels.grouped_gemm import (
     GroupedGemmPersistentKernel,
-    GroupedGemmPersistent3WGKernel,
     GroupedGemmPersistentV2Kernel,
 )
 
