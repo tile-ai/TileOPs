@@ -219,3 +219,64 @@ def test_var_mean_scalar_input(dim) -> None:
     torch.testing.assert_close(mean_out, mean_ref)
     if expect_warn:
         assert any(issubclass(w.category, UserWarning) for w in op_caught)
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-dim regression — aliasing sequences on a 0-D tensor must raise
+# the same RuntimeError PyTorch raises ("dim 0 appears multiple times in
+# the list of dims") instead of silently returning a scalar.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dim",
+    [[0, 0], [0, -1], [-1, -1], [-1, 0], (0, -1)],
+    ids=["dim=[0,0]", "dim=[0,-1]", "dim=[-1,-1]", "dim=[-1,0]", "dim=(0,-1)"],
+)
+def test_sum_scalar_duplicate_dim_matches_torch(dim) -> None:
+    from tileops.ops.reduction.reduce import SumFwdOp
+
+    x = torch.tensor(1.5, dtype=torch.float32, device="cuda")
+    with pytest.raises(RuntimeError, match="appears multiple times"):
+        torch.sum(x, dim=list(dim))
+    op = SumFwdOp(dtype=torch.float32, dim=list(dim))
+    with pytest.raises(RuntimeError, match="appears multiple times"):
+        op(x)
+
+
+# ---------------------------------------------------------------------------
+# Welford requires_grad regression — the invalid-DOF (NaN) fast path must
+# return a tensor with autograd history matching PyTorch so backward works.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_var_scalar_requires_grad_preserves_grad_fn() -> None:
+    from tileops.ops.reduction.reduce import VarFwdOp
+
+    x = torch.tensor(0.5, dtype=torch.float32, device="cuda", requires_grad=True)
+    op = VarFwdOp(dtype=torch.float32, dim=None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        y = op(x)
+        ref = torch.var(x)
+    assert y.shape == ref.shape == ()
+    assert torch.isnan(y).item()
+    assert y.requires_grad and ref.requires_grad
+    assert y.grad_fn is not None and ref.grad_fn is not None
+
+
+@pytest.mark.smoke
+def test_var_mean_scalar_requires_grad_preserves_grad_fn() -> None:
+    from tileops.ops.reduction.reduce import VarMeanFwdOp
+
+    x = torch.tensor(1.25, dtype=torch.float32, device="cuda", requires_grad=True)
+    op = VarMeanFwdOp(dtype=torch.float32, dim=None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        var_out, mean_out = op(x)
+        var_ref, mean_ref = torch.var_mean(x)
+    assert var_out.requires_grad and var_ref.requires_grad
+    assert mean_out.requires_grad and mean_ref.requires_grad
+    assert var_out.grad_fn is not None and mean_out.grad_fn is not None
