@@ -683,7 +683,9 @@ class _WelfordReduceOp(_ReduceOpBase):
           returns ``nan`` to match the standard reduction convention.
         - ``correction == 0``: the unbiased denominator is ``N``, so the
           deviation from the mean (which equals the element itself) is
-          zero; both variance and standard deviation are ``0``.
+          zero for finite inputs. The result is computed as ``x - x`` so
+          non-finite inputs propagate (``nan`` / ``inf`` → ``nan``) and
+          autograd history on ``x`` is preserved.
 
         ``VarMeanFwdOp`` overrides this hook to additionally return the
         mean (the input element).
@@ -697,7 +699,7 @@ class _WelfordReduceOp(_ReduceOpBase):
                 stacklevel=2,
             )
             return torch.full((), float("nan"), dtype=x.dtype, device=x.device)
-        return torch.zeros((), dtype=x.dtype, device=x.device)
+        return x - x
 
     def _invalid_dof_output(self, x: torch.Tensor) -> Optional[torch.Tensor]:
         """Return PyTorch-compatible NaNs when ``N - correction <= 0``.
