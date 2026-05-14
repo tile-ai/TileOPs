@@ -65,3 +65,22 @@ def test_against_2wg_reference(dist):
     C_ref = ref(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
+def test_max_waves_edge_case():
+    """Validate static-wave slack: numel just over sm_count * block_m
+    forces an extra wave compared to the bulk case."""
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    block_m, _, K, N = 64, 256, 128, 256
+    E, top_k = 4, 1
+    numel = sm * block_m + 1  # forces an extra wave
+    T_count = numel  # numel = T * top_k with top_k=1
+    A, B, sizes, offsets, _ = make_inputs(T_count, E, top_k, N, K, torch.bfloat16, "uniform")
+    ref = GroupedGemmPersistentKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    v2 = GroupedGemmPersistentV2Kernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    C_ref = ref(A, B, sizes, offsets)
+    C_v2 = v2(A, B, sizes, offsets)
+    torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)

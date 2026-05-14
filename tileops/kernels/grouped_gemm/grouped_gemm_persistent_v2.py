@@ -12,10 +12,16 @@ Two compile-time templates routed by ``block_m``:
 
 K-aligned only.  K-unaligned use ``GroupedGemmPersistentKernel``.
 
-V2 phase 1: pingpong (atomic_add scheduler, parity drop-in).
-Literal port of GroupedGemmPersistent3WGKernel; only names differ.  Future
-phases will swap the scheduler, replace the double-buffer with a
-num_stages ring, add TMA-store epilogue, and add a cooperative template.
+V2 phase 2: pingpong + *static-wave scheduler* (no atomic counter).  Each
+CTA enumerates its tile IDs as ``flat_id_0 = 2*(sm_count*w + pid)`` and
+``flat_id_1 = flat_id_0 + 1`` for wave ``w ∈ [0, _max_waves)``.  Tiles past
+``s_total`` are skipped via the same valid mask the atomic version used.
+This removes scheduler latency (one int divide + compare vs an atomic-add
+round-trip per iteration) and produces a deterministic tile-to-CTA map,
+which Phase 3 will leverage for L2-friendly swizzling.  Group-size=8
+threadblock swizzle is deferred to a follow-up: the M tile axis is
+partitioned by expert via prefix-sum/binary-search, so naive swizzle
+across expert boundaries is unsafe.
 
 Defaults differ from 3WG: ``num_stages`` is 2 (phase-1 baseline for the
 upcoming ring-buffer phase) and ``autotune_configs`` returns a single
@@ -70,7 +76,6 @@ class GroupedGemmPersistentV2Kernel(Kernel):
             self.numel, self.num_experts, self.N, self.K,
             self.dtype_str, self.sm_count, self.config["block_k"])
         self.init_config(config, tune)
-        self._tile_counter: torch.Tensor | None = None
 
     @property
     def default_config(self) -> dict:
@@ -78,13 +83,9 @@ class GroupedGemmPersistentV2Kernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return [dict(_DEFAULT_CONFIG)]  # phase 1: single config
+        return [dict(_DEFAULT_CONFIG)]  # phase 2: single config
 
     def forward(self, A, B, true_sizes, true_offsets):
-        if self._tile_counter is None or self._tile_counter.device != A.device:
-            self._tile_counter = torch.zeros(1, dtype=torch.int32, device=A.device)
-        else:
-            self._tile_counter.zero_()
         C = torch.zeros(self.numel, self.N, dtype=self.dtype, device=A.device)
         block_m = self.config["block_m"]
         block_n = self.config["block_n"]
@@ -103,7 +104,7 @@ class GroupedGemmPersistentV2Kernel(Kernel):
             self.config["threads"],
             self.config.get("group_size_m", 1),
         )
-        gemm_fn(A, B, true_sizes, true_offsets, C, self._tile_counter)
+        gemm_fn(A, B, true_sizes, true_offsets, C)
         return C
 
 
@@ -112,9 +113,7 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                                        sm_count, block_k):
     """Build a V2 persistent grouped-GEMM JIT factory.
 
-    V2 phase 1: pingpong (atomic_add scheduler, parity drop-in).
-    Literal port of _persistent_grouped_gemm_3wg_kernel; only the outer
-    factory name and internal prim_func name differ.
+    V2 phase 2: pingpong + static-wave scheduler.
     """
     accum_dtype = "float"
     log2_up = max(1, math.ceil(math.log2(num_experts + 1)))
@@ -141,13 +140,12 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
             f"(1 producer + 2 consumer WGs); got threads={threads}"
         )
         _num_pid_n = math.ceil(N / block_n)
-        _max_tiles = numel // block_m + num_experts
+        _max_tiles = numel // block_m + num_experts  # over-estimate of M tiles
         _total_ctas_ub = _max_tiles * _num_pid_n
-        # Each iteration claims 2 tiles per CTA (atomic_add(+2)); slack of 2
-        # absorbs the case where total_ctas_ub is not a multiple of 2*sm_count.
-        # Each iteration claims 2 tiles per CTA (atomic_add(+2)); slack of 2
-        # absorbs the case where total_ctas_ub is not a multiple of 2*sm_count.
-        _max_iters = (_total_ctas_ub + 2 * sm_count - 1) // (2 * sm_count) + 2
+        # Pingpong: each CTA processes 2 tiles per wave (one per math WG).
+        # Slack of 1 covers the case where _total_ctas_ub is not a multiple
+        # of 2 * sm_count.
+        _max_waves = (_total_ctas_ub + 2 * sm_count - 1) // (2 * sm_count) + 1
         _k_iters = K // block_k
         A_shape = (numel + block_m, K)
 
@@ -158,7 +156,6 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
             true_sizes: T.Tensor((num_experts,), "int32"),      # noqa: F821
             true_offsets: T.Tensor((num_experts,), "int32"),    # noqa: F821
             C: T.Tensor((numel, N), dtype),                     # type: ignore  # noqa: F821
-            tile_counter: T.Tensor((1,), "int32"),              # noqa: F821
         ):
             with T.Kernel(sm_count, threads=threads) as (pid,):
                 # ── Per-WG double-buffered SMEM (independent tiles) ──
@@ -173,11 +170,9 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                 C_local_wg0 = T.alloc_fragment((block_m, block_n), accum_dtype)
                 C_local_wg1 = T.alloc_fragment((block_m, block_n), accum_dtype)
 
-                # ── Scheduler SMEM ──
+                # ── Scheduler SMEM (no atomic counter / tile pair anymore) ──
                 s_cum = T.alloc_shared((num_experts + 1,), "int32")
                 s_total = T.alloc_shared((1,), "int32")
-                # Two consecutive tile IDs claimed per producer iteration.
-                s_tile_pair = T.alloc_shared((2,), "int32")
                 lo = T.alloc_local((1,), "int32")
                 hi = T.alloc_local((1,), "int32")
                 # Per-tile metadata hoisted to alloc_local so the interleaved
@@ -222,16 +217,12 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
 
                 tx = T.get_thread_binding()
 
-                # ════════════════════════════════════════════════════════
+                # ═════════════════════════════════════════════════════════
                 # Producer WG: tx < 128
-                # ════════════════════════════════════════════════════════
-                # CUTLASS pingpong producer pattern: a *single* K-loop body
-                # issues the WG0 TMA pair followed by the WG1 TMA pair at
-                # each k, so WG1's first stage is ready right after WG0's
-                # first stage — both consumers start in parallel.  The
-                # previous "feed WG0 K-loop fully, then WG1 K-loop fully"
-                # form forced WG1 to wait K_iters TMAs before its first
-                # WGMMA could dispatch, defeating pingpong.
+                # ═════════════════════════════════════════════════════════
+                # Static-wave scheduler: each CTA enumerates tile IDs
+                # ``flat_id_0 = 2*(sm_count*w + pid)`` and
+                # ``flat_id_1 = flat_id_0 + 1`` for wave w.  No atomic.
                 if tx < 128:
                     T.dec_max_nreg(24)
 
@@ -240,38 +231,20 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                         for e in T.serial(num_experts):
                             s_cum[e + 1] = s_cum[e] + (true_sizes[e] + (block_m - 1)) // block_m
                         s_total[0] = s_cum[num_experts] * T.int32(_num_pid_n)
+                    # CTA-wide sync: publishes s_cum/s_total to consumers
+                    # (this pairs with the corresponding sync_threads in
+                    # the elif/else branches below).
                     T.sync_threads()
 
-                    for _iter in T.serial(_max_iters):
-                        if tx == 0:
-                            # atomic_add(+2) → atomic claim of both tiles in
-                            # one transaction.  Two separate +1 adds would
-                            # let outsider CTAs interleave and break tile-
-                            # pair adjacency (Known trap #4).
-                            s_tile_pair[0] = T.atomic_add(
-                                tile_counter[0], T.int32(2), return_prev=True
-                            )
-                            s_tile_pair[1] = s_tile_pair[0] + T.int32(1)
-                        T.sync_threads()
-
+                    for w in T.serial(_max_waves):
                         total = s_total[0]
+                        base = T.int32(2) * (T.int32(sm_count) * w + pid)
 
                         # ── Resolve WG0 tile metadata into alloc_local ──
-                        flat_id_0 = s_tile_pair[0]
+                        flat_id_0 = base
                         if flat_id_0 < total:
-                            if group_size_m == 1:
-                                m_tile_0 = flat_id_0 // T.int32(_num_pid_n)
-                                n_tile_0 = flat_id_0 % T.int32(_num_pid_n)
-                            else:
-                                num_pid_in_group = group_size_m * _num_pid_n
-                                m_tiles_total = s_cum[num_experts]
-                                pig_0 = flat_id_0 % T.int32(num_pid_in_group)
-                                g_id_0 = flat_id_0 // T.int32(num_pid_in_group)
-                                fp_m_0 = g_id_0 * T.int32(group_size_m)
-                                agsm_0 = T.min(m_tiles_total - fp_m_0,
-                                               T.int32(group_size_m))
-                                m_tile_0 = fp_m_0 + pig_0 % agsm_0
-                                n_tile_0 = pig_0 // agsm_0
+                            m_tile_0 = flat_id_0 // T.int32(_num_pid_n)
+                            n_tile_0 = flat_id_0 % T.int32(_num_pid_n)
 
                             lo[0] = T.int32(0)
                             hi[0] = T.int32(num_experts - 1)
@@ -290,21 +263,10 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                             v0[0] = T.int32(0)
 
                         # ── Resolve WG1 tile metadata into alloc_local ──
-                        flat_id_1 = s_tile_pair[1]
+                        flat_id_1 = base + T.int32(1)
                         if flat_id_1 < total:
-                            if group_size_m == 1:
-                                m_tile_1 = flat_id_1 // T.int32(_num_pid_n)
-                                n_tile_1 = flat_id_1 % T.int32(_num_pid_n)
-                            else:
-                                num_pid_in_group = group_size_m * _num_pid_n
-                                m_tiles_total = s_cum[num_experts]
-                                pig_1 = flat_id_1 % T.int32(num_pid_in_group)
-                                g_id_1 = flat_id_1 // T.int32(num_pid_in_group)
-                                fp_m_1 = g_id_1 * T.int32(group_size_m)
-                                agsm_1 = T.min(m_tiles_total - fp_m_1,
-                                               T.int32(group_size_m))
-                                m_tile_1 = fp_m_1 + pig_1 % agsm_1
-                                n_tile_1 = pig_1 // agsm_1
+                            m_tile_1 = flat_id_1 // T.int32(_num_pid_n)
+                            n_tile_1 = flat_id_1 % T.int32(_num_pid_n)
 
                             lo[0] = T.int32(0)
                             hi[0] = T.int32(num_experts - 1)
@@ -394,44 +356,22 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                                     T.barrier_arrive(ab_full_wg1_1)
                                 gi_prod_1 = gi_prod_1 + 1
 
-                # ════════════════════════════════════════════════════════
-                # Consumer WG0: 128 ≤ tx < 256 — processes s_tile_pair[0]
-                # ════════════════════════════════════════════════════════
-                # Since cons0 and cons1 own *independent* SMEM buffers and
-                # *independent* ab_full/ab_empty barrier pairs, the two math
-                # WGs never collide on shared resources and no math-WG
-                # ordering protocol is needed.  An earlier version added a
-                # `math_wg_order_{0,1}` mbarrier pair (CUTLASS-style) but it
-                # introduced a phase-tracking race: a single-bit mbarrier
-                # parity cannot tolerate `arrive` running ahead of `wait` by
-                # more than one iteration, which happens whenever the two
-                # WGs' mainloop+epilogue durations diverge (e.g. one WG
-                # claims an invalid tile and skips its mainloop).
+                # ═════════════════════════════════════════════════════════
+                # Consumer WG0: 128 ≤ tx < 256 — processes flat_id_0 per wave
+                # ═════════════════════════════════════════════════════════
                 elif tx < 256:
                     T.inc_max_nreg(240)
+                    # CTA-wide sync (pairs with producer's post-init sync).
                     T.sync_threads()
 
-                    for _iter in T.serial(_max_iters):
-                        T.sync_threads()
-
-                        flat_id_0 = s_tile_pair[0]
+                    for w in T.serial(_max_waves):
                         total = s_total[0]
+                        flat_id_0 = T.int32(2) * (T.int32(sm_count) * w + pid)
                         valid_0 = flat_id_0 < total
 
                         if valid_0:
-                            if group_size_m == 1:
-                                m_tile_0 = flat_id_0 // T.int32(_num_pid_n)
-                                n_tile_0 = flat_id_0 % T.int32(_num_pid_n)
-                            else:
-                                num_pid_in_group = group_size_m * _num_pid_n
-                                m_tiles_total = s_cum[num_experts]
-                                pig_0 = flat_id_0 % T.int32(num_pid_in_group)
-                                g_id_0 = flat_id_0 // T.int32(num_pid_in_group)
-                                fp_m_0 = g_id_0 * T.int32(group_size_m)
-                                agsm_0 = T.min(m_tiles_total - fp_m_0,
-                                               T.int32(group_size_m))
-                                m_tile_0 = fp_m_0 + pig_0 % agsm_0
-                                n_tile_0 = pig_0 // agsm_0
+                            m_tile_0 = flat_id_0 // T.int32(_num_pid_n)
+                            n_tile_0 = flat_id_0 % T.int32(_num_pid_n)
 
                             lo[0] = T.int32(0)
                             hi[0] = T.int32(num_experts - 1)
@@ -481,34 +421,22 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                                 if i < arows_0 and j < acols_0:
                                     C[m_start_0 + i, n_start_0 + j] = C_local_wg0[i, j]
 
-                # ════════════════════════════════════════════════════════
-                # Consumer WG1: tx ≥ 256 — processes s_tile_pair[1]
-                # ════════════════════════════════════════════════════════
+                # ═════════════════════════════════════════════════════════
+                # Consumer WG1: tx ≥ 256 — processes flat_id_1 per wave
+                # ═════════════════════════════════════════════════════════
                 else:
                     T.inc_max_nreg(240)
+                    # CTA-wide sync (pairs with producer's post-init sync).
                     T.sync_threads()
 
-                    for _iter in T.serial(_max_iters):
-                        T.sync_threads()
-
-                        flat_id_1 = s_tile_pair[1]
+                    for w in T.serial(_max_waves):
                         total = s_total[0]
+                        flat_id_1 = T.int32(2) * (T.int32(sm_count) * w + pid) + T.int32(1)
                         valid_1 = flat_id_1 < total
 
                         if valid_1:
-                            if group_size_m == 1:
-                                m_tile_1 = flat_id_1 // T.int32(_num_pid_n)
-                                n_tile_1 = flat_id_1 % T.int32(_num_pid_n)
-                            else:
-                                num_pid_in_group = group_size_m * _num_pid_n
-                                m_tiles_total = s_cum[num_experts]
-                                pig_1 = flat_id_1 % T.int32(num_pid_in_group)
-                                g_id_1 = flat_id_1 // T.int32(num_pid_in_group)
-                                fp_m_1 = g_id_1 * T.int32(group_size_m)
-                                agsm_1 = T.min(m_tiles_total - fp_m_1,
-                                               T.int32(group_size_m))
-                                m_tile_1 = fp_m_1 + pig_1 % agsm_1
-                                n_tile_1 = pig_1 // agsm_1
+                            m_tile_1 = flat_id_1 // T.int32(_num_pid_n)
+                            n_tile_1 = flat_id_1 % T.int32(_num_pid_n)
 
                             lo[0] = T.int32(0)
                             hi[0] = T.int32(num_experts - 1)
