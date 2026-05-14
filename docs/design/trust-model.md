@@ -47,6 +47,29 @@ Kernel (L1) + Op (L2). Developer reads manifest + ref_program for behavior; high
 - **OWNS**: TileLang kernels, op dispatch, class variable protocol
 - **MUST NOT WRITE**: workload shape definitions, correctness assertions, manifest entries
 
+PyTorch is the spec oracle, not a runtime implementation path. The Op
+layer must compute its result through TileLang kernels or closed-form
+arithmetic on tensor primitives (clone, cast, elementwise compare,
+arithmetic), never by delegating to PyTorch's higher-level operators
+(e.g. `torch.sum`, `torch.var`, `F.softmax`) at forward time.
+
+A narrowly scoped runtime fallback to PyTorch is permitted only when
+all of the following hold, and the fallback is documented at its call
+site with the blocking limitation and the issue tracking its removal:
+
+1. TileLang cannot express the operation at the required shape (the
+   kernel is undefined for the degenerate case, e.g. Welford with
+   `N == 1`), AND
+1. The closed-form replacement is not expressible with basic tensor
+   primitives, AND
+1. A non-fallback alternative would require manifest changes that are
+   out of scope.
+
+Helper conveniences (calling `x.float().mean(...)` in place of an
+elementwise expression for clarity) are not in scope of this rule;
+the rule targets full-operator delegation that hides where semantics
+are implemented.
+
 → Rules: [ops-design.md](../../.claude/domain-rules/ops-design.md) | Guide: [ops-design.md](ops-design.md)
 
 ## Benchmark

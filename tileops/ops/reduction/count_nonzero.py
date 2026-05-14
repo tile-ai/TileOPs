@@ -84,6 +84,16 @@ class CountNonzeroFwdOp(_ReduceOpBase):
         """Pad with 0, neutral for sum/count."""
         return 0.0
 
+    def _noop_output_dtype(self) -> torch.dtype:
+        """count_nonzero returns int64 per manifest contract.
+
+        Although count_nonzero's ``_empty_dim_policy`` is ``"full"`` (so the
+        empty-dim no-op short-circuit never fires), the shared scalar
+        forward in the base class consults this hook to cast the
+        ``x != 0`` predicate to the declared output dtype.
+        """
+        return torch.int64
+
     def _pre_kernel(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
         """Convert unsupported storage dtypes to float32."""
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
