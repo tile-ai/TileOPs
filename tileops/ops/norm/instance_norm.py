@@ -149,34 +149,6 @@ class InstanceNormFwdOp(Op):
             (2 * self.N * self.C * self.spatial_size + 2 * self.C) * elem_bytes,
         )
 
-    def _validate_dtypes(self, x: torch.Tensor) -> None:
-        """Validate ``x.dtype`` and ``self.dtype`` against the manifest dtype union.
-
-        Manifest declares ``x.dtype`` as ``float32 | float16 | bfloat16``
-        and the configured op dtype must be drawn from the same union and
-        match the input.
-
-        Args:
-            x: Input tensor.
-
-        Raises:
-            ValueError: If ``self.dtype`` or ``x.dtype`` is outside the
-                supported union, or ``x.dtype`` does not match ``self.dtype``.
-        """
-        allowed = (torch.float32, torch.float16, torch.bfloat16)
-        if self.dtype not in allowed:
-            raise ValueError(
-                f"self.dtype must be one of {allowed}, got {self.dtype}"
-            )
-        if x.dtype not in allowed:
-            raise ValueError(
-                f"x.dtype must be one of {allowed}, got {x.dtype}"
-            )
-        if x.dtype != self.dtype:
-            raise ValueError(
-                f"Expected x.dtype {self.dtype}, got {x.dtype}"
-            )
-
     def forward(
         self,
         x: torch.Tensor,
@@ -199,7 +171,17 @@ class InstanceNormFwdOp(Op):
             ValueError: If any tensor is not on CUDA, dtypes mismatch, or
                 shapes are incompatible with the configured dimensions.
         """
-        self._validate_dtypes(x)
+        if not isinstance(weight, torch.Tensor):
+            raise ValueError(
+                "weight is required; use InstanceNormFwdOpNoAffine for the "
+                "affine-free path"
+            )
+        if not isinstance(bias, torch.Tensor):
+            raise ValueError(
+                "bias is required; use InstanceNormFwdOpNoAffine for the "
+                "affine-free path"
+            )
+        self._validate_dtypes(x, weight, bias)
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.device != self._kernel_device:
@@ -212,25 +194,11 @@ class InstanceNormFwdOp(Op):
             raise ValueError(
                 f"Expected x shape {self._expected_shape}, got {tuple(x.shape)}"
             )
-        if not isinstance(weight, torch.Tensor):
-            raise ValueError(
-                "weight is required; use InstanceNormFwdOpNoAffine for the "
-                "affine-free path"
-            )
-        if not isinstance(bias, torch.Tensor):
-            raise ValueError(
-                "bias is required; use InstanceNormFwdOpNoAffine for the "
-                "affine-free path"
-            )
         if not weight.is_cuda:
             raise ValueError("weight must be a CUDA tensor")
         if weight.device != x.device:
             raise ValueError(
                 f"Expected weight on {x.device}, got {weight.device}"
-            )
-        if weight.dtype != self.dtype:
-            raise ValueError(
-                f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
             )
         if weight.ndim != 1 or weight.shape[0] != self.C:
             raise ValueError(
@@ -241,10 +209,6 @@ class InstanceNormFwdOp(Op):
         if bias.device != x.device:
             raise ValueError(
                 f"Expected bias on {x.device}, got {bias.device}"
-            )
-        if bias.dtype != self.dtype:
-            raise ValueError(
-                f"Expected bias.dtype {self.dtype}, got {bias.dtype}"
             )
         if bias.ndim != 1 or bias.shape[0] != self.C:
             raise ValueError(
