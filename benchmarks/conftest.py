@@ -24,8 +24,6 @@ TILELANG_019_BENCH_PATHS = {
     "benchmarks/ops/bench_gla_chunkwise.py",
     "benchmarks/ops/bench_gla_recurrence.py",
     # Attention.
-    "benchmarks/ops/attention/bench_deepseek_dsa_decode.py",
-    "benchmarks/ops/attention/bench_deepseek_mla_decode.py",
     "benchmarks/ops/attention/bench_gqa_decode.py",
     "benchmarks/ops/attention/bench_gqa_decode_paged.py",
     "benchmarks/ops/attention/bench_gqa_sliding_window.py",
