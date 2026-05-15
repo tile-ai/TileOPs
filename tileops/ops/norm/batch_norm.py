@@ -6,7 +6,7 @@ in a standard TileOPs Op interface.
 User-facing API mirrors :func:`torch.nn.functional.batch_norm`:
 
     fwd_op = BatchNormFwdOp(
-        N, C, *spatial, dtype=dtype, training=False,
+        N, C, spatial, dtype=dtype, training=False,
         momentum=0.1, eps=1e-5,
     )
     y = fwd_op(x, running_mean, running_var, weight, bias)
@@ -104,18 +104,19 @@ class BatchNormFwdOp(Op):
         self,
         N: int,
         C: int,
-        *spatial: int,
+        spatial: Tuple[int, ...] = (),
         dtype: torch.dtype = torch.float16,
         training: bool = False,
         momentum: float = 0.1,
         eps: float = 1e-5,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
         self.N = N
         self.C = C
-        self.spatial = spatial
-        self.L = N * math.prod(spatial) if spatial else N
+        self.spatial = tuple(spatial)
+        self.L = N * math.prod(self.spatial) if self.spatial else N
         self.dtype = dtype
         self.training = training
         self.eps = eps

@@ -18,7 +18,7 @@ ReluFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false, kw_only: true}
+      inplace: {type: bool, default: false}
     shape_rules:
     - "output.shape == input.shape"
 
@@ -91,7 +91,7 @@ SiluFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false, kw_only: true}
+      inplace: {type: bool, default: false}
     shape_rules:
     - "output.shape == input.shape"
 
@@ -126,7 +126,7 @@ HardswishFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false, kw_only: true}
+      inplace: {type: bool, default: false}
     shape_rules:
     - "output.shape == input.shape"
 
@@ -161,7 +161,7 @@ HardsigmoidFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false, kw_only: true}
+      inplace: {type: bool, default: false}
     shape_rules:
     - "output.shape == input.shape"
 
@@ -196,7 +196,7 @@ MishFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false, kw_only: true}
+      inplace: {type: bool, default: false}
     shape_rules:
     - "output.shape == input.shape"
 
@@ -231,7 +231,7 @@ SeluFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      inplace: {type: bool, default: false, kw_only: true}
+      inplace: {type: bool, default: false}
     shape_rules:
     - "output.shape == input.shape"
 
@@ -267,7 +267,7 @@ LeakyReluFwdOp:
       output: {dtype: "same_as(input)"}
     params:
       negative_slope: {type: float, default: 0.01}
-      inplace: {type: bool, default: false, kw_only: true}
+      inplace: {type: bool, default: false}
     shape_rules:
     - "output.shape == input.shape"
 
@@ -303,7 +303,7 @@ EluFwdOp:
       output: {dtype: "same_as(input)"}
     params:
       alpha: {type: float, default: 1.0}
-      inplace: {type: bool, default: false, kw_only: true}
+      inplace: {type: bool, default: false}
     shape_rules:
     - "output.shape == input.shape"
 
@@ -340,7 +340,7 @@ HardtanhFwdOp:
     params:
       min_val: {type: float, default: -1.0}
       max_val: {type: float, default: 1.0}
-      inplace: {type: bool, default: false, kw_only: true}
+      inplace: {type: bool, default: false}
     shape_rules:
     - "min_val <= max_val"
     - "output.shape == input.shape"

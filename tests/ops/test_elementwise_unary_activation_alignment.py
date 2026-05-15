@@ -192,58 +192,58 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
 # downstream code (tests, benches, codegen) relies on them.
 _FROZEN_UNARY_ACTIVATION_SIGNATURES = {
     "ReluFwdOp": (
-        "(self, N_total: int, dtype: torch.dtype, *, "
+        "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
         "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
-        "tune: bool = False, inplace: bool = False)"
+        "tune: bool = False)"
     ),
     "SiluFwdOp": (
-        "(self, N_total: int, dtype: torch.dtype, *, "
+        "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
         "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
-        "tune: bool = False, inplace: bool = False)"
+        "tune: bool = False)"
     ),
     "HardswishFwdOp": (
-        "(self, N_total: int, dtype: torch.dtype, *, "
+        "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
         "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
-        "tune: bool = False, inplace: bool = False)"
+        "tune: bool = False)"
     ),
     "HardsigmoidFwdOp": (
-        "(self, N_total: int, dtype: torch.dtype, *, "
+        "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
         "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
-        "tune: bool = False, inplace: bool = False)"
+        "tune: bool = False)"
     ),
     "MishFwdOp": (
-        "(self, N_total: int, dtype: torch.dtype, *, "
+        "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
         "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
-        "tune: bool = False, inplace: bool = False)"
+        "tune: bool = False)"
     ),
     "SeluFwdOp": (
-        "(self, N_total: int, dtype: torch.dtype, *, "
+        "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
         "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
-        "tune: bool = False, inplace: bool = False)"
+        "tune: bool = False)"
     ),
     "LeakyReluFwdOp": (
         "(self, N_total: int, dtype: torch.dtype, "
-        "negative_slope: float = 0.01, *, "
+        "negative_slope: float = 0.01, inplace: bool = False, *, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
-        "tune: bool = False, inplace: bool = False)"
+        "tune: bool = False)"
     ),
     "EluFwdOp": (
         "(self, N_total: int, dtype: torch.dtype, "
-        "alpha: float = 1.0, *, "
+        "alpha: float = 1.0, inplace: bool = False, *, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
-        "tune: bool = False, inplace: bool = False)"
+        "tune: bool = False)"
     ),
     "HardtanhFwdOp": (
         "(self, N_total: int, dtype: torch.dtype, "
-        "min_val: float = -1.0, max_val: float = 1.0, *, "
+        "min_val: float = -1.0, max_val: float = 1.0, inplace: bool = False, *, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
-        "tune: bool = False, inplace: bool = False)"
+        "tune: bool = False)"
     ),
     "SoftplusFwdOp": (
         "(self, N_total: int, dtype: torch.dtype, "

@@ -47,10 +47,10 @@ class CumulativeOp(Op):
 
     def __init__(
         self,
-        *,
         N: int,
         dtype: torch.dtype,
         dim: int = -1,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:

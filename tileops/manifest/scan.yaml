@@ -15,7 +15,7 @@ CumsumFwdOp:
     outputs:
       y: {dtype: "same_as(x)"}
     params:
-      dim: {type: int, default: -1, kw_only: true}
+      dim: {type: int, default: -1}
     static_dims:
       N: "x.shape[dim]"
     shape_rules:
@@ -56,7 +56,7 @@ CumprodFwdOp:
     outputs:
       y: {dtype: "same_as(x)"}
     params:
-      dim: {type: int, default: -1, kw_only: true}
+      dim: {type: int, default: -1}
     static_dims:
       N: "x.shape[dim]"
     shape_rules:

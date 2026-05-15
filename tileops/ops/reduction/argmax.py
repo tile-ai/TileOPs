@@ -41,10 +41,10 @@ class ArgmaxFwdOp(_ReduceOpBase):
 
     def __init__(
         self,
-        *,
         dtype: torch.dtype,
         dim: Optional[int] = None,
         keepdim: bool = False,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):

@@ -48,11 +48,11 @@ class L2NormFwdOp(_ReduceOpBase):
 
     def __init__(
         self,
-        *,
         dtype: torch.dtype,
+        ord: Union[int, float] = 2,
         dim: Union[int, List[int], None] = None,
         keepdim: bool = False,
-        ord: Union[int, float] = 2,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
