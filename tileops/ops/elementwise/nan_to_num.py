@@ -71,6 +71,11 @@ class NanToNumFwdOp(Op):
         self.nan = nan
         self.posinf = posinf
         self.neginf = neginf
+        # Manifest input binding for the synthesized eval_roofline
+        # (docs/design/roofline.md §4.4.3): the resolver locates the
+        # input as ``self.input_shape`` since this op stores only the
+        # flat element count, not the original-rank tensor.
+        self.input_shape = (N_total,)
         self.dispatch_kernel(kernel_map)
         # Pass replacement values positionally; the kernel constructor's
         # internal parameter naming is encapsulated below the Op layer.
