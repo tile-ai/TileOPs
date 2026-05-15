@@ -62,6 +62,7 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
     # Conformance flags: things expected for implemented ops but missing.
     missing_kernel_map: list[str] = []
     missing_roofline: list[str] = []
+    missing_bench: list[str] = []
     workloads_below_two: list[str] = []
     spec_only: list[str] = []
 
@@ -93,6 +94,8 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
                 missing_kernel_map.append(name)
             if not _has_roofline(op):
                 missing_roofline.append(name)
+            if not _has_bench_manifest_driven(op):
+                missing_bench.append(name)
             if len(wls) < 2:
                 workloads_below_two.append(name)
         elif status == "spec-only":
@@ -139,6 +142,7 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
         "conformance_gaps": {
             "implemented_without_kernel_map": sorted(missing_kernel_map),
             "implemented_without_roofline": sorted(missing_roofline),
+            "implemented_without_bench_manifest_driven": sorted(missing_bench),
             "implemented_with_fewer_than_two_workloads": sorted(workloads_below_two),
             "spec_only_ops": sorted(spec_only),
         },
@@ -209,6 +213,10 @@ def render_text(stats: dict[str, Any]) -> str:
         f"{len(gaps['implemented_without_roofline'])}"
     )
     lines.append(
+        f"  implemented without bench:      "
+        f"{len(gaps['implemented_without_bench_manifest_driven'])}"
+    )
+    lines.append(
         f"  implemented with <2 workloads:  "
         f"{len(gaps['implemented_with_fewer_than_two_workloads'])}"
     )
@@ -276,6 +284,10 @@ def render_markdown(stats: dict[str, Any]) -> str:
         f"**{len(gaps['implemented_without_roofline'])}**"
     )
     lines.append(
+        f"- Implemented ops without `source.bench_manifest_driven`: "
+        f"**{len(gaps['implemented_without_bench_manifest_driven'])}**"
+    )
+    lines.append(
         f"- Implemented ops with fewer than two workloads: "
         f"**{len(gaps['implemented_with_fewer_than_two_workloads'])}**"
     )
@@ -313,11 +325,11 @@ def render_badges(stats: dict[str, Any]) -> dict[str, dict[str, Any]]:
     impl = stats["by_status"].get("implemented", 0)
     pct_impl = (impl / total * 100) if total else 0.0
 
-    missing_km = len(
-        stats["conformance_gaps"]["implemented_without_kernel_map"]
+    missing_bench = len(
+        stats["conformance_gaps"]["implemented_without_bench_manifest_driven"]
     )
-    impl_with_km = impl - missing_km
-    pct_km = (impl_with_km / impl * 100) if impl else 0.0
+    impl_benched = impl - missing_bench
+    pct_bench = (impl_benched / impl * 100) if impl else 0.0
 
     def _color(pct: float) -> str:
         if pct >= 90:
@@ -333,15 +345,15 @@ def render_badges(stats: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         "implemented": {
             "schemaVersion": 1,
-            "label": "implemented",
+            "label": "spec coverage",
             "message": f"{impl}/{total} ({pct_impl:.0f}%)",
             "color": _color(pct_impl),
         },
-        "kernel_map": {
+        "benchmark": {
             "schemaVersion": 1,
-            "label": "kernel_map coverage",
-            "message": f"{impl_with_km}/{impl} ({pct_km:.0f}%)",
-            "color": _color(pct_km),
+            "label": "bench coverage",
+            "message": f"{impl_benched}/{impl} ({pct_bench:.0f}%)",
+            "color": _color(pct_bench),
         },
     }
 
