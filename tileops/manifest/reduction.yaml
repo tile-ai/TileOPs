@@ -19,7 +19,7 @@ SoftmaxFwdOp:
       # dtype, equivalent to x.to(dtype) before softmax). The current manifest
       # DSL cannot express "y.dtype = dtype if dtype is not None else x.dtype",
       # so dtype is omitted here; tracked as BLOCKED on missing-manifest-capability.
-      dim: {type: "int | None", default: null}
+      dim: {type: "int | None", default: null, kw_only: true}
     shape_rules:
       - "dim is None or -x.ndim <= dim < x.ndim"
       - "output.shape == x.shape"
@@ -68,7 +68,7 @@ LogSoftmaxFwdOp:
       # manifest DSL cannot express "y.dtype = dtype if dtype is not None
       # else x.dtype", so dtype is omitted here; tracked as BLOCKED on
       # missing-manifest-capability.
-      dim: {type: "int | None", default: null}
+      dim: {type: "int | None", default: null, kw_only: true}
     shape_rules:
       - "dim is None or -x.ndim <= dim < x.ndim"
       - "output.shape == x.shape"
@@ -115,8 +115,8 @@ LogSumExpFwdOp:
     outputs:
       output: {dtype: "same_as(x)"}
     params:
-      dim: {type: "int | list[int] | tuple[int, ...]", default: -1}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | list[int] | tuple[int, ...]", default: -1, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
       - "isinstance(dim, int) or len(dim) > 0"
@@ -171,8 +171,8 @@ SumFwdOp:
       # dtype). The current manifest dtype DSL cannot express
       # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
       # omitted here; tracked as BLOCKED on missing-manifest-capability.
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
       - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
@@ -223,8 +223,8 @@ MeanFwdOp:
       # dtype). The current manifest dtype DSL cannot express
       # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
       # omitted here; tracked as BLOCKED on missing-manifest-capability.
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
       - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
@@ -267,8 +267,8 @@ AmaxFwdOp:
     outputs:
       output: {dtype: "same_as(x)"}
     params:
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
       - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
@@ -311,8 +311,8 @@ AminFwdOp:
     outputs:
       output: {dtype: "same_as(x)"}
     params:
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
       - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
@@ -365,8 +365,8 @@ ProdFwdOp:
       # dtype). The current manifest dtype DSL cannot express
       # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
       # omitted here; tracked as BLOCKED on missing-manifest-capability.
-      dim: {type: int, default: -1}
-      keepdim: {type: bool, default: false}
+      dim: {type: int, default: -1, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "-x.ndim <= dim < x.ndim"
       - "output.ndim == (x.ndim if keepdim else x.ndim - 1)"
@@ -412,9 +412,9 @@ VarFwdOp:
     outputs:
       output: {dtype: "same_as(x)"}
     params:
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      correction: {type: int, default: 1}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      correction: {type: int, default: 1, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
       - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
@@ -457,9 +457,9 @@ StdFwdOp:
     outputs:
       output: {dtype: "same_as(x)"}
     params:
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      correction: {type: int, default: 1}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      correction: {type: int, default: 1, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
       - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
@@ -503,9 +503,9 @@ VarMeanFwdOp:
       var: {dtype: "same_as(x)"}
       mean: {dtype: "same_as(x)"}
     params:
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      correction: {type: int, default: 1}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      correction: {type: int, default: 1, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
       - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
@@ -554,8 +554,8 @@ ArgmaxFwdOp:
     outputs:
       output: {dtype: "int64"}
     params:
-      dim: {type: "int | None", default: null}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | None", default: null, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "dim is None or -x.ndim <= dim < x.ndim"
       - "output.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
@@ -597,8 +597,8 @@ ArgminFwdOp:
     outputs:
       output: {dtype: "int64"}
     params:
-      dim: {type: "int | None", default: null}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | None", default: null, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "dim is None or -x.ndim <= dim < x.ndim"
       - "output.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
@@ -644,8 +644,8 @@ AllFwdOp:
     outputs:
       output: {dtype: "bool"}
     params:
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     # PyTorch: torch.all(x, dim=()) / dim=[] is a no-op (returns x.shape),
     # unlike sum/mean/amax. Only dim=None triggers full reduction; empty
     # list/tuple yields an empty reduction set.
@@ -690,8 +690,8 @@ AnyFwdOp:
     outputs:
       output: {dtype: "bool"}
     params:
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      keepdim: {type: bool, default: false}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     # PyTorch: torch.any(x, dim=()) / dim=[] is a no-op (returns x.shape),
     # unlike sum/mean/amax. Only dim=None triggers full reduction; empty
     # list/tuple yields an empty reduction set.
@@ -736,7 +736,7 @@ CountNonzeroFwdOp:
     outputs:
       output: {dtype: "int64"}
     params:
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
     shape_rules:
       - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
       - "output.ndim == x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
@@ -786,9 +786,9 @@ L1NormFwdOp:
       # x.to(dtype) before reduction; returns the requested dtype). The
       # current manifest dtype DSL cannot express that conditional, so dtype
       # is omitted here; tracked as BLOCKED on missing-manifest-capability.
-      ord: {type: "int | float", default: 1}
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      keepdim: {type: bool, default: false}
+      ord: {type: "int | float", default: 1, kw_only: true}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "ord == 1"
       - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
@@ -836,9 +836,9 @@ L2NormFwdOp:
       # x.to(dtype) before reduction; returns the requested dtype). The
       # current manifest dtype DSL cannot express that conditional, so dtype
       # is omitted here; tracked as BLOCKED on missing-manifest-capability.
-      ord: {type: "int | float", default: 2}
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      keepdim: {type: bool, default: false}
+      ord: {type: "int | float", default: 2, kw_only: true}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "ord == 2"
       - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
@@ -886,9 +886,9 @@ InfNormFwdOp:
       # x.to(dtype) before reduction; returns the requested dtype). The
       # current manifest dtype DSL cannot express that conditional, so dtype
       # is omitted here; tracked as BLOCKED on missing-manifest-capability.
-      ord: {type: "int | float", default: .inf}
-      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      keepdim: {type: bool, default: false}
+      ord: {type: "int | float", default: .inf, kw_only: true}
+      dim: {type: "int | list[int] | tuple[int, ...] | None", default: null, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
     shape_rules:
       - "ord == float('inf')"
       - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"

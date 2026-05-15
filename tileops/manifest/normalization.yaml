@@ -315,9 +315,9 @@ BatchNormFwdOp:
     outputs:
       output: {dtype: "same_as(x)"}
     params:
-      training: {type: bool, default: false}
-      momentum: {type: float, default: 0.1}
-      eps: {type: float, default: 1.0e-5}
+      training: {type: bool, default: false, kw_only: true}
+      momentum: {type: float, default: 0.1, kw_only: true}
+      eps: {type: float, default: 1.0e-5, kw_only: true}
     static_dims:
       C: "x.shape[1]"
     shape_rules:
