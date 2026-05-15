@@ -136,7 +136,8 @@ class GroupedGemmPersistent3WGKernel(Kernel):
             raise ValueError(f"K-aligned only: K={self.K}, block_k={block_k}")
         if self.N % block_n != 0:
             raise ValueError(f"N-aligned only: N={self.N}, block_n={block_n}")
-        A = F.pad(A, (0, 0, 0, block_m))
+        if A.shape[0] < self.numel + block_m:
+            A = F.pad(A, (0, 0, 0, block_m))
         gemm_fn = _persistent_grouped_gemm_v2_kernel(
             self.numel, self.num_experts, self.N, self.K,
             self.dtype_str, self.sm_count, block_k,
