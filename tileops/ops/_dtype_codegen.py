@@ -72,16 +72,20 @@ def _parse_dtype_combos(
 ) -> list[dict[str, torch.dtype]] | None:
     """Validate and normalize ``signature.dtype_combos`` rows.
 
-    Each row is a mapping ``{input_name: dtype_token}`` listing the
-    concrete dtype for combo-axis inputs. Rows MUST NOT reference inputs
-    declared via ``same_as(ref)`` (per manifest R6: such inputs do not
-    contribute an independent axis to the combo space).
+    Each row is a mapping ``{input_name: dtype_token}`` where each value
+    is either a concrete torch dtype token (``"float16"``) or a
+    ``same_as(ref)`` expression naming another input in the same row.
+    ``same_as`` tokens are resolved against their sibling within the row
+    before tuple comparison (manifest.md R4/R6; see
+    ``scripts/validate_manifest.py``'s ``check_l3_dtype_combos_data``).
 
     Returns:
         A list of normalized rows, or ``None`` when *combos* is absent.
 
     Raises:
-        ValueError: when an entry is malformed or names an unknown input.
+        ValueError: when an entry is malformed, names an unknown input,
+            or contains a ``same_as`` reference that cannot be resolved
+            within the row (dangling sibling, cycle, or union expression).
     """
     if combos is None:
         return None
@@ -97,7 +101,8 @@ def _parse_dtype_combos(
                 f"{op_name}: signature.dtype_combos[{idx}] must be a "
                 f"non-empty mapping"
             )
-        norm: dict[str, torch.dtype] = {}
+        # First pass: type-check entries and capture raw tokens.
+        raw: dict[str, str] = {}
         for name, tok in row.items():
             if name not in input_names:
                 raise ValueError(
@@ -109,18 +114,49 @@ def _parse_dtype_combos(
                     f"{op_name}: signature.dtype_combos[{idx}][{name!r}] "
                     f"must be a string dtype token"
                 )
-            if _SAME_AS_RE.match(tok.strip()):
+            tok_stripped = tok.strip()
+            if "|" in tok_stripped:
                 raise ValueError(
                     f"{op_name}: signature.dtype_combos[{idx}][{name!r}] "
-                    f"may not use same_as(...); list concrete dtypes only"
+                    f"= {tok!r} — combo values must be a single concrete "
+                    f"dtype, not a union"
                 )
-            dt = getattr(torch, tok.strip(), None)
-            if not isinstance(dt, torch.dtype):
-                raise ValueError(
-                    f"{op_name}: signature.dtype_combos[{idx}][{name!r}] "
-                    f"unknown dtype token {tok!r}"
-                )
-            norm[name] = dt
+            raw[name] = tok_stripped
+        # Second pass: resolve same_as references to siblings in the row.
+        norm: dict[str, torch.dtype] = {}
+        # Iterative resolution: a same_as may chain through several
+        # siblings before reaching a concrete dtype. Bail on cycles.
+        for name in raw:
+            seen: list[str] = []
+            cur = name
+            while True:
+                if cur in seen:
+                    chain = " -> ".join(seen + [cur])
+                    raise ValueError(
+                        f"{op_name}: signature.dtype_combos[{idx}] has "
+                        f"a same_as cycle ({chain})"
+                    )
+                seen.append(cur)
+                tok = raw[cur]
+                m = _SAME_AS_RE.match(tok)
+                if not m:
+                    dt = getattr(torch, tok, None)
+                    if not isinstance(dt, torch.dtype):
+                        raise ValueError(
+                            f"{op_name}: signature.dtype_combos[{idx}]"
+                            f"[{cur!r}] unknown dtype token {tok!r}"
+                        )
+                    norm[name] = dt
+                    break
+                ref = m.group(1)
+                if ref not in raw:
+                    raise ValueError(
+                        f"{op_name}: signature.dtype_combos[{idx}]"
+                        f"[{cur!r}] = {tok!r} references sibling "
+                        f"{ref!r} which is not present in the same "
+                        f"combo row"
+                    )
+                cur = ref
         normalized.append(norm)
     return normalized
 

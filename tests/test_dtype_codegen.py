@@ -233,7 +233,9 @@ class TestSynthesizeDtypeCombos:
                weight=torch.empty(0, dtype=torch.float16),
                bias=torch.empty(0, dtype=torch.bfloat16))
 
-    def test_rejects_same_as_token_inside_combo_row(self):
+    def test_same_as_token_inside_combo_row_resolved(self):
+        """``same_as(ref)`` inside a combo row resolves to the sibling's
+        concrete dtype before tuple comparison (validator R4/R6)."""
         sig = {
             "inputs": {
                 "x": {"dtype": "float16 | bfloat16"},
@@ -241,10 +243,49 @@ class TestSynthesizeDtypeCombos:
             },
             "dtype_combos": [
                 {"x": "float16", "weight": "same_as(x)"},
+                {"x": "bfloat16", "weight": "same_as(x)"},
             ],
         }
-        with pytest.raises(ValueError, match="same_as"):
-            synthesize_validate_dtypes("BadOp", sig)
+        fn = synthesize_validate_dtypes("SameAsComboOp", sig)
+        m = self._mock()
+        fn(m,
+           x=torch.empty(0, dtype=torch.float16),
+           weight=torch.empty(0, dtype=torch.float16))
+        fn(m,
+           x=torch.empty(0, dtype=torch.bfloat16),
+           weight=torch.empty(0, dtype=torch.bfloat16))
+        # Mismatched pair is rejected because the resolved combo is
+        # (float16, float16) or (bfloat16, bfloat16), not the mix.
+        with pytest.raises(ValueError, match="dtype_combos"):
+            fn(m,
+               x=torch.empty(0, dtype=torch.float16),
+               weight=torch.empty(0, dtype=torch.bfloat16))
+
+    def test_rejects_same_as_cycle_in_combo_row(self):
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+                "y": {"dtype": "float16 | bfloat16"},
+            },
+            "dtype_combos": [
+                {"x": "same_as(y)", "y": "same_as(x)"},
+            ],
+        }
+        with pytest.raises(ValueError, match="cycle"):
+            synthesize_validate_dtypes("CycleOp", sig)
+
+    def test_rejects_same_as_dangling_sibling_in_combo_row(self):
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+                "weight": {"dtype": "float16 | bfloat16"},
+            },
+            "dtype_combos": [
+                {"x": "float16", "weight": "same_as(missing)"},
+            ],
+        }
+        with pytest.raises(ValueError, match="not present in the same"):
+            synthesize_validate_dtypes("DanglingOp", sig)
 
     def test_rejects_unknown_input_in_combo_row(self):
         sig = {
