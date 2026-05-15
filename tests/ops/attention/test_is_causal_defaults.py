@@ -8,6 +8,10 @@ import pytest
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionFwdOp,
+    GroupedQueryAttentionPrefillFwdOp,
+    GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
+    GroupedQueryAttentionPrefillVarlenFwdOp,
+    GroupedQueryAttentionPrefillWithKVCacheFwdOp,
     GroupedQueryAttentionSlidingWindowFwdOp,
     GroupedQueryAttentionSlidingWindowVarlenFwdOp,
     MultiHeadAttentionBwdOp,
@@ -24,6 +28,13 @@ from tileops.ops import (
         pytest.param(GroupedQueryAttentionBwdOp, marks=pytest.mark.smoke),
         pytest.param(GroupedQueryAttentionSlidingWindowFwdOp, marks=pytest.mark.smoke),
         pytest.param(GroupedQueryAttentionSlidingWindowVarlenFwdOp, marks=pytest.mark.smoke),
+        pytest.param(GroupedQueryAttentionPrefillFwdOp, marks=pytest.mark.smoke),
+        pytest.param(GroupedQueryAttentionPrefillVarlenFwdOp, marks=pytest.mark.smoke),
+        pytest.param(GroupedQueryAttentionPrefillWithKVCacheFwdOp, marks=pytest.mark.smoke),
+        pytest.param(
+            GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
+            marks=pytest.mark.smoke,
+        ),
     ],
 )
 def test_is_causal_default_true_on_init(op_cls):
