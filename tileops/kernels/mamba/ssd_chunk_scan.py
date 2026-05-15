@@ -174,8 +174,7 @@ def _ssd_chunk_scan_fwd_kernel(
                     # hist_acc += c_tile @ state_tile
                     T.gemm(c_tile, state_tile, hist_acc)
 
-                # Precompute exp(dA_l[ll]) once per l-tile.
-                # Used both to scale hist_acc and in Part 2 inner loop.
+                # Precompute exp(dA_l[ll]) once per l-tile for history path scaling.
                 exp_dA_l = T.alloc_shared((block_l,), accum_dtype)
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
@@ -198,9 +197,17 @@ def _ssd_chunk_scan_fwd_kernel(
                 #   acc[l,p] += sum_{s<=l} cb[c,g,l,s]
                 #               * exp(dA_l[l] - dA_s[s]) * dt[h,c,s] * x[s,h,p]
                 #
-                # exp(dA_l[l] - dA_s[s]) = exp_dA_l[l] * exp(-dA_s[s])
-                # Factoring reduces MUFU from block_l*block_s to block_l+block_s
-                # per s-block (32x reduction at default block_l=block_s=64).
+                # Anchor-shifted factored form:
+                #   exp(dA_l - dA_s) = exp(dA_l - anchor) * exp(anchor - dA_s)
+                # where anchor = dA_cumsum[bz, bh, bc, s0] (the first, i.e. largest,
+                # value in the s-block, since dA_cumsum is non-increasing).
+                #
+                # This preserves the relative difference exactly:
+                #   (dA_l - anchor) >= 0  for any causal l >= s0, bounded by chunk_len * dt
+                #   (anchor - dA_s)  >= 0  by monotonicity, bounded within [0, block_s * dt_max]
+                # Neither term overflows or underflows independently, so the product
+                # always equals exp(dA_l - dA_s) without a clamp.
+                # MUFU count: block_l + block_s per s-block (same as the old factored form).
                 #
                 # s-blocks are split into two paths:
                 #   full-lower  (s0 + block_s <= l0): causal mask always true,
@@ -210,16 +217,11 @@ def _ssd_chunk_scan_fwd_kernel(
                 # =====================================================
                 cb_tile    = T.alloc_shared((block_l, block_s), dtype)
                 x_tile     = T.alloc_shared((block_s, block_p), dtype)
-                # decay_dt_s[ss] = exp(-dA_s[ss]) * dt[ss]
-                # Merging the two scalars into one saves one shared buffer and
-                # one multiply per (ll, ss) element in the lcb_cast loop.
-                # exp(-dA_s) is clamped to prevent overflow: dA_cumsum is a
-                # cumsum of negatives, so for any valid causal pair (l >= s)
-                # exp_dA_l[l] * exp(-dA_s[s]) == exp(dA_l - dA_s) <= 1.
-                # However exp_dA_l can underflow to 0 while exp(-dA_s) overflows
-                # to inf, yielding NaN. Clamping -dA_s to ≤88 keeps exp(-dA_s)
-                # finite; the product is still 0 because exp_dA_l underflowed.
-                decay_dt_s = T.alloc_shared((block_s,), accum_dtype)
+                # exp_neg_dA_s_shifted[ss] = exp(anchor - dA_s[ss]) * dt[ss]
+                # Combined into one scalar per ss to save one multiply per (ll,ss).
+                exp_neg_dA_s_shifted = T.alloc_shared((block_s,), accum_dtype)
+                # Per-l scale: exp(dA_l - anchor), refreshed each s-block.
+                exp_dA_l_shifted = T.alloc_shared((block_l,), accum_dtype)
                 lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
 
                 # Only iterate over s-blocks that have at least one s <= l_max.
@@ -246,22 +248,41 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # Precompute decay_dt_s[ss] = exp(-dA_s[ss]) * dt[ss].
-                    # One MUFU (exp) + one multiply per ss, amortised across
-                    # all block_l rows of the lcb_cast loop below.
+                    # anchor = dA_cumsum at the start of this s-block (largest value
+                    # in the block since dA_cumsum is non-increasing).
+                    anchor = T.if_then_else(
+                        s0 < Q,
+                        dA_cumsum[bz, bh, bc, s0],
+                        T.float32(0.0),
+                    )
+
+                    # exp_neg_dA_s_shifted[ss] = exp(anchor - dA_s[ss]) * dt[ss]
+                    # anchor - dA_s[ss] >= 0 by monotonicity, so no overflow.
                     for ss in T.Parallel(block_s):
                         s_abs = s0 + ss
                         dA_val = T.if_then_else(
                             s_abs < Q,
                             dA_cumsum[bz, bh, bc, s_abs],
-                            T.float32(0.0),
+                            anchor,
                         )
                         dt_val = T.if_then_else(
                             s_abs < Q,
                             T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
                             T.float32(0.0),
                         )
-                        decay_dt_s[ss] = T.exp(T.min(-dA_val, T.float32(88.0))) * dt_val
+                        exp_neg_dA_s_shifted[ss] = T.exp(anchor - dA_val) * dt_val
+
+                    # exp_dA_l_shifted[ll] = exp(dA_l[ll] - anchor)
+                    # dA_l[ll] - anchor can be positive (l >= s0) or negative (l < s0
+                    # in the diagonal block); both cases are finite.
+                    for ll in T.Parallel(block_l):
+                        l_abs = l0 + ll
+                        dA_l_val = T.if_then_else(
+                            l_abs < Q,
+                            dA_cumsum[bz, bh, bc, l_abs],
+                            T.float32(0.0),
+                        )
+                        exp_dA_l_shifted[ll] = T.exp(dA_l_val - anchor)
                     T.sync_threads()
 
                     # full-lower path: s0 + block_s <= l0 means every (ll,ss) has
@@ -270,8 +291,8 @@ def _ssd_chunk_scan_fwd_kernel(
                         for ll, ss in T.Parallel(block_l, block_s):
                             lcb_cast[ll, ss] = T.cast(
                                 T.cast(cb_tile[ll, ss], accum_dtype)
-                                * exp_dA_l[ll]
-                                * decay_dt_s[ss],
+                                * exp_dA_l_shifted[ll]
+                                * exp_neg_dA_s_shifted[ss],
                                 dtype,
                             )
                     else:
@@ -284,8 +305,8 @@ def _ssd_chunk_scan_fwd_kernel(
                                 valid,
                                 T.cast(
                                     T.cast(cb_tile[ll, ss], accum_dtype)
-                                    * exp_dA_l[ll]
-                                    * decay_dt_s[ss],
+                                    * exp_dA_l_shifted[ll]
+                                    * exp_neg_dA_s_shifted[ss],
                                     dtype,
                                 ),
                                 T.cast(T.float32(0.0), dtype),
