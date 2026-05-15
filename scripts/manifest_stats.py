@@ -51,6 +51,7 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
     per_family: dict[str, Counter[str]] = defaultdict(Counter)
     workloads_per_op: dict[str, int] = {}
     families_workloads: dict[str, int] = defaultdict(int)
+    workloads_impl_total = 0
 
     roofline_ok = 0
     kernel_map_ok = 0
@@ -73,6 +74,8 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
         wls = op.get("workloads") or []
         workloads_per_op[name] = len(wls)
         families_workloads[family] += len(wls)
+        if status == "implemented":
+            workloads_impl_total += len(wls)
 
         if _has_roofline(op):
             roofline_ok += 1
@@ -122,8 +125,9 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
         "pct_implemented": (implemented_total / total) if total else 0.0,
         "families": family_rows,
         "workloads_total": workloads_total,
+        "workloads_implemented_total": workloads_impl_total,
         "workloads_avg_per_implemented": (
-            workloads_total / implemented_total if implemented_total else 0.0
+            workloads_impl_total / implemented_total if implemented_total else 0.0
         ),
         "coverage": {
             "ref_api": ref_api_ok,
