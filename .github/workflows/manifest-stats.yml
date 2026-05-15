@@ -15,9 +15,14 @@ on:
     - cron: "17 6 * * *"
   workflow_dispatch:
 
-# Serialize publishes so a slower run can never overwrite newer stats.
+# All publish-capable events (push, schedule, workflow_dispatch) share a
+# single mutex so a slower scheduled run can never overwrite a newer push.
+# PRs are isolated per number.
 concurrency:
-  group: manifest-stats-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('manifest-stats-pr-{0}', github.event.pull_request.number)
+        || 'manifest-stats-publish' }}
   cancel-in-progress: false
 
 jobs:
@@ -96,7 +101,7 @@ jobs:
   pr-comment:
     name: Sticky PR comment
     needs: report
-    if: github.event_name == 'pull_request' && needs.report.outputs.diff_nonzero == 'true'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Download stats artifact
