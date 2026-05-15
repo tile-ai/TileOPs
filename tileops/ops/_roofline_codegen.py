@@ -272,8 +272,10 @@ def maybe_install_eval_roofline(cls: type) -> None:
     Conditions for installation:
 
     - Resolved status is ``"implemented"``.
-    - The class did not already define ``eval_roofline`` in its own
-      ``__dict__`` (manual overrides are honored verbatim).
+    - No class in ``cls.__mro__`` other than the L1 ``Op`` base supplies
+      its own ``eval_roofline`` (direct overrides on ``cls`` and inherited
+      overrides on intermediate base classes such as ``UnaryOp`` are both
+      honored verbatim).
     - The manifest roofline block parses successfully under
       ``synthesize_eval_roofline``.
 
@@ -281,8 +283,15 @@ def maybe_install_eval_roofline(cls: type) -> None:
     leaves the base stub in place rather than blocking class
     construction; the validator catches the resulting C7 error.
     """
-    if "eval_roofline" in cls.__dict__:
-        return
+    from tileops.ops.op_base import Op
+
+    for base in cls.__mro__:
+        if base is Op:
+            break
+        if "eval_roofline" in base.__dict__:
+            # Manual override on cls or an intermediate base (e.g. UnaryOp,
+            # SoftmaxBase) — preserve it.
+            return
 
     roofline = getattr(cls, "__manifest_roofline__", None)
     sig = getattr(cls, "__manifest_signature__", None)

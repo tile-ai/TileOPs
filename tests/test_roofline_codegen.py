@@ -185,6 +185,58 @@ class TestAutoInstallHook:
         )
         assert Cls.eval_roofline is manual
 
+    def test_inherited_override_not_clobbered(self):
+        """An intermediate base class (e.g. UnaryOp) supplying its own
+        ``eval_roofline`` must be honored — codegen must not synthesize
+        a body on the leaf subclass and shadow the inherited working
+        implementation."""
+        def base_impl(self):
+            return (123, 456)
+
+        class IntermediateBase(Op):
+            default_kernel_map = property(lambda self: {})
+
+            def forward(self, *a, **kw):
+                return None
+
+            eval_roofline = base_impl
+
+        Leaf = type(
+            "LeafInheritsRoofline",
+            (IntermediateBase,),
+            {
+                "__manifest_signature__": {"inputs": {}},
+                "__manifest_roofline__": {"flops": "1", "bytes": "1"},
+                "__manifest_status__": "implemented",
+            },
+        )
+        # Codegen must not overwrite the inherited implementation.
+        assert Leaf.eval_roofline is base_impl
+        # And it must still be callable end-to-end.
+        assert Leaf().eval_roofline() == (123, 456)
+
+    def test_relu_fwd_op_uses_unary_base_roofline(self):
+        """Regression: ``ReluFwdOp`` inherits ``UnaryOp.eval_roofline``;
+        codegen must not replace it with a synthesized body that depends
+        on attributes the leaf class never sets (e.g. an input tensor
+        ``shape``)."""
+        import torch
+
+        from tileops.ops.elementwise import ReluFwdOp
+        from tileops.ops.elementwise._base import UnaryOp
+
+        # The class-level method must still be the UnaryOp implementation.
+        assert ReluFwdOp.eval_roofline is UnaryOp.eval_roofline
+
+        # And a constructed instance must produce sensible (flops, bytes).
+        op = ReluFwdOp.__new__(ReluFwdOp)
+        op.dtype = torch.float16
+        op.output_dtype = torch.float16
+        op.N_total = 32
+        flops, total_bytes = op.eval_roofline()
+        assert flops > 0
+        assert total_bytes > 0
+
     def test_no_manifest_metadata_leaves_stub(self):
         class NoMetaOp(Op):
             @property
