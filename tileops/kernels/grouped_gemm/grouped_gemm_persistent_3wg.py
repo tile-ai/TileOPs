@@ -87,26 +87,27 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         print(f"Start autotuning {self.__class__.__name__}...")
         best_ms = float("inf")
         best_cfg = None
-        # Build a dummy forward to benchmark each config
+        # Build dummy inputs once for benchmarking all configs
+        A_dummy = torch.randn(
+            self.numel, self.K, dtype=self.dtype, device="cuda") * 0.02
+        B_dummy = torch.randn(
+            self.num_experts, self.N, self.K, dtype=self.dtype, device="cuda") * 0.02
+        per = max(1, self.numel // self.num_experts)
+        sizes = torch.full(
+            (self.num_experts,), per, dtype=torch.int32, device="cuda")
+        sizes[-1] = self.numel - per * (self.num_experts - 1)
+        offsets = torch.zeros(
+            self.num_experts, dtype=torch.int32, device="cuda")
+        offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+
+        def _bench_forward():
+            return self.forward(A_dummy, B_dummy, sizes, offsets)
+
         for cfg in self.autotune_configs:
             try:
                 self.config = cfg
-                # Dry-run forward to compile + verify
-                A_dummy = torch.randn(
-                    self.numel, self.K, dtype=self.dtype, device="cuda") * 0.02
-                B_dummy = torch.randn(
-                    self.num_experts, self.N, self.K, dtype=self.dtype, device="cuda") * 0.02
-                per = max(1, self.numel // self.num_experts)
-                sizes = torch.full(
-                    (self.num_experts,), per, dtype=torch.int32, device="cuda")
-                sizes[-1] = self.numel - per * (self.num_experts - 1)
-                offsets = torch.zeros(
-                    self.num_experts, dtype=torch.int32, device="cuda")
-                offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
-                self.forward(A_dummy, B_dummy, sizes, offsets)
-                ms = _do_bench(
-                    lambda: self.forward(A_dummy, B_dummy, sizes, offsets),
-                    warmup=warmup, rep=rep)
+                _bench_forward()
+                ms = _do_bench(_bench_forward, warmup=warmup, rep=rep)
                 if ms < best_ms:
                     best_ms = ms
                     best_cfg = cfg
