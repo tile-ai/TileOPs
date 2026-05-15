@@ -206,9 +206,11 @@ class TestSynthesizeDtypeCombos:
                x=torch.empty(0, dtype=torch.float32),
                weight=torch.empty(0, dtype=torch.float16))
 
-    def test_combo_ignores_same_as_axis(self):
-        """``same_as`` inputs do not contribute a combo axis; they are
-        still validated by the per-input pass."""
+    def test_combo_row_must_enumerate_same_as_bound_inputs(self):
+        """Combo rows must enumerate every declared input, including
+        ``same_as``-bound tensors (manifest validator R6 combo-row
+        completeness, scripts/validate_manifest.py). A row that omits a
+        declared input is a synthesis-time error."""
         sig = {
             "inputs": {
                 "x": {"dtype": "float16 | bfloat16"},
@@ -218,6 +220,28 @@ class TestSynthesizeDtypeCombos:
             "dtype_combos": [
                 {"x": "float16", "weight": "float16"},
                 {"x": "float16", "weight": "float8_e4m3fn"},
+            ],
+        }
+        with pytest.raises(
+            ValueError, match="must enumerate every declared input",
+        ):
+            synthesize_validate_dtypes("MixedGemmBiasOp", sig)
+
+    def test_combo_full_row_with_same_as_bound_resolved(self):
+        """When every row enumerates every input (including same_as-bound
+        tensors), the observed tuple compares fully-resolved concrete
+        dtypes — matching validator R6 semantics."""
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+                "weight": {"dtype": "float16 | float8_e4m3fn"},
+                "bias": {"dtype": "same_as(x)"},
+            },
+            "dtype_combos": [
+                {"x": "float16", "weight": "float16",
+                 "bias": "same_as(x)"},
+                {"x": "float16", "weight": "float8_e4m3fn",
+                 "bias": "same_as(x)"},
             ],
         }
         fn = synthesize_validate_dtypes("MixedGemmBiasOp", sig)
@@ -314,7 +338,7 @@ class TestSynthesizeDtypeCombos:
             ],
         }
         with pytest.raises(
-            ValueError, match="must enumerate the same input axes"
+            ValueError, match="must enumerate every declared input"
         ):
             synthesize_validate_dtypes("IncompleteRowOp", sig)
 
@@ -331,7 +355,7 @@ class TestSynthesizeDtypeCombos:
             ],
         }
         with pytest.raises(
-            ValueError, match="must enumerate the same input axes"
+            ValueError, match="must enumerate every declared input"
         ):
             synthesize_validate_dtypes("ExtraAxisOp", sig)
 

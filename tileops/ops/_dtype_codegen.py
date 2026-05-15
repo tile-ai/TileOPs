@@ -220,137 +220,92 @@ def synthesize_validate_dtypes(
     combos = _parse_dtype_combos(
         op_name, sig.get("dtype_combos"), input_names,
     )
-    # When dtype_combos is present, freeze each row to a hashable key
-    # over the combo-axis inputs. ``same_as`` inputs do not contribute
-    # an axis (R6); they are still validated by the per-input loop.
+    # When dtype_combos is present, every row enumerates every declared
+    # input (manifest validator R6, scripts/validate_manifest.py R6
+    # combo-row completeness check). The observed combo key is built
+    # over the full input_names tuple, with same_as-bound inputs included
+    # at their resolved concrete dtype.
     combo_keys: set[tuple] | None = None
-    combo_axis_names: list[str] | None = None
     if combos is not None:
-        # Every row must enumerate the same axis set so each combo key is
-        # built from a consistent tuple — never padded with ``None`` for a
-        # missing axis. A row that omits a declared axis is a manifest bug
-        # and must fail synthesis, not produce an unreachable combo key.
-        first_axes = list(combos[0].keys())
-        first_axes_set = set(first_axes)
-        for idx, row in enumerate(combos[1:], start=1):
-            row_axes = set(row.keys())
-            if row_axes != first_axes_set:
-                missing = first_axes_set - row_axes
-                extra = row_axes - first_axes_set
+        input_names_set = set(input_names)
+        for idx, row in enumerate(combos):
+            row_keys = set(row.keys())
+            if row_keys != input_names_set:
+                missing = input_names_set - row_keys
+                extra = row_keys - input_names_set
                 detail_parts: list[str] = []
                 if missing:
-                    detail_parts.append(
-                        f"missing {sorted(missing)!r}"
-                    )
+                    detail_parts.append(f"missing {sorted(missing)!r}")
                 if extra:
                     detail_parts.append(f"extra {sorted(extra)!r}")
                 detail = "; ".join(detail_parts)
                 raise ValueError(
                     f"{op_name}: signature.dtype_combos[{idx}] keys "
-                    f"{sorted(row_axes)!r} differ from row 0 keys "
-                    f"{sorted(first_axes_set)!r} ({detail}); every row "
-                    f"must enumerate the same input axes"
+                    f"{sorted(row_keys)!r} do not cover every declared "
+                    f"signature.inputs name {sorted(input_names_set)!r} "
+                    f"({detail}); every combo row must enumerate every "
+                    f"declared input"
                 )
-        combo_axis_names = first_axes
         combo_keys = {
-            tuple(row[n] for n in combo_axis_names) for row in combos
+            tuple(row[n] for n in input_names) for row in combos
         }
 
-    def _validate_dtypes(self, **kwargs: torch.Tensor) -> None:  # noqa: D401
-        # Callers always reach this function through ``_rebuild_with_named_kwargs``,
-        # which binds every declared input via ``inspect.Signature.bind``
-        # and raises ``TypeError`` for missing arguments before forwarding.
-        # A manual presence check here would be unreachable.
-        for name in input_names:
-            concrete, refs, dtype_str = per_input[name]
-            t = kwargs[name]
-            actual = t.dtype
-            if actual in concrete:
-                continue
-            # Resolve ``same_as`` refs against the actual tensors passed.
-            matched_ref = False
-            for ref in refs:
-                ref_tensor = kwargs.get(ref)
-                if ref_tensor is None:
-                    raise ValueError(
-                        f"{op_name}: input {name!r} declares "
-                        f"same_as({ref}) but {ref!r} was not supplied"
-                    )
-                if actual == ref_tensor.dtype:
-                    matched_ref = True
-                    break
-            if matched_ref:
-                continue
-            raise ValueError(
-                f"{op_name}: input {name!r} has dtype {actual}, "
-                f"expected {dtype_str!r}"
-            )
-        # dtype_combos, when present, is exhaustive: only the listed
-        # cross-tensor combinations are valid.
-        if combo_keys is not None and combo_axis_names is not None:
-            observed = tuple(
-                kwargs[n].dtype for n in combo_axis_names
-            )
-            if observed not in combo_keys:
-                pairs = ", ".join(
-                    f"{n}={d}"
-                    for n, d in zip(
-                        combo_axis_names, observed, strict=True,
-                    )
-                )
-                raise ValueError(
-                    f"{op_name}: dtype combination ({pairs}) is not "
-                    f"listed in signature.dtype_combos"
-                )
-
+    # Generate the validator with explicit named parameters via ``exec``
+    # so its native ``inspect.signature`` reports the manifest inputs and
+    # no per-call ``inspect.Signature.bind`` is paid on the hot path.
+    # ``_validate_dtypes`` is invoked on every ``forward()``; using a
+    # ``**kwargs`` body with a wrapper that calls ``Signature.bind`` per
+    # call adds measurable overhead.
+    closure: dict[str, Any] = {
+        "per_input": per_input,
+        "input_names": input_names,
+        "combo_keys": combo_keys,
+        "ValueError": ValueError,
+        "op_name": op_name,
+    }
+    params_src = ", ".join(input_names)
+    src_lines = [
+        f"def _validate_dtypes(self, {params_src}):",
+        f'    """Synthesized from manifest signature for {op_name}."""',
+        "    _locals = locals()",
+        "    for _name in input_names:",
+        "        _concrete, _refs, _dtype_str = per_input[_name]",
+        "        _actual = _locals[_name].dtype",
+        "        if _actual in _concrete:",
+        "            continue",
+        "        _matched = False",
+        "        for _ref in _refs:",
+        "            _ref_tensor = _locals.get(_ref)",
+        "            if _ref_tensor is None:",
+        "                raise ValueError(",
+        "                    f\"{op_name}: input {_name!r} declares \"",
+        "                    f\"same_as({_ref}) but {_ref!r} was not supplied\"",
+        "                )",
+        "            if _actual == _ref_tensor.dtype:",
+        "                _matched = True",
+        "                break",
+        "        if _matched:",
+        "            continue",
+        "        raise ValueError(",
+        "            f\"{op_name}: input {_name!r} has dtype {_actual}, \"",
+        "            f\"expected {_dtype_str!r}\"",
+        "        )",
+        "    if combo_keys is not None:",
+        "        _observed = tuple(_locals[_n].dtype for _n in input_names)",
+        "        if _observed not in combo_keys:",
+        "            _pairs = \", \".join(",
+        "                f\"{_n}={_d}\" for _n, _d in zip(input_names, _observed)",
+        "            )",
+        "            raise ValueError(",
+        "                f\"{op_name}: dtype combination ({_pairs}) is not \"",
+        "                f\"listed in signature.dtype_combos\"",
+        "            )",
+    ]
+    exec("\n".join(src_lines), closure)
+    _validate_dtypes = closure["_validate_dtypes"]
     _validate_dtypes.__name__ = "_validate_dtypes"
     _validate_dtypes.__qualname__ = f"{op_name}._validate_dtypes"
-    _validate_dtypes.__doc__ = (
-        f"Synthesized from manifest signature for {op_name}."
-    )
-    # Rebuild the function so its inspect.signature reflects the
-    # manifest's named inputs as keyword-only parameters. The manifest
-    # validator probes via kwargs only.
-    _validate_dtypes = _rebuild_with_named_kwargs(
-        _validate_dtypes, input_names,
-    )
     return _validate_dtypes
-
-
-def _rebuild_with_named_kwargs(
-    fn: Callable[..., None], input_names: list[str],
-) -> Callable[..., None]:
-    """Wrap *fn* so its ``inspect.signature`` exposes ``input_names`` as
-    keyword-or-positional parameters.
-
-    The original implementation accepts ``**kwargs`` for simplicity; the
-    validator binds via ``inspect.signature(...).bind(self, **tensors)``,
-    which already succeeds with a ``**kwargs`` body. Exposing the named
-    parameters also lets callers introspect the manifest contract.
-    """
-    import inspect
-
-    params = [
-        inspect.Parameter("self", inspect.Parameter.POSITIONAL_OR_KEYWORD),
-    ]
-    for n in input_names:
-        params.append(
-            inspect.Parameter(n, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        )
-    new_sig = inspect.Signature(parameters=params, return_annotation=None)
-
-    def wrapper(self, *args, **kwargs):  # noqa: ANN001, ANN002
-        bound = new_sig.bind(self, *args, **kwargs)
-        bound.apply_defaults()
-        call_kwargs = {n: bound.arguments[n] for n in input_names}
-        return fn(self, **call_kwargs)
-
-    wrapper.__name__ = fn.__name__
-    wrapper.__qualname__ = fn.__qualname__
-    wrapper.__doc__ = fn.__doc__
-    wrapper.__signature__ = new_sig  # type: ignore[attr-defined]
-    wrapper.__wrapped__ = fn  # type: ignore[attr-defined]
-    return wrapper
 
 
 def _lookup_manifest_entry(op_name: str) -> dict[str, Any] | None:
