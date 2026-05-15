@@ -101,7 +101,12 @@ jobs:
   pr-comment:
     name: Sticky PR comment
     needs: report
-    if: github.event_name == 'pull_request'
+    # Fork PRs ship a read-only GITHUB_TOKEN regardless of declared
+    # permissions, so the sticky comment API call would 403. Skip on
+    # fork PRs; Job Summary (in `report`) still surfaces the data.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Download stats artifact
