@@ -1,4 +1,4 @@
-"""Benchmark GroupedGemmPersistent3WGKernel vs torch._grouped_mm (CUTLASS-backed).
+"""Benchmark GroupedGemmPersistent3WGKernel vs CUTLASS (torch._grouped_mm).
 
 torch._grouped_mm (PyTorch 2.10+) dispatches to CUTLASS grouped GEMM kernels
 internally, making it the strongest available baseline for Hopper grouped GEMM.Cases:
