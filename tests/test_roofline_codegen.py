@@ -72,7 +72,7 @@ class TestSynthesizeInlineMode:
     """Inline mode: emits a vars-resolution block + return block."""
 
     def test_inline_no_vars(self):
-        # M, N, K all come from op attributes (shape dims).
+        # M, N, K all come from op attributes (params).
         fn = synthesize_eval_roofline(
             "GemmOp",
             roofline={
@@ -88,6 +88,10 @@ class TestSynthesizeInlineMode:
         )
 
         class Mock:
+            # Input binding per the 2-tier contract; never read by the
+            # arithmetic expression in this test, but the resolver must
+            # find a valid shape.
+            a_shape = (4, 3)
             M = 4
             N = 5
             K = 3
@@ -268,72 +272,217 @@ class TestRealOpSmoke:
         # PreluFwdOp.__init__ builds a kernel; bypass via __new__ so the
         # test stays smoke-light and CUDA-free.
         op = PreluFwdOp.__new__(PreluFwdOp)
-        op.shape = (16, 256, 56, 56)
-        op.num_channels = 256
+        op.input_shape = (16, 256, 56, 56)
+        op.weight_shape = (256,)
         op.dtype = torch.float16
 
         from math import prod as _prod
-        N = _prod(op.shape)
-        W = op.num_channels
+        N = _prod(op.input_shape)
+        W = op.weight_shape[0]
         elem = op.dtype.itemsize
         flops, total_bytes = op.eval_roofline()
         assert flops == 2 * N
         assert total_bytes == (2 * N + W) * elem
 
-    def test_nan_to_num_fwd_op_eval_roofline_uses_n_total(self):
+    def test_nan_to_num_fwd_op_eval_roofline_uses_input_shape(self):
         import torch
 
         from tileops.ops.elementwise.nan_to_num import NanToNumFwdOp
 
         op = NanToNumFwdOp.__new__(NanToNumFwdOp)
-        op.N_total = 4096 * 4096
+        op.input_shape = (4096 * 4096,)
         op.dtype = torch.float16
 
+        N = op.input_shape[0]
         elem = op.dtype.itemsize
         flops, total_bytes = op.eval_roofline()
-        assert flops == 6 * op.N_total
-        assert total_bytes == 2 * op.N_total * elem
+        assert flops == 6 * N
+        assert total_bytes == 2 * N * elem
 
 
 class TestResolveTensorBinding:
-    """``_resolve_tensor_binding`` priority order."""
+    """``_resolve_tensor_binding`` honors the 2-tier contract.
+
+    Tier 1: ``self.<name>`` exposing ``.shape``/``.ndim``.
+    Tier 2: ``self.<name>_shape`` as a shape tuple.
+    Anything else → ``ValueError`` naming op + input + attempted
+    conventions. Family-specific aliases (``self.shape`` /
+    ``self.num_channels`` / ``self.N_total``) are *not* consulted; ops
+    declare bindings explicitly.
+    """
 
     def test_real_tensor_attr_wins(self):
         class Op:
             input = _ShapeProxy((4, 5))
-        out = _resolve_tensor_binding(Op(), "input", is_primary=True)
+        out = _resolve_tensor_binding(Op(), "input", "ToyOp")
         assert out.shape == (4, 5)
 
     def test_input_shape_attr_used(self):
         class Op:
             input_shape = (2, 3, 4)
-        out = _resolve_tensor_binding(Op(), "input", is_primary=True)
+        out = _resolve_tensor_binding(Op(), "input", "ToyOp")
         assert out.shape == (2, 3, 4)
         assert out.ndim == 3
 
-    def test_primary_falls_back_to_self_shape(self):
+    def test_input_shape_attr_accepts_list(self):
+        # Shape tuples written as YAML lists survive the manifest load
+        # path as Python lists; the resolver must accept either form.
+        class Op:
+            input_shape = [2, 3, 4]
+        out = _resolve_tensor_binding(Op(), "input", "ToyOp")
+        assert out.shape == (2, 3, 4)
+
+    def test_self_shape_alias_no_longer_consulted(self):
+        # Pre-contract code rescued ops via self.shape; the systematic
+        # fix drops this so unconformant ops fail loudly.
         class Op:
             shape = (7, 11)
-        out = _resolve_tensor_binding(Op(), "input", is_primary=True)
-        assert out.shape == (7, 11)
+        with pytest.raises(ValueError, match="cannot resolve roofline input 'input'"):
+            _resolve_tensor_binding(Op(), "input", "ToyOp")
 
-    def test_weight_falls_back_to_num_channels(self):
+    def test_num_channels_alias_no_longer_consulted(self):
         class Op:
             num_channels = 64
-        out = _resolve_tensor_binding(Op(), "weight", is_primary=False)
-        assert out.shape == (64,)
-        assert out.ndim == 1
+        with pytest.raises(ValueError, match="cannot resolve roofline input 'weight'"):
+            _resolve_tensor_binding(Op(), "weight", "ToyOp")
 
-    def test_primary_falls_back_to_n_total(self):
+    def test_n_total_alias_no_longer_consulted(self):
         class Op:
             N_total = 1024
-        out = _resolve_tensor_binding(Op(), "input", is_primary=True)
-        assert out.shape == (1024,)
+        with pytest.raises(ValueError, match="cannot resolve roofline input 'input'"):
+            _resolve_tensor_binding(Op(), "input", "ToyOp")
 
-    def test_no_state_returns_none(self):
+    def test_no_binding_raises_with_op_and_conventions(self):
         class Op:
             pass
-        assert _resolve_tensor_binding(Op(), "input", is_primary=True) is None
+        with pytest.raises(ValueError) as exc:
+            _resolve_tensor_binding(Op(), "input", "ToyOp")
+        msg = str(exc.value)
+        assert "ToyOp" in msg
+        assert "'input'" in msg
+        assert "self.input" in msg
+        assert "self.input_shape" in msg
+
+
+class TestVarsLayerComprehensions:
+    """Vars-layer comprehensions: target names bind to a child scope."""
+
+    def test_generator_target_resolves(self):
+        # ``sum(d for d in x.shape)`` was previously rejected because the
+        # bare ``Name`` walk surfaced ``d`` as unknown; the scoped
+        # validator now binds ``d`` for the comprehension subtree only.
+        fn = synthesize_eval_roofline(
+            "ProdOp",
+            roofline={
+                "vars": {"N": "sum(d for d in x.shape)"},
+                "flops": "N",
+                "bytes": "N * elem_bytes",
+            },
+            signature={"inputs": {"x": {"dtype": "float16"}}},
+        )
+
+        import torch
+
+        class Mock:
+            x = _ShapeProxy((2, 3, 5))
+            dtype = torch.float16
+
+        flops, nbytes = fn(Mock())
+        assert flops == 2 + 3 + 5
+        assert nbytes == (2 + 3 + 5) * 2
+
+    def test_listcomp_target_resolves(self):
+        fn = synthesize_eval_roofline(
+            "Op",
+            roofline={
+                "vars": {"N": "sum([d * d for d in x.shape])"},
+                "flops": "N",
+                "bytes": "N * elem_bytes",
+            },
+            signature={"inputs": {"x": {"dtype": "float16"}}},
+        )
+
+        import torch
+
+        class Mock:
+            x = _ShapeProxy((2, 3))
+            dtype = torch.float16
+
+        flops, _ = fn(Mock())
+        assert flops == 2 * 2 + 3 * 3
+
+    def test_target_does_not_leak_to_outer_scope(self):
+        # ``d`` is bound inside the comprehension. Referencing it outside
+        # must still raise — the scope must pop.
+        with pytest.raises(ValueError, match="unknown name 'd'"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {
+                        "N": "sum(d for d in x.shape)",
+                        "M": "d",  # 'd' is not visible here
+                    },
+                    "flops": "N + M",
+                    "bytes": "N * elem_bytes",
+                },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+
+class TestVarsLayerAttributeWhitelist:
+    """Vars-layer ``Attribute`` access is restricted to ``.shape`` / ``.ndim``."""
+
+    def test_arbitrary_attribute_rejected(self):
+        with pytest.raises(ValueError, match="non-whitelisted attribute 'dtype'"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {"N": "x.dtype"},
+                    "flops": "N",
+                    "bytes": "N * elem_bytes",
+                },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+    def test_dunder_attribute_rejected(self):
+        with pytest.raises(ValueError, match="non-whitelisted attribute"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {"N": "x.__class__"},
+                    "flops": "N",
+                    "bytes": "N * elem_bytes",
+                },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+
+class TestParamContract:
+    """``signature.params`` must be exposed as ``self.<param>``."""
+
+    def test_missing_param_raises_attribute_error(self):
+        fn = synthesize_eval_roofline(
+            "ToyOp",
+            roofline={
+                "flops": "M * N",
+                "bytes": "(M + N) * elem_bytes",
+            },
+            signature={
+                "inputs": {"x": {"dtype": "float16"}},
+                "params": {"M": {"type": "int"}, "N": {"type": "int"}},
+            },
+        )
+
+        import torch
+
+        class Mock:
+            x_shape = (1,)
+            M = 4
+            # N intentionally omitted.
+            dtype = torch.float16
+
+        with pytest.raises(AttributeError, match="'N'"):
+            fn(Mock())
 
 
 class TestMissingRoofline:

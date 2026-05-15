@@ -60,27 +60,25 @@ class _ShapeProxy:
         self.ndim = len(self.shape)
 
 
-def _resolve_tensor_binding(
-    op: Any, name: str, is_primary: bool,
-) -> Any:
+def _resolve_tensor_binding(op: Any, name: str, op_name: str) -> Any:
     """Bind ``name`` for inline-mode synthesis from op-instance state.
 
-    Resolution order:
+    Two accepted conventions, in order:
 
-    1. ``self.<name>`` when it exposes ``.shape`` (a real tensor or
-       previously-bound proxy).
-    2. ``self.<name>_shape`` (explicit shape tuple convention) wrapped
-       in a ``_ShapeProxy``.
-    3. The primary input falls back to ``self.shape`` (canonical
-       op-level shape attribute used by elementwise ops).
-    4. A ``weight`` tensor falls back to ``self.num_channels`` → a 1-D
-       proxy of length ``num_channels``.
-    5. The primary input falls back to ``self.N_total`` → a 1-D proxy
-       of length ``N_total`` (used by ops that flatten at construction).
+    1. ``self.<name>`` exposes ``.shape`` (a real tensor or any object
+       exposing ``.shape`` / ``.ndim``).
+    2. ``self.<name>_shape`` is a shape tuple/list; wrapped in a
+       :class:`_ShapeProxy` for uniform ``.shape``/``.ndim`` access.
 
-    Returns ``None`` when no convention matches; vars expressions that
-    dereference ``None.shape`` then surface ``AttributeError`` so the
-    contract gap is visible rather than silently producing zero work.
+    Anything else raises :class:`ValueError` so the missing binding is
+    surfaced with the op and input name rather than the vacuous
+    ``'NoneType' object has no attribute 'shape'`` that would otherwise
+    reach the caller from inside the generated body.
+
+    Op-family-specific aliases (``self.shape`` / ``self.num_channels``
+    / ``self.N_total``) are *not* consulted; ops opting into inline
+    roofline declare bindings explicitly per ``docs/design/roofline.md``
+    §4.4.3.
     """
     direct = getattr(op, name, None)
     if direct is not None and hasattr(direct, "shape"):
@@ -88,19 +86,11 @@ def _resolve_tensor_binding(
     shape_attr = getattr(op, f"{name}_shape", None)
     if isinstance(shape_attr, (tuple, list)):
         return _ShapeProxy(tuple(shape_attr))
-    if is_primary:
-        op_shape = getattr(op, "shape", None)
-        if isinstance(op_shape, (tuple, list)):
-            return _ShapeProxy(tuple(op_shape))
-    if name == "weight":
-        n_ch = getattr(op, "num_channels", None)
-        if isinstance(n_ch, int):
-            return _ShapeProxy((n_ch,))
-    if is_primary:
-        n_total = getattr(op, "N_total", None)
-        if isinstance(n_total, int):
-            return _ShapeProxy((n_total,))
-    return direct
+    raise ValueError(
+        f"{op_name}: cannot resolve roofline input {name!r}; expected "
+        f"either self.{name} (with .shape/.ndim) or self.{name}_shape "
+        f"(shape tuple) on the op instance"
+    )
 
 
 _VARS_HELPERS: dict[str, Any] = {
@@ -184,6 +174,143 @@ def _synthesize_func_mode(
     return eval_roofline
 
 
+_VARS_FORBIDDEN_NODES = (
+    ast.Lambda, ast.NamedExpr, ast.Yield, ast.YieldFrom, ast.Await,
+    ast.AsyncFunctionDef, ast.FunctionDef, ast.ClassDef,
+)
+_VARS_ATTR_WHITELIST = frozenset({"shape", "ndim"})
+
+
+class _VarsExprValidator(ast.NodeVisitor):
+    """AST-check a vars-layer expression with scope-aware name resolution.
+
+    Maintains a stack of name scopes. The outermost scope holds tensor
+    bindings, params, ``elem_bytes``, earlier vars, and helper names;
+    comprehensions (``ListComp`` / ``SetComp`` / ``DictComp`` /
+    ``GeneratorExp``) push a child scope containing their generator
+    target names so loop variables (``d`` in ``sum(d for d in x.shape)``)
+    resolve cleanly without polluting the surrounding scope.
+    """
+
+    def __init__(self, op_name: str, var_name: str, allowed: set[str]) -> None:
+        self.op_name = op_name
+        self.var_name = var_name
+        self._scopes: list[set[str]] = [set(allowed)]
+
+    def _is_bound(self, name: str) -> bool:
+        return any(name in scope for scope in self._scopes)
+
+    def _collect_targets(self, target: ast.AST, scope: set[str]) -> None:
+        if isinstance(target, ast.Name):
+            scope.add(target.id)
+            return
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                self._collect_targets(elt, scope)
+            return
+        if isinstance(target, ast.Starred):
+            self._collect_targets(target.value, scope)
+            return
+        raise ValueError(
+            f"{self.op_name}: roofline.vars[{self.var_name!r}] uses "
+            f"unsupported comprehension target {type(target).__name__}"
+        )
+
+    def _visit_comp(self, node: ast.AST) -> None:
+        generators = node.generators  # type: ignore[attr-defined]
+        scope: set[str] = set()
+        for gen in generators:
+            self._collect_targets(gen.target, scope)
+        self._scopes.append(scope)
+        try:
+            # Element / key / value expression and all generator
+            # iterables + conditions are visited inside the child scope.
+            # (Python evaluates the first iterable in the enclosing
+            # scope, but accepting that iterable under the looser child
+            # scope is strictly more permissive only for target names —
+            # which are not visible in the outer scope anyway, so this
+            # simplification cannot mask invalid references.)
+            if isinstance(node, ast.DictComp):
+                self.visit(node.key)
+                self.visit(node.value)
+            else:
+                self.visit(node.elt)  # type: ignore[attr-defined]
+            for gen in generators:
+                self.visit(gen.iter)
+                for cond in gen.ifs:
+                    self.visit(cond)
+        finally:
+            self._scopes.pop()
+
+    # ast.NodeVisitor dispatch hooks: names must match AST class names.
+    visit_ListComp = _visit_comp  # noqa: N815
+    visit_SetComp = _visit_comp  # noqa: N815
+    visit_DictComp = _visit_comp  # noqa: N815
+    visit_GeneratorExp = _visit_comp  # noqa: N815
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if not self._is_bound(node.id):
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
+                f"references unknown name {node.id!r}"
+            )
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if node.attr not in _VARS_ATTR_WHITELIST:
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
+                f"accesses non-whitelisted attribute {node.attr!r}; "
+                f"vars-layer allows only "
+                f"{sorted(_VARS_ATTR_WHITELIST)!r}"
+            )
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if not isinstance(node.func, ast.Name):
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
+                f"performs a non-helper call (only whitelisted helper "
+                f"names may be invoked)"
+            )
+        if node.func.id not in _VARS_HELPERS:
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
+                f"calls non-whitelisted name {node.func.id!r}; "
+                f"vars-layer helpers are {sorted(_VARS_HELPERS)!r}"
+            )
+        for arg in node.args:
+            self.visit(arg)
+        for kw in node.keywords:
+            self.visit(kw.value)
+
+    def generic_visit(self, node: ast.AST) -> None:
+        if isinstance(node, _VARS_FORBIDDEN_NODES):
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] uses "
+                f"forbidden construct {type(node).__name__}"
+            )
+        super().generic_visit(node)
+
+
+def _referenced_names(*exprs: str | None) -> set[str]:
+    """Return ``Name`` ids referenced in any of the given expressions.
+
+    Used by inline synthesis to scope locals to names the manifest
+    actually reads — params declared on the op but unused by the
+    roofline are not pulled in. Comprehension target names appear here
+    too; that's harmless because the caller intersects with the known
+    {inputs ∪ params} set, which never contains target names.
+    """
+    names: set[str] = set()
+    for expr in exprs:
+        if expr is None:
+            continue
+        for node in ast.walk(ast.parse(expr, mode="eval")):
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+    return names
+
+
 def _validate_vars_expr(
     op_name: str,
     var_name: str,
@@ -192,13 +319,13 @@ def _validate_vars_expr(
 ) -> ast.Expression:
     """Parse and AST-check a vars-layer expression.
 
-    Vars-layer permits tensor shape access (``Attribute`` + ``Subscript``),
-    small comprehensions, calls to whitelisted helpers, and references
-    to bound names (tensors, params, ``elem_bytes``, earlier vars,
-    helpers). Forbidden constructs (``Lambda``, ``Assign``, dunder
-    access, calls to unknown callees, references to unknown names)
-    raise ``ValueError`` so class construction fails before the manifest
-    lands.
+    Vars-layer permits ``.shape`` / ``.ndim`` access, small
+    comprehensions, calls to whitelisted helpers, and references to
+    bound names (tensors, params, ``elem_bytes``, earlier vars,
+    helpers). Forbidden constructs raise ``ValueError`` so class
+    construction fails before the manifest lands. Comprehension target
+    names bind to a child scope so they are reachable only inside the
+    comprehension's element/conditions/iterables.
     """
     try:
         tree = ast.parse(expr, mode="eval")
@@ -207,47 +334,7 @@ def _validate_vars_expr(
             f"{op_name}: roofline.vars[{var_name!r}] is not a valid Python "
             f"expression ({exc})"
         ) from exc
-
-    # Walk the AST. ``Call`` nodes must target a whitelisted helper name
-    # (no ``__import__``, no ``os.system``, no method calls on tensors).
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Lambda, ast.NamedExpr, ast.Yield,
-                             ast.YieldFrom, ast.Await,
-                             ast.AsyncFunctionDef, ast.FunctionDef,
-                             ast.ClassDef)):
-            raise ValueError(
-                f"{op_name}: roofline.vars[{var_name!r}] uses forbidden "
-                f"construct {type(node).__name__}"
-            )
-        # Allow only ``<name>.shape``, ``<name>.ndim`` chains; reject
-        # dunder probes that could pivot into arbitrary state.
-        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
-            raise ValueError(
-                f"{op_name}: roofline.vars[{var_name!r}] references "
-                f"forbidden dunder attribute {node.attr!r}"
-            )
-        if isinstance(node, ast.Name) and node.id not in allowed_names:
-            raise ValueError(
-                f"{op_name}: roofline.vars[{var_name!r}] references "
-                f"unknown name {node.id!r}; allowed names are "
-                f"{sorted(allowed_names)!r}"
-            )
-        if isinstance(node, ast.Call):
-            # Callees must be plain Names resolving to a helper. Reject
-            # ``obj.method(...)`` and chained calls; tensors expose data
-            # via attribute/subscript, never via method calls in vars.
-            if not isinstance(node.func, ast.Name):
-                raise ValueError(
-                    f"{op_name}: roofline.vars[{var_name!r}] performs a "
-                    f"non-helper call (only whitelisted helper names may "
-                    f"be invoked)"
-                )
-            if node.func.id not in _VARS_HELPERS:
-                raise ValueError(
-                    f"{op_name}: roofline.vars[{var_name!r}] calls "
-                    f"non-whitelisted name {node.func.id!r}; vars-layer "
-                    f"helpers are {sorted(_VARS_HELPERS)!r}"
-                )
+    _VarsExprValidator(op_name, var_name, allowed_names).visit(tree)
     return tree
 
 
@@ -393,24 +480,35 @@ def _synthesize_inline_mode(
         "def eval_roofline(self):",
         f'    """Synthesized from manifest inline roofline for {op_name}."""',
     ]
-    for idx, n in enumerate(input_names):
-        # Inputs bind from op-instance state via a tensor resolver that
-        # accepts either the real tensor or a shape-bearing proxy derived
-        # from canonical op attributes (``self.shape``, ``self.N_total``,
-        # ``self.num_channels``). The first input is treated as primary
-        # so derived shape fallbacks apply.
-        is_primary = "True" if idx == 0 else "False"
+    # Only bind inputs / params that the roofline expressions actually
+    # reference. Authoring a manifest entry that declares a param but
+    # never reads it in the roofline (e.g. NanToNumFwdOp's
+    # ``nan``/``posinf``/``neginf`` configure the kernel but do not
+    # affect FLOPs / bytes) is legitimate; binding them anyway would
+    # widen the contract to "expose every signature.params name on
+    # every Op even when the roofline does not need it", which is more
+    # than the design requires.
+    referenced = _referenced_names(
+        *vars_block.values(), flops_expr, bytes_expr,
+    )
+    for n in input_names:
+        if n not in referenced:
+            continue
+        # Inputs bind from op-instance state via the resolver, which
+        # accepts either ``self.<n>`` exposing ``.shape`` or
+        # ``self.<n>_shape`` as a tuple. Anything else raises
+        # ``ValueError`` at call time naming the missing convention.
         src_lines.append(
-            f"    {n} = _resolve_tensor_binding(self, {n!r}, {is_primary})"
+            f"    {n} = _resolve_tensor_binding(self, {n!r}, {op_name!r})"
         )
     for n in param_names:
-        # Params may or may not be stored on the op (some are stored at
-        # ``__init__`` time, others arrive via forward args). Bind when
-        # present so vars expressions can reference them; otherwise let
-        # a NameError surface to the caller.
-        src_lines.append(
-            f"    if hasattr(self, {n!r}): {n} = getattr(self, {n!r})"
-        )
+        if n not in referenced:
+            continue
+        # ``signature.params`` referenced by the roofline must be
+        # exposed as ``self.<n>``. A missing attribute surfaces an
+        # ``AttributeError`` naming the op rather than a downstream
+        # ``NameError`` deep in the body.
+        src_lines.append(f"    {n} = self.{n}")
     src_lines.append("    elem_bytes = self.dtype.itemsize")
     for name, expr in vars_block.items():
         src_lines.append(f"    {name} = {expr}")
@@ -424,8 +522,6 @@ def _synthesize_inline_mode(
     globs: dict[str, Any] = dict(_VARS_HELPERS)
     globs["_resolve_tensor_binding"] = _resolve_tensor_binding
     globs["__builtins__"] = {
-        "getattr": getattr,
-        "hasattr": hasattr,
         "int": int,
         "float": float,
         "bool": bool,

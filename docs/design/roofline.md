@@ -165,10 +165,21 @@ Codegen actions emit two sequential blocks:
 
 **Block 1 — vars resolution.**
 
-- Bind each `signature.inputs` tensor to a local: `x = self.x`. (Arbitrary-rank ops: `self.x` is bound in `forward()` before `eval_roofline()` runs.)
-- Bind each `signature.params` name: `dim = self.dim`.
+- Bind each `signature.inputs` tensor referenced by the roofline expressions to a local using the **2-tier op-state contract**:
+
+  1. `self.<input_name>` exposes `.shape` / `.ndim` (a real tensor stored on the op, or any object exposing those attributes).
+  1. `self.<input_name>_shape` is a shape tuple/list; codegen wraps it in a shape-bearing proxy so vars expressions see `.shape` / `.ndim` uniformly.
+
+  Family-specific aliases (`self.shape`, `self.num_channels`, `self.N_total`, …) are **not** consulted. Ops opting into inline roofline declare their bindings explicitly in `__init__` — either by storing the tensor under the manifest input name, or by exposing a `<input_name>_shape` tuple. Anything else raises `ValueError(op_name, input_name, attempted_conventions)` at the first `eval_roofline()` call.
+
+- Bind each `signature.params` name referenced by the roofline expressions: `dim = self.dim`. A missing param attribute surfaces an `AttributeError` named with the op so the contract gap is unambiguous.
+
+- Bindings are emitted **only for names the manifest expressions actually reference**. Declaring a param that the roofline does not consume (e.g. a kernel-tuning knob with no FLOPs/bytes effect) does not require exposing it on the op.
+
 - Bind `elem_bytes` from whichever dtype source exists at the call site (§4.4.5): use `self.dtype.itemsize` when `eval_roofline()` runs at `__init__` (fixed-rank — no tensor yet), and `self.<first_input>.dtype.itemsize` when it runs in `forward()` (arbitrary-rank — the tensor is bound).
-- If `vars:` is present, emit one assignment per entry in YAML declaration order: `<name> = <vars[name]>`, copying the expression string verbatim. Later entries may reference earlier locals.
+
+- If `vars:` is present, emit one assignment per entry in YAML declaration order: `<name> = <vars[name]>`, copying the expression string verbatim. Later entries may reference earlier locals. Comprehension target names bind to a child scope confined to the comprehension itself; they do not leak into surrounding vars or arithmetic expressions.
+
 - If `vars:` is absent and `shape` is fixed-rank, emit assignments from the `shape` declaration (tuple-unpack `self.x.shape`, or read `self.<dim>` if the Op stored dims at `__init__`).
 
 **Block 2 — arithmetic.** Return `(<flops>, <bytes>)` with both expression strings copied verbatim. They reference only Block 1 locals + `elem_bytes` + arithmetic-layer helpers (§4.4.4).

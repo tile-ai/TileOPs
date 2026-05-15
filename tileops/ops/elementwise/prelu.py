@@ -40,6 +40,12 @@ class PreluFwdOp(Op):
         self.shape = shape
         self.dtype = dtype
         self.num_channels = num_channels
+        # Manifest input bindings for the synthesized eval_roofline
+        # (docs/design/roofline.md §4.4.3): each signature.inputs entry
+        # is exposed as self.<name>_shape so the codegen resolver can
+        # reach it without family-specific aliases.
+        self.input_shape = tuple(shape)
+        self.weight_shape = (num_channels,)
         N_total = prod(shape)
         self.N_total = N_total
         # PyTorch PReLU: channel dim is 1 for ndim>=2, else 0
