@@ -133,6 +133,132 @@ class TestSynthesizeSignature:
         assert params == ["self", "q", "k"]
 
 
+class TestSynthesizeDtypeCombos:
+    """When ``dtype_combos`` is present, it is the exhaustive list of
+    accepted cross-tensor dtype rows (manifest.md R6)."""
+
+    def _mock(self):
+        class Mock:
+            pass
+
+        return Mock()
+
+    def test_listed_combo_accepted(self):
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+                "weight": {"dtype": "float16 | float8_e4m3fn | bfloat16"},
+            },
+            "dtype_combos": [
+                {"x": "float16", "weight": "float16"},
+                {"x": "float16", "weight": "float8_e4m3fn"},
+                {"x": "bfloat16", "weight": "bfloat16"},
+            ],
+        }
+        fn = synthesize_validate_dtypes("MixedGemmOp", sig)
+        m = self._mock()
+        fn(m,
+           x=torch.empty(0, dtype=torch.float16),
+           weight=torch.empty(0, dtype=torch.float16))
+        fn(m,
+           x=torch.empty(0, dtype=torch.float16),
+           weight=torch.empty(0, dtype=torch.float8_e4m3fn))
+        fn(m,
+           x=torch.empty(0, dtype=torch.bfloat16),
+           weight=torch.empty(0, dtype=torch.bfloat16))
+
+    def test_unlisted_cross_combo_rejected(self):
+        """A row that passes per-input unions but is not in
+        ``dtype_combos`` must still be rejected."""
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+                "weight": {"dtype": "float16 | float8_e4m3fn | bfloat16"},
+            },
+            "dtype_combos": [
+                {"x": "float16", "weight": "float16"},
+                {"x": "bfloat16", "weight": "bfloat16"},
+            ],
+        }
+        fn = synthesize_validate_dtypes("MixedGemmOp", sig)
+        m = self._mock()
+        # Each input dtype is in its declared union, but the (x, weight)
+        # pair is not in the combo list.
+        with pytest.raises(ValueError, match="dtype_combos"):
+            fn(m,
+               x=torch.empty(0, dtype=torch.bfloat16),
+               weight=torch.empty(0, dtype=torch.float16))
+
+    def test_out_of_union_still_rejected_before_combo_check(self):
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+                "weight": {"dtype": "float16 | bfloat16"},
+            },
+            "dtype_combos": [
+                {"x": "float16", "weight": "float16"},
+            ],
+        }
+        fn = synthesize_validate_dtypes("MixedGemmOp", sig)
+        m = self._mock()
+        with pytest.raises(ValueError):
+            fn(m,
+               x=torch.empty(0, dtype=torch.float32),
+               weight=torch.empty(0, dtype=torch.float16))
+
+    def test_combo_ignores_same_as_axis(self):
+        """``same_as`` inputs do not contribute a combo axis; they are
+        still validated by the per-input pass."""
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+                "weight": {"dtype": "float16 | float8_e4m3fn"},
+                "bias": {"dtype": "same_as(x)"},
+            },
+            "dtype_combos": [
+                {"x": "float16", "weight": "float16"},
+                {"x": "float16", "weight": "float8_e4m3fn"},
+            ],
+        }
+        fn = synthesize_validate_dtypes("MixedGemmBiasOp", sig)
+        m = self._mock()
+        fn(m,
+           x=torch.empty(0, dtype=torch.float16),
+           weight=torch.empty(0, dtype=torch.float8_e4m3fn),
+           bias=torch.empty(0, dtype=torch.float16))
+        # same_as(x) violated
+        with pytest.raises(ValueError):
+            fn(m,
+               x=torch.empty(0, dtype=torch.float16),
+               weight=torch.empty(0, dtype=torch.float16),
+               bias=torch.empty(0, dtype=torch.bfloat16))
+
+    def test_rejects_same_as_token_inside_combo_row(self):
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+                "weight": {"dtype": "float16 | bfloat16"},
+            },
+            "dtype_combos": [
+                {"x": "float16", "weight": "same_as(x)"},
+            ],
+        }
+        with pytest.raises(ValueError, match="same_as"):
+            synthesize_validate_dtypes("BadOp", sig)
+
+    def test_rejects_unknown_input_in_combo_row(self):
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16"},
+            },
+            "dtype_combos": [
+                {"x": "float16", "missing": "float16"},
+            ],
+        }
+        with pytest.raises(ValueError, match="unknown input"):
+            synthesize_validate_dtypes("BadOp", sig)
+
+
 class TestAutoInstallHook:
     def test_subclass_with_manifest_status_implemented_gets_validator(self):
         sig = {"inputs": {"x": {"dtype": "float16"}}}

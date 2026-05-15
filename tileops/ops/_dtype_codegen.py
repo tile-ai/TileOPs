@@ -65,6 +65,66 @@ def _classify_tokens(
     return concrete, refs
 
 
+def _parse_dtype_combos(
+    op_name: str,
+    combos: Any,
+    input_names: list[str],
+) -> list[dict[str, torch.dtype]] | None:
+    """Validate and normalize ``signature.dtype_combos`` rows.
+
+    Each row is a mapping ``{input_name: dtype_token}`` listing the
+    concrete dtype for combo-axis inputs. Rows MUST NOT reference inputs
+    declared via ``same_as(ref)`` (per manifest R6: such inputs do not
+    contribute an independent axis to the combo space).
+
+    Returns:
+        A list of normalized rows, or ``None`` when *combos* is absent.
+
+    Raises:
+        ValueError: when an entry is malformed or names an unknown input.
+    """
+    if combos is None:
+        return None
+    if not isinstance(combos, list) or not combos:
+        raise ValueError(
+            f"{op_name}: signature.dtype_combos must be a non-empty list "
+            f"when present"
+        )
+    normalized: list[dict[str, torch.dtype]] = []
+    for idx, row in enumerate(combos):
+        if not isinstance(row, dict) or not row:
+            raise ValueError(
+                f"{op_name}: signature.dtype_combos[{idx}] must be a "
+                f"non-empty mapping"
+            )
+        norm: dict[str, torch.dtype] = {}
+        for name, tok in row.items():
+            if name not in input_names:
+                raise ValueError(
+                    f"{op_name}: signature.dtype_combos[{idx}] references "
+                    f"unknown input {name!r}"
+                )
+            if not isinstance(tok, str):
+                raise ValueError(
+                    f"{op_name}: signature.dtype_combos[{idx}][{name!r}] "
+                    f"must be a string dtype token"
+                )
+            if _SAME_AS_RE.match(tok.strip()):
+                raise ValueError(
+                    f"{op_name}: signature.dtype_combos[{idx}][{name!r}] "
+                    f"may not use same_as(...); list concrete dtypes only"
+                )
+            dt = getattr(torch, tok.strip(), None)
+            if not isinstance(dt, torch.dtype):
+                raise ValueError(
+                    f"{op_name}: signature.dtype_combos[{idx}][{name!r}] "
+                    f"unknown dtype token {tok!r}"
+                )
+            norm[name] = dt
+        normalized.append(norm)
+    return normalized
+
+
 def synthesize_validate_dtypes(
     op_name: str, sig: dict[str, Any],
 ) -> Callable[..., None]:
@@ -74,13 +134,16 @@ def synthesize_validate_dtypes(
         op_name: Manifest op name; used in error messages.
         sig: The ``signature`` block from the manifest entry. Must contain
             an ``inputs`` mapping; each entry's ``dtype`` is the union
-            expression to enforce.
+            expression to enforce. May also contain ``dtype_combos`` —
+            when present, it is the exhaustive list of accepted
+            cross-tensor dtype rows (per ``docs/design/manifest.md`` R6).
 
     Returns:
         A function with signature ``(self, **inputs) -> None`` that
         raises ``ValueError`` when any input's dtype lies outside the
-        declared union (or, for ``same_as(ref)``, differs from the
-        referenced input's dtype).
+        declared union, when a ``same_as(ref)`` constraint is violated,
+        or when ``dtype_combos`` is present and the observed combo row
+        is not listed.
     """
     inputs = sig.get("inputs") or {}
     if not isinstance(inputs, dict) or not inputs:
@@ -107,6 +170,25 @@ def synthesize_validate_dtypes(
         per_input[name] = (concrete, refs, dtype_str)
 
     input_names = list(inputs.keys())
+    combos = _parse_dtype_combos(
+        op_name, sig.get("dtype_combos"), input_names,
+    )
+    # When dtype_combos is present, freeze each row to a hashable key
+    # over the combo-axis inputs. ``same_as`` inputs do not contribute
+    # an axis (R6); they are still validated by the per-input loop.
+    combo_keys: set[tuple] | None = None
+    combo_axis_names: list[str] | None = None
+    if combos is not None:
+        # Combo axes are the union of names that appear in any row.
+        seen: list[str] = []
+        for row in combos:
+            for n in row:
+                if n not in seen:
+                    seen.append(n)
+        combo_axis_names = seen
+        combo_keys = {
+            tuple(row.get(n) for n in combo_axis_names) for row in combos
+        }
 
     def _validate_dtypes(self, **kwargs: torch.Tensor) -> None:  # noqa: D401
         # Verify all manifest-declared inputs are present.
@@ -140,6 +222,23 @@ def synthesize_validate_dtypes(
                 f"{op_name}: input {name!r} has dtype {actual}, "
                 f"expected {dtype_str!r}"
             )
+        # dtype_combos, when present, is exhaustive: only the listed
+        # cross-tensor combinations are valid.
+        if combo_keys is not None and combo_axis_names is not None:
+            observed = tuple(
+                kwargs[n].dtype for n in combo_axis_names
+            )
+            if observed not in combo_keys:
+                pairs = ", ".join(
+                    f"{n}={d}"
+                    for n, d in zip(
+                        combo_axis_names, observed, strict=True,
+                    )
+                )
+                raise ValueError(
+                    f"{op_name}: dtype combination ({pairs}) is not "
+                    f"listed in signature.dtype_combos"
+                )
 
     _validate_dtypes.__name__ = "_validate_dtypes"
     _validate_dtypes.__qualname__ = f"{op_name}._validate_dtypes"
