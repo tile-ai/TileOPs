@@ -81,7 +81,10 @@ def _resolve_tensor_binding(op: Any, name: str, op_name: str) -> Any:
     §4.4.3.
     """
     direct = getattr(op, name, None)
-    if direct is not None and hasattr(direct, "shape"):
+    # Tier 1 requires both ``.shape`` and ``.ndim`` so a partially
+    # conformant object (e.g. exposes ``.shape`` only) does not slip
+    # past and die later when the generated body reads ``.ndim``.
+    if direct is not None and hasattr(direct, "shape") and hasattr(direct, "ndim"):
         return direct
     shape_attr = getattr(op, f"{name}_shape", None)
     if isinstance(shape_attr, (tuple, list)):
@@ -192,9 +195,22 @@ class _VarsExprValidator(ast.NodeVisitor):
     resolve cleanly without polluting the surrounding scope.
     """
 
-    def __init__(self, op_name: str, var_name: str, allowed: set[str]) -> None:
+    def __init__(
+        self,
+        op_name: str,
+        var_name: str,
+        allowed: set[str],
+        input_names: set[str],
+    ) -> None:
         self.op_name = op_name
         self.var_name = var_name
+        # Names referring to tensor inputs. They are bound (the
+        # generated body receives them from the resolver) but may only
+        # appear as the operand of a whitelisted attribute access
+        # (``input.shape`` / ``input.ndim``). A bare reference would
+        # read tensor data at runtime, which violates the "vars layer
+        # is shape-derived" boundary in §4.4.3.
+        self._input_names = set(input_names)
         self._scopes: list[set[str]] = [set(allowed)]
 
     def _is_bound(self, name: str) -> bool:
@@ -250,6 +266,13 @@ class _VarsExprValidator(ast.NodeVisitor):
                 f"{self.op_name}: roofline.vars[{self.var_name!r}] "
                 f"references unknown name {node.id!r}"
             )
+        if node.id in self._input_names:
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
+                f"references tensor input {node.id!r} as a bare value; "
+                f"access shape metadata via {node.id}.shape / "
+                f"{node.id}.ndim instead"
+            )
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if node.attr not in _VARS_ATTR_WHITELIST:
@@ -259,7 +282,19 @@ class _VarsExprValidator(ast.NodeVisitor):
                 f"vars-layer allows only "
                 f"{sorted(_VARS_ATTR_WHITELIST)!r}"
             )
-        self.generic_visit(node)
+        # ``input.shape`` / ``input.ndim`` is the *only* legal use of a
+        # bare tensor input name. Don't recurse into ``node.value`` when
+        # it is one of those inputs — visiting the Name would fire the
+        # bare-input check above. Other operands (chained attributes,
+        # subscripts of locals, etc.) recurse normally.
+        if isinstance(node.value, ast.Name) and node.value.id in self._input_names:
+            if not self._is_bound(node.value.id):
+                raise ValueError(
+                    f"{self.op_name}: roofline.vars[{self.var_name!r}] "
+                    f"references unknown name {node.value.id!r}"
+                )
+            return
+        self.visit(node.value)
 
     def visit_Call(self, node: ast.Call) -> None:
         if not isinstance(node.func, ast.Name):
@@ -312,16 +347,17 @@ def _validate_vars_expr(
     var_name: str,
     expr: str,
     allowed_names: set[str],
+    input_names: set[str],
 ) -> ast.Expression:
     """Parse and AST-check a vars-layer expression.
 
-    Vars-layer permits ``.shape`` / ``.ndim`` access, small
-    comprehensions, calls to whitelisted helpers, and references to
-    bound names (tensors, params, ``elem_bytes``, earlier vars,
-    helpers). Forbidden constructs raise ``ValueError`` so class
-    construction fails before the manifest lands. Comprehension target
-    names bind to a child scope so they are reachable only inside the
-    comprehension's element/conditions/iterables.
+    Vars-layer permits ``.shape`` / ``.ndim`` access on tensor inputs,
+    small comprehensions, calls to whitelisted helpers, and references
+    to bound names (params, ``elem_bytes``, earlier vars, helpers).
+    Tensor inputs may not appear as bare values; comprehension target
+    names bind to a child scope reachable only inside the comprehension.
+    Forbidden constructs raise ``ValueError`` so class construction
+    fails before the manifest lands.
     """
     try:
         tree = ast.parse(expr, mode="eval")
@@ -330,7 +366,9 @@ def _validate_vars_expr(
             f"{op_name}: roofline.vars[{var_name!r}] is not a valid Python "
             f"expression ({exc})"
         ) from exc
-    _VarsExprValidator(op_name, var_name, allowed_names).visit(tree)
+    _VarsExprValidator(
+        op_name, var_name, allowed_names, input_names,
+    ).visit(tree)
     return tree
 
 
@@ -451,6 +489,7 @@ def _synthesize_inline_mode(
     vars_allowed.add("elem_bytes")
     vars_allowed.update(_VARS_HELPERS.keys())
 
+    input_name_set = set(input_names)
     for name, expr in vars_block.items():
         if not isinstance(name, str) or not name.isidentifier():
             raise ValueError(
@@ -462,7 +501,18 @@ def _synthesize_inline_mode(
                 f"{op_name}: roofline.vars[{name!r}] must be a string "
                 f"expression"
             )
-        _validate_vars_expr(op_name, name, expr, vars_allowed)
+        # Reject keys that collide with names already in scope (inputs,
+        # params, helpers, ``elem_bytes``, or an earlier vars entry).
+        # The emitted body assigns ``<name> = <expr>`` and would shadow
+        # the colliding binding for later vars / arithmetic expressions
+        # — e.g. a ``vars.sum`` entry would shadow the ``sum`` helper.
+        if name in vars_allowed:
+            raise ValueError(
+                f"{op_name}: roofline.vars key {name!r} collides with an "
+                f"existing name (input / param / helper / elem_bytes / "
+                f"earlier var)"
+            )
+        _validate_vars_expr(op_name, name, expr, vars_allowed, input_name_set)
         vars_allowed.add(name)
 
     # Arithmetic-layer legal name set per §4.4.3 Block 2: "references

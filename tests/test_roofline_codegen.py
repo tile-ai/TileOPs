@@ -316,6 +316,21 @@ class TestResolveTensorBinding:
         assert "self.input" in msg
         assert "self.input_shape" in msg
 
+    def test_tier1_requires_both_shape_and_ndim(self):
+        # A partially-conformant attribute (``.shape`` but no ``.ndim``)
+        # must not pass tier 1 and bypass the ``<name>_shape`` fallback.
+        class ShapeOnly:
+            shape = (2, 3)
+
+        class Op:
+            input = ShapeOnly()
+            input_shape = (7, 11)
+
+        out = _resolve_tensor_binding(Op(), "input", "ToyOp")
+        # Tier 1 rejected ShapeOnly, tier 2 used input_shape → proxy.
+        assert out.shape == (7, 11)
+        assert out.ndim == 2
+
 
 class TestVarsLayerComprehensions:
     """Vars-layer comprehensions: target names bind to a child scope."""
@@ -411,6 +426,101 @@ class TestVarsLayerAttributeWhitelist:
                     "bytes": "N * elem_bytes",
                 },
                 signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+
+class TestVarsLayerTensorInputUsage:
+    """Vars-layer rejects tensor inputs used as bare values."""
+
+    def test_bare_tensor_in_helper_call_rejected(self):
+        # ``sum(x)`` would iterate tensor data at runtime; vars layer is
+        # shape-derived, so reject the bare reference at synthesis.
+        with pytest.raises(ValueError, match="tensor input 'x' as a bare value"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {"N": "sum(x)"},
+                    "flops": "N",
+                    "bytes": "N * elem_bytes",
+                },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+    def test_bare_tensor_subscript_rejected(self):
+        # ``x[0]`` reads tensor data at runtime.
+        with pytest.raises(ValueError, match="tensor input 'x' as a bare value"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {"N": "x[0]"},
+                    "flops": "N",
+                    "bytes": "N * elem_bytes",
+                },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+    def test_shape_subscript_accepted(self):
+        # ``x.shape[0]`` is shape access, not data access. Must pass.
+        fn = synthesize_eval_roofline(
+            "Op",
+            roofline={
+                "vars": {"N": "x.shape[0]"},
+                "flops": "N",
+                "bytes": "N * elem_bytes",
+            },
+            signature={"inputs": {"x": {"dtype": "float16"}}},
+        )
+
+        import torch
+
+        class Mock:
+            x = _ShapeProxy((4, 5))
+            dtype = torch.float16
+
+        flops, _ = fn(Mock())
+        assert flops == 4
+
+
+class TestVarsKeyCollision:
+    """Vars keys must not shadow inputs / params / helpers / earlier vars."""
+
+    def test_vars_key_collides_with_helper(self):
+        with pytest.raises(ValueError, match="collides with an existing name"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {"sum": "1", "N": "sum(x.shape)"},
+                    "flops": "N",
+                    "bytes": "N * elem_bytes",
+                },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+    def test_vars_key_collides_with_input(self):
+        with pytest.raises(ValueError, match="collides with an existing name"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {"x": "1"},
+                    "flops": "x",
+                    "bytes": "x * elem_bytes",
+                },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+    def test_vars_key_collides_with_param(self):
+        with pytest.raises(ValueError, match="collides with an existing name"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {"M": "1"},
+                    "flops": "M",
+                    "bytes": "M * elem_bytes",
+                },
+                signature={
+                    "inputs": {"x": {"dtype": "float16"}},
+                    "params": {"M": {"type": "int"}},
+                },
             )
 
 
