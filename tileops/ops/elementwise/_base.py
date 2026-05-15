@@ -1008,11 +1008,11 @@ class _ParamFreeActivationOp(_UnaryActivationMixin, UnaryOp):
         self,
         N_total: int,
         dtype: torch.dtype,
+        inplace: bool = False,
         *,
         strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
-        inplace: bool = False,
     ):
         super().__init__(
             N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
