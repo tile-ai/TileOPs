@@ -52,6 +52,18 @@ class Op(ABC):
     # manifest `static_dims`. Default empty = no committed axes.
     _static_axes: frozenset[tuple[int, int]] = frozenset()
 
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Auto-install a manifest-derived ``_validate_dtypes`` on subclasses.
+
+        Lazy-imports the codegen module to avoid a circular import at
+        ``Op`` definition time. The hook is a no-op when the subclass
+        does not advertise manifest metadata, defines its own
+        ``_validate_dtypes``, or is marked ``status: spec-only``.
+        """
+        super().__init_subclass__(**kwargs)
+        from tileops.ops._dtype_codegen import maybe_install_validator
+        maybe_install_validator(cls)
+
     @property
     @abstractmethod
     def default_kernel_map(self) -> dict[str, Kernel]:
