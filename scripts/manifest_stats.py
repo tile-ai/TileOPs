@@ -213,6 +213,10 @@ def render_text(stats: dict[str, Any]) -> str:
         f"{len(gaps['implemented_without_roofline'])}"
     )
     lines.append(
+        f"  implemented without bench:      "
+        f"{len(gaps['implemented_without_bench_manifest_driven'])}"
+    )
+    lines.append(
         f"  implemented with <2 workloads:  "
         f"{len(gaps['implemented_with_fewer_than_two_workloads'])}"
     )
@@ -278,6 +282,10 @@ def render_markdown(stats: dict[str, Any]) -> str:
     lines.append(
         f"- Implemented ops without `roofline`: "
         f"**{len(gaps['implemented_without_roofline'])}**"
+    )
+    lines.append(
+        f"- Implemented ops without `source.bench_manifest_driven`: "
+        f"**{len(gaps['implemented_without_bench_manifest_driven'])}**"
     )
     lines.append(
         f"- Implemented ops with fewer than two workloads: "
