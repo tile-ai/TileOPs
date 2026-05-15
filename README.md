@@ -7,6 +7,10 @@
     <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/badge/PyPI-tileops-1E90FF" alt="PyPI version" height="20"></a>
   </p> -->
   <p>
+    <a href="https://github.com/tile-ai/TileOPs/tree/main/tileops/manifest"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Implemented ops"></a>
+    <a href="https://github.com/tile-ai/TileOPs/tree/main/tileops/manifest"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-kernel-map.json" alt="kernel_map coverage"></a>
+  </p>
+  <p>
     <a href="#installation"><b>Installation</b></a> |
     <a href="#quick-start"><b>Quick Start</b></a> |
     <a href="#documentation"><b>Docs</b></a>
