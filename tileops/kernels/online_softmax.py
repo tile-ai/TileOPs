@@ -65,6 +65,35 @@ def make_online_softmax(scale, accum_dtype, block_rows, block_cols):
     return online_softmax
 
 
+def make_online_softmax_with_score_scale(scale, accum_dtype, block_rows, block_cols):
+    """Create an online softmax macro that fuses a positive score scale.
+
+    The score scale is constant for the current K/V block.  Since it is
+    positive, the row maximum can be computed on the unscaled QK accumulator
+    and scaled once per row before the normal online update.
+    """
+
+    @T.macro
+    def online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum,
+                       logsum, score_scale):
+        score_scale_softmax = score_scale * scale
+        T.copy(scores_max, scores_max_prev)
+        T.fill(scores_max, -T.infinity(accum_dtype))
+        T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+        for i in T.Parallel(block_rows):
+            scores_max[i] *= score_scale
+        for i in T.Parallel(block_rows):
+            scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+        for i, j in T.Parallel(block_rows, block_cols):
+            acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax -
+                                  scores_max[i] * scale)
+        T.reduce_sum(acc_s, scores_sum, dim=1)
+        for i in T.Parallel(block_rows):
+            logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+
+    return online_softmax
+
+
 def make_online_softmax_with_mask_guard(scale, accum_dtype, block_rows, block_cols):
     """Create an online softmax T.macro with monotonic max enforcement and NaN guard.
 
