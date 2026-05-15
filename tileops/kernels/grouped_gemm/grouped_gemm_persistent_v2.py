@@ -89,12 +89,15 @@ class GroupedGemmPersistentV2Kernel(Kernel):
                     for num_stages in (2, 3, 4, 5, 6):
                         # Pingpong layout: 4 independent SMEM streams
                         # (A_wg0, B_wg0, A_wg1, B_wg1) each of shape
-                        # (num_stages, block_{m or n}, block_k)
-                        smem = (
+                        # (num_stages, block_{m or n}, block_k).
+                        smem_main = (
                             2 * num_stages * block_m * block_k * bytes_per_elem  # A_wg0 + A_wg1
                             + 2 * num_stages * block_n * block_k * bytes_per_elem  # B_wg0 + B_wg1
                         )
-                        if smem > SMEM_LIMIT:
+                        # TMA-store staging: per-WG C_shared (block_m, block_n)
+                        # in dtype, used by phase-4 epilogue for full m-tiles.
+                        smem_c = 2 * block_m * block_n * bytes_per_elem
+                        if smem_main + smem_c > SMEM_LIMIT:
                             continue
                         configs.append({
                             "block_m": block_m, "block_n": block_n,
@@ -185,6 +188,14 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                 C_local_wg0 = T.alloc_fragment((block_m, block_n), accum_dtype)
                 C_local_wg1 = T.alloc_fragment((block_m, block_n), accum_dtype)
 
+                # ── Phase-4 epilogue: per-WG cast fragment + TMA-store SMEM ──
+                # Fast path (full m-tile): cast→C_shared→TMA store.
+                # Slow path (partial m-tile, arows < block_m): cast→predicated STG.
+                C_local_cast_wg0 = T.alloc_fragment((block_m, block_n), dtype)
+                C_local_cast_wg1 = T.alloc_fragment((block_m, block_n), dtype)
+                C_shared_wg0 = T.alloc_shared((block_m, block_n), dtype)
+                C_shared_wg1 = T.alloc_shared((block_m, block_n), dtype)
+
                 # ── Scheduler SMEM (no atomic counter / tile pair anymore) ──
                 s_cum = T.alloc_shared((num_experts + 1,), "int32")
                 s_total = T.alloc_shared((1,), "int32")
@@ -208,6 +219,8 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                     B_smem_wg0: tilelang.layout.make_swizzled_layout(B_smem_wg0),
                     A_smem_wg1: tilelang.layout.make_swizzled_layout(A_smem_wg1),
                     B_smem_wg1: tilelang.layout.make_swizzled_layout(B_smem_wg1),
+                    C_shared_wg0: tilelang.layout.make_swizzled_layout(C_shared_wg0),
+                    C_shared_wg1: tilelang.layout.make_swizzled_layout(C_shared_wg1),
                 })
 
                 # ── Per-WG producer/consumer barriers (arrive_count=128) ──
@@ -392,9 +405,21 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                                 T.barrier_arrive(ab_empty_wg0[slot])
                                 gi_cons_0 = gi_cons_0 + 1
 
-                            for i, j in T.Parallel(block_m, block_n):
-                                if i < arows_0 and j < acols_0:
-                                    C[m_start_0 + i, n_start_0 + j] = C_local_wg0[i, j]
+                            # ── Phase-4 epilogue: TMA-store fast path / STG fallback ──
+                            # Cast fp32 accumulator → dtype fragment once, then
+                            # branch on full vs partial m-tile (acols is always
+                            # block_n since N % block_n == 0 is enforced).
+                            T.copy(C_local_wg0, C_local_cast_wg0)
+                            if arows_0 == T.int32(block_m):
+                                # Fast path: full tile → SMEM staging → TMA store.
+                                T.copy(C_local_cast_wg0, C_shared_wg0)
+                                T.copy(C_shared_wg0,
+                                       C[m_start_0, n_start_0])
+                            else:
+                                # Slow path: partial tile → predicated direct STG.
+                                for i, j in T.Parallel(block_m, block_n):
+                                    if i < arows_0 and j < acols_0:
+                                        C[m_start_0 + i, n_start_0 + j] = C_local_cast_wg0[i, j]
 
                 # ═════════════════════════════════════════════════════════
                 # Consumer WG1: tx ≥ 256 — processes flat_id_1 per wave
@@ -449,9 +474,21 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
                                 T.barrier_arrive(ab_empty_wg1[slot])
                                 gi_cons_1 = gi_cons_1 + 1
 
-                            for i, j in T.Parallel(block_m, block_n):
-                                if i < arows_1 and j < acols_1:
-                                    C[m_start_1 + i, n_start_1 + j] = C_local_wg1[i, j]
+                            # ── Phase-4 epilogue: TMA-store fast path / STG fallback ──
+                            # Cast fp32 accumulator → dtype fragment once, then
+                            # branch on full vs partial m-tile (acols is always
+                            # block_n since N % block_n == 0 is enforced).
+                            T.copy(C_local_wg1, C_local_cast_wg1)
+                            if arows_1 == T.int32(block_m):
+                                # Fast path: full tile → SMEM staging → TMA store.
+                                T.copy(C_local_cast_wg1, C_shared_wg1)
+                                T.copy(C_shared_wg1,
+                                       C[m_start_1, n_start_1])
+                            else:
+                                # Slow path: partial tile → predicated direct STG.
+                                for i, j in T.Parallel(block_m, block_n):
+                                    if i < arows_1 and j < acols_1:
+                                        C[m_start_1 + i, n_start_1 + j] = C_local_cast_wg1[i, j]
 
         return _gemm_main_v2
 

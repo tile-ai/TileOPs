@@ -86,6 +86,35 @@ def test_correctness_stages(num_stages):
 
 
 @pytest.mark.nightly
+def test_partial_m_tile():
+    """Exercise the STG-fallback slow path: per-expert size that is NOT a
+    multiple of block_m, so the trailing m-tile of each expert has
+    arows < block_m and must take the predicated direct-STG epilogue.
+
+    The TMA-store fast path triggers for the leading full tiles; this test
+    guarantees both paths are exercised in a single run."""
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    E, top_k, N, K = 4, 2, 256, 128
+    block_m = 64
+    # Make every expert end on a partial tile (size = 1 full block_m tile + 17 rows).
+    per_expert = block_m + 17
+    numel = E * per_expert
+    sizes = torch.full((E,), per_expert, dtype=torch.int32, device="cuda")
+    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
+    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+    torch.manual_seed(0)
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    ref = GroupedGemmPersistentKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    v2 = GroupedGemmPersistentV2Kernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    C_ref = ref(A, B, sizes, offsets)
+    C_v2 = v2(A, B, sizes, offsets)
+    torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
 def test_max_waves_edge_case():
     """Validate static-wave slack: cross the 2*sm CTA-pair boundary AND
     end on a partial last wave with an odd tile count, exercising the
