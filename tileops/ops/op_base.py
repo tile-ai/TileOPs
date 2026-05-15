@@ -53,16 +53,21 @@ class Op(ABC):
     _static_axes: frozenset[tuple[int, int]] = frozenset()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
-        """Auto-install a manifest-derived ``_validate_dtypes`` on subclasses.
+        """Auto-install manifest-derived methods on concrete subclasses.
 
-        Lazy-imports the codegen module to avoid a circular import at
-        ``Op`` definition time. The hook is a no-op when the subclass
-        does not advertise manifest metadata, defines its own
-        ``_validate_dtypes``, or is marked ``status: spec-only``.
+        Synthesizes ``_validate_dtypes`` (per docs/design/ops-design.md
+        §Step 5) and ``eval_roofline`` (per docs/design/roofline.md §4.4)
+        from the subclass's manifest entry. Each codegen pass is a no-op
+        when the subclass does not advertise manifest metadata, supplies
+        its own override, or is marked ``status: spec-only``. Codegen
+        modules are lazy-imported to avoid a circular import at ``Op``
+        definition time.
         """
         super().__init_subclass__(**kwargs)
         from tileops.ops._dtype_codegen import maybe_install_validator
+        from tileops.ops._roofline_codegen import maybe_install_eval_roofline
         maybe_install_validator(cls)
+        maybe_install_eval_roofline(cls)
 
     @property
     @abstractmethod
