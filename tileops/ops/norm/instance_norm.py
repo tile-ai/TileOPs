@@ -200,10 +200,6 @@ class InstanceNormFwdOp(Op):
             raise ValueError(
                 f"Expected weight on {x.device}, got {weight.device}"
             )
-        if weight.dtype != self.dtype:
-            raise ValueError(
-                f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
-            )
         if weight.ndim != 1 or weight.shape[0] != self.C:
             raise ValueError(
                 f"Expected weight shape ({self.C},), got {weight.shape}"
@@ -213,10 +209,6 @@ class InstanceNormFwdOp(Op):
         if bias.device != x.device:
             raise ValueError(
                 f"Expected bias on {x.device}, got {bias.device}"
-            )
-        if bias.dtype != self.dtype:
-            raise ValueError(
-                f"Expected bias.dtype {self.dtype}, got {bias.dtype}"
             )
         if bias.ndim != 1 or bias.shape[0] != self.C:
             raise ValueError(

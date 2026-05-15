@@ -192,9 +192,9 @@ def test_instance_norm_validate_dtypes_matches_manifest_inputs() -> None:
     """
     sig = inspect.signature(InstanceNormFwdOp._validate_dtypes)
     params = [p for p in sig.parameters if p != "self"]
-    assert set(params) == {"x", "weight", "bias"}, (
-        f"_validate_dtypes params {params} must equal manifest inputs "
-        "{'x', 'weight', 'bias'}"
+    assert params == ["x", "weight", "bias"], (
+        f"_validate_dtypes params {params} must match manifest inputs "
+        "['x', 'weight', 'bias'] in order"
     )
 
 
