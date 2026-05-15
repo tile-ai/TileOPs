@@ -71,7 +71,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         self.sm_count = sm_count
         self.kernel = lambda: _persistent_grouped_gemm_v2_kernel(
             self.numel, self.num_experts, self.N, self.K,
-            self.dtype_str, self.sm_count, self.config["block_k"])
+            self.dtype_str, self.sm_count, _DEFAULT_CONFIG["block_k"])
         self.init_config(config, tune)
 
     @property

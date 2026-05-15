@@ -11,7 +11,7 @@ internally, making it the strongest available baseline for Hopper grouped GEMM.C
 Usage:
     TILELANG_CLEANUP_TEMP_FILES=1 TMPDIR=/tmp/jieneng_tvm_tmp \\
     conda run -n tileops-tl9 --no-capture-output \\
-    python benchmarks/ops/bench_grouped_gemm_3wg_vs_2wg.py
+    python benchmarks/ops/bench_grouped_gemm_3wg_vs_cutlass.py
 """
 from __future__ import annotations
 
