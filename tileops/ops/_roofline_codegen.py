@@ -217,28 +217,24 @@ class _VarsExprValidator(ast.NodeVisitor):
         )
 
     def _visit_comp(self, node: ast.AST) -> None:
-        generators = node.generators  # type: ignore[attr-defined]
-        scope: set[str] = set()
-        for gen in generators:
-            self._collect_targets(gen.target, scope)
-        self._scopes.append(scope)
+        # Walk the comprehension matching Python's scoping rules: each
+        # generator's iterable is evaluated *before* its target is bound
+        # (so ``sum(d for d in d)`` raises NameError at runtime in
+        # Python — and must therefore fail validation here too). Bind
+        # the target only after visiting its iterable, then conditions
+        # and any subsequent generator iterables / body see the binding.
+        self._scopes.append(set())
         try:
-            # Element / key / value expression and all generator
-            # iterables + conditions are visited inside the child scope.
-            # (Python evaluates the first iterable in the enclosing
-            # scope, but accepting that iterable under the looser child
-            # scope is strictly more permissive only for target names —
-            # which are not visible in the outer scope anyway, so this
-            # simplification cannot mask invalid references.)
+            for gen in node.generators:  # type: ignore[attr-defined]
+                self.visit(gen.iter)
+                self._collect_targets(gen.target, self._scopes[-1])
+                for cond in gen.ifs:
+                    self.visit(cond)
             if isinstance(node, ast.DictComp):
                 self.visit(node.key)
                 self.visit(node.value)
             else:
                 self.visit(node.elt)  # type: ignore[attr-defined]
-            for gen in generators:
-                self.visit(gen.iter)
-                for cond in gen.ifs:
-                    self.visit(cond)
         finally:
             self._scopes.pop()
 
@@ -338,6 +334,26 @@ def _validate_vars_expr(
     return tree
 
 
+# Positive allowlist for arithmetic-layer AST nodes. Anything else
+# (tensor access, slicing, collection literals, comprehensions, lambdas,
+# starred / walrus / etc.) is rejected at synthesis time. Listing what
+# survives — rather than enumerating what to forbid — keeps the gate
+# from drifting as new AST node kinds appear in future Python versions.
+_ARITHMETIC_ALLOWED_NODES: tuple[type[ast.AST], ...] = (
+    ast.Expression,
+    ast.BinOp, ast.UnaryOp, ast.BoolOp,
+    ast.IfExp, ast.Compare,
+    ast.Call,
+    ast.Constant,
+    ast.Name, ast.Load,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    ast.LShift, ast.RShift, ast.BitAnd, ast.BitOr, ast.BitXor,
+    ast.USub, ast.UAdd, ast.Invert, ast.Not,
+    ast.And, ast.Or,
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+)
+
+
 def _validate_arithmetic_expr(
     op_name: str,
     label: str,
@@ -347,10 +363,9 @@ def _validate_arithmetic_expr(
     """Parse and AST-check an arithmetic-layer expression.
 
     Per ``docs/design/roofline.md`` §4.4.3, the arithmetic layer
-    forbids tensor access, shape slicing, comprehensions, attributes,
-    and arbitrary calls. Only ``BinOp``, ``UnaryOp``, ``IfExp``,
-    ``Compare``, ``BoolOp``, constants, names from *allowed_names*, and
-    calls to ``ceil`` / ``floor`` / ``log2`` survive.
+    permits only numeric operations on resolved vars + ``elem_bytes``
+    + ``ceil`` / ``floor`` / ``log2``. Any AST node outside
+    ``_ARITHMETIC_ALLOWED_NODES`` fails synthesis.
     """
     try:
         tree = ast.parse(expr, mode="eval")
@@ -360,23 +375,12 @@ def _validate_arithmetic_expr(
             f"expression ({exc})"
         ) from exc
 
-    forbidden_nodes = (
-        ast.Attribute,
-        ast.Subscript,
-        ast.ListComp,
-        ast.SetComp,
-        ast.DictComp,
-        ast.GeneratorExp,
-        ast.Lambda,
-        ast.NamedExpr,
-        ast.Starred,
-    )
     for node in ast.walk(tree):
-        if isinstance(node, forbidden_nodes):
+        if not isinstance(node, _ARITHMETIC_ALLOWED_NODES):
             raise ValueError(
                 f"{op_name}: roofline.{label} uses forbidden construct "
                 f"{type(node).__name__} (arithmetic layer permits only "
-                f"BinOp/UnaryOp/IfExp/Compare/BoolOp/constants/names "
+                f"BinOp/UnaryOp/BoolOp/IfExp/Compare/constants/names "
                 f"and calls to ceil/floor/log2)"
             )
         if isinstance(node, ast.Name) and node.id not in allowed_names:

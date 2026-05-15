@@ -381,6 +381,22 @@ class TestVarsLayerComprehensions:
                 signature={"inputs": {"x": {"dtype": "float16"}}},
             )
 
+    def test_target_not_bound_in_its_own_iterable(self):
+        # Python evaluates each generator's iterable in the surrounding
+        # scope, *before* binding its target. ``sum(d for d in d)``
+        # raises NameError at runtime; the synthesis-time gate must
+        # mirror that and reject the iterable's reference to ``d``.
+        with pytest.raises(ValueError, match="unknown name 'd'"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {"N": "sum(d for d in d)"},
+                    "flops": "N",
+                    "bytes": "N * elem_bytes",
+                },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
 
 class TestVarsLayerAttributeWhitelist:
     """Vars-layer ``Attribute`` access is restricted to ``.shape`` / ``.ndim``."""
@@ -394,6 +410,26 @@ class TestVarsLayerAttributeWhitelist:
                     "flops": "N",
                     "bytes": "N * elem_bytes",
                 },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+
+class TestArithmeticLayerForm:
+    """Arithmetic layer rejects non-numeric AST forms."""
+
+    def test_tuple_literal_rejected(self):
+        with pytest.raises(ValueError, match="forbidden construct Tuple"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={"flops": "(1, 2)", "bytes": "1 * elem_bytes"},
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+    def test_list_literal_rejected(self):
+        with pytest.raises(ValueError, match="forbidden construct List"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={"flops": "[1]", "bytes": "1 * elem_bytes"},
                 signature={"inputs": {"x": {"dtype": "float16"}}},
             )
 
