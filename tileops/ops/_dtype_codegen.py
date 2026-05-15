@@ -206,6 +206,17 @@ def synthesize_validate_dtypes(
         per_input[name] = (concrete, refs, dtype_str)
 
     input_names = list(inputs.keys())
+    # Validate every same_as(ref) names a sibling in the same signature.
+    # Doing this at synthesis time turns typos into class-construction
+    # errors instead of deferring them to a runtime fallback path.
+    for name, (_concrete, refs, _dtype_str) in per_input.items():
+        for ref in refs:
+            if ref not in input_names:
+                raise ValueError(
+                    f"{op_name}: signature.inputs[{name!r}].dtype "
+                    f"references same_as({ref}) but {ref!r} is not "
+                    f"declared in signature.inputs"
+                )
     combos = _parse_dtype_combos(
         op_name, sig.get("dtype_combos"), input_names,
     )
@@ -215,25 +226,41 @@ def synthesize_validate_dtypes(
     combo_keys: set[tuple] | None = None
     combo_axis_names: list[str] | None = None
     if combos is not None:
-        # Combo axes are the union of names that appear in any row.
-        seen: list[str] = []
-        for row in combos:
-            for n in row:
-                if n not in seen:
-                    seen.append(n)
-        combo_axis_names = seen
+        # Every row must enumerate the same axis set so each combo key is
+        # built from a consistent tuple — never padded with ``None`` for a
+        # missing axis. A row that omits a declared axis is a manifest bug
+        # and must fail synthesis, not produce an unreachable combo key.
+        first_axes = list(combos[0].keys())
+        first_axes_set = set(first_axes)
+        for idx, row in enumerate(combos[1:], start=1):
+            row_axes = set(row.keys())
+            if row_axes != first_axes_set:
+                missing = first_axes_set - row_axes
+                extra = row_axes - first_axes_set
+                detail_parts: list[str] = []
+                if missing:
+                    detail_parts.append(
+                        f"missing {sorted(missing)!r}"
+                    )
+                if extra:
+                    detail_parts.append(f"extra {sorted(extra)!r}")
+                detail = "; ".join(detail_parts)
+                raise ValueError(
+                    f"{op_name}: signature.dtype_combos[{idx}] keys "
+                    f"{sorted(row_axes)!r} differ from row 0 keys "
+                    f"{sorted(first_axes_set)!r} ({detail}); every row "
+                    f"must enumerate the same input axes"
+                )
+        combo_axis_names = first_axes
         combo_keys = {
-            tuple(row.get(n) for n in combo_axis_names) for row in combos
+            tuple(row[n] for n in combo_axis_names) for row in combos
         }
 
     def _validate_dtypes(self, **kwargs: torch.Tensor) -> None:  # noqa: D401
-        # Verify all manifest-declared inputs are present.
-        for name in input_names:
-            if name not in kwargs:
-                raise TypeError(
-                    f"{op_name}._validate_dtypes() missing required "
-                    f"keyword argument {name!r}"
-                )
+        # Callers always reach this function through ``_rebuild_with_named_kwargs``,
+        # which binds every declared input via ``inspect.Signature.bind``
+        # and raises ``TypeError`` for missing arguments before forwarding.
+        # A manual presence check here would be unreachable.
         for name in input_names:
             concrete, refs, dtype_str = per_input[name]
             t = kwargs[name]

@@ -299,6 +299,73 @@ class TestSynthesizeDtypeCombos:
         with pytest.raises(ValueError, match="unknown input"):
             synthesize_validate_dtypes("BadOp", sig)
 
+    def test_rejects_incomplete_combo_row_axes(self):
+        """Rows that omit a declared combo axis must fail synthesis
+        rather than silently produce an unreachable combo key padded
+        with ``None``."""
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | bfloat16"},
+                "w": {"dtype": "float16 | bfloat16"},
+            },
+            "dtype_combos": [
+                {"x": "float16", "w": "float16"},
+                {"x": "bfloat16"},
+            ],
+        }
+        with pytest.raises(
+            ValueError, match="must enumerate the same input axes"
+        ):
+            synthesize_validate_dtypes("IncompleteRowOp", sig)
+
+    def test_rejects_extra_combo_row_axes(self):
+        """Rows with axes not present in row 0 are also rejected."""
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16"},
+                "w": {"dtype": "float16"},
+            },
+            "dtype_combos": [
+                {"x": "float16"},
+                {"x": "float16", "w": "float16"},
+            ],
+        }
+        with pytest.raises(
+            ValueError, match="must enumerate the same input axes"
+        ):
+            synthesize_validate_dtypes("ExtraAxisOp", sig)
+
+
+class TestSameAsRefValidation:
+    def test_rejects_same_as_unknown_input_at_synthesis(self):
+        """A ``same_as(ref)`` token inside an input dtype expression
+        must name a sibling input declared in ``signature.inputs``;
+        otherwise synthesis fails up front instead of waiting for a
+        runtime fallback path to surface the typo."""
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16 | same_as(missing)"},
+            },
+        }
+        with pytest.raises(
+            ValueError,
+            match=r"same_as\(missing\).*not declared in signature.inputs",
+        ):
+            synthesize_validate_dtypes("BadRefOp", sig)
+
+    def test_rejects_same_as_unknown_input_pure_ref(self):
+        """Same check fires when ``same_as`` is the sole token."""
+        sig = {
+            "inputs": {
+                "x": {"dtype": "float16"},
+                "y": {"dtype": "same_as(typo)"},
+            },
+        }
+        with pytest.raises(
+            ValueError, match="not declared in signature.inputs"
+        ):
+            synthesize_validate_dtypes("BadRefOp2", sig)
+
 
 class TestAutoInstallHook:
     def test_subclass_with_manifest_status_implemented_gets_validator(self):
