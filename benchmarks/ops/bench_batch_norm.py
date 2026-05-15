@@ -149,7 +149,7 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     # Manifest input order: (x, running_mean, running_var, weight, bias).
     inputs = (x, running_mean, running_var, weight, bias)
 
-    op = BatchNormFwdOp(N, C, *spatial, dtype=dtype, training=training, tune=tune)
+    op = BatchNormFwdOp(N, C, tuple(spatial), dtype=dtype, training=training, tune=tune)
 
     test = BatchNormFwdTest(N, C, spatial, dtype, training)
     bm = BatchNormFwdBenchmark(test, op)

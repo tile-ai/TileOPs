@@ -48,10 +48,10 @@ class SoftmaxFwdOp(_SoftmaxBaseOp):
 
     def __init__(
         self,
-        *,
         N: int,
         dtype: torch.dtype,
         dim: Optional[int] = None,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):

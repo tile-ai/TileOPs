@@ -171,10 +171,10 @@ class LeakyReluFwdOp(_ParametricActivationOp):
         N_total: int,
         dtype: torch.dtype,
         negative_slope: float = 0.01,
+        inplace: bool = False,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
-        inplace: bool = False,
     ):
         _validate_scalar_param_repr("negative_slope", negative_slope, dtype, self._op_name)
         self.negative_slope = negative_slope
@@ -213,10 +213,10 @@ class EluFwdOp(_ParametricActivationOp):
         N_total: int,
         dtype: torch.dtype,
         alpha: float = 1.0,
+        inplace: bool = False,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
-        inplace: bool = False,
     ):
         _validate_scalar_param_repr("alpha", alpha, dtype, self._op_name)
         self.alpha = alpha
@@ -257,10 +257,10 @@ class HardtanhFwdOp(_ParametricActivationOp):
         dtype: torch.dtype,
         min_val: float = -1.0,
         max_val: float = 1.0,
+        inplace: bool = False,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
-        inplace: bool = False,
     ):
         _validate_scalar_param_repr("min_val", min_val, dtype, self._op_name)
         _validate_scalar_param_repr("max_val", max_val, dtype, self._op_name)
