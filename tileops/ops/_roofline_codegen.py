@@ -282,19 +282,24 @@ class _VarsExprValidator(ast.NodeVisitor):
                 f"vars-layer allows only "
                 f"{sorted(_VARS_ATTR_WHITELIST)!r}"
             )
-        # ``input.shape`` / ``input.ndim`` is the *only* legal use of a
-        # bare tensor input name. Don't recurse into ``node.value`` when
-        # it is one of those inputs — visiting the Name would fire the
-        # bare-input check above. Other operands (chained attributes,
-        # subscripts of locals, etc.) recurse normally.
-        if isinstance(node.value, ast.Name) and node.value.id in self._input_names:
-            if not self._is_bound(node.value.id):
-                raise ValueError(
-                    f"{self.op_name}: roofline.vars[{self.var_name!r}] "
-                    f"references unknown name {node.value.id!r}"
-                )
-            return
-        self.visit(node.value)
+        # ``.shape`` / ``.ndim`` are valid *only* taken directly from a
+        # declared tensor-input Name. Chained accesses
+        # (``x.shape.ndim``), subscripted operands
+        # (``x.shape[0].shape``), and accesses on local / param names
+        # (``N.shape``) all reject at synthesis instead of producing a
+        # body that crashes at runtime.
+        if not isinstance(node.value, ast.Name) or node.value.id not in self._input_names:
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
+                f"accesses .{node.attr} on a non-tensor-input operand; "
+                f".shape / .ndim are valid only directly on a declared "
+                f"signature.inputs name"
+            )
+        if not self._is_bound(node.value.id):
+            raise ValueError(
+                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
+                f"references unknown name {node.value.id!r}"
+            )
 
     def visit_Call(self, node: ast.Call) -> None:
         if not isinstance(node.func, ast.Name):

@@ -414,7 +414,8 @@ class TestVarsLayerComprehensions:
 
 
 class TestVarsLayerAttributeWhitelist:
-    """Vars-layer ``Attribute`` access is restricted to ``.shape`` / ``.ndim``."""
+    """Vars-layer ``Attribute`` access is restricted to ``.shape`` / ``.ndim``,
+    and only when taken directly from a declared tensor-input Name."""
 
     def test_arbitrary_attribute_rejected(self):
         with pytest.raises(ValueError, match="non-whitelisted attribute 'dtype'"):
@@ -424,6 +425,49 @@ class TestVarsLayerAttributeWhitelist:
                     "vars": {"N": "x.dtype"},
                     "flops": "N",
                     "bytes": "N * elem_bytes",
+                },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+    def test_chained_shape_attr_rejected(self):
+        # ``x.shape.ndim`` would crash at runtime: ``x.shape`` is a
+        # tuple, not a shape-bearing proxy. Reject at synthesis.
+        with pytest.raises(ValueError, match="non-tensor-input operand"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {"N": "x.shape.ndim"},
+                    "flops": "N",
+                    "bytes": "N * elem_bytes",
+                },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+    def test_subscript_chained_attr_rejected(self):
+        # ``x.shape[0].shape`` — subscripting shape yields an int.
+        with pytest.raises(ValueError, match="non-tensor-input operand"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {"N": "x.shape[0].shape"},
+                    "flops": "N",
+                    "bytes": "N * elem_bytes",
+                },
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
+    def test_attr_on_local_rejected(self):
+        # ``N.shape`` — ``N`` is a local vars-layer name, not a tensor.
+        with pytest.raises(ValueError, match="non-tensor-input operand"):
+            synthesize_eval_roofline(
+                "BadOp",
+                roofline={
+                    "vars": {
+                        "N": "x.shape[0]",
+                        "M": "N.shape",  # ← invalid
+                    },
+                    "flops": "M",
+                    "bytes": "M * elem_bytes",
                 },
                 signature={"inputs": {"x": {"dtype": "float16"}}},
             )
