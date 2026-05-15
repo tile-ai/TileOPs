@@ -281,7 +281,14 @@ def render_markdown(stats: dict[str, Any]) -> str:
         lines.append("<details><summary>Spec-only ops "
                      f"({len(spec_list)})</summary>")
         lines.append("")
-        lines.append(", ".join(f"`{n}`" for n in spec_list))
+        lines.append("| | | |")
+        lines.append("| --- | --- | --- |")
+        cols = 3
+        padded = list(spec_list) + [""] * ((-len(spec_list)) % cols)
+        for i in range(0, len(padded), cols):
+            row = padded[i : i + cols]
+            cells = [f"`{n}`" if n else "" for n in row]
+            lines.append("| " + " | ".join(cells) + " |")
         lines.append("")
         lines.append("</details>")
     return "\n".join(lines) + "\n"
