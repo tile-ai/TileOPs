@@ -42,10 +42,10 @@ _ANCHOR_HELPER_PATH = os.path.abspath(
 __all__ = ["GroupedGemmPersistentV2Kernel"]
 
 _DEFAULT_CONFIG = {
-    "block_m": 64,         # bm=64 pingpong; cooperative bm=128 in phase 5
-    "block_n": 128,
+    "block_m": 128,        # cooperative template (split-A, shared-B)
+    "block_n": 256,
     "block_k": 64,
-    "num_stages": 4,
+    "num_stages": 3,
     "threads": 384,
     "group_size_m": 1,
 }
