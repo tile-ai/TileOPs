@@ -333,7 +333,7 @@ def render_badges(stats: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         "implemented": {
             "schemaVersion": 1,
-            "label": "implemented",
+            "label": "spec coverage",
             "message": f"{impl}/{total} ({pct_impl:.0f}%)",
             "color": _color(pct_impl),
         },
