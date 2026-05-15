@@ -1,0 +1,127 @@
+name: Manifest Stats
+
+permissions:
+  contents: write       # publish-stats job pushes to the `stats` branch
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    # Daily fallback in case a push event was missed.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+# All publish-capable events (push, schedule, workflow_dispatch) share a
+# single mutex so a slower scheduled run can never overwrite a newer push.
+# PRs are isolated per number.
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('manifest-stats-pr-{0}', github.event.pull_request.number)
+        || 'manifest-stats-publish' }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Manifest stats summary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install minimal dependencies
+        run: pip install pyyaml
+
+      - name: Generate current stats
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          mkdir -p _stats
+          python scripts/manifest_stats.py --format json --output _stats/current.json
+          python scripts/manifest_stats.py --format md   --output _stats/current.md
+
+      - name: Compute diff vs base branch (PR only)
+        id: diff
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "$BASE_SHA"
+          git worktree add /tmp/base "$BASE_SHA"
+          # Use the PR-branch script (it may not exist on base) but load
+          # tileops.manifest from the base worktree so the snapshot reflects
+          # the base ref's manifest contents.
+          PYTHONPATH=/tmp/base python scripts/manifest_stats.py \
+            --format json --output /tmp/base-stats.json
+          git worktree remove --force /tmp/base
+
+          PYTHONPATH=${{ github.workspace }} python scripts/manifest_stats.py \
+            --format md --diff /tmp/base-stats.json --output _stats/comment.md
+
+      - name: Write Job Summary
+        run: |
+          if [[ -f _stats/comment.md ]]; then
+            cat _stats/comment.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat _stats/current.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload stats artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-stats
+          path: _stats/
+          retention-days: 14
+
+  publish-stats:
+    name: Publish stats to orphan branch
+    needs: report
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install minimal dependencies
+        run: pip install pyyaml
+
+      - name: Generate publish payload
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          mkdir -p _publish
+          python scripts/manifest_stats.py --format json --output _publish/manifest-stats.json
+          python scripts/manifest_stats.py --format md   --output _publish/manifest-stats.md
+          python scripts/manifest_stats.py --badge-output _publish
+
+      - name: Push to stats branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: stats
+          publish_dir: _publish
+          force_orphan: true
+          commit_message: "chore(stats): refresh manifest stats from ${{ github.sha }}"
+          user_name: "github-actions[bot]"
+          user_email: "41898282+github-actions[bot]@users.noreply.github.com"
