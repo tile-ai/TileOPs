@@ -135,3 +135,73 @@ def test_max_waves_edge_case():
     C_ref = ref(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Cooperative template (block_m >= 128) — phase 5
+# ════════════════════════════════════════════════════════════════════════
+
+_COOP_CFGS = [
+    {"block_m": 128, "block_n": 128, "block_k": 64, "num_stages": 2, "threads": 384, "group_size_m": 1},
+    {"block_m": 128, "block_n": 128, "block_k": 64, "num_stages": 3, "threads": 384, "group_size_m": 1},
+    {"block_m": 128, "block_n": 256, "block_k": 64, "num_stages": 2, "threads": 384, "group_size_m": 1},
+    {"block_m": 128, "block_n": 256, "block_k": 64, "num_stages": 3, "threads": 384, "group_size_m": 1},
+]
+
+
+@pytest.mark.nightly
+@pytest.mark.parametrize("cfg", _COOP_CFGS, ids=lambda c: f"bm{c['block_m']}_bn{c['block_n']}_ns{c['num_stages']}")
+@pytest.mark.parametrize("dist", ["uniform", "skewed"])
+def test_cooperative_correctness(cfg, dist):
+    """Cooperative path (bm>=128, split-A) vs 2WG reference across the
+    surviving autotune configs and both routing distributions.
+    Aligned per-expert sizes so every tile is a full block_m=128 tile,
+    isolating the WGMMA + barrier-set + epilogue-fast-path correctness.
+    """
+    T_count, E, top_k, N, K = 512, 8, 2, 256, 128
+    numel = T_count * top_k
+    A, B, sizes, offsets, _ = make_inputs(T_count, E, top_k, N, K, torch.bfloat16, dist)
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    ref = GroupedGemmPersistentKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    v2 = GroupedGemmPersistentV2Kernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm, config=cfg)
+    C_ref = ref(A, B, sizes, offsets)
+    C_v2 = v2(A, B, sizes, offsets)
+    torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
+def test_cooperative_partial_m_tile():
+    """Cooperative path: each math WG owns half_m=64 rows of a bm=128 tile,
+    so partial-m has THREE distinct boundary classes:
+      * arows >= 128: both WGs full → both TMA-store
+      * 64 <= arows < 128: WG0 full TMA, WG1 partial STG (arows-64 rows)
+      * arows < 64: WG0 partial STG (arows rows), WG1 skips entirely
+
+    Pick per-expert sizes that hit all three:
+      sizes = [40, 90, 128, 200] →
+        * expert 0 has 40 rows: a single tile with arows=40 (WG0 partial,  WG1 skip)
+        * expert 1 has 90 rows: a single tile with arows=90 (WG0 full,     WG1 partial 26)
+        * expert 2 has 128 rows: a single tile with arows=128 (both full)
+        * expert 3 has 200 rows: tile 0 full (128), tile 1 partial 72
+                                 (WG0 full 64, WG1 partial 8)
+    """
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    cfg = {"block_m": 128, "block_n": 128, "block_k": 64,
+           "num_stages": 2, "threads": 384, "group_size_m": 1}
+    sizes = torch.tensor([40, 90, 128, 200], dtype=torch.int32, device="cuda")
+    numel = int(sizes.sum().item())
+    offsets = torch.zeros(4, dtype=torch.int32, device="cuda")
+    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+    E, N, K = 4, 256, 128
+    torch.manual_seed(0)
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    ref = GroupedGemmPersistentKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    v2 = GroupedGemmPersistentV2Kernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm, config=cfg)
+    C_ref = ref(A, B, sizes, offsets)
+    C_v2 = v2(A, B, sizes, offsets)
+    torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
