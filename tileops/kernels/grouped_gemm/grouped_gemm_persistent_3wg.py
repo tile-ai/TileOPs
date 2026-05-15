@@ -78,6 +78,47 @@ class GroupedGemmPersistent3WGKernel(Kernel):
     def default_config(self) -> dict:
         return dict(_DEFAULT_CONFIG)
 
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
+        """Override base autotune: the JIT factory already accepts config
+        params (block_m, block_n, ...) in its signature, so we call it
+        directly with each config and benchmark."""
+        from tilelang.profiler import do_bench as _do_bench
+
+        print(f"Start autotuning {self.__class__.__name__}...")
+        best_ms = float("inf")
+        best_cfg = None
+        # Build a dummy forward to benchmark each config
+        for cfg in self.autotune_configs:
+            try:
+                self.config = cfg
+                # Dry-run forward to compile + verify
+                A_dummy = torch.randn(
+                    self.numel, self.K, dtype=self.dtype, device="cuda") * 0.02
+                B_dummy = torch.randn(
+                    self.num_experts, self.N, self.K, dtype=self.dtype, device="cuda") * 0.02
+                per = max(1, self.numel // self.num_experts)
+                sizes = torch.full(
+                    (self.num_experts,), per, dtype=torch.int32, device="cuda")
+                sizes[-1] = self.numel - per * (self.num_experts - 1)
+                offsets = torch.zeros(
+                    self.num_experts, dtype=torch.int32, device="cuda")
+                offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+                self.forward(A_dummy, B_dummy, sizes, offsets)
+                ms = _do_bench(
+                    lambda: self.forward(A_dummy, B_dummy, sizes, offsets),
+                    warmup=warmup, rep=rep)
+                if ms < best_ms:
+                    best_ms = ms
+                    best_cfg = cfg
+            except Exception:
+                continue
+        if best_cfg is not None:
+            self.config = best_cfg
+            print(f"Best config: {best_cfg} ({best_ms:.3f} ms)")
+        else:
+            self.config = self.default_config
+            print("Autotune failed for all configs, using default.")
+
     @property
     def autotune_configs(self) -> list[dict]:
         SMEM_LIMIT = 228 * 1024
@@ -136,8 +177,9 @@ class GroupedGemmPersistent3WGKernel(Kernel):
             raise ValueError(f"K-aligned only: K={self.K}, block_k={block_k}")
         if self.N % block_n != 0:
             raise ValueError(f"N-aligned only: N={self.N}, block_n={block_n}")
-        if A.shape[0] < self.numel + block_m:
-            A = F.pad(A, (0, 0, 0, block_m))
+        required_rows = self.numel + block_m
+        if A.shape[0] < required_rows:
+            A = F.pad(A, (0, 0, 0, required_rows - A.shape[0]))
         gemm_fn = _persistent_grouped_gemm_v2_kernel(
             self.numel, self.num_experts, self.N, self.K,
             self.dtype_str, self.sm_count, block_k,
