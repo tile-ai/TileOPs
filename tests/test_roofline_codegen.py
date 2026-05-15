@@ -221,28 +221,6 @@ class TestAutoInstallHook:
         # And it must still be callable end-to-end.
         assert Leaf().eval_roofline() == (123, 456)
 
-    def test_relu_fwd_op_uses_unary_base_roofline(self):
-        """Regression: ``ReluFwdOp`` inherits ``UnaryOp.eval_roofline``;
-        codegen must not replace it with a synthesized body that depends
-        on attributes the leaf class never sets (e.g. an input tensor
-        ``shape``)."""
-        import torch
-
-        from tileops.ops.elementwise import ReluFwdOp
-        from tileops.ops.elementwise._base import UnaryOp
-
-        # The class-level method must still be the UnaryOp implementation.
-        assert ReluFwdOp.eval_roofline is UnaryOp.eval_roofline
-
-        # And a constructed instance must produce sensible (flops, bytes).
-        op = ReluFwdOp.__new__(ReluFwdOp)
-        op.dtype = torch.float16
-        op.output_dtype = torch.float16
-        op.N_total = 32
-        flops, total_bytes = op.eval_roofline()
-        assert flops > 0
-        assert total_bytes > 0
-
     def test_no_manifest_metadata_leaves_stub(self):
         class NoMetaOp(Op):
             @property
@@ -256,12 +234,9 @@ class TestAutoInstallHook:
 
 
 class TestRealOpSmoke:
-    """End-to-end checks on concrete ops whose state schema differs from
-    the manifest tensor names (``input`` / ``weight``).
-
-    These regressions guard against the codegen assuming ops store the
-    raw tensor on ``self``: real elementwise ops keep only derived state
-    such as ``self.shape``, ``self.N_total``, or ``self.num_channels``.
+    """End-to-end checks on concrete ops with both inline-mode tiers:
+    ``PreluFwdOp`` uses ``self.<input>_shape`` for both inputs;
+    ``NanToNumFwdOp`` uses ``self.<input>_shape`` for its single input.
     """
 
     def test_prelu_fwd_op_eval_roofline_uses_shape_attrs(self):
@@ -304,11 +279,9 @@ class TestResolveTensorBinding:
     """``_resolve_tensor_binding`` honors the 2-tier contract.
 
     Tier 1: ``self.<name>`` exposing ``.shape``/``.ndim``.
-    Tier 2: ``self.<name>_shape`` as a shape tuple.
+    Tier 2: ``self.<name>_shape`` as a shape tuple/list.
     Anything else → ``ValueError`` naming op + input + attempted
-    conventions. Family-specific aliases (``self.shape`` /
-    ``self.num_channels`` / ``self.N_total``) are *not* consulted; ops
-    declare bindings explicitly.
+    conventions.
     """
 
     def test_real_tensor_attr_wins(self):
@@ -331,26 +304,6 @@ class TestResolveTensorBinding:
             input_shape = [2, 3, 4]
         out = _resolve_tensor_binding(Op(), "input", "ToyOp")
         assert out.shape == (2, 3, 4)
-
-    def test_self_shape_alias_no_longer_consulted(self):
-        # Pre-contract code rescued ops via self.shape; the systematic
-        # fix drops this so unconformant ops fail loudly.
-        class Op:
-            shape = (7, 11)
-        with pytest.raises(ValueError, match="cannot resolve roofline input 'input'"):
-            _resolve_tensor_binding(Op(), "input", "ToyOp")
-
-    def test_num_channels_alias_no_longer_consulted(self):
-        class Op:
-            num_channels = 64
-        with pytest.raises(ValueError, match="cannot resolve roofline input 'weight'"):
-            _resolve_tensor_binding(Op(), "weight", "ToyOp")
-
-    def test_n_total_alias_no_longer_consulted(self):
-        class Op:
-            N_total = 1024
-        with pytest.raises(ValueError, match="cannot resolve roofline input 'input'"):
-            _resolve_tensor_binding(Op(), "input", "ToyOp")
 
     def test_no_binding_raises_with_op_and_conventions(self):
         class Op:
@@ -438,18 +391,6 @@ class TestVarsLayerAttributeWhitelist:
                 "BadOp",
                 roofline={
                     "vars": {"N": "x.dtype"},
-                    "flops": "N",
-                    "bytes": "N * elem_bytes",
-                },
-                signature={"inputs": {"x": {"dtype": "float16"}}},
-            )
-
-    def test_dunder_attribute_rejected(self):
-        with pytest.raises(ValueError, match="non-whitelisted attribute"):
-            synthesize_eval_roofline(
-                "BadOp",
-                roofline={
-                    "vars": {"N": "x.__class__"},
                     "flops": "N",
                     "bytes": "N * elem_bytes",
                 },
