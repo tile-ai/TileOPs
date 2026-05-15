@@ -182,6 +182,23 @@ def test_instance_norm_forward_required_signature() -> None:
 
 
 @pytest.mark.smoke
+def test_instance_norm_validate_dtypes_matches_manifest_inputs() -> None:
+    """``_validate_dtypes`` accepts kwargs matching manifest ``signature.inputs``.
+
+    Regression guard for a signature drift where the hand-written override
+    accepted only ``x`` while the manifest declared ``x``, ``weight`` and
+    ``bias``. The manifest-validator dtype-parity check binds by kwargs and
+    requires the impl to honor the manifest order.
+    """
+    sig = inspect.signature(InstanceNormFwdOp._validate_dtypes)
+    params = [p for p in sig.parameters if p != "self"]
+    assert params == ["x", "weight", "bias"], (
+        f"_validate_dtypes params {params} must match manifest inputs "
+        "['x', 'weight', 'bias'] in order"
+    )
+
+
+@pytest.mark.smoke
 def test_instance_norm_rejects_device_mismatch() -> None:
     """Forward must raise ValueError when input device differs from kernel device.
 
