@@ -34,7 +34,7 @@ class MultiHeadAttentionFwdOp(Op):
                  heads: int,
                  seq_len: int,
                  dim: int,
-                 is_causal: bool,
+                 is_causal: bool = True,
                  dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False) -> None:
@@ -66,7 +66,7 @@ class MultiHeadAttentionBwdOp(Op):
                  heads: int,
                  seq_len: int,
                  dim: int,
-                 is_causal: bool,
+                 is_causal: bool = True,
                  dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False) -> None:
