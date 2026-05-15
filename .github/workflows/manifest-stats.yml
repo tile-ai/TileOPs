@@ -56,15 +56,19 @@ jobs:
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PYTHONPATH: ${{ github.workspace }}
         run: |
           set -euo pipefail
           git fetch --depth=1 origin "$BASE_SHA"
           git worktree add /tmp/base "$BASE_SHA"
-          (cd /tmp/base && python scripts/manifest_stats.py --format json --output /tmp/base-stats.json)
+          # Use the PR-branch script (it may not exist on base) but load
+          # tileops.manifest from the base worktree so the snapshot reflects
+          # the base ref's manifest contents.
+          PYTHONPATH=/tmp/base python scripts/manifest_stats.py \
+            --format json --output /tmp/base-stats.json
           git worktree remove --force /tmp/base
 
-          python scripts/manifest_stats.py --format md --diff /tmp/base-stats.json --output _stats/comment.md
+          PYTHONPATH=${{ github.workspace }} python scripts/manifest_stats.py \
+            --format md --diff /tmp/base-stats.json --output _stats/comment.md
 
           # Decide whether anything actually changed.
           if diff -q /tmp/base-stats.json _stats/current.json >/dev/null; then
