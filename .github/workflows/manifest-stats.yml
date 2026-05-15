@@ -2,7 +2,6 @@ name: Manifest Stats
 
 permissions:
   contents: write       # publish-stats job pushes to the `stats` branch
-  pull-requests: write  # pr-comment job posts/updates sticky comments
 
 on:
   push:
@@ -29,9 +28,6 @@ jobs:
   report:
     name: Manifest stats summary
     runs-on: ubuntu-latest
-    outputs:
-      diff_nonzero: ${{ steps.diff.outputs.diff_nonzero }}
-      comment_body_path: ${{ steps.diff.outputs.comment_body_path }}
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v4
@@ -75,14 +71,6 @@ jobs:
           PYTHONPATH=${{ github.workspace }} python scripts/manifest_stats.py \
             --format md --diff /tmp/base-stats.json --output _stats/comment.md
 
-          # Decide whether anything actually changed.
-          if diff -q /tmp/base-stats.json _stats/current.json >/dev/null; then
-            echo "diff_nonzero=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "diff_nonzero=true" >> "$GITHUB_OUTPUT"
-          fi
-          echo "comment_body_path=_stats/comment.md" >> "$GITHUB_OUTPUT"
-
       - name: Write Job Summary
         run: |
           if [[ -f _stats/comment.md ]]; then
@@ -97,29 +85,6 @@ jobs:
           name: manifest-stats
           path: _stats/
           retention-days: 14
-
-  pr-comment:
-    name: Sticky PR comment
-    needs: report
-    # Fork PRs ship a read-only GITHUB_TOKEN regardless of declared
-    # permissions, so the sticky comment API call would 403. Skip on
-    # fork PRs; Job Summary (in `report`) still surfaces the data.
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download stats artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: manifest-stats
-          path: _stats
-
-      - name: Post or update sticky comment
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: manifest-stats
-          path: _stats/comment.md
 
   publish-stats:
     name: Publish stats to orphan branch
