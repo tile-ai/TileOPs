@@ -208,13 +208,18 @@ def _ssd_chunk_scan_fwd_kernel(
                 #   diagonal    (s0 <= l0 < s0 + block_s): mixed mask, guarded path.
                 # Upper-triangle blocks are skipped entirely by the loop bound.
                 # =====================================================
-                cb_tile  = T.alloc_shared((block_l, block_s), dtype)
-                x_tile   = T.alloc_shared((block_s, block_p), dtype)
-                dA_s         = T.alloc_shared((block_s,), accum_dtype)
-                # decay_dt_s[ss] = exp(-dA_s[ss]) * dt_s[ss]
+                cb_tile    = T.alloc_shared((block_l, block_s), dtype)
+                x_tile     = T.alloc_shared((block_s, block_p), dtype)
+                # decay_dt_s[ss] = exp(-dA_s[ss]) * dt[ss]
                 # Merging the two scalars into one saves one shared buffer and
                 # one multiply per (ll, ss) element in the lcb_cast loop.
-                decay_dt_s   = T.alloc_shared((block_s,), accum_dtype)
+                # exp(-dA_s) is clamped to prevent overflow: dA_cumsum is a
+                # cumsum of negatives, so for any valid causal pair (l >= s)
+                # exp_dA_l[l] * exp(-dA_s[s]) == exp(dA_l - dA_s) <= 1.
+                # However exp_dA_l can underflow to 0 while exp(-dA_s) overflows
+                # to inf, yielding NaN. Clamping -dA_s to ≤88 keeps exp(-dA_s)
+                # finite; the product is still 0 because exp_dA_l underflowed.
+                decay_dt_s = T.alloc_shared((block_s,), accum_dtype)
                 lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
 
                 # Only iterate over s-blocks that have at least one s <= l_max.
@@ -246,7 +251,7 @@ def _ssd_chunk_scan_fwd_kernel(
                     # all block_l rows of the lcb_cast loop below.
                     for ss in T.Parallel(block_s):
                         s_abs = s0 + ss
-                        dA_s[ss] = T.if_then_else(
+                        dA_val = T.if_then_else(
                             s_abs < Q,
                             dA_cumsum[bz, bh, bc, s_abs],
                             T.float32(0.0),
@@ -256,7 +261,7 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
                             T.float32(0.0),
                         )
-                        decay_dt_s[ss] = T.exp(-dA_s[ss]) * dt_val
+                        decay_dt_s[ss] = T.exp(T.min(-dA_val, T.float32(88.0))) * dt_val
                     T.sync_threads()
 
                     # full-lower path: s0 + block_s <= l0 means every (ll,ss) has
@@ -426,7 +431,7 @@ class SSDChunkScanFwdKernel(Kernel):
         #     GEMM tile size and s-loop iteration count; threads controls warps/block
         #     and latency-hiding capacity.
         #
-        # 16 configs total — practical compile budget.
+        # 6–8 configs total (2 block_n entries dropped when d_state <= 32 or 64).
         block_n = min(128, self.d_state)
         return [
             {"block_l": 64, "block_p": 64, "block_n": block_n, "block_s": bs, "threads": t}
