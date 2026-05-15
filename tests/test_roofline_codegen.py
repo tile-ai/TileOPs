@@ -9,6 +9,8 @@ Covers ``tileops.ops._roofline_codegen.synthesize_eval_roofline`` and the
 import pytest
 
 from tileops.ops._roofline_codegen import (
+    _resolve_tensor_binding,
+    _ShapeProxy,
     synthesize_eval_roofline,
 )
 from tileops.ops.op_base import Op
@@ -247,6 +249,91 @@ class TestAutoInstallHook:
                 return None
 
         assert NoMetaOp.eval_roofline is Op.eval_roofline
+
+
+class TestRealOpSmoke:
+    """End-to-end checks on concrete ops whose state schema differs from
+    the manifest tensor names (``input`` / ``weight``).
+
+    These regressions guard against the codegen assuming ops store the
+    raw tensor on ``self``: real elementwise ops keep only derived state
+    such as ``self.shape``, ``self.N_total``, or ``self.num_channels``.
+    """
+
+    def test_prelu_fwd_op_eval_roofline_uses_shape_attrs(self):
+        import torch
+
+        from tileops.ops.elementwise.prelu import PreluFwdOp
+
+        # PreluFwdOp.__init__ builds a kernel; bypass via __new__ so the
+        # test stays smoke-light and CUDA-free.
+        op = PreluFwdOp.__new__(PreluFwdOp)
+        op.shape = (16, 256, 56, 56)
+        op.num_channels = 256
+        op.dtype = torch.float16
+
+        from math import prod as _prod
+        N = _prod(op.shape)
+        W = op.num_channels
+        elem = op.dtype.itemsize
+        flops, total_bytes = op.eval_roofline()
+        assert flops == 2 * N
+        assert total_bytes == (2 * N + W) * elem
+
+    def test_nan_to_num_fwd_op_eval_roofline_uses_n_total(self):
+        import torch
+
+        from tileops.ops.elementwise.nan_to_num import NanToNumFwdOp
+
+        op = NanToNumFwdOp.__new__(NanToNumFwdOp)
+        op.N_total = 4096 * 4096
+        op.dtype = torch.float16
+
+        elem = op.dtype.itemsize
+        flops, total_bytes = op.eval_roofline()
+        assert flops == 6 * op.N_total
+        assert total_bytes == 2 * op.N_total * elem
+
+
+class TestResolveTensorBinding:
+    """``_resolve_tensor_binding`` priority order."""
+
+    def test_real_tensor_attr_wins(self):
+        class Op:
+            input = _ShapeProxy((4, 5))
+        out = _resolve_tensor_binding(Op(), "input", is_primary=True)
+        assert out.shape == (4, 5)
+
+    def test_input_shape_attr_used(self):
+        class Op:
+            input_shape = (2, 3, 4)
+        out = _resolve_tensor_binding(Op(), "input", is_primary=True)
+        assert out.shape == (2, 3, 4)
+        assert out.ndim == 3
+
+    def test_primary_falls_back_to_self_shape(self):
+        class Op:
+            shape = (7, 11)
+        out = _resolve_tensor_binding(Op(), "input", is_primary=True)
+        assert out.shape == (7, 11)
+
+    def test_weight_falls_back_to_num_channels(self):
+        class Op:
+            num_channels = 64
+        out = _resolve_tensor_binding(Op(), "weight", is_primary=False)
+        assert out.shape == (64,)
+        assert out.ndim == 1
+
+    def test_primary_falls_back_to_n_total(self):
+        class Op:
+            N_total = 1024
+        out = _resolve_tensor_binding(Op(), "input", is_primary=True)
+        assert out.shape == (1024,)
+
+    def test_no_state_returns_none(self):
+        class Op:
+            pass
+        assert _resolve_tensor_binding(Op(), "input", is_primary=True) is None
 
 
 class TestMissingRoofline:

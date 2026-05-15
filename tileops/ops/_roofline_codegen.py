@@ -37,9 +37,72 @@ import math
 from math import prod
 from typing import Any, Callable
 
+
 # Names bound into the vars-layer namespace per
 # ``docs/design/roofline.md`` §4.4.4. Helper names map to their Python
 # implementations; tensor/param/elem_bytes names are bound dynamically.
+class _ShapeProxy:
+    """Synthetic tensor stand-in exposing only ``shape`` and ``ndim``.
+
+    Inline-mode roofline expressions reference ``<tensor>.shape`` and
+    ``<tensor>.ndim``. Op classes are not required to retain the original
+    tensor argument on ``self`` — many keep only derived state such as
+    ``self.shape`` (the input shape tuple) or ``self.N_total`` (a flat
+    element count). When the op does not store the tensor itself,
+    ``_resolve_tensor_binding`` constructs a ``_ShapeProxy`` from the
+    derived state so vars-layer expressions resolve uniformly.
+    """
+
+    __slots__ = ("shape", "ndim")
+
+    def __init__(self, shape: tuple) -> None:
+        self.shape = tuple(shape)
+        self.ndim = len(self.shape)
+
+
+def _resolve_tensor_binding(
+    op: Any, name: str, is_primary: bool,
+) -> Any:
+    """Bind ``name`` for inline-mode synthesis from op-instance state.
+
+    Resolution order:
+
+    1. ``self.<name>`` when it exposes ``.shape`` (a real tensor or
+       previously-bound proxy).
+    2. ``self.<name>_shape`` (explicit shape tuple convention) wrapped
+       in a ``_ShapeProxy``.
+    3. The primary input falls back to ``self.shape`` (canonical
+       op-level shape attribute used by elementwise ops).
+    4. A ``weight`` tensor falls back to ``self.num_channels`` → a 1-D
+       proxy of length ``num_channels``.
+    5. The primary input falls back to ``self.N_total`` → a 1-D proxy
+       of length ``N_total`` (used by ops that flatten at construction).
+
+    Returns ``None`` when no convention matches; vars expressions that
+    dereference ``None.shape`` then surface ``AttributeError`` so the
+    contract gap is visible rather than silently producing zero work.
+    """
+    direct = getattr(op, name, None)
+    if direct is not None and hasattr(direct, "shape"):
+        return direct
+    shape_attr = getattr(op, f"{name}_shape", None)
+    if isinstance(shape_attr, (tuple, list)):
+        return _ShapeProxy(tuple(shape_attr))
+    if is_primary:
+        op_shape = getattr(op, "shape", None)
+        if isinstance(op_shape, (tuple, list)):
+            return _ShapeProxy(tuple(op_shape))
+    if name == "weight":
+        n_ch = getattr(op, "num_channels", None)
+        if isinstance(n_ch, int):
+            return _ShapeProxy((n_ch,))
+    if is_primary:
+        n_total = getattr(op, "N_total", None)
+        if isinstance(n_total, int):
+            return _ShapeProxy((n_total,))
+    return direct
+
+
 _VARS_HELPERS: dict[str, Any] = {
     "product": prod,
     "isinstance": isinstance,
@@ -330,8 +393,16 @@ def _synthesize_inline_mode(
         "def eval_roofline(self):",
         f'    """Synthesized from manifest inline roofline for {op_name}."""',
     ]
-    for n in input_names:
-        src_lines.append(f"    {n} = getattr(self, {n!r}, None)")
+    for idx, n in enumerate(input_names):
+        # Inputs bind from op-instance state via a tensor resolver that
+        # accepts either the real tensor or a shape-bearing proxy derived
+        # from canonical op attributes (``self.shape``, ``self.N_total``,
+        # ``self.num_channels``). The first input is treated as primary
+        # so derived shape fallbacks apply.
+        is_primary = "True" if idx == 0 else "False"
+        src_lines.append(
+            f"    {n} = _resolve_tensor_binding(self, {n!r}, {is_primary})"
+        )
     for n in param_names:
         # Params may or may not be stored on the op (some are stored at
         # ``__init__`` time, others arrive via forward args). Bind when
@@ -351,6 +422,7 @@ def _synthesize_inline_mode(
     # of the generated function. The arithmetic-layer subset is included
     # by virtue of being a subset of the vars table.
     globs: dict[str, Any] = dict(_VARS_HELPERS)
+    globs["_resolve_tensor_binding"] = _resolve_tensor_binding
     globs["__builtins__"] = {
         "getattr": getattr,
         "hasattr": hasattr,
