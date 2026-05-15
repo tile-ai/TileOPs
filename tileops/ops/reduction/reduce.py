@@ -88,10 +88,10 @@ class _ReduceOpBase(Op):
 
     def __init__(
         self,
-        *,
         dtype: torch.dtype,
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         keepdim: bool = False,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -587,10 +587,10 @@ class ProdFwdOp(_SimpleReduceOp):
 
     def __init__(
         self,
-        *,
         dtype: torch.dtype,
         dim: int = -1,
         keepdim: bool = False,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -649,11 +649,11 @@ class _WelfordReduceOp(_ReduceOpBase):
 
     def __init__(
         self,
-        *,
         dtype: torch.dtype,
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         correction: int = 1,
         keepdim: bool = False,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):

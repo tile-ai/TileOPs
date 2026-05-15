@@ -147,7 +147,7 @@ AddFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      alpha: {type: "int | float", default: 1}
+      alpha: {type: "int | float", default: 1, kw_only: true}
     shape_rules:
       # Output follows PyTorch broadcasting; numel uses the broadcast shape.
     - "output.shape == broadcast_shapes(input.shape, other.shape)"
@@ -177,7 +177,7 @@ SubFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      alpha: {type: "int | float", default: 1}
+      alpha: {type: "int | float", default: 1, kw_only: true}
     shape_rules:
     - "output.shape == broadcast_shapes(input.shape, other.shape)"
 
@@ -233,7 +233,7 @@ DivFwdOp:
     outputs:
       output: {dtype: "same_as(input)"}
     params:
-      rounding_mode: {type: "str | None", default: null}
+      rounding_mode: {type: "str | None", default: null, kw_only: true}
     shape_rules:
     - "output.shape == broadcast_shapes(input.shape, other.shape)"
     - "rounding_mode is None or rounding_mode in ('trunc', 'floor')"

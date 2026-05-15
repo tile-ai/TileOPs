@@ -64,10 +64,10 @@ class _SoftmaxBaseOp(Op):
 
     def __init__(
         self,
-        *,
         dtype: torch.dtype,
         dim: Union[int, List[int]] = -1,
         N: Optional[int] = None,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):

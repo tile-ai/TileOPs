@@ -19,7 +19,7 @@ class TestBatchNormFwdValidation:
 
     def _make_op(self):
         from tileops.ops.norm.batch_norm import BatchNormFwdOp
-        return BatchNormFwdOp(4, 8, 4, 4, dtype=torch.float16)
+        return BatchNormFwdOp(4, 8, (4, 4), dtype=torch.float16)
 
     def _make_inputs(self, device="cuda", dtype=torch.float16):
         x = torch.randn(4, 8, 4, 4, device=device, dtype=dtype)
@@ -62,7 +62,7 @@ class TestBatchNormCustomOp:
 
     def test_fwd_torch_compile_smoke(self):
         from tileops.ops.norm.batch_norm import BatchNormFwdOp
-        op = BatchNormFwdOp(4, 8, 4, 4, dtype=torch.float16, training=True)
+        op = BatchNormFwdOp(4, 8, (4, 4), dtype=torch.float16, training=True)
         x = torch.randn(4, 8, 4, 4, device="cuda", dtype=torch.float16)
         weight = torch.randn(8, device="cuda", dtype=torch.float32)
         bias = torch.randn(8, device="cuda", dtype=torch.float32)
