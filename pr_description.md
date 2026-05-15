@@ -45,9 +45,9 @@
 
 **Environment**: NVIDIA H200, CUDA 12.9, PyTorch 2.11.0.dev20260107+cu129. `TILELANG_CLEANUP_TEMP_FILES=1` set as a workaround for a shared `/tmp/tvm-debug-mode-tempdirs` permission issue on this machine.
 
-### Before (pre-fix code, TileLang 0.1.8 `tileopsenv` and 0.1.9 `flashmlaenv`)
+### Before (pre-fix code, official TileLang 0.1.8 `pypi:tilelang==0.1.8`)
 
-All 4 benchmark shapes **fail** with `tvm.error.InternalError: no available layout found` during `LayoutInference`. This is the bug this PR fixes — the unguarded 384-thread `T.copy` on the same shared buffer as the 128-thread `T.wgmma_gemm` triggers the layout conflict in both 0.1.8 and 0.1.9.
+All 4 benchmark shapes **fail** with `tvm.error.InternalError: no available layout found` during `LayoutInference`. This is the bug this PR fixes — the unguarded 384-thread `T.copy` on the same shared buffer as the 128-thread `T.wgmma_gemm` triggers the layout conflict.
 
 ```
 FAILED bench_deepseek_mla_decode.py::test_mla_decode_bench[mainstream-fp16]  # AutoTune: all configs fail LayoutInference
