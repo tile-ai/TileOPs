@@ -211,6 +211,11 @@ def _sparse_mla_kernel(batch: int,
 
                 tx = T.get_thread_binding()
 
+                # Q -> shared copies must stay inside tx < 128 so that the copy
+                # and the subsequent T.wgmma_gemm share the same 128-thread bounds.
+                # Mixing a 384-thread copy with a 128-thread WGMMA on the same shared
+                # buffer causes TileLang 0.1.9 layout inference to fail with
+                # "no available layout found".
                 if tx < 128:
                     T.set_max_nreg(240, 1)
                     T.copy(q[b_i, s_i, h0:h1, 0:d // 2], q_shared_l)
