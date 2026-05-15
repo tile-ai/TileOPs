@@ -1,13 +1,18 @@
 """Correctness tests for GroupedGemmPersistent3WGKernel.
 
-Verifies 3WG produces same output as the 2WG reference. 3WG cross-check will be added in a later phase.
+Verifies 3WG produces same output as the 2WG reference.
 """
 import pytest
 import torch
 
 from tileops.kernels.grouped_gemm import (
-    GroupedGemmPersistentKernel,
     GroupedGemmPersistent3WGKernel,
+    GroupedGemmPersistentKernel,
+)
+
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
+    reason="Requires SM90 (Hopper)",
 )
 
 
@@ -94,7 +99,7 @@ def test_partial_m_tile():
     The TMA-store fast path triggers for the leading full tiles; this test
     guarantees both paths are exercised in a single run."""
     sm = torch.cuda.get_device_properties(0).multi_processor_count
-    E, top_k, N, K = 4, 2, 256, 128
+    E, N, K = 4, 256, 128
     block_m = 64
     # Make every expert end on a partial tile (size = 1 full block_m tile + 17 rows).
     per_expert = block_m + 17
@@ -120,14 +125,14 @@ def test_max_waves_edge_case():
     end on a partial last wave with an odd tile count, exercising the
     `if valid_1:` guard (WG1-OOB on the final pair claim)."""
     sm = torch.cuda.get_device_properties(0).multi_processor_count
-    block_m, block_n, K, N = 64, 256, 128, 768
-    E, top_k = 4, 1
+    block_m, K, N = 64, 128, 768
+    E = 4
     # numel = 3 * sm * 64 + 31; per-expert ceil-rounded -> ~3*sm M-tiles plus a few; num_pid_n=3
     # total tiles ~= 3 * (3*sm + small) ~ 9*sm; CTA pairs ~= 4.5*sm -> _max_waves ~ 5+slack
     # odd numel ensures a trailing tile triggers `valid_1=False` on the last claim
     numel = 3 * sm * block_m + 31
-    T_count = numel  # numel = T * top_k with top_k=1
-    A, B, sizes, offsets, _ = make_inputs(T_count, E, top_k, N, K, torch.bfloat16, "uniform")
+    T_count = numel
+    A, B, sizes, offsets, _ = make_inputs(T_count, E, 1, N, K, torch.bfloat16, "uniform")
     ref = GroupedGemmPersistentKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
     v2 = GroupedGemmPersistent3WGKernel(

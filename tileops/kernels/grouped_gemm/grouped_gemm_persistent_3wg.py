@@ -393,7 +393,6 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                         acols_0 = T.min(T.int32(block_n),
                                         T.int32(N) - n_start_0)
 
-                        T.clear(C_local_wg0)
 
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             slot = gi_cons_0 % num_stages
@@ -462,7 +461,6 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                         acols_1 = T.min(T.int32(block_n),
                                         T.int32(N) - n_start_1)
 
-                        T.clear(C_local_wg1)
 
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             slot = gi_cons_1 % num_stages
@@ -707,7 +705,6 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                         arows0 = T.max(T.int32(0),
                                        T.min(T.int32(half_m), true_arows))
 
-                        T.clear(C_local_wg0)
 
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             slot = gi_cons_0 % num_stages
@@ -772,7 +769,6 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                                        T.min(T.int32(half_m),
                                              true_arows - T.int32(half_m)))
 
-                        T.clear(C_local_wg1)
 
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             slot = gi_cons_1 % num_stages
