@@ -165,7 +165,7 @@ MoePermuteNopadFwdOp:
     # Permute is memory-bound; flops = 0
     flops: "0"
     # hidden_states read [T, H] + perm_h write [T*K, H] + metadata
-    bytes: "(total_tokens * hidden_size + total_tokens * top_k * hidden_size) * elem_bytes + (num_experts + 1) * 8 + total_tokens * top_k * 4 + num_experts * 8"
+    bytes: "(total_tokens * hidden_size + total_tokens * top_k * hidden_size) * elem_bytes + (num_experts + 1) * 8 + 2 * total_tokens * top_k * 4 + num_experts * 8"
 
   source:
     kernel: tileops/kernels/moe/permute_nopad.py
