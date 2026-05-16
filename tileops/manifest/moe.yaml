@@ -7,7 +7,7 @@
 MoePermutePaddedFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -61,11 +61,13 @@ MoePermutePaddedFwdOp:
     test: tests/ops/test_moe_permute.py
     bench: benchmarks/ops/bench_moe_permute.py
     bench_manifest_driven: true
+    kernel_map:
+      permute_kernel: MoePermutePaddedKernel
 
 MoePermuteAlignFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -111,6 +113,8 @@ MoePermuteAlignFwdOp:
     test: tests/ops/test_moe_permute_align.py
     bench: benchmarks/ops/bench_moe_permute_align.py
     bench_manifest_driven: true
+    kernel_map:
+      permute_align_kernel: MoePermuteAlignKernel
 
 MoePermuteNopadFwdOp:
   ref_api: "none"
@@ -173,7 +177,7 @@ MoePermuteNopadFwdOp:
 MoeUnpermuteFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -213,11 +217,13 @@ MoeUnpermuteFwdOp:
     test: tests/ops/test_moe_unpermute.py
     bench: benchmarks/ops/bench_moe_unpermute.py
     bench_manifest_driven: true
+    kernel_map:
+      unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoeExpertsFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -239,6 +245,7 @@ FusedMoeExpertsFwdOp:
       - "output.shape == hidden_states.shape"
 
   workloads:
+    - {num_tokens: 32, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-decode"}
     - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
 
   roofline:
@@ -250,11 +257,16 @@ FusedMoeExpertsFwdOp:
     op: tileops/ops/moe/fused_moe_experts.py
     test: tests/ops/test_moe_fused_moe.py
     bench: benchmarks/ops/bench_moe_fused_moe.py
+    kernel_map:
+      permute_nopad_kernel: MoePermuteNopadKernel
+      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
+      silu_and_mul: SiluAndMulFwdKernel
+      unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoeExpertsPaddedFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -276,6 +288,7 @@ FusedMoeExpertsPaddedFwdOp:
       - "output.shape == hidden_states.shape"
 
   workloads:
+    - {num_tokens: 32, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-decode"}
     - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
 
   roofline:
@@ -287,6 +300,11 @@ FusedMoeExpertsPaddedFwdOp:
     op: tileops/ops/moe/fused_moe_experts.py
     test: tests/ops/test_moe_fused_moe.py
     bench: benchmarks/ops/bench_moe_fused_moe.py
+    kernel_map:
+      permute_kernel: MoePermutePaddedKernel
+      grouped_gemm_kernel: GroupedGemmKernel
+      silu_and_mul: SiluAndMulFwdKernel
+      unpermute_kernel: MoeUnpermuteKernel
 
 MoeGroupedGemmNopadFwdOp:
   ref_api: "none"
@@ -325,7 +343,7 @@ MoeGroupedGemmNopadFwdOp:
 MoEExpertsNopadFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -369,11 +387,16 @@ MoEExpertsNopadFwdOp:
     test: tests/ops/test_moe_experts_nopad.py
     bench: benchmarks/ops/bench_moe_experts_nopad.py
     bench_manifest_driven: false
+    kernel_map:
+      permute_nopad_kernel: MoePermuteNopadKernel
+      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
+      silu_and_mul: SiluAndMulFwdKernel
+      unpermute_kernel: MoeUnpermuteKernel
 
 MoEExpertsPaddedFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -417,6 +440,11 @@ MoEExpertsPaddedFwdOp:
     test: tests/ops/test_moe_experts_nopad.py
     bench: benchmarks/ops/bench_moe_experts_nopad.py
     bench_manifest_driven: false
+    kernel_map:
+      permute_kernel: MoePermutePaddedKernel
+      grouped_gemm_kernel: GroupedGemmKernel
+      silu_and_mul: SiluAndMulFwdKernel
+      unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoeFwdOp:
   ref_api: "none"

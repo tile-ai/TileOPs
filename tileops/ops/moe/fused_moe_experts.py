@@ -72,6 +72,7 @@ class FusedMoeExpertsFwdOp(Op):
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -80,6 +81,8 @@ class FusedMoeExpertsFwdOp(Op):
         self.ffn_size = ffn_size
         self.routed_scaling_factor = routed_scaling_factor
         self.dtype = dtype
+
+        self.dispatch_kernel(kernel_map)
 
         numel = num_tokens * top_k
         num_experts_local = (
@@ -93,6 +96,7 @@ class FusedMoeExpertsFwdOp(Op):
             hidden_size=hidden_size,
             dtype=dtype,
             expert_map=expert_map,
+            kernel_map=kernel_map,
         )
         self._gemm_gate_up = MoeGroupedGemmNopadFwdOp(
             numel=numel,
@@ -100,11 +104,13 @@ class FusedMoeExpertsFwdOp(Op):
             n=ffn_size * 2,
             k=hidden_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._silu_and_mul = SiluAndMulFwdOp(
             M=numel,
             N=ffn_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel,
@@ -112,13 +118,15 @@ class FusedMoeExpertsFwdOp(Op):
             n=hidden_size,
             k=ffn_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._unpermute = MoeUnpermuteFwdOp(
-            num_tokens=num_tokens,
+            total_tokens=num_tokens,
             top_k=top_k,
             hidden_size=hidden_size,
             dtype=dtype,
             padded_batch_sum=numel,
+            kernel_map=kernel_map,
         )
 
     @property
@@ -188,6 +196,7 @@ class FusedMoeExpertsPaddedFwdOp(Op):
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -196,6 +205,9 @@ class FusedMoeExpertsPaddedFwdOp(Op):
         self.ffn_size = ffn_size
         self.routed_scaling_factor = routed_scaling_factor
         self.dtype = dtype
+
+        self.dispatch_kernel(kernel_map)
+
         if expert_map is not None:
             raise NotImplementedError(
                 "expert_map is not yet supported for the padded layout. "
@@ -206,12 +218,13 @@ class FusedMoeExpertsPaddedFwdOp(Op):
         _padded_batch_sum = numel + (num_experts * (_BLOCK_M - 1))
 
         self._permute = MoePermutePaddedFwdOp(
-            num_tokens=num_tokens,
+            total_tokens=num_tokens,
             top_k=top_k,
             num_experts=num_experts,
             hidden_size=hidden_size,
             dtype=dtype,
             block_m=_BLOCK_M,
+            kernel_map=kernel_map,
         )
         self._gemm_gate_up = GroupedGemmOp(
             batch_sum=_padded_batch_sum,
@@ -219,11 +232,13 @@ class FusedMoeExpertsPaddedFwdOp(Op):
             n=ffn_size * 2,
             k=hidden_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._silu_and_mul = SiluAndMulFwdOp(
             M=_padded_batch_sum,
             N=ffn_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._gemm_down = GroupedGemmOp(
             batch_sum=_padded_batch_sum,
@@ -231,13 +246,15 @@ class FusedMoeExpertsPaddedFwdOp(Op):
             n=hidden_size,
             k=ffn_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._unpermute = MoeUnpermuteFwdOp(
-            num_tokens=num_tokens,
+            total_tokens=num_tokens,
             top_k=top_k,
             hidden_size=hidden_size,
             dtype=dtype,
             padded_batch_sum=_padded_batch_sum,
+            kernel_map=kernel_map,
         )
 
     @property
