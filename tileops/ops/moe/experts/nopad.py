@@ -56,7 +56,7 @@ class MoEExpertsNopadFwdOp(MoEExpertsModular, Op):
         )
 
         self._permute = MoePermuteNopadFwdOp(
-            num_tokens=num_tokens, top_k=top_k, num_experts=num_experts,
+            total_tokens=num_tokens, top_k=top_k, num_experts=num_experts,
             hidden_size=hidden_size, dtype=dtype, expert_map=expert_map,
             kernel_map=kernel_map,
         )

@@ -90,7 +90,7 @@ class FusedMoeExpertsFwdOp(Op):
         )
 
         self._permute = MoePermuteNopadFwdOp(
-            num_tokens=num_tokens,
+            total_tokens=num_tokens,
             top_k=top_k,
             num_experts=num_experts,
             hidden_size=hidden_size,
