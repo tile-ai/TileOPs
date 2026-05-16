@@ -13,7 +13,6 @@ Usage:
     conda run -n tileops python benchmarks/ops/bench_masked_fill.py
 """
 
-from math import prod
 from typing import Optional
 
 import pytest
@@ -49,18 +48,13 @@ class MaskedFillTest(WorkloadBase):
         self.input_shape = tuple(input_shape)
         self.mask_shape = tuple(mask_shape)
         self.dtype = dtype
-        self.n_total = prod(
-            torch.broadcast_shapes(self.input_shape, self.mask_shape)
-        )
 
     def gen_inputs(self):
         torch.manual_seed(42)
         dev = "cuda"
         x = torch.randn(self.input_shape, dtype=self.dtype, device=dev)
         # Roughly half-true mask exercises both branches of the predicated select.
-        mask = torch.randint(
-            0, 2, self.mask_shape, dtype=torch.bool, device=dev,
-        )
+        mask = torch.randint(0, 2, self.mask_shape, device=dev).bool()
         value = torch.zeros((), dtype=self.dtype, device=dev)
         return x, mask, value
 
