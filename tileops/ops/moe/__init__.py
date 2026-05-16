@@ -10,7 +10,7 @@ from .abc import (
 )
 from .experts.nopad import MoEExpertsNopadFwdOp
 from .experts.padded import MoEExpertsPaddedFwdOp
-from .fused_moe import FusedMoe
+from .fused_moe import FusedMoe, FusedMoeFwdCbFwdOp, FusedMoeFwdOp
 from .fused_moe_experts import FusedMoeExpertsFwdOp, FusedMoeExpertsPaddedFwdOp
 from .fused_topk import FusedTopKOp
 from .moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
@@ -25,6 +25,8 @@ __all__ = [
     "FusedMoe",
     "FusedMoeExpertsFwdOp",
     "FusedMoeExpertsPaddedFwdOp",
+    "FusedMoeFwdCbFwdOp",
+    "FusedMoeFwdOp",
     "FusedTopKOp",
     "MoEExperts",
     "MoEExpertsModular",
