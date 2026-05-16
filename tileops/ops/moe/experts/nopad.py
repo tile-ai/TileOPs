@@ -56,7 +56,7 @@ class MoEExpertsNopadFwdOp(MoEExpertsModular):
             n=hidden_size, k=ffn_size, dtype=dtype,
         )
         self._unpermute = MoeUnpermuteFwdOp(
-            num_tokens=num_tokens, top_k=top_k,
+            total_tokens=num_tokens, top_k=top_k,
             hidden_size=hidden_size, dtype=dtype, padded_batch_sum=numel,
         )
         self._routed_scaling_factor = routed_scaling_factor

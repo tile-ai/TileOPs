@@ -7,7 +7,7 @@
 MoePermutePaddedFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -61,11 +61,13 @@ MoePermutePaddedFwdOp:
     test: tests/ops/test_moe_permute.py
     bench: benchmarks/ops/bench_moe_permute.py
     bench_manifest_driven: true
+    kernel_map:
+      permute_kernel: MoePermutePaddedKernel
 
 MoePermuteAlignFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -111,6 +113,8 @@ MoePermuteAlignFwdOp:
     test: tests/ops/test_moe_permute_align.py
     bench: benchmarks/ops/bench_moe_permute_align.py
     bench_manifest_driven: true
+    kernel_map:
+      permute_align_kernel: MoePermuteAlignKernel
 
 MoePermuteNopadFwdOp:
   ref_api: "none"
@@ -173,7 +177,7 @@ MoePermuteNopadFwdOp:
 MoeUnpermuteFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -213,6 +217,8 @@ MoeUnpermuteFwdOp:
     test: tests/ops/test_moe_unpermute.py
     bench: benchmarks/ops/bench_moe_unpermute.py
     bench_manifest_driven: true
+    kernel_map:
+      unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoeExpertsFwdOp:
   ref_api: "none"

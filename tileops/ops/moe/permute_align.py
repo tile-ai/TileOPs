@@ -20,32 +20,36 @@ class MoePermuteAlignFwdOp(Op):
     padded token count.
 
     Args:
-        numel: Total (token, expert) assignments = total_tokens * top_k.
+        total_tokens: Number of input tokens T.
+        top_k: Number of experts selected per token K.
         num_experts: Number of experts.
-        block_size: GEMM tile size (M dimension).
+        block_size: GEMM tile size (M dimension); default 64.
         kernel_map: Optional kernel override dict.
         tune: Whether to autotune the kernel.
 
     Example:
-        >>> op = MoePermuteAlignFwdOp(numel=32, num_experts=8, block_size=16)
+        >>> op = MoePermuteAlignFwdOp(total_tokens=4, top_k=8, num_experts=8, block_size=16)
         >>> sorted_ids, expert_ids, num_post_pad = op(topk_ids)
     """
 
     def __init__(
         self,
-        numel: int,
+        total_tokens: int,
+        top_k: int,
         num_experts: int,
-        block_size: int,
+        block_size: int = 64,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.numel = numel
+        self.total_tokens = total_tokens
+        self.top_k = top_k
         self.num_experts = num_experts
         self.block_size = block_size
+        self.numel = total_tokens * top_k
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["permute_align_kernel"](
-            numel, num_experts, block_size
+            self.numel, num_experts, block_size
         )
 
     @property

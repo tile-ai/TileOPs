@@ -114,7 +114,7 @@ class FusedMoeExpertsFwdOp(Op):
             dtype=dtype,
         )
         self._unpermute = MoeUnpermuteFwdOp(
-            num_tokens=num_tokens,
+            total_tokens=num_tokens,
             top_k=top_k,
             hidden_size=hidden_size,
             dtype=dtype,
@@ -206,7 +206,7 @@ class FusedMoeExpertsPaddedFwdOp(Op):
         _padded_batch_sum = numel + (num_experts * (_BLOCK_M - 1))
 
         self._permute = MoePermutePaddedFwdOp(
-            num_tokens=num_tokens,
+            total_tokens=num_tokens,
             top_k=top_k,
             num_experts=num_experts,
             hidden_size=hidden_size,
@@ -233,7 +233,7 @@ class FusedMoeExpertsPaddedFwdOp(Op):
             dtype=dtype,
         )
         self._unpermute = MoeUnpermuteFwdOp(
-            num_tokens=num_tokens,
+            total_tokens=num_tokens,
             top_k=top_k,
             hidden_size=hidden_size,
             dtype=dtype,
