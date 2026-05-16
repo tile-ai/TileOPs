@@ -61,7 +61,7 @@ MaskedFillFwdOp:
   # value form lands as MaskedFillScalarFwdOp below per the
   # "No Optional[Tensor]" manifest rule for variant splits.
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
