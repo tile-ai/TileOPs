@@ -19,11 +19,21 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.manifest import load_workloads
+from tileops.manifest import load_manifest, load_workloads
 from tileops.ops.elementwise import MaskedFillFwdOp
 from workloads.workload_base import WorkloadBase
 
 _OP_NAME = "MaskedFillFwdOp"
+
+# Skip the whole module while the manifest entry is still spec-only:
+# the L4 `eval_roofline()` body is codegen-installed only on `implemented`
+# ops, so `op.eval_roofline()` would hit the L1 base stub.
+_OP_STATUS = load_manifest().get(_OP_NAME, {}).get("status", "spec-only")
+pytestmark = pytest.mark.skipif(
+    _OP_STATUS != "implemented",
+    reason=f"{_OP_NAME} manifest status is {_OP_STATUS!r}; "
+    f"eval_roofline body not installed until status flips to 'implemented'",
+)
 
 _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
