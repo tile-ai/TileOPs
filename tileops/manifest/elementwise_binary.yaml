@@ -61,7 +61,6 @@ MaskedFillFwdOp:
   # value form lands as MaskedFillScalarFwdOp below per the
   # "No Optional[Tensor]" manifest rule for variant splits.
   family: elementwise
-  # spec-only: kernel only supports float dtypes; manifest declares int/bool union
   status: spec-only
 
   signature:
@@ -89,8 +88,8 @@ MaskedFillFwdOp:
     kernel_map:
       masked_fill_tensor_value: MaskedFillTensorValueFwdKernel
     op: tileops/ops/elementwise/masked_fill.py
-    test: tests/ops/test_special_elementwise.py
-    bench: benchmarks/ops/bench_independent_elementwise.py
+    test: tests/ops/test_special_elementwise_conformance.py
+    bench: benchmarks/ops/bench_masked_fill.py
     bench_manifest_driven: false
 
 MaskedFillScalarFwdOp:
