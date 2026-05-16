@@ -256,6 +256,11 @@ FusedMoeExpertsFwdOp:
     op: tileops/ops/moe/fused_moe_experts.py
     test: tests/ops/test_moe_fused_moe.py
     bench: benchmarks/ops/bench_moe_fused_moe.py
+    kernel_map:
+      permute_nopad_kernel: MoePermuteNopadKernel
+      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
+      silu_and_mul: SiluAndMulFwdKernel
+      unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoeExpertsPaddedFwdOp:
   ref_api: "none"
@@ -293,6 +298,11 @@ FusedMoeExpertsPaddedFwdOp:
     op: tileops/ops/moe/fused_moe_experts.py
     test: tests/ops/test_moe_fused_moe.py
     bench: benchmarks/ops/bench_moe_fused_moe.py
+    kernel_map:
+      permute_kernel: MoePermutePaddedKernel
+      grouped_gemm_kernel: GroupedGemmKernel
+      silu_and_mul: SiluAndMulFwdKernel
+      unpermute_kernel: MoeUnpermuteKernel
 
 MoeGroupedGemmNopadFwdOp:
   ref_api: "none"
@@ -375,6 +385,11 @@ MoEExpertsNopadFwdOp:
     test: tests/ops/test_moe_experts_nopad.py
     bench: benchmarks/ops/bench_moe_experts_nopad.py
     bench_manifest_driven: false
+    kernel_map:
+      permute_nopad_kernel: MoePermuteNopadKernel
+      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
+      silu_and_mul: SiluAndMulFwdKernel
+      unpermute_kernel: MoeUnpermuteKernel
 
 MoEExpertsPaddedFwdOp:
   ref_api: "none"
@@ -423,6 +438,11 @@ MoEExpertsPaddedFwdOp:
     test: tests/ops/test_moe_experts_nopad.py
     bench: benchmarks/ops/bench_moe_experts_nopad.py
     bench_manifest_driven: false
+    kernel_map:
+      permute_kernel: MoePermutePaddedKernel
+      grouped_gemm_kernel: GroupedGemmKernel
+      silu_and_mul: SiluAndMulFwdKernel
+      unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoeFwdOp:
   ref_api: "none"
