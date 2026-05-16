@@ -20,7 +20,7 @@ class MoePermuteNopadFwdOp(Op):
     the MoE pipeline.
 
     Args:
-        num_tokens: Number of input tokens T.
+        total_tokens: Number of input tokens T.
         top_k: Number of experts selected per token K.
         num_experts: Total number of experts E (global count).
         hidden_size: Hidden dimension H.
@@ -31,13 +31,13 @@ class MoePermuteNopadFwdOp(Op):
         kernel_map: Optional kernel override dict.
 
     Example:
-        >>> op = MoePermuteNopadFwdOp(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
+        >>> op = MoePermuteNopadFwdOp(total_tokens=4, top_k=2, num_experts=8, hidden_size=128)
         >>> perm_h, offsets, sizes, expert_offset, fwd_idx = op(hidden_states, topk_ids)
     """
 
     def __init__(
         self,
-        num_tokens: int,
+        total_tokens: int,
         top_k: int,
         num_experts: int,
         hidden_size: int,
@@ -45,7 +45,7 @@ class MoePermuteNopadFwdOp(Op):
         expert_map: Optional[torch.Tensor] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
-        self.num_tokens = num_tokens
+        self.total_tokens = total_tokens
         self.top_k = top_k
         self.num_experts = num_experts
         self.hidden_size = hidden_size
@@ -53,7 +53,7 @@ class MoePermuteNopadFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["permute_nopad_kernel"](
-            num_tokens, top_k, num_experts, hidden_size, dtype, expert_map
+            total_tokens, top_k, num_experts, hidden_size, dtype, expert_map
         )
 
     @property
@@ -64,11 +64,11 @@ class MoePermuteNopadFwdOp(Op):
         elem_bytes = self.dtype.itemsize
         flops = 0
         mem_bytes = (
-            (self.num_tokens * self.hidden_size
-             + self.num_tokens * self.top_k * self.hidden_size)
+            (self.total_tokens * self.hidden_size
+             + self.total_tokens * self.top_k * self.hidden_size)
             * elem_bytes
             + (self.num_experts + 1) * 8
-            + self.num_tokens * self.top_k * 4
+            + self.total_tokens * self.top_k * 4
             + self.num_experts * 8
         )
         return flops, mem_bytes
