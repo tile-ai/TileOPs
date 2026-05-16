@@ -350,25 +350,61 @@ def test_clamp_max_nan_propagation(dtype):
 # ---------------------------------------------------------------------------
 
 
+_MASKED_FILL_TENSOR_VALUE_FLOAT_DTYPES = [
+    torch.float16, torch.bfloat16, torch.float32,
+]
+_MASKED_FILL_TENSOR_VALUE_INT_DTYPES = [
+    torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
+]
+
+
+def _masked_fill_tensor_value_inputs(input_shape, mask_shape, dtype):
+    if dtype == torch.bool:
+        inp = torch.randint(0, 2, input_shape, device="cuda").bool()
+        value = torch.tensor(True, device="cuda", dtype=torch.bool)
+    elif dtype in _MASKED_FILL_TENSOR_VALUE_INT_DTYPES:
+        iinfo = torch.iinfo(dtype)
+        lo = max(iinfo.min, -1000)
+        hi = min(iinfo.max, 1000) + 1
+        inp = torch.randint(lo, hi, input_shape, device="cuda", dtype=dtype)
+        value = torch.tensor(7, device="cuda", dtype=dtype)
+    else:
+        inp = torch.randn(input_shape, device="cuda", dtype=dtype)
+        value = torch.tensor(-1.5, device="cuda", dtype=dtype)
+    mask = torch.randint(0, 2, mask_shape, device="cuda").bool()
+    return inp, mask, value
+
+
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "input_shape, mask_shape",
     [((4, 8), (4, 8)), ((1, 8), (4, 8)), ((4, 8), (1, 8)), ((2, 1), (2, 3))],
 )
-def test_masked_fill_tensor_value(input_shape, mask_shape):
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.bool, *_MASKED_FILL_TENSOR_VALUE_INT_DTYPES,
+     *_MASKED_FILL_TENSOR_VALUE_FLOAT_DTYPES],
+)
+def test_masked_fill_tensor_value(input_shape, mask_shape, dtype):
     from tileops.ops.elementwise import MaskedFillFwdOp
 
-    inp = torch.randn(input_shape, device="cuda", dtype=torch.float32)
-    mask = torch.randint(0, 2, mask_shape, device="cuda").bool()
-    value = torch.tensor(-1.5, device="cuda", dtype=torch.float32)
+    inp, mask, value = _masked_fill_tensor_value_inputs(input_shape, mask_shape, dtype)
 
     out_shape = torch.broadcast_shapes(input_shape, mask_shape)
     ref = inp.expand(out_shape).clone().masked_fill(mask.expand(out_shape), value.item())
 
     op = MaskedFillFwdOp(input=tuple(inp.shape), mask=tuple(mask.shape),
-                        value=tuple(value.shape), dtype=torch.float32)
+                        value=tuple(value.shape), dtype=dtype)
     out = op(inp, mask, value)
-    torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+    if dtype == torch.float16:
+        tol = {"atol": 1e-3, "rtol": 1e-3}
+    elif dtype == torch.bfloat16:
+        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
+    elif dtype == torch.float32:
+        tol = {"atol": 1e-5, "rtol": 1e-5}
+    else:
+        tol = {"atol": 0, "rtol": 0}
+    torch.testing.assert_close(out, ref, **tol)
 
 
 @pytest.mark.smoke
