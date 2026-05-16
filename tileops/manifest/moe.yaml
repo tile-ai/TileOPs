@@ -245,6 +245,7 @@ FusedMoeExpertsFwdOp:
       - "output.shape == hidden_states.shape"
 
   workloads:
+    - {num_tokens: 32, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-decode"}
     - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
 
   roofline:
@@ -287,6 +288,7 @@ FusedMoeExpertsPaddedFwdOp:
       - "output.shape == hidden_states.shape"
 
   workloads:
+    - {num_tokens: 32, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-decode"}
     - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
 
   roofline:
