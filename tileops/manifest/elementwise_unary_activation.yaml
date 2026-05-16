@@ -465,8 +465,8 @@ ClampScalarFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], min: -0.5, max: 0.5, dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], min: -0.5, max: 0.5, dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
