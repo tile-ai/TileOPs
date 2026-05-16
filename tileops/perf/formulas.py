@@ -684,7 +684,7 @@ def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
     top_k = int(op.top_k)
     hidden_size = int(op.hidden_size)
     ffn_size = int(op.ffn_size)
-    elem_bytes = op.dtype.itemsize
+    elem_bytes = _dtype_itemsize(op.dtype)
 
     flops = num_tokens * top_k * 6 * ffn_size * hidden_size
     weight_bytes = num_experts * 3 * ffn_size * hidden_size * elem_bytes
