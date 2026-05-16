@@ -96,6 +96,7 @@ class FusedMoeExpertsFwdOp(Op):
             hidden_size=hidden_size,
             dtype=dtype,
             expert_map=expert_map,
+            kernel_map=kernel_map,
         )
         self._gemm_gate_up = MoeGroupedGemmNopadFwdOp(
             numel=numel,
@@ -103,11 +104,13 @@ class FusedMoeExpertsFwdOp(Op):
             n=ffn_size * 2,
             k=hidden_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._silu_and_mul = SiluAndMulFwdOp(
             M=numel,
             N=ffn_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel,
@@ -115,6 +118,7 @@ class FusedMoeExpertsFwdOp(Op):
             n=hidden_size,
             k=ffn_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._unpermute = MoeUnpermuteFwdOp(
             total_tokens=num_tokens,
@@ -122,6 +126,7 @@ class FusedMoeExpertsFwdOp(Op):
             hidden_size=hidden_size,
             dtype=dtype,
             padded_batch_sum=numel,
+            kernel_map=kernel_map,
         )
 
     @property
@@ -219,6 +224,7 @@ class FusedMoeExpertsPaddedFwdOp(Op):
             hidden_size=hidden_size,
             dtype=dtype,
             block_m=_BLOCK_M,
+            kernel_map=kernel_map,
         )
         self._gemm_gate_up = GroupedGemmOp(
             batch_sum=_padded_batch_sum,
@@ -226,11 +232,13 @@ class FusedMoeExpertsPaddedFwdOp(Op):
             n=ffn_size * 2,
             k=hidden_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._silu_and_mul = SiluAndMulFwdOp(
             M=_padded_batch_sum,
             N=ffn_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._gemm_down = GroupedGemmOp(
             batch_sum=_padded_batch_sum,
@@ -238,6 +246,7 @@ class FusedMoeExpertsPaddedFwdOp(Op):
             n=hidden_size,
             k=ffn_size,
             dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._unpermute = MoeUnpermuteFwdOp(
             total_tokens=num_tokens,
@@ -245,6 +254,7 @@ class FusedMoeExpertsPaddedFwdOp(Op):
             hidden_size=hidden_size,
             dtype=dtype,
             padded_batch_sum=_padded_batch_sum,
+            kernel_map=kernel_map,
         )
 
     @property

@@ -168,18 +168,12 @@ class Op(ABC):
         default_map = self.default_kernel_map
         if default_map is None or len(default_map) == 0:
             # Composite ops own no direct kernel — they orchestrate sub-ops
-            # whose own __init__ already dispatches their kernel maps. An
-            # empty default with an empty/None override is the well-formed
-            # composite case; a non-empty override against an empty default
-            # has nowhere to land and is still rejected.
-            if candidate_map is None or len(candidate_map) == 0:
-                self.kernel_map = {}
-                return
-            raise ValueError(
-                "default_kernel_map is empty but a non-empty kernel_map "
-                "override was supplied; composite ops accept no kernel "
-                "overrides at this layer"
-            )
+            # whose own _install_kernel_map slices the override against
+            # their non-empty default_kernel_map (arch-compat is enforced
+            # there). The composite stores the override verbatim so its
+            # __init__ can forward it to each sub-op constructor.
+            self.kernel_map = dict(candidate_map) if candidate_map else {}
+            return
         resolved: dict[str, Kernel] = {}
         current_arch = get_sm_version()
         for name, default_kernel in default_map.items():

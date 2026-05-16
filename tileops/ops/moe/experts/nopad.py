@@ -58,19 +58,25 @@ class MoEExpertsNopadFwdOp(MoEExpertsModular, Op):
         self._permute = MoePermuteNopadFwdOp(
             num_tokens=num_tokens, top_k=top_k, num_experts=num_experts,
             hidden_size=hidden_size, dtype=dtype, expert_map=expert_map,
+            kernel_map=kernel_map,
         )
         self._gemm_gate_up = MoeGroupedGemmNopadFwdOp(
             numel=numel, num_experts=num_experts_local,
             n=ffn_size * 2, k=hidden_size, dtype=dtype,
+            kernel_map=kernel_map,
         )
-        self._silu_and_mul = SiluAndMulFwdOp(M=numel, N=ffn_size, dtype=dtype)
+        self._silu_and_mul = SiluAndMulFwdOp(
+            M=numel, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
+        )
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel, num_experts=num_experts_local,
             n=hidden_size, k=ffn_size, dtype=dtype,
+            kernel_map=kernel_map,
         )
         self._unpermute = MoeUnpermuteFwdOp(
             total_tokens=num_tokens, top_k=top_k,
             hidden_size=hidden_size, dtype=dtype, padded_batch_sum=numel,
+            kernel_map=kernel_map,
         )
         self._routed_scaling_factor = routed_scaling_factor
 
