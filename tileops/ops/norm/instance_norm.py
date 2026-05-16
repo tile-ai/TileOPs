@@ -155,11 +155,6 @@ class InstanceNormFwdOp(Op):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ) -> None:
-        # Manifest input-union + same_as(x) parity (would otherwise be the
-        # synthesized validator's job) plus the kernel-configured dtype gate:
-        # the compiled kernel binds to self.dtype at construction time, so
-        # inputs whose dtype differs from self.dtype must not reach it even
-        # when they satisfy the manifest union.
         allowed = (torch.float32, torch.float16, torch.bfloat16)
         if self.dtype not in allowed:
             raise ValueError(

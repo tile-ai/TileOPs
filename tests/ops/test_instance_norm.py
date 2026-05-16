@@ -183,21 +183,14 @@ def test_instance_norm_forward_required_signature() -> None:
 
 @pytest.mark.smoke
 def test_instance_norm_rejects_ctor_input_dtype_mismatch() -> None:
-    """`_validate_dtypes` rejects inputs whose dtype differs from the kernel
-    dtype set at construction time. Each manifest-accepted input dtype must
-    still match `self.dtype` so the compiled fp16/bf16/fp32 kernel never
-    sees a tensor it cannot consume.
-    """
     op = InstanceNormFwdOp.__new__(InstanceNormFwdOp)
     op.dtype = torch.float16
 
     fp16 = torch.empty(0, dtype=torch.float16)
     bf16 = torch.empty(0, dtype=torch.bfloat16)
 
-    # Matching dtypes pass.
     op._validate_dtypes(fp16, fp16, fp16)
 
-    # Each tensor mismatched independently raises.
     with pytest.raises(ValueError, match="x.dtype"):
         op._validate_dtypes(bf16, fp16, fp16)
     with pytest.raises(ValueError, match="weight.dtype"):

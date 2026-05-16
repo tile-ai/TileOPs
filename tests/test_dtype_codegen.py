@@ -1,9 +1,4 @@
-"""Critical-path check for manifest-driven ``_validate_dtypes`` codegen.
-
-Guards that every ``status: implemented`` op in the live manifest has a
-non-stub ``_validate_dtypes`` installed by the ``__init_subclass__``
-hook. Per-op dtype-rejection behavior lives in each op's own test file.
-"""
+"""Live-manifest parity sweep for the generated ``_validate_dtypes``."""
 
 import pytest
 
