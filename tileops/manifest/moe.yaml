@@ -344,8 +344,8 @@ MoeGroupedGemmNopadFwdOp:
   source:
     kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
     op: tileops/ops/moe/moe_grouped_gemm_nopad.py
-    test: tests/ops/test_moe_grouped_gemm_nopad.py
-    bench: benchmarks/ops/bench_moe_grouped_gemm_nopad.py
+    test: tests/ops/test_moe_fused_moe.py
+    bench: benchmarks/ops/bench_moe_fused_moe.py
     kernel_map:
       moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
 
