@@ -14,7 +14,12 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase
-from tileops.ops.moe import FusedMoe, FusedTopKOp
+from tileops.ops.moe import (
+    FusedMoe,
+    FusedMoeFwdCbFwdOp,
+    FusedMoeFwdOp,
+    FusedTopKOp,
+)
 
 # ---------------------------------------------------------------------------
 # vLLM optional import
@@ -460,6 +465,78 @@ def test_fused_moe_vs_vllm(
 # ---------------------------------------------------------------------------
 # prepare_finalize / experts contract
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+def test_fused_moe_fwd_op_identity() -> None:
+    """`FusedMoeFwdOp` (no correction bias) matches the FusedMoe core path.
+
+    Guards the manifest <-> class identity contract surfaced by
+    validate_manifest --check-op: both names must resolve to concrete Op
+    subclasses, each with the right `forward()` positional signature.
+    """
+    torch.manual_seed(42)
+    dev = "cuda"
+    T, E, K, H, F_ = 32, 8, 2, 64, 32
+    dtype = torch.bfloat16
+
+    hidden = torch.randn(T, H, dtype=dtype, device=dev)
+    gating = torch.randn(T, E, dtype=dtype, device=dev)
+    w_gate_up = torch.randn(E, F_ * 2, H, dtype=dtype, device=dev) * 0.02
+    w_down = torch.randn(E, H, F_, dtype=dtype, device=dev) * 0.02
+
+    op = FusedMoeFwdOp(
+        num_tokens=T, num_experts=E, top_k=K,
+        hidden_size=H, ffn_size=F_, dtype=dtype,
+    )
+    out = op(hidden, gating, w_gate_up, w_down)
+    assert out.shape == (T, H)
+    assert out.dtype == dtype
+
+    ref_op = FusedMoe(
+        num_tokens=T, num_experts=E, top_k=K,
+        hidden_size=H, ffn_size=F_, dtype=dtype,
+    )
+    ref = ref_op(hidden, gating, w_gate_up, w_down)
+    torch.testing.assert_close(out.float(), ref.float(), rtol=1e-2, atol=1e-2)
+
+    flops, nbytes = op.eval_roofline()
+    assert flops > 0 and nbytes > 0
+
+
+@pytest.mark.smoke
+def test_fused_moe_fwd_cb_op_identity() -> None:
+    """`FusedMoeFwdCbFwdOp` (with correction bias) end-to-end smoke."""
+    torch.manual_seed(7)
+    dev = "cuda"
+    T, E, K, H, F_ = 32, 8, 2, 64, 32
+    dtype = torch.bfloat16
+
+    hidden = torch.randn(T, H, dtype=dtype, device=dev)
+    gating = torch.randn(T, E, dtype=dtype, device=dev)
+    correction_bias = torch.randn(E, dtype=torch.float32, device=dev) * 0.1
+    w_gate_up = torch.randn(E, F_ * 2, H, dtype=dtype, device=dev) * 0.02
+    w_down = torch.randn(E, H, F_, dtype=dtype, device=dev) * 0.02
+
+    op = FusedMoeFwdCbFwdOp(
+        num_tokens=T, num_experts=E, top_k=K,
+        hidden_size=H, ffn_size=F_, renormalize=True, dtype=dtype,
+    )
+    out = op(hidden, gating, correction_bias, w_gate_up, w_down)
+    assert out.shape == (T, H)
+    assert out.dtype == dtype
+
+    ref_op = FusedMoe(
+        num_tokens=T, num_experts=E, top_k=K,
+        hidden_size=H, ffn_size=F_,
+        scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
+        dtype=dtype,
+    )
+    ref = ref_op(hidden, gating, w_gate_up, w_down, correction_bias)
+    torch.testing.assert_close(out.float(), ref.float(), rtol=1e-2, atol=1e-2)
+
+    flops, nbytes = op.eval_roofline()
+    assert flops > 0 and nbytes > 0
 
 
 @pytest.mark.smoke

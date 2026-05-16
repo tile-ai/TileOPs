@@ -661,21 +661,34 @@ def bitwise_xor_fwd_roofline(op: "Op") -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 
-def fused_moe_fwd_bytes(**kwargs: Any) -> dict[str, int]:
+def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
     """Roofline for FusedMoeFwdOp / FusedMoeFwdCbFwdOp.
 
-    Mixed-dtype inputs: hidden_states (bf16/fp16) + gating_output (float32).
-    elem_bytes applies only to the bf16/fp16 tensors.
+    Func-mode is required because byte traffic mixes a float32 gating tensor
+    with hidden-states / weights in the configured ``op.dtype`` (and, for the
+    Cb variant, a float32 correction-bias broadcast over experts). Inline
+    mode binds a single ``elem_bytes`` and cannot express this.
+
+    Args:
+        op: A bound ``FusedMoeFwdOp`` or ``FusedMoeFwdCbFwdOp`` instance.
+
+    Returns:
+        ``(flops, bytes)`` as ints. FLOPs cover gate+up GEMM, SwiGLU, and
+        down GEMM (``T * K * 6 * F * H``). Bytes cover hidden states (in
+        and out), gating logits (float32), expert weights at ``op.dtype``,
+        and -- for the correction-bias variant -- the per-expert bias
+        (float32).
     """
-    num_tokens = kwargs["num_tokens"]
-    num_experts = kwargs["num_experts"]
-    top_k = kwargs["top_k"]
-    hidden_size = kwargs["hidden_size"]
-    ffn_size = kwargs["ffn_size"]
-    elem_bytes = kwargs.get("elem_bytes", 2)  # bf16 default
+    num_tokens = int(op.num_tokens)
+    num_experts = int(op.num_experts)
+    top_k = int(op.top_k)
+    hidden_size = int(op.hidden_size)
+    ffn_size = int(op.ffn_size)
+    elem_bytes = _dtype_itemsize(op.dtype)
 
     flops = num_tokens * top_k * 6 * ffn_size * hidden_size
     weight_bytes = num_experts * 3 * ffn_size * hidden_size * elem_bytes
     token_bytes = 2 * num_tokens * hidden_size * elem_bytes
-    gating_bytes = num_tokens * num_experts * 4  # float32
-    return {"flops": flops, "bytes": weight_bytes + token_bytes + gating_bytes}
+    gating_bytes = num_tokens * num_experts * 4  # float32 logits
+    bias_bytes = num_experts * 4 if getattr(op, "with_correction_bias", False) else 0
+    return flops, weight_bytes + token_bytes + gating_bytes + bias_bytes

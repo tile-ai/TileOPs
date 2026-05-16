@@ -458,7 +458,7 @@ MoEExpertsPaddedFwdOp:
 FusedMoeFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -499,11 +499,17 @@ FusedMoeFwdOp:
     test: tests/ops/test_moe_fused_moe.py
     bench: benchmarks/ops/bench_moe_fused_moe.py
     bench_manifest_driven: true
+    kernel_map:
+      fused_topk_kernel: FusedTopKKernel
+      permute_nopad_kernel: MoePermuteNopadKernel
+      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
+      silu_and_mul: SiluAndMulFwdKernel
+      unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoeFwdCbFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
   variant_of: FusedMoeFwdOp
 
   signature:
@@ -544,3 +550,9 @@ FusedMoeFwdCbFwdOp:
     test: tests/ops/test_moe_fused_moe.py
     bench: benchmarks/ops/bench_moe_fused_moe.py
     bench_manifest_driven: true
+    kernel_map:
+      fused_topk_kernel: FusedTopKKernel
+      permute_nopad_kernel: MoePermuteNopadKernel
+      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
+      silu_and_mul: SiluAndMulFwdKernel
+      unpermute_kernel: MoeUnpermuteKernel
