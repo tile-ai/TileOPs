@@ -311,7 +311,7 @@ FusedMoeExpertsPaddedFwdOp:
 MoeGroupedGemmNopadFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -330,7 +330,12 @@ MoeGroupedGemmNopadFwdOp:
       - "c.shape == (numel, n)"
 
   workloads:
-    - {numel: 4096, num_experts: 256, n: 4096, k: 2048, dtypes: [bfloat16], label: "deepseek-v3-gate-up"}
+    # Tight grouped-GEMM shapes representative of DeepSeek-V3 MoE
+    # (E=256, K=8, H=7168, F=2048; numel = num_tokens * top_k).
+    - {numel: 4096, num_experts: 256, n: 4096, k: 7168, dtypes: [bfloat16], label: "deepseek-v3-decode-gate-up"}
+    - {numel: 32768, num_experts: 256, n: 4096, k: 7168, dtypes: [bfloat16], label: "deepseek-v3-prefill-gate-up"}
+    - {numel: 4096, num_experts: 256, n: 7168, k: 2048, dtypes: [bfloat16], label: "deepseek-v3-decode-down"}
+    - {numel: 32768, num_experts: 256, n: 7168, k: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill-down"}
 
   roofline:
     flops: "2 * numel * n * k"
@@ -341,6 +346,8 @@ MoeGroupedGemmNopadFwdOp:
     op: tileops/ops/moe/moe_grouped_gemm_nopad.py
     test: tests/ops/test_moe_fused_moe.py
     bench: benchmarks/ops/bench_moe_fused_moe.py
+    kernel_map:
+      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
 
 MoEExpertsNopadFwdOp:
   ref_api: "none"
