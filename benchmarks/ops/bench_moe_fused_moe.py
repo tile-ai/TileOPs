@@ -202,8 +202,12 @@ def _run_bench(
     result_pad = bm.profile(op_pad, *forward_args_tileops)
     BenchmarkReport.record(op_pad, locals(), result_pad, tag="tileops-padded")
 
-    # -- vLLM baseline (optional) ------------------------------------------
-    if _VLLM_AVAILABLE:
+    # -- Baseline ----------------------------------------------------------
+    # vLLM's ``fused_topk`` has no correction_bias parameter, so routing for
+    # FusedMoeFwdCbFwdOp would diverge from TileOPs. Fall back to torch-ref
+    # for correction-bias workloads; otherwise prefer vLLM when available.
+    use_vllm = _VLLM_AVAILABLE and not with_correction_bias
+    if use_vllm:
         gating_f32 = gating.float()
 
         def _vllm_fn(hidden, gating, correction_bias, w_gate_up, w_down):

@@ -94,6 +94,7 @@ class FusedMoe(Op):
             scoring_func=scoring_func,
             renormalize=renormalize,
             with_correction_bias=with_correction_bias,
+            kernel_map=kernel_map,
         )
 
         self._prepare: MoEPrepareAndFinalize = (
@@ -122,6 +123,7 @@ class FusedMoe(Op):
                 routed_scaling_factor=routed_scaling_factor,
                 dtype=dtype,
                 expert_map=expert_map,
+                kernel_map=kernel_map,
             )
 
     @property
