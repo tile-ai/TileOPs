@@ -48,8 +48,8 @@ class MoeGroupedGemmNopadFwdOp(Op):
     ) -> None:
         self.numel = numel
         self.num_experts = num_experts
-        self.N = n
-        self.K = k
+        self.n = n
+        self.k = k
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
