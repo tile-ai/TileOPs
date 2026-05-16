@@ -113,7 +113,7 @@ class MoEExpertsPaddedFwdOp(MoEExpertsModular, Op):
         )
         output = self._unpermute(mm2_pad, fwd_idx, topk_weights)
         if self._routed_scaling_factor != 1.0:
-            output = output * self._routed_scaling_factor
+            output.mul_(self._routed_scaling_factor)
         return output
 
     def workspace_shapes(
