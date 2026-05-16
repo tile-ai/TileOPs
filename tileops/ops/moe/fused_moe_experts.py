@@ -72,6 +72,7 @@ class FusedMoeExpertsFwdOp(Op):
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -80,6 +81,8 @@ class FusedMoeExpertsFwdOp(Op):
         self.ffn_size = ffn_size
         self.routed_scaling_factor = routed_scaling_factor
         self.dtype = dtype
+
+        self.dispatch_kernel(kernel_map)
 
         numel = num_tokens * top_k
         num_experts_local = (
@@ -188,6 +191,7 @@ class FusedMoeExpertsPaddedFwdOp(Op):
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -196,6 +200,9 @@ class FusedMoeExpertsPaddedFwdOp(Op):
         self.ffn_size = ffn_size
         self.routed_scaling_factor = routed_scaling_factor
         self.dtype = dtype
+
+        self.dispatch_kernel(kernel_map)
+
         if expert_map is not None:
             raise NotImplementedError(
                 "expert_map is not yet supported for the padded layout. "

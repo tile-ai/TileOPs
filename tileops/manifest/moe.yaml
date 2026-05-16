@@ -223,7 +223,7 @@ MoeUnpermuteFwdOp:
 FusedMoeExpertsFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -260,7 +260,7 @@ FusedMoeExpertsFwdOp:
 FusedMoeExpertsPaddedFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -331,7 +331,7 @@ MoeGroupedGemmNopadFwdOp:
 MoEExpertsNopadFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -379,7 +379,7 @@ MoEExpertsNopadFwdOp:
 MoEExpertsPaddedFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:

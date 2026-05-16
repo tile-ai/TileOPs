@@ -2,24 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Dict, Optional
 
 import torch
 from torch import Tensor
 
 from tileops.kernels.grouped_gemm import _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS
+from tileops.kernels.kernel_base import Kernel
 from tileops.ops.elementwise import SiluAndMulFwdOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
 from tileops.ops.moe.abc import MoEExpertsModular, WeightedReduce, WeightedReduceNoOp
 from tileops.ops.moe.permute_padded import MoePermutePaddedFwdOp
 from tileops.ops.moe.unpermute import MoeUnpermuteFwdOp
+from tileops.ops.op_base import Op
 
 __all__ = ["MoEExpertsPaddedFwdOp"]
 
 _BLOCK_M: int = _GEMM_DEFAULT_CONFIGS[(False, True)]["block_m"]
 
 
-class MoEExpertsPaddedFwdOp(MoEExpertsModular):
+class MoEExpertsPaddedFwdOp(MoEExpertsModular, Op):
     """Expert GEMM using block_m-aligned padded layout (reference baseline).
 
     Internal pipeline: MoePermutePaddedFwdOp → gate_up GEMM → SwiGLU →
@@ -38,7 +40,17 @@ class MoEExpertsPaddedFwdOp(MoEExpertsModular):
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[Tensor] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        self.num_tokens = num_tokens
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.hidden_size = hidden_size
+        self.ffn_size = ffn_size
+        self.dtype = dtype
+
+        self.dispatch_kernel(kernel_map)
+
         if expert_map is not None:
             raise NotImplementedError(
                 "expert_map is not supported for padded layout. "
@@ -65,6 +77,38 @@ class MoEExpertsPaddedFwdOp(MoEExpertsModular):
             hidden_size=hidden_size, dtype=dtype, padded_batch_sum=padded_batch_sum,
         )
         self._routed_scaling_factor = routed_scaling_factor
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {}
+
+    def forward(
+        self,
+        hidden_states: Tensor,   # [T, H]
+        w_gate_up: Tensor,       # [E, 2F, H]
+        w_down: Tensor,          # [E, H, F]
+        topk_weights: Tensor,    # [T, K] float32
+        topk_ids: Tensor,        # [T, K] int32
+    ) -> Tensor:                  # [T, H]
+        """Allocating wrapper around apply(): runs the expert pipeline and returns the output.
+
+        Mirrors FusedMoeExpertsPaddedFwdOp.forward() semantics so the manifest
+        signature is satisfied at the validator's Op-class resolution path.
+        """
+        perm_h_pad, padded_offsets, padded_sizes, _, fwd_idx = self._permute(
+            hidden_states, topk_ids
+        )
+        gate_up_pad = self._gemm_gate_up(
+            perm_h_pad, w_gate_up, padded_sizes, padded_offsets, padded_offsets
+        )
+        act_pad = self._silu_and_mul(gate_up_pad)
+        mm2_pad = self._gemm_down(
+            act_pad, w_down, padded_sizes, padded_offsets, padded_offsets
+        )
+        output = self._unpermute(mm2_pad, fwd_idx, topk_weights)
+        if self._routed_scaling_factor != 1.0:
+            output = output * self._routed_scaling_factor
+        return output
 
     def workspace_shapes(
         self, M: int, N: int, K: int, topk: int, num_experts: int,
