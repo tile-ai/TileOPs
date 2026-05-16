@@ -25,7 +25,7 @@ Source of truth for op interfaces. Human-reviewed, separate PR.
 
 ### Status flip carve-out
 
-An implementation PR may edit only `status`, `source.kernel_map`, and (only when promoting `spec-only → implemented`) `workloads` on the aligned op; every other contractual field needs a separate manifest-only PR.
+An implementation PR may edit only `status`, `source.kernel_map`, `source.test`, `source.bench`, and (only when promoting `spec-only → implemented`) `workloads` on the aligned op; every other contractual field needs a separate manifest-only PR.
 
 Full enumeration: [.claude/rules/manifest-trust-model.md](../../.claude/rules/manifest-trust-model.md) §Status flip carve-out.
 
