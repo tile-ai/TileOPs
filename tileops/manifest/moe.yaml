@@ -119,7 +119,7 @@ MoePermuteAlignFwdOp:
 MoePermuteNopadFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -170,9 +170,11 @@ MoePermuteNopadFwdOp:
   source:
     kernel: tileops/kernels/moe/permute_nopad.py
     op: tileops/ops/moe/permute_nopad.py
-    test: tests/ops/test_moe_permute.py
+    test: tests/ops/test_moe_permute_nopad.py
     bench: benchmarks/ops/bench_moe_permute_nopad.py
     bench_manifest_driven: true
+    kernel_map:
+      permute_nopad_kernel: MoePermuteNopadKernel
 
 MoeUnpermuteFwdOp:
   ref_api: "none"
