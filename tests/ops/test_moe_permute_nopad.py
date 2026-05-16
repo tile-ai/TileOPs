@@ -11,14 +11,8 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteNopadFwdOp
 from workloads.moe import MoePermuteTest as _MoePermuteTestWorkload
-
-_DTYPE_TOKENS = {
-    "bfloat16": torch.bfloat16,
-    "float16": torch.float16,
-}
 
 
 def _ref_moe_permute_nopad(
@@ -102,28 +96,12 @@ def _compare(hidden_states, topk_ids, outputs, outputs_ref, num_experts):
     )
 
 
-def _manifest_param(label: str) -> tuple[int, int, int, int, torch.dtype]:
-    """Pull a manifest workload row by label and return its op-ctor tuple."""
-    for wl in load_workloads("MoePermuteNopadFwdOp"):
-        if wl.get("label") == label:
-            dtype = _DTYPE_TOKENS[wl["dtypes"][0]]
-            return (
-                wl["total_tokens"], wl["top_k"], wl["num_experts"],
-                wl["hidden_size"], dtype,
-            )
-    raise KeyError(f"workload label {label!r} not in MoePermuteNopadFwdOp manifest")
-
-
 class MoePermuteNopadFixture(FixtureBase):
-    # Manifest-tied smoke cases: the two smallest qwen3-30b shapes from
-    # tileops/manifest/moe.yaml. Each row mirrors a manifest workload by label
-    # so the conformance suite tracks the spec entries directly.
     PARAMS = [
         ("total_tokens, top_k, num_experts, hidden_size, dtype", [
-            pytest.param(*_manifest_param("qwen3-30b-decode"),
-                         marks=pytest.mark.smoke, id="qwen3-30b-decode"),
-            pytest.param(*_manifest_param("qwen3-30b-small"),
-                         marks=pytest.mark.smoke, id="qwen3-30b-small"),
+            pytest.param(4,  2, 4, 64,  torch.bfloat16, marks=pytest.mark.smoke, id="tiny-bf16"),
+            pytest.param(4,  2, 4, 64,  torch.float16,  marks=pytest.mark.smoke, id="tiny-fp16"),
+            pytest.param(16, 2, 8, 128, torch.bfloat16, marks=pytest.mark.full,  id="small"),
         ]),
     ]
 
