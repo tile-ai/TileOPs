@@ -60,18 +60,8 @@ class MoePermuteNopadFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"permute_nopad_kernel": MoePermuteNopadKernel}
 
-    def eval_roofline(self) -> tuple[int, int]:
-        elem_bytes = self.dtype.itemsize
-        flops = 0
-        mem_bytes = (
-            (self.total_tokens * self.hidden_size
-             + self.total_tokens * self.top_k * self.hidden_size)
-            * elem_bytes
-            + (self.num_experts + 1) * 8
-            + self.total_tokens * self.top_k * 4
-            + self.num_experts * 8
-        )
-        return flops, mem_bytes
+    # eval_roofline is installed by tileops.ops._roofline_codegen from the
+    # manifest roofline.bytes / roofline.flops expressions; no manual override.
 
     def forward(
         self,
