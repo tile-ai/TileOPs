@@ -7,11 +7,6 @@ internally, making it the strongest available baseline for Hopper grouped GEMM.C
   DeepSeek-V3-decode  E=256 T=512
   DeepSeek-V3-prefill E=256 T=4096
 × {uniform, skewed} distribution = 8 cases.
-
-Usage:
-    TILELANG_CLEANUP_TEMP_FILES=1 TMPDIR=/tmp/jieneng_tvm_tmp \\
-    conda run -n tileops-tl9 --no-capture-output \\
-    python benchmarks/ops/bench_grouped_gemm_3wg_vs_cutlass.py
 """
 from __future__ import annotations
 

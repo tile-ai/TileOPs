@@ -5,9 +5,6 @@ Tests the three implementations across:
   - Skewed distribution (80% tokens to top-20% experts)
   - Both decode (T=512) and prefill (T=4096) shapes
   - Qwen3-235B (E=128) and DeepSeek-V3 (E=256)
-
-Usage:
-    conda run -n tileops python benchmarks/ops/bench_moe_persistent_vs_nopad.py
 """
 import math
 

@@ -10,10 +10,6 @@ Real model configurations:
   DeepSeek-V3      7168  256   8
   Qwen3-235B-A22B  7168  128   8
   Qwen3-30B-A3B    3072  128   8
-
-Usage:
-    conda run -n tileops python -m pytest benchmarks/ops/bench_moe_permute_nopad.py -vvs
-    conda run -n tileops python benchmarks/ops/bench_moe_permute_nopad.py
 """
 
 from typing import Optional

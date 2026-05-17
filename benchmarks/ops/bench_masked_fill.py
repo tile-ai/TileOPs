@@ -7,10 +7,6 @@ Baseline:
 Workload shapes come from the manifest entry's ``workloads`` (via
 ``load_workloads``); the benchmark reports TileOPs latency alongside the
 manifest-derived roofline (``op.eval_roofline()``).
-
-Usage:
-    conda run -n tileops python -m pytest benchmarks/ops/bench_masked_fill.py -vvs
-    conda run -n tileops python benchmarks/ops/bench_masked_fill.py
 """
 
 from typing import Optional

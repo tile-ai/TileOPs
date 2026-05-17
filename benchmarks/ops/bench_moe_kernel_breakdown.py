@@ -7,9 +7,6 @@ Stages measured:
   padded : FusedTopK | Permute | GEMM_gate_up | SiluAndMul | GEMM_down | Unpermute
   nopad  : FusedTopK | Permute | Sched | GEMM_gate_up | SiluAndMul | Sched | GEMM_down | Unpermute
   vLLM   : torch.profiler top-CUDA-kernel breakdown
-
-Usage:
-    conda run -n tileops python benchmarks/ops/bench_moe_kernel_breakdown.py
 """
 
 import torch

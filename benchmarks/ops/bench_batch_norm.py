@@ -1,9 +1,6 @@
 """Benchmark for BatchNormFwdOp and BatchNormBwdOp.
 
 Compares TileOPs vs PyTorch cuDNN batch norm on common ResNet-style shapes.
-
-Run:
-    conda run -n tileops python -m pytest benchmarks/ops/bench_batch_norm.py -vvs
 """
 
 import math

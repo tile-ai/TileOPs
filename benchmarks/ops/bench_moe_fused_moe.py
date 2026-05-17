@@ -10,9 +10,6 @@ Coverage:
   Op                       Models (manifest workloads)
   FusedMoeFwdOp            Qwen3-235B-A22B (softmax), DeepSeek-V3 (sigmoid)
   FusedMoeFwdCbFwdOp       Kimi K2 (sigmoid + correction_bias)
-
-Usage:
-    conda run -n tileops python -m pytest benchmarks/ops/bench_moe_fused_moe.py -vvs
 """
 
 from typing import Optional
