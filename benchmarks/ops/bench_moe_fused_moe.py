@@ -103,11 +103,10 @@ class FusedMoeBenchTest(WorkloadBase):
 class FusedMoeBenchmark(BenchmarkBase[FusedMoeBenchTest]):
     """Benchmark wrapper sourcing flops/bytes from the bound op's roofline."""
 
-    _roofline_cache: Optional[tuple[float, float]] = None
-
     def __init__(self, test, op):
         super().__init__(test)
         self._op = op
+        self._roofline_cache: Optional[tuple[float, float]] = None
 
     def _get_roofline(self) -> tuple[float, float]:
         cache = self._roofline_cache
