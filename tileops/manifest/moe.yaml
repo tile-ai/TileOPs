@@ -537,9 +537,9 @@ FusedMoeFwdCbFwdOp:
       - "output.shape          == (num_tokens, hidden_size)"
 
   workloads:
-    # Kimi K2: scoring_func=sigmoid, correction_bias
-    - {num_tokens: 512,  num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: false, dtypes: [bfloat16], label: "kimi-k2-decode"}
-    - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: false, dtypes: [bfloat16], label: "kimi-k2-prefill"}
+    # Kimi K2: scoring_func=sigmoid, correction_bias, renormalize=True, routed_scaling_factor=2.827
+    - {num_tokens: 512,  num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, dtypes: [bfloat16], label: "kimi-k2-decode"}
+    - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, dtypes: [bfloat16], label: "kimi-k2-prefill"}
 
   roofline:
     func: "tileops.perf.formulas.fused_moe_fwd_bytes"
