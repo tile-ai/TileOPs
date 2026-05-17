@@ -92,12 +92,7 @@ class MoEExpertsNopadFwdOp(MoEExpertsModular, Op):
         topk_weights: Tensor,    # [T, K] float32
         topk_ids: Tensor,        # [T, K] int32
     ) -> Tensor:                  # [T, H]
-        """Allocating wrapper around apply(): runs the expert pipeline and returns the output.
-
-        Mirrors FusedMoeExpertsFwdOp.forward() semantics so the manifest signature
-        (hidden_states, w_gate_up, w_down, topk_weights, topk_ids) -> output is
-        satisfied at the validator's Op-class resolution path.
-        """
+        """Allocating wrapper: run the expert pipeline and return the output tensor."""
         perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(
             hidden_states, topk_ids
         )

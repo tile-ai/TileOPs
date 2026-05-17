@@ -664,20 +664,9 @@ def bitwise_xor_fwd_roofline(op: "Op") -> tuple[int, int]:
 def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
     """Roofline for FusedMoeFwdOp / FusedMoeFwdCbFwdOp.
 
-    Func-mode is required because byte traffic mixes a float32 gating tensor
-    with hidden-states / weights in the configured ``op.dtype`` (and, for the
-    Cb variant, a float32 correction-bias broadcast over experts). Inline
-    mode binds a single ``elem_bytes`` and cannot express this.
-
-    Args:
-        op: A bound ``FusedMoeFwdOp`` or ``FusedMoeFwdCbFwdOp`` instance.
-
-    Returns:
-        ``(flops, bytes)`` as ints. FLOPs cover gate+up GEMM, SwiGLU, and
-        down GEMM (``T * K * 6 * F * H``). Bytes cover hidden states (in
-        and out), gating logits (float32), expert weights at ``op.dtype``,
-        and -- for the correction-bias variant -- the per-expert bias
-        (float32).
+    Func-mode: byte traffic mixes float32 gating (and float32 correction bias
+    for the Cb variant) with hidden-states / weights at ``op.dtype``, so a
+    single ``elem_bytes`` cannot express the total.
     """
     num_tokens = int(op.num_tokens)
     num_experts = int(op.num_experts)
