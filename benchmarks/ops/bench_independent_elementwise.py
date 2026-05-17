@@ -216,7 +216,7 @@ def test_clamp_tensor_bench(
 
 
 @pytest.mark.parametrize(
-    "input_shape, min_shape, max_shape, dtype",
+    "input_shape, min_shape, _max_shape, dtype",
     _workloads_to_clamp_params(
         load_workloads(_CLAMP_MIN_OP), needs_min=True, needs_max=False,
     ),
@@ -224,7 +224,7 @@ def test_clamp_tensor_bench(
 def test_clamp_min_bench(
     input_shape: tuple,
     min_shape: tuple,
-    max_shape: Optional[tuple],
+    _max_shape: Optional[tuple],
     dtype: torch.dtype,
 ) -> None:
     test = TensorClampBenchCase(input_shape, dtype, min_shape=min_shape)
@@ -243,14 +243,14 @@ def test_clamp_min_bench(
 
 
 @pytest.mark.parametrize(
-    "input_shape, min_shape, max_shape, dtype",
+    "input_shape, _min_shape, max_shape, dtype",
     _workloads_to_clamp_params(
         load_workloads(_CLAMP_MAX_OP), needs_min=False, needs_max=True,
     ),
 )
 def test_clamp_max_bench(
     input_shape: tuple,
-    min_shape: Optional[tuple],
+    _min_shape: Optional[tuple],
     max_shape: tuple,
     dtype: torch.dtype,
 ) -> None:
