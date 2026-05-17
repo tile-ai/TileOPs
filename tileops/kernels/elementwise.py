@@ -3263,13 +3263,9 @@ class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
     Computes ``out = mask ? value : x`` over flat tensors of length
     ``N_total``. The Op layer broadcasts ``input`` and ``mask`` to the
     output shape, flattens them, packs the mask as uint8, and reshapes
-    the 0-dim ``value`` to a length-1 tensor before dispatch.
-
-    Supports the PyTorch ``Tensor.masked_fill(mask, value: Tensor)``
-    dtype union of integer and floating-point input dtypes. The bool
-    dtype path is handled at the Op layer by viewing input and value as
-    uint8, so the kernel itself only sees integer and floating-point
-    storage dtypes.
+    the 0-dim ``value`` to a length-1 tensor before dispatch. The bool
+    input dtype is routed through uint8 at the Op layer, so this kernel
+    only sees integer and floating-point storage dtypes.
     """
 
     _DEFAULT_THREADS = 512

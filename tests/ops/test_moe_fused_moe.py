@@ -469,12 +469,7 @@ def test_fused_moe_vs_vllm(
 
 @pytest.mark.smoke
 def test_fused_moe_fwd_op_identity() -> None:
-    """`FusedMoeFwdOp` (no correction bias) matches the FusedMoe core path.
-
-    Guards the manifest <-> class identity contract surfaced by
-    validate_manifest --check-op: both names must resolve to concrete Op
-    subclasses, each with the right `forward()` positional signature.
-    """
+    """`FusedMoeFwdOp` (no correction bias) matches the `FusedMoe` reference output."""
     torch.manual_seed(42)
     dev = "cuda"
     T, E, K, H, F_ = 32, 8, 2, 64, 32

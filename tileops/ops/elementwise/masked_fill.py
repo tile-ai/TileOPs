@@ -51,10 +51,8 @@ class MaskedFillFwdOp(Op):
             raise ValueError(
                 f"MaskedFillFwdOp requires a 0-dim value Tensor; got shape {tuple(value)}"
             )
-        # The kernel handles ints and fp16/bf16/fp32 directly. The bool
-        # dtype is supported here at the Op layer via uint8 storage view,
-        # since TileLang's bool tensor codegen is not vectorized; the
-        # user-facing contract still exposes ``torch.bool``.
+        # Bool routes through uint8 at the Op layer (TileLang bool codegen is unvectorized);
+        # all other dtypes go straight to the kernel.
         kernel_supported = MaskedFillTensorValueFwdKernel.SUPPORTED_DTYPES
         if (
             dtype != torch.bool
@@ -176,10 +174,8 @@ class MaskedFillScalarFwdOp(Op):
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
-        # The kernel handles ints and fp16/bf16/fp32 directly. The bool
-        # dtype is supported here at the Op layer via uint8 storage view,
-        # since TileLang's bool tensor codegen is not vectorized; the
-        # user-facing contract still exposes ``torch.bool``.
+        # Bool routes through uint8 at the Op layer (TileLang bool codegen is unvectorized);
+        # all other dtypes go straight to the kernel.
         kernel_supported = MaskedFillFwdKernel.SUPPORTED_DTYPES
         if (
             dtype != torch.bool

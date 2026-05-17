@@ -126,11 +126,7 @@ class TestCacheKeyWarning:
 
 
 class TestCompositeKernelMapOverride:
-    """Composite ops (empty ``default_kernel_map``) must accept a non-empty
-    ``kernel_map`` override so they can forward per-sub-op slices into the
-    nested op constructors. The override is stored verbatim on ``self``;
-    sub-op ``_install_kernel_map`` calls handle their own arch-compat checks
-    when constructed."""
+    """Composite ops (empty ``default_kernel_map``) accept a non-empty override and store it verbatim."""
 
     def test_empty_default_with_empty_override_yields_empty_map(self):
         Cls = _make_op_subclass()
@@ -146,8 +142,6 @@ class TestCompositeKernelMapOverride:
         assert op.kernel_map == override
 
     def test_empty_default_override_is_copied_not_aliased(self):
-        """``self.kernel_map`` must be an independent dict so callers mutating
-        the original override do not corrupt installed state."""
         Cls = _make_op_subclass()
         op = Cls()
         override = {"permute_nopad_kernel": object()}
