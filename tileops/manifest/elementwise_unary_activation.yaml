@@ -442,7 +442,7 @@ ClampFwdOp:
     op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 ClampScalarFwdOp:
   ref_api: "torch.clamp"
@@ -519,7 +519,7 @@ ClampMinFwdOp:
     op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 ClampMaxFwdOp:
   ref_api: "torch.clamp_max"
@@ -554,7 +554,7 @@ ClampMaxFwdOp:
     op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 NanToNumFwdOp:
   ref_api: "torch.nan_to_num"
