@@ -13,10 +13,6 @@ Real model configurations:
   DeepSeek-V3      7168   8
   Qwen3-235B-A22B  7168   8
   Qwen3-30B-A3B    3072   8
-
-Usage:
-    conda run -n tileops python -m pytest benchmarks/ops/bench_moe_unpermute.py -vvs
-    conda run -n tileops python benchmarks/ops/bench_moe_unpermute.py
 """
 
 from typing import Optional

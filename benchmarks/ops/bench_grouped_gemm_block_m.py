@@ -6,10 +6,6 @@ Qwen3-MoE with E=256.
 
 FLOPs and memory are computed from the TRUE (unpadded) batch_sum so that
 efficiency reflects useful work only; padding overhead shows up as lower TFLOPS.
-
-Usage:
-    conda run -n tileops python -m pytest \
-        benchmarks/ops/bench_grouped_gemm_block_m.py -vvs
 """
 
 import math

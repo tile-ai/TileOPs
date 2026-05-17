@@ -10,9 +10,6 @@ Real model configurations:
   DeepSeek-V3      256   8  sigmoid   True
   Qwen3-235B-A22B  128   8  softmax   False
   Qwen3-30B-A3B    128   8  softmax   False
-
-Usage:
-    conda run -n tileops python -m pytest benchmarks/ops/bench_moe_fused_topk.py -vvs
 """
 
 from typing import Optional

@@ -16,9 +16,6 @@ MoEExpertsPaddedFwdOp (shared workload set):
 Baselines:
   - vllm:      vLLM fused_experts (expert GEMM only, no routing)
   - torch-ref: per-expert GEMM loop with index_add_ (fallback when vLLM absent)
-
-Usage:
-    conda run -n tileops python -m pytest benchmarks/ops/bench_moe_experts_nopad.py -vvs
 """
 
 from typing import Optional
