@@ -86,19 +86,20 @@ def _conv1d_kernel(
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
 
+                tile_ol_start = bx * block_n
+                tile_ol_end = tile_ol_start + block_n - 1
+                tile_input_start = tile_ol_start * stride_l - pad_l
+                tile_input_end = tile_ol_end * stride_l + (kernel_l - 1) * dilation_l - pad_l
+                tile_spatial_full = (
+                    (tile_ol_end < out_l)
+                    & (tile_input_start >= 0)
+                    & (tile_input_end < l_in)
+                )
+
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
                     T.copy(weight_flat[by * block_m, k_iter * block_k], weight_shared)
 
-                    tile_ol_start = bx * block_n
-                    tile_ol_end = tile_ol_start + block_n - 1
-                    tile_input_start = tile_ol_start * stride_l - pad_l
-                    tile_input_end = tile_ol_end * stride_l + (kernel_l - 1) * dilation_l - pad_l
-                    tile_full = (
-                        (tile_ol_end < out_l)
-                        & (tile_input_start >= 0)
-                        & (tile_input_end < l_in)
-                        & ((k_iter + 1) * block_k <= k_total)
-                    )
+                    tile_full = tile_spatial_full & ((k_iter + 1) * block_k <= k_total)
                     for i, j in T.Parallel(block_k, block_n):
                         k_idx = k_iter * block_k + i
                         ol = bx * block_n + j
