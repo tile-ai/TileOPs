@@ -9,7 +9,13 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
-__all__ = ["Conv1dKernel", "Conv2d1x1Kernel", "Conv2dKernel", "Conv3dKernel"]
+__all__ = [
+    "Conv1dKernel",
+    "Conv1dPointwiseKernel",
+    "Conv2d1x1Kernel",
+    "Conv2dKernel",
+    "Conv3dKernel",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +156,90 @@ def _conv1d_kernel(
     return _conv1d_func
 
 
+@functools.lru_cache(maxsize=32)
+def _conv1d_pointwise_kernel(
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    has_bias: bool,
+    dtype: str = "float16",
+):
+    accum_dtype = "float"
+
+    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _conv1d_pointwise_func(
+        block_m: int,
+        block_n: int,
+        block_k: int,
+        num_stages: int,
+        threads: int,
+        enable_rasterization: bool,
+    ):
+        @T.prim_func
+        def _conv1d_pointwise_main(
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, l_in), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                T.ceildiv(l_in, block_n),
+                T.ceildiv(c_out, block_m),
+                n,
+                threads=threads,
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                T.use_swizzle(10, enable=enable_rasterization)
+                T.clear(out_local)
+
+                tile_l_end = bx * block_n + block_n - 1
+                tile_spatial_full = tile_l_end < l_in
+                for k_iter in T.Pipelined(T.ceildiv(c_in, block_k), num_stages=num_stages):
+                    T.copy(weight[by * block_m, k_iter * block_k], weight_shared)
+
+                    tile_full = tile_spatial_full & ((k_iter + 1) * block_k <= c_in)
+                    if tile_full:
+                        T.copy(x[bz, k_iter * block_k, bx * block_n], data_shared)
+                    else:
+                        for i, j in T.Parallel(block_k, block_n):
+                            ci = k_iter * block_k + i
+                            l_idx = bx * block_n + j
+                            data_shared[i, j] = T.if_then_else(
+                                (ci < c_in) & (l_idx < l_in),
+                                x[bz, ci, l_idx],
+                                T.cast(0.0, dtype),
+                            )
+
+                    T.gemm(weight_shared, data_shared, out_local)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc = by * block_m + i
+                    l_idx = bx * block_n + j
+                    if has_bias:
+                        out_shared[i, j] = T.if_then_else(
+                            (oc < c_out) & (l_idx < l_in),
+                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                            T.cast(0.0, dtype),
+                        )
+                    else:
+                        out_shared[i, j] = T.if_then_else(
+                            (oc < c_out) & (l_idx < l_in),
+                            T.cast(out_local[i, j], dtype),
+                            T.cast(0.0, dtype),
+                        )
+
+                T.copy(out_shared, out[bz, by * block_m, bx * block_n])
+
+        return _conv1d_pointwise_main
+
+    return _conv1d_pointwise_func
+
+
 @torch.library.custom_op("top::conv1d_wrapped_kernel", mutates_args=())
 def _conv1d_wrapped_kernel(
     n: int,
@@ -177,6 +267,29 @@ def _conv1d_wrapped_kernel(
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
+@torch.library.custom_op("top::conv1d_pointwise_wrapped_kernel", mutates_args=())
+def _conv1d_pointwise_wrapped_kernel(
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    has_bias: bool,
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasterization: bool,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    return _conv1d_pointwise_kernel(
+        n, c_in, l_in, c_out, has_bias, dtype
+    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
+
+
 @_conv1d_wrapped_kernel.register_fake
 def _(
     n: int,
@@ -199,6 +312,134 @@ def _(
 ) -> torch.Tensor:
     out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     return torch.empty((n, c_out, out_l), dtype=inputs[0].dtype, device=inputs[0].device)
+
+
+@_conv1d_pointwise_wrapped_kernel.register_fake
+def _(
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    has_bias: bool,
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasterization: bool,
+    *inputs: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
+    return torch.empty((n, c_out, l_in), dtype=inputs[0].dtype, device=inputs[0].device)
+
+
+class Conv1dPointwiseKernel(Kernel):
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        l_in: int,
+        c_out: int,
+        dtype: torch.dtype,
+        has_bias: bool = False,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        self.n = n
+        self.c_in = c_in
+        self.l_in = l_in
+        self.c_out = c_out
+        self.dtype = dtype
+        self.has_bias = has_bias
+        self.out_l = l_in
+        self.k_total = c_in
+        self.kernel = _conv1d_pointwise_kernel(
+            n,
+            c_in,
+            l_in,
+            c_out,
+            has_bias,
+            self.dtype_str,
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        sm_version = get_sm_version()
+        if sm_version in {90}:
+            return {
+                "block_m": 64,
+                "block_n": 128,
+                "block_k": 128,
+                "num_stages": 3,
+                "threads": 128,
+                "enable_rasterization": True,
+            }
+        return {
+            "block_m": 64,
+            "block_n": 128,
+            "block_k": 128,
+            "num_stages": 2,
+            "threads": 128,
+            "enable_rasterization": True,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
+        configs = itertools.product(
+            [32, 64, 128],
+            [64, 128, 256],
+            [32, 64, 128],
+            [2, 3],
+            [128, 256],
+            [True],
+        )
+        valid_configs = []
+        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
+            shared_memory_bytes = conv_shared_memory_bytes(
+                block_m, block_n, block_k, num_stages, self.dtype)
+            if shared_memory_bytes > shared_memory_limit_bytes:
+                continue
+            valid_configs.append({
+                "block_m": block_m,
+                "block_n": block_n,
+                "block_k": block_k,
+                "num_stages": num_stages,
+                "threads": threads,
+                "enable_rasterization": enable_rasterization,
+            })
+        return valid_configs
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if bias is None:
+            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
+        weight_2d = weight[:, :, 0].contiguous()
+        return _conv1d_pointwise_wrapped_kernel(
+            self.n,
+            self.c_in,
+            self.l_in,
+            self.c_out,
+            self.has_bias,
+            self.dtype_str,
+            self.config["block_m"],
+            self.config["block_n"],
+            self.config["block_k"],
+            self.config["num_stages"],
+            self.config["threads"],
+            self.config["enable_rasterization"],
+            x,
+            weight_2d,
+            bias,
+        )
 
 
 class Conv1dKernel(Kernel):
@@ -233,7 +474,6 @@ class Conv1dKernel(Kernel):
         self.out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
         self.m = n * self.out_l
         self.k_total = c_in * kernel_l
-
         self.kernel = _conv1d_kernel(
             n,
             c_in,

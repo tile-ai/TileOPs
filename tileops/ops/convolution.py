@@ -2,7 +2,13 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.convolution import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
+from tileops.kernels.convolution import (
+    Conv1dKernel,
+    Conv1dPointwiseKernel,
+    Conv2d1x1Kernel,
+    Conv2dKernel,
+    Conv3dKernel,
+)
 from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
@@ -187,25 +193,42 @@ class Conv1dFwdOp(Op):
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        if "conv1d_kernel" not in self.kernel_map:
-            raise NotImplementedError("Conv1dFwdOp requires 'conv1d_kernel' in kernel_map")
-        self.kernel = self.kernel_map["conv1d_kernel"](
+        kernel_kwargs = dict(
             n=n,
             c_in=c_in,
             l_in=l_in,
             c_out=c_out,
-            kernel_l=self.kernel_size,
-            stride_l=self.stride,
-            pad_l=self.padding,
-            dilation_l=self.dilation,
             dtype=dtype,
             has_bias=_has_bias,
             tune=tune,
         )
+        if (
+            self.kernel_size == 1
+            and self.stride == 1
+            and self.padding == 0
+            and self.dilation == 1
+            and "conv1d_pointwise_kernel" in self.kernel_map
+        ):
+            self.kernel = self.kernel_map["conv1d_pointwise_kernel"](**kernel_kwargs)
+        elif "conv1d_kernel" in self.kernel_map:
+            self.kernel = self.kernel_map["conv1d_kernel"](
+                **kernel_kwargs,
+                kernel_l=self.kernel_size,
+                stride_l=self.stride,
+                pad_l=self.padding,
+                dilation_l=self.dilation,
+            )
+        else:
+            raise NotImplementedError(
+                "Conv1dFwdOp requires 'conv1d_pointwise_kernel' or 'conv1d_kernel' in kernel_map"
+            )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"conv1d_kernel": Conv1dKernel}
+        return {
+            "conv1d_pointwise_kernel": Conv1dPointwiseKernel,
+            "conv1d_kernel": Conv1dKernel,
+        }
 
     def forward(
         self,
