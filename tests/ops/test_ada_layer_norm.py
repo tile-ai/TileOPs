@@ -3,46 +3,11 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.ada_layer_norm import AdaLayerNormOp
+from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
+from workloads.ada_layer_norm import AdaLayerNormTest as _AdaLayerNormTestWorkload
 
 
-class AdaLayerNormFixture(FixtureBase):
-    PARAMS = [
-        ("m, n, dtype", [
-            # Standard aligned shapes -- fp32
-            pytest.param(1024, 4096, torch.float32, marks=pytest.mark.smoke),
-            pytest.param(4096, 4096, torch.float32, marks=pytest.mark.full),
-            # Standard aligned shapes -- fp16
-            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.full),
-            pytest.param(4096, 4096, torch.float16, marks=pytest.mark.full),
-            # Standard aligned shapes -- bf16
-            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(4096, 4096, torch.bfloat16, marks=pytest.mark.full),
-            # Non-power-of-two hidden dims
-            pytest.param(1024, 3000, torch.float32, marks=pytest.mark.full),
-            pytest.param(1024, 3000, torch.float16, marks=pytest.mark.full),
-            pytest.param(1024, 3000, torch.bfloat16, marks=pytest.mark.full),
-            # Tail-M: M not divisible by block_m
-            pytest.param(1025, 4096, torch.float16, marks=pytest.mark.full),
-            pytest.param(1025, 4096, torch.bfloat16, marks=pytest.mark.full),
-        ]),
-    ]
-
-
-class AdaLayerNormTest(TestBase):
-
-    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.eps = eps
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        scale = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        shift = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return x, scale, shift
-
+class AdaLayerNormTest(_AdaLayerNormTestWorkload, TestBase):
     def ref_program(self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor) -> torch.Tensor:
         # AdaLN: y = scale * LayerNorm(x) + shift
         normed = F.layer_norm(
@@ -54,6 +19,29 @@ class AdaLayerNormTest(TestBase):
         )
         y = scale.float() * normed + shift.float()
         return y.to(x.dtype)
+
+
+class AdaLayerNormFixture(FixtureBase):
+    PARAMS = [
+        ("m, n, dtype", [
+            # Standard aligned shapes -- fp32
+            pytest.param(1024, 4096, torch.float32, marks=pytest.mark.smoke),
+            # Standard aligned shapes -- fp16
+            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
+            # Standard aligned shapes -- bf16
+            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4096, 4096, torch.float32, marks=pytest.mark.full),
+            pytest.param(4096, 4096, torch.float16, marks=pytest.mark.full),
+            pytest.param(4096, 4096, torch.bfloat16, marks=pytest.mark.full),
+            # Non-power-of-two hidden dims
+            pytest.param(1024, 3000, torch.float32, marks=pytest.mark.full),
+            pytest.param(1024, 3000, torch.float16, marks=pytest.mark.full),
+            pytest.param(1024, 3000, torch.bfloat16, marks=pytest.mark.full),
+            # Tail-M: M not divisible by block_m
+            pytest.param(1025, 4096, torch.float16, marks=pytest.mark.full),
+            pytest.param(1025, 4096, torch.bfloat16, marks=pytest.mark.full),
+        ]),
+    ]
 
 
 def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
@@ -68,7 +56,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @AdaLayerNormFixture
 def test_ada_layer_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormTest(m, n, dtype)
-    op = AdaLayerNormOp(M=m, N=n, dtype=dtype)
+    op = AdaLayerNormFwdOp(M=m, N=n, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -77,8 +65,8 @@ class AdaLayerNorm3DFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, hidden, dtype", [
             pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.smoke),
-            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.full),
-            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -91,7 +79,7 @@ def test_ada_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype
     shift = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
 
     M = batch * seq
-    op = AdaLayerNormOp(M=M, N=hidden, dtype=dtype)
+    op = AdaLayerNormFwdOp(M=M, N=hidden, dtype=dtype)
 
     # Reference: scale * LayerNorm(x) + shift
     eps = 1e-5

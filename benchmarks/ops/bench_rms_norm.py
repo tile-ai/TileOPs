@@ -3,47 +3,69 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_rms_norm import RmsNormTest
-from tileops.ops.norm.rms_norm import RmsNormOp
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from tileops.manifest import load_workloads
+from tileops.ops.norm.rms_norm import RMSNormFwdOp
+from workloads.rms_norm import RMSNormTest
 
 
-class RmsNormBenchmark(BenchmarkBase):
+class _RMSNormTestBaseline(RMSNormTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        x_f32 = x.float()
+        rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return ((x_f32 / rms) * weight.float()).to(x.dtype)
+
+
+_OP_NAME = "RMSNormFwdOp"
+
+
+class RMSNormBenchmark(BenchmarkBase[RMSNormTest]):
+
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def __init__(self, test, op):
+        super().__init__(test)
+        self._op = op
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = self._op.eval_roofline()
+        return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
-        # Per row: N squares + (N-1) adds for sum + 1 div + 1 add + 1 rsqrt + N muls (x*rrms) + N muls (weight)
-        # Simplified: ~4N flops per row
-        return 4 * t.m * t.n
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        """Useful bytes only (not padded). Read x + read weight + write y."""
-        t = self.test
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Read x (M*N) + read weight (N, broadcast) + write y (M*N)
-        return (2 * t.m * t.n + t.n) * elem_bytes
+        return self._get_roofline()[1]
 
 
-_RMS_NORM_BENCH_PARAMS = [
-    pytest.param(1024, 4096, torch.float16, True, id="mainstream-fp16"),
-    pytest.param(4096, 4096, torch.bfloat16, True, id="throughput-bf16"),
-    pytest.param(2048, 5120, torch.float16, True, id="non-power-of-two"),
-    pytest.param(1025, 4096, torch.float16, True, id="tail-m"),
-]
+def _manifest_params():
+    """Convert manifest workloads to pytest params: (m, n, dtype, tune)."""
+    params = []
+    for w in load_workloads(_OP_NAME):
+        m, n = w["x_shape"]
+        label = w.get("label", f"{m}x{n}")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(m, n, dtype, True,
+                                       id=f"{label}-{dtype_str}"))
+    return params
 
 
-@pytest.mark.parametrize("m, n, dtype, tune", _RMS_NORM_BENCH_PARAMS)
+@pytest.mark.parametrize("m, n, dtype, tune", _manifest_params())
 def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = RmsNormTest(m, n, dtype)
-    bm = RmsNormBenchmark(test)
+    test = _RMSNormTestBaseline(m, n, dtype)
     inputs = test.gen_inputs()
 
-    op = RmsNormOp(M=m, N=n, dtype=dtype, tune=tune)
+    op = RMSNormFwdOp(normalized_shape=(n,), dtype=dtype, tune=tune)
+    bm = RMSNormBenchmark(test, op)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("rms_norm", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("rms_norm", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

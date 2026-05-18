@@ -4,45 +4,55 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fused_add_layer_norm import FusedAddLayerNormTest
-from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormOp
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from tileops.manifest import load_workloads
+from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
+from workloads.fused_add_layer_norm import FusedAddLayerNormTest
+
+_OP_NAME = "FusedAddLayerNormFwdOp"
 
 
-class FusedAddLayerNormBenchmark(BenchmarkBase):
+class FusedAddLayerNormBenchmark(BenchmarkBase[FusedAddLayerNormTest]):
+
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def __init__(self, test, op):
+        super().__init__(test)
+        self._op = op
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = self._op.eval_roofline()
+        return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
-        # Per row: N adds (residual), N for mean, N for variance, N for normalize,
-        # N for scale, N for bias = ~6N flops per row
-        return 6 * t.m * t.n
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        """Useful bytes only.  Read x + residual + weight + bias + write y + residual_out."""
-        t = self.test
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Read x (M*N) + read residual (M*N) + read weight (N) + read bias (N)
-        # + write y (M*N) + write residual_out (M*N)
-        return (4 * t.m * t.n + 2 * t.n) * elem_bytes
+        return self._get_roofline()[1]
 
 
-_FUSED_ADD_LAYER_NORM_BENCH_PARAMS = [
-    pytest.param(1024, 4096, torch.float16, True, id="mainstream-fp16"),
-    pytest.param(4096, 4096, torch.bfloat16, True, id="throughput-bf16"),
-    pytest.param(1024, 3000, torch.float16, True, id="non-power-of-two"),
-    pytest.param(1025, 4096, torch.float16, True, id="tail-m"),
-]
+def _manifest_params():
+    params = []
+    for w in load_workloads(_OP_NAME):
+        m, n = w["x_shape"]
+        label = w.get("label", f"{m}x{n}")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(m, n, dtype, True,
+                                       id=f"{label}-{dtype_str}"))
+    return params
 
 
-@pytest.mark.parametrize("m, n, dtype, tune", _FUSED_ADD_LAYER_NORM_BENCH_PARAMS)
+@pytest.mark.parametrize("m, n, dtype, tune", _manifest_params())
 def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddLayerNormTest(m, n, dtype)
-    bm = FusedAddLayerNormBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = FusedAddLayerNormOp(M=m, N=n, dtype=dtype, tune=tune)
+    op = FusedAddLayerNormFwdOp(M=m, N=n, dtype=dtype, tune=tune)
+    bm = FusedAddLayerNormBenchmark(test, op)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("fused_add_layer_norm", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: add + F.layer_norm (separate ops)
     def baseline_fn(x, residual, weight, bias):
@@ -50,7 +60,7 @@ def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bo
         return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=test.eps), add_result
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("fused_add_layer_norm", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

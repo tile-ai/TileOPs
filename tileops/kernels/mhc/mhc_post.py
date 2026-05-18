@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -5,11 +6,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
-__all__ = ["mhc_post_kernel"]
+__all__ = ["MHCPostKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat16'):
 
     dtype = "float32"
@@ -88,7 +90,7 @@ def _(
     return torch.empty_like(input[0], dtype=input[0].dtype, device=input[0].device)
 
 
-class mhc_post_kernel(Kernel):
+class MHCPostKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,

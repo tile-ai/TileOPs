@@ -1,14 +1,25 @@
-from typing import Tuple
+
 
 import pytest
 import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import Fp8QuantOp
+from tileops.ops import FP8QuantOp
+from workloads.fp8_quant import FP8QuantTest as _FP8QuantTestWorkload
 
 
-class Fp8QuantFixture(FixtureBase):
+class FP8QuantTest(_FP8QuantTestWorkload, TestBase):
+    def ref_program(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # input_tensor: (batch, seq_len_kv, kv_group, index_dim)
+        amax_value = torch.abs(input_tensor).amax(dim=-1, keepdim=True).clamp(min=1e-4)
+        scale_tensor = amax_value / 448.0
+        output_tensor = torch.clamp(input_tensor / scale_tensor, min=-448.0, max=448.0)
+        output_tensor = output_tensor.to(torch.float8_e4m3fn)
+        return scale_tensor.squeeze(dim=-1), output_tensor
+
+
+class FP8QuantFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len_kv, kv_group, index_dim, in_dtype, tune", [
             pytest.param(1, 8192, 1, 64, torch.float16, False, marks=pytest.mark.smoke),
@@ -29,40 +40,11 @@ def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
         f"Cosine similarity too low: {cos_sim.item()}"
 
 
-class Fp8QuantTest(TestBase):
-
-    def __init__(self, batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
-                 in_dtype: torch.dtype):
-        self.batch = batch
-        self.seq_len_kv = seq_len_kv
-        self.kv_group = kv_group
-        self.index_dim = index_dim
-        self.in_dtype = in_dtype
-
-    def gen_inputs(self) -> Tuple[torch.Tensor]:
-        input_tensor = torch.randn(
-            self.batch,
-            self.seq_len_kv,
-            self.kv_group,
-            self.index_dim,
-            dtype=self.in_dtype,
-            device="cuda")
-        return (input_tensor,)
-
-    def ref_program(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # input_tensor: (batch, seq_len_kv, kv_group, index_dim)
-        amax_value = torch.abs(input_tensor).amax(dim=-1, keepdim=True).clamp(min=1e-4)
-        scale_tensor = amax_value / 448.0
-        output_tensor = torch.clamp(input_tensor / scale_tensor, min=-448.0, max=448.0)
-        output_tensor = output_tensor.to(torch.float8_e4m3fn)
-        return scale_tensor.squeeze(dim=-1), output_tensor
-
-
-@Fp8QuantFixture
+@FP8QuantFixture
 def test_fp8_quant_op(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
                       in_dtype: torch.dtype, tune: bool) -> None:
-    test = Fp8QuantTest(batch, seq_len_kv, kv_group, index_dim, in_dtype)
-    op = Fp8QuantOp(
+    test = FP8QuantTest(batch, seq_len_kv, kv_group, index_dim, in_dtype)
+    op = FP8QuantOp(
         batch=batch,
         seq_len_kv=seq_len_kv,
         kv_group=kv_group,

@@ -3,47 +3,13 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormOp
+from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
+from workloads.fused_add_layer_norm import (
+    FusedAddLayerNormTest as _FusedAddLayerNormTestWorkload,
+)
 
 
-class FusedAddLayerNormFixture(FixtureBase):
-    PARAMS = [
-        ("m, n, dtype, tune", [
-            # Standard aligned shapes -- fp32
-            pytest.param(1024, 4096, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
-            # Standard aligned shapes -- fp16
-            pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
-            # Standard aligned shapes -- bf16
-            pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
-            # Non-power-of-two hidden dims
-            pytest.param(1024, 3000, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
-            # Tail-M: M not divisible by block_m
-            pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
-        ]),
-    ]
-
-
-class FusedAddLayerNormTest(TestBase):
-
-    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.eps = eps
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        residual = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        weight = torch.randn(self.n, dtype=self.dtype, device="cuda")
-        bias = torch.randn(self.n, dtype=self.dtype, device="cuda")
-        return x, residual, weight, bias
-
+class FusedAddLayerNormTest(_FusedAddLayerNormTestWorkload, TestBase):
     def ref_program(
         self,
         x: torch.Tensor,
@@ -62,6 +28,29 @@ class FusedAddLayerNormTest(TestBase):
         return y, add_result
 
 
+class FusedAddLayerNormFixture(FixtureBase):
+    PARAMS = [
+        ("m, n, dtype, tune", [
+            # Standard aligned shapes -- fp32
+            pytest.param(1024, 4096, torch.float32, False, marks=pytest.mark.smoke),
+            pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
+            pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
+            # Standard aligned shapes -- fp16
+            pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
+            # Standard aligned shapes -- bf16
+            pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+            # Non-power-of-two hidden dims
+            pytest.param(1024, 3000, torch.float32, False, marks=pytest.mark.full),
+            pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
+            # Tail-M: M not divisible by block_m
+            pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+        ]),
+    ]
+
+
 def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
     if dtype == torch.float32:
         return 1e-5, 1e-5
@@ -74,7 +63,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @FusedAddLayerNormFixture
 def test_fused_add_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddLayerNormTest(m, n, dtype)
-    op = FusedAddLayerNormOp(M=m, N=n, dtype=dtype)
+    op = FusedAddLayerNormFwdOp(M=m, N=n, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -83,8 +72,8 @@ class FusedAddLayerNormNonContigFixture(FixtureBase):
     PARAMS = [
         ("m, n, dtype", [
             pytest.param(1024, 4096, torch.float32, marks=pytest.mark.smoke),
-            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.full),
-            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -99,7 +88,7 @@ def test_fused_add_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype)
     weight = torch.randn(n, dtype=dtype, device="cuda")
     bias = torch.randn(n, dtype=dtype, device="cuda")
 
-    op = FusedAddLayerNormOp(M=m, N=n, dtype=dtype)
+    op = FusedAddLayerNormFwdOp(M=m, N=n, dtype=dtype)
 
     # Reference on contiguous copies
     test = FusedAddLayerNormTest(m, n, dtype)
@@ -117,8 +106,8 @@ class FusedAddLayerNorm3DFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, hidden, dtype", [
             pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.smoke),
-            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.full),
-            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.full),
+            pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -132,7 +121,7 @@ def test_fused_add_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch
     bias = torch.randn(hidden, dtype=dtype, device="cuda")
 
     M = batch * seq
-    op = FusedAddLayerNormOp(M=M, N=hidden, dtype=dtype)
+    op = FusedAddLayerNormFwdOp(M=M, N=hidden, dtype=dtype)
 
     test = FusedAddLayerNormTest(M, hidden, dtype)
     y_ref, add_ref = test.ref_program(x, residual, weight, bias)

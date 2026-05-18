@@ -1,9 +1,10 @@
 from .ada_layer_norm import AdaLayerNormKernel
 from .batch_norm import BatchNormBwdKernel, BatchNormFwdInferKernel, BatchNormFwdTrainKernel
-from .fused_add_norm import FusedAddLayerNormKernel, FusedAddRmsNormKernel
-from .group_norm import GroupNormKernel
+from .fused_add_norm import FusedAddLayerNormKernel, FusedAddRMSNormKernel
+from .group_norm import GroupNormKernel, GroupNormNoAffineKernel
+from .instance_norm import InstanceNormKernel, InstanceNormNoAffineKernel
 from .layer_norm import LayerNormKernel
-from .rms_norm import RmsNormKernel
+from .rms_norm import RMSNormKernel
 
 __all__: list[str] = [
     "AdaLayerNormKernel",
@@ -11,8 +12,11 @@ __all__: list[str] = [
     "BatchNormFwdInferKernel",
     "BatchNormFwdTrainKernel",
     "FusedAddLayerNormKernel",
-    "FusedAddRmsNormKernel",
+    "FusedAddRMSNormKernel",
     "GroupNormKernel",
+    "GroupNormNoAffineKernel",
+    "InstanceNormKernel",
+    "InstanceNormNoAffineKernel",
     "LayerNormKernel",
-    "RmsNormKernel",
+    "RMSNormKernel",
 ]

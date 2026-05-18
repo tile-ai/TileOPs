@@ -11,25 +11,30 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
+from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
-    AlibiOp,
-    ClampOp,
-    EluOp,
-    HardtanhOp,
-    LeakyReluOp,
-    MaskedFillOp,
-    NanToNumOp,
-    PreluOp,
-    SinusoidalOp,
-    SoftplusOp,
-    WhereOp,
+    AlibiFwdOp,
+    ClampFwdOp,
+    ClampMaxFwdOp,
+    ClampMinFwdOp,
+    ClampScalarFwdOp,
+    EluFwdOp,
+    HardtanhFwdOp,
+    LeakyReluFwdOp,
+    MaskedFillScalarFwdOp,
+    NanToNumFwdOp,
+    PreluFwdOp,
+    SinusoidalFwdOp,
+    SoftplusFwdOp,
+    WhereFwdOp,
 )
+from workloads.workload_base import FixtureBase
 
-# DNN-realistic shapes: (tokens, hidden_dim)
-# small=4096, medium=10240, large=20480 (pow2 + non-pow2 mix)
-_UNARY_SHAPES = [(1024, 4096), (1024, 10240), (1024, 20480)]
+# DNN-realistic shapes: (tokens, hidden_dim).
+# small=4096 (pow2), medium=10240 (pow2), large=11008 (non-pow2,
+# LLaMA-7B intermediate) so each op exercises a non-pow2 shape.
+_UNARY_SHAPES = [(1024, 4096), (1024, 10240), (1024, 11008)]
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 
@@ -47,12 +52,12 @@ class UnaryBenchCase:
         return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
 
 
-class UnaryBenchmark(BenchmarkBase):
+class UnaryBenchmark(BenchmarkBase[UnaryBenchCase]):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        return self.test.n_total * self.test.dtype.itemsize * 2
+        return self.workload.n_total * self.workload.dtype.itemsize * 2
 
 
 # ---------------------------------------------------------------------------
@@ -74,12 +79,12 @@ class UnaryIndependentBenchFixture(FixtureBase):
 
 
 _UNARY_OPS = {
-    "leaky_relu": (LeakyReluOp, lambda x: F.leaky_relu(x, 0.01), {}),
-    "elu": (EluOp, lambda x: F.elu(x, 1.0), {}),
-    "hardtanh": (HardtanhOp, lambda x: F.hardtanh(x, -1.0, 1.0), {"min_val": -1.0, "max_val": 1.0}),
-    "softplus": (SoftplusOp, lambda x: F.softplus(x, 1.0, 20.0), {}),
-    "clamp": (ClampOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min_val": -0.5, "max_val": 0.5}),
-    "nan_to_num": (NanToNumOp, lambda x: torch.nan_to_num(x, 0.0, 1e4, -1e4), {}),
+    "leaky_relu": (LeakyReluFwdOp, lambda x: F.leaky_relu(x, 0.01), {}),
+    "elu": (EluFwdOp, lambda x: F.elu(x, 1.0), {}),
+    "hardtanh": (HardtanhFwdOp, lambda x: F.hardtanh(x, -1.0, 1.0), {"min_val": -1.0, "max_val": 1.0}),
+    "softplus": (SoftplusFwdOp, lambda x: F.softplus(x, 1.0, 20.0), {}),
+    "clamp": (ClampScalarFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min": -0.5, "max": 0.5}),
+    "nan_to_num": (NanToNumFwdOp, lambda x: torch.nan_to_num(x, 0.0, 1e4, -1e4), {}),
 }
 
 
@@ -91,19 +96,184 @@ def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype)
     bm = UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
+    if op_cls.__name__ == "ClampScalarFwdOp":
+        op = op_cls(input=(n_total,), dtype=dtype, **extra_kwargs)
+    else:
+        op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
+
+
+# ---------------------------------------------------------------------------
+# Tensor-bound clamp ops (manifest-driven): ClampFwdOp, ClampMinFwdOp,
+# ClampMaxFwdOp. Workload shapes are loaded from tileops/manifest/ so the
+# bench coverage stays aligned with the spec (post-broadcast N_total ==
+# product(out_shape)). FLOP/byte counts come from each op's eval_roofline().
+# ---------------------------------------------------------------------------
+
+_CLAMP_FWD_OP = "ClampFwdOp"
+_CLAMP_MIN_OP = "ClampMinFwdOp"
+_CLAMP_MAX_OP = "ClampMaxFwdOp"
+
+
+class TensorClampBenchCase:
+    """Workload adapter for Tensor-bound clamp ops.
+
+    Holds the post-broadcast output shape so :class:`ManifestBenchmark`
+    can read a single ``n_total`` while the bench builds per-operand
+    tensors from the manifest-declared ``input_shape`` / ``min_shape`` /
+    ``max_shape`` keys.
+    """
+
+    def __init__(
+        self,
+        input_shape: tuple,
+        dtype: torch.dtype,
+        min_shape: Optional[tuple] = None,
+        max_shape: Optional[tuple] = None,
+    ):
+        self.input_shape = input_shape
+        self.min_shape = min_shape
+        self.max_shape = max_shape
+        broadcast_args = [input_shape]
+        if min_shape is not None:
+            broadcast_args.append(min_shape)
+        if max_shape is not None:
+            broadcast_args.append(max_shape)
+        self.shape = tuple(torch.broadcast_shapes(*broadcast_args))
+        self.n_total = prod(self.shape)
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
+        tensors: list[torch.Tensor] = [x]
+        if self.min_shape is not None:
+            tensors.append(
+                torch.randn(self.min_shape, device="cuda", dtype=self.dtype) - 0.5
+            )
+        if self.max_shape is not None:
+            tensors.append(
+                torch.randn(self.max_shape, device="cuda", dtype=self.dtype) + 0.5
+            )
+        return tuple(tensors)
+
+
+def _workloads_to_clamp_params(
+    workloads: list, *, needs_min: bool, needs_max: bool,
+) -> list:
+    """Convert manifest workload dicts to clamp-bench pytest params."""
+    params = []
+    for idx, w in enumerate(workloads):
+        input_shape = tuple(w["input_shape"])
+        min_shape = tuple(w["min_shape"]) if needs_min else None
+        max_shape = tuple(w["max_shape"]) if needs_max else None
+        label = w.get("label", "x".join(str(s) for s in input_shape))
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            # Smoke = first workload + fp16; everything else is full-mode.
+            mark = (
+                pytest.mark.smoke
+                if (idx == 0 and dtype is torch.float16)
+                else pytest.mark.full
+            )
+            params.append(
+                pytest.param(
+                    input_shape, min_shape, max_shape, dtype,
+                    marks=mark, id=f"{label}-{dtype_str}",
+                )
+            )
+    return params
+
+
+@pytest.mark.parametrize(
+    "input_shape, min_shape, max_shape, dtype",
+    _workloads_to_clamp_params(
+        load_workloads(_CLAMP_FWD_OP), needs_min=True, needs_max=True,
+    ),
+)
+def test_clamp_tensor_bench(
+    input_shape: tuple,
+    min_shape: tuple,
+    max_shape: tuple,
+    dtype: torch.dtype,
+) -> None:
+    test = TensorClampBenchCase(input_shape, dtype, min_shape=min_shape, max_shape=max_shape)
+    x, t_min, t_max = test.gen_inputs()
+
+    op = ClampFwdOp(input=input_shape, min=min_shape, max=max_shape, dtype=dtype)
+    bm = ManifestBenchmark(_CLAMP_FWD_OP, op, test)
+    result = bm.profile(op, x, t_min, t_max)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x, t_min, t_max):
+        return torch.clamp(x, t_min, t_max)
+
+    result_bl = bm.profile(baseline_fn, x, t_min, t_max)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+@pytest.mark.parametrize(
+    "input_shape, min_shape, _max_shape, dtype",
+    _workloads_to_clamp_params(
+        load_workloads(_CLAMP_MIN_OP), needs_min=True, needs_max=False,
+    ),
+)
+def test_clamp_min_bench(
+    input_shape: tuple,
+    min_shape: tuple,
+    _max_shape: Optional[tuple],
+    dtype: torch.dtype,
+) -> None:
+    test = TensorClampBenchCase(input_shape, dtype, min_shape=min_shape)
+    x, t_min = test.gen_inputs()
+
+    op = ClampMinFwdOp(input=input_shape, min=min_shape, dtype=dtype)
+    bm = ManifestBenchmark(_CLAMP_MIN_OP, op, test)
+    result = bm.profile(op, x, t_min)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x, t_min):
+        return torch.maximum(x, t_min)
+
+    result_bl = bm.profile(baseline_fn, x, t_min)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+@pytest.mark.parametrize(
+    "input_shape, _min_shape, max_shape, dtype",
+    _workloads_to_clamp_params(
+        load_workloads(_CLAMP_MAX_OP), needs_min=False, needs_max=True,
+    ),
+)
+def test_clamp_max_bench(
+    input_shape: tuple,
+    _min_shape: Optional[tuple],
+    max_shape: tuple,
+    dtype: torch.dtype,
+) -> None:
+    test = TensorClampBenchCase(input_shape, dtype, max_shape=max_shape)
+    x, t_max = test.gen_inputs()
+
+    op = ClampMaxFwdOp(input=input_shape, max=max_shape, dtype=dtype)
+    bm = ManifestBenchmark(_CLAMP_MAX_OP, op, test)
+    result = bm.profile(op, x, t_max)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x, t_max):
+        return torch.minimum(x, t_max)
+
+    result_bl = bm.profile(baseline_fn, x, t_max)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
 # prelu (2 inputs: x + weight)
 # ---------------------------------------------------------------------------
 
-_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 10240), (1024, 20480)]
+_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 10240), (1024, 11008)]
 
 
 class PreluBenchCase:
@@ -119,12 +289,12 @@ class PreluBenchCase:
         return x, weight
 
 
-class PreluBenchmark(BenchmarkBase):
+class PreluBenchmark(BenchmarkBase[PreluBenchCase]):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return t.n_total * t.dtype.itemsize * 2 + t.num_channels * t.dtype.itemsize
 
 
@@ -150,12 +320,12 @@ def test_prelu_bench(shape: tuple, num_channels: int, dtype: torch.dtype) -> Non
     # PReLU shape convention: (batch, channels, spatial)
     prelu_shape = (1, num_channels, shape[0])
     n_total = prod(shape)
-    op = PreluOp(shape=prelu_shape, dtype=dtype, num_channels=num_channels)
+    op = PreluFwdOp(shape=prelu_shape, dtype=dtype, num_channels=num_channels)
     result = bm.profile(op, x.reshape(prelu_shape), weight)
-    BenchmarkReport.record("prelu", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(F.prelu, x.reshape(prelu_shape), weight)
-    BenchmarkReport.record("prelu", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -175,12 +345,12 @@ class WhereBenchCase:
         return cond, x, y
 
 
-class WhereBenchmark(BenchmarkBase):
+class WhereBenchmark(BenchmarkBase[WhereBenchCase]):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return t.n_total * (t.dtype.itemsize * 2 + 1) + t.n_total * t.dtype.itemsize
 
 
@@ -204,12 +374,12 @@ def test_where_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = WhereBenchmark(test)
     cond, x, y = test.gen_inputs()
 
-    op = WhereOp(N_total=n_total, dtype=dtype)
+    op = WhereFwdOp(condition=tuple(shape), input=tuple(shape), other=tuple(shape), dtype=dtype)
     result = bm.profile(op, cond, x, y)
-    BenchmarkReport.record("where", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(torch.where, cond, x, y)
-    BenchmarkReport.record("where", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -228,12 +398,12 @@ class MaskedFillBenchCase:
         return x, mask
 
 
-class MaskedFillBenchmark(BenchmarkBase):
+class MaskedFillBenchmark(BenchmarkBase[MaskedFillBenchCase]):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return t.n_total * (t.dtype.itemsize + 1) + t.n_total * t.dtype.itemsize
 
 
@@ -248,15 +418,15 @@ def test_masked_fill_bench(shape: tuple, dtype: torch.dtype) -> None:
     bm = MaskedFillBenchmark(test)
     x, mask = test.gen_inputs()
 
-    op = MaskedFillOp(N_total=n_total, dtype=dtype, fill_value=-65000.0)
+    op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-65000.0, dtype=dtype)
     result = bm.profile(op, x, mask)
-    BenchmarkReport.record("masked_fill", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x, mask):
         return x.masked_fill(mask, -65000.0)
 
     result_bl = bm.profile(baseline_fn, x, mask)
-    BenchmarkReport.record("masked_fill", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
@@ -274,12 +444,12 @@ class GenerativeBenchCase:
         return ()
 
 
-class GenerativeBenchmark(BenchmarkBase):
+class GenerativeBenchmark(BenchmarkBase[GenerativeBenchCase]):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
-        return self.test.n_total * self.test.dtype.itemsize
+        return self.workload.n_total * self.workload.dtype.itemsize
 
 
 def _generative_params():
@@ -325,14 +495,17 @@ def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dty
     test = GenerativeBenchCase(seq_len, dim, dtype)
 
     if op_name == "alibi":
-        # ALiBi outputs (num_heads, seq_len, seq_len); override n_total
+        # ALiBi outputs (num_heads, seq_len, seq_len); override n_total.
         test.n_total = dim * seq_len * seq_len
-        op = AlibiOp(seq_len=seq_len, num_heads=dim, dtype=dtype)
+        shape = (dim, seq_len, seq_len)
+        op = AlibiFwdOp(seq_len=seq_len, num_heads=dim, dtype=dtype)
 
         def baseline_fn():
             return _alibi_reference(seq_len, dim, dtype)
     else:
-        op = SinusoidalOp(seq_len=seq_len, d_model=dim, dtype=dtype)
+        # Sinusoidal positional embedding: (seq_len, d_model).
+        shape = (seq_len, dim)
+        op = SinusoidalFwdOp(seq_len=seq_len, d_model=dim, dtype=dtype)
 
         def baseline_fn():
             return _sinusoidal_reference(seq_len, dim, dtype)
@@ -342,7 +515,7 @@ def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dty
     BenchmarkReport.record(op_name, locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch-ref")
 
 
 # ---------------------------------------------------------------------------
@@ -364,19 +537,19 @@ class Fp8UnaryBenchCase:
         return (x.to(self.dtype),)
 
 
-class Fp8UnaryBenchmark(BenchmarkBase):
+class Fp8UnaryBenchmark(BenchmarkBase[Fp8UnaryBenchCase]):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
         # fp8 in (1B) + fp8 out (1B) per element
-        return self.test.n_total * 2
+        return self.workload.n_total * 2
 
 
 _FP8_UNARY_OPS = {
-    "leaky_relu": (LeakyReluOp, lambda x: F.leaky_relu(x, 0.01), {}),
-    "elu": (EluOp, lambda x: F.elu(x, 1.0), {}),
-    "clamp": (ClampOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min_val": -0.5, "max_val": 0.5}),
+    "leaky_relu": (LeakyReluFwdOp, lambda x: F.leaky_relu(x, 0.01), {}),
+    "elu": (EluFwdOp, lambda x: F.elu(x, 1.0), {}),
+    "clamp": (ClampScalarFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min": -0.5, "max": 0.5}),
 }
 
 
@@ -408,7 +581,10 @@ def test_fp8_unary_independent_bench(
     bm = Fp8UnaryBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
+    if op_cls.__name__ == "ClampScalarFwdOp":
+        op = op_cls(input=(n_total,), dtype=dtype, **extra_kwargs)
+    else:
+        op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(f"{op_name}_fp8", locals(), result, tag="tileops")
 
@@ -417,7 +593,7 @@ def test_fp8_unary_independent_bench(
         return baseline_fn(x.to(torch.float16)).to(dtype)
 
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record(f"{op_name}_fp8", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(f"{op_name}_fp8", locals(), result_bl, tag="torch-ref")
 
 
 # ---------------------------------------------------------------------------
@@ -442,13 +618,13 @@ class Fp8WhereBenchCase:
         return cond, x, y
 
 
-class Fp8WhereBenchmark(BenchmarkBase):
+class Fp8WhereBenchmark(BenchmarkBase[Fp8WhereBenchCase]):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
         # cond (1B) + fp8 x (1B) + fp8 y (1B) + fp8 out (1B)
-        return self.test.n_total * 4
+        return self.workload.n_total * 4
 
 
 class Fp8MaskedFillBenchCase:
@@ -465,13 +641,13 @@ class Fp8MaskedFillBenchCase:
         return x, mask
 
 
-class Fp8MaskedFillBenchmark(BenchmarkBase):
+class Fp8MaskedFillBenchmark(BenchmarkBase[Fp8MaskedFillBenchCase]):
     def calculate_flops(self) -> Optional[float]:
-        return self.test.n_total
+        return self.workload.n_total
 
     def calculate_memory(self) -> Optional[float]:
         # fp8 x (1B) + mask (1B) + fp8 out (1B)
-        return self.test.n_total * 3
+        return self.workload.n_total * 3
 
 
 def _fp8_selection_params():
@@ -499,34 +675,34 @@ def test_fp8_selection_bench(
     n_total = prod(shape)
 
     if op_name == "where":
+        # WhereFwdOp manifest does not declare fp8 dtype support, so this
+        # branch records only the torch.where baseline. Instantiating
+        # WhereFwdOp with an fp8 dtype here would violate the manifest
+        # contract; the manifest is the spec, not the code.
         test = Fp8WhereBenchCase(shape, dtype)
         bm = Fp8WhereBenchmark(test)
         cond, x, y = test.gen_inputs()
-
-        op = WhereOp(N_total=n_total, dtype=dtype)
-        result = bm.profile(op, cond, x, y)
-        BenchmarkReport.record("where_fp8", locals(), result, tag="tileops")
 
         # torch.where supports fp8 natively (pure selection, no arithmetic)
         def baseline(cond, x, y):
             return torch.where(cond, x, y)
 
         result_bl = bm.profile(baseline, cond, x, y)
-        BenchmarkReport.record("where_fp8", locals(), result_bl, tag="baseline")
+        BenchmarkReport.record("where_fp8", locals(), result_bl, tag="torch-ref")
     else:
         test = Fp8MaskedFillBenchCase(shape, dtype)
         bm = Fp8MaskedFillBenchmark(test)
         x, mask = test.gen_inputs()
 
-        op = MaskedFillOp(N_total=n_total, dtype=dtype, fill_value=-100.0)
+        op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-100.0, dtype=dtype)
         result = bm.profile(op, x, mask)
-        BenchmarkReport.record("masked_fill_fp8", locals(), result, tag="tileops")
+        BenchmarkReport.record(op, locals(), result, tag="tileops")
 
         def baseline(x, mask):
             return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)
 
         result_bl = bm.profile(baseline, x, mask)
-        BenchmarkReport.record("masked_fill_fp8", locals(), result_bl, tag="baseline")
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

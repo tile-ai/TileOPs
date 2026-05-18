@@ -47,7 +47,12 @@ output/
 output*/
 profile_out/
 tmp/
+.tmp/
 debug/
+
+# Local lock / scheduler state
+/.lock
+.claude/*.lock
 
 # Exception: keep the debug folder for tests
 !testing/python/debug
@@ -64,7 +69,10 @@ secrets.yml
 docs/plans/
 .humanize*
 .foundry/runs/
+.foundry/migrations/
+.foundry/plan/
 .foundry/config.local.json
 
 CLAUDE.local.md
 .claude/worktrees/
+docs/superpowers/

@@ -10,74 +10,74 @@ kernels are implemented.
 # Each sub-category PR uncomments its own lines.
 
 # --- LogicalReduceKernel ops ---
-from .all_op import AllOp
-from .any_op import AnyOp
+from .all_op import AllFwdOp
+from .any_op import AnyFwdOp
 
 # --- ArgreduceKernel ops ---
-from .argmax import ArgmaxOp
-from .argmin import ArgminOp
-from .count_nonzero import CountNonzeroOp
+from .argmax import ArgmaxFwdOp
+from .argmin import ArgminFwdOp
+from .count_nonzero import CountNonzeroFwdOp
 
 # --- CumulativeKernel ops ---
-from .cumprod import CumprodOp
-from .cumsum import CumsumOp
+from .cumprod import CumprodFwdOp
+from .cumsum import CumsumFwdOp
 
 # from .cummax import CummaxOp
 # from .cummin import CumminOp
 # --- VectorNormKernel ops ---
-from .inf_norm import InfNormOp
-from .l1_norm import L1NormOp
-from .l2_norm import L2NormOp
-from .log_softmax import LogSoftmaxOp
-from .logsumexp import LogSumExpOp
+from .inf_norm import InfNormFwdOp
+from .l1_norm import L1NormFwdOp
+from .l2_norm import L2NormFwdOp
+from .log_softmax import LogSoftmaxFwdOp
+from .logsumexp import LogSumExpFwdOp
 
 # --- ReduceKernel ops ---
 # --- SoftmaxKernel ops ---
 from .reduce import (
-    AmaxOp,  # ReduceMaxOp
-    AminOp,  # ReduceMinOp
-    MeanOp,  # ReduceMeanOp
-    ProdOp,  # ReduceProdOp
-    StdOp,
-    SumOp,  # ReduceSumOp
-    VarMeanOp,
-    VarOp,
+    AmaxFwdOp,  # ReduceMaxOp
+    AminFwdOp,  # ReduceMinOp
+    MeanFwdOp,  # ReduceMeanOp
+    ProdFwdOp,  # ReduceProdOp
+    StdFwdOp,
+    SumFwdOp,  # ReduceSumOp
+    VarFwdOp,
+    VarMeanFwdOp,
 )
-from .softmax import SoftmaxOp
+from .softmax import SoftmaxFwdOp
 
 __all__: list[str] = [
     # --- LogicalReduceKernel ops ---
-    "AllOp",
-    "AnyOp",
-    "CountNonzeroOp",
+    "AllFwdOp",
+    "AnyFwdOp",
+    "CountNonzeroFwdOp",
     # --- ReduceKernel ops ---
-    "AmaxOp",
-    "AminOp",
-    "MeanOp",
-    "ProdOp",
-    "StdOp",
-    "SumOp",
-    "VarMeanOp",
-    "VarOp",
+    "AmaxFwdOp",
+    "AminFwdOp",
+    "MeanFwdOp",
+    "ProdFwdOp",
+    "StdFwdOp",
+    "SumFwdOp",
+    "VarMeanFwdOp",
+    "VarFwdOp",
     # "ReduceMaxOp",
     # "ReduceMeanOp",
     # "ReduceMinOp",
     # "ReduceProdOp",
     # "ReduceSumOp",
     # --- SoftmaxKernel ops ---
-    "SoftmaxOp",
-    "LogSoftmaxOp",
-    "LogSumExpOp",
+    "SoftmaxFwdOp",
+    "LogSoftmaxFwdOp",
+    "LogSumExpFwdOp",
     # --- ArgreduceKernel ops ---
-    "ArgmaxOp",
-    "ArgminOp",
+    "ArgmaxFwdOp",
+    "ArgminFwdOp",
     # --- CumulativeKernel ops ---
-    "CumsumOp",
-    "CumprodOp",
+    "CumsumFwdOp",
+    "CumprodFwdOp",
     # "CummaxOp",
     # "CumminOp",
     # --- VectorNormKernel ops ---
-    "InfNormOp",
-    "L1NormOp",
-    "L2NormOp",
+    "InfNormFwdOp",
+    "L1NormFwdOp",
+    "L2NormFwdOp",
 ]

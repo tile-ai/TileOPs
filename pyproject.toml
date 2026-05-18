@@ -5,9 +5,14 @@ description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
-    "torch>=2.1.0,<2.10.0",
-    "tilelang==0.1.8",
+    "torch>=2.1.0,<2.11.0",
+    "tilelang==0.1.9",
+    # FIXME(apache-tvm-ffi-pin): Remove once tilelang carries its own
+    # apache-tvm-ffi<0.1.10 pin (already on tilelang main, not yet released).
+    # Tracking: https://github.com/tile-ai/TileOPs/issues/969
+    "apache-tvm-ffi>=0.1.2,<0.1.10",
     "einops",
+    "pyyaml>=6.0",
 ]
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -35,6 +40,15 @@ dev = [
     "codespell==2.4.1",
     "pytest>=8.0",
     "pytest-xdist>=3.0",
+    "pyyaml>=6.0",
+]
+bench = [
+    "flash-attn==2.8.3",
+    "flash-attn-interface>=2.7.2",
+    "flash-linear-attention==0.4.2",
+    "flashinfer>=0.6.6",
+    "vllm==0.18.0",
+    "sgl-kernel==0.3.21",
 ]
 
 [build-system]
@@ -44,6 +58,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 exclude = ["tests", "tests.*", "benchmarks", "benchmarks.*"]
+
+[tool.setuptools.package-data]
+tileops = ["kernels/moe/_atomic_helper.h", "manifest/*.yaml"]
 
 [tool.codespell]
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"
@@ -76,6 +93,8 @@ select = [
     # "D",
     # pep8-naming (naming conventions)
     "N",
+    # ruff-specific: sort __all__
+    "RUF022",
     # flake8-annotations (type hints) — enable when codebase has sufficient coverage
     # "ANN",
 ]
@@ -105,12 +124,18 @@ known-first-party = ["tileops"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "bench_*.py" = ["F401"]
+# __all__ intentionally grouped by category, not alphabetical
+"tileops/kernels/elementwise.py" = ["RUF022"]
+"tileops/ops/__init__.py" = ["RUF022"]
+"tileops/ops/elementwise.py" = ["RUF022"]
+"tileops/ops/reduction/__init__.py" = ["RUF022"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "benchmarks/tests"]
 python_files = ["test_*.py", "bench_*.py"]
 markers = [
     "smoke: fast PR critical-path tests",
     "full: standard correctness coverage",
     "nightly: exhaustive or long-running coverage",
+    "packaging: minimal wheel-install sanity check (one case per op family)",
 ]

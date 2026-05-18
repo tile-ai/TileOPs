@@ -3,19 +3,29 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_topk_selector import TopkSelectorTest
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import TopkSelectorOp
-from tileops.utils import str2dtype
+from workloads.topk_selector import TopkSelectorTest
 
 
-class TopkSelectorBenchmark(BenchmarkBase):
+class _TopkSelectorTestBaseline(TopkSelectorTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, index_score: torch.Tensor, starts: torch.Tensor,
+                    ends: torch.Tensor) -> torch.Tensor:
+        # index_score: (batch, seq_len, seq_len_kv, kv_group); topk over seq_len_kv (dim=2)
+        indexes_ref = torch.topk(index_score, self.topk, dim=2)[1]
+        # Match kernel/output layout: (batch, seq_len, kv_group, topk)
+        return indexes_ref.permute(0, 1, 3, 2)
+
+
+class TopkSelectorBenchmark(BenchmarkBase[TopkSelectorTest]):
 
     def calculate_flops(self) -> Optional[float]:
         return None
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         index_score_memory = (t.batch * t.seq_len * t.seq_len_kv * t.kv_group * t.in_dtype.itemsize)
         index_memory = t.batch * t.seq_len * t.topk * t.kv_group * t.out_dtype.itemsize
         starts_memory = t.batch * t.seq_len * t.out_dtype.itemsize
@@ -24,31 +34,39 @@ class TopkSelectorBenchmark(BenchmarkBase):
 
 
 _TOPK_SELECTOR_BENCH_PARAMS = [
-    pytest.param(64, 32 * 1024, 1024, "float32", "int32", True, id="base-topk1024"),
-    pytest.param(64, 32 * 1024, 2048, "float32", "int32", True, id="base-topk2048"),
-    pytest.param(128, 64 * 1024, 1024, "float32", "int32", True, id="large-batch-topk1024"),
-    pytest.param(128, 64 * 1024, 2048, "float32", "int32", True, id="large-batch-topk2048"),
+    pytest.param(1, 32 * 1024, 64 * 1024, 1, 1024, torch.float32, torch.int32, True, id="base-topk1024"),
+    pytest.param(1, 32 * 1024, 64 * 1024, 1, 2048, torch.float32, torch.int32, True, id="base-topk2048"),
+    pytest.param(1, 65535, 128 * 1024, 1, 1024, torch.float32, torch.int32, True,
+                 id="large-batch-topk1024"),
+    pytest.param(1, 65535, 128 * 1024, 1, 2048, torch.float32, torch.int32, True,
+                 id="large-batch-topk2048"),
 ]
 
 
 @pytest.mark.parametrize(
-    "batch, seq_len, topk, in_dtype_str, out_dtype_str, tune",
+    "batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, tune",
     _TOPK_SELECTOR_BENCH_PARAMS,
 )
-def test_topk_selector_bench(batch: int, seq_len: int, topk: int, in_dtype_str: str,
-                              out_dtype_str: str, tune: bool) -> None:
-    in_dtype = str2dtype[in_dtype_str]
-    out_dtype = str2dtype[out_dtype_str]
-    test = TopkSelectorTest(batch, seq_len, topk, in_dtype, out_dtype)
+def test_topk_selector_bench(batch: int, seq_len: int, seq_len_kv: int, kv_group: int, topk: int,
+                             in_dtype: torch.dtype, out_dtype: torch.dtype, tune: bool) -> None:
+    test = _TopkSelectorTestBaseline(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)
     bm = TopkSelectorBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = TopkSelectorOp(batch, seq_len, topk, in_dtype, out_dtype, tune=tune)
+    op = TopkSelectorOp(
+        batch=batch,
+        seq_len=seq_len,
+        seq_len_kv=seq_len_kv,
+        kv_group=kv_group,
+        topk=topk,
+        in_dtype=in_dtype,
+        out_dtype=out_dtype,
+        tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("topk_selector", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("topk_selector", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

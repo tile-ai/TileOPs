@@ -21,20 +21,23 @@ Each kernel class uses the ``explicit_parallel`` strategy:
     Global → Register → Compute → Register → Global
 """
 
+import functools
+
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 __all__ = [
-    "RopeNeoxKernel",
-    "RopeNonNeoxKernel",
     "RopeLlama31Kernel",
-    "RopeYarnKernel",
     "RopeLongRopeKernel",
+    "RopeNeoxKernel",
+    "RopeNeoxPositionIdsKernel",
+    "RopeNonNeoxKernel",
+    "RopeYarnKernel",
 ]
 
 
@@ -43,6 +46,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _make_rope_neox_1d(seq_len: int, head_dim: int, dtype: str,
                        threads: int = 256, num_per_thread: int = 8) -> object:
     """1D neox RoPE kernel: (seq_len, head_dim) x cos(seq_len, half) x sin(seq_len, half).
@@ -87,6 +91,7 @@ def _make_rope_neox_1d(seq_len: int, head_dim: int, dtype: str,
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_rope_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: int,
                        dtype: str, threads: int = 256, num_per_thread: int = 8) -> object:
     """2D neox RoPE kernel: (batch, seq_len, num_heads, head_dim).
@@ -135,6 +140,7 @@ def _make_rope_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: int,
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_rope_non_neox_1d(seq_len: int, head_dim: int, dtype: str,
                            threads: int = 256, num_per_thread: int = 8) -> object:
     """1D non-neox (RoFormer) RoPE kernel: adjacent-pair rotation.
@@ -179,6 +185,55 @@ def _make_rope_non_neox_1d(seq_len: int, head_dim: int, dtype: str,
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
+def _make_rope_neox_position_ids_thd(num_tokens: int, num_heads: int, head_dim: int,
+                                     rotary_dim: int, max_position: int, dtype: str,
+                                     threads: int = 256,
+                                     num_per_thread: int = 8) -> object:
+    """THD neox RoPE kernel with explicit absolute position ids."""
+    half = rotary_dim // 2
+    token_stride = num_heads * head_dim
+    n_total = num_tokens * token_stride
+    block_size = threads * num_per_thread
+
+    @tilelang.jit(out_idx=[4])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(
+            x: T.Tensor((n_total,), dtype),
+            cos_table: T.Tensor((max_position, half), dtype),
+            sin_table: T.Tensor((max_position, half), dtype),
+            position_ids: T.Tensor((num_tokens,), "int32"),
+            y: T.Tensor((n_total,), dtype),
+        ):
+            with T.Kernel(T.ceildiv(n_total, block_size), threads=threads_arg) as bx:
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    flat_idx = (bx * threads_arg + i) * npt_arg + j
+                    if flat_idx < n_total:
+                        token_idx = flat_idx // token_stride
+                        col = flat_idx % head_dim
+                        pos = position_ids[token_idx]
+
+                        freq_idx = col % half
+                        c = cos_table[pos, freq_idx]
+                        s = sin_table[pos, freq_idx]
+                        val = x[flat_idx]
+
+                        paired_col = T.if_then_else(
+                            col < half, col + half,
+                            T.if_then_else(col < rotary_dim, col - half, col))
+                        head_base = flat_idx - col
+                        paired_idx = head_base + paired_col
+                        paired_val = x[paired_idx]
+                        rotated = T.if_then_else(col < half, -paired_val, paired_val)
+                        y[flat_idx] = T.if_then_else(col < rotary_dim, val * c + rotated * s, val)
+
+        return main
+
+    return kernel
+
+
+@functools.lru_cache(maxsize=32)
 def _make_rope_non_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: int,
                            dtype: str, threads: int = 256,
                            num_per_thread: int = 8) -> object:
@@ -211,14 +266,14 @@ def _make_rope_non_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: i
                     s = sin_table[s_idx, freq_idx]
                     val = x[flat_idx]
 
-                    # Adjacent pair: even pairs with next, odd pairs with prev
-                    is_even = (col % 2) == 0
-                    paired_col = T.if_then_else(is_even, col + 1, col - 1)
-                    head_base = flat_idx - col
-                    paired_idx = head_base + paired_col
+                    # Adjacent pair: even pairs with next, odd pairs with previous.
+                    # Compute the same pair as a +/-1 flat offset to avoid a
+                    # TileLang 0.1.9 lowering bug for if_then_else-derived indices.
+                    col_parity = col % 2
+                    paired_idx = flat_idx + 1 - 2 * col_parity
                     paired_val = x[paired_idx]
 
-                    rotated = T.if_then_else(is_even, -paired_val, paired_val)
+                    rotated = T.if_then_else(col_parity == 0, -paired_val, paired_val)
                     y[flat_idx] = val * c + rotated * s
 
         return main
@@ -348,6 +403,70 @@ class RopeNeoxKernel(_RopeKernelBase):
     """
 
     ROTATION_STYLE = "neox"
+
+
+class RopeNeoxPositionIdsKernel(Kernel):
+    """GPT-NeoX style RoPE kernel for packed THD tensors with explicit positions."""
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    def __init__(self, num_tokens: int, num_heads: int, head_dim: int, rotary_dim: int,
+                 max_position: int, dtype: torch.dtype, config: dict | None = None,
+                 tune: bool = False):
+        super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
+        if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > head_dim:
+            raise ValueError("rotary_dim must be positive, even, and <= head_dim")
+        if num_tokens <= 0:
+            raise ValueError(f"num_tokens must be positive, got {num_tokens}")
+        if num_heads <= 0:
+            raise ValueError(f"num_heads must be positive, got {num_heads}")
+        if max_position <= 0:
+            raise ValueError(f"max_position must be positive, got {max_position}")
+
+        self.num_tokens = num_tokens
+        self.num_heads = num_heads
+        self.head_dim = head_dim
+        self.rotary_dim = rotary_dim
+        self.max_position = max_position
+        self.dtype = dtype
+        self.kernel = self._build_kernel()
+        self.init_config(config, tune)
+
+    def _build_kernel(self) -> object:
+        cfg = self.default_config
+        return _make_rope_neox_position_ids_thd(
+            self.num_tokens,
+            self.num_heads,
+            self.head_dim,
+            self.rotary_dim,
+            self.max_position,
+            self.dtype_to_str(self.dtype),
+            threads=cfg["threads"],
+            num_per_thread=cfg["num_per_thread"],
+        )
+
+    @property
+    def default_config(self) -> dict:
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 256, "num_per_thread": npt}
+
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
+                position_ids: torch.Tensor) -> torch.Tensor:
+        cfg = self.config
+        orig_shape = x.shape
+        result = self.kernel(cfg["threads"], cfg["num_per_thread"])(
+            x.contiguous().reshape(-1),
+            cos,
+            sin,
+            position_ids.contiguous(),
+        )
+        return result.reshape(orig_shape)
 
 
 class RopeNonNeoxKernel(_RopeKernelBase):

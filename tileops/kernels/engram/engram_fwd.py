@@ -18,13 +18,14 @@ Grid: (T, M) — one thread block per (batch, position).
 Uses 2D fragments (1, d_padded) to leverage T.reduce_sum for safe reductions.
 """
 
+import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["EngramGateConvFwdKernel"]
 
@@ -36,6 +37,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
+@functools.lru_cache(maxsize=32)
 def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
     accum_dtype = "float"
     d_padded = _align_up(d, ALIGNMENT)

@@ -1,65 +1,30 @@
 """Benchmarks for softmax-family ops (softmax, log_softmax, logsumexp).
 
 Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
+Workload shapes and roofline formulas are loaded from the ops manifest (tileops/manifest/).
 """
-
-from typing import Optional
 
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_softmax import (
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from tileops.ops.reduction.log_softmax import LogSoftmaxFwdOp
+from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
+from tileops.ops.reduction.softmax import SoftmaxFwdOp
+from workloads.softmax import (
     LogSoftmaxTest,
     LogSumExpTest,
     SoftmaxTest,
 )
-from tileops.ops.reduction.log_softmax import LogSoftmaxOp
-from tileops.ops.reduction.logsumexp import LogSumExpOp
-from tileops.ops.reduction.softmax import SoftmaxOp
 
+# ===================================================================
+# Op name constants
+# ===================================================================
 
-class SoftmaxBenchmark(BenchmarkBase):
-    """Benchmark for softmax op (4N FLOPs: max, exp, sum, div)."""
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.test
-        return 4 * t.m * t.n
-
-    def calculate_memory(self) -> Optional[float]:
-        """Read x (M*N) + write y (M*N)."""
-        t = self.test
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        return (2 * t.m * t.n) * elem_bytes
-
-
-class LogSoftmaxBenchmark(BenchmarkBase):
-    """Benchmark for log_softmax op (5N FLOPs: max, exp, sum, div, log)."""
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.test
-        return 5 * t.m * t.n
-
-    def calculate_memory(self) -> Optional[float]:
-        """Read x (M*N) + write y (M*N)."""
-        t = self.test
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        return (2 * t.m * t.n) * elem_bytes
-
-
-class LogSumExpBenchmark(BenchmarkBase):
-    """Benchmark for logsumexp op (3N FLOPs: max, exp, sum + 1 log+add)."""
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.test
-        return 3 * t.m * t.n
-
-    def calculate_memory(self) -> Optional[float]:
-        """Read x (M*N) + write y (M)."""
-        t = self.test
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        return (t.m * t.n + t.m) * elem_bytes
+_SOFTMAX_OP = "SoftmaxFwdOp"
+_LOG_SOFTMAX_OP = "LogSoftmaxFwdOp"
+_LOGSUMEXP_OP = "LogSumExpFwdOp"
 
 
 # ===================================================================
@@ -67,29 +32,26 @@ class LogSumExpBenchmark(BenchmarkBase):
 # ===================================================================
 
 
-_SOFTMAX_BENCH_PARAMS = [
-    pytest.param(1024, 4096, torch.float16, True, id="mainstream-fp16"),
-    pytest.param(4096, 4096, torch.bfloat16, True, id="throughput-bf16"),
-    pytest.param(1024, 3000, torch.float16, True, id="non-power-of-two"),
-    pytest.param(1025, 4096, torch.float16, True, id="tail-m"),
-]
-
-
-@pytest.mark.parametrize("m, n, dtype, tune", _SOFTMAX_BENCH_PARAMS)
-def test_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = SoftmaxTest(m, n, dtype)
-    bm = SoftmaxBenchmark(test)
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_SOFTMAX_OP))
+def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = SoftmaxTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = SoftmaxOp(M=m, N=n, dtype=dtype, tune=tune)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record("softmax", locals(), result, tag="tileops")
+    op = SoftmaxFwdOp(N=shape[-1], dtype=dtype, dim=-1, tune=True)
+    bm = ManifestBenchmark(_SOFTMAX_OP, op, test)
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
         return F.softmax(x, dim=-1)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("softmax", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ===================================================================
@@ -97,24 +59,26 @@ def test_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
 # ===================================================================
 
 
-_LOG_SOFTMAX_BENCH_PARAMS = _SOFTMAX_BENCH_PARAMS
-
-
-@pytest.mark.parametrize("m, n, dtype, tune", _LOG_SOFTMAX_BENCH_PARAMS)
-def test_log_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = LogSoftmaxTest(m, n, dtype)
-    bm = LogSoftmaxBenchmark(test)
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOG_SOFTMAX_OP))
+def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = LogSoftmaxTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = LogSoftmaxOp(M=m, N=n, dtype=dtype, tune=tune)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record("log_softmax", locals(), result, tag="tileops")
+    op = LogSoftmaxFwdOp(N=shape[-1], dtype=dtype, dim=-1, tune=True)
+    bm = ManifestBenchmark(_LOG_SOFTMAX_OP, op, test)
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
         return F.log_softmax(x, dim=-1)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("log_softmax", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ===================================================================
@@ -122,24 +86,26 @@ def test_log_softmax_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> No
 # ===================================================================
 
 
-_LOGSUMEXP_BENCH_PARAMS = _SOFTMAX_BENCH_PARAMS
-
-
-@pytest.mark.parametrize("m, n, dtype, tune", _LOGSUMEXP_BENCH_PARAMS)
-def test_logsumexp_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = LogSumExpTest(m, n, dtype)
-    bm = LogSumExpBenchmark(test)
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOGSUMEXP_OP))
+def test_logsumexp_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = LogSumExpTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = LogSumExpOp(M=m, N=n, dtype=dtype, tune=tune)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record("logsumexp", locals(), result, tag="tileops")
+    op = LogSumExpFwdOp(dtype=dtype, dim=-1, tune=True)
+    bm = ManifestBenchmark(_LOGSUMEXP_OP, op, test)
+    try:
+        result = bm.profile(op, *inputs)
+    except ValueError as exc:
+        if "No configurations to tune" in str(exc):
+            pytest.skip(f"Kernel does not support this shape: {exc}")
+        raise
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     def baseline_fn(x):
         return torch.logsumexp(x, dim=-1)
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("logsumexp", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

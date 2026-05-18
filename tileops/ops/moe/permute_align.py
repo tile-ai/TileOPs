@@ -4,15 +4,15 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import MoePermuteAlignKernel
 
-from ..op import Op
+from ..op_base import Op
 
-__all__ = ["MoePermuteAlignOp"]
+__all__ = ["MoePermuteAlignFwdOp"]
 
 
-class MoePermuteAlignOp(Op):
+class MoePermuteAlignFwdOp(Op):
     """Route tokens to experts and pad each expert's token count to block_size.
 
     Takes ``topk_ids`` and produces the three index arrays required by MoE
@@ -20,37 +20,49 @@ class MoePermuteAlignOp(Op):
     padded token count.
 
     Args:
-        numel: Total (token, expert) assignments = total_tokens * top_k.
+        total_tokens: Number of input tokens T.
+        top_k: Number of experts selected per token K.
         num_experts: Number of experts.
-        block_size: GEMM tile size (M dimension).
+        block_size: GEMM tile size (M dimension); default 64.
         kernel_map: Optional kernel override dict.
         tune: Whether to autotune the kernel.
 
     Example:
-        >>> op = MoePermuteAlignOp(numel=32, num_experts=8, block_size=16)
+        >>> op = MoePermuteAlignFwdOp(total_tokens=4, top_k=8, num_experts=8, block_size=16)
         >>> sorted_ids, expert_ids, num_post_pad = op(topk_ids)
     """
 
     def __init__(
         self,
-        numel: int,
+        total_tokens: int,
+        top_k: int,
         num_experts: int,
-        block_size: int,
+        block_size: int = 64,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.numel = numel
+        self.total_tokens = total_tokens
+        self.top_k = top_k
         self.num_experts = num_experts
         self.block_size = block_size
+        self.numel = total_tokens * top_k
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["permute_align_kernel"](
-            numel, num_experts, block_size
+            self.numel, num_experts, block_size
         )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"permute_align_kernel": MoePermuteAlignKernel}
+
+    def eval_roofline(self) -> tuple[int, int]:
+        max_padded = self.numel + (self.num_experts + 1) * (self.block_size - 1)
+        num_blocks = (max_padded + self.block_size - 1) // self.block_size
+        return (
+            0,
+            self.numel * 4 + max_padded * 4 + num_blocks * 4 + 4,
+        )
 
     def forward(
         self, topk_ids: torch.Tensor

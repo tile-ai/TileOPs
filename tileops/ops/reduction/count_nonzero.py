@@ -1,109 +1,101 @@
-"""CountNonzeroOp: counts non-zero elements along dim=-1, returning int64.
+"""CountNonzeroFwdOp: counts non-zero elements along ``dim``, returning int64.
 
-The Op layer validates inputs, reshapes to 2D (M_flat, N), pads to alignment
-(with 0, which is neutral for sum/count), calls the kernel, and reshapes the
-output back. Output dtype is always int64.
+The Op layer validates inputs, normalizes ``dim``, reshapes to 2D (M, N),
+calls the kernel, and reshapes the output back.  Alignment padding is handled
+inside the kernel with 0, which is neutral for sum/count.  Output dtype is
+always int64.
 
 Supports any numeric dtype as input including torch.bool, int32, int64, and
 complex types. Inputs with unsupported TileLang storage dtypes (bool, int32,
 int64, complex64, complex128) are pre-converted to float32 before the kernel
 call.
+
+Kernels are cached by ``(M, N)`` so that the same op instance can handle
+varying shapes.
+
+Note: Unlike AllFwdOp/AnyFwdOp, CountNonzeroFwdOp does NOT accept ``keepdim``.
+The reduction dimension is always removed, matching ``torch.count_nonzero``.
 """
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
-import torch.nn.functional as F
 
-from tileops.kernels.kernel import Kernel
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
-from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
-from tileops.kernels.reduction.logical_reduce.fwd import (
+from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.reduction.logical_reduce import (
     _UNSUPPORTED_STORAGE_DTYPES,
+    LogicalReduceKernel,
     to_logical_float32,
 )
 
-from ..op import Op
+from ._multidim import EmptyDimPolicy
+from .reduce import _ReduceOpBase
 
-__all__ = ["CountNonzeroOp"]
+__all__ = ["CountNonzeroFwdOp"]
 
 
-class CountNonzeroOp(Op):
-    """Count nonzero reduction along dim=-1, returning int64.
+class CountNonzeroFwdOp(_ReduceOpBase):
+    """Count nonzero reduction along ``dim``, returning int64.
 
-    Follows the validate -> reshape -> pad -> kernel -> reshape pattern.
+    Construction: ``CountNonzeroFwdOp(dtype=..., dim=None)``.  M and N are
+    derived from the input tensor at forward time, and kernels are cached
+    by ``(M, N)`` to avoid rebuilds.
+
     Padded positions use 0, which is neutral for sum/count.
+
+    Note: No ``keepdim`` parameter -- the reduction dimension is always
+    removed, matching ``torch.count_nonzero`` semantics.
 
     Supports any numeric dtype including torch.bool, int32, int64, and complex
     types. Inputs with unsupported TileLang storage dtypes (bool, int32, int64,
     complex64, complex128) are pre-converted to float32 in forward().
 
     Args:
-        M: Product of all leading dimensions.
-        N: Last dimension size.
         dtype: Input data type (float16, bfloat16, float32, int32, int64,
                bool, complex64, complex128).
+        dim: Reduction dimension (default ``None``, i.e. full reduction).
+            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
+            multi-dim reduction.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
 
+    _op_kind = "count_nonzero"
+    _kernel_key = "logical_reduce"
+    _kernel_cls = LogicalReduceKernel
+    _empty_dim_policy: EmptyDimPolicy = "full"
+    _kernel_handles_padding = True
+
     def __init__(
         self,
-        M: int,
-        N: int,
         dtype: torch.dtype,
+        dim: Union[int, List[int], Tuple[int, ...], None] = None,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
-        self.N = N
-        self.dtype = dtype
-        self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["logical_reduce"](
-            M,
-            N,
-            "count_nonzero",
-            dtype,
-            tune=tune,
+        # count_nonzero never keeps dim (matches torch.count_nonzero)
+        super().__init__(
+            dtype=dtype, dim=dim, keepdim=False,
+            kernel_map=kernel_map, tune=tune,
         )
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"logical_reduce": LogicalReduceKernel}
+    def _pad_value(self) -> float:
+        """Pad with 0, neutral for sum/count."""
+        return 0.0
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute count_nonzero along dim=-1.
+    def _noop_output_dtype(self) -> torch.dtype:
+        """count_nonzero returns int64 per manifest contract.
 
-        Args:
-            x: Input tensor with last dim == N.
-
-        Returns:
-            Int64 tensor with shape == x.shape[:-1].
+        Although count_nonzero's ``_empty_dim_policy`` is ``"full"`` (so the
+        empty-dim no-op short-circuit never fires), the shared scalar
+        forward in the base class consults this hook to cast the
+        ``x != 0`` predicate to the declared output dtype.
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.shape[-1] != self.N:
-            raise ValueError(f"Expected last dim {self.N}, got {x.shape[-1]}")
+        return torch.int64
 
-        orig_shape = x.shape[:-1]  # output shape (leading dims)
-        x = x.contiguous().reshape(-1, self.N)
-        M_actual = x.shape[0]
-        if M_actual != self.M:
-            raise ValueError(f"Expected M={self.M} (product of leading dims), got {M_actual}")
-
-        # Pre-convert unsupported storage dtypes (bool, int32, int64, complex)
-        # to float32. TileLang cannot handle these as shared-memory storage
-        # dtypes; the kernel is compiled for float32 in those cases.
+    def _pre_kernel(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
+        """Convert unsupported storage dtypes to float32."""
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
             x = to_logical_float32(x)
-
-        # Pad to alignment with 0 (zero is neutral for sum/count)
-        if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N), value=0.0)
-
-        y = self.kernel(x)
-
-        return y.reshape(orig_shape)
+        return x, None

@@ -1,88 +1,72 @@
-"""Argmin op: returns int64 indices of the minimum along dim=-1.
+"""Argmin op: returns int64 indices of the minimum along a given dim.
 
-The Op layer validates inputs, reshapes to 2D (M_flat, N), pads to alignment,
+The Op layer validates inputs, reshapes to 2D (M, N), pads to alignment,
 calls the kernel, and reshapes the output back. Output dtype is always int64.
+Kernels are cached by ``(M, N)`` so the same op instance handles varying shapes.
 """
 
 from typing import Dict, Optional
 
 import torch
-import torch.nn.functional as F
 
-from tileops.kernels.kernel import Kernel
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.argreduce import ArgreduceKernel
 
-from ..op import Op
+from .reduce import _ReduceOpBase
 
-__all__ = ["ArgminOp"]
+__all__ = ["ArgminFwdOp"]
 
 
-class ArgminOp(Op):
-    """Argmin reduction along dim=-1, returning int64 indices.
+class ArgminFwdOp(_ReduceOpBase):
+    """Argmin reduction along an arbitrary dim, returning int64 indices.
 
-    Follows the validate -> reshape -> pad -> kernel -> reshape pattern.
-    Padded positions use +inf so they never win the argmin comparison.
+    Construction: ``ArgminFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N are
+    derived from the input tensor at forward time, and kernels are cached
+    by ``(M, N)`` to avoid rebuilds.
 
     Args:
-        M: Product of all leading dimensions.
-        N: Last dimension size.
         dtype: Input data type.
+        dim: Reduction dimension. ``None`` (the default) matches
+            ``torch.argmin(x)`` semantics: the input is treated as a
+            contiguous flattened 1D buffer and the returned index is into
+            that flattened tensor.
+        keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
 
+    _op_kind = "argmin"
+    _kernel_key = "argreduce"
+    _kernel_cls = ArgreduceKernel
+
     def __init__(
         self,
-        M: int,
-        N: int,
         dtype: torch.dtype,
+        dim: Optional[int] = None,
+        keepdim: bool = False,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
-        self.N = N
-        self.dtype = dtype
-        self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["argreduce"](
-            M,
-            N,
-            "argmin",
-            dtype,
-            tune=tune,
+        super().__init__(
+            dtype=dtype, dim=dim, keepdim=keepdim,
+            kernel_map=kernel_map, tune=tune,
         )
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"argreduce": ArgreduceKernel}
+    def _validate_dim(self) -> None:
+        """Argmin accepts a scalar ``int`` dim or ``None`` (full-tensor reduction).
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute argmin along dim=-1.
-
-        Args:
-            x: Input tensor with last dim == N.
-
-        Returns:
-            Int64 tensor of indices with shape == x.shape[:-1].
+        ``dim=None`` matches ``torch.argmin(x)`` semantics: the input is
+        treated as a contiguous flattened 1D buffer and the returned index
+        is into that flattened tensor.
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.shape[-1] != self.N:
-            raise ValueError(f"Expected last dim {self.N}, got {x.shape[-1]}")
+        if self.dim is None or isinstance(self.dim, int):
+            return
+        raise ValueError(
+            f"ArgminFwdOp only supports scalar dim (int) or None, "
+            f"got {type(self.dim).__name__}: {self.dim!r}"
+        )
 
-        orig_shape = x.shape[:-1]  # output shape (leading dims)
-        x = x.contiguous().reshape(-1, self.N)
-        M_actual = x.shape[0]
-        if M_actual != self.M:
-            raise ValueError(f"Expected M={self.M} (product of leading dims), got {M_actual}")
-
-        # Pad to alignment with +inf so padded positions never win argmin
-        if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N), value=float("inf"))
-
-        y = self.kernel(x)
-
-        return y.reshape(orig_shape)
+    def _pad_value(self) -> float:
+        """Pad with +inf so padded positions never win argmin."""
+        return float("inf")

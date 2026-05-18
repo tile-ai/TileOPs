@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.elementwise import EqOp, GeOp, GtOp, LeOp, LtOp, NeOp
+from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -49,8 +49,8 @@ class EqFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -59,7 +59,7 @@ class EqFixture(FixtureBase):
 def test_eq_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.eq)
     shape = (n_total,)
-    op = EqOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = EqFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -72,8 +72,8 @@ class NeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -82,7 +82,7 @@ class NeFixture(FixtureBase):
 def test_ne_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.ne)
     shape = (n_total,)
-    op = NeOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = NeFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -95,8 +95,8 @@ class GtFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -105,7 +105,7 @@ class GtFixture(FixtureBase):
 def test_gt_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.gt)
     shape = (n_total,)
-    op = GtOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = GtFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -118,8 +118,8 @@ class LtFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -128,7 +128,7 @@ class LtFixture(FixtureBase):
 def test_lt_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.lt)
     shape = (n_total,)
-    op = LtOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = LtFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -141,8 +141,8 @@ class GeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -151,7 +151,7 @@ class GeFixture(FixtureBase):
 def test_ge_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.ge)
     shape = (n_total,)
-    op = GeOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = GeFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -164,8 +164,8 @@ class LeFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(16_384, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16_384, torch.float32, marks=pytest.mark.full),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -174,7 +174,7 @@ class LeFixture(FixtureBase):
 def test_le_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.le)
     shape = (n_total,)
-    op = LeOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = LeFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -189,12 +189,12 @@ _BROADCAST_PATTERNS = [
 ]
 
 _CMP_OPS = [
-    ("eq", EqOp, torch.eq),
-    ("ne", NeOp, torch.ne),
-    ("gt", GtOp, torch.gt),
-    ("lt", LtOp, torch.lt),
-    ("ge", GeOp, torch.ge),
-    ("le", LeOp, torch.le),
+    ("eq", EqFwdOp, torch.eq),
+    ("ne", NeFwdOp, torch.ne),
+    ("gt", GtFwdOp, torch.gt),
+    ("lt", LtFwdOp, torch.lt),
+    ("ge", GeFwdOp, torch.ge),
+    ("le", LeFwdOp, torch.le),
 ]
 
 
@@ -245,7 +245,7 @@ def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
     # Make some elements differ
     b[::2] = torch.randn(n_total // 2, dtype=dtype, device="cuda")
     shape = (n_total,)
-    op = EqOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = EqFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.eq(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -254,27 +254,136 @@ def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Dtype rejection tests
+# Per-dtype correctness across the manifest dtype union
+# ---------------------------------------------------------------------------
+
+_INT_DTYPES = [torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64]
+_CMP_OP_CASES = [
+    (EqFwdOp, torch.eq),
+    (NeFwdOp, torch.ne),
+    (GtFwdOp, torch.gt),
+    (LtFwdOp, torch.lt),
+    (GeFwdOp, torch.ge),
+    (LeFwdOp, torch.le),
+]
+
+
+def _gen_int_inputs(n: int, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+    if dtype == torch.uint8:
+        lo, hi = 0, 16
+    elif dtype == torch.int8:
+        lo, hi = -16, 16
+    else:
+        lo, hi = -64, 64
+    a = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
+    b = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
+    # Inject some equal positions so eq/ge/le exercise the True branch.
+    b[: n // 4] = a[: n // 4]
+    return a, b
+
+
+# Dtype-coverage axis: exercise every manifest-declared int dtype on a
+# single representative op (EqFwdOp). The op-coverage axis below uses a
+# fixed dtype and varies op_cls; this avoids the dtype x op cross product.
+class ComparisonIntDtypeFixture(FixtureBase):
+    PARAMS = [
+        ("dtype", [
+            pytest.param(dt, marks=pytest.mark.smoke)
+            for dt in _INT_DTYPES
+        ]),
+    ]
+
+
+@ComparisonIntDtypeFixture
+def test_comparison_integer_dtype_eq(dtype: torch.dtype) -> None:
+    """EqFwdOp matches torch.eq on every manifest-declared int dtype."""
+    n = 4_096
+    shape = (n,)
+    a, b = _gen_int_inputs(n, dtype)
+    op = EqFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch.eq(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    _bool_compare(out, ref)
+
+
+# Op-coverage axis: at a fixed integer dtype, every comparison op must
+# match its torch reference. Combined with the dtype-coverage axis above,
+# this gives full per-op-per-dtype coverage in N + M cases instead of
+# N x M.
+class ComparisonOpIntFixture(FixtureBase):
+    PARAMS = [
+        ("op_cls, ref_fn", [
+            pytest.param(op_cls, ref_fn, marks=pytest.mark.smoke)
+            for op_cls, ref_fn in _CMP_OP_CASES
+        ]),
+    ]
+
+
+@ComparisonOpIntFixture
+def test_comparison_op_int32(op_cls, ref_fn) -> None:
+    """Each comparison op matches its torch reference on int32 inputs."""
+    n = 4_096
+    shape = (n,)
+    a, b = _gen_int_inputs(n, torch.int32)
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.int32)
+    ref = ref_fn(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    _bool_compare(out, ref)
+
+
+class ComparisonBoolDtypeFixture(FixtureBase):
+    PARAMS = [
+        ("op_cls, ref_fn", [
+            pytest.param(op_cls, ref_fn, marks=pytest.mark.smoke)
+            for op_cls, ref_fn in _CMP_OP_CASES
+        ]),
+    ]
+
+
+@ComparisonBoolDtypeFixture
+def test_comparison_bool_dtype(op_cls, ref_fn) -> None:
+    """Comparison ops match torch reference on torch.bool inputs."""
+    n = 4_096
+    shape = (n,)
+    a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+    b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.bool)
+    ref = ref_fn(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    _bool_compare(out, ref)
+
+
+# ---------------------------------------------------------------------------
+# Dtype rejection tests (dtypes outside the manifest dtype union: fp8 and
+# complex must raise at construction time).
 # ---------------------------------------------------------------------------
 
 
 class ComparisonRejectFixture(FixtureBase):
+    # Smoke cases (first three) cover the three rejected dtypes on three
+    # distinct op_cls so the tier validator's "each dtype needs a smoke"
+    # rule is satisfied while keeping "full cases must not differ from a
+    # smoke case only by dtype" — each smoke op_cls is unique.
     PARAMS = [
         ("op_cls, dtype", [
-            pytest.param(EqOp, torch.int32, marks=pytest.mark.smoke),
-            pytest.param(NeOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(GtOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(LtOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(GeOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(LeOp, torch.int32, marks=pytest.mark.full),
-            pytest.param(EqOp, torch.int64, marks=pytest.mark.full),
+            pytest.param(EqFwdOp, torch.complex64, marks=pytest.mark.smoke),
+            pytest.param(NeFwdOp, torch.float8_e4m3fn, marks=pytest.mark.smoke),
+            pytest.param(GtFwdOp, torch.float8_e5m2, marks=pytest.mark.smoke),
+            pytest.param(LtFwdOp, torch.complex64, marks=pytest.mark.full),
+            pytest.param(GeFwdOp, torch.float8_e4m3fn, marks=pytest.mark.full),
+            pytest.param(LeFwdOp, torch.float8_e5m2, marks=pytest.mark.full),
         ]),
     ]
 
 
 @ComparisonRejectFixture
-def test_comparison_rejects_integer_dtype(op_cls, dtype: torch.dtype) -> None:
-    """Comparison ops only support float dtypes; integers must be rejected."""
+def test_comparison_rejects_unsupported_dtype(
+    op_cls, dtype: torch.dtype,
+) -> None:
+    """Comparison ops reject dtypes outside the supported set (e.g. complex)."""
     shape = (16,)
     with pytest.raises(ValueError, match="does not support dtype"):
         op_cls(a_shape=shape, b_shape=shape, dtype=dtype)

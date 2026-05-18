@@ -9,33 +9,34 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.rope import RopeNeoxOp
+from workloads.workload_base import FixtureBase
 
-# DNN-realistic: (seq_len, head_dim) — typical attention head sizes
-_SHAPES = [(2048, 64), (2048, 128), (4096, 128)]
+# DNN-realistic: (seq_len, head_dim) — typical attention head sizes.
+# Includes a non-pow2 seq_len (3000) to exercise tail handling.
+_SHAPES = [(2048, 64), (2048, 128), (4096, 128), (3000, 128)]
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 
 class RopeBenchCase:
-    def __init__(self, seq_len: int, head_dim: int, dtype: torch.dtype):
-        self.seq_len = seq_len
-        self.head_dim = head_dim
-        self.n_total = seq_len * head_dim
+    def __init__(self, shape: tuple[int, int], dtype: torch.dtype):
+        self.shape = shape
+        self.seq_len, self.head_dim = shape
+        self.n_total = self.seq_len * self.head_dim
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        return (torch.randn(self.seq_len, self.head_dim, device="cuda", dtype=self.dtype),)
+        return (torch.randn(*self.shape, device="cuda", dtype=self.dtype),)
 
 
-class RopeBenchmark(BenchmarkBase):
+class RopeBenchmark(BenchmarkBase[RopeBenchCase]):
     def calculate_flops(self) -> Optional[float]:
         # 4 ops per element: 2 muls + 1 add + 1 negate/select
-        return self.test.n_total * 4
+        return self.workload.n_total * 4
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem = t.dtype.itemsize
         # Read x + cos + sin + write y
         cos_sin_elems = t.seq_len * (t.head_dim // 2) * 2
@@ -65,26 +66,36 @@ def _rope_neox_apply(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> t
 
 def _rope_params():
     params = []
-    for seq_len, head_dim in _SHAPES:
+    smoke_shape = _SHAPES[0]
+    for shape in _SHAPES:
         for dtype in _DTYPES:
-            mark = pytest.mark.smoke if (seq_len == _SHAPES[0][0] and dtype == torch.float16) else pytest.mark.full
-            params.append(pytest.param(seq_len, head_dim, dtype, marks=mark))
+            mark = (
+                pytest.mark.smoke
+                if (shape == smoke_shape and dtype == torch.float16)
+                else pytest.mark.full
+            )
+            params.append(pytest.param(
+                shape, dtype,
+                id=f"{shape[0]}x{shape[1]}-{dtype}",
+                marks=mark,
+            ))
     return params
 
 
 class RopeBenchFixture(FixtureBase):
-    PARAMS = [("seq_len, head_dim, dtype", _rope_params())]
+    PARAMS = [("shape, dtype", _rope_params())]
 
 
 @RopeBenchFixture
-def test_rope_bench(seq_len: int, head_dim: int, dtype: torch.dtype) -> None:
-    test = RopeBenchCase(seq_len, head_dim, dtype)
+def test_rope_bench(shape: tuple[int, int], dtype: torch.dtype) -> None:
+    test = RopeBenchCase(shape, dtype)
     bm = RopeBenchmark(test)
     (x,) = test.gen_inputs()
 
+    seq_len, head_dim = shape
     op = RopeNeoxOp(seq_len=seq_len, head_dim=head_dim, dtype=dtype)
     result = bm.profile(op, x)
-    BenchmarkReport.record("rope_neox", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     cos, sin = _precompute_rope_neox_cos_sin(seq_len, head_dim, dtype)
 
@@ -92,7 +103,7 @@ def test_rope_bench(seq_len: int, head_dim: int, dtype: torch.dtype) -> None:
         return _rope_neox_apply(x, cos, sin)
 
     result_bl = bm.profile(baseline_fn, x)
-    BenchmarkReport.record("rope_neox", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

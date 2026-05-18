@@ -1,12 +1,12 @@
 """Tests for smoke-param tier validation in conftest.py.
 
 Verifies:
-- AC-1: Zero smoke params still fail.
-- AC-2: Multiple smoke params pass validation.
-- AC-3: Smoke params must appear as first N non-xfail cases; ordering
-         violation raises pytest.UsageError.
-- AC-4: Existing single-smoke fixtures pass unchanged (backward compat).
-- AC-5: tune=False and no-xfail constraints apply to every smoke case.
+- Zero smoke params still fail.
+- Multiple smoke params pass validation.
+- Smoke params must appear as first N non-xfail cases; ordering
+  violation raises pytest.UsageError.
+- Existing single-smoke fixtures pass unchanged (backward compat).
+- tune=False and no-xfail constraints apply to every smoke case.
 """
 
 from __future__ import annotations
@@ -16,8 +16,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
-from tests.conftest import pytest_collection_modifyitems
+from tests.conftest import _freeze_value, pytest_collection_modifyitems
 
 # ---------------------------------------------------------------------------
 # Helpers to build mock pytest.Items
@@ -30,6 +31,7 @@ def _make_item(
     originalname: str = "test_op",
     path: str = "tests/ops/test_foo.py",
     markers: list[str] | None = None,
+    dtype: object | None = None,
     tune: bool | None = None,
 ) -> MagicMock:
     """Build a lightweight mock pytest.Item for tier validation tests."""
@@ -50,21 +52,35 @@ def _make_item(
 
     item.get_closest_marker = _get_closest_marker
 
-    # callspec with optional tune param
+    params: dict[str, object] = {}
+    if dtype is not None:
+        params["dtype"] = dtype
     if tune is not None:
-        item.callspec = SimpleNamespace(params={"tune": tune})
+        params["tune"] = tune
+
+    if params:
+        item.callspec = SimpleNamespace(params=params)
     else:
         item.callspec = None
 
     return item
 
 
+@pytest.mark.full
+class TestFreezeValue:
+    """Regression coverage for stable signatures built from set values."""
+
+    def test_set_with_non_comparable_values_is_sorted_stably(self):
+        frozen = _freeze_value({torch.float16, None, 1})
+        assert frozen == tuple(sorted((torch.float16, None, 1), key=str))
+
+
 # ===================================================================
-# AC-1: Zero smoke params still fail
+# Zero smoke params still fail
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestZeroSmokeFails:
     """At least one smoke param is required per ops test function."""
 
@@ -78,11 +94,11 @@ class TestZeroSmokeFails:
 
 
 # ===================================================================
-# AC-2: Multiple smoke params pass validation
+# Multiple smoke params pass validation
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestMultiSmokePasses:
     """Tests with >1 smoke params must pass tier validation."""
 
@@ -107,11 +123,11 @@ class TestMultiSmokePasses:
 
 
 # ===================================================================
-# AC-3: Smoke params must appear as the first N non-xfail cases
+# Smoke params must appear as the first N non-xfail cases
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestSmokeOrdering:
     """Smoke cases must be contiguous at the front of non-xfail items."""
 
@@ -156,11 +172,11 @@ class TestSmokeOrdering:
 
 
 # ===================================================================
-# AC-4: Backward compatibility -- single smoke still works
+# Backward compatibility -- single smoke still works
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestSingleSmokeBackwardCompat:
     """Existing single-smoke test fixtures must pass unchanged."""
 
@@ -175,11 +191,11 @@ class TestSingleSmokeBackwardCompat:
 
 
 # ===================================================================
-# AC-5: tune=False and no-xfail constraints for every smoke case
+# tune=False and no-xfail constraints for every smoke case
 # ===================================================================
 
 
-@pytest.mark.smoke
+@pytest.mark.full
 class TestSmokeConstraints:
     """Every smoke case must have tune=False and must not be xfail."""
 
@@ -255,3 +271,137 @@ class TestSmokeConstraints:
         # Only the xfail rejection should fire; ordering is fine
         assert "must not be xfail" in str(exc_info.value)
         assert "must appear as the first" not in str(exc_info.value)
+
+
+@pytest.mark.full
+class TestNonRuntimeOpsFileExemption:
+    """Explicitly exempted non-runtime ops files may be full-only."""
+
+    def test_exempt_ops_file_may_have_zero_smoke(self):
+        items = [
+            _make_item(
+                name="test_compile[0]",
+                originalname="test_compile",
+                path="tests/ops/test_elementwise_compile.py",
+                markers=["full"],
+                tune=False,
+            ),
+            _make_item(
+                name="test_compile[1]",
+                originalname="test_compile",
+                path="tests/ops/test_elementwise_compile.py",
+                markers=["full"],
+                tune=True,
+            ),
+        ]
+        pytest_collection_modifyitems(items)
+
+# ===================================================================
+# Every dtype needs smoke coverage
+# ===================================================================
+
+
+@pytest.mark.smoke
+class TestPerDtypeSmokeCoverage:
+    """Every dtype present in parametrized ops tests must have a smoke case."""
+
+    def test_each_dtype_has_smoke_case(self):
+        items = [
+            _make_item(
+                name="test_op[fp16]",
+                markers=["smoke"],
+                dtype=torch.float16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[bf16]",
+                markers=["smoke"],
+                dtype=torch.bfloat16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[fp32]",
+                markers=["smoke"],
+                dtype=torch.float32,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[fp16-full]",
+                markers=["full"],
+                dtype=torch.float16,
+                tune=True,
+            ),
+        ]
+        pytest_collection_modifyitems(items)
+
+    def test_missing_dtype_smoke_raises(self):
+        items = [
+            _make_item(
+                name="test_op[fp16]",
+                markers=["smoke"],
+                dtype=torch.float16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[bf16]",
+                markers=["full"],
+                dtype=torch.bfloat16,
+                tune=False,
+            ),
+        ]
+        with pytest.raises(pytest.UsageError, match="each dtype must have at least one smoke"):
+            pytest_collection_modifyitems(items)
+
+
+# ===================================================================
+# full must not only differ from smoke by dtype
+# ===================================================================
+
+
+@pytest.mark.smoke
+class TestFullNotDtypeOnly:
+    """A full case cannot duplicate a smoke case except for dtype."""
+
+    def test_full_with_same_signature_except_dtype_raises(self):
+        items = [
+            _make_item(
+                name="test_op[fp16]",
+                markers=["smoke"],
+                dtype=torch.float16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[bf16]",
+                markers=["full"],
+                dtype=torch.bfloat16,
+                tune=False,
+            ),
+        ]
+        with pytest.raises(
+            pytest.UsageError,
+            match="must not differ from a smoke case only by dtype",
+        ):
+            pytest_collection_modifyitems(items)
+
+    def test_full_with_distinct_non_dtype_params_passes(self):
+        items = [
+            _make_item(
+                name="test_op[fp16-typical]",
+                markers=["smoke"],
+                dtype=torch.float16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[bf16-typical]",
+                markers=["smoke"],
+                dtype=torch.bfloat16,
+                tune=False,
+            ),
+            _make_item(
+                name="test_op[fp16-tuned]",
+                markers=["full"],
+                dtype=torch.float16,
+                tune=True,
+            ),
+        ]
+        pytest_collection_modifyitems(items)

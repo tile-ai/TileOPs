@@ -1,89 +1,68 @@
-"""L2NormOp: computes L2 norm (Euclidean norm) along dim=-1.
+"""L2NormFwdOp: computes L2 norm (Euclidean norm) along a given dim.
 
-The Op layer validates inputs, reshapes to 2D (M_flat, N), pads to alignment
-(with 0.0, which is neutral for sum of squares), calls the kernel, and reshapes
-the output back. Output dtype matches input dtype; internal computation in fp32.
+The Op layer validates inputs, reshapes to 2D (M, N), calls the kernel, and
+reshapes the output back. Alignment padding is handled inside the kernel with
+0.0, which is neutral for sum of squares. Output dtype matches input dtype;
+internal computation in fp32.
 """
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Union
 
 import torch
-import torch.nn.functional as F
 
-from tileops.kernels.kernel import Kernel
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 
-from ..op import Op
+from ._multidim import EmptyDimPolicy
+from .reduce import _ReduceOpBase
 
-__all__ = ["L2NormOp"]
+__all__ = ["L2NormFwdOp"]
 
 
-class L2NormOp(Op):
-    """L2 norm reduction along dim=-1.
+class L2NormFwdOp(_ReduceOpBase):
+    """L2 norm reduction along a configurable dim.
 
-    Follows the validate -> reshape -> pad -> kernel -> reshape pattern.
-    Padded positions use 0.0 (neutral for sum of squares).
+    Construction: ``L2NormFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N
+    are derived from the input tensor at forward time, and kernels are cached
+    by ``(M, N)`` to avoid rebuilds.
 
     Args:
-        M: Product of all leading dimensions.
-        N: Last dimension size.
         dtype: Input data type (float16, bfloat16, float32).
+        dim: Reduction dimension (default ``None`` -> full reduction, matching
+            ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
+            ``None``.
+        keepdim: Whether to retain the reduced dimension as size 1.
+        ord: Norm order. Must equal 2 for ``L2NormFwdOp`` (manifest fixes
+            ``ord == 2``); accepted as a kwarg to mirror
+            ``torch.linalg.vector_norm``.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
 
+    _op_kind = "l2"
+    _kernel_key = "vector_norm"
+    _kernel_cls = VectorNormKernel
+    _kernel_handles_padding = True
+    _required_ord: Union[int, float] = 2
+    _empty_dim_policy: EmptyDimPolicy = "full"
+
     def __init__(
         self,
-        M: int,
-        N: int,
         dtype: torch.dtype,
+        ord: Union[int, float] = 2,
+        dim: Union[int, List[int], None] = None,
+        keepdim: bool = False,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
-        self.N = N
-        self.dtype = dtype
-        self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["vector_norm"](
-            M,
-            N,
-            "l2",
-            dtype,
-            tune=tune,
+        if ord != self._required_ord:
+            raise ValueError(
+                f"{type(self).__name__} only supports ord={self._required_ord!r}, "
+                f"got ord={ord!r}"
+            )
+        self.ord = ord
+        super().__init__(
+            dtype=dtype, dim=dim, keepdim=keepdim,
+            kernel_map=kernel_map, tune=tune,
         )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"vector_norm": VectorNormKernel}
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute L2 norm along dim=-1.
-
-        Args:
-            x: Input tensor with last dim == N.
-
-        Returns:
-            Tensor with shape == x.shape[:-1], same dtype as input.
-        """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.shape[-1] != self.N:
-            raise ValueError(f"Expected last dim {self.N}, got {x.shape[-1]}")
-
-        orig_shape = x.shape[:-1]  # output shape (leading dims)
-        x = x.contiguous().reshape(-1, self.N)
-        M_actual = x.shape[0]
-        if M_actual != self.M:
-            raise ValueError(f"Expected M={self.M} (product of leading dims), got {M_actual}")
-
-        # Pad to alignment with 0.0 (neutral for sum of squares)
-        if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N))
-
-        y = self.kernel(x)
-
-        return y.reshape(orig_shape)

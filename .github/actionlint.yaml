@@ -2,3 +2,4 @@ self-hosted-runner:
   labels:
     - tile-ops
     - venv
+    - nightly

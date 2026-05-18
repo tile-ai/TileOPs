@@ -31,11 +31,15 @@ fp8 dtype support (e4m3fn, e5m2):
     non-saturating cast to e5m2 via PyTorch's .to() which preserves Inf/NaN.
 """
 
+import functools
+import math
+import warnings
+
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = [
     # --- base classes ---
@@ -43,82 +47,87 @@ __all__ = [
     "FusedGatedKernel",
     "UnaryKernel",
     # --- unary: existing ---
-    "ReluKernel",
+    "ReluFwdKernel",
     # --- unary: math (17) ---
-    "AbsKernel",
-    "CeilKernel",
-    "CosKernel",
-    "ErfKernel",
-    "ExpKernel",
-    "Expm1Kernel",
-    "FloorKernel",
-    "Log1pKernel",
-    "LogKernel",
-    "NegKernel",
-    "ReciprocalKernel",
-    "RoundKernel",
-    "RsqrtKernel",
-    "SignKernel",
-    "SinKernel",
-    "SqrtKernel",
-    "TruncKernel",
-    # --- unary: activations (8) ---
-    "GeluKernel",
-    "HardsigmoidKernel",
-    "HardswishKernel",
-    "MishKernel",
-    "SeluKernel",
-    "SigmoidKernel",
-    "SiluKernel",
-    "TanhKernel",
+    "AbsFwdKernel",
+    "CeilFwdKernel",
+    "CosFwdKernel",
+    "ErfFwdKernel",
+    "ExpFwdKernel",
+    "Expm1FwdKernel",
+    "FloorFwdKernel",
+    "Log1pFwdKernel",
+    "LogFwdKernel",
+    "NegFwdKernel",
+    "ReciprocalFwdKernel",
+    "RoundFwdKernel",
+    "RsqrtFwdKernel",
+    "SignFwdKernel",
+    "SinFwdKernel",
+    "SqrtFwdKernel",
+    "TruncFwdKernel",
+    # --- unary: activations (9) ---
+    "GeluFwdKernel",
+    "GeluTanhFwdKernel",
+    "HardsigmoidFwdKernel",
+    "HardswishFwdKernel",
+    "MishFwdKernel",
+    "SeluFwdKernel",
+    "SigmoidFwdKernel",
+    "SiluFwdKernel",
+    "TanhFwdKernel",
     # --- unary: logical / bitwise (2) ---
-    "BitwiseNotKernel",
-    "LogicalNotKernel",
+    "BitwiseNotFwdKernel",
+    "LogicalNotFwdKernel",
     # --- unary: special predicates (3) ---
-    "IsfiniteKernel",
-    "IsinfKernel",
-    "IsnanKernel",
+    "IsfiniteFwdKernel",
+    "IsinfFwdKernel",
+    "IsnanFwdKernel",
     # --- binary arithmetic ---
-    "AddKernel",
-    "SubKernel",
-    "MulKernel",
-    "DivKernel",
-    "RemainderKernel",
-    "PowKernel",
-    "FloorDivideKernel",
-    "LerpKernel",
-    "MaximumKernel",
-    "MinimumKernel",
-    # --- comparison (OUTPUT_DTYPE = "int8", cast to bool by Op layer) ---
-    "EqKernel",
-    "NeKernel",
-    "GtKernel",
-    "LtKernel",
-    "GeKernel",
-    "LeKernel",
-    # --- logical (OUTPUT_DTYPE = "int8", cast to bool by Op layer) ---
-    "LogicalAndKernel",
-    "LogicalOrKernel",
+    "AddFwdKernel",
+    "SubFwdKernel",
+    "MulFwdKernel",
+    "DivFwdKernel",
+    "DivTruncFwdKernel",
+    "RemainderFwdKernel",
+    "PowFwdKernel",
+    "FloorDivideFwdKernel",
+    "LerpFwdKernel",
+    "MaximumFwdKernel",
+    "MinimumFwdKernel",
+    # --- comparison (OUTPUT_DTYPE = torch.int8, cast to bool by Op layer) ---
+    "EqFwdKernel",
+    "NeFwdKernel",
+    "GtFwdKernel",
+    "LtFwdKernel",
+    "GeFwdKernel",
+    "LeFwdKernel",
+    # --- logical (OUTPUT_DTYPE = torch.int8, cast to bool by Op layer) ---
+    "LogicalAndFwdKernel",
+    "LogicalOrFwdKernel",
     # --- bitwise ---
-    "BitwiseAndKernel",
-    "BitwiseOrKernel",
-    "BitwiseXorKernel",
+    "BitwiseAndFwdKernel",
+    "BitwiseOrFwdKernel",
+    "BitwiseXorFwdKernel",
     # --- fused gated ---
-    "SiluAndMulKernel",
-    "GeluAndMulKernel",
-    "GeluTanhAndMulKernel",
+    "SiluAndMulFwdKernel",
+    "GeluAndMulFwdKernel",
+    "GeluTanhAndMulFwdKernel",
     # --- independent (custom-signature) ---
-    "LeakyReluKernel",
-    "EluKernel",
-    "HardtanhKernel",
-    "SoftplusKernel",
-    "PreluKernel",
-    "WhereKernel",
-    "ClampKernel",
-    "MaskedFillKernel",
-    "NanToNumKernel",
-    "AlibiKernel",
-    "SinusoidalKernel",
+    "LeakyReluFwdKernel",
+    "EluFwdKernel",
+    "HardtanhFwdKernel",
+    "SoftplusFwdKernel",
+    "PreluFwdKernel",
+    "WhereFwdKernel",
+    "LerpTensorFwdKernel",
+    "ClampFwdKernel",
+    "ClampTensorFwdKernel",
+    "MaskedFillFwdKernel",
+    "MaskedFillTensorValueFwdKernel",
+    "NanToNumFwdKernel",
+    "AlibiFwdKernel",
+    "SinusoidalFwdKernel",
 ]
 
 _BITWISE_DTYPES = (
@@ -139,16 +148,44 @@ _FLOAT_DTYPES = (
     torch.float16,
     torch.bfloat16,
     torch.float32,
-    torch.float8_e4m3fn,
-    torch.float8_e5m2,
 )
 
 _LOGICAL_DTYPES = _BITWISE_DTYPES + _FLOAT_DTYPES
+
+# Binary arithmetic dtype unions, mirroring the manifest entries for
+# torch.add / torch.sub. fp8 is excluded because PyTorch does not define
+# add/sub for float8 storage; bool is excluded for sub because PyTorch
+# rejects bool subtraction.
+_BINARY_FULL_DTYPES = _BITWISE_DTYPES + (
+    torch.float16,
+    torch.bfloat16,
+    torch.float32,
+)
+_BINARY_NO_BOOL_DTYPES = tuple(
+    dt for dt in _BINARY_FULL_DTYPES if dt is not torch.bool
+)
 
 
 def _is_fp8(dtype: torch.dtype) -> bool:
     """Check if a torch dtype is an fp8 variant."""
     return dtype in _FP8_DTYPES
+
+
+def _strategy_npt(strategy: str, dtype: torch.dtype) -> int:
+    """Return the default num_per_thread for a strategy + dtype pair.
+
+    Strategy-aware heuristic (H200 benchmarks, issue 553):
+    - explicit_parallel: npt=4 for fp16/bf16 (42% bandwidth gain vs npt=8)
+    - register_copy: npt=8 for fp16/bf16 (vectorized 128-bit loads)
+    - fp32: npt=4 for all strategies (4 bytes x 4 = 128-bit alignment)
+    - fp8: handled separately by callers (npt=16)
+    """
+    if dtype == torch.float32:
+        return 4
+    # fp16 / bf16: strategy-dependent
+    if strategy == "explicit_parallel" and dtype in (torch.float16, torch.bfloat16):
+        return 4
+    return 8
 
 
 def _fp8_needs_nonsaturating_cast(dtype: torch.dtype) -> bool:
@@ -182,6 +219,47 @@ def _get_fp8_output_dtypes(dtype: torch.dtype):
     if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
         return dtype, torch.float16
     return None, dtype
+
+
+def _clamp_to_dtype_range(value, dtype: torch.dtype):
+    """Normalize *value* into the storage representation of *dtype*.
+
+    Mirrors PyTorch ``Tensor.masked_fill`` scalar coercion so the kernel
+    receives a literal that lands as the same bit pattern PyTorch would
+    write:
+
+    - bool: any non-zero coerces to ``1``, else ``0``.
+    - Signed int: truncate toward zero. The upstream validator
+      guarantees the value is in ``iinfo`` range; ``+/-Inf`` is mapped
+      to ``iinfo.max/min`` as defense-in-depth so a bypassed validator
+      cannot trigger ``OverflowError`` on ``int(inf)``.
+    - ``torch.uint8``: negatives in ``[-255, 0)`` wrap via
+      ``value & 0xFF`` (PyTorch ``masked_fill(mask, -1) -> 255``);
+      non-negatives truncate as for signed ints.
+    - ``fp16 / bf16 / fp32`` and ``fp8_e5m2`` (Inf-representable):
+      ``NaN`` and ``+/-Inf`` pass through; finite values clamp to
+      ``finfo``.
+    - ``fp8_e4m3fn`` (no Inf representation): ``+/-Inf`` saturates to
+      ``finfo.max/min`` to avoid a TVM ``FloatImm`` overflow.
+    """
+    if dtype == torch.bool:
+        return 1 if bool(value) else 0
+    if dtype in _BITWISE_DTYPES:
+        if isinstance(value, float) and math.isinf(value):
+            iinfo = torch.iinfo(dtype)
+            return iinfo.max if value > 0 else iinfo.min
+        if dtype == torch.uint8 and isinstance(value, int) and not isinstance(value, bool) and value < 0:
+            return value & 0xFF
+        return int(value)
+    fvalue = float(value)
+    if math.isnan(fvalue):
+        return fvalue
+    finfo = torch.finfo(dtype)
+    if math.isinf(fvalue):
+        if dtype in _FP8_DTYPES and not _fp8_needs_nonsaturating_cast(dtype):
+            return finfo.max if fvalue > 0 else finfo.min
+        return fvalue
+    return max(finfo.min, min(finfo.max, fvalue))
 
 
 def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
@@ -239,6 +317,7 @@ def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _make_unary_direct(N, dtype, op_func, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
@@ -257,6 +336,7 @@ def _make_unary_direct(N, dtype, op_func, output_dtype=None, threads=256):
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_unary_explicit(N, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 2: N elements per thread via T.Parallel(threads, npt)."""
     block_size = threads * num_per_thread
@@ -276,6 +356,7 @@ def _make_unary_explicit(N, dtype, op_func, output_dtype=None, threads=256, num_
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_unary_regcopy(N, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8):
     """Strategy 3: fragment load → compute → fragment store."""
     block_size = threads * num_per_thread
@@ -331,6 +412,7 @@ def _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
     )
 
 
+@functools.lru_cache(maxsize=32)
 def _make_binary_register_copy(
     N_total, dtype, op_func, output_dtype=None, threads=256, num_per_thread=8,
 ):
@@ -369,6 +451,7 @@ def _make_binary_register_copy(
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_binary_direct(
     N_total, dtype, op_func, coalesced_shape, a_strides, b_strides,
     a_numel, b_numel, output_dtype=None, threads=256,
@@ -421,6 +504,7 @@ def _make_binary_direct(
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_binary_explicit(
     N_total, dtype, op_func, coalesced_shape, a_strides, b_strides,
     a_numel, b_numel, output_dtype=None, threads=256, num_per_thread=8,
@@ -482,6 +566,7 @@ def _make_binary_explicit(
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=32)
 def _make_fused_gated_direct(M, N, dtype, op_func, threads=256, output_dtype=None):
     """FusedGated direct: 1 element per thread. x[:, :N] is gate, x[:, N:] is value.
 
@@ -511,6 +596,7 @@ def _make_fused_gated_direct(M, N, dtype, op_func, threads=256, output_dtype=Non
     return kernel
 
 
+@functools.lru_cache(maxsize=32)
 def _make_fused_gated_explicit(M, N, dtype, op_func, threads=256, num_per_thread=8,
                                output_dtype=None):
     """FusedGated explicit_parallel: N elements per thread.
@@ -649,7 +735,7 @@ class UnaryKernel(Kernel):
         if _is_fp8(self.dtype):
             # fp8: 1 byte per element, 16 elements = 128-bit alignment
             return {"threads": 256, "num_per_thread": 16}
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = _strategy_npt(self.strategy, self.dtype)
         return {"threads": 256, "num_per_thread": npt}
 
     @property
@@ -738,7 +824,7 @@ class BinaryKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     DEFAULT_STRATEGY = "explicit_parallel"
-    OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., "int8")
+    OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
 
     @staticmethod
@@ -761,6 +847,9 @@ class BinaryKernel(Kernel):
         self._fp8_output_dtype = None
         if _is_fp8(dtype) and self.OUTPUT_DTYPE is None and _fp8_needs_nonsaturating_cast(dtype):
             self._fp8_output_dtype = dtype
+            self.output_dtype = torch.float16
+        else:
+            self.output_dtype = self.OUTPUT_DTYPE or dtype
         self.coalesced_shape = coalesced_shape
         self.a_strides = a_strides
         self.b_strides = b_strides
@@ -769,7 +858,28 @@ class BinaryKernel(Kernel):
         self._same_shape = _is_contiguous_same_shape(
             coalesced_shape, a_strides, b_strides,
         )
-        if strategy is not None:
+        # Validate a caller-provided strategy up front so typos raise the
+        # same ValueError regardless of dtype (the bool override below
+        # otherwise silently accepts an unknown strategy for bool inputs).
+        if strategy is not None and strategy not in self.STRATEGIES:
+            raise ValueError(
+                f"Unknown strategy '{strategy}', expected one of {self.STRATEGIES}"
+            )
+        # torch.bool maps to TileLang ``boolx<N>`` for vectorised loads /
+        # stores, which the CUDA codegen cannot lower. Force the scalar
+        # ``direct`` strategy for bool inputs regardless of caller request.
+        bool_input = dtype == torch.bool
+        if bool_input:
+            if strategy is not None and strategy != "direct":
+                warnings.warn(
+                    f"BinaryKernel: dtype=torch.bool requires strategy="
+                    f"'direct' (TileLang cannot lower vectorised boolx<N> "
+                    f"loads); overriding requested strategy={strategy!r}.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            self.strategy = "direct"
+        elif strategy is not None:
             # register_copy requires same-shape contiguous inputs (no
             # broadcast); silently downgrade to explicit_parallel when
             # the caller requests register_copy on broadcast shapes.
@@ -805,7 +915,9 @@ class BinaryKernel(Kernel):
         cfg = self.default_config
         effective_op = self._get_effective_op_func()
         # For e5m2: kernel output is fp16 (non-saturating path)
-        kernel_output_dtype = self.OUTPUT_DTYPE
+        kernel_output_dtype = (
+            self.dtype_to_str(self.OUTPUT_DTYPE) if self.OUTPUT_DTYPE is not None else None
+        )
         if self._fp8_output_dtype is not None:
             kernel_output_dtype = _fp8_accum_dtype_str()
         if strategy == "direct":
@@ -836,7 +948,7 @@ class BinaryKernel(Kernel):
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
             return {"threads": 256, "num_per_thread": 16}
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = _strategy_npt(self.strategy, self.dtype)
         return {"threads": 256, "num_per_thread": npt}
 
     @property
@@ -945,6 +1057,9 @@ class FusedGatedKernel(Kernel):
         if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
             self._kernel_output_dtype = _fp8_accum_dtype_str()
             self._fp8_output_dtype = dtype
+            self.output_dtype = torch.float16
+        else:
+            self.output_dtype = dtype
         self.strategy = strategy or self.DEFAULT_STRATEGY
         if self.strategy not in self.STRATEGIES:
             raise ValueError(
@@ -988,7 +1103,7 @@ class FusedGatedKernel(Kernel):
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
             return {"threads": 256, "num_per_thread": 16}
-        npt = 4 if self.dtype == torch.float32 else 8
+        npt = _strategy_npt(self.strategy, self.dtype)
         return {"threads": 256, "num_per_thread": npt}
 
     @property
@@ -1079,7 +1194,7 @@ class LogicalUnaryKernel(UnaryKernel):
     OUTPUT_DTYPE = torch.bool
 
 
-class ReluKernel(FloatUnaryKernel):
+class ReluFwdKernel(FloatUnaryKernel):
     """ReLU: y = max(x, 0)."""
 
     @staticmethod
@@ -1087,31 +1202,137 @@ class ReluKernel(FloatUnaryKernel):
         return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
 
 
-class AddKernel(BinaryKernel):
-    """Element-wise addition: y = a + b."""
+class _AlphaScaledBinaryKernel(BinaryKernel):
+    """Shared base for ``y = a (op) alpha * b`` kernels.
+
+    Subclasses set ``_combine`` to either addition or subtraction. ``alpha``
+    is baked in at kernel construction time (one specialization per distinct
+    ``alpha`` value, matching the lru_cache key shape used by the binary
+    builders) so the kernel surface stays scalar-free.
+    """
+
+    @staticmethod
+    def _combine(a_scaled, b_scaled):
+        raise NotImplementedError
 
     @staticmethod
     def op_func(a, b):
-        return a + b
+        raise NotImplementedError(
+            "_AlphaScaledBinaryKernel uses a per-instance op_func built from "
+            "alpha; use the kernel via __init__ instead of calling op_func."
+        )
+
+    def __init__(
+        self, N_total, dtype, coalesced_shape, a_strides, b_strides,
+        a_numel, b_numel, strategy=None, config=None, tune=False, alpha=1,
+    ):
+        # PyTorch's torch.add / torch.sub reject a floating alpha when the
+        # input tensor is integral (or bool). Mirror that contract here so
+        # the kernel cannot silently truncate alpha through an fp32 cast.
+        # Out-of-range integer alphas are not rejected: PyTorch coerces the
+        # scalar via the input dtype, so values wrap silently (uint8
+        # alpha=-1 → 255; bool alpha=2 → True via low-bit). The kernel's
+        # T.cast(int(alpha), a.dtype) reproduces that wrap.
+        if dtype in _BITWISE_DTYPES and float(alpha) != float(int(alpha)):
+            raise ValueError(
+                "alpha must be an integer when input dtype is integral"
+            )
+        self._alpha = alpha
+        super().__init__(
+            N_total, dtype, coalesced_shape, a_strides, b_strides,
+            a_numel, b_numel, strategy=strategy, config=config, tune=tune,
+        )
+
+    def _alpha_op_func(self):
+        """Build a binary op_func with ``alpha`` baked in.
+
+        Floating inputs route the scalar multiply through fp32 to dodge
+        narrow-type literal issues for fp16 / bf16; integer/bool inputs
+        keep native integer arithmetic. Following PyTorch, the integral
+        alpha is coerced via the input dtype, so out-of-range values
+        wrap silently (uint8 alpha=-1 -> 255; bool alpha=2 -> low-bit).
+        """
+        alpha = self._alpha
+        combine = type(self)._combine
+
+        if alpha == 1:
+            # Identity multiplier: skip the scalar multiply so the kernel
+            # stays byte-identical to the pre-alpha fast path.
+            def op_func(a, b):
+                return combine(a, b)
+
+            return op_func
+
+        if self.dtype in _BITWISE_DTYPES:
+            # Native integer arithmetic. Coerce alpha into the input dtype's
+            # representable range in Python before T.cast: TVM rejects a
+            # negative literal cast to an unsigned dtype, so reproduce
+            # PyTorch's "scalar wraps via the input dtype" semantics here.
+            if self.dtype is torch.bool:
+                int_alpha = int(bool(alpha))
+            else:
+                info = torch.iinfo(self.dtype)
+                width = info.max - info.min + 1
+                int_alpha = int(alpha)
+                if int_alpha < info.min or int_alpha > info.max:
+                    int_alpha = ((int_alpha - info.min) % width) + info.min
+
+            def op_func(a, b):
+                scaled_b = T.cast(int_alpha, a.dtype) * b
+                return combine(a, scaled_b)
+
+            return op_func
+
+        def op_func(a, b):
+            scaled_b = T.cast(T.cast(alpha, "float32") * T.cast(b, "float32"), a.dtype)
+            return combine(a, scaled_b)
+
+        return op_func
+
+    def _get_effective_op_func(self):
+        """Inject the alpha-baked op_func into the parent build pipeline."""
+        op_func = self._alpha_op_func()
+        if self.OUTPUT_DTYPE is not None:
+            return op_func
+        return _wrap_fp8_accumulation(op_func, self.dtype, self.dtype_str, arity=2)
 
 
-class SubKernel(BinaryKernel):
-    """Element-wise subtraction: y = a - b."""
+class AddFwdKernel(_AlphaScaledBinaryKernel):
+    """Element-wise addition with scalar alpha: y = a + alpha * b."""
+
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
 
     @staticmethod
-    def op_func(a, b):
-        return a - b
+    def _combine(a, scaled_b):
+        return a + scaled_b
 
 
-class MulKernel(BinaryKernel):
-    """Element-wise multiplication: y = a * b."""
+class SubFwdKernel(_AlphaScaledBinaryKernel):
+    """Element-wise subtraction with scalar alpha: y = a - alpha * b."""
+
+    SUPPORTED_DTYPES = _BINARY_NO_BOOL_DTYPES
+
+    @staticmethod
+    def _combine(a, scaled_b):
+        return a - scaled_b
+
+
+class MulFwdKernel(BinaryKernel):
+    """Element-wise multiplication: y = a * b.
+
+    Supports the manifest dtype union (bool / unsigned / signed integer /
+    half / single precision floats). Bool multiplication is logical AND
+    (PyTorch semantics).
+    """
+
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
 
     @staticmethod
     def op_func(a, b):
         return a * b
 
 
-class DivKernel(BinaryKernel):
+class DivFwdKernel(BinaryKernel):
     """Element-wise division: y = a / b."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1121,7 +1342,26 @@ class DivKernel(BinaryKernel):
         return a / b
 
 
-class RemainderKernel(BinaryKernel):
+class DivTruncFwdKernel(BinaryKernel):
+    """Element-wise truncated division: y = trunc(a / b).
+
+    Matches ``torch.div(a, b, rounding_mode="trunc")`` semantics: rounds
+    the quotient toward zero. Division and ``trunc`` are computed in fp32
+    to avoid two sources of error: (1) ``htrunc`` is not available for
+    ``cutlass::half_t`` in CUDA, and (2) fp16 division rounds the
+    quotient before ``trunc`` sees it.
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @staticmethod
+    def op_func(a, b):
+        a_f32 = T.cast(a, "float32")
+        b_f32 = T.cast(b, "float32")
+        return T.Cast(a.dtype, T.trunc(a_f32 / b_f32))
+
+
+class RemainderFwdKernel(BinaryKernel):
     """Element-wise remainder: y = a - floor(a / b) * b.
 
     Matches PyTorch remainder semantics for floating-point inputs.
@@ -1145,7 +1385,7 @@ class RemainderKernel(BinaryKernel):
         return a - floored * b
 
 
-class PowKernel(BinaryKernel):
+class PowFwdKernel(BinaryKernel):
     """Element-wise power: y = a ** b."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1157,7 +1397,7 @@ class PowKernel(BinaryKernel):
         return T.Cast(a.dtype, T.pow(a_f32, b_f32))
 
 
-class FloorDivideKernel(BinaryKernel):
+class FloorDivideFwdKernel(BinaryKernel):
     """Element-wise floor division: y = floor(a / b).
 
     Division and floor are computed in fp32 to avoid two sources of error:
@@ -1175,7 +1415,7 @@ class FloorDivideKernel(BinaryKernel):
         return T.Cast(a.dtype, T.floor(a_f32 / b_f32))
 
 
-class LerpKernel(BinaryKernel):
+class LerpFwdKernel(BinaryKernel):
     """Element-wise lerp: y = a + weight * (b - a).
 
     PyTorch lerp is ternary (a, b, weight). Here weight is a compile-time
@@ -1214,7 +1454,9 @@ class LerpKernel(BinaryKernel):
         )
 
         # For e5m2: kernel output is fp16 (non-saturating path)
-        kernel_output_dtype = self.OUTPUT_DTYPE
+        kernel_output_dtype = (
+            self.dtype_to_str(self.OUTPUT_DTYPE) if self.OUTPUT_DTYPE is not None else None
+        )
         if self._fp8_output_dtype is not None:
             kernel_output_dtype = _fp8_accum_dtype_str()
 
@@ -1244,26 +1486,46 @@ class LerpKernel(BinaryKernel):
             raise ValueError(f"Unknown strategy: {strategy}")
 
 
-class MaximumKernel(BinaryKernel):
-    """Element-wise maximum: y = max(a, b) with NaN propagation.
+def _is_float_dtype_str(dtype_str: str) -> bool:
+    """Return True for floating-point TileLang dtype strings.
 
-    Matches torch.maximum semantics:
+    TileLang IR exposes operand dtypes only as strings (``"float16"``,
+    ``"bfloat16"``, ``"float32"``, ``"float8_e4m3fn"`` ...), so prefix
+    matching is the established convention for float detection inside
+    ``op_func`` kernel bodies. All TileLang float dtype names start
+    with ``"float"`` or ``"bfloat"``; integer / bool dtype names
+    (``"int*"``, ``"uint*"``, ``"bool"``) do not.
+    """
+    return dtype_str.startswith(("float", "bfloat"))
+
+
+class MaximumFwdKernel(BinaryKernel):
+    """Element-wise maximum: y = max(a, b).
+
+    For float dtypes, matches torch.maximum semantics:
     - If either operand is NaN, the result is NaN.
     - maximum(+0.0, -0.0) = +0.0 (IEEE 754 signed-zero).
 
-    Performance: uses T.max for the fast path (correct signed-zero on CUDA
-    -- fmaxf returns +0 for max(+0,-0)) plus two isnan guards for NaN
-    propagation. Total IR: 1 max + 2 fp32 casts + 2 isnan + 2 select.
+    For integer / bool dtypes (no NaN representation), uses ``T.max``
+    directly without the NaN guards.
+
+    Performance (float path): uses T.max for the fast path (correct
+    signed-zero on CUDA -- fmaxf returns +0 for max(+0,-0)) plus two
+    isnan guards for NaN propagation. Total IR: 1 max + 2 fp32 casts +
+    2 isnan + 2 select.
     """
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        # T.max handles signed-zero correctly (returns +0 for max(+0,-0))
-        # but does NOT propagate NaN -- it returns the non-NaN operand.
         result = T.max(a, b)
-        # NaN propagation: cast to fp32 for isnan (bfloat16 lacks native isnan).
+        if not _is_float_dtype_str(str(a.dtype)):
+            # Integer / bool: no NaN representation, T.max is sufficient.
+            return result
+        # Float path: T.max handles signed-zero correctly but does NOT
+        # propagate NaN -- it returns the non-NaN operand. Cast to fp32
+        # for isnan (bfloat16 lacks native isnan).
         a_is_nan = T.isnan(T.Cast("float32", a))
         b_is_nan = T.isnan(T.Cast("float32", b))
         result = T.if_then_else(b_is_nan, b, result)
@@ -1271,26 +1533,29 @@ class MaximumKernel(BinaryKernel):
         return result
 
 
-class MinimumKernel(BinaryKernel):
-    """Element-wise minimum: y = min(a, b) with NaN propagation.
+class MinimumFwdKernel(BinaryKernel):
+    """Element-wise minimum: y = min(a, b).
 
-    Matches torch.minimum semantics:
+    For float dtypes, matches torch.minimum semantics:
     - If either operand is NaN, the result is NaN.
     - minimum(-0.0, +0.0) = -0.0 (IEEE 754 signed-zero).
 
-    Performance: uses T.min for the fast path (correct signed-zero on CUDA
-    -- fminf returns -0 for min(-0,+0)) plus two isnan guards for NaN
-    propagation. See MaximumKernel for full rationale.
+    For integer / bool dtypes (no NaN representation), uses ``T.min``
+    directly without the NaN guards.
+
+    Performance (float path): uses T.min for the fast path (correct
+    signed-zero on CUDA -- fminf returns -0 for min(-0,+0)) plus two
+    isnan guards for NaN propagation. See MaximumFwdKernel for full
+    rationale.
     """
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        # T.min handles signed-zero correctly (returns -0 for min(+0,-0))
-        # but does NOT propagate NaN -- it returns the non-NaN operand.
         result = T.min(a, b)
-        # NaN propagation: cast to fp32 for isnan (bfloat16 lacks native isnan).
+        if not _is_float_dtype_str(str(a.dtype)):
+            return result
         a_is_nan = T.isnan(T.Cast("float32", a))
         b_is_nan = T.isnan(T.Cast("float32", b))
         result = T.if_then_else(b_is_nan, b, result)
@@ -1303,11 +1568,11 @@ class MinimumKernel(BinaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class EqKernel(BinaryKernel):
+class EqFwdKernel(BinaryKernel):
     """Element-wise equality: y = (a == b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1316,11 +1581,11 @@ class EqKernel(BinaryKernel):
         return T.if_then_else(a == b, one, zero)
 
 
-class NeKernel(BinaryKernel):
+class NeFwdKernel(BinaryKernel):
     """Element-wise not-equal: y = (a != b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1329,11 +1594,11 @@ class NeKernel(BinaryKernel):
         return T.if_then_else(a != b, one, zero)
 
 
-class GtKernel(BinaryKernel):
+class GtFwdKernel(BinaryKernel):
     """Element-wise greater-than: y = (a > b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1342,11 +1607,11 @@ class GtKernel(BinaryKernel):
         return T.if_then_else(a > b, one, zero)
 
 
-class LtKernel(BinaryKernel):
+class LtFwdKernel(BinaryKernel):
     """Element-wise less-than: y = (a < b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1355,11 +1620,11 @@ class LtKernel(BinaryKernel):
         return T.if_then_else(a < b, one, zero)
 
 
-class GeKernel(BinaryKernel):
+class GeFwdKernel(BinaryKernel):
     """Element-wise greater-equal: y = (a >= b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1368,11 +1633,11 @@ class GeKernel(BinaryKernel):
         return T.if_then_else(a >= b, one, zero)
 
 
-class LeKernel(BinaryKernel):
+class LeFwdKernel(BinaryKernel):
     """Element-wise less-equal: y = (a <= b), stored as int8 (1/0)."""
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-    OUTPUT_DTYPE = "int8"
+    SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1386,11 +1651,11 @@ class LeKernel(BinaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class LogicalAndKernel(BinaryKernel):
+class LogicalAndFwdKernel(BinaryKernel):
     """Element-wise logical AND with non-zero truthiness, stored as int8."""
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1401,11 +1666,11 @@ class LogicalAndKernel(BinaryKernel):
         return T.if_then_else(a_nonzero & b_nonzero, one, zero)
 
 
-class LogicalOrKernel(BinaryKernel):
+class LogicalOrFwdKernel(BinaryKernel):
     """Element-wise logical OR with non-zero truthiness, stored as int8."""
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
-    OUTPUT_DTYPE = "int8"
+    OUTPUT_DTYPE = torch.int8
 
     @staticmethod
     def op_func(a, b):
@@ -1421,7 +1686,7 @@ class LogicalOrKernel(BinaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class BitwiseAndKernel(BinaryKernel):
+class BitwiseAndFwdKernel(BinaryKernel):
     """Element-wise bitwise AND: y = a & b (integer inputs)."""
 
     SUPPORTED_DTYPES = _BITWISE_DTYPES
@@ -1431,7 +1696,7 @@ class BitwiseAndKernel(BinaryKernel):
         return a & b
 
 
-class BitwiseOrKernel(BinaryKernel):
+class BitwiseOrFwdKernel(BinaryKernel):
     """Element-wise bitwise OR: y = a | b (integer inputs)."""
 
     SUPPORTED_DTYPES = _BITWISE_DTYPES
@@ -1441,7 +1706,7 @@ class BitwiseOrKernel(BinaryKernel):
         return a | b
 
 
-class BitwiseXorKernel(BinaryKernel):
+class BitwiseXorFwdKernel(BinaryKernel):
     """Element-wise bitwise XOR: y = a ^ b (integer inputs)."""
 
     SUPPORTED_DTYPES = _BITWISE_DTYPES
@@ -1456,7 +1721,7 @@ class BitwiseXorKernel(BinaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class SiluAndMulKernel(FusedGatedKernel):
+class SiluAndMulFwdKernel(FusedGatedKernel):
     """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -1466,7 +1731,7 @@ class SiluAndMulKernel(FusedGatedKernel):
         return x * T.sigmoid(x)
 
 
-class GeluAndMulKernel(FusedGatedKernel):
+class GeluAndMulFwdKernel(FusedGatedKernel):
     """GELU-and-Mul: y = gelu(gate) * value.
 
     Uses exact GELU: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
@@ -1485,7 +1750,7 @@ class GeluAndMulKernel(FusedGatedKernel):
         return x * half * (one + erf_val)
 
 
-class GeluTanhAndMulKernel(FusedGatedKernel):
+class GeluTanhAndMulFwdKernel(FusedGatedKernel):
     """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value.
 
     Uses tanh approximation: gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
@@ -1510,7 +1775,7 @@ class GeluTanhAndMulKernel(FusedGatedKernel):
 # ---------------------------------------------------------------------------
 
 
-class ExpKernel(FloatUnaryKernel):
+class ExpFwdKernel(FloatUnaryKernel):
     """Element-wise exp(x)."""
 
     @staticmethod
@@ -1518,7 +1783,7 @@ class ExpKernel(FloatUnaryKernel):
         return T.exp(T.cast(x, "float32"))
 
 
-class LogKernel(FloatUnaryKernel):
+class LogFwdKernel(FloatUnaryKernel):
     """Element-wise log(x)."""
 
     @staticmethod
@@ -1526,7 +1791,7 @@ class LogKernel(FloatUnaryKernel):
         return T.log(T.cast(x, "float32"))
 
 
-class SqrtKernel(FloatUnaryKernel):
+class SqrtFwdKernel(FloatUnaryKernel):
     """Element-wise sqrt(x)."""
 
     @staticmethod
@@ -1534,7 +1799,7 @@ class SqrtKernel(FloatUnaryKernel):
         return T.sqrt(T.cast(x, "float32"))
 
 
-class RsqrtKernel(FloatUnaryKernel):
+class RsqrtFwdKernel(FloatUnaryKernel):
     """Element-wise 1/sqrt(x)."""
 
     @staticmethod
@@ -1542,7 +1807,7 @@ class RsqrtKernel(FloatUnaryKernel):
         return T.rsqrt(T.cast(x, "float32"))
 
 
-class AbsKernel(FloatUnaryKernel):
+class AbsFwdKernel(FloatUnaryKernel):
     """Element-wise |x|."""
 
     @staticmethod
@@ -1550,7 +1815,7 @@ class AbsKernel(FloatUnaryKernel):
         return T.abs(x)
 
 
-class NegKernel(FloatUnaryKernel):
+class NegFwdKernel(FloatUnaryKernel):
     """Element-wise -x."""
 
     @staticmethod
@@ -1558,7 +1823,7 @@ class NegKernel(FloatUnaryKernel):
         return -x
 
 
-class ReciprocalKernel(FloatUnaryKernel):
+class ReciprocalFwdKernel(FloatUnaryKernel):
     """Element-wise 1/x."""
 
     @staticmethod
@@ -1566,7 +1831,7 @@ class ReciprocalKernel(FloatUnaryKernel):
         return T.cast(1.0, "float32") / x
 
 
-class SignKernel(FloatUnaryKernel):
+class SignFwdKernel(FloatUnaryKernel):
     """Element-wise sign(x): -1, 0, or +1."""
 
     @staticmethod
@@ -1581,7 +1846,7 @@ class SignKernel(FloatUnaryKernel):
         )
 
 
-class SinKernel(FloatUnaryKernel):
+class SinFwdKernel(FloatUnaryKernel):
     """Element-wise sin(x)."""
 
     @staticmethod
@@ -1589,7 +1854,7 @@ class SinKernel(FloatUnaryKernel):
         return T.sin(T.cast(x, "float32"))
 
 
-class CosKernel(FloatUnaryKernel):
+class CosFwdKernel(FloatUnaryKernel):
     """Element-wise cos(x)."""
 
     @staticmethod
@@ -1597,7 +1862,7 @@ class CosKernel(FloatUnaryKernel):
         return T.cos(T.cast(x, "float32"))
 
 
-class FloorKernel(FloatUnaryKernel):
+class FloorFwdKernel(FloatUnaryKernel):
     """Element-wise floor(x).
 
     Casts to fp32 before calling ``T.floor`` because ``hfloor`` is not
@@ -1609,7 +1874,7 @@ class FloorKernel(FloatUnaryKernel):
         return T.floor(T.cast(x, "float32"))
 
 
-class CeilKernel(FloatUnaryKernel):
+class CeilFwdKernel(FloatUnaryKernel):
     """Element-wise ceil(x).
 
     Casts to fp32 before calling ``T.ceil`` because ``hceil`` is not
@@ -1621,7 +1886,7 @@ class CeilKernel(FloatUnaryKernel):
         return T.ceil(T.cast(x, "float32"))
 
 
-class RoundKernel(FloatUnaryKernel):
+class RoundFwdKernel(FloatUnaryKernel):
     """Element-wise round(x) with banker's rounding (round-to-nearest-even).
 
     Uses ``T.nearbyint`` (maps to ``nearbyintf`` in CUDA) to match
@@ -1634,7 +1899,7 @@ class RoundKernel(FloatUnaryKernel):
         return T.nearbyint(T.cast(x, "float32"))
 
 
-class TruncKernel(FloatUnaryKernel):
+class TruncFwdKernel(FloatUnaryKernel):
     """Element-wise trunc(x) -- integer part toward zero.
 
     Casts to fp32 before calling ``T.trunc`` because ``htrunc`` is not
@@ -1646,7 +1911,7 @@ class TruncKernel(FloatUnaryKernel):
         return T.trunc(T.cast(x, "float32"))
 
 
-class ErfKernel(FloatUnaryKernel):
+class ErfFwdKernel(FloatUnaryKernel):
     """Element-wise erf(x).
 
     Casts to fp32 before calling ``T.erf`` because the half-precision
@@ -1658,7 +1923,7 @@ class ErfKernel(FloatUnaryKernel):
         return T.erf(T.cast(x, "float32"))
 
 
-class Log1pKernel(FloatUnaryKernel):
+class Log1pFwdKernel(FloatUnaryKernel):
     """Element-wise log(1 + x).
 
     Uses composite ``log(1 + x)`` because ``T.log1p`` is not lowered
@@ -1670,7 +1935,7 @@ class Log1pKernel(FloatUnaryKernel):
         return T.log(T.cast(1.0, "float32") + x)
 
 
-class Expm1Kernel(FloatUnaryKernel):
+class Expm1FwdKernel(FloatUnaryKernel):
     """Element-wise exp(x) - 1."""
 
     @staticmethod
@@ -1679,11 +1944,11 @@ class Expm1Kernel(FloatUnaryKernel):
 
 
 # ---------------------------------------------------------------------------
-# Concrete unary kernel subclasses -- activations (8)
+# Concrete unary kernel subclasses -- activations (9)
 # ---------------------------------------------------------------------------
 
 
-class GeluKernel(FloatUnaryKernel):
+class GeluFwdKernel(FloatUnaryKernel):
     """Element-wise GELU using the standard erf formulation."""
 
     @staticmethod
@@ -1694,7 +1959,25 @@ class GeluKernel(FloatUnaryKernel):
         return half * x * (one + T.erf(T.cast(x, "float32") * inv_sqrt_2))
 
 
-class SiluKernel(FloatUnaryKernel):
+class GeluTanhFwdKernel(FloatUnaryKernel):
+    """Element-wise GELU using the tanh approximation.
+
+    Computes ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``,
+    matching ``torch.nn.functional.gelu(x, approximate='tanh')``.
+    """
+
+    @staticmethod
+    def op_func(x):
+        sqrt_2_over_pi = T.cast(0.7978845608028654, "float32")
+        coeff = T.cast(0.044715, "float32")
+        half = T.cast(0.5, "float32")
+        one = T.cast(1.0, "float32")
+        x_f32 = T.cast(x, "float32")
+        inner = sqrt_2_over_pi * (x_f32 + coeff * x_f32 * x_f32 * x_f32)
+        return half * x_f32 * (one + T.tanh(inner))
+
+
+class SiluFwdKernel(FloatUnaryKernel):
     """Element-wise SiLU (Swish): x * sigmoid(x)."""
 
     @staticmethod
@@ -1702,7 +1985,7 @@ class SiluKernel(FloatUnaryKernel):
         return x * T.sigmoid(x)
 
 
-class SigmoidKernel(FloatUnaryKernel):
+class SigmoidFwdKernel(FloatUnaryKernel):
     """Element-wise sigmoid(x)."""
 
     @staticmethod
@@ -1710,7 +1993,7 @@ class SigmoidKernel(FloatUnaryKernel):
         return T.sigmoid(x)
 
 
-class TanhKernel(FloatUnaryKernel):
+class TanhFwdKernel(FloatUnaryKernel):
     """Element-wise tanh(x)."""
 
     @staticmethod
@@ -1718,7 +2001,7 @@ class TanhKernel(FloatUnaryKernel):
         return T.tanh(T.cast(x, "float32"))
 
 
-class HardswishKernel(FloatUnaryKernel):
+class HardswishFwdKernel(FloatUnaryKernel):
     """Element-wise HardSwish: x * clamp(x + 3, 0, 6) / 6."""
 
     @staticmethod
@@ -1730,7 +2013,7 @@ class HardswishKernel(FloatUnaryKernel):
         return x * clamped / six
 
 
-class HardsigmoidKernel(FloatUnaryKernel):
+class HardsigmoidFwdKernel(FloatUnaryKernel):
     """Element-wise HardSigmoid: clamp(x + 3, 0, 6) / 6."""
 
     @staticmethod
@@ -1741,7 +2024,7 @@ class HardsigmoidKernel(FloatUnaryKernel):
         return T.min(T.max(x + three, zero), six) / six
 
 
-class MishKernel(FloatUnaryKernel):
+class MishFwdKernel(FloatUnaryKernel):
     """Element-wise Mish: x * tanh(softplus(x)) = x * tanh(log(1 + exp(x)))."""
 
     @staticmethod
@@ -1750,7 +2033,7 @@ class MishKernel(FloatUnaryKernel):
         return x * T.tanh(T.log(one + T.exp(x)))
 
 
-class SeluKernel(FloatUnaryKernel):
+class SeluFwdKernel(FloatUnaryKernel):
     """Element-wise SELU: scale * (max(0,x) + min(0, alpha*(exp(x)-1))).
 
     alpha = 1.6732632423543772, scale = 1.0507009873554805
@@ -1771,7 +2054,7 @@ class SeluKernel(FloatUnaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class LogicalNotKernel(LogicalUnaryKernel):
+class LogicalNotFwdKernel(LogicalUnaryKernel):
     """Element-wise logical NOT with torch-style bool output."""
 
     @staticmethod
@@ -1779,7 +2062,7 @@ class LogicalNotKernel(LogicalUnaryKernel):
         return x == T.cast(0, x.dtype)
 
 
-class BitwiseNotKernel(UnaryKernel):
+class BitwiseNotFwdKernel(UnaryKernel):
     """Element-wise bitwise NOT (~x) for bool/integer inputs.
 
     Uses XOR with ``-1`` (all-ones) because ``T.bitwise_not`` fails on
@@ -1803,7 +2086,7 @@ class BitwiseNotKernel(UnaryKernel):
 # ---------------------------------------------------------------------------
 
 
-class IsnanKernel(FloatPredicateKernel):
+class IsnanFwdKernel(FloatPredicateKernel):
     """Element-wise isnan with torch-style bool output."""
 
     @staticmethod
@@ -1811,7 +2094,7 @@ class IsnanKernel(FloatPredicateKernel):
         return T.isnan(T.cast(x, "float32"))
 
 
-class IsinfKernel(FloatPredicateKernel):
+class IsinfFwdKernel(FloatPredicateKernel):
     """Element-wise isinf with torch-style bool output."""
 
     @staticmethod
@@ -1819,7 +2102,7 @@ class IsinfKernel(FloatPredicateKernel):
         return T.isinf(T.cast(x, "float32"))
 
 
-class IsfiniteKernel(FloatPredicateKernel):
+class IsfiniteFwdKernel(FloatPredicateKernel):
     """Element-wise isfinite with torch-style bool output."""
 
     @staticmethod
@@ -1832,6 +2115,111 @@ class IsfiniteKernel(FloatPredicateKernel):
 # ---------------------------------------------------------------------------
 
 
+class ParametricUnaryKernel(Kernel):
+    """Shared base for independent parametric elementwise kernels.
+
+    Subclasses must define:
+    - ``_builder_fn``: a ``@staticmethod`` returning the ``@lru_cache``-d
+      builder function (e.g. ``_make_leaky_relu_kernel``).
+    - ``_builder_args(self) -> tuple``: positional args for the builder
+      *between* ``N_total`` and the common ``output_dtype, is_fp8, threads,
+      npt`` suffix.
+
+    Optional overrides:
+    - ``_DEFAULT_THREADS``: class-level default thread count (default 256).
+    - ``_NPT_FP8``: npt when dtype is fp8 but not fp32 (default 16).
+    - ``_NPT_NON_FP32``: npt for non-fp32, non-fp8 (default 8).
+    - ``_skip_fp8_output``: set to ``True`` if the kernel should *not*
+      use ``_get_fp8_output_dtypes`` (e.g. Where, which is a pure selection
+      op). When True, ``_fp8_output_dtype`` is ``None``.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    _DEFAULT_THREADS: int = 256
+    _NPT_FP8: int = 16
+    _NPT_NON_FP32: int = 8
+    _skip_fp8_output: bool = False
+
+    def __init__(self, N_total, dtype, config=None, tune=False):
+        super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
+        self.N_total = N_total
+        self.dtype = dtype
+        # fp8 output handling
+        if self._skip_fp8_output:
+            self._fp8_output_dtype = None
+        else:
+            self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
+        # Post-fp8 parameter processing (e.g. clamping scalars to output dtype range)
+        self._post_init_params()
+        # Build the kernel via the subclass-provided builder
+        cfg = self.default_config
+        builder_kwargs = {
+            "is_fp8": _is_fp8(dtype),
+            "threads": cfg["threads"],
+            "npt": cfg["num_per_thread"],
+        }
+        if not self._skip_fp8_output:
+            builder_kwargs["output_dtype"] = self.dtype_to_str(self.output_dtype)
+        self.kernel = self._builder_fn()(
+            *self._builder_positional_args(), **builder_kwargs,
+        )
+        self.init_config(config, tune)
+
+    @staticmethod
+    def _builder_fn():
+        """Return the @lru_cache builder function for this kernel."""
+        raise NotImplementedError
+
+    def _builder_positional_args(self) -> tuple:
+        """Return all positional args for the builder function.
+
+        Default: ``(N_total, dtype_str, *_builder_args())``.
+        Override if the builder has a different parameter order (e.g. PReLU).
+        """
+        return (self.N_total, self.dtype_str, *self._builder_args())
+
+    def _builder_args(self) -> tuple:
+        """Return op-specific positional args (after N_total, dtype_str)."""
+        return ()
+
+    def _post_init_params(self):
+        """Hook called after fp8 output dtypes are set, before kernel build.
+
+        Override to clamp scalar parameters to the output dtype range (e.g.
+        MaskedFill, NanToNum).
+        """
+
+    @property
+    def default_config(self):
+        if self.dtype == torch.float32:
+            npt = 4
+        elif _is_fp8(self.dtype):
+            npt = self._NPT_FP8
+        else:
+            npt = self._NPT_NON_FP32
+        return {"threads": self._DEFAULT_THREADS, "num_per_thread": npt}
+
+    def init_config(self, config=None, tune=False):
+        """Override to cache the compiled kernel function after config is set."""
+        super().init_config(config, tune)
+        cfg = self.config
+        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+
+    def forward(self, x):
+        result = self._compiled_fn(x)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
+
+
+@functools.lru_cache(maxsize=32)
 def _make_leaky_relu_kernel(N, dtype, negative_slope, output_dtype=None,
                             is_fp8=False, threads=256, npt=8):
     """Build leaky_relu kernel: y = x if x > 0 else negative_slope * x.
@@ -1886,245 +2274,243 @@ def _make_leaky_relu_kernel(N, dtype, negative_slope, output_dtype=None,
     return kernel
 
 
-class LeakyReluKernel(Kernel):
+class LeakyReluFwdKernel(ParametricUnaryKernel):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-
     def __init__(self, N_total, dtype, negative_slope=0.01, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
         self.negative_slope = negative_slope
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_leaky_relu_kernel(
-            N_total, self.dtype_str, negative_slope,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
-        return {"threads": 256, "num_per_thread": npt}
+    @staticmethod
+    def _builder_fn():
+        return _make_leaky_relu_kernel
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
-
-    def forward(self, x):
-        return self._compiled_fn(x)
+    def _builder_args(self):
+        return (self.negative_slope,)
 
 
-def _make_elu_kernel(N, dtype, alpha, output_dtype=None, threads=256, npt=8):
-    """Build ELU kernel: y = x if x > 0 else alpha * (exp(x) - 1)."""
+@functools.lru_cache(maxsize=32)
+def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False,
+                     threads=256, npt=8):
+    """Build ELU kernel: y = x if x > 0 else alpha * (exp(x) - 1).
+
+    For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
+    -> fragment store for coalesced memory access.
+
+    For fp8 dtypes, uses explicit_parallel with fp16 accumulation
+    (register_copy is unreliable for 8-bit fragments).
+    """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
-    @tilelang.jit(out_idx=[1])
-    def kernel(threads_arg, npt_arg):
-        @T.prim_func
-        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    if idx < N:
-                        val = x[idx]
+    if is_fp8:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            val = x[idx]
+                            zero = T.cast(0, "float32")
+                            a = T.cast(alpha, "float32")
+                            one = T.cast(1.0, "float32")
+                            v32 = T.cast(val, "float32")
+                            y[idx] = T.if_then_else(v32 > zero, T.Cast(out_dtype, v32), T.Cast(out_dtype, a * (T.exp(v32) - one)))
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        val = x_reg[i * npt_arg + j]
                         zero = T.cast(0, "float32")
                         a = T.cast(alpha, "float32")
                         one = T.cast(1.0, "float32")
                         v32 = T.cast(val, "float32")
-                        y[idx] = T.if_then_else(v32 > zero, T.Cast(out_dtype, v32), T.Cast(out_dtype, a * (T.exp(v32) - one)))
+                        y_reg[i * npt_arg + j] = T.if_then_else(
+                            v32 > zero, val, T.Cast(val.dtype, a * (T.exp(v32) - one)),
+                        )
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
-        return main
+            return main
 
     return kernel
 
 
-class EluKernel(Kernel):
+class EluFwdKernel(ParametricUnaryKernel):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-
     def __init__(self, N_total, dtype, alpha=1.0, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
         self.alpha = alpha
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_elu_kernel(
-            N_total, self.dtype_str, alpha,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 256, "num_per_thread": npt}
+    @staticmethod
+    def _builder_fn():
+        return _make_elu_kernel
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
-
-    def forward(self, x):
-        return self._compiled_fn(x)
+    def _builder_args(self):
+        return (self.alpha,)
 
 
-def _make_hardtanh_kernel(N, dtype, min_val, max_val, output_dtype=None, threads=256, npt=8):
-    """Build hardtanh kernel: y = clamp(x, min_val, max_val)."""
+@functools.lru_cache(maxsize=32)
+def _make_hardtanh_kernel(N, dtype, min_val, max_val, output_dtype=None,
+                          is_fp8=False, threads=256, npt=8):
+    """Build hardtanh kernel: y = clamp(x, min_val, max_val).
+
+    For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
+    -> fragment store for coalesced memory access.
+
+    For fp8 dtypes, uses explicit_parallel with fp16 accumulation
+    (register_copy is unreliable for 8-bit fragments).
+    """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
-    @tilelang.jit(out_idx=[1])
-    def kernel(threads_arg, npt_arg):
-        @T.prim_func
-        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    if idx < N:
-                        val = x[idx]
+    if is_fp8:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            val = x[idx]
+                            lo = T.cast(min_val, "float32")
+                            hi = T.cast(max_val, "float32")
+                            v32 = T.cast(val, "float32")
+                            y[idx] = T.Cast(out_dtype, T.min(T.max(v32, lo), hi))
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        val = x_reg[i * npt_arg + j]
                         lo = T.cast(min_val, "float32")
                         hi = T.cast(max_val, "float32")
                         v32 = T.cast(val, "float32")
-                        y[idx] = T.Cast(out_dtype, T.min(T.max(v32, lo), hi))
+                        y_reg[i * npt_arg + j] = T.Cast(val.dtype, T.min(T.max(v32, lo), hi))
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
-        return main
+            return main
 
     return kernel
 
 
-class HardtanhKernel(Kernel):
+class HardtanhFwdKernel(ParametricUnaryKernel):
     """Hardtanh: y = clamp(x, min_val, max_val)."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-
     def __init__(self, N_total, dtype, min_val=-1.0, max_val=1.0, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
         self.min_val = min_val
         self.max_val = max_val
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_hardtanh_kernel(
-            N_total, self.dtype_str, min_val, max_val,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 256, "num_per_thread": npt}
+    @staticmethod
+    def _builder_fn():
+        return _make_hardtanh_kernel
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
-
-    def forward(self, x):
-        return self._compiled_fn(x)
+    def _builder_args(self):
+        return (self.min_val, self.max_val)
 
 
-def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None, threads=256, npt=8):
-    """Build softplus kernel: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
+@functools.lru_cache(maxsize=32)
+def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None,
+                          is_fp8=False, threads=256, npt=8):
+    """Build softplus kernel: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
+
+    For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
+    -> fragment store for coalesced memory access.
+
+    For fp8 dtypes, uses explicit_parallel with fp16 accumulation
+    (register_copy is unreliable for 8-bit fragments).
+    """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
-    @tilelang.jit(out_idx=[1])
-    def kernel(threads_arg, npt_arg):
-        @T.prim_func
-        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    if idx < N:
-                        val = x[idx]
+    if is_fp8:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            val = x[idx]
+                            v32 = T.cast(val, "float32")
+                            b = T.cast(beta, "float32")
+                            t = T.cast(threshold, "float32")
+                            one = T.cast(1.0, "float32")
+                            scaled = v32 * b
+                            sp = T.log(one + T.exp(scaled)) / b
+                            y[idx] = T.if_then_else(scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp))
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        val = x_reg[i * npt_arg + j]
                         v32 = T.cast(val, "float32")
                         b = T.cast(beta, "float32")
                         t = T.cast(threshold, "float32")
                         one = T.cast(1.0, "float32")
                         scaled = v32 * b
                         sp = T.log(one + T.exp(scaled)) / b
-                        y[idx] = T.if_then_else(scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp))
+                        y_reg[i * npt_arg + j] = T.if_then_else(
+                            scaled > t, val, T.Cast(val.dtype, sp),
+                        )
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
-        return main
+            return main
 
     return kernel
 
 
-class SoftplusKernel(Kernel):
+class SoftplusFwdKernel(ParametricUnaryKernel):
     """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-
     def __init__(self, N_total, dtype, beta=1.0, threshold=20.0, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
         self.beta = beta
         self.threshold = threshold
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_softplus_kernel(
-            N_total, self.dtype_str, beta, threshold,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 256, "num_per_thread": npt}
+    @staticmethod
+    def _builder_fn():
+        return _make_softplus_kernel
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
-
-    def forward(self, x):
-        return self._compiled_fn(x)
+    def _builder_args(self):
+        return (self.beta, self.threshold)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
                        is_fp8=False, threads=256, npt=8):
     """Build PReLU kernel: y = x if x > 0 else weight[channel] * x.
@@ -2196,63 +2582,26 @@ def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
     return kernel
 
 
-class PreluKernel(Kernel):
-    """PReLU: y = x if x > 0 else weight[channel] * x.
-
-    Channel index follows PyTorch convention: channels live at
-    dimension 1 (or dimension 0 for 1-D inputs). The ``inner_size``
-    parameter is the product of all dimensions after the channel
-    dimension.
-
-    Args:
-        N_total: Total number of elements (flattened).
-        C: Number of channels (weight length).
-        inner_size: Product of dimensions after the channel dim.
-        dtype: Torch dtype.
-        config: Optional config dict.
-        tune: Whether to autotune.
-    """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+class PreluFwdKernel(ParametricUnaryKernel):
+    """PReLU: y = x if x > 0 else weight[channel] * x."""
 
     def __init__(self, N_total, C, inner_size, dtype, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
         self.C = C
         self.inner_size = inner_size
-        self.dtype = dtype
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_prelu_kernel(
-            N_total, C, inner_size, self.dtype_str,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
-        return {"threads": 256, "num_per_thread": npt}
+    @staticmethod
+    def _builder_fn():
+        return _make_prelu_kernel
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+    def _builder_positional_args(self):
+        return (self.N_total, self.C, self.inner_size, self.dtype_str)
 
     def forward(self, x, weight):
         return self._compiled_fn(x, weight)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
     """Build where kernel: out = cond ? x : y.
 
@@ -2320,138 +2669,426 @@ def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
     return kernel
 
 
-class WhereKernel(Kernel):
-    """Where: out = cond ? x : y.
+class WhereFwdKernel(ParametricUnaryKernel):
+    """Where: out = cond ? x : y."""
 
-    Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype for x and y.
-        config: Optional config dict.
-        tune: Whether to autotune.
-    """
+    _DEFAULT_THREADS = 512
+    _skip_fp8_output = True
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-
-    def __init__(self, N_total, dtype, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
-        # Where is a pure selection op (out = cond ? x : y): no arithmetic,
-        # no type conversion needed.  _fp8_output_dtype is explicitly None
-        # so _apply_fp8_post_cast is a no-op.
-        self._fp8_output_dtype = None
-        cfg = self.default_config
-        self.kernel = _make_where_kernel(
-            N_total, self.dtype_str, is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
-
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 512, "num_per_thread": npt}
-
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+    @staticmethod
+    def _builder_fn():
+        return _make_where_kernel
 
     def forward(self, cond, x, y):
         return self._compiled_fn(cond, x, y)
 
 
-def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val,
-                       output_dtype=None, threads=256, npt=8):
-    """Build clamp kernel: y = clamp(x, min_val, max_val) with optional bounds."""
+@functools.lru_cache(maxsize=32)
+def _make_lerp_tensor_kernel(N, dtype, output_dtype=None, is_fp8=False,
+                             threads=256, npt=8):
+    """Build Tensor-weight lerp kernel: out = a + weight * (b - a).
+
+    The Op layer pre-broadcasts ``input`` / ``end`` / ``weight`` to the
+    flat output shape so the kernel sees three contiguous 1-D tensors of
+    size ``N``. Computation is performed in the input dtype for fp16 /
+    bfloat16 / float32 (the only dtypes the manifest declares); the fp8
+    path is unreachable here because the kernel's ``SUPPORTED_DTYPES``
+    excludes fp8.
+
+    Uses the register-fragment load -> compute -> fragment store strategy
+    (matches the non-fp8 ``_make_where_kernel`` layout) so all three
+    inputs and the output share the same vectorized memory access path.
+    """
+    del is_fp8  # fp8 is not in the manifest contract for this op
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
-        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
+        def main(
+            a: T.Tensor((N,), dtype),
+            b: T.Tensor((N,), dtype),
+            w: T.Tensor((N,), dtype),
+            out: T.Tensor((N,), out_dtype),
+        ):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                a_reg = T.alloc_fragment((block_size,), dtype)
+                b_reg = T.alloc_fragment((block_size,), dtype)
+                w_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(a[bx * block_size : (bx + 1) * block_size], a_reg)
+                T.copy(b[bx * block_size : (bx + 1) * block_size], b_reg)
+                T.copy(w[bx * block_size : (bx + 1) * block_size], w_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
-                    idx = (bx * threads_arg + i) * npt_arg + j
-                    if idx < N:
-                        v32 = T.cast(x[idx], "float32")
-                        if has_min:
-                            lo = T.cast(min_val, "float32")
-                            v32 = T.max(v32, lo)
-                        if has_max:
-                            hi = T.cast(max_val, "float32")
-                            v32 = T.min(v32, hi)
-                        y[idx] = T.Cast(out_dtype, v32)
+                    k = i * npt_arg + j
+                    a_reg[k] = a_reg[k] + w_reg[k] * (b_reg[k] - a_reg[k])
+                T.copy(a_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
 
     return kernel
 
 
-class ClampKernel(Kernel):
-    """Clamp: y = clamp(x, min, max) with optional bounds.
+class LerpTensorFwdKernel(ParametricUnaryKernel):
+    """Tensor-weight lerp: out = input + weight * (end - input).
 
-    Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
-        min_val: Lower bound (None = no lower bound).
-        max_val: Upper bound (None = no upper bound).
-        config: Optional config dict.
-        tune: Whether to autotune.
+    Implements the Tensor-weight overload of ``torch.lerp`` —
+    ``torch.lerp(input, end, weight: Tensor)`` — where all three operands
+    are float tensors of the same dtype broadcast together by the Op
+    layer to a flat ``N``-element view.
+
+    Manifest declares ``float16 | bfloat16 | float32``; fp8 is rejected
+    at construction. The Op layer is responsible for broadcasting the
+    three inputs to ``N_total`` before dispatch.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+    _DEFAULT_THREADS = 512
+    _skip_fp8_output = True
 
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    @staticmethod
+    def _builder_fn():
+        return _make_lerp_tensor_kernel
+
+    def forward(self, a, b, w):
+        return self._compiled_fn(a, b, w)
+
+
+@functools.lru_cache(maxsize=32)
+def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val,
+                       output_dtype=None, is_fp8=False, threads=256, npt=8):
+    """Build clamp kernel: y = clamp(x, min_val, max_val) with optional bounds.
+
+    For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
+    -> fragment store for coalesced memory access.  Computes in fp32 then
+    casts back to preserve precision.
+
+    For fp8 dtypes, uses explicit_parallel with fp16 accumulation
+    (register_copy is unreliable for 8-bit fragments).
+    """
+    out_dtype = output_dtype or dtype
+    block_size = threads * npt
+
+    if is_fp8:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            v32 = T.cast(x[idx], "float32")
+                            if has_min:
+                                lo = T.cast(min_val, "float32")
+                                v32 = T.max(v32, lo)
+                            if has_max:
+                                hi = T.cast(max_val, "float32")
+                                v32 = T.min(v32, hi)
+                            y[idx] = T.Cast(out_dtype, v32)
+
+            return main
+    else:
+
+        @tilelang.jit(out_idx=[1])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    y_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        val = x_reg[i * npt_arg + j]
+                        v32 = T.cast(val, "float32")
+                        if has_min:
+                            lo = T.cast(min_val, "float32")
+                            v32 = T.max(v32, lo)
+                        if has_max:
+                            hi = T.cast(max_val, "float32")
+                            v32 = T.min(v32, hi)
+                        y_reg[i * npt_arg + j] = T.Cast(val.dtype, v32)
+                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
+
+    return kernel
+
+
+class ClampFwdKernel(ParametricUnaryKernel):
+    """Clamp: y = clamp(x, min, max) with optional bounds."""
 
     def __init__(self, N_total, dtype, min_val=None, max_val=None, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
         self.min_val = min_val
         self.max_val = max_val
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_clamp_kernel(
-            N_total, self.dtype_str,
-            has_min=min_val is not None,
-            has_max=max_val is not None,
-            min_val=min_val if min_val is not None else 0.0,
-            max_val=max_val if max_val is not None else 0.0,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
+        super().__init__(N_total, dtype, config=config, tune=tune)
+
+    @staticmethod
+    def _builder_fn():
+        return _make_clamp_kernel
+
+    def _builder_args(self):
+        return (
+            self.min_val is not None,
+            self.max_val is not None,
+            self.min_val if self.min_val is not None else 0.0,
+            self.max_val if self.max_val is not None else 0.0,
         )
-        self.init_config(config, tune)
-
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 256, "num_per_thread": npt}
-
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
-
-    def forward(self, x):
-        return self._compiled_fn(x)
 
 
+@functools.lru_cache(maxsize=32)
+def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
+                              output_dtype=None, is_fp8=False,
+                              threads=256, npt=8):
+    """Build Tensor-bound clamp kernel.
+
+    Inputs (all flat, length N, pre-broadcast/expanded by the Op layer):
+        x: data tensor.
+        lo: lower-bound tensor (only present when ``has_min``).
+        hi: upper-bound tensor (only present when ``has_max``).
+
+    Output:
+        y: clamp result, same dtype as ``output_dtype`` (or ``dtype``).
+
+    For fp8 the cast/compute uses fp32 to preserve precision; for non-fp8
+    the kernel uses register_copy with fp32 accumulation.
+
+    NaN semantics: matches ``torch.clamp`` / ``torch.clamp_min`` /
+    ``torch.clamp_max``. If ``x``, ``lo``, or ``hi`` is NaN at a position,
+    the output at that position is NaN. ``T.max`` / ``T.min`` on CUDA do
+    not propagate NaN by themselves (they return the non-NaN operand), so
+    we add explicit ``isnan`` guards in fp32 -- mirroring the pattern used
+    by ``MaximumFwdKernel`` / ``MinimumFwdKernel``.
+    """
+    if not (has_min or has_max):
+        raise ValueError(
+            "_make_clamp_tensor_kernel requires has_min or has_max to be True",
+        )
+    out_dtype = output_dtype or dtype
+    block_size = threads * npt
+
+    if is_fp8:
+        if has_min and has_max:
+            @tilelang.jit(out_idx=[3])
+            def kernel(threads_arg, npt_arg):
+                @T.prim_func
+                def main(
+                    x: T.Tensor((N,), dtype),
+                    lo: T.Tensor((N,), dtype),
+                    hi: T.Tensor((N,), dtype),
+                    y: T.Tensor((N,), out_dtype),
+                ):
+                    with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                        for i, j in T.Parallel(threads_arg, npt_arg):
+                            idx = (bx * threads_arg + i) * npt_arg + j
+                            if idx < N:
+                                x32 = T.cast(x[idx], "float32")
+                                lo32 = T.cast(lo[idx], "float32")
+                                hi32 = T.cast(hi[idx], "float32")
+                                r = T.max(x32, lo32)
+                                r = T.min(r, hi32)
+                                # NaN propagation (PyTorch semantics):
+                                # if any of x/lo/hi is NaN -> output NaN.
+                                r = T.if_then_else(T.isnan(hi32), hi32, r)
+                                r = T.if_then_else(T.isnan(lo32), lo32, r)
+                                r = T.if_then_else(T.isnan(x32), x32, r)
+                                y[idx] = T.Cast(out_dtype, r)
+
+                return main
+
+            return kernel
+        if has_min:
+            @tilelang.jit(out_idx=[2])
+            def kernel(threads_arg, npt_arg):
+                @T.prim_func
+                def main(
+                    x: T.Tensor((N,), dtype),
+                    lo: T.Tensor((N,), dtype),
+                    y: T.Tensor((N,), out_dtype),
+                ):
+                    with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                        for i, j in T.Parallel(threads_arg, npt_arg):
+                            idx = (bx * threads_arg + i) * npt_arg + j
+                            if idx < N:
+                                x32 = T.cast(x[idx], "float32")
+                                lo32 = T.cast(lo[idx], "float32")
+                                r = T.max(x32, lo32)
+                                # NaN propagation (PyTorch clamp_min):
+                                # if x or lo is NaN -> output NaN.
+                                r = T.if_then_else(T.isnan(lo32), lo32, r)
+                                r = T.if_then_else(T.isnan(x32), x32, r)
+                                y[idx] = T.Cast(out_dtype, r)
+
+                return main
+
+            return kernel
+
+        # has_max only
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                hi: T.Tensor((N,), dtype),
+                y: T.Tensor((N,), out_dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            x32 = T.cast(x[idx], "float32")
+                            hi32 = T.cast(hi[idx], "float32")
+                            r = T.min(x32, hi32)
+                            # NaN propagation (PyTorch clamp_max):
+                            # if x or hi is NaN -> output NaN.
+                            r = T.if_then_else(T.isnan(hi32), hi32, r)
+                            r = T.if_then_else(T.isnan(x32), x32, r)
+                            y[idx] = T.Cast(out_dtype, r)
+
+            return main
+
+        return kernel
+
+    # non-fp8 path (register_copy)
+    if has_min and has_max:
+        @tilelang.jit(out_idx=[3])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                lo: T.Tensor((N,), dtype),
+                hi: T.Tensor((N,), dtype),
+                y: T.Tensor((N,), dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    lo_reg = T.alloc_fragment((block_size,), dtype)
+                    hi_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    T.copy(lo[bx * block_size : (bx + 1) * block_size], lo_reg)
+                    T.copy(hi[bx * block_size : (bx + 1) * block_size], hi_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        k = i * npt_arg + j
+                        x32 = T.cast(x_reg[k], "float32")
+                        lo32 = T.cast(lo_reg[k], "float32")
+                        hi32 = T.cast(hi_reg[k], "float32")
+                        r = T.max(x32, lo32)
+                        r = T.min(r, hi32)
+                        # NaN propagation (PyTorch clamp):
+                        # if any of x/lo/hi is NaN -> output NaN.
+                        r = T.if_then_else(T.isnan(hi32), hi32, r)
+                        r = T.if_then_else(T.isnan(lo32), lo32, r)
+                        r = T.if_then_else(T.isnan(x32), x32, r)
+                        x_reg[k] = T.Cast(dtype, r)
+                    T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
+
+        return kernel
+    if has_min:
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                lo: T.Tensor((N,), dtype),
+                y: T.Tensor((N,), dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    lo_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    T.copy(lo[bx * block_size : (bx + 1) * block_size], lo_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        k = i * npt_arg + j
+                        x32 = T.cast(x_reg[k], "float32")
+                        lo32 = T.cast(lo_reg[k], "float32")
+                        r = T.max(x32, lo32)
+                        # NaN propagation (PyTorch clamp_min):
+                        # if x or lo is NaN -> output NaN.
+                        r = T.if_then_else(T.isnan(lo32), lo32, r)
+                        r = T.if_then_else(T.isnan(x32), x32, r)
+                        x_reg[k] = T.Cast(dtype, r)
+                    T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
+
+            return main
+
+        return kernel
+
+    # has_max only
+    @tilelang.jit(out_idx=[2])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(
+            x: T.Tensor((N,), dtype),
+            hi: T.Tensor((N,), dtype),
+            y: T.Tensor((N,), dtype),
+        ):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                hi_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                T.copy(hi[bx * block_size : (bx + 1) * block_size], hi_reg)
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    k = i * npt_arg + j
+                    x32 = T.cast(x_reg[k], "float32")
+                    hi32 = T.cast(hi_reg[k], "float32")
+                    r = T.min(x32, hi32)
+                    # NaN propagation (PyTorch clamp_max):
+                    # if x or hi is NaN -> output NaN.
+                    r = T.if_then_else(T.isnan(hi32), hi32, r)
+                    r = T.if_then_else(T.isnan(x32), x32, r)
+                    x_reg[k] = T.Cast(dtype, r)
+                T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
+
+        return main
+
+    return kernel
+
+
+class ClampTensorFwdKernel(ParametricUnaryKernel):
+    """Tensor-bound clamp kernel.
+
+    Computes ``y = clamp(x, lo, hi)`` over flat tensors of length
+    ``N_total``. The Op layer broadcasts ``input`` / ``min`` / ``max``
+    to the output shape and flattens them before dispatch. ``has_min``
+    / ``has_max`` select between the three forms used by the Tensor
+    clamp, clamp_min, and clamp_max ops.
+    """
+
+    _DEFAULT_THREADS = 512
+
+    def __init__(self, N_total, dtype, has_min, has_max,
+                 config=None, tune=False):
+        if not (has_min or has_max):
+            raise ValueError(
+                "ClampTensorFwdKernel requires has_min or has_max to be True",
+            )
+        self.has_min = bool(has_min)
+        self.has_max = bool(has_max)
+        super().__init__(N_total, dtype, config=config, tune=tune)
+
+    @staticmethod
+    def _builder_fn():
+        return _make_clamp_tensor_kernel
+
+    def _builder_args(self):
+        return (self.has_min, self.has_max)
+
+    def forward(self, x, lo=None, hi=None):
+        if self.has_min and self.has_max:
+            result = self._compiled_fn(x, lo, hi)
+        elif self.has_min:
+            result = self._compiled_fn(x, lo)
+        else:
+            result = self._compiled_fn(x, hi)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
+
+
+@functools.lru_cache(maxsize=32)
 def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
                              is_fp8=False, threads=256, npt=8):
     """Build masked_fill kernel: out = mask ? fill_value : x.
@@ -2521,56 +3158,131 @@ def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
     return kernel
 
 
-class MaskedFillKernel(Kernel):
+class MaskedFillFwdKernel(ParametricUnaryKernel):
     """MaskedFill: out = mask ? fill_value : x.
 
-    Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
-        fill_value: Scalar value to fill where mask is True.
-        config: Optional config dict.
-        tune: Whether to autotune.
+    Supports the PyTorch ``Tensor.masked_fill(mask, value: Number)`` dtype
+    union of integer and floating-point input dtypes. The bool dtype path
+    is handled at the Op layer by viewing the input as uint8 and casting
+    the result back to bool, so the kernel itself only sees integer and
+    floating-point storage dtypes.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    _DEFAULT_THREADS = 512
+    SUPPORTED_DTYPES = _BITWISE_DTYPES[1:] + _FLOAT_DTYPES  # uint8/intN + fp16/bf16/fp32
 
     def __init__(self, N_total, dtype, fill_value, config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
-        self.fill_value = fill_value
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_masked_fill_kernel(
-            N_total, self.dtype_str, fill_value,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        self._raw_fill_value = fill_value
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 512, "num_per_thread": npt}
+    def _post_init_params(self):
+        self.fill_value = _clamp_to_dtype_range(self._raw_fill_value, self.output_dtype)
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+    @staticmethod
+    def _builder_fn():
+        return _make_masked_fill_kernel
+
+    def _builder_args(self):
+        return (self.fill_value,)
 
     def forward(self, x, mask):
         return self._compiled_fn(x, mask)
 
 
+@functools.lru_cache(maxsize=32)
+def _make_masked_fill_tensor_value_kernel(N, dtype, output_dtype=None,
+                                          is_fp8=False, threads=256, npt=8):
+    """Build masked_fill kernel with a 0-dim Tensor fill value.
+
+    Inputs (all flat, length N, pre-broadcast/expanded by the Op layer):
+        x: data tensor (length N).
+        mask: bool mask packed as uint8 (length N).
+        value: scalar fill value carried as a length-1 tensor (the Op
+            layer reshapes the 0-dim Tensor to ``(1,)``).
+
+    Output:
+        out: ``out[i] = value[0] if mask[i] else x[i]``.
+    """
+    out_dtype = output_dtype or dtype
+    block_size = threads * npt
+
+    if is_fp8:
+        @tilelang.jit(out_idx=[3])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                mask: T.Tensor((N,), "uint8"),
+                value: T.Tensor((1,), dtype),
+                out: T.Tensor((N,), out_dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    fv = T.Cast(out_dtype, value[0])
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        idx = (bx * threads_arg + i) * npt_arg + j
+                        if idx < N:
+                            x_val = T.Cast(out_dtype, x[idx])
+                            out[idx] = T.if_then_else(
+                                mask[idx] != T.cast(0, "uint8"), fv, x_val,
+                            )
+
+            return main
+
+        return kernel
+
+    @tilelang.jit(out_idx=[3])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(
+            x: T.Tensor((N,), dtype),
+            mask: T.Tensor((N,), "uint8"),
+            value: T.Tensor((1,), dtype),
+            out: T.Tensor((N,), dtype),
+        ):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                m_reg = T.alloc_fragment((block_size,), "uint8")
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(mask[bx * block_size : (bx + 1) * block_size], m_reg)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                fv = value[0]
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    k = i * npt_arg + j
+                    x_reg[k] = T.if_then_else(
+                        m_reg[k] != T.cast(0, "uint8"), fv, x_reg[k],
+                    )
+                T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
+
+        return main
+
+    return kernel
+
+
+class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
+    """MaskedFill kernel with 0-dim Tensor fill value.
+
+    Computes ``out = mask ? value : x`` over flat tensors of length
+    ``N_total``. The Op layer broadcasts ``input`` and ``mask`` to the
+    output shape, flattens them, packs the mask as uint8, and reshapes
+    the 0-dim ``value`` to a length-1 tensor before dispatch. The bool
+    input dtype is routed through uint8 at the Op layer, so this kernel
+    only sees integer and floating-point storage dtypes.
+    """
+
+    _DEFAULT_THREADS = 512
+    SUPPORTED_DTYPES = _BITWISE_DTYPES[1:] + _FLOAT_DTYPES  # uint8/intN + fp16/bf16/fp32
+
+    @staticmethod
+    def _builder_fn():
+        return _make_masked_fill_tensor_value_kernel
+
+    def forward(self, x, mask, value):
+        result = self._compiled_fn(x, mask, value)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
+
+
+@functools.lru_cache(maxsize=32)
 def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
                             output_dtype=None, is_fp8=False, threads=256, npt=8):
     """Build nan_to_num kernel: replace NaN, +Inf, -Inf with given values.
@@ -2646,65 +3358,30 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
     return kernel
 
 
-class NanToNumKernel(Kernel):
-    """NanToNum: replace NaN, +Inf, -Inf with specified values.
-
-    Note: For e4m3fn this is effectively a no-op because e4m3fn has no Inf
-    or NaN representation — all values are finite by construction.  The
-    kernel still runs but no replacements will occur.
-
-    Args:
-        N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
-        nan_val: Replacement for NaN (default 0.0).
-        posinf_val: Replacement for +Inf (default 1e4).
-        neginf_val: Replacement for -Inf (default -1e4).
-        config: Optional config dict.
-        tune: Whether to autotune.
-    """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+class NanToNumFwdKernel(ParametricUnaryKernel):
+    """NanToNum: replace NaN, +Inf, -Inf with specified values."""
 
     def __init__(self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4,
                  config=None, tune=False):
-        super().__init__()
-        if dtype not in self.SUPPORTED_DTYPES:
-            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
-            raise ValueError(
-                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
-            )
-        self.N_total = N_total
-        self.dtype = dtype
-        self.nan_val = nan_val
-        self.posinf_val = posinf_val
-        self.neginf_val = neginf_val
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        cfg = self.default_config
-        self.kernel = _make_nan_to_num_kernel(
-            N_total, self.dtype_str, nan_val, posinf_val, neginf_val,
-            output_dtype=self.dtype_to_str(self.output_dtype),
-            is_fp8=_is_fp8(dtype),
-            threads=cfg["threads"], npt=cfg["num_per_thread"],
-        )
-        self.init_config(config, tune)
+        self._raw_nan_val = nan_val
+        self._raw_posinf_val = posinf_val
+        self._raw_neginf_val = neginf_val
+        super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @property
-    def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else 16
-        return {"threads": 256, "num_per_thread": npt}
+    def _post_init_params(self):
+        self.nan_val = _clamp_to_dtype_range(self._raw_nan_val, self.output_dtype)
+        self.posinf_val = _clamp_to_dtype_range(self._raw_posinf_val, self.output_dtype)
+        self.neginf_val = _clamp_to_dtype_range(self._raw_neginf_val, self.output_dtype)
 
-    def init_config(self, config=None, tune=False):
-        """Override to cache the compiled kernel function after config is set."""
-        super().init_config(config, tune)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+    @staticmethod
+    def _builder_fn():
+        return _make_nan_to_num_kernel
 
-    def forward(self, x):
-        return self._compiled_fn(x)
+    def _builder_args(self):
+        return (self.nan_val, self.posinf_val, self.neginf_val)
 
 
+@functools.lru_cache(maxsize=32)
 def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
     """Build ALiBi kernel: bias[h, i, j] = -slope_h * |i - j|.
 
@@ -2741,7 +3418,7 @@ def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
     return kernel
 
 
-class AlibiKernel(Kernel):
+class AlibiFwdKernel(Kernel):
     """ALiBi position encoding: bias[h, i, j] = -slope_h * |i - j|.
 
     Generates the full (num_heads, seq_len, seq_len) bias tensor.
@@ -2792,6 +3469,7 @@ class AlibiKernel(Kernel):
         return self._compiled_fn()
 
 
+@functools.lru_cache(maxsize=32)
 def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
     """Build sinusoidal positional encoding kernel.
 
@@ -2829,7 +3507,7 @@ def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
     return kernel
 
 
-class SinusoidalKernel(Kernel):
+class SinusoidalFwdKernel(Kernel):
     """Sinusoidal positional encoding from "Attention Is All You Need".
 
     PE(pos, 2i) = sin(pos / 10000^(2i/d_model))

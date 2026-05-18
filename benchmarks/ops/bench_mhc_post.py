@@ -3,21 +3,36 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_mhc_post import MhcPostTest
-from tileops.ops import ManifoldConstrainedHyperConnectionPostOp
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from tileops.ops import MHCPostOp
+from workloads.mhc import MHCPostTest
 
 
-class MhcPostBenchmark(BenchmarkBase):
+class _MHCPostTestBaseline(MHCPostTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
+                    x_res: torch.Tensor) -> torch.Tensor:
+        batch = self.batch
+        n_expand = self.n_expand
+        c_x = self.c_x
+
+        x_out_ref = (h_post.unsqueeze(2).float() @ x_layer_out.unsqueeze(1).float()).reshape(
+            batch, n_expand * c_x) + x_res.float()
+        x_out_ref = x_out_ref.bfloat16()
+        return x_out_ref
+
+
+class MHCPostBenchmark(BenchmarkBase[MHCPostTest]):
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         flops = 2 * t.batch * (
             t.n_expand * t.n_expand * t.c_x * t.c_x + t.n_expand * t.c_x)
         return flops
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         return (t.n_expand * 2 + 1) * t.c_x
 
 
@@ -31,17 +46,16 @@ _MHC_POST_BENCH_PARAMS = [
 @pytest.mark.parametrize("batch, n_expand, c_x, dtype, tune", _MHC_POST_BENCH_PARAMS)
 def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                          tune: bool) -> None:
-    test = MhcPostTest(batch, n_expand, c_x, dtype)
-    bm = MhcPostBenchmark(test)
+    test = _MHCPostTestBaseline(batch, n_expand, c_x, dtype)
+    bm = MHCPostBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = ManifoldConstrainedHyperConnectionPostOp(
-        batch, n_expand, c_x, dtype=str(dtype).split('.')[-1], tune=tune)
+    op = MHCPostOp(batch, n_expand, c_x, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("mhc_post", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("mhc_post", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

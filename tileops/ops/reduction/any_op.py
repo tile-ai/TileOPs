@@ -1,109 +1,104 @@
-"""AnyOp: returns bool indicating if any element is non-zero along dim=-1.
+"""AnyFwdOp: returns bool indicating if any element is non-zero along ``dim``.
 
-The Op layer validates inputs, reshapes to 2D (M_flat, N), pads to alignment
-(with 0, which is neutral for OR/any), calls the kernel, and reshapes the
-output back. Output dtype is always bool.
+The Op layer validates inputs, normalizes ``dim``, reshapes to 2D (M, N),
+calls the kernel, and reshapes the output back.  Alignment padding is handled
+inside the kernel with 0, which is neutral for OR/any.  Output dtype is always
+bool.
 
 Supports any numeric dtype as input including torch.bool, int32, int64, and
 complex types. Inputs with unsupported TileLang storage dtypes (bool, int32,
 int64, complex64, complex128) are pre-converted to float32 before the kernel
 call.
+
+Kernels are cached by ``(M, N)`` so that the same op instance can handle
+varying shapes.
 """
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
-import torch.nn.functional as F
 
-from tileops.kernels.kernel import Kernel
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
-from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
-from tileops.kernels.reduction.logical_reduce.fwd import (
+from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.reduction.logical_reduce import (
     _UNSUPPORTED_STORAGE_DTYPES,
+    LogicalReduceKernel,
     to_logical_float32,
 )
 
-from ..op import Op
+from ._multidim import EmptyDimPolicy
+from .reduce import _ReduceOpBase
 
-__all__ = ["AnyOp"]
+__all__ = ["AnyFwdOp"]
 
 
-class AnyOp(Op):
-    """Any reduction along dim=-1, returning bool.
+class AnyFwdOp(_ReduceOpBase):
+    """Any reduction along ``dim``, returning bool.
 
-    Follows the validate -> reshape -> pad -> kernel -> reshape pattern.
+    Construction: ``AnyFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N
+    are derived from the input tensor at forward time, and kernels are
+    cached by ``(M, N)`` to avoid rebuilds.
+
     Padded positions use 0 (False), which is neutral for OR/any.
 
     Supports any numeric dtype including torch.bool, int32, int64, and complex
     types. Inputs with unsupported TileLang storage dtypes (bool, int32, int64,
     complex64, complex128) are pre-converted to float32 in forward().
 
+    Empty-dim contract: ``dim=[]`` / ``dim=()`` is a no-op -- forward returns
+    ``x.bool()`` with the input shape, matching ``torch.any`` semantics.
+
     Args:
-        M: Product of all leading dimensions.
-        N: Last dimension size.
         dtype: Input data type (float16, bfloat16, float32, int32, int64,
                bool, complex64, complex128).
+        dim: Reduction dimension (default ``None``, i.e. full reduction).
+            Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
+            multi-dim reduction.
+        keepdim: Whether to retain the reduced dimension as size 1.
         kernel_map: Optional custom kernel map.
         tune: Whether to autotune the kernel.
     """
 
+    _op_kind = "any"
+    _kernel_key = "logical_reduce"
+    _kernel_cls = LogicalReduceKernel
+    _kernel_handles_padding = True
+    _empty_dim_policy: EmptyDimPolicy = "noop"
+
     def __init__(
         self,
-        M: int,
-        N: int,
         dtype: torch.dtype,
+        dim: Union[int, List[int], Tuple[int, ...], None] = None,
+        keepdim: bool = False,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.M = M
-        self.N = N
-        self.dtype = dtype
-        self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["logical_reduce"](
-            M,
-            N,
-            "any",
-            dtype,
-            tune=tune,
-        )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"logical_reduce": LogicalReduceKernel}
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute any along dim=-1.
+        """Construct AnyFwdOp.
 
         Args:
-            x: Input tensor with last dim == N.
-
-        Returns:
-            Bool tensor with shape == x.shape[:-1].
+            dtype: Input data type.
+            dim: Reduction dimension (default ``None``, i.e. full reduction).
+                Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
+                ``None``.
+            keepdim: Whether to retain reduced dims as size 1.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default ``False``).
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.shape[-1] != self.N:
-            raise ValueError(f"Expected last dim {self.N}, got {x.shape[-1]}")
+        super().__init__(
+            dtype=dtype, dim=dim, keepdim=keepdim,
+            kernel_map=kernel_map, tune=tune,
+        )
 
-        orig_shape = x.shape[:-1]  # output shape (leading dims)
-        x = x.contiguous().reshape(-1, self.N)
-        M_actual = x.shape[0]
-        if M_actual != self.M:
-            raise ValueError(f"Expected M={self.M} (product of leading dims), got {M_actual}")
+    def _pad_value(self) -> float:
+        """Pad with 0 (False), neutral for OR/any."""
+        return 0.0
 
-        # Pre-convert unsupported storage dtypes (bool, int32, int64, complex)
-        # to float32. TileLang cannot handle these as shared-memory storage
-        # dtypes; the kernel is compiled for float32 in those cases.
+    def _noop_output_dtype(self) -> torch.dtype:
+        """Any returns bool per manifest contract."""
+        return torch.bool
+
+    def _pre_kernel(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
+        """Convert unsupported storage dtypes to float32."""
         if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
             x = to_logical_float32(x)
-
-        # Pad to alignment with 0 (False is neutral for OR/any)
-        if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N), value=0.0)
-
-        y = self.kernel(x)
-
-        return y.reshape(orig_shape)
+        return x, None

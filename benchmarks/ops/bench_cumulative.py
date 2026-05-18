@@ -5,8 +5,8 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.test_base import FixtureBase, TestBase
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from workloads.workload_base import FixtureBase, WorkloadBase
 
 
 class CumulativeBenchFixture(FixtureBase):
@@ -25,7 +25,7 @@ class CumulativeBenchFixture(FixtureBase):
     ]
 
 
-class CumulativeBenchTest(TestBase):
+class CumulativeBenchTest(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
         self.m = m
         self.n = n
@@ -48,14 +48,14 @@ class CumulativeBenchTest(TestBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-class CumulativeBenchmark(BenchmarkBase):
+class CumulativeBenchmark(BenchmarkBase[CumulativeBenchTest]):
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         # Approximate: inclusive scan performs N-1 ops per row, rounded up to M*N
         return t.m * t.n
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
         # Read x (M*N) + write output (M*N)
         return 2 * t.m * t.n * elem_bytes
@@ -63,15 +63,15 @@ class CumulativeBenchmark(BenchmarkBase):
 
 def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.cumprod import CumprodOp
-    from tileops.ops.reduction.cumsum import CumsumOp
+    from tileops.ops.reduction.cumprod import CumprodFwdOp
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     op_map = {
-        "cumsum": CumsumOp,
-        "cumprod": CumprodOp,
+        "cumsum": CumsumFwdOp,
+        "cumprod": CumprodFwdOp,
     }
     cls = op_map[op_kind]
-    return cls(M=m, N=n, dtype=dtype)
+    return cls(N=n, dtype=dtype)
 
 
 @CumulativeBenchFixture
@@ -82,10 +82,10 @@ def test_cumulative_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> N
 
     op = _make_op(m, n, dtype, op_kind)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("cumulative", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("cumulative", locals(), result_bl, tag="baseline")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

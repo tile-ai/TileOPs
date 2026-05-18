@@ -25,11 +25,11 @@ class DropoutStatFixture(FixtureBase):
         ("n_total, dtype, p", [
             # Smoke: basic dropout
             pytest.param(4_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
+            pytest.param(4_000_000, torch.bfloat16, 0.5, marks=pytest.mark.smoke),
+            pytest.param(4_000_000, torch.float32, 0.5, marks=pytest.mark.smoke),
             # Full: required p values and additional dtypes
             pytest.param(4_000_000, torch.float16, 0.1, marks=pytest.mark.full),
             pytest.param(4_000_000, torch.float16, 0.3, marks=pytest.mark.full),
-            pytest.param(4_000_000, torch.bfloat16, 0.5, marks=pytest.mark.full),
-            pytest.param(4_000_000, torch.float32, 0.5, marks=pytest.mark.full),
         ]),
     ]
 
@@ -40,10 +40,10 @@ class DropoutScaleFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype, p", [
             pytest.param(1_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.bfloat16, 0.5, marks=pytest.mark.smoke),
+            pytest.param(1_000_000, torch.float32, 0.5, marks=pytest.mark.smoke),
             pytest.param(1_000_000, torch.float16, 0.1, marks=pytest.mark.full),
             pytest.param(1_000_000, torch.float16, 0.3, marks=pytest.mark.full),
-            pytest.param(1_000_000, torch.bfloat16, 0.5, marks=pytest.mark.full),
-            pytest.param(1_000_000, torch.float32, 0.5, marks=pytest.mark.full),
         ]),
     ]
 
@@ -52,7 +52,7 @@ class DropoutDeterminismFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype, p", [
             pytest.param(1_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, 0.3, marks=pytest.mark.full),
+            pytest.param(1_000_000, torch.float32, 0.3, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -61,7 +61,7 @@ class DropoutEdgeCaseFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype", [
             pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(1_000_000, torch.float32, marks=pytest.mark.full),
+            pytest.param(1_000_000, torch.float32, marks=pytest.mark.smoke),
         ]),
     ]
 
@@ -197,7 +197,7 @@ class DropoutCustomConfigFixture(FixtureBase):
     PARAMS = [
         ("n_total, dtype, threads, num_per_thread", [
             pytest.param(8192, torch.float16, 128, 4, marks=pytest.mark.smoke),
-            pytest.param(8192, torch.float32, 128, 1, marks=pytest.mark.full),
+            pytest.param(8192, torch.float32, 128, 1, marks=pytest.mark.smoke),
             pytest.param(65536, torch.float16, 64, 16, marks=pytest.mark.full),
         ]),
     ]

@@ -1,14 +1,10 @@
-"""Benchmark for MoePermuteAlignOp vs Triton and sgl-kernel baselines.
+"""Benchmark for MoePermuteAlignFwdOp vs Triton and sgl-kernel baselines.
 
 Baselines:
   - Triton: adapted from SGLang's moe_align_block_size (4-stage fallback)
       sglang/sgl-kernel/benchmark/bench_moe_align_block_size.py
   - sgl-kernel (optional): SGLang's production CUDA kernel; only runs when
       sgl_kernel is installed (`pip install sgl-kernel`).
-
-Usage:
-    conda run -n tileops python -m pytest benchmarks/ops/bench_moe_permute_align.py -vvs
-    conda run -n tileops python benchmarks/ops/bench_moe_permute_align.py
 """
 
 import math
@@ -25,38 +21,12 @@ try:
 except ImportError:
     _SGL_KERNEL_AVAILABLE = False
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_moe_permute_align import MoePermuteAlignTest
-from tests.test_base import FixtureBase
-from tileops.ops.moe import MoePermuteAlignOp
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from tileops.manifest import load_workloads
+from tileops.ops.moe import MoePermuteAlignFwdOp
+from workloads.moe import MoePermuteAlignTest
 
-# ---------------------------------------------------------------------------
-# CUPTI warmup fixture
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session", autouse=True)
-def warmup_cupti():
-    """Pre-initialize the CUPTI profiler once per session.
-
-    The first torch.profiler.profile() call with CUDA activity tracking
-    incurs a one-time initialization cost.  If this happens inside do_bench's
-    estimation phase, estimate_ms is inflated and n_repeat is computed as 1,
-    causing the measured latency to include initialization overhead.
-    """
-    if not torch.cuda.is_available():
-        return
-    dummy = torch.empty(1, device="cuda")
-    schedule = torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1)
-    with torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CUDA],
-        schedule=schedule,
-    ) as prof:
-        for _ in range(2):
-            dummy.zero_()
-            prof.step()
-    torch.cuda.synchronize()
-
+_OP_NAME = "MoePermuteAlignFwdOp"
 
 # ---------------------------------------------------------------------------
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
@@ -167,50 +137,46 @@ def _triton_permute_align(
 
 
 # ---------------------------------------------------------------------------
-# Benchmark fixture (production-scale configs)
-# ---------------------------------------------------------------------------
-
-
-class MoePermuteAlignBenchFixture(FixtureBase):
-    """Production-scale configs for throughput benchmarking.
-
-    Columns: total_tokens, top_k, num_experts, block_size
-    """
-    PARAMS = [
-        ("total_tokens, top_k, num_experts, block_size", [
-            # ── Mixtral-8x7B style: 8 experts, top_k=2 ──────────────────────
-            (512,  2,   8,   16),
-            (2048, 2,   8,   16),
-            (4096, 2,   8,   16),
-            # ── DeepSeek-MoE style: 64 experts, top_k=6 ─────────────────────
-            (512,  6,  64,   64),
-            (2048, 6,  64,   64),
-            (4096, 6,  64,  128),
-            (8192, 6,  64,  128),
-            # ── Large MoE: 256 experts, top_k=6 ─────────────────────────────
-            (2048, 6, 256,  128),
-            (8192, 6, 256,  128),
-        ]),
-    ]
-
-
-# ---------------------------------------------------------------------------
 # Benchmark class
 # ---------------------------------------------------------------------------
 
 
-class MoePermuteAlignBenchmark(BenchmarkBase):
+class MoePermuteAlignBenchmark(BenchmarkBase[MoePermuteAlignTest]):
+
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def __init__(self, test, op):
+        super().__init__(test)
+        self._op = op
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = self._op.eval_roofline()
+        return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
-        return None
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
-        numel = t.total_tokens * t.top_k
-        max_padded = numel + (t.num_experts + 1) * (t.block_size - 1)
-        max_num_blocks = math.ceil(max_padded / t.block_size)
-        # topk_ids read + sorted_token_ids write + expert_ids write + num_post_pad write
-        return (numel + max_padded + max_num_blocks + 1) * 4  # int32 = 4 bytes
+        return self._get_roofline()[1]
+
+
+# ---------------------------------------------------------------------------
+# Manifest-driven parametrize
+# ---------------------------------------------------------------------------
+
+
+def _manifest_params():
+    """Convert manifest workloads to pytest params."""
+    params = []
+    for w in load_workloads(_OP_NAME):
+        label = w.get("label", "unlabeled")
+        for dtype_str in w["dtypes"]:
+            params.append(pytest.param(
+                w["total_tokens"], w["top_k"], w["num_experts"], w["block_size"],
+                id=f"{label}-{dtype_str}",
+            ))
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -218,35 +184,39 @@ class MoePermuteAlignBenchmark(BenchmarkBase):
 # ---------------------------------------------------------------------------
 
 
-@MoePermuteAlignBenchFixture
+@pytest.mark.parametrize(
+    "total_tokens, top_k, num_experts, block_size",
+    _manifest_params(),
+)
 def test_permute_align_bench(
     total_tokens: int, top_k: int, num_experts: int, block_size: int
 ) -> None:
     numel = total_tokens * top_k
     test = MoePermuteAlignTest(total_tokens, top_k, num_experts, block_size)
-    bm = MoePermuteAlignBenchmark(test)
     inputs = test.gen_inputs()
 
     # TileOPs
-    op = MoePermuteAlignOp(numel, num_experts, block_size)
+    op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
+    bm = MoePermuteAlignBenchmark(test, op)
 
     # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)
     torch.cuda.synchronize()
 
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("permute_align", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Triton baseline
     dev = inputs[0].device
     max_padded = numel + (num_experts + 1) * (block_size - 1)
     max_num_blocks = math.ceil(max_padded / block_size)
 
+    sorted_ids = torch.empty(max_padded, dtype=torch.int32, device=dev)
+    expert_ids = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
+    num_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
+
     def _triton_fn(topk_ids):
-        sorted_ids = torch.empty(max_padded, dtype=torch.int32, device=dev)
         sorted_ids.fill_(numel)
-        expert_ids = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
-        num_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
         _triton_permute_align(topk_ids, num_experts, block_size,
                               sorted_ids, expert_ids, num_post_pad)
         return sorted_ids, expert_ids, num_post_pad
@@ -256,27 +226,28 @@ def test_permute_align_bench(
     torch.cuda.synchronize()
 
     result_bl = bm.profile(_triton_fn, *inputs)
-    BenchmarkReport.record("permute_align", locals(), result_bl, tag="triton")
+    BenchmarkReport.record(op, locals(), result_bl, tag="triton")
 
-    # sgl-kernel baseline (optional — only runs when sgl_kernel is installed)
+    # sgl-kernel baseline (optional -- only runs when sgl_kernel is installed)
     if _SGL_KERNEL_AVAILABLE:
+        sorted_ids_sgl = torch.empty(max_padded, dtype=torch.int32, device=dev)
+        expert_ids_sgl = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
+        num_post_pad_sgl = torch.empty(1, dtype=torch.int32, device=dev)
+        cumsum_buf = torch.empty(num_experts + 1, dtype=torch.int32, device=dev)
+
         def _sgl_fn(topk_ids):
-            sorted_ids = torch.empty(max_padded, dtype=torch.int32, device=dev)
-            sorted_ids.fill_(numel)
-            expert_ids = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
-            num_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
-            cumsum_buf = torch.empty(num_experts + 1, dtype=torch.int32, device=dev)
+            sorted_ids_sgl.fill_(numel)
             _sgl_moe_align_block_size(topk_ids, num_experts, block_size,
-                                      sorted_ids, expert_ids, num_post_pad,
+                                      sorted_ids_sgl, expert_ids_sgl, num_post_pad_sgl,
                                       cumsum_buf)
-            return sorted_ids, expert_ids, num_post_pad
+            return sorted_ids_sgl, expert_ids_sgl, num_post_pad_sgl
 
         # Warmup sgl-kernel baseline
         _sgl_fn(*inputs)
         torch.cuda.synchronize()
 
         result_sgl = bm.profile(_sgl_fn, *inputs)
-        BenchmarkReport.record("permute_align", locals(), result_sgl, tag="sgl-kernel")
+        BenchmarkReport.record(op, locals(), result_sgl, tag="sgl-kernel")
 
 
 if __name__ == "__main__":

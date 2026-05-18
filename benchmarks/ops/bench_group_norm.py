@@ -1,59 +1,107 @@
-import math
 from typing import Optional
 
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_group_norm import GroupNormTest
-from tileops.ops.norm.group_norm import GroupNormOp
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from tileops.manifest import load_workloads
+from tileops.ops.norm.group_norm import (
+    GroupNormFwdOp,
+    GroupNormFwdOpNoAffine,
+)
+from workloads.group_norm import GroupNormTest
+
+_OP_NAME = "GroupNormFwdOp"
+_OP_NAME_NO_AFFINE = "GroupNormFwdOpNoAffine"
 
 
-class GroupNormBenchmark(BenchmarkBase):
+class GroupNormBenchmark(BenchmarkBase[GroupNormTest]):
+
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def __init__(self, test, op):
+        super().__init__(test)
+        self._op = op
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = self._op.eval_roofline()
+        return self._roofline_cache
 
     def calculate_flops(self) -> Optional[float]:
-        t = self.test
-        spatial_size = math.prod(t.spatial)
-        total_elems = t.n * t.c * spatial_size
-        # Per element: subtract mean, square for var, normalize, scale, bias => ~5 flops
-        return 5 * total_elems
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        """Useful bytes only. Read x + read weight + read bias + write y."""
-        t = self.test
-        spatial_size = math.prod(t.spatial)
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        total_elems = t.n * t.c * spatial_size
-        # Read x + write y + read weight (C, broadcast) + read bias (C, broadcast)
-        return (2 * total_elems + 2 * t.c) * elem_bytes
+        return self._get_roofline()[1]
 
 
-_GROUP_NORM_BENCH_PARAMS = [
-    pytest.param(8, 128, (32, 32), 32, torch.float16, True, id="image-fp16"),
-    pytest.param(8, 128, (32, 32), 32, torch.bfloat16, True, id="image-bf16"),
-    pytest.param(4, 256, (28, 28), 32, torch.float16, True, id="wider-channel"),
-    pytest.param(4, 128, (30, 30), 16, torch.float16, True, id="tail-spatial"),
-]
+def _build_params(workloads):
+    params = []
+    for w in workloads:
+        shape = w["x_shape"]
+        n, c, spatial = shape[0], shape[1], tuple(shape[2:])
+        num_groups = w.get("num_groups")
+        if num_groups is None:
+            raise KeyError(
+                "Workload manifest must contain 'num_groups'"
+            )
+        label = w.get("label", f"{n}x{c}x{'x'.join(map(str, spatial))}")
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(pytest.param(n, c, spatial, num_groups, dtype, False,
+                                       id=f"{label}-{dtype_str}"))
+    return params
 
 
-@pytest.mark.parametrize("n, c, spatial, g, dtype, tune", _GROUP_NORM_BENCH_PARAMS)
-def test_group_norm_bench(n: int, c: int, spatial: tuple, g: int,
+_AFFINE_PARAMS = _build_params(load_workloads(_OP_NAME))
+_NO_AFFINE_PARAMS = _build_params(load_workloads(_OP_NAME_NO_AFFINE))
+
+
+@pytest.mark.parametrize("n, c, spatial, num_groups, dtype, tune",
+                         _AFFINE_PARAMS)
+def test_group_norm_bench(n: int, c: int, spatial: tuple, num_groups: int,
                           dtype: torch.dtype, tune: bool) -> None:
-    test = GroupNormTest(n, c, spatial, g, dtype)
-    bm = GroupNormBenchmark(test)
-    inputs = test.gen_inputs()
+    test = GroupNormTest(n, c, spatial, num_groups, dtype)
+    x, weight, bias = test.gen_inputs()
 
-    op = GroupNormOp(N=n, C=c, spatial=spatial, G=g, dtype=dtype, tune=tune)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record("group_norm", locals(), result, tag="tileops")
+    op = GroupNormFwdOp(
+        N=n, C=c, spatial=spatial, num_groups=num_groups,
+        dtype=dtype, tune=tune,
+    )
+    bm = GroupNormBenchmark(test, op)
+    result = bm.profile(op, x, weight, bias)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline: torch.nn.functional.group_norm
     def baseline_fn(x, weight, bias):
-        return F.group_norm(x, g, weight=weight, bias=bias, eps=1e-5)
+        return F.group_norm(x, num_groups, weight=weight, bias=bias, eps=1e-5)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record("group_norm", locals(), result_bl, tag="baseline")
+    result_bl = bm.profile(baseline_fn, x, weight, bias)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+@pytest.mark.parametrize("n, c, spatial, num_groups, dtype, tune",
+                         _NO_AFFINE_PARAMS)
+def test_group_norm_no_affine_bench(n: int, c: int, spatial: tuple,
+                                    num_groups: int, dtype: torch.dtype,
+                                    tune: bool) -> None:
+    test = GroupNormTest(n, c, spatial, num_groups, dtype)
+    x, _, _ = test.gen_inputs()
+
+    op = GroupNormFwdOpNoAffine(
+        N=n, C=c, spatial=spatial, num_groups=num_groups,
+        dtype=dtype, tune=tune,
+    )
+    bm = GroupNormBenchmark(test, op)
+    result = bm.profile(op, x)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_no_affine(x):
+        return F.group_norm(x, num_groups, weight=None, bias=None, eps=1e-5)
+
+    result_bl = bm.profile(baseline_no_affine, x)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 if __name__ == "__main__":

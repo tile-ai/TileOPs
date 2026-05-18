@@ -37,13 +37,14 @@ The conv_state is padded to max_conv_len by the op before calling this kernel,
 so the kernel is compiled once with max_conv_len.
 """
 
+import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["EngramDecodeKernel"]
 
@@ -54,6 +55,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
+@functools.lru_cache(maxsize=32)
 def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, eps, dtype):
     """
     Args:

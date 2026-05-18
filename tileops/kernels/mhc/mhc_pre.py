@@ -1,3 +1,4 @@
+import functools
 import itertools
 from typing import Optional
 
@@ -5,12 +6,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import LOG2E
 
-__all__ = ["mhc_pre_kernel"]
+__all__ = ["MHCPreKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat16'):
 
     dtype = "float32"
@@ -74,9 +76,9 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat1
                     acc_r_sqr[i] = T.sqrt(xsqr_sum[i])
 
                 T.copy(acc_x_phi, H[bx * block_x_b:(bx + 1) * block_x_b, :])
-                eps = 0.0001
+                norm_eps = 0.0001
                 for i in T.Parallel(block_x_b):
-                    acc_r_sqr[i] /= (n_expand * c_x)**0.5 + eps
+                    acc_r_sqr[i] = acc_r_sqr[i] / (n_expand * c_x)**0.5 + norm_eps
                 T.copy(acc_r_sqr, r[bx * block_x_b:(bx + 1) * block_x_b])
 
         @T.macro
@@ -283,7 +285,7 @@ def _(
     return torch.empty_like(input[0], dtype=input[0].dtype, device=input[0].device)
 
 
-class mhc_pre_kernel(Kernel):
+class MHCPreKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
     def __init__(self,

@@ -13,13 +13,14 @@ Three-pass design:
     Pass 2:  Gate bwd -> RMSNorm(H) bwd, RMSNorm(k) bwd -> dH, dk, dv
 """
 
+import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["EngramGateConvBwdKernel"]
 
@@ -31,6 +32,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
+@functools.lru_cache(maxsize=32)
 def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
     accum_dtype = "float"
     d_padded = _align_up(d, ALIGNMENT)

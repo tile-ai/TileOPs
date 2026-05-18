@@ -1,68 +1,28 @@
 """Test ManifoldConstrainedHyperConnection Pre operation."""
 
+
 import math
-from typing import Tuple
 
 import pytest
 import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import ManifoldConstrainedHyperConnectionPreOp
+from tileops.ops import MHCPreOp
+from workloads.mhc import MHCPreTest as _MHCPreTestWorkload
 
 
-class MhcPreFixture(FixtureBase):
-    PARAMS = [
-        ("batch, n_expand, c_x, dtype, tune", [
-            pytest.param(1, 4, 1280, torch.bfloat16, False, marks=pytest.mark.smoke),
-            pytest.param(2, 4, 1920, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(4, 4, 2560, torch.bfloat16, False, marks=pytest.mark.full),
-        ]),
-    ]
-
-
-def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
-    """Compare using cosine similarity (mhc pre uses bf16 and needs looser checks)."""
-    cos_sim = F.cosine_similarity(output_ref, output, dim=-1, eps=1e-8)
-    assert cos_sim.min() > 0.99, \
-        f"cosine similarity too low: {cos_sim.min().item()}"
-
-
-class MhcPreTest(TestBase):
-
-    def __init__(self, batch: int, n_expand: int, c_x: int, dtype: torch.dtype):
-        self.batch = batch
-        self.n_expand = n_expand
-        self.c_x = c_x
-        self.dtype = dtype
-
-    def gen_inputs(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-                                  torch.Tensor, torch.Tensor, torch.Tensor, int, float]:
-        batch = self.batch
-        n_expand = self.n_expand
-        c_x = self.c_x
-
-        phi = torch.randn([n_expand * c_x, n_expand * n_expand + 2 * n_expand],
-                          device="cuda",
-                          dtype=torch.float32)
-        x = torch.randn([batch, n_expand * c_x], device="cuda", dtype=torch.bfloat16)
-        b = torch.randn([n_expand * n_expand + 2 * n_expand], device="cuda", dtype=torch.float32)
-        alpha_pre = torch.randn(())
-        alpha_post = torch.randn(())
-        alpha_res = torch.randn(())
-        sinkhorn_repeat = 20
-        eps = 0.02
-        return phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, eps
-
+class MHCPreTest(_MHCPreTestWorkload, TestBase):
     def ref_program(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor,
                     alpha_pre, alpha_post, alpha_res,
-                    sinkhorn_repeat: int, eps: float) -> Tuple[torch.Tensor, torch.Tensor]:
+                    sinkhorn_repeat: int, eps: float) -> tuple[torch.Tensor, torch.Tensor]:
         batch = self.batch
         n_expand = self.n_expand
         c_x = self.c_x
 
         xsqr = x * x
-        r_ref = torch.sqrt(xsqr.sum(dim=1)) / math.sqrt(n_expand * c_x)
+        norm_eps = 0.0001
+        r_ref = torch.sqrt(xsqr.sum(dim=1)) / math.sqrt(n_expand * c_x) + norm_eps
         H = torch.zeros([batch, n_expand * n_expand + 2 * n_expand],
                         device="cuda", dtype=torch.float)
         for i in range(batch):
@@ -105,11 +65,28 @@ class MhcPreTest(TestBase):
         return x_res_ref, x_layer_ref
 
 
-@MhcPreFixture
+class MHCPreFixture(FixtureBase):
+    PARAMS = [
+        ("batch, n_expand, c_x, dtype, tune", [
+            pytest.param(1, 4, 1280, torch.bfloat16, False, marks=pytest.mark.smoke),
+            pytest.param(2, 4, 1920, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(4, 4, 2560, torch.bfloat16, False, marks=pytest.mark.full),
+        ]),
+    ]
+
+
+def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
+    """Compare using cosine similarity (mhc pre uses bf16 and needs looser checks)."""
+    cos_sim = F.cosine_similarity(output_ref, output, dim=-1, eps=1e-8)
+    assert cos_sim.min() > 0.99, \
+        f"cosine similarity too low: {cos_sim.min().item()}"
+
+
+@MHCPreFixture
 def test_mhc_pre_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
                     tune: bool) -> None:
-    test = MhcPreTest(batch, n_expand, c_x, dtype)
-    op = ManifoldConstrainedHyperConnectionPreOp(batch, n_expand, c_x, dtype=torch.bfloat16)
+    test = MHCPreTest(batch, n_expand, c_x, dtype)
+    op = MHCPreOp(batch, n_expand, c_x, dtype=dtype, tune=tune)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 

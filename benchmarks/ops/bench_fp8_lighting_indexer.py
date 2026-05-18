@@ -3,19 +3,50 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark import BenchmarkBase, BenchmarkReport
-from tests.ops.test_fp8_lighting_indexer import Fp8LightingIndexerTest
-from tileops.ops import Fp8LightingIndexerOp
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from tileops.ops import FP8LightingIndexerOp
+from workloads.fp8_lighting_indexer import FP8LightingIndexerTest
 
 
-class Fp8LightingIndexerBenchmark(BenchmarkBase):
+class _FP8LightingIndexerTestBaseline(FP8LightingIndexerTest):
+    """Adds baseline ref_program for benchmark profiling."""
+
+    def ref_program(self, q: torch.Tensor, kv: torch.Tensor, weights: torch.Tensor,
+                    cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor) -> tuple[torch.Tensor]:
+        k = kv
+        q = q.float()
+        k = k.float()
+        batch, seq_len, heads, index_dim = q.shape
+        seq_len_kv = self.seq_len_kv
+        kv_group = self.kv_group
+        heads_per_group = heads // kv_group
+
+        k = k.view(batch, seq_len_kv, kv_group, index_dim)
+        q = q.view(batch, seq_len, kv_group, heads_per_group, index_dim)
+
+        mask_lo = torch.arange(0, seq_len_kv, device="cuda")[None, :] >= cu_seqlen_ks[:, None]
+        mask_hi = torch.arange(0, seq_len_kv, device="cuda")[None, :] < cu_seqlen_ke[:, None]
+        mask = mask_lo & mask_hi
+
+        score = torch.einsum("bsghd,bngd->bghsn", q, k)
+        weights = weights.view(seq_len, kv_group, heads_per_group)
+        weights = weights.permute(1, 2, 0).unsqueeze(0).unsqueeze(-1)
+        score = score.relu() * weights
+        logits = score.sum(dim=2)
+        logits = logits.permute(0, 2, 3, 1)
+        mask_expanded = mask.unsqueeze(0).unsqueeze(-1)
+        logits = logits.masked_fill(~mask_expanded, float("-inf"))
+        return (logits,)
+
+
+class FP8LightingIndexerBenchmark(BenchmarkBase[FP8LightingIndexerTest]):
 
     def calculate_flops(self) -> Optional[float]:
         # Flops depend on the actual mask cost which varies per input
         return None
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.test
+        t = self.workload
         dtype = torch.float8_e4m3fn
         accum_dtype = torch.float32
         index_dtype = torch.int32
@@ -33,35 +64,37 @@ class Fp8LightingIndexerBenchmark(BenchmarkBase):
 
 
 _FP8_LIGHTING_INDEXER_BENCH_PARAMS = [
-    pytest.param(4096, 32, 64, 8192, True, None, False, id="default-config"),
-    pytest.param(2048, 16, 64, 4096, True, None, False, id="mid-shape"),
+    pytest.param(1, 4096, 32, 64, 8192, 1, True, None, False, id="default-config"),
+    pytest.param(1, 2048, 16, 64, 4096, 1, True, None, False, id="mid-shape"),
 ]
 
 
 @pytest.mark.parametrize(
-    "seq_len, heads, index_dim, seq_len_kv, clean_logits, config, tune",
+    "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, config, tune",
     _FP8_LIGHTING_INDEXER_BENCH_PARAMS,
 )
-def test_fp8_lighting_indexer_bench(seq_len: int, heads: int, index_dim: int, seq_len_kv: int,
-                                    clean_logits: bool, config: Optional[dict],
-                                    tune: bool) -> None:
-    test = Fp8LightingIndexerTest(seq_len, heads, index_dim, seq_len_kv, clean_logits, config)
-    bm = Fp8LightingIndexerBenchmark(test)
+def test_fp8_lighting_indexer_bench(batch: int, seq_len: int, heads: int, index_dim: int,
+                                    seq_len_kv: int, kv_group: int, clean_logits: bool,
+                                    config: Optional[dict], tune: bool) -> None:
+    test = _FP8LightingIndexerTestBaseline(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
+                                  clean_logits, config)
+    bm = FP8LightingIndexerBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = Fp8LightingIndexerOp(seq_len, heads, index_dim, seq_len_kv, clean_logits, config,
-                               tune=tune)
+    op = FP8LightingIndexerOp(batch=batch,
+                              seq_len=seq_len,
+                              heads=heads,
+                              index_dim=index_dim,
+                              seq_len_kv=seq_len_kv,
+                              kv_group=kv_group,
+                              clean_logits=clean_logits,
+                              config=config,
+                              tune=tune)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("fp8_lighting_indexer", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    try:
-        result_bl = bm.profile(test.ref_program, *inputs)
-    except RuntimeError as e:
-        if "out of memory" not in str(e).lower():
-            raise
-        result_bl = None
-    if result_bl is not None:
-        BenchmarkReport.record("fp8_lighting_indexer", locals(), result_bl, tag="baseline")
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 if __name__ == "__main__":

@@ -3,37 +3,46 @@ from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.kernel import Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import AdaLayerNormKernel
 
-from ..op import Op
+from ..op_base import Op
+from .norm_base import ALIGNMENT, align_up
 
-__all__ = ["AdaLayerNormOp"]
-
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
+__all__ = ["AdaLayerNormFwdOp"]
 
 
-class AdaLayerNormOp(Op):
-    """Adaptive LayerNorm (AdaLN) operator.
+class AdaLayerNormFwdOp(Op):
+    """Adaptive Layer Normalization (AdaLN) operator.
 
-    y = scale * LayerNorm(x) + shift
+    Applies layer normalization with per-token adaptive scale and shift:
 
-    scale and shift are per-token tensors of shape (M, N), pre-computed
-    by the caller from a conditioning signal. Linear projection from
-    conditioning input to scale/shift is the caller's responsibility.
+    .. math::
 
-    Supports arbitrary leading dimensions (3D+) via flatten/unflatten.
-    Handles non-contiguous inputs and non-power-of-two hidden dims.
+        y = s \\cdot \\frac{x - \\mathrm{E}[x]}{\\sqrt{\\mathrm{Var}[x]
+            + \\epsilon}} + d
+
+    where *s* (scale) and *d* (shift) are per-token tensors of shape
+    ``(M, N)``, pre-computed by the caller from a conditioning signal.
+    Linear projection from the conditioning input to scale/shift is the
+    caller's responsibility.
+
+    Supported dtypes:
+        ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
+
+    Note:
+        Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
+        Handles non-contiguous inputs and non-power-of-two hidden dims
+        by padding to 256-element alignment.
 
     Args:
-        M: Number of rows (product of all dims except last).
+        M: Number of rows (product of all dims except the last).
         N: Hidden dimension (last dim).
-        dtype: Data type (float32, float16, or bfloat16).
-        eps: Epsilon for numerical stability (default 1e-5).
+        dtype: Data type (``torch.float32``, ``torch.float16``, or
+            ``torch.bfloat16``).
+        eps: Epsilon for numerical stability.
+        kernel_map: Optional kernel override dictionary.
+        tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
@@ -49,7 +58,7 @@ class AdaLayerNormOp(Op):
         self.N = N
         self.dtype = dtype
         self.eps = eps
-        self.N_padded = _align_up(N, ALIGNMENT)
+        self.N_padded = align_up(N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["ada_layer_norm"](
             M, N, eps, dtype, has_gate=False, tune=tune,
@@ -59,9 +68,27 @@ class AdaLayerNormOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"ada_layer_norm": AdaLayerNormKernel}
 
+    def eval_roofline(self) -> tuple[int, int]:
+        elem_bytes = self.dtype.itemsize
+        return 5 * self.M * self.N, 4 * self.M * self.N * elem_bytes
+
     def forward(
         self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor,
     ) -> torch.Tensor:
+        """Apply adaptive layer normalization.
+
+        Args:
+            x: Input tensor of shape ``(*leading, N)`` on CUDA.
+            scale: Per-token scale tensor of shape ``(*leading, N)`` on CUDA.
+            shift: Per-token shift tensor of shape ``(*leading, N)`` on CUDA.
+
+        Returns:
+            Normalized and modulated tensor of the same shape as *x*.
+
+        Raises:
+            ValueError: If tensors are not on CUDA, dtypes mismatch,
+                or shapes are incompatible with the configured dimensions.
+        """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if not scale.is_cuda:

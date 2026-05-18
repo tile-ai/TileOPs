@@ -1,8 +1,10 @@
 # Issue Body Sections
 
-## Required sections
+Structural contract for the issue body — the template and per-section rules below are what the pipeline parses. Constraints authoring policy (work-shape declarations, defaults) lives in [docs/design/trust-model.md §Issue-authoring](../../docs/design/trust-model.md#issue-authoring-declaring-scope).
 
-All five top-level sections must be present. `Constraints` header required even if empty.
+## 1. Template
+
+Copy verbatim. Replace each `{...}`. Keep all five top-level sections.
 
 ```markdown
 ## Description
@@ -17,32 +19,31 @@ All five top-level sections must be present. `Constraints` header required even 
 {key files, functions, or configs}
 
 ## Goal
-{concrete objective — must not be empty}
+{concrete objective}
 
 ## Plan
 <!-- type: {proposal | fixed} -->
 1. {at least one step}
 
 ## Constraints
-{scope limits, API stability, perf budgets — or empty}
+- {one bullet per constraint or scope declaration — see trust-model.md §Issue-authoring for the three work-shape forms}
 
 ## Acceptance Criteria
 - [ ] Modified files pass unit tests
 - [ ] {additional criteria as needed}
 ```
 
-## Validation rules
+## 2. Per-section rules
 
-| Section             | Rule                                                         |
-| ------------------- | ------------------------------------------------------------ |
-| Description         | All three subsections present and non-empty                  |
-| Goal                | Non-empty                                                    |
-| Plan                | ≥1 step (`- ` or `1.`) + `<!-- type: -->` comment            |
-| Acceptance Criteria | ≥1 checkbox; always include "Modified files pass unit tests" |
+| Section             | Required form                                                                                      |
+| ------------------- | -------------------------------------------------------------------------------------------------- |
+| Description         | Three subsections (`Symptom / Motivation`, `Root Cause Analysis`, `Related Files`), each non-empty |
+| Goal                | Non-empty single-paragraph objective                                                               |
+| Plan                | `<!-- type: -->` comment (value `proposal` or `fixed`) plus at least one step (`- ` or `1.`)       |
+| Constraints         | At least one list item (`- `)                                                                      |
+| Acceptance Criteria | At least one checkbox, including `- [ ] Modified files pass unit tests`                            |
 
-## Defaults (when creating from brief description)
+## 3. Cross-references
 
-- Goal → extract from description
-- Plan → `proposal` type, infer steps
-- Constraints → empty
-- Acceptance Criteria → "Modified files pass unit tests"
+- Constraints authoring policy: [docs/design/trust-model.md §Issue-authoring](../../docs/design/trust-model.md#issue-authoring-declaring-scope)
+- Reviewer-side criteria: [.claude/review-checklists/pre-review.md](../../.claude/review-checklists/pre-review.md)
