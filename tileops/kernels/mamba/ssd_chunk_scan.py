@@ -53,7 +53,6 @@ Notation:
 """
 
 import functools
-import itertools
 from typing import Callable, Optional
 
 import tilelang
@@ -175,14 +174,14 @@ def _ssd_chunk_scan_fwd_kernel(
                     # hist_acc += c_tile @ state_tile
                     T.gemm(c_tile, state_tile, hist_acc)
 
-                # Load dA_l here, just before it's needed (avoids a sync before the N-loop)
-                dA_l = T.alloc_shared((block_l,), accum_dtype)
+                # Precompute exp(dA_l[ll]) once per l-tile for history path scaling.
+                exp_dA_l = T.alloc_shared((block_l,), accum_dtype)
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
-                    dA_l[ll] = T.if_then_else(
+                    exp_dA_l[ll] = T.if_then_else(
                         l_abs < Q,
-                        dA_cumsum[bz, bh, bc, l_abs],
-                        T.float32(0.0),
+                        T.exp(dA_cumsum[bz, bh, bc, l_abs]),
+                        T.float32(1.0),
                     )
                 T.sync_threads()
 
@@ -191,21 +190,63 @@ def _ssd_chunk_scan_fwd_kernel(
                     l_abs = l0 + ll
                     p_abs = p0 + pp
                     if (l_abs < Q) and (p_abs < P):
-                        acc[ll, pp] += hist_acc[ll, pp] * T.exp(dA_l[ll])
+                        acc[ll, pp] += hist_acc[ll, pp] * exp_dA_l[ll]
 
                 # =====================================================
                 # PART 2: intra-chunk causal path
                 #   acc[l,p] += sum_{s<=l} cb[c,g,l,s]
                 #               * exp(dA_l[l] - dA_s[s]) * dt[h,c,s] * x[s,h,p]
+                #
+                # L-side anchor factored form (full-lower blocks only):
+                #   exp(dA_l - dA_s) = exp(dA_l - anchor) * exp(anchor - dA_s)
+                # where anchor = dA_cumsum[bz, bh, bc, l0] (the largest value in the
+                # l-tile, since dA_cumsum is non-increasing).
+                #
+                # Both arguments are non-positive for all valid causal pairs:
+                #   dA_l[ll] - anchor <= 0  because dA_l[ll] <= dA_l[l0] = anchor
+                #   anchor - dA_s[ss] <= 0  because anchor = dA_l[l0] <= dA_s[ss]
+                #                           for any s >= l0 (full-lower condition)
+                # Non-positive exponents cannot overflow; underflow to 0 is numerically
+                # correct (the true value is also ~0).  No clamp required.
+                # MUFU count: block_l + block_s per s-block.
+                #
+                # Diagonal blocks (s0 <= l0 < s0 + block_s): s is close to l so the
+                # difference dA_l - dA_s is bounded by at most block_s decay steps
+                # (a small value); compute exp(dA_l - dA_s) directly per element.
+                # This path already has per-element guard branches, so the extra MUFU
+                # cost (block_l * block_s in the worst case) is acceptable.
+                #
+                # Upper-triangle blocks are skipped entirely by the loop bound.
                 # =====================================================
-                cb_tile  = T.alloc_shared((block_l, block_s), dtype)
-                x_tile   = T.alloc_shared((block_s, block_p), dtype)
-                dA_s     = T.alloc_shared((block_s,), accum_dtype)
-                dt_s     = T.alloc_shared((block_s,), accum_dtype)
-                lcb      = T.alloc_fragment((block_l, block_s), accum_dtype)
+                cb_tile    = T.alloc_shared((block_l, block_s), dtype)
+                x_tile     = T.alloc_shared((block_s, block_p), dtype)
+                # Full-lower buffers (l-side anchor).
+                # exp_l[ll]  = exp(dA_l[ll] - anchor),  anchor = dA_l[l0]
+                # exp_s[ss]  = exp(anchor - dA_s[ss]) * dt[ss]
+                exp_l = T.alloc_shared((block_l,), accum_dtype)
+                exp_s = T.alloc_shared((block_s,), accum_dtype)
                 lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
 
-                for s_blk in T.serial(T.ceildiv(Q, block_s)):
+                # anchor = dA_cumsum at l0, the largest value in this l-tile.
+                anchor = T.if_then_else(
+                    l0 < Q,
+                    dA_cumsum[bz, bh, bc, l0],
+                    T.float32(0.0),
+                )
+
+                # Precompute exp_l once for all s-blocks; only used in full-lower path.
+                for ll in T.Parallel(block_l):
+                    l_abs = l0 + ll
+                    dA_l_val = T.if_then_else(
+                        l_abs < Q,
+                        dA_cumsum[bz, bh, bc, l_abs],
+                        anchor,
+                    )
+                    # dA_l_val - anchor <= 0 always, so exp <= 1 (no overflow).
+                    exp_l[ll] = T.exp(dA_l_val - anchor)
+
+                # Only iterate over s-blocks that have at least one s <= l_max.
+                for s_blk in T.serial(T.ceildiv(l0 + block_l, block_s)):
                     s0 = s_blk * block_s
 
                     # cb[b, c, g, l, s]  layout: [B, C, G, L, L]
@@ -228,36 +269,66 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # dA_cumsum[b,h,c,s] and dt[b,h,c,s]  layout: [B,H,C,L]
-                    for ss in T.Parallel(block_s):
-                        s_abs = s0 + ss
-                        dA_s[ss] = T.if_then_else(
-                            s_abs < Q,
-                            dA_cumsum[bz, bh, bc, s_abs],
-                            T.float32(0.0),
-                        )
-                        dt_s[ss] = T.if_then_else(
-                            s_abs < Q,
-                            T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
-                            T.float32(0.0),
-                        )
-                    T.sync_threads()
+                    # full-lower path: s0 + block_s <= l0 means every (ll,ss) has
+                    # s_abs < l0 <= l_abs, so s_abs < l_abs (causal mask always true)
+                    # and anchor <= dA_s[ss] (anchor - dA_s[ss] <= 0, no overflow).
+                    if s0 + block_s <= l0:
+                        for ss in T.Parallel(block_s):
+                            s_abs = s0 + ss
+                            dA_s_val = T.if_then_else(
+                                s_abs < Q,
+                                dA_cumsum[bz, bh, bc, s_abs],
+                                anchor,
+                            )
+                            dt_val = T.if_then_else(
+                                s_abs < Q,
+                                T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
+                                T.float32(0.0),
+                            )
+                            # anchor - dA_s_val <= 0, so exp <= 1 (no overflow).
+                            exp_s[ss] = T.exp(anchor - dA_s_val) * dt_val
+                        T.sync_threads()
 
-                    # lcb[l,s] = cb[l,s] * exp(dA_l[l] - dA_s[s]) * dt[s]  if s<=l else 0
-                    for ll, ss in T.Parallel(block_l, block_s):
-                        l_abs = l0 + ll
-                        s_abs = s0 + ss
-                        valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
-                        lcb[ll, ss] = T.if_then_else(
-                            valid,
-                            T.cast(cb_tile[ll, ss], accum_dtype)
-                            * T.exp(dA_l[ll] - dA_s[ss])
-                            * dt_s[ss],
-                            T.float32(0.0),
-                        )
-
-                    # cast to dtype for gemm (both operands must share dtype)
-                    T.copy(lcb, lcb_cast)
+                        for ll, ss in T.Parallel(block_l, block_s):
+                            lcb_cast[ll, ss] = T.cast(
+                                T.cast(cb_tile[ll, ss], accum_dtype)
+                                * exp_l[ll]
+                                * exp_s[ss],
+                                dtype,
+                            )
+                    else:
+                        T.sync_threads()
+                        # Diagonal path: s is within block_s steps of l, so
+                        # dA_l - dA_s is bounded and safe to compute directly.
+                        for ll, ss in T.Parallel(block_l, block_s):
+                            l_abs = l0 + ll
+                            s_abs = s0 + ss
+                            valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
+                            dA_l_val = T.if_then_else(
+                                l_abs < Q,
+                                dA_cumsum[bz, bh, bc, l_abs],
+                                T.float32(0.0),
+                            )
+                            dA_s_val = T.if_then_else(
+                                s_abs < Q,
+                                dA_cumsum[bz, bh, bc, s_abs],
+                                T.float32(0.0),
+                            )
+                            dt_val = T.if_then_else(
+                                s_abs < Q,
+                                T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
+                                T.float32(0.0),
+                            )
+                            lcb_cast[ll, ss] = T.if_then_else(
+                                valid,
+                                T.cast(
+                                    T.cast(cb_tile[ll, ss], accum_dtype)
+                                    * T.exp(dA_l_val - dA_s_val)
+                                    * dt_val,
+                                    dtype,
+                                ),
+                                T.cast(T.float32(0.0), dtype),
+                            )
 
                     # acc += lcb_cast @ x_tile
                     T.gemm(lcb_cast, x_tile, acc)
@@ -381,21 +452,39 @@ class SSDChunkScanFwdKernel(Kernel):
         return {
             "block_l": 64,
             "block_p": 64,
-            "block_n": 32,
+            "block_n": min(128, self.d_state),
             "block_s": 64,
             "threads": 128,
         }
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_l = [32, 64]
-        block_p = [32, 64]
-        block_n = [32, 64, 128]
-        block_s = [64, 128]
-        threads = [128, 256]
+        # Focused search around the known-good default (block_l=64, block_p=64,
+        # block_n=128, block_s=64, threads=128).
+        #
+        # NCU evidence:
+        #   - block_l=64, block_p=64 anchors GEMM tile efficiency; smaller tiles
+        #     hurt more than they help (tested: shape-aware default was slower).
+        #   - block_n only affects the history-path loop count; vary minimally.
+        #   - block_s and threads are the primary levers: block_s controls causal
+        #     GEMM tile size and s-loop iteration count; threads controls warps/block
+        #     and latency-hiding capacity.
+        #
+        # 6–8 configs total (2 block_n entries dropped when d_state <= 32 or 64).
+        block_n = min(128, self.d_state)
         return [
-            {"block_l": c[0], "block_p": c[1], "block_n": c[2], "block_s": c[3], "threads": c[4]}
-            for c in itertools.product(block_l, block_p, block_n, block_s, threads)
+            {"block_l": 64, "block_p": 64, "block_n": block_n, "block_s": bs, "threads": t}
+            for bs in [64, 128]
+            for t  in [128, 256]
+        ] + [
+            # block_n sweep at fixed block_s=64, threads=128
+            {"block_l": 64, "block_p": 64, "block_n": bn, "block_s": 64, "threads": 128}
+            for bn in [32, 64]
+            if bn <= self.d_state
+        ] + [
+            # threads=64 (2 warps/block) — more blocks/SM at cost of less ILP
+            {"block_l": 64, "block_p": 64, "block_n": block_n, "block_s": bs, "threads": 64}
+            for bs in [64, 128]
         ]
 
     def forward(
