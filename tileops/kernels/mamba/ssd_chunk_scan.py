@@ -197,32 +197,53 @@ def _ssd_chunk_scan_fwd_kernel(
                 #   acc[l,p] += sum_{s<=l} cb[c,g,l,s]
                 #               * exp(dA_l[l] - dA_s[s]) * dt[h,c,s] * x[s,h,p]
                 #
-                # Anchor-shifted factored form:
+                # L-side anchor factored form (full-lower blocks only):
                 #   exp(dA_l - dA_s) = exp(dA_l - anchor) * exp(anchor - dA_s)
-                # where anchor = dA_cumsum[bz, bh, bc, s0] (the first, i.e. largest,
-                # value in the s-block, since dA_cumsum is non-increasing).
+                # where anchor = dA_cumsum[bz, bh, bc, l0] (the largest value in the
+                # l-tile, since dA_cumsum is non-increasing).
                 #
-                # This preserves the relative difference exactly:
-                #   (dA_l - anchor) >= 0  for any causal l >= s0, bounded by chunk_len * dt
-                #   (anchor - dA_s)  >= 0  by monotonicity, bounded within [0, block_s * dt_max]
-                # Neither term overflows or underflows independently, so the product
-                # always equals exp(dA_l - dA_s) without a clamp.
-                # MUFU count: block_l + block_s per s-block (same as the old factored form).
+                # Both arguments are non-positive for all valid causal pairs:
+                #   dA_l[ll] - anchor <= 0  because dA_l[ll] <= dA_l[l0] = anchor
+                #   anchor - dA_s[ss] <= 0  because anchor = dA_l[l0] <= dA_s[ss]
+                #                           for any s >= l0 (full-lower condition)
+                # Non-positive exponents cannot overflow; underflow to 0 is numerically
+                # correct (the true value is also ~0).  No clamp required.
+                # MUFU count: block_l + block_s per s-block.
                 #
-                # s-blocks are split into two paths:
-                #   full-lower  (s0 + block_s <= l0): causal mask always true,
-                #               no predicate needed — eliminates branch divergence.
-                #   diagonal    (s0 <= l0 < s0 + block_s): mixed mask, guarded path.
+                # Diagonal blocks (s0 <= l0 < s0 + block_s): s is close to l so the
+                # difference dA_l - dA_s is bounded by at most block_s decay steps
+                # (a small value); compute exp(dA_l - dA_s) directly per element.
+                # This path already has per-element guard branches, so the extra MUFU
+                # cost (block_l * block_s in the worst case) is acceptable.
+                #
                 # Upper-triangle blocks are skipped entirely by the loop bound.
                 # =====================================================
                 cb_tile    = T.alloc_shared((block_l, block_s), dtype)
                 x_tile     = T.alloc_shared((block_s, block_p), dtype)
-                # exp_neg_dA_s_shifted[ss] = exp(anchor - dA_s[ss]) * dt[ss]
-                # Combined into one scalar per ss to save one multiply per (ll,ss).
-                exp_neg_dA_s_shifted = T.alloc_shared((block_s,), accum_dtype)
-                # Per-l scale: exp(dA_l - anchor), refreshed each s-block.
-                exp_dA_l_shifted = T.alloc_shared((block_l,), accum_dtype)
+                # Full-lower buffers (l-side anchor).
+                # exp_l[ll]  = exp(dA_l[ll] - anchor),  anchor = dA_l[l0]
+                # exp_s[ss]  = exp(anchor - dA_s[ss]) * dt[ss]
+                exp_l = T.alloc_shared((block_l,), accum_dtype)
+                exp_s = T.alloc_shared((block_s,), accum_dtype)
                 lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
+
+                # anchor = dA_cumsum at l0, the largest value in this l-tile.
+                anchor = T.if_then_else(
+                    l0 < Q,
+                    dA_cumsum[bz, bh, bc, l0],
+                    T.float32(0.0),
+                )
+
+                # Precompute exp_l once for all s-blocks; only used in full-lower path.
+                for ll in T.Parallel(block_l):
+                    l_abs = l0 + ll
+                    dA_l_val = T.if_then_else(
+                        l_abs < Q,
+                        dA_cumsum[bz, bh, bc, l_abs],
+                        anchor,
+                    )
+                    # dA_l_val - anchor <= 0 always, so exp <= 1 (no overflow).
+                    exp_l[ll] = T.exp(dA_l_val - anchor)
 
                 # Only iterate over s-blocks that have at least one s <= l_max.
                 for s_blk in T.serial(T.ceildiv(l0 + block_l, block_s)):
@@ -248,65 +269,62 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # anchor = dA_cumsum at the start of this s-block (largest value
-                    # in the block since dA_cumsum is non-increasing).
-                    anchor = T.if_then_else(
-                        s0 < Q,
-                        dA_cumsum[bz, bh, bc, s0],
-                        T.float32(0.0),
-                    )
-
-                    # exp_neg_dA_s_shifted[ss] = exp(anchor - dA_s[ss]) * dt[ss]
-                    # anchor - dA_s[ss] >= 0 by monotonicity, so no overflow.
-                    for ss in T.Parallel(block_s):
-                        s_abs = s0 + ss
-                        dA_val = T.if_then_else(
-                            s_abs < Q,
-                            dA_cumsum[bz, bh, bc, s_abs],
-                            anchor,
-                        )
-                        dt_val = T.if_then_else(
-                            s_abs < Q,
-                            T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
-                            T.float32(0.0),
-                        )
-                        exp_neg_dA_s_shifted[ss] = T.exp(anchor - dA_val) * dt_val
-
-                    # exp_dA_l_shifted[ll] = exp(dA_l[ll] - anchor)
-                    # dA_l[ll] - anchor can be positive (l >= s0) or negative (l < s0
-                    # in the diagonal block); both cases are finite.
-                    for ll in T.Parallel(block_l):
-                        l_abs = l0 + ll
-                        dA_l_val = T.if_then_else(
-                            l_abs < Q,
-                            dA_cumsum[bz, bh, bc, l_abs],
-                            T.float32(0.0),
-                        )
-                        exp_dA_l_shifted[ll] = T.exp(dA_l_val - anchor)
-                    T.sync_threads()
-
                     # full-lower path: s0 + block_s <= l0 means every (ll,ss) has
-                    # s_abs <= l_abs, so the causal mask is unconditionally true.
+                    # s_abs < l0 <= l_abs, so s_abs < l_abs (causal mask always true)
+                    # and anchor <= dA_s[ss] (anchor - dA_s[ss] <= 0, no overflow).
                     if s0 + block_s <= l0:
+                        for ss in T.Parallel(block_s):
+                            s_abs = s0 + ss
+                            dA_s_val = T.if_then_else(
+                                s_abs < Q,
+                                dA_cumsum[bz, bh, bc, s_abs],
+                                anchor,
+                            )
+                            dt_val = T.if_then_else(
+                                s_abs < Q,
+                                T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
+                                T.float32(0.0),
+                            )
+                            # anchor - dA_s_val <= 0, so exp <= 1 (no overflow).
+                            exp_s[ss] = T.exp(anchor - dA_s_val) * dt_val
+                        T.sync_threads()
+
                         for ll, ss in T.Parallel(block_l, block_s):
                             lcb_cast[ll, ss] = T.cast(
                                 T.cast(cb_tile[ll, ss], accum_dtype)
-                                * exp_dA_l_shifted[ll]
-                                * exp_neg_dA_s_shifted[ss],
+                                * exp_l[ll]
+                                * exp_s[ss],
                                 dtype,
                             )
                     else:
-                        # diagonal path: mixed mask, guard each element
+                        T.sync_threads()
+                        # Diagonal path: s is within block_s steps of l, so
+                        # dA_l - dA_s is bounded and safe to compute directly.
                         for ll, ss in T.Parallel(block_l, block_s):
                             l_abs = l0 + ll
                             s_abs = s0 + ss
                             valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
+                            dA_l_val = T.if_then_else(
+                                l_abs < Q,
+                                dA_cumsum[bz, bh, bc, l_abs],
+                                T.float32(0.0),
+                            )
+                            dA_s_val = T.if_then_else(
+                                s_abs < Q,
+                                dA_cumsum[bz, bh, bc, s_abs],
+                                T.float32(0.0),
+                            )
+                            dt_val = T.if_then_else(
+                                s_abs < Q,
+                                T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
+                                T.float32(0.0),
+                            )
                             lcb_cast[ll, ss] = T.if_then_else(
                                 valid,
                                 T.cast(
                                     T.cast(cb_tile[ll, ss], accum_dtype)
-                                    * exp_dA_l_shifted[ll]
-                                    * exp_neg_dA_s_shifted[ss],
+                                    * T.exp(dA_l_val - dA_s_val)
+                                    * dt_val,
                                     dtype,
                                 ),
                                 T.cast(T.float32(0.0), dtype),
