@@ -193,7 +193,6 @@ def _sparse_mla_kernel(batch: int,
                 indices_local = T.alloc_local([1], indices_dtype)
 
                 # TODO: Multi buffer
-                bar_q = T.alloc_barrier(arrive_count=384)
                 bar_k_0_ready = T.alloc_barrier(arrive_count=128)
                 bar_k_1_ready = T.alloc_barrier(arrive_count=128)
                 bar_k_0_free = T.alloc_barrier(arrive_count=256)
@@ -212,17 +211,19 @@ def _sparse_mla_kernel(batch: int,
 
                 tx = T.get_thread_binding()
 
-                T.copy(q[b_i, s_i, h0:h1, 0:d // 2], q_shared_l)
-                T.copy(q[b_i, s_i, h0:h1, d // 2:d], q_shared_r)
-                T.copy(q[b_i, s_i, h0:h1, d:], q_tail_shared)
-                T.barrier_arrive(bar_q)
-
+                # Q -> shared copies must stay inside tx < 128 so that the copy
+                # and the subsequent T.wgmma_gemm share the same 128-thread bounds.
+                # Mixing a 384-thread copy with a 128-thread WGMMA on the same shared
+                # buffer causes TileLang 0.1.9 layout inference to fail with
+                # "no available layout found".
                 if tx < 128:
                     T.set_max_nreg(240, 1)
+                    T.copy(q[b_i, s_i, h0:h1, 0:d // 2], q_shared_l)
+                    T.copy(q[b_i, s_i, h0:h1, d // 2:d], q_shared_r)
+                    T.copy(q[b_i, s_i, h0:h1, d:], q_tail_shared)
                     T.fill(sumexp, 0)
                     T.fill(m_i, -2**30)  # avoid -inf - inf to cause nan
                     T.fill(acc_o_l, 0)
-                    T.barrier_wait(bar_q, 0)
 
                     for i_i in T.serial(T.ceildiv(n_i, 2)):
 
@@ -336,6 +337,7 @@ def _sparse_mla_kernel(batch: int,
 
                     T.copy(acc_o_r, o_shared_r)
                     T.copy(o_shared_r, output[b_i, s_i, h0:h1, d // 2:d])
+
                 elif tx >= 256:
                     # producer
                     T.set_max_nreg(80, 0)
