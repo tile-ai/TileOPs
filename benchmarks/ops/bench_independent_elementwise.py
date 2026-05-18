@@ -11,9 +11,13 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
+from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
     AlibiFwdOp,
+    ClampFwdOp,
+    ClampMaxFwdOp,
+    ClampMinFwdOp,
     ClampScalarFwdOp,
     EluFwdOp,
     HardtanhFwdOp,
@@ -101,6 +105,168 @@ def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
+
+
+# ---------------------------------------------------------------------------
+# Tensor-bound clamp ops (manifest-driven): ClampFwdOp, ClampMinFwdOp,
+# ClampMaxFwdOp. Workload shapes are loaded from tileops/manifest/ so the
+# bench coverage stays aligned with the spec (post-broadcast N_total ==
+# product(out_shape)). FLOP/byte counts come from each op's eval_roofline().
+# ---------------------------------------------------------------------------
+
+_CLAMP_FWD_OP = "ClampFwdOp"
+_CLAMP_MIN_OP = "ClampMinFwdOp"
+_CLAMP_MAX_OP = "ClampMaxFwdOp"
+
+
+class TensorClampBenchCase:
+    """Workload adapter for Tensor-bound clamp ops.
+
+    Holds the post-broadcast output shape so :class:`ManifestBenchmark`
+    can read a single ``n_total`` while the bench builds per-operand
+    tensors from the manifest-declared ``input_shape`` / ``min_shape`` /
+    ``max_shape`` keys.
+    """
+
+    def __init__(
+        self,
+        input_shape: tuple,
+        dtype: torch.dtype,
+        min_shape: Optional[tuple] = None,
+        max_shape: Optional[tuple] = None,
+    ):
+        self.input_shape = input_shape
+        self.min_shape = min_shape
+        self.max_shape = max_shape
+        broadcast_args = [input_shape]
+        if min_shape is not None:
+            broadcast_args.append(min_shape)
+        if max_shape is not None:
+            broadcast_args.append(max_shape)
+        self.shape = tuple(torch.broadcast_shapes(*broadcast_args))
+        self.n_total = prod(self.shape)
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
+        tensors: list[torch.Tensor] = [x]
+        if self.min_shape is not None:
+            tensors.append(
+                torch.randn(self.min_shape, device="cuda", dtype=self.dtype) - 0.5
+            )
+        if self.max_shape is not None:
+            tensors.append(
+                torch.randn(self.max_shape, device="cuda", dtype=self.dtype) + 0.5
+            )
+        return tuple(tensors)
+
+
+def _workloads_to_clamp_params(
+    workloads: list, *, needs_min: bool, needs_max: bool,
+) -> list:
+    """Convert manifest workload dicts to clamp-bench pytest params."""
+    params = []
+    for idx, w in enumerate(workloads):
+        input_shape = tuple(w["input_shape"])
+        min_shape = tuple(w["min_shape"]) if needs_min else None
+        max_shape = tuple(w["max_shape"]) if needs_max else None
+        label = w.get("label", "x".join(str(s) for s in input_shape))
+        for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            # Smoke = first workload + fp16; everything else is full-mode.
+            mark = (
+                pytest.mark.smoke
+                if (idx == 0 and dtype is torch.float16)
+                else pytest.mark.full
+            )
+            params.append(
+                pytest.param(
+                    input_shape, min_shape, max_shape, dtype,
+                    marks=mark, id=f"{label}-{dtype_str}",
+                )
+            )
+    return params
+
+
+@pytest.mark.parametrize(
+    "input_shape, min_shape, max_shape, dtype",
+    _workloads_to_clamp_params(
+        load_workloads(_CLAMP_FWD_OP), needs_min=True, needs_max=True,
+    ),
+)
+def test_clamp_tensor_bench(
+    input_shape: tuple,
+    min_shape: tuple,
+    max_shape: tuple,
+    dtype: torch.dtype,
+) -> None:
+    test = TensorClampBenchCase(input_shape, dtype, min_shape=min_shape, max_shape=max_shape)
+    x, t_min, t_max = test.gen_inputs()
+
+    op = ClampFwdOp(input=input_shape, min=min_shape, max=max_shape, dtype=dtype)
+    bm = ManifestBenchmark(_CLAMP_FWD_OP, op, test)
+    result = bm.profile(op, x, t_min, t_max)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x, t_min, t_max):
+        return torch.clamp(x, t_min, t_max)
+
+    result_bl = bm.profile(baseline_fn, x, t_min, t_max)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+@pytest.mark.parametrize(
+    "input_shape, min_shape, _max_shape, dtype",
+    _workloads_to_clamp_params(
+        load_workloads(_CLAMP_MIN_OP), needs_min=True, needs_max=False,
+    ),
+)
+def test_clamp_min_bench(
+    input_shape: tuple,
+    min_shape: tuple,
+    _max_shape: Optional[tuple],
+    dtype: torch.dtype,
+) -> None:
+    test = TensorClampBenchCase(input_shape, dtype, min_shape=min_shape)
+    x, t_min = test.gen_inputs()
+
+    op = ClampMinFwdOp(input=input_shape, min=min_shape, dtype=dtype)
+    bm = ManifestBenchmark(_CLAMP_MIN_OP, op, test)
+    result = bm.profile(op, x, t_min)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x, t_min):
+        return torch.maximum(x, t_min)
+
+    result_bl = bm.profile(baseline_fn, x, t_min)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+@pytest.mark.parametrize(
+    "input_shape, _min_shape, max_shape, dtype",
+    _workloads_to_clamp_params(
+        load_workloads(_CLAMP_MAX_OP), needs_min=False, needs_max=True,
+    ),
+)
+def test_clamp_max_bench(
+    input_shape: tuple,
+    _min_shape: Optional[tuple],
+    max_shape: tuple,
+    dtype: torch.dtype,
+) -> None:
+    test = TensorClampBenchCase(input_shape, dtype, max_shape=max_shape)
+    x, t_max = test.gen_inputs()
+
+    op = ClampMaxFwdOp(input=input_shape, max=max_shape, dtype=dtype)
+    bm = ManifestBenchmark(_CLAMP_MAX_OP, op, test)
+    result = bm.profile(op, x, t_max)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    def baseline_fn(x, t_max):
+        return torch.minimum(x, t_max)
+
+    result_bl = bm.profile(baseline_fn, x, t_max)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # ---------------------------------------------------------------------------
