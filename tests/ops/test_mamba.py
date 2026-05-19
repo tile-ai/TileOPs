@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import TestBase, allclose_compare
+from tileops.kernels.mamba import SSDChunkStateFwdKernelMH
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
@@ -230,6 +231,30 @@ def test_ssd_chunk_state_fwd(
     op = SSDChunkStateFwdOp(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
         has_seq_idx=has_seq_idx, tune=tune,
+    )
+    inputs = test.gen_inputs()
+    atol = 1e-3 if dtype == torch.float16 else 1.6e-2
+    rtol = 1e-3
+    test.check(op, *inputs, atol=atol, rtol=rtol)
+
+
+@SSDChunkStateFwdFixture
+def test_ssd_chunk_state_fwd_mh(
+    batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx,
+):
+    test = SSDChunkStateFwdTest(
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx,
+    )
+    # heads_per_group=2 divides H//G for all fixture cases (min H//G = 2).
+    # Build the Op with the default kernel, then swap in the MH kernel directly.
+    op = SSDChunkStateFwdOp(
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
+        has_seq_idx=has_seq_idx, tune=tune,
+    )
+    op.kernel = SSDChunkStateFwdKernelMH(
+        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
+        has_seq_idx=has_seq_idx,
+        config={"block_n": 128, "block_p": 64, "block_l": 64, "threads": 128, "heads_per_group": 2},
     )
     inputs = test.gen_inputs()
     atol = 1e-3 if dtype == torch.float16 else 1.6e-2

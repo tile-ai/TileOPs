@@ -3,7 +3,7 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.mamba import SSDChunkStateFwdKernel
+from tileops.kernels.mamba import SSDChunkStateFwdKernel, SSDChunkStateFwdKernelMH
 
 from .op_base import Op
 
@@ -67,7 +67,10 @@ class SSDChunkStateFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ssd_chunk_state_fwd": SSDChunkStateFwdKernel}
+        return {
+            "ssd_chunk_state_fwd": SSDChunkStateFwdKernel,
+            "ssd_chunk_state_fwd_mh": SSDChunkStateFwdKernelMH,
+        }
 
     def forward(
         self,
