@@ -474,6 +474,9 @@ class Conv1dKernel(Kernel):
         self.out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
         self.m = n * self.out_l
         self.k_total = c_in * kernel_l
+        self._weight_flat_cache_source: Optional[torch.Tensor] = None
+        self._weight_flat_cache_version: Optional[int] = None
+        self._weight_flat_cache: Optional[torch.Tensor] = None
         self.kernel = _conv1d_kernel(
             n,
             c_in,
@@ -536,6 +539,21 @@ class Conv1dKernel(Kernel):
             })
         return valid_configs
 
+    def _get_weight_flat(self, weight: torch.Tensor) -> torch.Tensor:
+        weight_version = weight._version
+        if (
+            self._weight_flat_cache_source is weight
+            and self._weight_flat_cache_version == weight_version
+            and self._weight_flat_cache is not None
+        ):
+            return self._weight_flat_cache
+
+        weight_flat = weight.permute(0, 2, 1).contiguous().view(self.c_out, self.k_total)
+        self._weight_flat_cache_source = weight
+        self._weight_flat_cache_version = weight_version
+        self._weight_flat_cache = weight_flat
+        return weight_flat
+
     def forward(
         self,
         x: torch.Tensor,
@@ -544,7 +562,7 @@ class Conv1dKernel(Kernel):
     ) -> torch.Tensor:
         if bias is None:
             bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        weight_flat = weight.permute(0, 2, 1).contiguous().view(self.c_out, self.k_total)
+        weight_flat = self._get_weight_flat(weight)
         return _conv1d_wrapped_kernel(
             self.n,
             self.c_in,
