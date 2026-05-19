@@ -373,6 +373,7 @@ class Conv2dOp(Op):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        self._validate_dtypes(x, weight, bias)
         _validate_tensor_shape("Conv2d", "x", x, (self.n, self.h, self.w, self.c_in))
         _validate_tensor_shape(
             "Conv2d",
@@ -383,6 +384,67 @@ class Conv2dOp(Op):
         if bias is not None:
             _validate_tensor_shape("Conv2d", "bias", bias, (self.c_out,))
         return self.kernel(x, weight, bias)
+
+    def _infer_output_shapes(
+        self, x_shape: tuple, weight_shape: tuple, bias_shape: Optional[tuple] = None
+    ) -> Dict[str, tuple]:
+        """Infer output tensor shapes from input shapes."""
+        # Derive spatial dims and params from shapes when self is not
+        # initialized (validator mock path).  When self is initialized
+        # (normal forward path) the cached attributes take precedence.
+        n = getattr(self, "n", x_shape[0])
+        c_out = getattr(self, "c_out", weight_shape[0])
+        h = getattr(self, "h", x_shape[1])
+        w = getattr(self, "w", x_shape[2])
+        kernel_size = getattr(self, "kernel_size", (weight_shape[2], weight_shape[3]))
+        if isinstance(kernel_size, int):
+            kernel_size = (kernel_size, kernel_size)
+        stride = getattr(self, "stride", (1, 1))
+        if isinstance(stride, int):
+            stride = (stride, stride)
+        padding = getattr(self, "padding", (0, 0))
+        if isinstance(padding, int):
+            padding = (padding, padding)
+        out_h = (h + 2 * padding[0] - kernel_size[0]) // stride[0] + 1
+        out_w = (w + 2 * padding[1] - kernel_size[1]) // stride[1] + 1
+        return {"output": (n, out_h, out_w, c_out)}
+
+    def _validate_dtypes(
+        self, x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] = None
+    ) -> None:
+        """Validate dtypes of input tensors passed to forward."""
+        supported = {torch.float32, torch.float16, torch.bfloat16}
+        if x.dtype not in supported:
+            raise ValueError(f"x.dtype must be float32/float16/bfloat16, got {x.dtype}")
+        if weight.dtype != x.dtype:
+            raise ValueError(
+                f"weight.dtype must match x.dtype ({x.dtype}), got {weight.dtype}"
+            )
+        if bias is not None and bias.dtype != x.dtype:
+            raise ValueError(
+                f"bias.dtype must match x.dtype ({x.dtype}), got {bias.dtype}"
+            )
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return (flops, bytes) for this op instance."""
+        out_h = (self.h + 2 * self.padding[0] - self.kernel_size[0]) // self.stride[0] + 1
+        out_w = (self.w + 2 * self.padding[1] - self.kernel_size[1]) // self.stride[1] + 1
+        flops = (
+            2
+            * self.n
+            * self.c_out
+            * out_h
+            * out_w
+            * self.c_in
+            * self.kernel_size[0]
+            * self.kernel_size[1]
+        )
+        bytes_ = (
+            self.n * self.c_in * self.h * self.w
+            + self.c_out * self.c_in * self.kernel_size[0] * self.kernel_size[1]
+            + self.n * self.c_out * out_h * out_w
+        ) * self.dtype.itemsize
+        return flops, bytes_
 
 
 def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
@@ -466,6 +528,7 @@ class Conv3dOp(Op):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        self._validate_dtypes(x, weight, bias)
         _validate_tensor_shape(
             "Conv3d",
             "x",
@@ -487,3 +550,71 @@ class Conv3dOp(Op):
         if bias is not None:
             _validate_tensor_shape("Conv3d", "bias", bias, (self.c_out,))
         return self.kernel(x, weight, bias)
+
+    def _infer_output_shapes(
+        self, x_shape: tuple, weight_shape: tuple, bias_shape: Optional[tuple] = None
+    ) -> Dict[str, tuple]:
+        """Infer output tensor shapes from input shapes."""
+        # Derive spatial dims and params from shapes when self is not
+        # initialized (validator mock path).  When self is initialized
+        # (normal forward path) the cached attributes take precedence.
+        n = getattr(self, "n", x_shape[0])
+        c_out = getattr(self, "c_out", weight_shape[0])
+        d_in = getattr(self, "d_in", x_shape[1])
+        h_in = getattr(self, "h_in", x_shape[2])
+        w_in = getattr(self, "w_in", x_shape[3])
+        kernel_size = getattr(
+            self, "kernel_size", (weight_shape[2], weight_shape[3], weight_shape[4])
+        )
+        if isinstance(kernel_size, int):
+            kernel_size = (kernel_size, kernel_size, kernel_size)
+        stride = getattr(self, "stride", (1, 1, 1))
+        if isinstance(stride, int):
+            stride = (stride, stride, stride)
+        padding = getattr(self, "padding", (0, 0, 0))
+        if isinstance(padding, int):
+            padding = (padding, padding, padding)
+        out_d = (d_in + 2 * padding[0] - kernel_size[0]) // stride[0] + 1
+        out_h = (h_in + 2 * padding[1] - kernel_size[1]) // stride[1] + 1
+        out_w = (w_in + 2 * padding[2] - kernel_size[2]) // stride[2] + 1
+        return {"output": (n, out_d, out_h, out_w, c_out)}
+
+    def _validate_dtypes(
+        self, x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] = None
+    ) -> None:
+        """Validate dtypes of input tensors passed to forward."""
+        supported = {torch.float32, torch.float16, torch.bfloat16}
+        if x.dtype not in supported:
+            raise ValueError(f"x.dtype must be float32/float16/bfloat16, got {x.dtype}")
+        if weight.dtype != x.dtype:
+            raise ValueError(
+                f"weight.dtype must match x.dtype ({x.dtype}), got {weight.dtype}"
+            )
+        if bias is not None and bias.dtype != x.dtype:
+            raise ValueError(
+                f"bias.dtype must match x.dtype ({x.dtype}), got {bias.dtype}"
+            )
+
+    def eval_roofline(self) -> tuple[int, int]:
+        """Return (flops, bytes) for this op instance."""
+        out_d = (self.d_in + 2 * self.padding[0] - self.kernel_size[0]) // self.stride[0] + 1
+        out_h = (self.h_in + 2 * self.padding[1] - self.kernel_size[1]) // self.stride[1] + 1
+        out_w = (self.w_in + 2 * self.padding[2] - self.kernel_size[2]) // self.stride[2] + 1
+        flops = (
+            2
+            * self.n
+            * self.c_out
+            * out_d
+            * out_h
+            * out_w
+            * self.c_in
+            * self.kernel_size[0]
+            * self.kernel_size[1]
+            * self.kernel_size[2]
+        )
+        bytes_ = (
+            self.n * self.c_in * self.d_in * self.h_in * self.w_in
+            + self.c_out * self.c_in * self.kernel_size[0] * self.kernel_size[1] * self.kernel_size[2]
+            + self.n * self.c_out * out_d * out_h * out_w
+        ) * self.dtype.itemsize
+        return flops, bytes_
