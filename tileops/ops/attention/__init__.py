@@ -11,6 +11,7 @@ from .gqa import (
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionDecodeWithKVCacheFwdOp,
     GroupedQueryAttentionFwdOp,
+    GroupedQueryAttentionPrefillFP8TensorCoreFwdOp,
     GroupedQueryAttentionSlidingWindowFwdOp,
     GroupedQueryAttentionSlidingWindowVarlenFwdOp,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionFwdOp",
+    "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp",
     "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "MeanPoolingForwardOp",

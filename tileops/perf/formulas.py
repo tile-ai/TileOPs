@@ -29,6 +29,7 @@ __all__ = [
     "gqa_decode_paged_roofline",
     "gqa_decode_roofline",
     "gqa_fwd_roofline",
+    "gqa_prefill_fp8_tensor_core_roofline",
     "gqa_sliding_window_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
     "masked_fill_fwd_roofline",
@@ -80,6 +81,30 @@ def gqa_bwd_roofline(**kwargs: Any) -> dict[str, int]:
     TODO: implement full formula based on B, S, H, H_kv, D, is_causal.
     """
     raise NotImplementedError
+
+
+def gqa_prefill_fp8_tensor_core_roofline(**kwargs: Any) -> dict[str, int]:
+    """Roofline for dense no-cache FP8 Tensor Core GQA prefill."""
+    q_shape = kwargs.get("q_shape")
+    kv_shape = kwargs.get("kv_shape") or kwargs.get("k_shape")
+    dtypes = kwargs.get("dtypes") or ["float16"]
+    if q_shape is None or kv_shape is None:
+        raise ValueError("q_shape and kv_shape are required.")
+    batch, seq_len, heads, dim = [int(x) for x in q_shape]
+    _, _, heads_kv, _ = [int(x) for x in kv_shape]
+    output_dtype = str(dtypes[0])
+    output_elem_bytes = 2 if output_dtype in ("float16", "bfloat16") else 4
+
+    flops = 4 * batch * heads * seq_len * seq_len * dim
+    q_bytes = batch * seq_len * heads * dim
+    k_bytes = batch * seq_len * heads_kv * dim
+    v_bytes = k_bytes
+    descale_bytes = 3 * batch * heads_kv * 4
+    out_bytes = batch * seq_len * heads * dim * output_elem_bytes
+    return {
+        "flops": int(flops),
+        "bytes": int(q_bytes + k_bytes + v_bytes + descale_bytes + out_bytes),
+    }
 
 
 # ---------------------------------------------------------------------------

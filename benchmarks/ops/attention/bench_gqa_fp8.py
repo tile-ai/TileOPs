@@ -36,6 +36,10 @@ from tileops.kernels.attention import (
     GQAFwdFP8WgmmaKernel,
     GQAFwdFP8WsPersistentKernel,
 )
+from tileops.manifest import load_workloads
+from tileops.ops import GroupedQueryAttentionPrefillFP8TensorCoreFwdOp
+
+_FP8_TC_OP_NAME = "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp"
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,36 @@ class GQAFp8BenchCase:
     def flops(self) -> float:
         # Non-causal dense prefill: QK and PV.
         return 4.0 * self.batch * self.heads * self.seq_len * self.seq_len * self.dim
+
+
+def _manifest_fp8_tensor_core_cases() -> list[GQAFp8BenchCase]:
+    cases: list[GQAFp8BenchCase] = []
+    for workload in load_workloads(_FP8_TC_OP_NAME):
+        batch, seq_len, heads, dim = workload["q_shape"]
+        _, _, heads_kv, _ = workload["kv_shape"]
+        for dtype_name in workload["dtypes"]:
+            out_dtype = getattr(torch, dtype_name)
+            op = GroupedQueryAttentionPrefillFP8TensorCoreFwdOp(
+                batch=batch,
+                heads=heads,
+                heads_kv=heads_kv,
+                seq_len=seq_len,
+                dim=dim,
+                is_causal=workload.get("is_causal", False),
+                dtype=out_dtype,
+            )
+            op.eval_roofline()
+            cases.append(
+                GQAFp8BenchCase(
+                    batch=batch,
+                    seq_len=seq_len,
+                    heads=heads,
+                    heads_kv=heads_kv,
+                    dim=dim,
+                    out_dtype=out_dtype,
+                    label=f"{workload['label']}-{dtype_name}",
+                ))
+    return cases
 
 
 def _block_quant_128(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

@@ -23,6 +23,7 @@ from tileops.kernels.attention import (
     GQAFwdFP8WgmmaKernel,
     GQAFwdFP8WsPersistentKernel,
 )
+from tileops.ops import GroupedQueryAttentionPrefillFP8TensorCoreFwdOp
 
 
 def _has_sm90() -> bool:
@@ -452,3 +453,32 @@ def test_gqa_fwd_fp8_bn224_tma_v_accepts_fa3_descale_contract() -> None:
     assert tuple(v_descale.shape) == (batch, heads_kv)
     assert torch.isfinite(out.float()).all()
     assert torch.isfinite(lse.float()).all()
+
+
+@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
+@pytest.mark.skipif(not _has_sm90(), reason="requires Hopper FP8 WGMMA")
+@pytest.mark.smoke
+def test_gqa_prefill_fp8_tensor_core_op_accepts_fa3_descale_contract() -> None:
+    batch, seq_len, heads, heads_kv, dim = 1, 896, 8, 2, 128
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16) * 0.25
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.25
+    v = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.25
+
+    q_fp8, q_descale = _quantize_q_fa3_gqa_descale(q, heads_kv)
+    k_fp8, k_descale = _quantize_kv_fa3_descale(k)
+    v_fp8, v_descale = _quantize_kv_fa3_descale(v)
+
+    op = GroupedQueryAttentionPrefillFP8TensorCoreFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        seq_len=seq_len,
+        dim=dim,
+        is_causal=False,
+        dtype=torch.float16,
+    )
+    out = op(q_fp8, k_fp8, v_fp8, q_descale, k_descale, v_descale)
+
+    assert out.shape == (batch, seq_len, heads, dim)
+    assert out.dtype == torch.float16
+    assert torch.isfinite(out.float()).all()
