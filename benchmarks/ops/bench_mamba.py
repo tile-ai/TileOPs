@@ -416,11 +416,23 @@ class SSDChunkStateFwdBenchmark(BenchmarkBase[SSDChunkStateFwdTest]):
 
 
 _SSD_CHUNK_STATE_FWD_BENCH_PARAMS = [
-    pytest.param(1, 2,  64, 4,  64,  32, 1, torch.float16,  False, False, id="b1-c2-L64-h4-p64-n32-g1-fp16"),
-    pytest.param(2, 4,  64, 8,  64,  64, 2, torch.float16,  False, False, id="b2-c4-L64-h8-p64-n64-g2-fp16"),
-    pytest.param(1, 2, 128, 4, 128,  32, 1, torch.bfloat16, False, False, id="b1-c2-L128-h4-p128-n32-g1-bf16"),
-    pytest.param(2, 2,  64, 4,  64,  32, 2, torch.bfloat16, False, False, id="b2-c2-L64-h4-p64-n32-g2-bf16"),
-    pytest.param(2, 4,  64, 8,  64,  64, 2, torch.float16,  False, True,  id="b2-c4-L64-h8-p64-n64-g2-seqidx-fp16"),
+    # Production-scale configs matching HuggingFace state-spaces/mamba2-* releases.
+    # All models: headdim=64, d_state=128, ngroups=1, chunk_size=256.
+    # nheads = d_model * expand / headdim.  seqlen=2048 -> num_chunks=8.
+    # Grid = B*C*H blocks (needs >> 132 SMs on H200 to produce useful numbers).
+    #
+    # mamba2-370m: d_model=1024, expand=2 -> d_inner=2048, nheads=32
+    pytest.param(1,  8, 256, 32, 64, 128, 1, torch.float16,  False, False, id="370m-b1-fp16"),
+    pytest.param(4,  8, 256, 32, 64, 128, 1, torch.float16,  False, False, id="370m-b4-fp16"),
+    # mamba2-1.3b: d_model=2048, expand=2 -> d_inner=4096, nheads=64
+    pytest.param(1,  8, 256, 64, 64, 128, 1, torch.float16,  False, False, id="1.3b-b1-fp16"),
+    pytest.param(4,  8, 256, 64, 64, 128, 1, torch.float16,  False, False, id="1.3b-b4-fp16"),
+    # mamba2-2.7b: d_model=2560, expand=2 -> d_inner=5120, nheads=80
+    pytest.param(1,  8, 256, 80, 64, 128, 1, torch.bfloat16, False, False, id="2.7b-b1-bf16"),
+    pytest.param(4,  8, 256, 80, 64, 128, 1, torch.bfloat16, False, False, id="2.7b-b4-bf16"),
+    # Long-sequence (seqlen=8192, num_chunks=32) + seq_idx variant
+    pytest.param(1, 32, 256, 64, 64, 128, 1, torch.float16,  False, False, id="1.3b-b1-L8k-fp16"),
+    pytest.param(1,  8, 256, 64, 64, 128, 1, torch.float16,  False, True,  id="1.3b-b1-seqidx-fp16"),
 ]
 
 

@@ -379,12 +379,14 @@ class SSDChunkStateFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # (block_p=64, block_n=64, block_l=64) gives the highest arithmetic
-        # intensity for the GEMM: K=64 doubles MMA phases vs K=32, and the
-        # removal of the x_scaled_f32 register fragment (saving block_l *
-        # block_p / 32 fp32 regs per thread) makes this size register-safe.
+        # block_n=128 covers the full d_state=128 in one N-tile, halving the
+        # grid from 2*B*H*C to B*H*C CTAs and doubling the GEMM N-dimension.
+        # This improves L2 hit rate (Bmat reuse within a CTA) and reduces
+        # grid-launch overhead on large shapes.  block_l=64 keeps K-depth
+        # high for MMA pipeline efficiency without exceeding the register
+        # budget (94 regs × 128 threads = 12032 regs/block).
         return {
-            "block_n": 64,
+            "block_n": 128,
             "block_p": 64,
             "block_l": 64,
             "threads": 128,
@@ -393,17 +395,17 @@ class SSDChunkStateFwdKernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         # Grid rationale:
+        #   block_n in {64, 128}: 128 covers the full d_state=128 in one tile
+        #     and is the default; 64 is retained for d_state<128 shapes.
         #   block_p in {16, 32, 64}: 16 is the minimum MMA M-atom; 64 only
         #     viable after the x_scaled_f32 fragment was removed.
-        #   block_n in {64, 128}: aligns to common d_state values; 128 covers
-        #     the full d_state in one tile and maximises N-reuse per L-tile.
-        #   block_l in {32, 64}: larger K improves GEMM arithmetic intensity;
-        #     32 keeps shared-memory pressure low for small d_head configs.
+        #   block_l in {32, 64, 128}: larger K improves GEMM arithmetic
+        #     intensity; 32 keeps shared-memory pressure low for small d_head.
         #   threads in {128, 256}: 128 warps = 4, 256 warps = 8; higher thread
         #     count hides latency but increases register/shared pressure.
         block_n = [64, 128]
         block_p = [16, 32, 64]
-        block_l = [32, 64]
+        block_l = [32, 64, 128]
         threads = [128, 256]
         _configs = list(itertools.product(block_n, block_p, block_l, threads))
         return [{
