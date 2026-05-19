@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.convolution import (
     Conv1dKernel,
+    Conv1dPointwiseKernel,
     Conv2d1x1Kernel,
     Conv2dKernel,
     Conv3dKernel,
@@ -221,17 +222,31 @@ def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None
 
 
 @pytest.mark.smoke
-def test_conv1d_dispatches_kernel() -> None:
+@pytest.mark.parametrize(
+    "kernel_size, stride, padding, dilation, expected_kernel",
+    [
+        pytest.param(3, 1, 1, 1, Conv1dKernel, id="generic"),
+        pytest.param(1, 1, 0, 1, Conv1dPointwiseKernel, id="pointwise"),
+    ],
+)
+def test_conv1d_dispatches_kernel(
+    kernel_size: int,
+    stride: int,
+    padding: int,
+    dilation: int,
+    expected_kernel: type,
+) -> None:
     op = Conv1dFwdOp(
         n=1,
         c_in=32,
         l_in=256,
         c_out=64,
-        kernel_size=3,
-        stride=1,
-        padding=1,
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
     )
-    assert isinstance(op.kernel, Conv1dKernel)
+    assert isinstance(op.kernel, expected_kernel)
 
 
 class Conv2dFixture(FixtureBase):

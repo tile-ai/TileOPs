@@ -12,7 +12,7 @@ Conv1dFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, L_in]"}
+      input: {dtype: "float16 | bfloat16", shape: "[N, C_in, L_in]"}
       weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kW]"}
     outputs:
       output: {dtype: "same_as(input)", shape: "[N, C_out, L_out]"}
@@ -60,6 +60,7 @@ Conv1dFwdOp:
   source:
     kernel: tileops/kernels/convolution.py
     kernel_map:
+      conv1d_pointwise_kernel: Conv1dPointwiseKernel
       conv1d_kernel: Conv1dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
@@ -75,7 +76,7 @@ Conv1dBiasFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, L_in]"}
+      input: {dtype: "float16 | bfloat16", shape: "[N, C_in, L_in]"}
       weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kW]"}
       bias: {dtype: "same_as(input)", shape: "[C_out]"}
     outputs:
@@ -111,6 +112,7 @@ Conv1dBiasFwdOp:
   source:
     kernel: tileops/kernels/convolution.py
     kernel_map:
+      conv1d_pointwise_kernel: Conv1dPointwiseKernel
       conv1d_kernel: Conv1dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
