@@ -25,7 +25,7 @@ For each (b, c, h, p, n), the kernel computes:
           * B[b, s, g(h), n]
           * exp(dA_cumsum[b, h, c, Q-1] - dA_cumsum[b, h, c, l])
           * dt[b, h, c, l]
-          * (1 if seq_idx is None else (seq_idx[b, s] == seq_idx[b, c*Q+Q-1]))
+          * (1 if seq_idx is None else (seq_idx[b, c*Q+Q-1] >= 0 and seq_idx[b, s] == seq_idx[b, c*Q+Q-1]))
 
 where:
   s = c * chunk_len + l
@@ -221,7 +221,7 @@ def _ssd_chunk_state_fwd_kernel(
                         if has_seq_idx:
                             same_seq = T.if_then_else(
                                 l_idx < Q,
-                                seq_idx[bz, chunk_start + l_idx] == seq_end,
+                                (seq_end >= T.int32(0)) and (seq_idx[bz, chunk_start + l_idx] == seq_end),
                                 T.bool(False),
                             )
                             w_tile[ll] = T.if_then_else(
@@ -339,7 +339,7 @@ class SSDChunkStateFwdKernel(Kernel):
               * B[b, c*Q+l, g(h), n]
               * exp(dA_cumsum[b,h,c,Q-1] - dA_cumsum[b,h,c,l])
               * dt[b, h, c, l]
-              * (1 if not has_seq_idx else (seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
+              * (1 if not has_seq_idx else (seq_idx[b,c*Q+Q-1] >= 0 and seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
 
     Inputs:  x, Bmat, dt, dA_cumsum[, seq_idx]
     Output:  out  (batch, num_chunks, n_heads, d_head, d_state), float32
