@@ -15,10 +15,17 @@ from tileops.kernels.attention import (
     GQAFwdFP8Fa3ContractKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224Kernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsPingpongKernel,
+    GQAFwdFP8Fa3ContractPtxAccBN224WsPingpongCorrectedKernel,
+    GQAFwdFP8Fa3ContractPtxAccBN224WsPingpongCorrectedPreRescaleKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragmentDeltaKernel,
+    GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaKernel,
+    GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaEmitterK224Kernel,
+    GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaSharedVKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapLocalPKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapKernel,
+    GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPKernel,
+    GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPPlainWaitKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVInplaceBarrierKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsKernel,
@@ -780,6 +787,66 @@ def _main(argv: Optional[list[str]] = None) -> None:
                 f"{result['latency_ms']:.6f},{result['tflops']:.2f}",
                 flush=True,
             )
+        if "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_streaming_p" in impls:
+            inputs, _ = _make_inputs(case, scale_mode=args.scale_mode)
+            kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPKernel(
+                case.batch,
+                case.heads,
+                case.heads_kv,
+                case.seq_len,
+                case.dim,
+                case.out_dtype,
+            )
+            kernel(*inputs)
+            torch.cuda.synchronize()
+            latency_ms = bench_kernel(
+                kernel,
+                args=inputs,
+                n_warmup=n_warmup,
+                n_repeat=n_repeat,
+                n_trials=n_trials,
+            )
+            result = {
+                "case": case.name,
+                "impl": "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_streaming_p",
+                "latency_ms": latency_ms,
+                "tflops": case.flops() / latency_ms * 1e-9,
+            }
+            print(
+                f"{result['case']},{result['impl']},"
+                f"{result['latency_ms']:.6f},{result['tflops']:.2f}",
+                flush=True,
+            )
+        if "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_streaming_p_plain_wait" in impls:
+            inputs, _ = _make_inputs(case, scale_mode=args.scale_mode)
+            kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPPlainWaitKernel(
+                case.batch,
+                case.heads,
+                case.heads_kv,
+                case.seq_len,
+                case.dim,
+                case.out_dtype,
+            )
+            kernel(*inputs)
+            torch.cuda.synchronize()
+            latency_ms = bench_kernel(
+                kernel,
+                args=inputs,
+                n_warmup=n_warmup,
+                n_repeat=n_repeat,
+                n_trials=n_trials,
+            )
+            result = {
+                "case": case.name,
+                "impl": "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_streaming_p_plain_wait",
+                "latency_ms": latency_ms,
+                "tflops": case.flops() / latency_ms * 1e-9,
+            }
+            print(
+                f"{result['case']},{result['impl']},"
+                f"{result['latency_ms']:.6f},{result['tflops']:.2f}",
+                flush=True,
+            )
         if "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_local_p" in impls:
             inputs, _ = _make_inputs(case, scale_mode=args.scale_mode)
             kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapLocalPKernel(
@@ -840,6 +907,96 @@ def _main(argv: Optional[list[str]] = None) -> None:
                 f"{result['latency_ms']:.6f},{result['tflops']:.2f}",
                 flush=True,
             )
+        if "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_visible_pv_delta" in impls:
+            inputs, _ = _make_inputs(case, scale_mode=args.scale_mode)
+            kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaKernel(
+                case.batch,
+                case.heads,
+                case.heads_kv,
+                case.seq_len,
+                case.dim,
+                case.out_dtype,
+            )
+            kernel(*inputs)
+            torch.cuda.synchronize()
+            latency_ms = bench_kernel(
+                kernel,
+                args=inputs,
+                n_warmup=n_warmup,
+                n_repeat=n_repeat,
+                n_trials=n_trials,
+            )
+            result = {
+                "case": case.name,
+                "impl": "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_visible_pv_delta",
+                "latency_ms": latency_ms,
+                "tflops": case.flops() / latency_ms * 1e-9,
+            }
+            print(
+                f"{result['case']},{result['impl']},"
+                f"{result['latency_ms']:.6f},{result['tflops']:.2f}",
+                flush=True,
+            )
+        if "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_visible_pv_delta_shared_v" in impls:
+            inputs, _ = _make_inputs(case, scale_mode=args.scale_mode)
+            kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaSharedVKernel(
+                case.batch,
+                case.heads,
+                case.heads_kv,
+                case.seq_len,
+                case.dim,
+                case.out_dtype,
+            )
+            kernel(*inputs)
+            torch.cuda.synchronize()
+            latency_ms = bench_kernel(
+                kernel,
+                args=inputs,
+                n_warmup=n_warmup,
+                n_repeat=n_repeat,
+                n_trials=n_trials,
+            )
+            result = {
+                "case": case.name,
+                "impl": "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_visible_pv_delta_shared_v",
+                "latency_ms": latency_ms,
+                "tflops": case.flops() / latency_ms * 1e-9,
+            }
+            print(
+                f"{result['case']},{result['impl']},"
+                f"{result['latency_ms']:.6f},{result['tflops']:.2f}",
+                flush=True,
+            )
+        if "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_visible_pv_delta_emitter_k224" in impls:
+            inputs, _ = _make_inputs(case, scale_mode=args.scale_mode)
+            kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaEmitterK224Kernel(
+                case.batch,
+                case.heads,
+                case.heads_kv,
+                case.seq_len,
+                case.dim,
+                case.out_dtype,
+            )
+            kernel(*inputs)
+            torch.cuda.synchronize()
+            latency_ms = bench_kernel(
+                kernel,
+                args=inputs,
+                n_warmup=n_warmup,
+                n_repeat=n_repeat,
+                n_trials=n_trials,
+            )
+            result = {
+                "case": case.name,
+                "impl": "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_visible_pv_delta_emitter_k224",
+                "latency_ms": latency_ms,
+                "tflops": case.flops() / latency_ms * 1e-9,
+            }
+            print(
+                f"{result['case']},{result['impl']},"
+                f"{result['latency_ms']:.6f},{result['tflops']:.2f}",
+                flush=True,
+            )
         if "tileops_ws_fa3_contract_ptx_acc_bn224_ws_overlap_frag_p_local_delta" in impls:
             inputs, _ = _make_inputs(case, scale_mode=args.scale_mode)
             kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaKernel(
@@ -892,6 +1049,66 @@ def _main(argv: Optional[list[str]] = None) -> None:
             result = {
                 "case": case.name,
                 "impl": "tileops_ws_fa3_contract_ptx_acc_bn224_ws_pingpong",
+                "latency_ms": latency_ms,
+                "tflops": case.flops() / latency_ms * 1e-9,
+            }
+            print(
+                f"{result['case']},{result['impl']},"
+                f"{result['latency_ms']:.6f},{result['tflops']:.2f}",
+                flush=True,
+            )
+        if "tileops_ws_fa3_contract_ptx_acc_bn224_ws_pingpong_corrected" in impls:
+            inputs, _ = _make_inputs(case, scale_mode=args.scale_mode)
+            kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsPingpongCorrectedKernel(
+                case.batch,
+                case.heads,
+                case.heads_kv,
+                case.seq_len,
+                case.dim,
+                case.out_dtype,
+            )
+            kernel(*inputs)
+            torch.cuda.synchronize()
+            latency_ms = bench_kernel(
+                kernel,
+                args=inputs,
+                n_warmup=n_warmup,
+                n_repeat=n_repeat,
+                n_trials=n_trials,
+            )
+            result = {
+                "case": case.name,
+                "impl": "tileops_ws_fa3_contract_ptx_acc_bn224_ws_pingpong_corrected",
+                "latency_ms": latency_ms,
+                "tflops": case.flops() / latency_ms * 1e-9,
+            }
+            print(
+                f"{result['case']},{result['impl']},"
+                f"{result['latency_ms']:.6f},{result['tflops']:.2f}",
+                flush=True,
+            )
+        if "tileops_ws_fa3_contract_ptx_acc_bn224_ws_pingpong_corrected_prerescale" in impls:
+            inputs, _ = _make_inputs(case, scale_mode=args.scale_mode)
+            kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsPingpongCorrectedPreRescaleKernel(
+                case.batch,
+                case.heads,
+                case.heads_kv,
+                case.seq_len,
+                case.dim,
+                case.out_dtype,
+            )
+            kernel(*inputs)
+            torch.cuda.synchronize()
+            latency_ms = bench_kernel(
+                kernel,
+                args=inputs,
+                n_warmup=n_warmup,
+                n_repeat=n_repeat,
+                n_trials=n_trials,
+            )
+            result = {
+                "case": case.name,
+                "impl": "tileops_ws_fa3_contract_ptx_acc_bn224_ws_pingpong_corrected_prerescale",
                 "latency_ms": latency_ms,
                 "tflops": case.flops() / latency_ms * 1e-9,
             }

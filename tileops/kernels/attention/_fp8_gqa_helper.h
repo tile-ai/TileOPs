@@ -746,6 +746,44 @@ __device__ __forceinline__ void fp8_acc_to_fa3_p_regs_64x224_no_cute(
   }
 }
 
+namespace fp8_gqa_detail {
+
+template <class Impl, size_t... CIdx>
+__device__ __forceinline__ void wgmma_rs_e4m3e4m3_f32_64x128x32_scalar_run(
+    uint32_t a0,
+    uint32_t a1,
+    uint32_t a2,
+    uint32_t a3,
+    uint64_t desc_b,
+    uint32_t* c_raw,
+    bool scale_out,
+    std::index_sequence<CIdx...>) {
+  using CReg = std::remove_extent_t<typename Impl::CRegisters>;
+  auto scale = scale_out ? cute::SM90::GMMA::ScaleOut::One
+                         : cute::SM90::GMMA::ScaleOut::Zero;
+  CReg* c = reinterpret_cast<CReg*>(c_raw);
+  Impl::fma(a0, a1, a2, a3, desc_b, c[CIdx]..., scale);
+}
+
+__device__ __forceinline__ void wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+    uint32_t a0,
+    uint32_t a1,
+    uint32_t a2,
+    uint32_t a3,
+    uint64_t desc_b,
+    uint32_t* c_raw,
+    bool scale_out) {
+  using Impl = cute::SM90::GMMA::MMA_64x128x32_F32E4M3E4M3_RS_TN<
+      cute::SM90::GMMA::ScaleIn::One,
+      cute::SM90::GMMA::ScaleIn::One>;
+  constexpr int kCRegs = std::extent_v<typename Impl::CRegisters>;
+  wgmma_rs_e4m3e4m3_f32_64x128x32_scalar_run<Impl>(
+      a0, a1, a2, a3, desc_b, c_raw, scale_out,
+      std::make_index_sequence<kCRegs>{});
+}
+
+}  // namespace fp8_gqa_detail
+
 __device__ __forceinline__ void fp8_dump_fa3_p_pack_no_cute_vs_cute_64x128(float* out) {
   fp8_e4_t p_cute[64];
   uint32_t p_regs[16];
@@ -2149,15 +2187,24 @@ __device__ __forceinline__ void fp8_pv_ptx_unit_accumulate_fa3_raw_64x128x224_ti
   Tensor sV = make_tensor(make_smem_ptr(v_tc_smem), typename VConfig::SmemLayoutVtMma{});
   Tensor tOrV = thr_mma.partition_fragment_B(sV)(_, _, _, _0{});
 
-  int64_t const t0 = fp8_gqa_detail::read_clock64();
+  int64_t t0 = 0;
+  if (tid == 0) {
+    t0 = fp8_gqa_detail::read_clock64();
+  }
 #pragma unroll
   for (int i = 0; i < 64; ++i) {
     delta[i] = 0.0f;
   }
-  int64_t const t1 = fp8_gqa_detail::read_clock64();
+  int64_t t1 = 0;
+  if (tid == 0) {
+    t1 = fp8_gqa_detail::read_clock64();
+  }
 
   fp8_acc_to_fa3_p_regs_64x224_no_cute(acc_s, p_regs);
-  int64_t const t2 = fp8_gqa_detail::read_clock64();
+  int64_t t2 = 0;
+  if (tid == 0) {
+    t2 = fp8_gqa_detail::read_clock64();
+  }
 
   asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
 #pragma unroll
@@ -2171,11 +2218,17 @@ __device__ __forceinline__ void fp8_pv_ptx_unit_accumulate_fa3_raw_64x128x224_ti
         ki != 0);
   }
   asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
-  int64_t const t3 = fp8_gqa_detail::read_clock64();
+  int64_t t3 = 0;
+  if (tid == 0) {
+    t3 = fp8_gqa_detail::read_clock64();
+  }
 
   asm volatile("wgmma.wait_group.sync.aligned 0;\n" ::: "memory");
   asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
-  int64_t const t4 = fp8_gqa_detail::read_clock64();
+  int64_t t4 = 0;
+  if (tid == 0) {
+    t4 = fp8_gqa_detail::read_clock64();
+  }
 
   Tensor tOrO_template = partition_fragment_C(tiled_mma_pv, Shape<_64, _128>{});
   Tensor tDelta = make_tensor(delta, tOrO_template.layout());
@@ -2203,7 +2256,10 @@ __device__ __forceinline__ void fp8_pv_ptx_unit_accumulate_fa3_raw_64x128x224_ti
     tAccO_rowcol(m, n) = tAccO_rowcol(m, n) * ss[row] + tDelta_rowcol(m, n) * v_scale;
   }
   }
-  int64_t const t5 = fp8_gqa_detail::read_clock64();
+  int64_t t5 = 0;
+  if (tid == 0) {
+    t5 = fp8_gqa_detail::read_clock64();
+  }
 
   if (tid == 0) {
     fp8_gqa_detail::clock_accum_i64(timing + 20, t1 - t0);
@@ -2231,6 +2287,27 @@ __device__ __forceinline__ void fp8_pack_p_fa3_raw_64x128x224_to_smem(
 #pragma unroll
   for (int i = 0; i < 112; ++i) {
     p_smem[tid * 112 + i] = reinterpret_cast<FP8T*>(p_regs)[i];
+  }
+}
+
+template <typename FP8T>
+__device__ __forceinline__ void fp8_pack_p_fa3_raw_64x128x224_to_smem_streaming(
+    float* acc_s, FP8T* p_smem) {
+  int const tid = static_cast<int>(threadIdx.x) & 127;
+  uint32_t* p_words = reinterpret_cast<uint32_t*>(p_smem + tid * 112);
+#pragma unroll
+  for (int r = 0; r < 28; ++r) {
+    p_words[r] = fp8_pack4_fa3_p_bytes(acc_s, r * 4);
+  }
+}
+
+template <typename FP8T>
+__device__ __forceinline__ void fp8_store_p_frag_fa3_raw_64x128x224_to_smem(
+    FP8T* p_frag, FP8T* p_smem) {
+  int const tid = static_cast<int>(threadIdx.x) & 127;
+#pragma unroll
+  for (int i = 0; i < 112; ++i) {
+    p_smem[tid * 112 + i] = p_frag[i];
   }
 }
 
@@ -2349,15 +2426,15 @@ __device__ __forceinline__ void fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224(
 template <typename FP8T>
 __device__ __forceinline__ void fp8_pv_ptx_unit_begin_from_p_smem_fa3_raw_64x128x224(
     FP8T* p_smem, FP8T* v_tc_smem, int flags, float* delta) {
-  using Element = cutlass::float_e4m3_t;
   int const tid = static_cast<int>(threadIdx.x) & 127;
-  Element p_frag[112];
+  uint32_t p_regs[28];
+  FP8T* p_frag = reinterpret_cast<FP8T*>(p_regs);
 #pragma unroll
   for (int i = 0; i < 112; ++i) {
-    reinterpret_cast<FP8T*>(p_frag)[i] = p_smem[tid * 112 + i];
+    p_frag[i] = p_smem[tid * 112 + i];
   }
   fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224(
-      reinterpret_cast<FP8T*>(p_frag), v_tc_smem, flags, delta);
+      p_frag, v_tc_smem, flags, delta);
 }
 
 template <typename FP8T>
@@ -2383,12 +2460,12 @@ void fp8_pv_ptx_unit_begin_accumulate_from_p_smem_fa3_raw_64x128x224(
   using VConfig = fp8_gqa_detail::VTranspose128x224<FP8T>;
 
   int const tid = static_cast<int>(threadIdx.x) & 127;
-  Element p_frag[112];
+  uint32_t p_regs[28];
+  FP8T* p_frag = reinterpret_cast<FP8T*>(p_regs);
 #pragma unroll
   for (int i = 0; i < 112; ++i) {
-    reinterpret_cast<FP8T*>(p_frag)[i] = p_smem[tid * 112 + i];
+    p_frag[i] = p_smem[tid * 112 + i];
   }
-  uint32_t* p_regs = reinterpret_cast<uint32_t*>(p_frag);
 
   TiledMmaPV tiled_mma_pv;
   auto thr_mma = tiled_mma_pv.get_slice(tid);
@@ -2406,6 +2483,196 @@ void fp8_pv_ptx_unit_begin_accumulate_from_p_smem_fa3_raw_64x128x224(
         reinterpret_cast<uint32_t*>(acc_o),
         true);
   }
+  asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
+}
+
+template <typename FP8T>
+__device__ __forceinline__
+void fp8_pv_ptx_unit_begin_accumulate_from_p_smem_streaming_fa3_raw_64x128x224(
+    FP8T* p_smem, FP8T* v_tc_smem, int /*flags*/, float* acc_o) {
+  using namespace cute;
+  using Element = cutlass::float_e4m3_t;
+  using ElementAccum = float;
+  using TileShapePV = Shape<_64, _128, Int<224>>;
+  using AtomLayout = Layout<Shape<_1, _1, _1>>;
+  using MmaPV = decltype(GMMA::rs_op_selector<Element, Element, ElementAccum,
+                                              TileShapePV, GMMA::Major::K,
+                                              GMMA::Major::K>());
+  using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
+  using VConfig = fp8_gqa_detail::VTranspose128x224<FP8T>;
+
+  int const tid = static_cast<int>(threadIdx.x) & 127;
+  uint32_t const* p_words = reinterpret_cast<uint32_t const*>(p_smem + tid * 112);
+  TiledMmaPV tiled_mma_pv;
+  auto thr_mma = tiled_mma_pv.get_slice(tid);
+  Tensor sV = make_tensor(make_smem_ptr(v_tc_smem), typename VConfig::SmemLayoutVtMma{});
+  Tensor tOrV = thr_mma.partition_fragment_B(sV)(_, _, _, _0{});
+
+  asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+#pragma unroll
+  for (int ki = 0; ki < 7; ++ki) {
+    uint32_t const p0 = p_words[ki * 4 + 0];
+    uint32_t const p1 = p_words[ki * 4 + 1];
+    uint32_t const p2 = p_words[ki * 4 + 2];
+    uint32_t const p3 = p_words[ki * 4 + 3];
+    cute::GmmaDescriptor desc_b = tOrV(_, _, ki)(0);
+    fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+        p0, p1, p2, p3, uint64_t(desc_b),
+        reinterpret_cast<uint32_t*>(acc_o), true);
+  }
+  asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
+}
+
+template <typename FP8T>
+__device__ __forceinline__
+void fp8_pv_ptx_unit_begin_accumulate_from_p_smem_scalar_materialized_fa3_raw_64x128x224(
+    FP8T* p_smem, FP8T* v_tc_smem, int /*flags*/, float* acc_o) {
+  using namespace cute;
+  using Element = cutlass::float_e4m3_t;
+  using ElementAccum = float;
+  using TileShapePV = Shape<_64, _128, Int<224>>;
+  using AtomLayout = Layout<Shape<_1, _1, _1>>;
+  using MmaPV = decltype(GMMA::rs_op_selector<Element, Element, ElementAccum,
+                                              TileShapePV, GMMA::Major::K,
+                                              GMMA::Major::K>());
+  using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
+  using VConfig = fp8_gqa_detail::VTranspose128x224<FP8T>;
+
+  int const tid = static_cast<int>(threadIdx.x) & 127;
+  uint32_t const* p_words = reinterpret_cast<uint32_t const*>(p_smem + tid * 112);
+  uint32_t const p0 = p_words[0];
+  uint32_t const p1 = p_words[1];
+  uint32_t const p2 = p_words[2];
+  uint32_t const p3 = p_words[3];
+  uint32_t const p4 = p_words[4];
+  uint32_t const p5 = p_words[5];
+  uint32_t const p6 = p_words[6];
+  uint32_t const p7 = p_words[7];
+  uint32_t const p8 = p_words[8];
+  uint32_t const p9 = p_words[9];
+  uint32_t const p10 = p_words[10];
+  uint32_t const p11 = p_words[11];
+  uint32_t const p12 = p_words[12];
+  uint32_t const p13 = p_words[13];
+  uint32_t const p14 = p_words[14];
+  uint32_t const p15 = p_words[15];
+  uint32_t const p16 = p_words[16];
+  uint32_t const p17 = p_words[17];
+  uint32_t const p18 = p_words[18];
+  uint32_t const p19 = p_words[19];
+  uint32_t const p20 = p_words[20];
+  uint32_t const p21 = p_words[21];
+  uint32_t const p22 = p_words[22];
+  uint32_t const p23 = p_words[23];
+  uint32_t const p24 = p_words[24];
+  uint32_t const p25 = p_words[25];
+  uint32_t const p26 = p_words[26];
+  uint32_t const p27 = p_words[27];
+
+  TiledMmaPV tiled_mma_pv;
+  auto thr_mma = tiled_mma_pv.get_slice(tid);
+  Tensor sV = make_tensor(make_smem_ptr(v_tc_smem), typename VConfig::SmemLayoutVtMma{});
+  Tensor tOrV = thr_mma.partition_fragment_B(sV)(_, _, _, _0{});
+
+  asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p0, p1, p2, p3, uint64_t(tOrV(_, _, 0)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p4, p5, p6, p7, uint64_t(tOrV(_, _, 1)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p8, p9, p10, p11, uint64_t(tOrV(_, _, 2)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p12, p13, p14, p15, uint64_t(tOrV(_, _, 3)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p16, p17, p18, p19, uint64_t(tOrV(_, _, 4)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p20, p21, p22, p23, uint64_t(tOrV(_, _, 5)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p24, p25, p26, p27, uint64_t(tOrV(_, _, 6)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
+}
+
+template <typename FP8T>
+__device__ __forceinline__
+void fp8_pv_ptx_unit_begin_accumulate_from_p_smem_scalar_zero_first_fa3_raw_64x128x224(
+    FP8T* p_smem, FP8T* v_tc_smem, int flags, float* acc_o) {
+  using namespace cute;
+  using Element = cutlass::float_e4m3_t;
+  using ElementAccum = float;
+  using TileShapePV = Shape<_64, _128, Int<224>>;
+  using AtomLayout = Layout<Shape<_1, _1, _1>>;
+  using MmaPV = decltype(GMMA::rs_op_selector<Element, Element, ElementAccum,
+                                              TileShapePV, GMMA::Major::K,
+                                              GMMA::Major::K>());
+  using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
+  using VConfig = fp8_gqa_detail::VTranspose128x224<FP8T>;
+
+  int const tid = static_cast<int>(threadIdx.x) & 127;
+  uint32_t const* p_words = reinterpret_cast<uint32_t const*>(p_smem + tid * 112);
+  uint32_t const p0 = p_words[0];
+  uint32_t const p1 = p_words[1];
+  uint32_t const p2 = p_words[2];
+  uint32_t const p3 = p_words[3];
+  uint32_t const p4 = p_words[4];
+  uint32_t const p5 = p_words[5];
+  uint32_t const p6 = p_words[6];
+  uint32_t const p7 = p_words[7];
+  uint32_t const p8 = p_words[8];
+  uint32_t const p9 = p_words[9];
+  uint32_t const p10 = p_words[10];
+  uint32_t const p11 = p_words[11];
+  uint32_t const p12 = p_words[12];
+  uint32_t const p13 = p_words[13];
+  uint32_t const p14 = p_words[14];
+  uint32_t const p15 = p_words[15];
+  uint32_t const p16 = p_words[16];
+  uint32_t const p17 = p_words[17];
+  uint32_t const p18 = p_words[18];
+  uint32_t const p19 = p_words[19];
+  uint32_t const p20 = p_words[20];
+  uint32_t const p21 = p_words[21];
+  uint32_t const p22 = p_words[22];
+  uint32_t const p23 = p_words[23];
+  uint32_t const p24 = p_words[24];
+  uint32_t const p25 = p_words[25];
+  uint32_t const p26 = p_words[26];
+  uint32_t const p27 = p_words[27];
+  (void)flags;
+
+  TiledMmaPV tiled_mma_pv;
+  auto thr_mma = tiled_mma_pv.get_slice(tid);
+  Tensor sV = make_tensor(make_smem_ptr(v_tc_smem), typename VConfig::SmemLayoutVtMma{});
+  Tensor tOrV = thr_mma.partition_fragment_B(sV)(_, _, _, _0{});
+
+  asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p0, p1, p2, p3, uint64_t(tOrV(_, _, 0)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), false);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p4, p5, p6, p7, uint64_t(tOrV(_, _, 1)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p8, p9, p10, p11, uint64_t(tOrV(_, _, 2)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p12, p13, p14, p15, uint64_t(tOrV(_, _, 3)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p16, p17, p18, p19, uint64_t(tOrV(_, _, 4)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p20, p21, p22, p23, uint64_t(tOrV(_, _, 5)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
+  fp8_gqa_detail::wgmma_rs_e4m3e4m3_f32_64x128x32_scalar(
+      p24, p25, p26, p27, uint64_t(tOrV(_, _, 6)(0)),
+      reinterpret_cast<uint32_t*>(acc_o), true);
   asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
 }
 
@@ -2536,6 +2803,83 @@ __device__ __forceinline__ void fp8_fa3_raw_acc_rescale_64x128(float* acc_o,
   }
 }
 
+__device__ __forceinline__ void fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128(
+    float* acc_o, float* ss) {
+  using namespace cute;
+  using Element = cutlass::float_e4m3_t;
+  using ElementAccum = float;
+  using TileShapePV = Shape<_64, _128, _128>;
+  using AtomLayout = Layout<Shape<_1, _1, _1>>;
+  using MmaPV = decltype(GMMA::rs_op_selector<Element, Element, ElementAccum,
+                                              TileShapePV, GMMA::Major::K,
+                                              GMMA::Major::K>());
+  using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
+
+  int const tid = static_cast<int>(threadIdx.x) & 127;
+  TiledMmaPV tiled_mma_pv;
+  auto thr_mma = tiled_mma_pv.get_slice(tid);
+  Tensor tOrO_template = partition_fragment_C(tiled_mma_pv, Shape<_64, _128>{});
+  Tensor tAccO = make_tensor(acc_o, tOrO_template.layout());
+  Tensor cO = make_identity_tensor(Shape<_64, _128>{});
+  Tensor tOcO = thr_mma.partition_C(cO);
+  Tensor frag = group_modes<1, 3>(tAccO);
+  Tensor frag_coord = group_modes<1, 3>(tOcO);
+
+#pragma unroll
+  for (int mi = 0; mi < size<1>(frag); ++mi) {
+#pragma unroll
+  for (int x0 = 0; x0 < size<0, 0>(frag); ++x0) {
+#pragma unroll
+  for (int j = 0; j < size<0, 1>(frag); ++j) {
+#pragma unroll
+  for (int x2 = 0; x2 < size<0, 2>(frag); ++x2) {
+    bool const swapped =
+        (x0 == 1 && ((x2 & 1) == 0)) || (x0 == 0 && ((x2 & 1) == 1));
+    if (!swapped) {
+      auto coord = frag_coord(make_coord(x0, j, x2), mi);
+      int const row = int(get<0>(coord));
+      frag(make_coord(x0, j, x2), mi) *= ss[row];
+    }
+  }
+  }
+  }
+  }
+
+#pragma unroll
+  for (int mi = 0; mi < size<1>(frag); ++mi) {
+#pragma unroll
+  for (int j = 0; j < size<0, 1>(frag); ++j) {
+#pragma unroll
+  for (int i = 0; i < size<0, 2>(frag) / 2; ++i) {
+    auto coord_a = frag_coord(make_coord(_1{}, j, 2 * i), mi);
+    auto coord_b = frag_coord(make_coord(_0{}, j, 2 * i + 1), mi);
+    int const row_a = int(get<0>(coord_a));
+    int const row_b = int(get<0>(coord_b));
+    frag(make_coord(_1{}, j, 2 * i), mi) *= ss[row_b];
+    frag(make_coord(_0{}, j, 2 * i + 1), mi) *= ss[row_a];
+  }
+  }
+  }
+}
+
+__device__ __forceinline__ void fp8_fa3_raw_acc_permute_to_canonical_64x128(
+    float* acc_o) {
+  using namespace cute;
+  using Element = cutlass::float_e4m3_t;
+  using ElementAccum = float;
+  using TileShapePV = Shape<_64, _128, _128>;
+  using AtomLayout = Layout<Shape<_1, _1, _1>>;
+  using MmaPV = decltype(GMMA::rs_op_selector<Element, Element, ElementAccum,
+                                              TileShapePV, GMMA::Major::K,
+                                              GMMA::Major::K>());
+  using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
+
+  TiledMmaPV tiled_mma_pv;
+  Tensor tOrO_template = partition_fragment_C(tiled_mma_pv, Shape<_64, _128>{});
+  Tensor tAccO = make_tensor(acc_o, tOrO_template.layout());
+  fp8_gqa_detail::permute_output_fp8(tAccO);
+}
+
 __device__ __forceinline__ void fp8_fa3_raw_acc_scale_64x128(float* acc_o,
                                                               float scale) {
 #pragma unroll
@@ -2634,6 +2978,99 @@ __device__ __forceinline__ void fp8_pv_ptx_unit_wait_update_fa3_raw_64x128(
     int const row = int(get<0>(coord));
     tAccO_rowcol(m, n) =
         tAccO_rowcol(m, n) * ss[row] + tDelta_rowcol(m, n) * v_scale;
+  }
+  }
+}
+
+__device__ __forceinline__ void fp8_pv_ptx_unit_wait_update_rescale_fa3_raw_64x128x224(
+    float* delta, int flags, float* ss, float v_scale, float* acc_o) {
+  using namespace cute;
+  using Element = cutlass::float_e4m3_t;
+  using ElementAccum = float;
+  using TileShapePV = Shape<_64, _128, Int<224>>;
+  using AtomLayout = Layout<Shape<_1, _1, _1>>;
+  using MmaPV = decltype(GMMA::rs_op_selector<Element, Element, ElementAccum,
+                                              TileShapePV, GMMA::Major::K,
+                                              GMMA::Major::K>());
+  using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
+
+  asm volatile("wgmma.wait_group.sync.aligned 0;\n" ::: "memory");
+  asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+
+  int const tid = static_cast<int>(threadIdx.x) & 127;
+  TiledMmaPV tiled_mma_pv;
+  auto thr_mma = tiled_mma_pv.get_slice(tid);
+  Tensor tOrO_template = partition_fragment_C(tiled_mma_pv, Shape<_64, _128>{});
+  Tensor tDelta = make_tensor(delta, tOrO_template.layout());
+  Tensor tAccO = make_tensor(acc_o, tOrO_template.layout());
+  Tensor cO = make_identity_tensor(Shape<_64, _128>{});
+  Tensor tOcO = thr_mma.partition_C(cO);
+
+  if ((flags & 2) == 0) {
+    fp8_gqa_detail::permute_output_fp8(tDelta);
+  }
+
+  Tensor tDelta_rowcol = make_tensor(
+      tDelta.data(), fp8_gqa_detail::convert_layout_acc_rowcol(tDelta.layout()));
+  Tensor tAccO_rowcol = make_tensor(
+      tAccO.data(), fp8_gqa_detail::convert_layout_acc_rowcol(tAccO.layout()));
+  Tensor tOcO_rowcol = make_tensor(
+      tOcO.data(), fp8_gqa_detail::convert_layout_acc_rowcol(tOcO.layout()));
+
+#pragma unroll
+  for (int m = 0; m < size<0>(tDelta_rowcol); ++m) {
+#pragma unroll
+  for (int n = 0; n < size<1>(tDelta_rowcol); ++n) {
+    auto coord = tOcO_rowcol(m, n);
+    int const row = int(get<0>(coord));
+    tAccO_rowcol(m, n) =
+        (tAccO_rowcol(m, n) + tDelta_rowcol(m, n) * v_scale) * ss[row];
+  }
+  }
+}
+
+__device__ __forceinline__ void fp8_pv_ptx_unit_wait_add_rescaled_delta_fa3_raw_64x128x224(
+    float* delta, int flags, float* ss, float v_scale, float* acc_o) {
+  using namespace cute;
+  using Element = cutlass::float_e4m3_t;
+  using ElementAccum = float;
+  using TileShapePV = Shape<_64, _128, Int<224>>;
+  using AtomLayout = Layout<Shape<_1, _1, _1>>;
+  using MmaPV = decltype(GMMA::rs_op_selector<Element, Element, ElementAccum,
+                                              TileShapePV, GMMA::Major::K,
+                                              GMMA::Major::K>());
+  using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
+
+  asm volatile("wgmma.wait_group.sync.aligned 0;\n" ::: "memory");
+  asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+
+  int const tid = static_cast<int>(threadIdx.x) & 127;
+  TiledMmaPV tiled_mma_pv;
+  auto thr_mma = tiled_mma_pv.get_slice(tid);
+  Tensor tOrO_template = partition_fragment_C(tiled_mma_pv, Shape<_64, _128>{});
+  Tensor tDelta = make_tensor(delta, tOrO_template.layout());
+  Tensor tAccO = make_tensor(acc_o, tOrO_template.layout());
+  Tensor cO = make_identity_tensor(Shape<_64, _128>{});
+  Tensor tOcO = thr_mma.partition_C(cO);
+
+  if ((flags & 2) == 0) {
+    fp8_gqa_detail::permute_output_fp8(tDelta);
+  }
+
+  Tensor tDelta_rowcol = make_tensor(
+      tDelta.data(), fp8_gqa_detail::convert_layout_acc_rowcol(tDelta.layout()));
+  Tensor tAccO_rowcol = make_tensor(
+      tAccO.data(), fp8_gqa_detail::convert_layout_acc_rowcol(tAccO.layout()));
+  Tensor tOcO_rowcol = make_tensor(
+      tOcO.data(), fp8_gqa_detail::convert_layout_acc_rowcol(tOcO.layout()));
+
+#pragma unroll
+  for (int m = 0; m < size<0>(tDelta_rowcol); ++m) {
+#pragma unroll
+  for (int n = 0; n < size<1>(tDelta_rowcol); ++n) {
+    auto coord = tOcO_rowcol(m, n);
+    int const row = int(get<0>(coord));
+    tAccO_rowcol(m, n) += tDelta_rowcol(m, n) * (v_scale * ss[row]);
   }
   }
 }

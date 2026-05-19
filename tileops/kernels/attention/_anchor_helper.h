@@ -33,4 +33,17 @@ __device__ __forceinline__ void wait_wgmma_anchor(int* sink_smem_ptr,
       : "memory");
 }
 
+template <int N>
+__device__ __forceinline__ void wait_wgmma_plain_fence(int* /*sink_smem_ptr*/,
+                                                        int /*cond*/) {
+  asm volatile("wgmma.wait_group.sync.aligned %0;\n" ::"n"(N) : "memory");
+  asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+}
+
+template <int N>
+__device__ __forceinline__ void wait_wgmma_plain_fence_noarg() {
+  asm volatile("wgmma.wait_group.sync.aligned %0;\n" ::"n"(N) : "memory");
+  asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+}
+
 }  // namespace tl

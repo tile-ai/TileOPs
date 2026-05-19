@@ -5,6 +5,8 @@ from typing import Callable, Optional, Tuple
 import tilelang
 import tilelang.language as T
 import torch
+from tilelang.intrinsics.mma_macro_generator import get_ldmatrix_offset
+from tilelang.intrinsics.wgmma_macro_generator import TensorCoreIntrinEmitter
 from tvm import tir
 
 from tileops.kernels.kernel_base import Kernel
@@ -27,8 +29,15 @@ __all__ = [
     "GQAFwdFP8Fa3ContractRawCudaQKWgmmaSoftmaxTileDebugKernel",
     "GQAFwdFP8Fa3ContractRawCudaQKWgmmaLocalPVTileDebugKernel",
     "GQAFwdFP8Fa3ContractPtxAccBN224WsPingpongKernel",
+    "GQAFwdFP8Fa3ContractPtxAccBN224WsPingpongCorrectedKernel",
+    "GQAFwdFP8Fa3ContractPtxAccBN224WsPingpongCorrectedPreRescaleKernel",
     "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaKernel",
+    "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedKernel",
+    "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedPreRescaleKernel",
     "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragmentDeltaKernel",
+    "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaKernel",
+    "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaEmitterK224Kernel",
+    "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaSharedVKernel",
     "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapLocalPKernel",
     "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapKernel",
     "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVInplaceBarrierKernel",
@@ -1535,7 +1544,6 @@ def _gqa_fwd_fp8_fa3_contract_bn224_kernel(
     scale = make_log2e_scale(dim)
     scale_block = 128
     scale_blocks = (seq_len + scale_block - 1) // scale_block
-
     @tilelang.jit(
         out_idx=[6, 7],
         pass_configs={
@@ -1678,6 +1686,8 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
     seq_len: int,
     dim: int,
     out_dtype: str,
+    streaming_p: bool = False,
+    plain_wait: bool = False,
 ) -> Callable:
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
@@ -1689,12 +1699,28 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
     block_m = 128
     half_m = block_m // 2
     block_n = 224
+    fp8_k = 32
     groups = heads // heads_kv
     accum_dtype = "float"
     fp8_dtype = "float8_e4m3fn"
     scale = make_log2e_scale(dim)
     scale_block = 128
     scale_blocks = (seq_len + scale_block - 1) // scale_block
+    pack_p_helper = (
+        "tl::fp8_pack_p_fa3_raw_64x128x224_to_smem_streaming"
+        if streaming_p else
+        "tl::fp8_pack_p_fa3_raw_64x128x224_to_smem"
+    )
+    pv_begin_accumulate_helper = (
+        "tl::fp8_pv_ptx_unit_begin_accumulate_from_p_smem_streaming_fa3_raw_64x128x224"
+        if streaming_p else
+        "tl::fp8_pv_ptx_unit_begin_accumulate_from_p_smem_fa3_raw_64x128x224"
+    )
+    wait_wgmma_helper = (
+        "tl::wait_wgmma_plain_fence_noarg"
+        if plain_wait else
+        "tl::wait_wgmma_anchor"
+    )
 
     @tilelang.jit(
         out_idx=[6, 7],
@@ -1744,10 +1770,10 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                 ss_shared_2 = T.alloc_shared([half_m], accum_dtype)
                 ls_shared_1 = T.alloc_shared([half_m], accum_dtype)
                 ls_shared_2 = T.alloc_shared([half_m], accum_dtype)
-                acc_o_layout_seed = T.alloc_shared([half_m, dim], out_dtype)
+                acc_o_layout_seed = T.alloc_shared([half_m, dim], fp8_dtype)
+                p_smem_1 = T.alloc_shared([half_m, block_n], fp8_dtype)
+                p_smem_2 = T.alloc_shared([half_m, block_n], fp8_dtype)
                 anchor_sink = T.alloc_shared([2], "int32")
-                p_pv_frag_1 = T.alloc_fragment([half_m, block_n], fp8_dtype)
-                p_pv_frag_2 = T.alloc_fragment([half_m, block_n], fp8_dtype)
 
                 acc_s_1 = T.alloc_fragment([half_m, block_n], accum_dtype)
                 acc_o_1 = T.alloc_fragment([half_m, dim], accum_dtype)
@@ -1891,67 +1917,87 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
 
                         T.barrier_wait(v_empty, (gi_vp + 1) % 2)
                         if gi_vp % 2 == 0:
+                            if visible_pv_shared_v:
+                                for d, n in T.Parallel(dim, block_n):
+                                    v_vt_smem_0[d, n] = v[
+                                        tile_b,
+                                        (loop_range - 1) * block_n + n,
+                                        head_kv,
+                                        d,
+                                    ]
                             if tx == 0:
-                                T.mbarrier_expect_tx(v_raw_full, dim * block_n)
-                                v_desc_tail = T.create_tma_descriptor(
-                                    TMA_DTYPE_UINT8, 4, v.data,
-                                    dim, heads_kv, seq_len, batch,
-                                    1, dim, heads_kv * dim, seq_len * heads_kv * dim,
-                                    dim, 1, block_n, 1,
-                                    1, 1, 1, 1,
-                                    TMA_INTERLEAVE_NONE, TMA_SWIZZLE_128B,
-                                    TMA_L2_PROMOTION_128B, TMA_OOB_FILL_NONE,
-                                )
-                                tir.call_extern(
+                                if not visible_pv_shared_v:
+                                    T.mbarrier_expect_tx(v_raw_full, dim * block_n)
+                                    v_desc_tail = T.create_tma_descriptor(
+                                        TMA_DTYPE_UINT8, 4, v.data,
+                                        dim, heads_kv, seq_len, batch,
+                                        1, dim, heads_kv * dim, seq_len * heads_kv * dim,
+                                        dim, 1, block_n, 1,
+                                        1, 1, 1, 1,
+                                        TMA_INTERLEAVE_NONE, TMA_SWIZZLE_128B,
+                                        TMA_L2_PROMOTION_128B, TMA_OOB_FILL_NONE,
+                                    )
+                                    tir.call_extern(
+                                        "handle",
+                                        "tl::fp8_tma_load_4d_ptx",
+                                        v_desc_tail,
+                                        v_raw_full[0],
+                                        T.access_ptr(v_vt_smem_0, "w"),
+                                        0,
+                                        head_kv,
+                                        (loop_range - 1) * block_n,
+                                        tile_b,
+                                    )
+                            if not visible_pv_shared_v:
+                                T.barrier_arrive(v_raw_full)
+                                T.barrier_wait(v_raw_full, gi_vp % 2)
+                                T.call_extern(
                                     "handle",
-                                    "tl::fp8_tma_load_4d_ptx",
-                                    v_desc_tail,
-                                    v_raw_full[0],
-                                    T.access_ptr(v_vt_smem_0, "w"),
-                                    0,
-                                    head_kv,
-                                    (loop_range - 1) * block_n,
-                                    tile_b,
+                                    "tl::fp8_transpose_v_128x224_fa3_src_ldsm_stsm",
+                                    v_vt_smem_0.access_ptr("r"),
+                                    v_tc_smem_0.access_ptr("w"),
                                 )
-                            T.barrier_arrive(v_raw_full)
-                            T.barrier_wait(v_raw_full, gi_vp % 2)
-                            T.call_extern(
-                                "handle",
-                                "tl::fp8_transpose_v_128x224_fa3_src_ldsm_stsm",
-                                v_vt_smem_0.access_ptr("r"),
-                                v_tc_smem_0.access_ptr("w"),
-                            )
                         else:
+                            if visible_pv_shared_v:
+                                for d, n in T.Parallel(dim, block_n):
+                                    v_vt_smem_1[d, n] = v[
+                                        tile_b,
+                                        (loop_range - 1) * block_n + n,
+                                        head_kv,
+                                        d,
+                                    ]
                             if tx == 0:
-                                T.mbarrier_expect_tx(v_raw_full, dim * block_n)
-                                v_desc_tail = T.create_tma_descriptor(
-                                    TMA_DTYPE_UINT8, 4, v.data,
-                                    dim, heads_kv, seq_len, batch,
-                                    1, dim, heads_kv * dim, seq_len * heads_kv * dim,
-                                    dim, 1, block_n, 1,
-                                    1, 1, 1, 1,
-                                    TMA_INTERLEAVE_NONE, TMA_SWIZZLE_128B,
-                                    TMA_L2_PROMOTION_128B, TMA_OOB_FILL_NONE,
-                                )
-                                tir.call_extern(
+                                if not visible_pv_shared_v:
+                                    T.mbarrier_expect_tx(v_raw_full, dim * block_n)
+                                    v_desc_tail = T.create_tma_descriptor(
+                                        TMA_DTYPE_UINT8, 4, v.data,
+                                        dim, heads_kv, seq_len, batch,
+                                        1, dim, heads_kv * dim, seq_len * heads_kv * dim,
+                                        dim, 1, block_n, 1,
+                                        1, 1, 1, 1,
+                                        TMA_INTERLEAVE_NONE, TMA_SWIZZLE_128B,
+                                        TMA_L2_PROMOTION_128B, TMA_OOB_FILL_NONE,
+                                    )
+                                    tir.call_extern(
+                                        "handle",
+                                        "tl::fp8_tma_load_4d_ptx",
+                                        v_desc_tail,
+                                        v_raw_full[0],
+                                        T.access_ptr(v_vt_smem_1, "w"),
+                                        0,
+                                        head_kv,
+                                        (loop_range - 1) * block_n,
+                                        tile_b,
+                                    )
+                            if not visible_pv_shared_v:
+                                T.barrier_arrive(v_raw_full)
+                                T.barrier_wait(v_raw_full, gi_vp % 2)
+                                T.call_extern(
                                     "handle",
-                                    "tl::fp8_tma_load_4d_ptx",
-                                    v_desc_tail,
-                                    v_raw_full[0],
-                                    T.access_ptr(v_vt_smem_1, "w"),
-                                    0,
-                                    head_kv,
-                                    (loop_range - 1) * block_n,
-                                    tile_b,
+                                    "tl::fp8_transpose_v_128x224_fa3_src_ldsm_stsm",
+                                    v_vt_smem_1.access_ptr("r"),
+                                    v_tc_smem_1.access_ptr("w"),
                                 )
-                            T.barrier_arrive(v_raw_full)
-                            T.barrier_wait(v_raw_full, gi_vp % 2)
-                            T.call_extern(
-                                "handle",
-                                "tl::fp8_transpose_v_128x224_fa3_src_ldsm_stsm",
-                                v_vt_smem_1.access_ptr("r"),
-                                v_tc_smem_1.access_ptr("w"),
-                            )
                         T.barrier_arrive(v_full)
                         gi_vp = gi_vp + 1
 
@@ -1995,12 +2041,15 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                                              clear_accum=True)
                             if n_idx == 0:
                                 T.call_extern("handle", "tl::tileops_barrier_arrive_named", 2, 256)
-                                T.call_extern(
-                                    "handle",
-                                    "tl::wait_wgmma_anchor<1>",
-                                    T.address_of(anchor_sink[0]),
-                                    gi_kc1,
-                                )
+                                if plain_wait:
+                                    T.call_extern("handle", f"{wait_wgmma_helper}<1>")
+                                else:
+                                    T.call_extern(
+                                        "handle",
+                                        f"{wait_wgmma_helper}<1>",
+                                        T.address_of(anchor_sink[0]),
+                                        gi_kc1,
+                                    )
                                 T.warpgroup_fence_operand(acc_s_1, num_regs=112)
                                 T.barrier_arrive(k_empty)
                                 for i, j in T.Parallel(half_m, block_n):
@@ -2009,20 +2058,19 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                                         * k_scale[tile_b, head_kv, n_idx]
                                     )
                                 online_softmax_1(acc_s_1, sm_1, smp_1, ss_1, ssum_1, ls_1)
-                                T.copy(acc_s_1, p_pv_frag_1)
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_pack_p_fa3_raw_64x128x224",
+                                    pack_p_helper,
                                     acc_s_1.data,
-                                    p_pv_frag_1.data,
+                                    p_smem_1.access_ptr("w"),
                                 )
                             else:
                                 T.barrier_wait(v_full, gi_vc1 % 2)
                                 if gi_vc1 % 2 == 0:
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_pv_ptx_unit_begin_accumulate_from_p_frag_fa3_raw_64x128x224",
-                                        p_pv_frag_1.data,
+                                        pv_begin_accumulate_helper,
+                                        p_smem_1.access_ptr("r"),
                                         v_tc_smem_0.access_ptr("r"),
                                         4,
                                         acc_o_1.data,
@@ -2030,14 +2078,22 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                                 else:
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_pv_ptx_unit_begin_accumulate_from_p_frag_fa3_raw_64x128x224",
-                                        p_pv_frag_1.data,
+                                        pv_begin_accumulate_helper,
+                                        p_smem_1.access_ptr("r"),
                                         v_tc_smem_1.access_ptr("r"),
                                         4,
                                         acc_o_1.data,
                                     )
                                 T.call_extern("handle", "tl::tileops_barrier_arrive_named", 2, 256)
-                                T.wait_wgmma(0)
+                                if plain_wait:
+                                    T.call_extern("handle", f"{wait_wgmma_helper}<1>")
+                                else:
+                                    T.call_extern(
+                                        "handle",
+                                        f"{wait_wgmma_helper}<1>",
+                                        T.address_of(anchor_sink[0]),
+                                        gi_kc1,
+                                    )
                                 T.warpgroup_fence_operand(acc_s_1, num_regs=112)
                                 T.barrier_arrive(k_empty)
                                 for i, j in T.Parallel(half_m, block_n):
@@ -2047,26 +2103,28 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                                     )
                                 online_softmax_1(acc_s_1, sm_1, smp_1, ss_1, ssum_1, ls_1)
                                 T.copy(ss_1, ss_shared_1)
-                                T.call_extern(
-                                    "handle",
-                                    "tl::wait_wgmma_anchor<0>",
-                                    T.address_of(anchor_sink[0]),
-                                    gi_kc1,
-                                )
+                                if plain_wait:
+                                    T.call_extern("handle", f"{wait_wgmma_helper}<0>")
+                                else:
+                                    T.call_extern(
+                                        "handle",
+                                        f"{wait_wgmma_helper}<0>",
+                                        T.address_of(anchor_sink[0]),
+                                        gi_kc1,
+                                    )
                                 T.warpgroup_fence_operand(acc_o_1, num_regs=64)
                                 T.barrier_arrive(v_empty)
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_fa3_raw_acc_rescale_64x128",
+                                    "tl::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
                                     acc_o_1.data,
                                     ss_shared_1.access_ptr("r"),
                                 )
-                                T.copy(acc_s_1, p_pv_frag_1)
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_pack_p_fa3_raw_64x128x224",
+                                    pack_p_helper,
                                     acc_s_1.data,
-                                    p_pv_frag_1.data,
+                                    p_smem_1.access_ptr("w"),
                                 )
                                 gi_vc1 = gi_vc1 + 1
                             gi_kc1 = gi_kc1 + 1
@@ -2075,8 +2133,8 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                         if gi_vc1 % 2 == 0:
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_pv_ptx_unit_begin_accumulate_from_p_frag_fa3_raw_64x128x224",
-                                p_pv_frag_1.data,
+                                pv_begin_accumulate_helper,
+                                p_smem_1.access_ptr("r"),
                                 v_tc_smem_0.access_ptr("r"),
                                 4,
                                 acc_o_1.data,
@@ -2084,8 +2142,8 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                         else:
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_pv_ptx_unit_begin_accumulate_from_p_frag_fa3_raw_64x128x224",
-                                p_pv_frag_1.data,
+                                pv_begin_accumulate_helper,
+                                p_smem_1.access_ptr("r"),
                                 v_tc_smem_1.access_ptr("r"),
                                 4,
                                 acc_o_1.data,
@@ -2098,6 +2156,11 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                         T.barrier_arrive(v_empty)
                         gi_vc1 = gi_vc1 + 1
 
+                        T.call_extern(
+                            "handle",
+                            "tl::fp8_fa3_raw_acc_permute_to_canonical_64x128",
+                            acc_o_1.data,
+                        )
                         T.call_extern(
                             "handle",
                             "tl::fp8_fa3_raw_acc_scale_64x128",
@@ -2167,12 +2230,15 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                                              clear_accum=True)
                             if n_idx == 0:
                                 T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
-                                T.call_extern(
-                                    "handle",
-                                    "tl::wait_wgmma_anchor<1>",
-                                    T.address_of(anchor_sink[1]),
-                                    gi_kc2,
-                                )
+                                if plain_wait:
+                                    T.call_extern("handle", f"{wait_wgmma_helper}<1>")
+                                else:
+                                    T.call_extern(
+                                        "handle",
+                                        f"{wait_wgmma_helper}<1>",
+                                        T.address_of(anchor_sink[1]),
+                                        gi_kc2,
+                                    )
                                 T.warpgroup_fence_operand(acc_s_2, num_regs=112)
                                 T.barrier_arrive(k_empty)
                                 for i, j in T.Parallel(half_m, block_n):
@@ -2181,20 +2247,19 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                                         * k_scale[tile_b, head_kv, n_idx]
                                     )
                                 online_softmax_2(acc_s_2, sm_2, smp_2, ss_2, ssum_2, ls_2)
-                                T.copy(acc_s_2, p_pv_frag_2)
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_pack_p_fa3_raw_64x128x224",
+                                    pack_p_helper,
                                     acc_s_2.data,
-                                    p_pv_frag_2.data,
+                                    p_smem_2.access_ptr("w"),
                                 )
                             else:
                                 T.barrier_wait(v_full, gi_vc2 % 2)
                                 if gi_vc2 % 2 == 0:
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_pv_ptx_unit_begin_accumulate_from_p_frag_fa3_raw_64x128x224",
-                                        p_pv_frag_2.data,
+                                        pv_begin_accumulate_helper,
+                                        p_smem_2.access_ptr("r"),
                                         v_tc_smem_0.access_ptr("r"),
                                         4,
                                         acc_o_2.data,
@@ -2202,14 +2267,22 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                                 else:
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_pv_ptx_unit_begin_accumulate_from_p_frag_fa3_raw_64x128x224",
-                                        p_pv_frag_2.data,
+                                        pv_begin_accumulate_helper,
+                                        p_smem_2.access_ptr("r"),
                                         v_tc_smem_1.access_ptr("r"),
                                         4,
                                         acc_o_2.data,
                                     )
                                 T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
-                                T.wait_wgmma(0)
+                                if plain_wait:
+                                    T.call_extern("handle", f"{wait_wgmma_helper}<1>")
+                                else:
+                                    T.call_extern(
+                                        "handle",
+                                        f"{wait_wgmma_helper}<1>",
+                                        T.address_of(anchor_sink[1]),
+                                        gi_kc2,
+                                    )
                                 T.warpgroup_fence_operand(acc_s_2, num_regs=112)
                                 T.barrier_arrive(k_empty)
                                 for i, j in T.Parallel(half_m, block_n):
@@ -2219,26 +2292,28 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                                     )
                                 online_softmax_2(acc_s_2, sm_2, smp_2, ss_2, ssum_2, ls_2)
                                 T.copy(ss_2, ss_shared_2)
-                                T.call_extern(
-                                    "handle",
-                                    "tl::wait_wgmma_anchor<0>",
-                                    T.address_of(anchor_sink[1]),
-                                    gi_kc2,
-                                )
+                                if plain_wait:
+                                    T.call_extern("handle", f"{wait_wgmma_helper}<0>")
+                                else:
+                                    T.call_extern(
+                                        "handle",
+                                        f"{wait_wgmma_helper}<0>",
+                                        T.address_of(anchor_sink[1]),
+                                        gi_kc2,
+                                    )
                                 T.warpgroup_fence_operand(acc_o_2, num_regs=64)
                                 T.barrier_arrive(v_empty)
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_fa3_raw_acc_rescale_64x128",
+                                    "tl::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
                                     acc_o_2.data,
                                     ss_shared_2.access_ptr("r"),
                                 )
-                                T.copy(acc_s_2, p_pv_frag_2)
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_pack_p_fa3_raw_64x128x224",
+                                    pack_p_helper,
                                     acc_s_2.data,
-                                    p_pv_frag_2.data,
+                                    p_smem_2.access_ptr("w"),
                                 )
                                 gi_vc2 = gi_vc2 + 1
                             gi_kc2 = gi_kc2 + 1
@@ -2247,8 +2322,8 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                         if gi_vc2 % 2 == 0:
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_pv_ptx_unit_begin_accumulate_from_p_frag_fa3_raw_64x128x224",
-                                p_pv_frag_2.data,
+                                pv_begin_accumulate_helper,
+                                p_smem_2.access_ptr("r"),
                                 v_tc_smem_0.access_ptr("r"),
                                 4,
                                 acc_o_2.data,
@@ -2256,8 +2331,8 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                         else:
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_pv_ptx_unit_begin_accumulate_from_p_frag_fa3_raw_64x128x224",
-                                p_pv_frag_2.data,
+                                pv_begin_accumulate_helper,
+                                p_smem_2.access_ptr("r"),
                                 v_tc_smem_1.access_ptr("r"),
                                 4,
                                 acc_o_2.data,
@@ -2270,6 +2345,11 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
                         T.barrier_arrive(v_empty)
                         gi_vc2 = gi_vc2 + 1
 
+                        T.call_extern(
+                            "handle",
+                            "tl::fp8_fa3_raw_acc_permute_to_canonical_64x128",
+                            acc_o_2.data,
+                        )
                         T.call_extern(
                             "handle",
                             "tl::fp8_fa3_raw_acc_scale_64x128",
@@ -2324,13 +2404,13 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_local_p_kernel(
     block_m = 128
     half_m = block_m // 2
     block_n = 224
+    fp8_k = 32
     groups = heads // heads_kv
     accum_dtype = "float"
     fp8_dtype = "float8_e4m3fn"
     scale = make_log2e_scale(dim)
     scale_block = 128
     scale_blocks = (seq_len + scale_block - 1) // scale_block
-
     @tilelang.jit(
         out_idx=[6, 7],
         pass_configs={
@@ -2379,6 +2459,8 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_local_p_kernel(
                 ss_shared_2 = T.alloc_shared([half_m], accum_dtype)
                 ls_shared_1 = T.alloc_shared([half_m], accum_dtype)
                 ls_shared_2 = T.alloc_shared([half_m], accum_dtype)
+                p_smem_1 = T.alloc_shared([half_m, block_n], fp8_dtype)
+                p_smem_2 = T.alloc_shared([half_m, block_n], fp8_dtype)
                 acc_o_layout_seed = T.alloc_shared([half_m, dim], out_dtype)
                 anchor_sink = T.alloc_shared([2], "int32")
                 p_pv_local_1 = T.alloc_local([112], fp8_dtype)
@@ -2946,6 +3028,8 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_frag_p_local_delta_kernel(
     seq_len: int,
     dim: int,
     out_dtype: str,
+    correct_delta_rescale: bool = False,
+    pre_rescale_delta: bool = False,
 ) -> Callable:
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
@@ -2963,6 +3047,13 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_frag_p_local_delta_kernel(
     scale = make_log2e_scale(dim)
     scale_block = 128
     scale_blocks = (seq_len + scale_block - 1) // scale_block
+    wait_update_helper = (
+        "tl::fp8_pv_ptx_unit_wait_add_rescaled_delta_fa3_raw_64x128x224"
+        if pre_rescale_delta else
+        "tl::fp8_pv_ptx_unit_wait_update_rescale_fa3_raw_64x128x224"
+        if correct_delta_rescale else
+        "tl::fp8_pv_ptx_unit_wait_update_fa3_raw_64x128x224"
+    )
 
     @tilelang.jit(
         out_idx=[6, 7],
@@ -3325,7 +3416,7 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_frag_p_local_delta_kernel(
                                 )
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_pv_ptx_unit_wait_update_fa3_raw_64x128x224",
+                                    wait_update_helper,
                                     acc_delta_local_1.data,
                                     4,
                                     ss_shared_1.access_ptr("r"),
@@ -3497,7 +3588,7 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_frag_p_local_delta_kernel(
                                 )
                                 T.call_extern(
                                     "handle",
-                                    "tl::fp8_pv_ptx_unit_wait_update_fa3_raw_64x128x224",
+                                    wait_update_helper,
                                     acc_delta_local_2.data,
                                     4,
                                     ss_shared_2.access_ptr("r"),
@@ -3583,6 +3674,9 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
     seq_len: int,
     dim: int,
     out_dtype: str,
+    visible_pv: bool = False,
+    visible_pv_shared_v: bool = False,
+    visible_pv_emitter_k224: bool = False,
 ) -> Callable:
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
@@ -3594,13 +3688,13 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
     block_m = 128
     half_m = block_m // 2
     block_n = 224
+    fp8_k = 32
     groups = heads // heads_kv
     accum_dtype = "float"
     fp8_dtype = "float8_e4m3fn"
     scale = make_log2e_scale(dim)
     scale_block = 128
     scale_blocks = (seq_len + scale_block - 1) // scale_block
-
     @tilelang.jit(
         out_idx=[6, 7],
         pass_configs={
@@ -3624,6 +3718,48 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
 
         online_softmax_1 = make_online_softmax(scale, accum_dtype, half_m, block_n)
         online_softmax_2 = make_online_softmax(scale, accum_dtype, half_m, block_n)
+        pv_wgmma_emitter = None
+        if visible_pv_emitter_k224:
+            pv_wgmma_emitter = TensorCoreIntrinEmitter(
+                a_dtype=T.float8_e4m3fn,
+                b_dtype=T.float8_e4m3fn,
+                accum_dtype=T.float32,
+                a_transposed=False,
+                b_transposed=True,
+                block_row_warps=4,
+                block_col_warps=1,
+                warp_row_tiles=16,
+                warp_col_tiles=128,
+                chunk=block_n,
+            )
+
+        @T.macro
+        def load_p_fragment_k224(a_local, p_shared):
+            tx, _, warp_m = pv_wgmma_emitter.extract_thread_binding(
+                pv_wgmma_emitter.get_thread_binding()
+            )
+            row_off, col_off = get_ldmatrix_offset(
+                "A",
+                tx,
+                0,
+                p_shared.shape[-1],
+                T.float8_e4m3fn,
+                False,
+            )
+            for ldm_k in T.serial(block_n // fp8_k):
+                T.ptx_ldmatrix(
+                    T.bool(False),
+                    4,
+                    T.access_ptr(
+                        p_shared[
+                            warp_m * 16 + row_off,
+                            ldm_k * fp8_k + col_off,
+                        ],
+                        "r",
+                        extent=8,
+                    ),
+                    T.access_ptr(a_local[ldm_k * 16], "w", extent=8),
+                )
 
         @T.prim_func
         def main(
@@ -3645,14 +3781,28 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
                 v_vt_smem_1 = T.alloc_shared([dim, block_n], fp8_dtype)
                 v_tc_smem_0 = T.alloc_shared([dim, block_n], fp8_dtype)
                 v_tc_smem_1 = T.alloc_shared([dim, block_n], fp8_dtype)
+                if visible_pv and not visible_pv_emitter_k224:
+                    v_tc_shared_1 = T.alloc_shared([dim, fp8_k], fp8_dtype)
+                    v_tc_shared_2 = T.alloc_shared([dim, fp8_k], fp8_dtype)
                 ss_shared_1 = T.alloc_shared([half_m], accum_dtype)
                 ss_shared_2 = T.alloc_shared([half_m], accum_dtype)
                 ls_shared_1 = T.alloc_shared([half_m], accum_dtype)
                 ls_shared_2 = T.alloc_shared([half_m], accum_dtype)
-                acc_o_layout_seed = T.alloc_shared([half_m, dim], out_dtype)
+                if not visible_pv:
+                    acc_o_layout_seed = T.alloc_shared([half_m, dim], out_dtype)
                 anchor_sink = T.alloc_shared([2], "int32")
-                p_pv_frag_1 = T.alloc_fragment([half_m, block_n], fp8_dtype)
-                p_pv_frag_2 = T.alloc_fragment([half_m, block_n], fp8_dtype)
+                if visible_pv:
+                    p_smem_1 = T.alloc_shared([half_m, block_n], fp8_dtype)
+                    p_smem_2 = T.alloc_shared([half_m, block_n], fp8_dtype)
+                    if visible_pv_emitter_k224:
+                        p_pv_frag_1 = T.alloc_local([112], fp8_dtype)
+                        p_pv_frag_2 = T.alloc_local([112], fp8_dtype)
+                    else:
+                        p_pv_frag_1 = T.alloc_fragment([half_m, fp8_k], fp8_dtype)
+                        p_pv_frag_2 = T.alloc_fragment([half_m, fp8_k], fp8_dtype)
+                else:
+                    p_pv_frag_1 = T.alloc_fragment([half_m, block_n], fp8_dtype)
+                    p_pv_frag_2 = T.alloc_fragment([half_m, block_n], fp8_dtype)
                 acc_delta_1 = T.alloc_fragment([half_m, dim], accum_dtype)
                 acc_delta_2 = T.alloc_fragment([half_m, dim], accum_dtype)
 
@@ -3680,10 +3830,20 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
                 q_full_1 = T.alloc_barrier(arrive_count=128)
                 q_full_2 = T.alloc_barrier(arrive_count=128)
 
-                T.annotate_layout({
-                    q_shared_1: tilelang.layout.make_swizzled_layout(q_shared_1),
-                    q_shared_2: tilelang.layout.make_swizzled_layout(q_shared_2),
-                })
+                if visible_pv_emitter_k224:
+                    T.annotate_layout({
+                        q_shared_1: tilelang.layout.make_swizzled_layout(q_shared_1),
+                        q_shared_2: tilelang.layout.make_swizzled_layout(q_shared_2),
+                        v_tc_smem_0: tilelang.layout.make_quarter_bank_swizzled_layout(v_tc_smem_0),
+                        v_tc_smem_1: tilelang.layout.make_quarter_bank_swizzled_layout(v_tc_smem_1),
+                        acc_delta_1: pv_wgmma_emitter.make_mma_store_layout(acc_delta_1),
+                        acc_delta_2: pv_wgmma_emitter.make_mma_store_layout(acc_delta_2),
+                    })
+                else:
+                    T.annotate_layout({
+                        q_shared_1: tilelang.layout.make_swizzled_layout(q_shared_1),
+                        q_shared_2: tilelang.layout.make_swizzled_layout(q_shared_2),
+                    })
                 T.sync_threads()
 
                 gi_kp = T.alloc_var("int32", init=0)
@@ -3731,67 +3891,103 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
                             if n_idx > 0:
                                 T.barrier_wait(v_empty, (gi_vp + 1) % 2)
                                 if gi_vp % 2 == 0:
+                                    if visible_pv_emitter_k224:
+                                        for d, n in T.Parallel(dim, block_n):
+                                            v_tc_smem_0[d, n] = v[
+                                                tile_b,
+                                                (n_idx - 1) * block_n + n,
+                                                head_kv,
+                                                d,
+                                            ]
+                                    elif visible_pv_shared_v:
+                                        for d, n in T.Parallel(dim, block_n):
+                                            v_vt_smem_0[d, n] = v[
+                                                tile_b,
+                                                (n_idx - 1) * block_n + n,
+                                                head_kv,
+                                                d,
+                                            ]
                                     if tx == 0:
-                                        T.mbarrier_expect_tx(v_raw_full, dim * block_n)
-                                        v_desc = T.create_tma_descriptor(
-                                            TMA_DTYPE_UINT8, 4, v.data,
-                                            dim, heads_kv, seq_len, batch,
-                                            1, dim, heads_kv * dim, seq_len * heads_kv * dim,
-                                            dim, 1, block_n, 1,
-                                            1, 1, 1, 1,
-                                            TMA_INTERLEAVE_NONE, TMA_SWIZZLE_128B,
-                                            TMA_L2_PROMOTION_128B, TMA_OOB_FILL_NONE,
-                                        )
-                                        tir.call_extern(
+                                        if not visible_pv_shared_v and not visible_pv_emitter_k224:
+                                            T.mbarrier_expect_tx(v_raw_full, dim * block_n)
+                                            v_desc = T.create_tma_descriptor(
+                                                TMA_DTYPE_UINT8, 4, v.data,
+                                                dim, heads_kv, seq_len, batch,
+                                                1, dim, heads_kv * dim, seq_len * heads_kv * dim,
+                                                dim, 1, block_n, 1,
+                                                1, 1, 1, 1,
+                                                TMA_INTERLEAVE_NONE, TMA_SWIZZLE_128B,
+                                                TMA_L2_PROMOTION_128B, TMA_OOB_FILL_NONE,
+                                            )
+                                            tir.call_extern(
+                                                "handle",
+                                                "tl::fp8_tma_load_4d_ptx",
+                                                v_desc,
+                                                v_raw_full[0],
+                                                T.access_ptr(v_vt_smem_0, "w"),
+                                                0,
+                                                head_kv,
+                                                (n_idx - 1) * block_n,
+                                                tile_b,
+                                            )
+                                    if not visible_pv_shared_v and not visible_pv_emitter_k224:
+                                        T.barrier_arrive(v_raw_full)
+                                        T.barrier_wait(v_raw_full, gi_vp % 2)
+                                        T.call_extern(
                                             "handle",
-                                            "tl::fp8_tma_load_4d_ptx",
-                                            v_desc,
-                                            v_raw_full[0],
-                                            T.access_ptr(v_vt_smem_0, "w"),
-                                            0,
-                                            head_kv,
-                                            (n_idx - 1) * block_n,
-                                            tile_b,
+                                            "tl::fp8_transpose_v_128x224_fa3_src_ldsm_stsm",
+                                            v_vt_smem_0.access_ptr("r"),
+                                            v_tc_smem_0.access_ptr("w"),
                                         )
-                                    T.barrier_arrive(v_raw_full)
-                                    T.barrier_wait(v_raw_full, gi_vp % 2)
-                                    T.call_extern(
-                                        "handle",
-                                        "tl::fp8_transpose_v_128x224_fa3_src_ldsm_stsm",
-                                        v_vt_smem_0.access_ptr("r"),
-                                        v_tc_smem_0.access_ptr("w"),
-                                    )
                                 else:
+                                    if visible_pv_emitter_k224:
+                                        for d, n in T.Parallel(dim, block_n):
+                                            v_tc_smem_1[d, n] = v[
+                                                tile_b,
+                                                (n_idx - 1) * block_n + n,
+                                                head_kv,
+                                                d,
+                                            ]
+                                    elif visible_pv_shared_v:
+                                        for d, n in T.Parallel(dim, block_n):
+                                            v_vt_smem_1[d, n] = v[
+                                                tile_b,
+                                                (n_idx - 1) * block_n + n,
+                                                head_kv,
+                                                d,
+                                            ]
                                     if tx == 0:
-                                        T.mbarrier_expect_tx(v_raw_full, dim * block_n)
-                                        v_desc = T.create_tma_descriptor(
-                                            TMA_DTYPE_UINT8, 4, v.data,
-                                            dim, heads_kv, seq_len, batch,
-                                            1, dim, heads_kv * dim, seq_len * heads_kv * dim,
-                                            dim, 1, block_n, 1,
-                                            1, 1, 1, 1,
-                                            TMA_INTERLEAVE_NONE, TMA_SWIZZLE_128B,
-                                            TMA_L2_PROMOTION_128B, TMA_OOB_FILL_NONE,
-                                        )
-                                        tir.call_extern(
+                                        if not visible_pv_shared_v and not visible_pv_emitter_k224:
+                                            T.mbarrier_expect_tx(v_raw_full, dim * block_n)
+                                            v_desc = T.create_tma_descriptor(
+                                                TMA_DTYPE_UINT8, 4, v.data,
+                                                dim, heads_kv, seq_len, batch,
+                                                1, dim, heads_kv * dim, seq_len * heads_kv * dim,
+                                                dim, 1, block_n, 1,
+                                                1, 1, 1, 1,
+                                                TMA_INTERLEAVE_NONE, TMA_SWIZZLE_128B,
+                                                TMA_L2_PROMOTION_128B, TMA_OOB_FILL_NONE,
+                                            )
+                                            tir.call_extern(
+                                                "handle",
+                                                "tl::fp8_tma_load_4d_ptx",
+                                                v_desc,
+                                                v_raw_full[0],
+                                                T.access_ptr(v_vt_smem_1, "w"),
+                                                0,
+                                                head_kv,
+                                                (n_idx - 1) * block_n,
+                                                tile_b,
+                                            )
+                                    if not visible_pv_shared_v and not visible_pv_emitter_k224:
+                                        T.barrier_arrive(v_raw_full)
+                                        T.barrier_wait(v_raw_full, gi_vp % 2)
+                                        T.call_extern(
                                             "handle",
-                                            "tl::fp8_tma_load_4d_ptx",
-                                            v_desc,
-                                            v_raw_full[0],
-                                            T.access_ptr(v_vt_smem_1, "w"),
-                                            0,
-                                            head_kv,
-                                            (n_idx - 1) * block_n,
-                                            tile_b,
+                                            "tl::fp8_transpose_v_128x224_fa3_src_ldsm_stsm",
+                                            v_vt_smem_1.access_ptr("r"),
+                                            v_tc_smem_1.access_ptr("w"),
                                         )
-                                    T.barrier_arrive(v_raw_full)
-                                    T.barrier_wait(v_raw_full, gi_vp % 2)
-                                    T.call_extern(
-                                        "handle",
-                                        "tl::fp8_transpose_v_128x224_fa3_src_ldsm_stsm",
-                                        v_vt_smem_1.access_ptr("r"),
-                                        v_tc_smem_1.access_ptr("w"),
-                                    )
                                 T.barrier_arrive(v_full)
                                 gi_vp = gi_vp + 1
                             gi_kp = gi_kp + 1
@@ -3912,40 +4108,114 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
                                         * k_scale[tile_b, head_kv, n_idx]
                                     )
                                 online_softmax_1(acc_s_1, sm_1, smp_1, ss_1, ssum_1, ls_1)
-                                T.copy(acc_s_1, p_pv_frag_1)
-                                T.call_extern(
-                                    "handle",
-                                    "tl::fp8_pack_p_fa3_raw_64x128x224",
-                                    acc_s_1.data,
-                                    p_pv_frag_1.data,
-                                )
-                            else:
-                                T.barrier_wait(v_full, gi_vc1 % 2)
-                                if gi_vc1 % 2 == 0:
+                                if visible_pv:
+                                    T.copy(acc_s_1, p_smem_1)
+                                else:
+                                    T.copy(acc_s_1, p_pv_frag_1)
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
+                                        "tl::fp8_pack_p_fa3_raw_64x128x224",
+                                        acc_s_1.data,
                                         p_pv_frag_1.data,
-                                        v_tc_smem_0.access_ptr("r"),
-                                        4,
-                                        acc_delta_1.data,
                                     )
+                            else:
+                                T.barrier_wait(v_full, gi_vc1 % 2)
+                                if visible_pv:
+                                    if visible_pv_emitter_k224:
+                                        load_p_fragment_k224(p_pv_frag_1, p_smem_1)
+                                        if gi_vc1 % 2 == 0:
+                                            pv_wgmma_emitter._assign_b_shared_layout(
+                                                tilelang.layout.make_quarter_bank_swizzled_layout(v_tc_smem_0)
+                                            )
+                                            pv_wgmma_emitter.wgmma_rs(
+                                                p_pv_frag_1[:],
+                                                v_tc_smem_0[:, :],
+                                                acc_delta_1[:, :],
+                                                clear_accum=True,
+                                                wg_wait=-1,
+                                            )
+                                        else:
+                                            pv_wgmma_emitter._assign_b_shared_layout(
+                                                tilelang.layout.make_quarter_bank_swizzled_layout(v_tc_smem_1)
+                                            )
+                                            pv_wgmma_emitter.wgmma_rs(
+                                                p_pv_frag_1[:],
+                                                v_tc_smem_1[:, :],
+                                                acc_delta_1[:, :],
+                                                clear_accum=True,
+                                                wg_wait=-1,
+                                            )
+                                    else:
+                                        for pv_k in range(block_n // fp8_k):
+                                            T.copy(
+                                                p_smem_1[:, pv_k * fp8_k:(pv_k + 1) * fp8_k],
+                                                p_pv_frag_1,
+                                            )
+                                            for d, n in T.Parallel(dim, fp8_k):
+                                                if visible_pv_shared_v:
+                                                    if gi_vc1 % 2 == 0:
+                                                        v_tc_shared_1[d, n] = v_vt_smem_0[
+                                                            d, pv_k * fp8_k + n]
+                                                    else:
+                                                        v_tc_shared_1[d, n] = v_vt_smem_1[
+                                                            d, pv_k * fp8_k + n]
+                                                else:
+                                                    v_tc_shared_1[d, n] = v[
+                                                        tile_b,
+                                                        (n_idx - 1) * block_n + pv_k * fp8_k + n,
+                                                        head_kv,
+                                                        d,
+                                                    ]
+                                            T.wgmma_gemm(
+                                                p_pv_frag_1,
+                                                v_tc_shared_1,
+                                                acc_delta_1,
+                                                transpose_B=True,
+                                                policy=T.GemmWarpPolicy.FullRow,
+                                                clear_accum=(pv_k == 0),
+                                            )
+                                else:
+                                    if gi_vc1 % 2 == 0:
+                                        T.call_extern(
+                                            "handle",
+                                            "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
+                                            p_pv_frag_1.data,
+                                            v_tc_smem_0.access_ptr("r"),
+                                            4,
+                                            acc_delta_1.data,
+                                        )
+                                    else:
+                                        T.call_extern(
+                                            "handle",
+                                            "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
+                                            p_pv_frag_1.data,
+                                            v_tc_smem_1.access_ptr("r"),
+                                            4,
+                                            acc_delta_1.data,
+                                        )
+                                T.call_extern("handle", "tl::tileops_barrier_arrive_named", 2, 256)
+                                if visible_pv:
+                                    if visible_pv_emitter_k224:
+                                        T.call_extern(
+                                            "handle",
+                                            "tl::wait_wgmma_anchor<1>",
+                                            T.address_of(anchor_sink[0]),
+                                            gi_kc1,
+                                        )
+                                    else:
+                                        T.call_extern(
+                                            "handle",
+                                            "tl::wait_wgmma_anchor<7>",
+                                            T.address_of(anchor_sink[0]),
+                                            gi_kc1,
+                                        )
                                 else:
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
-                                        p_pv_frag_1.data,
-                                        v_tc_smem_1.access_ptr("r"),
-                                        4,
-                                        acc_delta_1.data,
+                                        "tl::wait_wgmma_anchor<1>",
+                                        T.address_of(anchor_sink[0]),
+                                        gi_kc1,
                                     )
-                                T.call_extern("handle", "tl::tileops_barrier_arrive_named", 2, 256)
-                                T.call_extern(
-                                    "handle",
-                                    "tl::wait_wgmma_anchor<1>",
-                                    T.address_of(anchor_sink[0]),
-                                    gi_kc1,
-                                )
                                 T.warpgroup_fence_operand(acc_s_1, num_regs=112)
                                 T.barrier_arrive(k_empty)
                                 for i, j in T.Parallel(half_m, block_n):
@@ -3961,77 +4231,162 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
                                     T.address_of(anchor_sink[0]),
                                     gi_kc1,
                                 )
-                                T.call_extern(
-                                    "handle",
-                                    "tl::fp8_pv_ptx_unit_wait_update_fa3_raw_64x128x224",
-                                    acc_delta_1.data,
-                                    4,
-                                    ss_shared_1.access_ptr("r"),
-                                    v_scale[tile_b, head_kv, n_idx - 1],
-                                    acc_o_1.data,
-                                )
-                                T.warpgroup_fence_operand(acc_o_1, num_regs=64)
+                                if visible_pv:
+                                    T.wait_wgmma(0)
+                                    T.warpgroup_fence_operand(acc_delta_1, num_regs=64)
+                                    for i, j in T.Parallel(half_m, dim):
+                                        acc_o_1[i, j] = (
+                                            acc_o_1[i, j]
+                                            + acc_delta_1[i, j]
+                                            * v_scale[tile_b, head_kv, n_idx - 1]
+                                        ) * ss_1[i]
+                                else:
+                                    T.call_extern(
+                                        "handle",
+                                        "tl::fp8_pv_ptx_unit_wait_update_fa3_raw_64x128x224",
+                                        acc_delta_1.data,
+                                        4,
+                                        ss_shared_1.access_ptr("r"),
+                                        v_scale[tile_b, head_kv, n_idx - 1],
+                                        acc_o_1.data,
+                                    )
+                                    T.warpgroup_fence_operand(acc_o_1, num_regs=64)
                                 T.barrier_arrive(v_empty)
-                                T.copy(acc_s_1, p_pv_frag_1)
-                                T.call_extern(
-                                    "handle",
-                                    "tl::fp8_pack_p_fa3_raw_64x128x224",
-                                    acc_s_1.data,
-                                    p_pv_frag_1.data,
-                                )
+                                if visible_pv:
+                                    T.copy(acc_s_1, p_smem_1)
+                                else:
+                                    T.copy(acc_s_1, p_pv_frag_1)
+                                    T.call_extern(
+                                        "handle",
+                                        "tl::fp8_pack_p_fa3_raw_64x128x224",
+                                        acc_s_1.data,
+                                        p_pv_frag_1.data,
+                                    )
                                 gi_vc1 = gi_vc1 + 1
                             gi_kc1 = gi_kc1 + 1
 
                         T.barrier_wait(v_full, gi_vc1 % 2)
-                        if gi_vc1 % 2 == 0:
-                            T.call_extern(
-                                "handle",
-                                "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
-                                p_pv_frag_1.data,
-                                v_tc_smem_0.access_ptr("r"),
-                                4,
-                                acc_delta_1.data,
-                            )
+                        if visible_pv:
+                            if visible_pv_emitter_k224:
+                                load_p_fragment_k224(p_pv_frag_1, p_smem_1)
+                                if gi_vc1 % 2 == 0:
+                                    pv_wgmma_emitter._assign_b_shared_layout(
+                                        tilelang.layout.make_quarter_bank_swizzled_layout(v_tc_smem_0)
+                                    )
+                                    pv_wgmma_emitter.wgmma_rs(
+                                        p_pv_frag_1[:],
+                                        v_tc_smem_0[:, :],
+                                        acc_delta_1[:, :],
+                                        clear_accum=True,
+                                        wg_wait=-1,
+                                    )
+                                else:
+                                    pv_wgmma_emitter._assign_b_shared_layout(
+                                        tilelang.layout.make_quarter_bank_swizzled_layout(v_tc_smem_1)
+                                    )
+                                    pv_wgmma_emitter.wgmma_rs(
+                                        p_pv_frag_1[:],
+                                        v_tc_smem_1[:, :],
+                                        acc_delta_1[:, :],
+                                        clear_accum=True,
+                                        wg_wait=-1,
+                                    )
+                            else:
+                                for pv_k in range(block_n // fp8_k):
+                                    T.copy(
+                                        p_smem_1[:, pv_k * fp8_k:(pv_k + 1) * fp8_k],
+                                        p_pv_frag_1,
+                                    )
+                                    for d, n in T.Parallel(dim, fp8_k):
+                                        if visible_pv_shared_v:
+                                            if gi_vc1 % 2 == 0:
+                                                v_tc_shared_1[d, n] = v_vt_smem_0[
+                                                    d, pv_k * fp8_k + n]
+                                            else:
+                                                v_tc_shared_1[d, n] = v_vt_smem_1[
+                                                    d, pv_k * fp8_k + n]
+                                        else:
+                                            v_tc_shared_1[d, n] = v[
+                                                tile_b,
+                                                (loop_range - 1) * block_n + pv_k * fp8_k + n,
+                                                head_kv,
+                                                d,
+                                            ]
+                                    T.wgmma_gemm(
+                                        p_pv_frag_1,
+                                        v_tc_shared_1,
+                                        acc_delta_1,
+                                        transpose_B=True,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                        clear_accum=(pv_k == 0),
+                                    )
+                        else:
+                            if gi_vc1 % 2 == 0:
+                                T.call_extern(
+                                    "handle",
+                                    "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
+                                    p_pv_frag_1.data,
+                                    v_tc_smem_0.access_ptr("r"),
+                                    4,
+                                    acc_delta_1.data,
+                                )
+                            else:
+                                T.call_extern(
+                                    "handle",
+                                    "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
+                                    p_pv_frag_1.data,
+                                    v_tc_smem_1.access_ptr("r"),
+                                    4,
+                                    acc_delta_1.data,
+                                )
+                        if visible_pv:
+                            T.wait_wgmma(0)
+                            T.warpgroup_fence_operand(acc_delta_1, num_regs=64)
+                            for i, j in T.Parallel(half_m, dim):
+                                acc_o_1[i, j] += (
+                                    acc_delta_1[i, j]
+                                    * v_scale[tile_b, head_kv, loop_range - 1]
+                                )
                         else:
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
-                                p_pv_frag_1.data,
-                                v_tc_smem_1.access_ptr("r"),
-                                4,
+                                "tl::fp8_pv_ptx_unit_wait_update_tail_fa3_raw_64x128x224",
                                 acc_delta_1.data,
+                                4,
+                                v_scale[tile_b, head_kv, loop_range - 1],
+                                acc_o_1.data,
                             )
-                        T.call_extern(
-                            "handle",
-                            "tl::fp8_pv_ptx_unit_wait_update_tail_fa3_raw_64x128x224",
-                            acc_delta_1.data,
-                            4,
-                            v_scale[tile_b, head_kv, loop_range - 1],
-                            acc_o_1.data,
-                        )
-                        T.warpgroup_fence_operand(acc_o_1, num_regs=64)
+                            T.warpgroup_fence_operand(acc_o_1, num_regs=64)
                         T.barrier_arrive(v_empty)
                         gi_vc1 = gi_vc1 + 1
-                        T.copy(ls_1, ls_shared_1)
-                        T.copy(acc_o_1, acc_o_layout_seed)
-                        T.call_extern(
-                            "handle",
-                            "tl::fp8_fa3_raw_acc_store_smem_cute_reuse_64x128",
-                            acc_o_1.data,
-                            ls_shared_1.access_ptr("r"),
-                            4,
-                            v_tc_smem_0.access_ptr("w"),
-                            T.address_of(output[tile_b, row_base, tile_h, 0]),
-                        )
-                        T.fence_proxy_async()
-                        T.sync_threads(barrier_id=3, arrive_count=128)
-                        T.call_extern(
-                            "handle",
-                            "tl::fp8_fa3_o_smem_store_global_cute_reuse_64x128",
-                            v_tc_smem_0.access_ptr("r"),
-                            T.address_of(output[tile_b, row_base, tile_h, 0]),
-                            heads * dim,
-                        )
+                        if visible_pv:
+                            for i, j in T.Parallel(half_m, dim):
+                                acc_o_1[i, j] /= ls_1[i]
+                            T.copy(
+                                acc_o_1,
+                                output[tile_b, row_base:row_base + half_m, tile_h, :],
+                            )
+                        else:
+                            T.copy(ls_1, ls_shared_1)
+                            T.copy(acc_o_1, acc_o_layout_seed)
+                            T.call_extern(
+                                "handle",
+                                "tl::fp8_fa3_raw_acc_store_smem_cute_reuse_64x128",
+                                acc_o_1.data,
+                                ls_shared_1.access_ptr("r"),
+                                4,
+                                v_tc_smem_0.access_ptr("w"),
+                                T.address_of(output[tile_b, row_base, tile_h, 0]),
+                            )
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=3, arrive_count=128)
+                            T.call_extern(
+                                "handle",
+                                "tl::fp8_fa3_o_smem_store_global_cute_reuse_64x128",
+                                v_tc_smem_0.access_ptr("r"),
+                                T.address_of(output[tile_b, row_base, tile_h, 0]),
+                                heads * dim,
+                            )
                         for i in T.Parallel(half_m):
                             ls_1[i] = T.log2(ls_1[i]) + sm_1[i] * scale
                         T.copy(ls_1, lse[tile_b, tile_h, row_base:row_base + half_m])
@@ -4085,40 +4440,114 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
                                         * k_scale[tile_b, head_kv, n_idx]
                                     )
                                 online_softmax_2(acc_s_2, sm_2, smp_2, ss_2, ssum_2, ls_2)
-                                T.copy(acc_s_2, p_pv_frag_2)
-                                T.call_extern(
-                                    "handle",
-                                    "tl::fp8_pack_p_fa3_raw_64x128x224",
-                                    acc_s_2.data,
-                                    p_pv_frag_2.data,
-                                )
-                            else:
-                                T.barrier_wait(v_full, gi_vc2 % 2)
-                                if gi_vc2 % 2 == 0:
+                                if visible_pv:
+                                    T.copy(acc_s_2, p_smem_2)
+                                else:
+                                    T.copy(acc_s_2, p_pv_frag_2)
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
+                                        "tl::fp8_pack_p_fa3_raw_64x128x224",
+                                        acc_s_2.data,
                                         p_pv_frag_2.data,
-                                        v_tc_smem_0.access_ptr("r"),
-                                        4,
-                                        acc_delta_2.data,
                                     )
+                            else:
+                                T.barrier_wait(v_full, gi_vc2 % 2)
+                                if visible_pv:
+                                    if visible_pv_emitter_k224:
+                                        load_p_fragment_k224(p_pv_frag_2, p_smem_2)
+                                        if gi_vc2 % 2 == 0:
+                                            pv_wgmma_emitter._assign_b_shared_layout(
+                                                tilelang.layout.make_quarter_bank_swizzled_layout(v_tc_smem_0)
+                                            )
+                                            pv_wgmma_emitter.wgmma_rs(
+                                                p_pv_frag_2[:],
+                                                v_tc_smem_0[:, :],
+                                                acc_delta_2[:, :],
+                                                clear_accum=True,
+                                                wg_wait=-1,
+                                            )
+                                        else:
+                                            pv_wgmma_emitter._assign_b_shared_layout(
+                                                tilelang.layout.make_quarter_bank_swizzled_layout(v_tc_smem_1)
+                                            )
+                                            pv_wgmma_emitter.wgmma_rs(
+                                                p_pv_frag_2[:],
+                                                v_tc_smem_1[:, :],
+                                                acc_delta_2[:, :],
+                                                clear_accum=True,
+                                                wg_wait=-1,
+                                            )
+                                    else:
+                                        for pv_k in range(block_n // fp8_k):
+                                            T.copy(
+                                                p_smem_2[:, pv_k * fp8_k:(pv_k + 1) * fp8_k],
+                                                p_pv_frag_2,
+                                            )
+                                            for d, n in T.Parallel(dim, fp8_k):
+                                                if visible_pv_shared_v:
+                                                    if gi_vc2 % 2 == 0:
+                                                        v_tc_shared_2[d, n] = v_vt_smem_0[
+                                                            d, pv_k * fp8_k + n]
+                                                    else:
+                                                        v_tc_shared_2[d, n] = v_vt_smem_1[
+                                                            d, pv_k * fp8_k + n]
+                                                else:
+                                                    v_tc_shared_2[d, n] = v[
+                                                        tile_b,
+                                                        (n_idx - 1) * block_n + pv_k * fp8_k + n,
+                                                        head_kv,
+                                                        d,
+                                                    ]
+                                            T.wgmma_gemm(
+                                                p_pv_frag_2,
+                                                v_tc_shared_2,
+                                                acc_delta_2,
+                                                transpose_B=True,
+                                                policy=T.GemmWarpPolicy.FullRow,
+                                                clear_accum=(pv_k == 0),
+                                            )
+                                else:
+                                    if gi_vc2 % 2 == 0:
+                                        T.call_extern(
+                                            "handle",
+                                            "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
+                                            p_pv_frag_2.data,
+                                            v_tc_smem_0.access_ptr("r"),
+                                            4,
+                                            acc_delta_2.data,
+                                        )
+                                    else:
+                                        T.call_extern(
+                                            "handle",
+                                            "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
+                                            p_pv_frag_2.data,
+                                            v_tc_smem_1.access_ptr("r"),
+                                            4,
+                                            acc_delta_2.data,
+                                        )
+                                T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
+                                if visible_pv:
+                                    if visible_pv_emitter_k224:
+                                        T.call_extern(
+                                            "handle",
+                                            "tl::wait_wgmma_anchor<1>",
+                                            T.address_of(anchor_sink[1]),
+                                            gi_kc2,
+                                        )
+                                    else:
+                                        T.call_extern(
+                                            "handle",
+                                            "tl::wait_wgmma_anchor<7>",
+                                            T.address_of(anchor_sink[1]),
+                                            gi_kc2,
+                                        )
                                 else:
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
-                                        p_pv_frag_2.data,
-                                        v_tc_smem_1.access_ptr("r"),
-                                        4,
-                                        acc_delta_2.data,
+                                        "tl::wait_wgmma_anchor<1>",
+                                        T.address_of(anchor_sink[1]),
+                                        gi_kc2,
                                     )
-                                T.call_extern("handle", "tl::tileops_barrier_arrive_named", 1, 256)
-                                T.call_extern(
-                                    "handle",
-                                    "tl::wait_wgmma_anchor<1>",
-                                    T.address_of(anchor_sink[1]),
-                                    gi_kc2,
-                                )
                                 T.warpgroup_fence_operand(acc_s_2, num_regs=112)
                                 T.barrier_arrive(k_empty)
                                 for i, j in T.Parallel(half_m, block_n):
@@ -4134,77 +4563,162 @@ def _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
                                     T.address_of(anchor_sink[1]),
                                     gi_kc2,
                                 )
-                                T.call_extern(
-                                    "handle",
-                                    "tl::fp8_pv_ptx_unit_wait_update_fa3_raw_64x128x224",
-                                    acc_delta_2.data,
-                                    4,
-                                    ss_shared_2.access_ptr("r"),
-                                    v_scale[tile_b, head_kv, n_idx - 1],
-                                    acc_o_2.data,
-                                )
-                                T.warpgroup_fence_operand(acc_o_2, num_regs=64)
+                                if visible_pv:
+                                    T.wait_wgmma(0)
+                                    T.warpgroup_fence_operand(acc_delta_2, num_regs=64)
+                                    for i, j in T.Parallel(half_m, dim):
+                                        acc_o_2[i, j] = (
+                                            acc_o_2[i, j]
+                                            + acc_delta_2[i, j]
+                                            * v_scale[tile_b, head_kv, n_idx - 1]
+                                        ) * ss_2[i]
+                                else:
+                                    T.call_extern(
+                                        "handle",
+                                        "tl::fp8_pv_ptx_unit_wait_update_fa3_raw_64x128x224",
+                                        acc_delta_2.data,
+                                        4,
+                                        ss_shared_2.access_ptr("r"),
+                                        v_scale[tile_b, head_kv, n_idx - 1],
+                                        acc_o_2.data,
+                                    )
+                                    T.warpgroup_fence_operand(acc_o_2, num_regs=64)
                                 T.barrier_arrive(v_empty)
-                                T.copy(acc_s_2, p_pv_frag_2)
-                                T.call_extern(
-                                    "handle",
-                                    "tl::fp8_pack_p_fa3_raw_64x128x224",
-                                    acc_s_2.data,
-                                    p_pv_frag_2.data,
-                                )
+                                if visible_pv:
+                                    T.copy(acc_s_2, p_smem_2)
+                                else:
+                                    T.copy(acc_s_2, p_pv_frag_2)
+                                    T.call_extern(
+                                        "handle",
+                                        "tl::fp8_pack_p_fa3_raw_64x128x224",
+                                        acc_s_2.data,
+                                        p_pv_frag_2.data,
+                                    )
                                 gi_vc2 = gi_vc2 + 1
                             gi_kc2 = gi_kc2 + 1
 
                         T.barrier_wait(v_full, gi_vc2 % 2)
-                        if gi_vc2 % 2 == 0:
-                            T.call_extern(
-                                "handle",
-                                "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
-                                p_pv_frag_2.data,
-                                v_tc_smem_0.access_ptr("r"),
-                                4,
-                                acc_delta_2.data,
-                            )
+                        if visible_pv:
+                            if visible_pv_emitter_k224:
+                                load_p_fragment_k224(p_pv_frag_2, p_smem_2)
+                                if gi_vc2 % 2 == 0:
+                                    pv_wgmma_emitter._assign_b_shared_layout(
+                                        tilelang.layout.make_quarter_bank_swizzled_layout(v_tc_smem_0)
+                                    )
+                                    pv_wgmma_emitter.wgmma_rs(
+                                        p_pv_frag_2[:],
+                                        v_tc_smem_0[:, :],
+                                        acc_delta_2[:, :],
+                                        clear_accum=True,
+                                        wg_wait=-1,
+                                    )
+                                else:
+                                    pv_wgmma_emitter._assign_b_shared_layout(
+                                        tilelang.layout.make_quarter_bank_swizzled_layout(v_tc_smem_1)
+                                    )
+                                    pv_wgmma_emitter.wgmma_rs(
+                                        p_pv_frag_2[:],
+                                        v_tc_smem_1[:, :],
+                                        acc_delta_2[:, :],
+                                        clear_accum=True,
+                                        wg_wait=-1,
+                                    )
+                            else:
+                                for pv_k in range(block_n // fp8_k):
+                                    T.copy(
+                                        p_smem_2[:, pv_k * fp8_k:(pv_k + 1) * fp8_k],
+                                        p_pv_frag_2,
+                                    )
+                                    for d, n in T.Parallel(dim, fp8_k):
+                                        if visible_pv_shared_v:
+                                            if gi_vc2 % 2 == 0:
+                                                v_tc_shared_2[d, n] = v_vt_smem_0[
+                                                    d, pv_k * fp8_k + n]
+                                            else:
+                                                v_tc_shared_2[d, n] = v_vt_smem_1[
+                                                    d, pv_k * fp8_k + n]
+                                        else:
+                                            v_tc_shared_2[d, n] = v[
+                                                tile_b,
+                                                (loop_range - 1) * block_n + pv_k * fp8_k + n,
+                                                head_kv,
+                                                d,
+                                            ]
+                                    T.wgmma_gemm(
+                                        p_pv_frag_2,
+                                        v_tc_shared_2,
+                                        acc_delta_2,
+                                        transpose_B=True,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                        clear_accum=(pv_k == 0),
+                                    )
+                        else:
+                            if gi_vc2 % 2 == 0:
+                                T.call_extern(
+                                    "handle",
+                                    "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
+                                    p_pv_frag_2.data,
+                                    v_tc_smem_0.access_ptr("r"),
+                                    4,
+                                    acc_delta_2.data,
+                                )
+                            else:
+                                T.call_extern(
+                                    "handle",
+                                    "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
+                                    p_pv_frag_2.data,
+                                    v_tc_smem_1.access_ptr("r"),
+                                    4,
+                                    acc_delta_2.data,
+                                )
+                        if visible_pv:
+                            T.wait_wgmma(0)
+                            T.warpgroup_fence_operand(acc_delta_2, num_regs=64)
+                            for i, j in T.Parallel(half_m, dim):
+                                acc_o_2[i, j] += (
+                                    acc_delta_2[i, j]
+                                    * v_scale[tile_b, head_kv, loop_range - 1]
+                                )
                         else:
                             T.call_extern(
                                 "handle",
-                                "tl::fp8_pv_ptx_unit_begin_from_p_fa3_raw_64x128x224",
-                                p_pv_frag_2.data,
-                                v_tc_smem_1.access_ptr("r"),
-                                4,
+                                "tl::fp8_pv_ptx_unit_wait_update_tail_fa3_raw_64x128x224",
                                 acc_delta_2.data,
+                                4,
+                                v_scale[tile_b, head_kv, loop_range - 1],
+                                acc_o_2.data,
                             )
-                        T.call_extern(
-                            "handle",
-                            "tl::fp8_pv_ptx_unit_wait_update_tail_fa3_raw_64x128x224",
-                            acc_delta_2.data,
-                            4,
-                            v_scale[tile_b, head_kv, loop_range - 1],
-                            acc_o_2.data,
-                        )
-                        T.warpgroup_fence_operand(acc_o_2, num_regs=64)
+                            T.warpgroup_fence_operand(acc_o_2, num_regs=64)
                         T.barrier_arrive(v_empty)
                         gi_vc2 = gi_vc2 + 1
-                        T.copy(ls_2, ls_shared_2)
-                        T.copy(acc_o_2, acc_o_layout_seed)
-                        T.call_extern(
-                            "handle",
-                            "tl::fp8_fa3_raw_acc_store_smem_cute_reuse_64x128",
-                            acc_o_2.data,
-                            ls_shared_2.access_ptr("r"),
-                            4,
-                            v_tc_smem_1.access_ptr("w"),
-                            T.address_of(output[tile_b, row_base + half_m, tile_h, 0]),
-                        )
-                        T.fence_proxy_async()
-                        T.sync_threads(barrier_id=4, arrive_count=128)
-                        T.call_extern(
-                            "handle",
-                            "tl::fp8_fa3_o_smem_store_global_cute_reuse_64x128",
-                            v_tc_smem_1.access_ptr("r"),
-                            T.address_of(output[tile_b, row_base + half_m, tile_h, 0]),
-                            heads * dim,
-                        )
+                        if visible_pv:
+                            for i, j in T.Parallel(half_m, dim):
+                                acc_o_2[i, j] /= ls_2[i]
+                            T.copy(
+                                acc_o_2,
+                                output[tile_b, row_base + half_m:row_base + block_m, tile_h, :],
+                            )
+                        else:
+                            T.copy(ls_2, ls_shared_2)
+                            T.copy(acc_o_2, acc_o_layout_seed)
+                            T.call_extern(
+                                "handle",
+                                "tl::fp8_fa3_raw_acc_store_smem_cute_reuse_64x128",
+                                acc_o_2.data,
+                                ls_shared_2.access_ptr("r"),
+                                4,
+                                v_tc_smem_1.access_ptr("w"),
+                                T.address_of(output[tile_b, row_base + half_m, tile_h, 0]),
+                            )
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=4, arrive_count=128)
+                            T.call_extern(
+                                "handle",
+                                "tl::fp8_fa3_o_smem_store_global_cute_reuse_64x128",
+                                v_tc_smem_1.access_ptr("r"),
+                                T.address_of(output[tile_b, row_base + half_m, tile_h, 0]),
+                                heads * dim,
+                            )
                         for i in T.Parallel(half_m):
                             ls_2[i] = T.log2(ls_2[i]) + sm_2[i] * scale
                         T.copy(ls_2, lse[tile_b, tile_h, row_base + half_m:row_base + block_m])
@@ -5215,6 +5729,70 @@ def _(
     return fake_o, fake_lse
 
 
+def _expand_fa3_gqa_descales(
+    q_descale: torch.Tensor,
+    k_descale: torch.Tensor,
+    v_descale: torch.Tensor,
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Accept FA3 [batch, heads_kv] descales while preserving internal scale layout.
+
+    The TileLang kernels below still index scale metadata as
+    q: [batch, heads, scale_blocks] and k/v: [batch, heads_kv, scale_blocks].
+    FA3 exposes q/k/v descales as [batch, heads_kv], with q grouped by KV head.
+    """
+    scale_blocks = (seq_len + 127) // 128
+    group_size = heads // heads_kv
+
+    def _record_stream(x: torch.Tensor) -> torch.Tensor:
+        if x.is_cuda:
+            x.record_stream(torch.cuda.current_stream(x.device))
+        return x
+
+    def _as_float_contiguous(x: torch.Tensor) -> torch.Tensor:
+        return x if x.dtype == torch.float32 and x.is_contiguous() else x.float().contiguous()
+
+    def _expand_q(x: torch.Tensor) -> torch.Tensor:
+        if x.ndim == 3:
+            if tuple(x.shape) != (batch, heads, scale_blocks):
+                raise ValueError(
+                    "q_descale/q_scale must have shape "
+                    f"({batch}, {heads_kv}) for FA3 descales or "
+                    f"({batch}, {heads}, {scale_blocks}) for internal scales, got {tuple(x.shape)}."
+            )
+            return _record_stream(_as_float_contiguous(x))
+        if x.ndim != 2 or tuple(x.shape) != (batch, heads_kv):
+            raise ValueError(
+                "q_descale must have FA3 shape "
+                f"({batch}, {heads_kv}) or internal shape "
+                f"({batch}, {heads}, {scale_blocks}), got {tuple(x.shape)}."
+            )
+        x = _as_float_contiguous(x).repeat_interleave(group_size, dim=1)
+        return _record_stream(x[:, :, None].expand(batch, heads, scale_blocks).contiguous())
+
+    def _expand_kv(name: str, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim == 3:
+            if tuple(x.shape) != (batch, heads_kv, scale_blocks):
+                raise ValueError(
+                    f"{name} must have FA3 shape ({batch}, {heads_kv}) or internal shape "
+                    f"({batch}, {heads_kv}, {scale_blocks}), got {tuple(x.shape)}."
+                )
+            return _record_stream(_as_float_contiguous(x))
+        if x.ndim != 2 or tuple(x.shape) != (batch, heads_kv):
+            raise ValueError(
+                f"{name} must have FA3 shape ({batch}, {heads_kv}) or internal shape "
+                f"({batch}, {heads_kv}, {scale_blocks}), got {tuple(x.shape)}."
+            )
+        x = _as_float_contiguous(x)
+        return _record_stream(x[:, :, None].expand(batch, heads_kv, scale_blocks).contiguous())
+
+    return _expand_q(q_descale), _expand_kv("k_descale", k_descale), _expand_kv(
+        "v_descale", v_descale)
+
+
 class GQAFwdFP8WgmmaKernel(Kernel):
     supported_archs: list[int] = [90]
 
@@ -5277,6 +5855,15 @@ class GQAFwdFP8WgmmaKernel(Kernel):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if q.dtype != torch.float8_e4m3fn or k.dtype != torch.float8_e4m3fn or v.dtype != torch.float8_e4m3fn:
             raise ValueError("GQAFwdFP8WgmmaKernel expects q/k/v to be torch.float8_e4m3fn.")
+        q_scale, k_scale, v_scale = _expand_fa3_gqa_descales(
+            q_scale,
+            k_scale,
+            v_scale,
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.seq_len,
+        )
         return _gqa_fwd_fp8_wgmma_wrapped_kernel(
             self.batch,
             self.heads,
@@ -5452,6 +6039,15 @@ class GQAFwdFP8WsPersistentKernel(Kernel):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if q.dtype != torch.float8_e4m3fn or k.dtype != torch.float8_e4m3fn or v.dtype != torch.float8_e4m3fn:
             raise ValueError("GQAFwdFP8WsPersistentKernel expects q/k/v to be torch.float8_e4m3fn.")
+        q_scale, k_scale, v_scale = _expand_fa3_gqa_descales(
+            q_scale,
+            k_scale,
+            v_scale,
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.seq_len,
+        )
         return _gqa_fwd_fp8_ws_persistent_wrapped_kernel(
             self.batch,
             self.heads,
@@ -5609,6 +6205,15 @@ class GQAFwdFP8Fa3ContractPtxAccBN224Kernel(GQAFwdFP8WsPersistentKernel):
             raise ValueError(
                 "GQAFwdFP8Fa3ContractPtxAccBN224Kernel expects q/k/v to be torch.float8_e4m3fn."
             )
+        q_scale, k_scale, v_scale = _expand_fa3_gqa_descales(
+            q_scale,
+            k_scale,
+            v_scale,
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.seq_len,
+        )
         return self.kernel(q, k, v, q_scale, k_scale, v_scale)
 
 
@@ -5669,6 +6274,17 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(GQAFwdFP8Fa3ContractPtxAccBN22
             "use_ptx_pv_fa3_epilogue_reuse_v_smem": False,
         })
         return config
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_descale: torch.Tensor,
+        k_descale: torch.Tensor,
+        v_descale: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return super().forward(q, k, v, q_descale, k_descale, v_descale)
 
 
 class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVInplaceKernel(
@@ -5772,6 +6388,109 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapKernel(Kernel):
         return self.kernel(q, k, v, q_scale, k_scale, v_scale)
 
 
+class GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPKernel(
+        GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapKernel):
+    """BN224 overlap kernel with streaming 4-reg P operands for each PV WGMMA."""
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len: int,
+        dim: int,
+        out_dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        Kernel.__init__(self)
+        if heads % heads_kv != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPKernel requires heads % heads_kv == 0."
+            )
+        if dim != 128:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPKernel currently requires dim == 128."
+            )
+        if seq_len % 224 != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPKernel requires seq_len % 224 == 0."
+            )
+        if out_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPKernel outputs float16 or bfloat16."
+            )
+
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len = seq_len
+        self.dim = dim
+        self.dtype = out_dtype
+        self.init_config(config, tune)
+        self.kernel = _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
+            batch,
+            heads,
+            heads_kv,
+            seq_len,
+            dim,
+            self.dtype_str,
+            True,
+        )()
+
+
+class GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPPlainWaitKernel(
+        GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapKernel):
+    """Streaming-P overlap kernel using plain wait_group plus wgmma fence."""
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len: int,
+        dim: int,
+        out_dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        Kernel.__init__(self)
+        if heads % heads_kv != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPPlainWaitKernel requires heads % heads_kv == 0."
+            )
+        if dim != 128:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPPlainWaitKernel currently requires dim == 128."
+            )
+        if seq_len % 224 != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPPlainWaitKernel requires seq_len % 224 == 0."
+            )
+        if out_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapStreamingPPlainWaitKernel outputs float16 or bfloat16."
+            )
+
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len = seq_len
+        self.dim = dim
+        self.dtype = out_dtype
+        self.init_config(config, tune)
+        self.kernel = _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_kernel(
+            batch,
+            heads,
+            heads_kv,
+            seq_len,
+            dim,
+            self.dtype_str,
+            True,
+            True,
+        )()
+
+
 class GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragmentDeltaKernel(Kernel):
     """BN224 overlap experiment using fragment P and fragment delta buffers."""
 
@@ -5842,6 +6561,207 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragmentDeltaKernel(Kernel):
         if q.dtype != torch.float8_e4m3fn or k.dtype != torch.float8_e4m3fn or v.dtype != torch.float8_e4m3fn:
             raise ValueError(
                 "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragmentDeltaKernel expects q/k/v to be torch.float8_e4m3fn."
+            )
+        return self.kernel(q, k, v, q_scale, k_scale, v_scale)
+
+
+class GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaKernel(
+        GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragmentDeltaKernel):
+    """BN224 overlap experiment with K32 TileLang-visible PV into fragment delta."""
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len: int,
+        dim: int,
+        out_dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        Kernel.__init__(self)
+        if heads % heads_kv != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaKernel requires heads % heads_kv == 0."
+            )
+        if dim != 128:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaKernel currently requires dim == 128."
+            )
+        if seq_len % 224 != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaKernel requires seq_len % 224 == 0."
+            )
+        if out_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaKernel outputs float16 or bfloat16."
+            )
+
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len = seq_len
+        self.dim = dim
+        self.dtype = out_dtype
+        self.init_config(config, tune)
+        self.kernel = _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
+            batch,
+            heads,
+            heads_kv,
+            seq_len,
+            dim,
+            self.dtype_str,
+            True,
+        )()
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: torch.Tensor,
+        k_scale: torch.Tensor,
+        v_scale: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if q.dtype != torch.float8_e4m3fn or k.dtype != torch.float8_e4m3fn or v.dtype != torch.float8_e4m3fn:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaKernel expects q/k/v to be torch.float8_e4m3fn."
+            )
+        return self.kernel(q, k, v, q_scale, k_scale, v_scale)
+
+
+class GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaSharedVKernel(
+        GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragmentDeltaKernel):
+    """BN224 visible-PV delta experiment that reuses producer-loaded shared V."""
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len: int,
+        dim: int,
+        out_dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        Kernel.__init__(self)
+        if heads % heads_kv != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaSharedVKernel requires heads % heads_kv == 0."
+            )
+        if dim != 128:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaSharedVKernel currently requires dim == 128."
+            )
+        if seq_len % 224 != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaSharedVKernel requires seq_len % 224 == 0."
+            )
+        if out_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaSharedVKernel outputs float16 or bfloat16."
+            )
+
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len = seq_len
+        self.dim = dim
+        self.dtype = out_dtype
+        self.init_config(config, tune)
+        self.kernel = _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
+            batch,
+            heads,
+            heads_kv,
+            seq_len,
+            dim,
+            self.dtype_str,
+            True,
+            True,
+        )()
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: torch.Tensor,
+        k_scale: torch.Tensor,
+        v_scale: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if q.dtype != torch.float8_e4m3fn or k.dtype != torch.float8_e4m3fn or v.dtype != torch.float8_e4m3fn:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaSharedVKernel expects q/k/v to be torch.float8_e4m3fn."
+            )
+        return self.kernel(q, k, v, q_scale, k_scale, v_scale)
+
+
+class GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaEmitterK224Kernel(
+        GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragmentDeltaKernel):
+    """BN224 visible-PV delta experiment using a K224 WGMMA emitter bracket."""
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len: int,
+        dim: int,
+        out_dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        Kernel.__init__(self)
+        if heads % heads_kv != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaEmitterK224Kernel requires heads % heads_kv == 0."
+            )
+        if dim != 128:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaEmitterK224Kernel currently requires dim == 128."
+            )
+        if seq_len % 224 != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaEmitterK224Kernel requires seq_len % 224 == 0."
+            )
+        if out_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaEmitterK224Kernel outputs float16 or bfloat16."
+            )
+
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len = seq_len
+        self.dim = dim
+        self.dtype = out_dtype
+        self.init_config(config, tune)
+        self.kernel = _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_fragment_delta_kernel(
+            batch,
+            heads,
+            heads_kv,
+            seq_len,
+            dim,
+            self.dtype_str,
+            True,
+            False,
+            True,
+        )()
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: torch.Tensor,
+        k_scale: torch.Tensor,
+        v_scale: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if q.dtype != torch.float8_e4m3fn or k.dtype != torch.float8_e4m3fn or v.dtype != torch.float8_e4m3fn:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapVisiblePVDeltaEmitterK224Kernel expects q/k/v to be torch.float8_e4m3fn."
             )
         return self.kernel(q, k, v, q_scale, k_scale, v_scale)
 
@@ -5929,6 +6849,149 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsPingpongKernel(
     until the online-softmax rescale for block n is known, then folded into
     acc_o with v_scale[n-1].
     """
+
+
+class GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedKernel(
+        GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaKernel):
+    """Frag-P local-delta overlap kernel with corrected delayed-delta rescale."""
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len: int,
+        dim: int,
+        out_dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        Kernel.__init__(self)
+        if heads % heads_kv != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedKernel requires heads % heads_kv == 0."
+            )
+        if dim != 128:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedKernel currently requires dim == 128."
+            )
+        if seq_len % 224 != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedKernel requires seq_len % 224 == 0."
+            )
+        if out_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedKernel outputs float16 or bfloat16."
+            )
+
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len = seq_len
+        self.dim = dim
+        self.dtype = out_dtype
+        self.init_config(config, tune)
+        self.kernel = _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_frag_p_local_delta_kernel(
+            batch,
+            heads,
+            heads_kv,
+            seq_len,
+            dim,
+            self.dtype_str,
+            True,
+        )()
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: torch.Tensor,
+        k_scale: torch.Tensor,
+        v_scale: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if q.dtype != torch.float8_e4m3fn or k.dtype != torch.float8_e4m3fn or v.dtype != torch.float8_e4m3fn:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedKernel expects q/k/v to be torch.float8_e4m3fn."
+            )
+        return self.kernel(q, k, v, q_scale, k_scale, v_scale)
+
+
+class GQAFwdFP8Fa3ContractPtxAccBN224WsPingpongCorrectedKernel(
+        GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedKernel):
+    """BN224 FP8 WS ping-pong candidate with corrected delayed-delta rescale."""
+
+
+class GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedPreRescaleKernel(
+        GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaKernel):
+    """Corrected local-delta kernel that rescales O before waiting for PV."""
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len: int,
+        dim: int,
+        out_dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        Kernel.__init__(self)
+        if heads % heads_kv != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedPreRescaleKernel requires heads % heads_kv == 0."
+            )
+        if dim != 128:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedPreRescaleKernel currently requires dim == 128."
+            )
+        if seq_len % 224 != 0:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedPreRescaleKernel requires seq_len % 224 == 0."
+            )
+        if out_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedPreRescaleKernel outputs float16 or bfloat16."
+            )
+
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len = seq_len
+        self.dim = dim
+        self.dtype = out_dtype
+        self.init_config(config, tune)
+        self.kernel = _gqa_fwd_fp8_fa3_contract_bn224_ws_overlap_frag_p_local_delta_kernel(
+            batch,
+            heads,
+            heads_kv,
+            seq_len,
+            dim,
+            self.dtype_str,
+            True,
+            True,
+        )()
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: torch.Tensor,
+        k_scale: torch.Tensor,
+        v_scale: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if q.dtype != torch.float8_e4m3fn or k.dtype != torch.float8_e4m3fn or v.dtype != torch.float8_e4m3fn:
+            raise ValueError(
+                "GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedPreRescaleKernel expects q/k/v to be torch.float8_e4m3fn."
+            )
+        return self.kernel(q, k, v, q_scale, k_scale, v_scale)
+
+
+class GQAFwdFP8Fa3ContractPtxAccBN224WsPingpongCorrectedPreRescaleKernel(
+        GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapFragPLocalDeltaCorrectedPreRescaleKernel):
+    """BN224 FP8 WS ping-pong candidate with pre-wait corrected delta merge."""
 
 
 class GQAFwdFP8Fa3ContractPtxAccBN224WsOverlapLocalPKernel(Kernel):
