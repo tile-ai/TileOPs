@@ -969,7 +969,7 @@ class GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp(Op):
         dim: int,
         is_causal: bool = True,
         dtype: torch.dtype = torch.float16,
-        cache_dtype: torch.dtype = torch.float8_e4m3fn,
+        cache_dtype: torch.dtype | str = "float8_e4m3fn",
         sm_scale: Optional[float] = None,
         softcap: Optional[float] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -977,6 +977,12 @@ class GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp(Op):
     ) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
         _validate_attention_dtype(dtype)
+        if isinstance(cache_dtype, str):
+            if cache_dtype != "float8_e4m3fn":
+                raise ValueError(
+                    "GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp currently supports "
+                    f"float8_e4m3fn cache only, got {cache_dtype}")
+            cache_dtype = torch.float8_e4m3fn
         if cache_dtype != torch.float8_e4m3fn:
             raise ValueError(
                 "GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp currently supports "
