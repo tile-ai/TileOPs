@@ -372,7 +372,7 @@ def ssd_chunk_state_fwd_ref(
     if seq_idx is not None:
         seq_chunked = seq_idx.reshape(b, c, Q)
         seq_end = seq_chunked[..., -1:]
-        same = (seq_chunked == seq_end).unsqueeze(3)
+        same = ((seq_end >= 0) & (seq_chunked == seq_end)).unsqueeze(3)
         weight = weight * same.permute(0, 1, 3, 2)
 
     w = weight.permute(0, 1, 3, 2).unsqueeze(-1).unsqueeze(-1)

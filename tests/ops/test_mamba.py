@@ -206,7 +206,7 @@ def ssd_chunk_state_fwd_ref(
     if seq_idx is not None:
         seq_chunked = seq_idx.reshape(b, c, Q)
         seq_end = seq_chunked[..., -1:]
-        same = (seq_chunked == seq_end).unsqueeze(3)
+        same = ((seq_end >= 0) & (seq_chunked == seq_end)).unsqueeze(3)
         weight = weight * same.permute(0, 1, 3, 2)
 
     w = weight.permute(0, 1, 3, 2).unsqueeze(-1).unsqueeze(-1)
@@ -235,6 +235,35 @@ def test_ssd_chunk_state_fwd(
     atol = 1e-3 if dtype == torch.float16 else 1.6e-2
     rtol = 1e-3
     test.check(op, *inputs, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+def test_ssd_chunk_state_fwd_seq_end_negative():
+    """Kernel must zero the whole chunk when the last token's seq_idx is -1."""
+    batch, num_chunks, chunk_len = 1, 2, 64
+    n_heads, d_head, d_state, n_groups = 4, 64, 32, 1
+    dtype = torch.float16
+    b, c, Q, h, p, n, g = batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups
+    seq_len = c * Q
+
+    x = torch.randn(b, seq_len, h, p, dtype=dtype, device="cuda") * 0.1
+    Bmat = torch.randn(b, seq_len, g, n, dtype=dtype, device="cuda") * 0.1
+    dA_cumsum = -torch.rand(b, h, c, Q, dtype=torch.float32, device="cuda").cumsum(-1)
+    dt = torch.rand(b, h, c, Q, dtype=torch.float32, device="cuda") * 0.1 + 0.01
+
+    # First chunk ends with seq_idx == -1 (whole chunk should zero out).
+    # Second chunk is a normal sequence (seq_idx == 1 throughout).
+    seq_idx = torch.ones(b, seq_len, dtype=torch.int32, device="cuda")
+    seq_idx[:, :Q] = -1
+
+    op = SSDChunkStateFwdOp(b, c, Q, h, p, n, g, dtype, has_seq_idx=True)
+    out = op(x, Bmat, dt, dA_cumsum, seq_idx)
+    ref = ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, g, seq_idx=seq_idx)
+
+    from tests.test_base import allclose_compare
+    atol = 1e-3
+    rtol = 1e-3
+    allclose_compare(out, ref, atol=atol, rtol=rtol)
 
 
 def ssd_state_passing_fwd_ref(
