@@ -146,6 +146,12 @@ def _ssd_chunk_scan_fwd_kernel(
                 c_tile     = T.alloc_shared((block_l, block_n), dtype)
                 state_tile = T.alloc_shared((block_n, block_p), dtype)
 
+                # Swizzled layouts eliminate bank conflicts and enable tensor-core GEMMs.
+                T.annotate_layout({
+                    c_tile:     tilelang.layout.make_swizzled_layout(c_tile),
+                    state_tile: tilelang.layout.make_swizzled_layout(state_tile),
+                })
+
                 for n_blk in T.serial(T.ceildiv(N, block_n)):
                     n0 = n_blk * block_n
 
@@ -174,13 +180,27 @@ def _ssd_chunk_scan_fwd_kernel(
                     # hist_acc += c_tile @ state_tile
                     T.gemm(c_tile, state_tile, hist_acc)
 
+                # =====================================================
+                # Cache dA_cumsum and dt for this chunk in shared memory.
+                # Eliminates repeated L2 round-trips in the exp_l/exp_s and
+                # diagonal-path loops.  Q fp32 scalars = Q*4 bytes (e.g. 1 KB
+                # for Q=256).  Loaded once, reused by every s-block.
+                # =====================================================
+                dA_smem = T.alloc_shared((Q,), accum_dtype)
+                dt_smem  = T.alloc_shared((Q,), accum_dtype)
+                for q in T.Parallel(Q):
+                    dA_smem[q] = dA_cumsum[bz, bh, bc, q]
+                    dt_smem[q]  = T.cast(dt[bz, bh, bc, q], accum_dtype)
+                T.sync_threads()
+
                 # Precompute exp(dA_l[ll]) once per l-tile for history path scaling.
+                # Now reads from dA_smem (smem hit) instead of global.
                 exp_dA_l = T.alloc_shared((block_l,), accum_dtype)
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
                     exp_dA_l[ll] = T.if_then_else(
                         l_abs < Q,
-                        T.exp(dA_cumsum[bz, bh, bc, l_abs]),
+                        T.exp(dA_smem[l_abs]),
                         T.float32(1.0),
                     )
                 T.sync_threads()
@@ -227,23 +247,31 @@ def _ssd_chunk_scan_fwd_kernel(
                 exp_s = T.alloc_shared((block_s,), accum_dtype)
                 lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
 
-                # anchor = dA_cumsum at l0, the largest value in this l-tile.
+                # Swizzled layouts for causal GEMM operands.
+                T.annotate_layout({
+                    cb_tile:  tilelang.layout.make_swizzled_layout(cb_tile),
+                    x_tile:   tilelang.layout.make_swizzled_layout(x_tile),
+                })
+
+                # anchor = dA_smem at l0, the largest value in this l-tile.
                 anchor = T.if_then_else(
                     l0 < Q,
-                    dA_cumsum[bz, bh, bc, l0],
+                    dA_smem[l0],
                     T.float32(0.0),
                 )
 
-                # Precompute exp_l once for all s-blocks; only used in full-lower path.
+                # Precompute exp_l once before the s-loop; reused by every
+                # full-lower s-block without re-fetching dA_cumsum from global.
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
                     dA_l_val = T.if_then_else(
                         l_abs < Q,
-                        dA_cumsum[bz, bh, bc, l_abs],
+                        dA_smem[l_abs],
                         anchor,
                     )
                     # dA_l_val - anchor <= 0 always, so exp <= 1 (no overflow).
                     exp_l[ll] = T.exp(dA_l_val - anchor)
+                T.sync_threads()
 
                 # Only iterate over s-blocks that have at least one s <= l_max.
                 for s_blk in T.serial(T.ceildiv(l0 + block_l, block_s)):
@@ -277,12 +305,12 @@ def _ssd_chunk_scan_fwd_kernel(
                             s_abs = s0 + ss
                             dA_s_val = T.if_then_else(
                                 s_abs < Q,
-                                dA_cumsum[bz, bh, bc, s_abs],
+                                dA_smem[s_abs],
                                 anchor,
                             )
                             dt_val = T.if_then_else(
                                 s_abs < Q,
-                                T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
+                                dt_smem[s_abs],
                                 T.float32(0.0),
                             )
                             # anchor - dA_s_val <= 0, so exp <= 1 (no overflow).
@@ -300,23 +328,24 @@ def _ssd_chunk_scan_fwd_kernel(
                         T.sync_threads()
                         # Diagonal path: s is within block_s steps of l, so
                         # dA_l - dA_s is bounded and safe to compute directly.
+                        # Reads from dA_smem/dt_smem (smem) instead of global.
                         for ll, ss in T.Parallel(block_l, block_s):
                             l_abs = l0 + ll
                             s_abs = s0 + ss
                             valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
                             dA_l_val = T.if_then_else(
                                 l_abs < Q,
-                                dA_cumsum[bz, bh, bc, l_abs],
+                                dA_smem[l_abs],
                                 T.float32(0.0),
                             )
                             dA_s_val = T.if_then_else(
                                 s_abs < Q,
-                                dA_cumsum[bz, bh, bc, s_abs],
+                                dA_smem[s_abs],
                                 T.float32(0.0),
                             )
                             dt_val = T.if_then_else(
                                 s_abs < Q,
-                                T.cast(dt[bz, bh, bc, s_abs], accum_dtype),
+                                dt_smem[s_abs],
                                 T.float32(0.0),
                             )
                             lcb_cast[ll, ss] = T.if_then_else(

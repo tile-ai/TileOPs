@@ -25,7 +25,7 @@ For each (b, c, h, p, n), the kernel computes:
           * B[b, s, g(h), n]
           * exp(dA_cumsum[b, h, c, Q-1] - dA_cumsum[b, h, c, l])
           * dt[b, h, c, l]
-          * (1 if seq_idx is None else (seq_idx[b, s] == seq_idx[b, c*Q+Q-1]))
+          * (1 if seq_idx is None else (seq_idx[b, c*Q+Q-1] >= 0 and seq_idx[b, s] == seq_idx[b, c*Q+Q-1]))
 
 where:
   s = c * chunk_len + l
@@ -221,7 +221,7 @@ def _ssd_chunk_state_fwd_kernel(
                         if has_seq_idx:
                             same_seq = T.if_then_else(
                                 l_idx < Q,
-                                seq_idx[bz, chunk_start + l_idx] == seq_end,
+                                (seq_end >= T.int32(0)) and (seq_idx[bz, chunk_start + l_idx] == seq_end),
                                 T.bool(False),
                             )
                             w_tile[ll] = T.if_then_else(
@@ -339,7 +339,7 @@ class SSDChunkStateFwdKernel(Kernel):
               * B[b, c*Q+l, g(h), n]
               * exp(dA_cumsum[b,h,c,Q-1] - dA_cumsum[b,h,c,l])
               * dt[b, h, c, l]
-              * (1 if not has_seq_idx else (seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
+              * (1 if not has_seq_idx else (seq_idx[b,c*Q+Q-1] >= 0 and seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
 
     Inputs:  x, Bmat, dt, dA_cumsum[, seq_idx]
     Output:  out  (batch, num_chunks, n_heads, d_head, d_state), float32
@@ -379,31 +379,48 @@ class SSDChunkStateFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # (block_p=64, block_n=64, block_l=64) gives the highest arithmetic
-        # intensity for the GEMM: K=64 doubles MMA phases vs K=32, and the
-        # removal of the x_scaled_f32 register fragment (saving block_l *
-        # block_p / 32 fp32 regs per thread) makes this size register-safe.
+        # block_n=128 covers the full d_state=128 in one N-tile.
+        # block_l=128 maximises GEMM K-depth and pipeline efficiency.
+        #
+        # threads=256 (8 warps/block) for the non-seqidx path: register count
+        # is ~127 regs/thread, giving Block Limit Registers=2 and theoretical
+        # occupancy=25%, which improves latency hiding vs threads=128.
+        #
+        # threads=128 (4 warps/block) for the has_seq_idx path: the seq_idx
+        # branch adds extra live registers, pushing the count to ~133 regs/thread.
+        # At threads=256 that is 133*256=34048 regs/block, which exceeds 32768
+        # (65536/2) and drops Block Limit Registers to 1 (only 8 warps/SM,
+        # 2 warps/scheduler).  Switching to threads=128 gives 133*128=17024
+        # regs/block -> 3 blocks/SM -> 12 warps/SM -> 3 warps/scheduler ->
+        # 18.75% theoretical occupancy, recovering the latency-hiding budget.
+        if self.has_seq_idx:
+            return {
+                "block_n": 128,
+                "block_p": 64,
+                "block_l": 128,
+                "threads": 128,
+            }
         return {
-            "block_n": 64,
+            "block_n": 128,
             "block_p": 64,
-            "block_l": 64,
-            "threads": 128,
+            "block_l": 128,
+            "threads": 256,
         }
 
     @property
     def autotune_configs(self) -> list[dict]:
         # Grid rationale:
+        #   block_n in {64, 128}: 128 covers the full d_state=128 in one tile
+        #     and is the default; 64 is retained for d_state<128 shapes.
         #   block_p in {16, 32, 64}: 16 is the minimum MMA M-atom; 64 only
         #     viable after the x_scaled_f32 fragment was removed.
-        #   block_n in {64, 128}: aligns to common d_state values; 128 covers
-        #     the full d_state in one tile and maximises N-reuse per L-tile.
-        #   block_l in {32, 64}: larger K improves GEMM arithmetic intensity;
-        #     32 keeps shared-memory pressure low for small d_head configs.
+        #   block_l in {32, 64, 128}: larger K improves GEMM arithmetic
+        #     intensity; 32 keeps shared-memory pressure low for small d_head.
         #   threads in {128, 256}: 128 warps = 4, 256 warps = 8; higher thread
         #     count hides latency but increases register/shared pressure.
         block_n = [64, 128]
         block_p = [16, 32, 64]
-        block_l = [32, 64]
+        block_l = [32, 64, 128]
         threads = [128, 256]
         _configs = list(itertools.product(block_n, block_p, block_l, threads))
         return [{

@@ -21,7 +21,7 @@ class SSDChunkStateFwdOp(Op):
               * B[b, c*Q+l, g(h), n]
               * exp(dA_cumsum[b,h,c,Q-1] - dA_cumsum[b,h,c,l])
               * dt[b, h, c, l]
-              * (1 if seq_idx is None else (seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
+              * (1 if seq_idx is None else (seq_idx[b,c*Q+Q-1] >= 0 and seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
 
     Args:
         batch:      Batch size.
@@ -67,7 +67,9 @@ class SSDChunkStateFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ssd_chunk_state_fwd": SSDChunkStateFwdKernel}
+        return {
+            "ssd_chunk_state_fwd": SSDChunkStateFwdKernel,
+        }
 
     def forward(
         self,
