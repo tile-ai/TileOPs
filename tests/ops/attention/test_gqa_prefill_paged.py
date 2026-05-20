@@ -312,6 +312,51 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("scale_name,bad_value", [
+    pytest.param("k_scale", 0.0, id="k_zero"),
+    pytest.param("k_scale", -0.01, id="k_negative"),
+    pytest.param("k_scale", float("inf"), id="k_inf"),
+    pytest.param("v_scale", float("nan"), id="v_nan"),
+])
+def test_gqa_prefill_paged_with_fp8_kv_cache_rejects_invalid_scales(
+    scale_name: str,
+    bad_value: float,
+) -> None:
+    batch, heads, heads_kv, dim = 1, 8, 2, 64
+    q_lens = [1]
+    page_size, max_pages_per_req = 64, 1
+    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
+    k_new = torch.randn(sum(q_lens), heads_kv, dim, device="cuda",
+                        dtype=torch.float16).contiguous()
+    v_new = torch.randn_like(k_new)
+    k_pages = torch.zeros(max_pages_per_req * page_size, heads_kv, dim, device="cuda",
+                          dtype=torch.float8_e4m3fn).contiguous()
+    v_pages = torch.zeros_like(k_pages)
+    k_scale = torch.tensor([0.02], device="cuda", dtype=torch.float32)
+    v_scale = torch.tensor([0.02], device="cuda", dtype=torch.float32)
+    if scale_name == "k_scale":
+        k_scale = torch.tensor([bad_value], device="cuda", dtype=torch.float32)
+    else:
+        v_scale = torch.tensor([bad_value], device="cuda", dtype=torch.float32)
+    block_table = torch.tensor([[0]], device="cuda", dtype=torch.int32)
+    op = GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        max_pages_per_req=max_pages_per_req,
+        page_size=page_size,
+        dim=dim,
+        dtype=torch.float16,
+    )
+
+    with pytest.raises(ValueError, match=f"{scale_name}.*finite positive"):
+        op(
+            q, k_new, v_new, k_pages, v_pages, k_scale, v_scale,
+            _make_cu_seqlens(q_lens), torch.tensor([0], device="cuda", dtype=torch.int32),
+            block_table, max(q_lens))
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("rotary_dim, is_causal, softcap", [
     pytest.param(None, True, None, id="full-causal"),
     pytest.param(32, True, None, id="partial-causal"),

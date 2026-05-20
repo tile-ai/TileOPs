@@ -1110,6 +1110,8 @@ class GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp(Op):
         for name, tensor in [("k_scale", k_scale), ("v_scale", v_scale)]:
             if tensor.dtype != torch.float32:
                 raise ValueError(f"{name} must have dtype torch.float32, got {tensor.dtype}")
+            if not torch.all(torch.isfinite(tensor) & (tensor > 0)).item():
+                raise ValueError(f"{name} must contain finite positive values")
         for name, tensor in [("cu_seqlens_q", cu_seqlens_q),
                              ("cache_seqlens", cache_seqlens),
                              ("block_table", block_table)]:
