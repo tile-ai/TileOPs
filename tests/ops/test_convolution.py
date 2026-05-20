@@ -249,6 +249,92 @@ def test_conv1d_dispatches_kernel(
     assert isinstance(op.kernel, expected_kernel)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "padding, kernel_size, stride",
+    [
+        pytest.param("valid", 3, 1, id="valid"),
+        pytest.param("same", 3, 1, id="same"),
+    ],
+)
+def test_conv1d_string_padding_matches_torch(padding: str, kernel_size: int, stride: int) -> None:
+    n, c_in, l_in, c_out = 1, 32, 128, 64
+    op = Conv1dFwdOp(
+        n=n,
+        c_in=c_in,
+        l_in=l_in,
+        c_out=c_out,
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+    )
+    x = torch.randn(n, c_in, l_in, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(c_out, c_in, kernel_size, device="cuda", dtype=torch.float16).contiguous()
+    out = op(x, weight)
+    ref = F.conv1d(x, weight, bias=None, stride=stride, padding=padding).contiguous()
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.parametrize(
+    "op_cls, groups, c_in, c_out, use_bias",
+    [
+        pytest.param(Conv1dFwdOp, 2, 32, 64, False, marks=pytest.mark.smoke, id="groups2-no-bias"),
+        pytest.param(Conv1dBiasFwdOp, 2, 32, 64, True, marks=pytest.mark.full, id="groups2-bias"),
+        pytest.param(Conv1dFwdOp, 4, 64, 64, False, marks=pytest.mark.full, id="groups4-no-bias"),
+        pytest.param(Conv1dBiasFwdOp, 4, 64, 64, True, marks=pytest.mark.full, id="groups4-bias"),
+    ],
+)
+def test_conv1d_groups_matches_torch(op_cls, groups: int, c_in: int, c_out: int, use_bias: bool) -> None:
+    n, l_in, kernel_size = 1, 128, 3
+    stride, padding = 1, 1
+    op_kwargs = {"bias": use_bias} if op_cls is Conv1dBiasFwdOp else {}
+    op = op_cls(
+        n=n,
+        c_in=c_in,
+        l_in=l_in,
+        c_out=c_out,
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        groups=groups,
+        **op_kwargs,
+    )
+    x = torch.randn(n, c_in, l_in, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(c_out, c_in // groups, kernel_size, device="cuda", dtype=torch.float16).contiguous()
+    bias = (
+        torch.randn(c_out, device="cuda", dtype=torch.float16).contiguous()
+        if use_bias else None
+    )
+    out = op(x, weight, bias) if use_bias else op(x, weight)
+    ref = F.conv1d(
+        x,
+        weight,
+        bias=bias,
+        stride=stride,
+        padding=padding,
+        groups=groups,
+    )
+    ref = ref.contiguous()
+    torch.testing.assert_close(out, ref, atol=2e-3, rtol=3e-3)
+
+
+@pytest.mark.smoke
+def test_conv1d_groups_forces_generic_kernel() -> None:
+    """When groups>1, pointwise conditions must not dispatch to Conv1dPointwiseKernel."""
+    op = Conv1dFwdOp(
+        n=1,
+        c_in=32,
+        l_in=256,
+        c_out=64,
+        kernel_size=1,
+        stride=1,
+        padding=0,
+        groups=2,
+    )
+    assert isinstance(op.kernel, Conv1dKernel)
+    assert not isinstance(op.kernel, Conv1dPointwiseKernel)
+
+
 class Conv2dFixture(FixtureBase):
     PARAMS = [
         ("n, c_in, h, w, c_out, kernel_size, stride, padding, dtype, tune", [

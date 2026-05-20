@@ -57,10 +57,15 @@ def _conv1d_kernel(
     dilation_l: int,
     has_bias: bool,
     dtype: str = "float16",
+    groups: int = 1,
+    c_in_g: int = 0,
+    c_out_g: int = 0,
 ):
     accum_dtype = "float"
     out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
-    k_total = c_in * kernel_l
+    c_in_g = c_in_g if c_in_g > 0 else c_in // groups
+    c_out_g = c_out_g if c_out_g > 0 else c_out // groups
+    k_total = c_in_g * kernel_l
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _conv1d_func(
@@ -109,11 +114,12 @@ def _conv1d_kernel(
                     for i, j in T.Parallel(block_k, block_n):
                         k_idx = k_iter * block_k + i
                         ol = bx * block_n + j
-                        kw = k_idx // c_in
-                        ci = k_idx % c_in
+                        kw = k_idx // c_in_g
+                        ci = k_idx % c_in_g
+                        group_id = (by * block_m) // c_out_g
                         il = ol * stride_l + kw * dilation_l - pad_l
                         if tile_full:
-                            data_shared[i, j] = x[bz, ci, il]
+                            data_shared[i, j] = x[bz, group_id * c_in_g + ci, il]
                         else:
                             in_bound = (
                                 (k_idx < k_total)
@@ -123,7 +129,7 @@ def _conv1d_kernel(
                             )
                             data_shared[i, j] = T.if_then_else(
                                 in_bound,
-                                x[bz, ci, il],
+                                x[bz, group_id * c_in_g + ci, il],
                                 T.cast(0.0, dtype),
                             )
 
@@ -252,6 +258,9 @@ def _conv1d_wrapped_kernel(
     dilation_l: int,
     has_bias: bool,
     dtype: str,
+    groups: int,
+    c_in_g: int,
+    c_out_g: int,
     block_m: int,
     block_n: int,
     block_k: int,
@@ -263,7 +272,7 @@ def _conv1d_wrapped_kernel(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _conv1d_kernel(
-        n, c_in, l_in, c_out, kernel_l, stride_l, pad_l, dilation_l, has_bias, dtype
+        n, c_in, l_in, c_out, kernel_l, stride_l, pad_l, dilation_l, has_bias, dtype, groups, c_in_g, c_out_g
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
@@ -457,6 +466,9 @@ class Conv1dKernel(Kernel):
         dtype: torch.dtype,
         dilation_l: int = 1,
         has_bias: bool = False,
+        groups: int = 1,
+        c_in_g: Optional[int] = None,
+        c_out_g: Optional[int] = None,
         config: Optional[dict] = None,
         tune: bool = False,
     ) -> None:
@@ -469,11 +481,14 @@ class Conv1dKernel(Kernel):
         self.stride_l = stride_l
         self.pad_l = pad_l
         self.dilation_l = dilation_l
+        self.groups = groups
+        self.c_in_g = c_in_g if c_in_g is not None else c_in // groups
+        self.c_out_g = c_out_g if c_out_g is not None else c_out // groups
         self.dtype = dtype
         self.has_bias = has_bias
         self.out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
         self.m = n * self.out_l
-        self.k_total = c_in * kernel_l
+        self.k_total = self.c_in_g * kernel_l
         self._weight_flat_cache_source: Optional[torch.Tensor] = None
         self._weight_flat_cache_version: Optional[int] = None
         self._weight_flat_cache: Optional[torch.Tensor] = None
@@ -488,8 +503,21 @@ class Conv1dKernel(Kernel):
             dilation_l,
             has_bias,
             self.dtype_str,
+            groups,
+            self.c_in_g,
+            self.c_out_g,
         )
         self.init_config(config, tune)
+        # For grouped conv, ensure block_m does not exceed c_out_g so that all
+        # output channels in a tile belong to the same group.
+        if self.groups > 1 and self.c_out_g < self.config["block_m"]:
+            if self.c_out_g < 16:
+                raise NotImplementedError(
+                    f"Conv1dKernel grouped conv requires c_out_g >= 16 due to "
+                    f"TensorCore warp constraints, but got c_out_g={self.c_out_g}. "
+                    f"Consider using a larger group size or ops-layer decomposition."
+                )
+            self.config["block_m"] = self.c_out_g
 
     @property
     def default_config(self) -> dict:
@@ -574,6 +602,9 @@ class Conv1dKernel(Kernel):
             self.dilation_l,
             self.has_bias,
             self.dtype_str,
+            self.groups,
+            self.c_in_g,
+            self.c_out_g,
             self.config["block_m"],
             self.config["block_n"],
             self.config["block_k"],
