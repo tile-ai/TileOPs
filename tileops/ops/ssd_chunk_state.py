@@ -68,7 +68,8 @@ class SSDChunkStateFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "ssd_chunk_state_fwd": SSDChunkStateFwdKernel,        }
+            "ssd_chunk_state_fwd": SSDChunkStateFwdKernel,
+        }
 
     def forward(
         self,

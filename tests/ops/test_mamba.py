@@ -237,7 +237,6 @@ def test_ssd_chunk_state_fwd(
     test.check(op, *inputs, atol=atol, rtol=rtol)
 
 
-@SSDChunkStateFwdFixture
 def ssd_state_passing_fwd_ref(
     states: torch.Tensor,
     dA_chunk_cumsum: torch.Tensor,
