@@ -1,4 +1,13 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(TILELANG_CLEANUP_TEMP_FILES=1 conda run -n tileops-tl9 python -c \"from tileops.ops.moe import FusedMoEExpertsNopadPersistent3WGFwdOp, FusedMoe; print\\('OK'\\)\")",
+      "Bash(TILELANG_CLEANUP_TEMP_FILES=1 conda run -n tileops-tl9 python -c \"from tileops.ops.moe import FusedMoEExpertsNopadPersistent3WGFwdOp; print\\('OK'\\)\")",
+      "Bash(TILELANG_CLEANUP_TEMP_FILES=1 conda run -n tileops-tl9 python -m pytest tests/ops/test_fused_moe_experts.py -x -v)",
+      "Bash(TILELANG_CLEANUP_TEMP_FILES=1 conda run -n tileops-tl9 python -m pytest tests/ops/test_moe_fused_moe.py -k smoke --collect-only)"
+    ]
+  },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true
   }
