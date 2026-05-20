@@ -142,10 +142,14 @@ Conv2dFwdOp:
       - "_s_w == (stride[1] if isinstance(stride, (tuple, list)) else stride)"
       - "_p_h == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
       - "_p_w == (padding[1] if isinstance(padding, (tuple, list)) else padding)"
+      - "_d_h == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_w == (dilation[1] if isinstance(dilation, (tuple, list)) else dilation)"
       - "not isinstance(_p_h, str) or _p_h in ('valid', 'same')"
+      - "not isinstance(_p_w, str) or _p_w in ('valid', 'same')"
       - "_p_h != 'same' or _s_h == 1"
-      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - kH) // _s_h + 1"
-      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - kW) // _s_w + 1"
+      - "_p_w != 'same' or _s_w == 1"
+      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - _d_h * (kH - 1) - 1) // _s_h + 1"
+      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - _d_w * (kW - 1) - 1) // _s_w + 1"
 
   workloads:
     - {input_shape: [2, 64, 56, 56], C_out: 64, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], dtypes: [float16, bfloat16], label: "resnet-3x3-fp16"}
@@ -203,10 +207,14 @@ Conv2dBiasFwdOp:
       - "_s_w == (stride[1] if isinstance(stride, (tuple, list)) else stride)"
       - "_p_h == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
       - "_p_w == (padding[1] if isinstance(padding, (tuple, list)) else padding)"
+      - "_d_h == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_w == (dilation[1] if isinstance(dilation, (tuple, list)) else dilation)"
       - "not isinstance(_p_h, str) or _p_h in ('valid', 'same')"
+      - "not isinstance(_p_w, str) or _p_w in ('valid', 'same')"
       - "_p_h != 'same' or _s_h == 1"
-      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - kH) // _s_h + 1"
-      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - kW) // _s_w + 1"
+      - "_p_w != 'same' or _s_w == 1"
+      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - _d_h * (kH - 1) - 1) // _s_h + 1"
+      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - _d_w * (kW - 1) - 1) // _s_w + 1"
 
   workloads:
     - {input_shape: [2, 64, 56, 56], C_out: 64, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], dtypes: [float16, bfloat16], label: "resnet-3x3-fp16"}
@@ -265,11 +273,18 @@ Conv3dFwdOp:
       - "_p_d == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
       - "_p_h == (padding[1] if isinstance(padding, (tuple, list)) else padding)"
       - "_p_w == (padding[2] if isinstance(padding, (tuple, list)) else padding)"
+      - "_d_d == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_h == (dilation[1] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_w == (dilation[2] if isinstance(dilation, (tuple, list)) else dilation)"
       - "not isinstance(_p_d, str) or _p_d in ('valid', 'same')"
+      - "not isinstance(_p_h, str) or _p_h in ('valid', 'same')"
+      - "not isinstance(_p_w, str) or _p_w in ('valid', 'same')"
       - "_p_d != 'same' or _s_d == 1"
-      - "out_D == D if _p_d == 'same' else (D + 2 * (0 if _p_d == 'valid' else _p_d) - kD) // _s_d + 1"
-      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - kH) // _s_h + 1"
-      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - kW) // _s_w + 1"
+      - "_p_h != 'same' or _s_h == 1"
+      - "_p_w != 'same' or _s_w == 1"
+      - "out_D == D if _p_d == 'same' else (D + 2 * (0 if _p_d == 'valid' else _p_d) - _d_d * (kD - 1) - 1) // _s_d + 1"
+      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - _d_h * (kH - 1) - 1) // _s_h + 1"
+      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - _d_w * (kW - 1) - 1) // _s_w + 1"
 
   workloads:
     - {input_shape: [1, 3, 16, 112, 112], C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], dtypes: [float16], label: "r3d-stem-k3-s1-fp16"}
@@ -318,11 +333,18 @@ Conv3dBiasFwdOp:
       - "_p_d == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
       - "_p_h == (padding[1] if isinstance(padding, (tuple, list)) else padding)"
       - "_p_w == (padding[2] if isinstance(padding, (tuple, list)) else padding)"
+      - "_d_d == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_h == (dilation[1] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_w == (dilation[2] if isinstance(dilation, (tuple, list)) else dilation)"
       - "not isinstance(_p_d, str) or _p_d in ('valid', 'same')"
+      - "not isinstance(_p_h, str) or _p_h in ('valid', 'same')"
+      - "not isinstance(_p_w, str) or _p_w in ('valid', 'same')"
       - "_p_d != 'same' or _s_d == 1"
-      - "out_D == D if _p_d == 'same' else (D + 2 * (0 if _p_d == 'valid' else _p_d) - kD) // _s_d + 1"
-      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - kH) // _s_h + 1"
-      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - kW) // _s_w + 1"
+      - "_p_h != 'same' or _s_h == 1"
+      - "_p_w != 'same' or _s_w == 1"
+      - "out_D == D if _p_d == 'same' else (D + 2 * (0 if _p_d == 'valid' else _p_d) - _d_d * (kD - 1) - 1) // _s_d + 1"
+      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - _d_h * (kH - 1) - 1) // _s_h + 1"
+      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - _d_w * (kW - 1) - 1) // _s_w + 1"
 
   workloads:
     - {input_shape: [1, 3, 16, 112, 112], C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], dtypes: [float16], label: "r3d-stem-k3-s1-fp16"}
