@@ -416,23 +416,33 @@ class SSDChunkStateFwdBenchmark(BenchmarkBase[SSDChunkStateFwdTest]):
 
 
 _SSD_CHUNK_STATE_FWD_BENCH_PARAMS = [
-    # Production-scale configs matching HuggingFace state-spaces/mamba2-* releases.
+    # ── smoke / debug ────────────────────────────────────────────────────────
+    # Minimal shape for fast local iteration and CI smoke runs.
+    # Not used for PR performance claims.
+    pytest.param(1, 2, 64, 4, 64, 32, 1, torch.float16, False, False,
+                 id="debug-b1-c2-L64-h4-p64-n32-g1-fp16"),
+    # ── Production-scale configs (HuggingFace state-spaces/mamba2-*) ─────────
     # All models: headdim=64, d_state=128, ngroups=1, chunk_size=256.
-    # nheads = d_model * expand / headdim.  seqlen=2048 -> num_chunks=8.
+    # nheads = d_model * expand / headdim.
+    # seqlen=2048 -> num_chunks=8 (L2k); seqlen=8192 -> num_chunks=32 (L8k).
     # Grid = B*C*H blocks (needs >> 132 SMs on H200 to produce useful numbers).
     #
     # mamba2-370m: d_model=1024, expand=2 -> d_inner=2048, nheads=32
-    pytest.param(1,  8, 256, 32, 64, 128, 1, torch.float16,  False, False, id="370m-b1-fp16"),
-    pytest.param(4,  8, 256, 32, 64, 128, 1, torch.float16,  False, False, id="370m-b4-fp16"),
+    pytest.param(1,  8, 256, 32, 64, 128, 1, torch.float16,  False, False, id="mamba2-370m-b1-L2k-fp16"),
+    pytest.param(4,  8, 256, 32, 64, 128, 1, torch.float16,  False, False, id="mamba2-370m-b4-L2k-fp16"),
     # mamba2-1.3b: d_model=2048, expand=2 -> d_inner=4096, nheads=64
-    pytest.param(1,  8, 256, 64, 64, 128, 1, torch.float16,  False, False, id="1.3b-b1-fp16"),
-    pytest.param(4,  8, 256, 64, 64, 128, 1, torch.float16,  False, False, id="1.3b-b4-fp16"),
+    pytest.param(1,  8, 256, 64, 64, 128, 1, torch.float16,  False, False, id="mamba2-1p3b-b1-L2k-fp16"),
+    pytest.param(4,  8, 256, 64, 64, 128, 1, torch.float16,  False, False, id="mamba2-1p3b-b4-L2k-fp16"),
     # mamba2-2.7b: d_model=2560, expand=2 -> d_inner=5120, nheads=80
-    pytest.param(1,  8, 256, 80, 64, 128, 1, torch.bfloat16, False, False, id="2.7b-b1-bf16"),
-    pytest.param(4,  8, 256, 80, 64, 128, 1, torch.bfloat16, False, False, id="2.7b-b4-bf16"),
-    # Long-sequence (seqlen=8192, num_chunks=32) + seq_idx variant
-    pytest.param(1, 32, 256, 64, 64, 128, 1, torch.float16,  False, False, id="1.3b-b1-L8k-fp16"),
-    pytest.param(1,  8, 256, 64, 64, 128, 1, torch.float16,  False, True,  id="1.3b-b1-seqidx-fp16"),
+    # Use bf16 to match the target production dtype for this model scale.
+    pytest.param(1,  8, 256, 80, 64, 128, 1, torch.bfloat16, False, False, id="mamba2-2p7b-b1-L2k-bf16"),
+    pytest.param(4,  8, 256, 80, 64, 128, 1, torch.bfloat16, False, False, id="mamba2-2p7b-b4-L2k-bf16"),
+    # Long-context: seqlen=8192
+    pytest.param(1, 32, 256, 64, 64, 128, 1, torch.float16,  False, False, id="mamba2-1p3b-b1-L8k-fp16"),
+    # seq_idx: latency (b1) and throughput (b4) cases exercise the separate
+    # has_seq_idx=True config branch (threads=128 vs threads=256 for non-seqidx).
+    pytest.param(1,  8, 256, 64, 64, 128, 1, torch.float16,  False, True,  id="mamba2-1p3b-b1-L2k-seqidx-fp16"),
+    pytest.param(4,  8, 256, 64, 64, 128, 1, torch.float16,  False, True,  id="mamba2-1p3b-b4-L2k-seqidx-fp16"),
 ]
 
 
