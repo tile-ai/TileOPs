@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from torch import Tensor
 
-from tileops.ops.moe.abc import MoEPrepareAndFinalize, PrepareResult, WeightedReduce
+from tileops.ops.moe.abc import FusedMoEPrepareAndFinalize, PrepareResult, WeightedReduce
 
 __all__ = ["MoEPrepareAndFinalizeNoDPEP"]
 
 
-class MoEPrepareAndFinalizeNoDPEP(MoEPrepareAndFinalize):
+class MoEPrepareAndFinalizeNoDPEP(FusedMoEPrepareAndFinalize):
     """No Data-Parallel / Expert-Parallel prepare and finalize.
 
     prepare(): bf16/fp16 pass-through (no quantization, no dispatch).

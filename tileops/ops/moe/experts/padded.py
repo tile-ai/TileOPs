@@ -1,27 +1,25 @@
-"""MoEExpertsPaddedFwdOp — block_m-aligned padded layout expert GEMM."""
+"""FusedMoEExpertsPaddedFwdOp — block_m-aligned padded layout expert GEMM."""
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Optional
 
 import torch
 from torch import Tensor
 
 from tileops.kernels.grouped_gemm import _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS
-from tileops.kernels.kernel_base import Kernel
 from tileops.ops.elementwise import SiluAndMulFwdOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
-from tileops.ops.moe.abc import MoEExpertsModular, WeightedReduce, WeightedReduceNoOp
+from tileops.ops.moe.abc import FusedMoEExpertsModular, WeightedReduce, WeightedReduceNoOp
 from tileops.ops.moe.permute_padded import MoePermutePaddedFwdOp
 from tileops.ops.moe.unpermute import MoeUnpermuteFwdOp
-from tileops.ops.op_base import Op
 
-__all__ = ["MoEExpertsPaddedFwdOp"]
+__all__ = ["FusedMoEExpertsPaddedFwdOp"]
 
 _BLOCK_M: int = _GEMM_DEFAULT_CONFIGS[(False, True)]["block_m"]
 
 
-class MoEExpertsPaddedFwdOp(MoEExpertsModular, Op):
+class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
     """Expert GEMM using block_m-aligned padded layout (reference baseline).
 
     Internal pipeline: MoePermutePaddedFwdOp → gate_up GEMM → SwiGLU →
@@ -40,22 +38,20 @@ class MoEExpertsPaddedFwdOp(MoEExpertsModular, Op):
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[Tensor] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        kernel_map=None,
     ):
+        self.dispatch_kernel(kernel_map)
+        if expert_map is not None:
+            raise NotImplementedError(
+                "expert_map is not supported for padded layout. "
+                "Use FusedMoEExpertsNopadPersistent3WGFwdOp for EP mode."
+            )
         self.num_tokens = num_tokens
         self.num_experts = num_experts
         self.top_k = top_k
         self.hidden_size = hidden_size
         self.ffn_size = ffn_size
         self.dtype = dtype
-
-        self.dispatch_kernel(kernel_map)
-
-        if expert_map is not None:
-            raise NotImplementedError(
-                "expert_map is not supported for padded layout. "
-                "Use MoEExpertsNopadFwdOp for EP mode."
-            )
         numel = num_tokens * top_k
         padded_batch_sum = numel + (num_experts * (_BLOCK_M - 1))
 
@@ -69,9 +65,7 @@ class MoEExpertsPaddedFwdOp(MoEExpertsModular, Op):
             n=ffn_size * 2, k=hidden_size, dtype=dtype,
             kernel_map=kernel_map,
         )
-        self._silu_and_mul = SiluAndMulFwdOp(
-            M=padded_batch_sum, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
-        )
+        self._silu_and_mul = SiluAndMulFwdOp(M=padded_batch_sum, N=ffn_size, dtype=dtype)
         self._gemm_down = GroupedGemmOp(
             batch_sum=padded_batch_sum, batch_count=num_experts,
             n=hidden_size, k=ffn_size, dtype=dtype,
@@ -84,34 +78,6 @@ class MoEExpertsPaddedFwdOp(MoEExpertsModular, Op):
         )
         self._routed_scaling_factor = routed_scaling_factor
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {}
-
-    def forward(
-        self,
-        hidden_states: Tensor,   # [T, H]
-        w_gate_up: Tensor,       # [E, 2F, H]
-        w_down: Tensor,          # [E, H, F]
-        topk_weights: Tensor,    # [T, K] float32
-        topk_ids: Tensor,        # [T, K] int32
-    ) -> Tensor:                  # [T, H]
-        """Allocating wrapper: run the expert pipeline and return the output tensor."""
-        perm_h_pad, padded_offsets, padded_sizes, _, fwd_idx = self._permute(
-            hidden_states, topk_ids
-        )
-        gate_up_pad = self._gemm_gate_up(
-            perm_h_pad, w_gate_up, padded_sizes, padded_offsets, padded_offsets
-        )
-        act_pad = self._silu_and_mul(gate_up_pad)
-        mm2_pad = self._gemm_down(
-            act_pad, w_down, padded_sizes, padded_offsets, padded_offsets
-        )
-        output = self._unpermute(mm2_pad, fwd_idx, topk_weights)
-        if self._routed_scaling_factor != 1.0:
-            output.mul_(self._routed_scaling_factor)
-        return output
-
     def workspace_shapes(
         self, M: int, N: int, K: int, topk: int, num_experts: int,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -123,28 +89,68 @@ class MoEExpertsPaddedFwdOp(MoEExpertsModular, Op):
     def make_weighted_reduce(self) -> WeightedReduce:
         return WeightedReduceNoOp()
 
-    def apply(
+    def _validate_dtypes(
         self,
         output: Tensor,
-        hidden_q: Tensor,
-        w1: Tensor,
-        w2: Tensor,
+        hidden_states: Tensor,
+        w_gate_up: Tensor,
+        w_down: Tensor,
         topk_weights: Tensor,
         topk_ids: Tensor,
-        num_experts: int,
         expert_map: Tensor | None,
         workspace1: Tensor,
         workspace2: Tensor,
     ) -> None:
+        allowed = (torch.float16, torch.bfloat16)
+        if self.dtype not in allowed:
+            raise ValueError(f"self.dtype must be one of {allowed}, got {self.dtype}")
+        for name, t in (
+            ("output", output),
+            ("hidden_states", hidden_states),
+            ("w_gate_up", w_gate_up),
+            ("w_down", w_down),
+        ):
+            if t.dtype != self.dtype:
+                raise ValueError(
+                    f"Expected {name}.dtype == self.dtype ({self.dtype}), got {t.dtype}"
+                )
+        if topk_weights.dtype != torch.float32:
+            raise ValueError(f"Expected topk_weights.dtype == float32, got {topk_weights.dtype}")
+        if topk_ids.dtype != torch.int32:
+            raise ValueError(f"Expected topk_ids.dtype == int32, got {topk_ids.dtype}")
+        if expert_map is not None and expert_map.dtype != torch.int32:
+            raise ValueError(f"Expected expert_map.dtype == int32, got {expert_map.dtype}")
+        for name, t in (("workspace1", workspace1), ("workspace2", workspace2)):
+            if t.dtype not in allowed:
+                raise ValueError(f"Expected {name}.dtype in {allowed}, got {t.dtype}")
+
+    @property
+    def default_kernel_map(self) -> dict:
+        # All sub-kernels are owned by the inner Ops (permute / GEMM / SiLU / unpermute).
+        return {}
+
+    def forward(
+        self,
+        output: Tensor,
+        hidden_states: Tensor,
+        w_gate_up: Tensor,
+        w_down: Tensor,
+        topk_weights: Tensor,
+        topk_ids: Tensor,
+        expert_map: Tensor | None,
+        workspace1: Tensor,
+        workspace2: Tensor,
+        num_experts: int,
+    ) -> None:
         perm_h_pad, padded_offsets, padded_sizes, _, fwd_idx = self._permute(
-            hidden_q, topk_ids
+            hidden_states, topk_ids
         )
         gate_up_pad = self._gemm_gate_up(
-            perm_h_pad, w1, padded_sizes, padded_offsets, padded_offsets
+            perm_h_pad, w_gate_up, padded_sizes, padded_offsets, padded_offsets
         )
         act_pad = self._silu_and_mul(gate_up_pad)
         mm2_pad = self._gemm_down(
-            act_pad, w2, padded_sizes, padded_offsets, padded_offsets
+            act_pad, w_down, padded_sizes, padded_offsets, padded_offsets
         )
         result = self._unpermute(mm2_pad, fwd_idx, topk_weights)
         if self._routed_scaling_factor != 1.0:
