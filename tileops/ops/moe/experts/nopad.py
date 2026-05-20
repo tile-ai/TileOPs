@@ -1,30 +1,33 @@
-"""MoEExpertsNopadFwdOp — tight (no-pad) layout expert GEMM."""
+"""FusedMoEExpertsNopadPersistent3WGFwdOp — tight (no-pad) layout expert GEMM with 3WG persistent kernel."""
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Optional
 
 import torch
 from torch import Tensor
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel
+from tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg import (
+    _DEFAULT_CONFIG as _3WG_DEFAULT_CONFIG,
+)
+from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 from tileops.ops.elementwise import SiluAndMulFwdOp
-from tileops.ops.moe.abc import MoEExpertsModular, WeightedReduce, WeightedReduceNoOp
+from tileops.ops.moe.abc import FusedMoEExpertsModular, WeightedReduce, WeightedReduceNoOp
 from tileops.ops.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
 from tileops.ops.moe.permute_nopad import MoePermuteNopadFwdOp
 from tileops.ops.moe.unpermute import MoeUnpermuteFwdOp
-from tileops.ops.op_base import Op
 
-__all__ = ["MoEExpertsNopadFwdOp"]
+__all__ = ["FusedMoEExpertsNopadPersistent3WGFwdOp"]
 
 
-class MoEExpertsNopadFwdOp(MoEExpertsModular, Op):
-    """Expert GEMM using tight (T*K rows, no-pad) layout with GPU tile scheduler.
+class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
+    """Expert GEMM using tight (T*K rows, no-pad) layout with 3WG persistent kernel.
 
-    Internal pipeline: MoePermuteNopadFwdOp → gate_up GEMM → SwiGLU →
-    down GEMM → MoeUnpermuteFwdOp (weighted reduction included).
+    Internal pipeline: MoePermuteNopadFwdOp → gate_up GEMM (3WG) → SwiGLU →
+    down GEMM (3WG) → MoeUnpermuteFwdOp (weighted reduction included).
 
-    apply() output shape is (T, H): reduction is done internally by
+    forward() output shape is (T, H): reduction is done internally by
     MoeUnpermuteFwdOp, so make_weighted_reduce() returns WeightedReduceNoOp.
     """
 
@@ -38,71 +41,83 @@ class MoEExpertsNopadFwdOp(MoEExpertsModular, Op):
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[Tensor] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
+        gemm_kernel: Optional[type] = None,
+        kernel_map=None,
     ):
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.hidden_size = hidden_size
-        self.ffn_size = ffn_size
-        self.dtype = dtype
-        self._expert_map = expert_map
-
         self.dispatch_kernel(kernel_map)
-
         numel = num_tokens * top_k
         num_experts_local = (
             int((expert_map >= 0).sum().item()) if expert_map is not None else num_experts
         )
 
+        kernel_cls = gemm_kernel or GroupedGemmPersistent3WGKernel
+
+        # 3WG requires N and K aligned to its default block dimensions.
+        # Fall back to tile scheduler kernel for small/unaligned dimensions.
+        _3wg_block_n = _3WG_DEFAULT_CONFIG["block_n"]
+        _3wg_block_k = _3WG_DEFAULT_CONFIG["block_k"]
+        gate_up_n = ffn_size * 2
+        if kernel_cls is GroupedGemmPersistent3WGKernel:
+            gate_up_ok = (gate_up_n % _3wg_block_n == 0) and (hidden_size % _3wg_block_k == 0)
+            down_ok = (hidden_size % _3wg_block_n == 0) and (ffn_size % _3wg_block_k == 0)
+            if not (gate_up_ok and down_ok):
+                kernel_cls = MoeGroupedGemmNopadKernel
+
         self._permute = MoePermuteNopadFwdOp(
             total_tokens=num_tokens, top_k=top_k, num_experts=num_experts,
             hidden_size=hidden_size, dtype=dtype, expert_map=expert_map,
-            kernel_map=kernel_map,
         )
         self._gemm_gate_up = MoeGroupedGemmNopadFwdOp(
             numel=numel, num_experts=num_experts_local,
             n=ffn_size * 2, k=hidden_size, dtype=dtype,
-            kernel_map=kernel_map,
+            kernel_map={"moe_grouped_gemm_kernel": kernel_cls},
         )
-        self._silu_and_mul = SiluAndMulFwdOp(
-            M=numel, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
-        )
+        self._silu_and_mul = SiluAndMulFwdOp(M=numel, N=ffn_size, dtype=dtype)
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel, num_experts=num_experts_local,
             n=hidden_size, k=ffn_size, dtype=dtype,
-            kernel_map=kernel_map,
+            kernel_map={"moe_grouped_gemm_kernel": kernel_cls},
         )
         self._unpermute = MoeUnpermuteFwdOp(
             total_tokens=num_tokens, top_k=top_k,
             hidden_size=hidden_size, dtype=dtype, padded_batch_sum=numel,
-            kernel_map=kernel_map,
         )
         self._routed_scaling_factor = routed_scaling_factor
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {}
-
-    def forward(
+    def _validate_dtypes(
         self,
-        hidden_states: Tensor,   # [T, H]
-        w_gate_up: Tensor,       # [E, 2F, H]
-        w_down: Tensor,          # [E, H, F]
-        topk_weights: Tensor,    # [T, K] float32
-        topk_ids: Tensor,        # [T, K] int32
-    ) -> Tensor:                  # [T, H]
-        """Allocating wrapper: run the expert pipeline and return the output tensor."""
-        perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(
-            hidden_states, topk_ids
-        )
-        gate_up = self._gemm_gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
-        act = self._silu_and_mul(gate_up)
-        mm2 = self._gemm_down(act, w_down, true_sizes, true_offsets)
-        output = self._unpermute(mm2, fwd_idx, topk_weights)
-        if self._routed_scaling_factor != 1.0:
-            output.mul_(self._routed_scaling_factor)
-        return output
+        output: Tensor,
+        hidden_states: Tensor,
+        w_gate_up: Tensor,
+        w_down: Tensor,
+        topk_weights: Tensor,
+        topk_ids: Tensor,
+        expert_map: Tensor | None,
+        workspace1: Tensor,
+        workspace2: Tensor,
+    ) -> None:
+        allowed = (torch.float16, torch.bfloat16)
+        if self.dtype not in allowed:
+            raise ValueError(f"self.dtype must be one of {allowed}, got {self.dtype}")
+        for name, t in (
+            ("output", output),
+            ("hidden_states", hidden_states),
+            ("w_gate_up", w_gate_up),
+            ("w_down", w_down),
+        ):
+            if t.dtype != self.dtype:
+                raise ValueError(
+                    f"Expected {name}.dtype == self.dtype ({self.dtype}), got {t.dtype}"
+                )
+        if topk_weights.dtype != torch.float32:
+            raise ValueError(f"Expected topk_weights.dtype == float32, got {topk_weights.dtype}")
+        if topk_ids.dtype != torch.int32:
+            raise ValueError(f"Expected topk_ids.dtype == int32, got {topk_ids.dtype}")
+        if expert_map is not None and expert_map.dtype != torch.int32:
+            raise ValueError(f"Expected expert_map.dtype == int32, got {expert_map.dtype}")
+        for name, t in (("workspace1", workspace1), ("workspace2", workspace2)):
+            if t.dtype not in allowed:
+                raise ValueError(f"Expected {name}.dtype in {allowed}, got {t.dtype}")
 
     def workspace_shapes(
         self, M: int, N: int, K: int, topk: int, num_experts: int,
@@ -115,23 +130,28 @@ class MoEExpertsNopadFwdOp(MoEExpertsModular, Op):
     def make_weighted_reduce(self) -> WeightedReduce:
         return WeightedReduceNoOp()
 
-    def apply(
+    @property
+    def default_kernel_map(self) -> dict:
+        # All sub-kernels are owned by the inner Ops (permute / GEMM / SiLU / unpermute).
+        return {}
+
+    def forward(
         self,
         output: Tensor,
-        hidden_q: Tensor,
-        w1: Tensor,
-        w2: Tensor,
+        hidden_states: Tensor,
+        w_gate_up: Tensor,
+        w_down: Tensor,
         topk_weights: Tensor,
         topk_ids: Tensor,
-        num_experts: int,
         expert_map: Tensor | None,
         workspace1: Tensor,
         workspace2: Tensor,
+        num_experts: int,
     ) -> None:
-        perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(hidden_q, topk_ids)
-        gate_up = self._gemm_gate_up(perm_h, w1, true_sizes, true_offsets)
+        perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(hidden_states, topk_ids)
+        gate_up = self._gemm_gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
         act = self._silu_and_mul(gate_up)
-        mm2 = self._gemm_down(act, w2, true_sizes, true_offsets)
+        mm2 = self._gemm_down(act, w_down, true_sizes, true_offsets)
         result = self._unpermute(mm2, fwd_idx, topk_weights)
         if self._routed_scaling_factor != 1.0:
             torch.mul(result, self._routed_scaling_factor, out=output)

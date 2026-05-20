@@ -1,15 +1,35 @@
-"""Tests for MoEExpertsNopadFwdOp/PaddedFwdOp and supporting ABCs."""
+"""Tests for FusedMoEExpertsNopadPersistent3WGFwdOp/PaddedFwdOp and supporting ABCs."""
 import pytest
 import torch
+import torch.nn.functional as F
 
 from tileops.ops.moe.abc import (
     WeightedReduce,
     WeightedReduceNoOp,
 )
-from tileops.ops.moe.experts.nopad import MoEExpertsNopadFwdOp
-from tileops.ops.moe.experts.padded import MoEExpertsPaddedFwdOp
-from tileops.ops.moe.fused_moe_experts import FusedMoeExpertsFwdOp, FusedMoeExpertsPaddedFwdOp
+from tileops.ops.moe.experts.nopad import FusedMoEExpertsNopadPersistent3WGFwdOp
+from tileops.ops.moe.experts.padded import FusedMoEExpertsPaddedFwdOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
+
+
+def _torch_ref_moe(hidden, w1, w2, topk_weights, topk_ids):
+    """Per-expert PyTorch reference: ground-truth MoE FFN."""
+    T, H = hidden.shape
+    E, twoF, _ = w1.shape
+    F_dim = twoF // 2
+    output = torch.zeros(T, H, dtype=torch.float32, device=hidden.device)
+    ids_i64 = topk_ids.to(torch.int64)
+    for e in range(E):
+        mask = (ids_i64 == e)
+        if not mask.any():
+            continue
+        t_idx, k_idx = mask.nonzero(as_tuple=True)
+        h = hidden[t_idx].float()
+        gate_up = h @ w1[e].float().t()
+        act = F.silu(gate_up[:, :F_dim]) * gate_up[:, F_dim:]
+        down = act @ w2[e].float().t()
+        output.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
+    return output.to(hidden.dtype)
 
 
 @pytest.mark.smoke
@@ -75,28 +95,28 @@ class TestMoEPrepareAndFinalizeNoDPEP:
 
 
 # ---------------------------------------------------------------------------
-# MoEExpertsNopadFwdOp
+# FusedMoEExpertsNopadPersistent3WGFwdOp
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(params=[torch.bfloat16, torch.float16], ids=["bfloat16", "float16"])
 def moe_tensors(request):
-    T, H, F, E, K = 16, 64, 32, 4, 2
+    T, H, F_dim, E, K = 128, 256, 128, 4, 2
     dtype = request.param
-    hidden = torch.randn(T, H, dtype=dtype, device="cuda")
-    w1 = torch.randn(E, 2 * F, H, dtype=dtype, device="cuda")
-    w2 = torch.randn(E, H, F, dtype=dtype, device="cuda")
+    hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
+    w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
+    w2 = torch.randn(E, H, F_dim, dtype=dtype, device="cuda") * 0.02
     weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
     ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
-    return dict(T=T, H=H, F=F, E=E, K=K, dtype=dtype,
+    return dict(T=T, H=H, F=F_dim, E=E, K=K, dtype=dtype,
                 hidden=hidden, w1=w1, w2=w2, weights=weights, ids=ids)
 
 
-class TestMoEExpertsNopadFwdOp:
+class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
 
     @pytest.mark.smoke
     def test_workspace_shapes(self, moe_tensors):
         d = moe_tensors
-        experts = MoEExpertsNopadFwdOp(
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
         )
@@ -106,7 +126,7 @@ class TestMoEExpertsNopadFwdOp:
     @pytest.mark.smoke
     def test_output_shape(self, moe_tensors):
         d = moe_tensors
-        experts = MoEExpertsNopadFwdOp(
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
         )
@@ -115,53 +135,53 @@ class TestMoEExpertsNopadFwdOp:
     @pytest.mark.smoke
     def test_make_weighted_reduce_is_noop(self, moe_tensors):
         d = moe_tensors
-        experts = MoEExpertsNopadFwdOp(
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
             hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
         )
         assert isinstance(experts.make_weighted_reduce(), WeightedReduceNoOp)
 
     @pytest.mark.smoke
-    def test_apply_matches_fused_moe_experts(self, moe_tensors):
-        """MoEExpertsNopadFwdOp.apply() must match FusedMoeExpertsFwdOp.forward()."""
+    def test_forward_matches_torch_ref(self, moe_tensors):
+        """forward() output must match a per-expert PyTorch reference."""
         d = moe_tensors
-        kwargs = dict(num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
-                      hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"])
-        ref = FusedMoeExpertsFwdOp(**kwargs)
-        new = MoEExpertsNopadFwdOp(**kwargs)
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+        )
 
-        ref_out = ref.forward(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
+        ref_out = _torch_ref_moe(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
 
         output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
         ws1 = torch.empty(0, device="cuda")
         ws2 = torch.empty(0, device="cuda")
-        new.apply(output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
-                  d["E"], None, ws1, ws2)
+        experts.forward(output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
+                        None, ws1, ws2, d["E"])
 
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
 
 # ---------------------------------------------------------------------------
-# MoEExpertsPaddedFwdOp
+# FusedMoEExpertsPaddedFwdOp
 # ---------------------------------------------------------------------------
 
-class TestMoEExpertsPaddedFwdOp:
+class TestFusedMoEExpertsPaddedFwdOp:
 
     @pytest.mark.smoke
-    def test_apply_matches_fused_moe_experts_padded(self, moe_tensors):
-        """MoEExpertsPaddedFwdOp.apply() must match FusedMoeExpertsPaddedFwdOp.forward()."""
+    def test_forward_matches_torch_ref(self, moe_tensors):
+        """forward() output must match a per-expert PyTorch reference."""
         d = moe_tensors
-        kwargs = dict(num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
-                      hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"])
-        ref = FusedMoeExpertsPaddedFwdOp(**kwargs)
-        new = MoEExpertsPaddedFwdOp(**kwargs)
+        experts = FusedMoEExpertsPaddedFwdOp(
+            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+        )
 
-        ref_out = ref.forward(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
+        ref_out = _torch_ref_moe(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
 
         output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
         ws1 = torch.empty(0, device="cuda")
         ws2 = torch.empty(0, device="cuda")
-        new.apply(output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
-                  d["E"], None, ws1, ws2)
+        experts.forward(output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
+                        None, ws1, ws2, d["E"])
 
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
