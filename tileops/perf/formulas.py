@@ -37,6 +37,7 @@ __all__ = [
     "gqa_decode_paged_roofline",
     "gqa_decode_roofline",
     "gqa_fwd_roofline",
+    "gqa_prefill_fp8_tensor_core_roofline",
     "gqa_prefill_fwd_roofline",
     "gqa_prefill_paged_with_kv_cache_fwd_roofline",
     "gqa_prefill_varlen_fwd_roofline",
@@ -141,6 +142,22 @@ def gqa_prefill_fwd_roofline(**kwargs: Any) -> dict[str, int]:
     kv_elems = batch * seq_len_kv * heads_kv * dim
     o_elems = q_elems
     nbytes = (q_elems + 2 * kv_elems + o_elems) * elem_bytes
+    return {"flops": int(flops), "bytes": int(nbytes)}
+
+
+def gqa_prefill_fp8_tensor_core_roofline(**kwargs: Any) -> dict[str, int]:
+    """Roofline for dense no-cache FP8 Tensor Core GQA prefill."""
+    q_shape = kwargs["q_shape"]
+    kv_shape = kwargs.get("kv_shape", kwargs.get("k_shape"))
+    batch, seq_len, heads, dim = q_shape
+    _, _, heads_kv, _ = kv_shape
+    out_bytes = _dtype_itemsize(kwargs.get("dtype", kwargs.get("dtypes", "float16")))
+
+    flops = 4 * batch * heads * seq_len * seq_len * dim
+    q_elems = batch * seq_len * heads * dim
+    kv_elems = batch * seq_len * heads_kv * dim
+    descale_bytes = 3 * batch * heads_kv * 4
+    nbytes = q_elems + 2 * kv_elems + q_elems * out_bytes + descale_bytes
     return {"flops": int(flops), "bytes": int(nbytes)}
 
 

@@ -11,6 +11,7 @@ from tileops.kernels.attention import (
     GQABwdWgmmaPipelinedKernel,
     GQADecodeKernel,
     GQADecodePagedKernel,
+    GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
     GQAFwdKernel,
     GQAFwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
@@ -39,6 +40,7 @@ __all__ = [
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionFwdOp",
+    "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp",
     "GroupedQueryAttentionPrefillFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
@@ -292,6 +294,129 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return _attention_output(self.kernel(q, k, v))
+
+
+class GroupedQueryAttentionPrefillFP8TensorCoreFwdOp(Op):
+    """Dense no-cache FP8 Tensor Core GQA prefill. Layout: BSHD."""
+
+    def __init__(self,
+                 batch: int,
+                 heads: int,
+                 heads_kv: int,
+                 seq_len: int,
+                 dim: int,
+                 is_causal: bool = False,
+                 dtype: torch.dtype = torch.float16,
+                 kernel_map: Optional[Dict[str, Kernel]] = None,
+                 tune: bool = False) -> None:
+        _validate_gqa_dims(heads, heads_kv, dim)
+        if is_causal:
+            raise ValueError(
+                "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp currently supports non-causal prefill only."
+            )
+        if dim != 128:
+            raise ValueError(
+                "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp currently requires dim == 128."
+            )
+        if seq_len % 224 != 0:
+            raise ValueError(
+                "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp currently requires seq_len % 224 == 0."
+            )
+        if seq_len % 128 != 0:
+            raise ValueError(
+                "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp currently requires seq_len % 128 == 0."
+            )
+        _validate_attention_dtype(dtype)
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len = seq_len
+        self.dim = dim
+        self.is_causal = is_causal
+        self.dtype = dtype
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["gqa_prefill_fp8_tensor_core_fwd_kernel"](
+            batch, heads, heads_kv, seq_len, dim, self.dtype, tune=tune)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {
+            "gqa_prefill_fp8_tensor_core_fwd_kernel":
+            GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
+        }
+
+    def _infer_output_shapes(self,
+                             q_shape: tuple[int, ...],
+                             k_shape: tuple[int, ...],
+                             v_shape: tuple[int, ...],
+                             q_descale_shape: tuple[int, ...],
+                             k_descale_shape: tuple[int, ...],
+                             v_descale_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        return {"o": tuple(q_shape)}
+
+    def _validate_dtypes(self,
+                         q: torch.Tensor,
+                         k: torch.Tensor,
+                         v: torch.Tensor,
+                         q_descale: torch.Tensor,
+                         k_descale: torch.Tensor,
+                         v_descale: torch.Tensor) -> None:
+        fp8_dtype = getattr(torch, "float8_e4m3fn", None)
+        if fp8_dtype is None:
+            raise ValueError("torch.float8_e4m3fn is required for this OP.")
+        if q.dtype != fp8_dtype or k.dtype != fp8_dtype or v.dtype != fp8_dtype:
+            raise ValueError("q/k/v must be torch.float8_e4m3fn.")
+        if q_descale.dtype != torch.float32 or k_descale.dtype != torch.float32 or v_descale.dtype != torch.float32:
+            raise ValueError("q_descale/k_descale/v_descale must be torch.float32.")
+
+    def _validate_shapes(self,
+                         q: torch.Tensor,
+                         k: torch.Tensor,
+                         v: torch.Tensor,
+                         q_descale: torch.Tensor,
+                         k_descale: torch.Tensor,
+                         v_descale: torch.Tensor) -> None:
+        q_shape = (self.batch, self.seq_len, self.heads, self.dim)
+        kv_shape = (self.batch, self.seq_len, self.heads_kv, self.dim)
+        descale_shape = (self.batch, self.heads_kv)
+        if tuple(q.shape) != q_shape:
+            raise ValueError(f"q must have shape {q_shape}, got {tuple(q.shape)}.")
+        if tuple(k.shape) != kv_shape:
+            raise ValueError(f"k must have shape {kv_shape}, got {tuple(k.shape)}.")
+        if tuple(v.shape) != kv_shape:
+            raise ValueError(f"v must have shape {kv_shape}, got {tuple(v.shape)}.")
+        if tuple(q_descale.shape) != descale_shape:
+            raise ValueError(
+                f"q_descale must have shape {descale_shape}, got {tuple(q_descale.shape)}."
+            )
+        if tuple(k_descale.shape) != descale_shape:
+            raise ValueError(
+                f"k_descale must have shape {descale_shape}, got {tuple(k_descale.shape)}."
+            )
+        if tuple(v_descale.shape) != descale_shape:
+            raise ValueError(
+                f"v_descale must have shape {descale_shape}, got {tuple(v_descale.shape)}."
+            )
+
+    def eval_roofline(self) -> tuple[int, int]:
+        flops = 4 * self.batch * self.heads * self.seq_len * self.seq_len * self.dim
+        q_bytes = self.batch * self.seq_len * self.heads * self.dim
+        kv_bytes = self.batch * self.seq_len * self.heads_kv * self.dim
+        descale_bytes = 3 * self.batch * self.heads_kv * torch.float32.itemsize
+        out_bytes = self.batch * self.seq_len * self.heads * self.dim * self.dtype.itemsize
+        return int(flops), int(q_bytes + 2 * kv_bytes + descale_bytes + out_bytes)
+
+    def forward(self,
+                q: torch.Tensor,
+                k: torch.Tensor,
+                v: torch.Tensor,
+                q_descale: torch.Tensor,
+                k_descale: torch.Tensor,
+                v_descale: torch.Tensor) -> torch.Tensor:
+        self._validate_dtypes(q, k, v, q_descale, k_descale, v_descale)
+        self._validate_shapes(q, k, v, q_descale, k_descale, v_descale)
+        return _attention_output(self.kernel(q, k, v, q_descale, k_descale, v_descale))
 
 
 class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
