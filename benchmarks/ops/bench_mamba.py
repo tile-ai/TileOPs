@@ -5,7 +5,6 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.kernels.mamba import SSDChunkStateFwdKernelMH
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
@@ -479,34 +478,6 @@ def test_ssd_chunk_state_fwd_bench(
             return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, n_groups=n_groups, seq_idx=seq_idx)
         result_bl = bm.profile(baseline, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
-
-
-@pytest.mark.parametrize(
-    "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx",
-    _SSD_CHUNK_STATE_FWD_BENCH_PARAMS,
-)
-def test_ssd_chunk_state_fwd_mh_bench(
-    batch: int, num_chunks: int, chunk_len: int, n_heads: int, d_head: int,
-    d_state: int, n_groups: int, dtype: torch.dtype, tune: bool, has_seq_idx: bool,
-) -> None:
-    test = SSDChunkStateFwdTest(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx,
-    )
-    bm = SSDChunkStateFwdBenchmark(test)
-    inputs = test.gen_inputs()
-
-    # heads_per_group=4 for all production shapes (H=32/64/80, G=1 → H//G >= 32).
-    op = SSDChunkStateFwdOp(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
-        has_seq_idx=has_seq_idx, tune=tune,
-    )
-    op.kernel = SSDChunkStateFwdKernelMH(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
-        has_seq_idx=has_seq_idx,
-        config={"block_n": 128, "block_p": 64, "block_l": 64, "threads": 128, "heads_per_group": 4},
-    )
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops-mh")
 
 
 def ssd_state_passing_fwd_ref(
