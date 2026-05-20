@@ -156,6 +156,7 @@ def gqa_prefill_fp8_tensor_core_roofline(**kwargs: Any) -> dict[str, int]:
     flops = 4 * batch * heads * seq_len * seq_len * dim
     q_elems = batch * seq_len * heads * dim
     kv_elems = batch * seq_len * heads_kv * dim
+    # Public FP8 descales follow the FA3-compatible [batch, heads_kv] contract.
     descale_bytes = 3 * batch * heads_kv * 4
     nbytes = q_elems + 2 * kv_elems + q_elems * out_bytes + descale_bytes
     return {"flops": int(flops), "bytes": int(nbytes)}

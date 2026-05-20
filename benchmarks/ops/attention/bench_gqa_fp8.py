@@ -62,6 +62,26 @@ def _make_inputs(case: GQAFp8TensorCoreBenchCase) -> tuple[torch.Tensor, ...]:
     return q_fp8, k_fp8, v_fp8, q_descale, k_descale, v_descale
 
 
+def _fa3_gqa_fp8_fwd():
+    try:
+        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
+    except Exception:
+        return None
+
+    def _run(q, k, v, q_descale, k_descale, v_descale):
+        return flash_attn_func(
+            q,
+            k,
+            v,
+            causal=False,
+            q_descale=q_descale,
+            k_descale=k_descale,
+            v_descale=v_descale,
+        )
+
+    return _run
+
+
 @pytest.mark.parametrize("case", [pytest.param(c, id=c.label) for c in _manifest_cases()])
 def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> None:
     if not hasattr(torch, "float8_e4m3fn"):
@@ -91,3 +111,15 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
         "bytes": bytes_moved,
     }
     BenchmarkReport.record(op, {"case": case.label}, result, tag="tileops")
+
+    fa3_fn = _fa3_gqa_fp8_fwd()
+    if fa3_fn is not None:
+        fa3_latency_ms = bench_kernel(fa3_fn, args=inputs, n_warmup=1, n_repeat=3, n_trials=1)
+        fa3_result = {
+            "latency_ms": fa3_latency_ms,
+            "tflops": flops / fa3_latency_ms * 1e-9 if fa3_latency_ms > 0 else 0.0,
+            "gbps": bytes_moved / fa3_latency_ms * 1e-6 if fa3_latency_ms > 0 else 0.0,
+            "flops": flops,
+            "bytes": bytes_moved,
+        }
+        BenchmarkReport.record(op, {"case": case.label}, fa3_result, tag="fa3")

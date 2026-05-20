@@ -297,7 +297,12 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
 
 
 class GroupedQueryAttentionPrefillFP8TensorCoreFwdOp(Op):
-    """Dense no-cache FP8 Tensor Core GQA prefill. Layout: BSHD."""
+    """Dense non-causal FP8 Tensor Core GQA prefill. Layout: BSHD.
+
+    ``q_descale``, ``k_descale`` and ``v_descale`` use the FA3-compatible
+    public shape ``[batch, heads_kv]``. The kernel wrapper broadcasts these
+    per-batch/KV-head descales to its internal per-block scale layout.
+    """
 
     def __init__(self,
                  batch: int,
@@ -403,6 +408,7 @@ class GroupedQueryAttentionPrefillFP8TensorCoreFwdOp(Op):
         flops = 4 * self.batch * self.heads * self.seq_len * self.seq_len * self.dim
         q_bytes = self.batch * self.seq_len * self.heads * self.dim
         kv_bytes = self.batch * self.seq_len * self.heads_kv * self.dim
+        # Public descales are FA3-compatible [batch, heads_kv] float32 tensors.
         descale_bytes = 3 * self.batch * self.heads_kv * torch.float32.itemsize
         out_bytes = self.batch * self.seq_len * self.heads * self.dim * self.dtype.itemsize
         return int(flops), int(q_bytes + 2 * kv_bytes + descale_bytes + out_bytes)

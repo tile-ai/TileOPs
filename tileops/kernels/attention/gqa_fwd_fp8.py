@@ -1395,11 +1395,14 @@ def _expand_fa3_gqa_descales(
     heads_kv: int,
     seq_len: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Accept FA3 [batch, heads_kv] descales while preserving internal scale layout.
+    """Accept FA3-interface [batch, heads_kv] descales.
 
     The TileLang kernels below still index scale metadata as
     q: [batch, heads, scale_blocks] and k/v: [batch, heads_kv, scale_blocks].
-    FA3 exposes q/k/v descales as [batch, heads_kv], with q grouped by KV head.
+    The public FA3 FP8 GQA binding exposes q/k/v descales as [batch, heads_kv],
+    with q grouped by KV head.  This wrapper broadcasts that 2D contract to the
+    internal per-block layout; direct kernel users may still pass the internal
+    3D layout explicitly.
     """
     scale_blocks = (seq_len + 127) // 128
     group_size = heads // heads_kv
@@ -1449,7 +1452,7 @@ def _expand_fa3_gqa_descales(
         "v_descale", v_descale)
 
 class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(Kernel):
-    """BN224 WS FA3-contract FP8 GQA baseline with direct TMA-V layout."""
+    """BN224 WS FP8 GQA kernel with FA3-compatible 2D descales and TMA-V layout."""
 
     supported_archs: list[int] = [90]
 
