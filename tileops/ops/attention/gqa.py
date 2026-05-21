@@ -157,6 +157,7 @@ def _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
 
 
 def _select_gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
+    # Selector hook for future FP8 paged-cache kernel variants.
     return GQAPrefillPagedWithFP8KVCacheFwdKernel
 
 

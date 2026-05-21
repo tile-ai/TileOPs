@@ -2203,6 +2203,10 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                 old_len = cache_seqlens[bz]
                 total_len = old_len + q_len
                 cur_kv_head = by // groups
+                local_k_scale = T.alloc_var(T.float32)
+                local_v_scale = T.alloc_var(T.float32)
+                local_k_scale = k_scale[0]
+                local_v_scale = v_scale[0]
 
                 if bx * block_m + block_m <= q_len:
                     T.copy(
@@ -2228,9 +2232,9 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                             physical_start = block_table[bz, page_idx] * page_size + page_offset
                             for i, d in T.Parallel(block_m, dim):
                                 k_pages[physical_start + i, by, d] = quantize_fp8(
-                                    k_new[q_start + bx * block_m + i, by, d], k_scale[0])
+                                    k_new[q_start + bx * block_m + i, by, d], local_k_scale)
                                 v_pages[physical_start + i, by, d] = quantize_fp8(
-                                    v_new[q_start + bx * block_m + i, by, d], v_scale[0])
+                                    v_new[q_start + bx * block_m + i, by, d], local_v_scale)
                         else:
                             for i, d in T.Parallel(block_m, dim):
                                 new_pos = bx * block_m + i
@@ -2239,9 +2243,9 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                                 page_offset = logical_pos - page_idx * page_size
                                 physical_pos = block_table[bz, page_idx] * page_size + page_offset
                                 k_pages[physical_pos, by, d] = quantize_fp8(
-                                    k_new[q_start + new_pos, by, d], k_scale[0])
+                                    k_new[q_start + new_pos, by, d], local_k_scale)
                                 v_pages[physical_pos, by, d] = quantize_fp8(
-                                    v_new[q_start + new_pos, by, d], v_scale[0])
+                                    v_new[q_start + new_pos, by, d], local_v_scale)
                     else:
                         for i, d in T.Parallel(block_m, dim):
                             new_pos = bx * block_m + i
@@ -2252,9 +2256,9 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                             if new_pos < q_len:
                                 physical_pos = block_table[bz, page_idx] * page_size + page_offset
                                 k_pages[physical_pos, by, d] = quantize_fp8(
-                                    k_new[q_start + new_pos, by, d], k_scale[0])
+                                    k_new[q_start + new_pos, by, d], local_k_scale)
                                 v_pages[physical_pos, by, d] = quantize_fp8(
-                                    v_new[q_start + new_pos, by, d], v_scale[0])
+                                    v_new[q_start + new_pos, by, d], local_v_scale)
 
                 T.clear(acc_o)
                 T.clear(logsum)
@@ -2274,9 +2278,9 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                             physical_start = block_table[bz, page_idx] * page_size + page_offset
                             for j, d in T.Parallel(block_n, dim):
                                 k_shared[j, d] = dequantize_fp8(
-                                    k_pages[physical_start + j, cur_kv_head, d], k_scale[0])
+                                    k_pages[physical_start + j, cur_kv_head, d], local_k_scale)
                                 v_shared[j, d] = dequantize_fp8(
-                                    v_pages[physical_start + j, cur_kv_head, d], v_scale[0])
+                                    v_pages[physical_start + j, cur_kv_head, d], local_v_scale)
                         elif block_n % page_size == 0:
                             tile_page_start = tile_start >> T.int32(page_size_log2)
                             for p in range(block_n // page_size):
@@ -2286,10 +2290,10 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                                     shared_row = p * page_size + off
                                     k_shared[shared_row, d] = dequantize_fp8(
                                         k_pages[segment_physical_start + off, cur_kv_head, d],
-                                        k_scale[0])
+                                        local_k_scale)
                                     v_shared[shared_row, d] = dequantize_fp8(
                                         v_pages[segment_physical_start + off, cur_kv_head, d],
-                                        v_scale[0])
+                                        local_v_scale)
                         else:
                             for j, d in T.Parallel(block_n, dim):
                                 kv_pos = tile_start + j
@@ -2297,9 +2301,9 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                                 page_offset = kv_pos - page_idx * page_size
                                 physical_pos = block_table[bz, page_idx] * page_size + page_offset
                                 k_shared[j, d] = dequantize_fp8(
-                                    k_pages[physical_pos, cur_kv_head, d], k_scale[0])
+                                    k_pages[physical_pos, cur_kv_head, d], local_k_scale)
                                 v_shared[j, d] = dequantize_fp8(
-                                    v_pages[physical_pos, cur_kv_head, d], v_scale[0])
+                                    v_pages[physical_pos, cur_kv_head, d], local_v_scale)
                     elif tile_start >= old_len and tile_end <= total_len:
                         new_start = tile_start - old_len
                         for j, d in T.Parallel(block_n, dim):
@@ -2315,9 +2319,9 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                             physical_pos = block_table[bz, page_idx] * page_size + page_offset
                             if kv_pos < old_len:
                                 k_shared[j, d] = dequantize_fp8(
-                                    k_pages[physical_pos, cur_kv_head, d], k_scale[0])
+                                    k_pages[physical_pos, cur_kv_head, d], local_k_scale)
                                 v_shared[j, d] = dequantize_fp8(
-                                    v_pages[physical_pos, cur_kv_head, d], v_scale[0])
+                                    v_pages[physical_pos, cur_kv_head, d], local_v_scale)
                             elif kv_pos < total_len:
                                 k_shared[j, d] = k_new[q_start + new_pos, cur_kv_head, d]
                                 v_shared[j, d] = v_new[q_start + new_pos, cur_kv_head, d]

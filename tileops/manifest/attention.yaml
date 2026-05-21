@@ -353,6 +353,8 @@ GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp:
     - {total_q: 2048, batch: 4, heads: 8, heads_kv: 2, dim: 64, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 18432, is_causal: true, softcap: 50.0, dtypes: [float16], cache_dtype: float8_e4m3fn, label: "gqa-prefill-paged-fp8-cache-softcap50-b4-prefix4k-chunk512-p64-fp16"}
 
   roofline:
+    # Approximate: reuses the non-FP8 paged prefill estimate and does not model
+    # online old-cache dequantization cost separately.
     func: "tileops.perf.formulas.gqa_prefill_with_kv_cache_fwd_roofline"
 
   source:
