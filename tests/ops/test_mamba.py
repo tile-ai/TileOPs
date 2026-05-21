@@ -265,6 +265,11 @@ def test_ssd_chunk_state_fwd_seq_end_negative():
     rtol = 1e-3
     allclose_compare(out, ref, atol=atol, rtol=rtol)
 
+    # Pin the semantic: chunk 0 (seq_idx == -1 throughout) must be exactly zero;
+    # chunk 1 (seq_idx == 1 throughout) must have non-zero state.
+    allclose_compare(out[:, 0], torch.zeros_like(out[:, 0]), atol=0.0, rtol=0.0)
+    assert out[:, 1].abs().max().item() > 0
+
 
 def ssd_state_passing_fwd_ref(
     states: torch.Tensor,

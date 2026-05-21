@@ -382,17 +382,15 @@ class SSDChunkStateFwdKernel(Kernel):
         # block_n=128 covers the full d_state=128 in one N-tile.
         # block_l=128 maximises GEMM K-depth and pipeline efficiency.
         #
-        # threads=256 (8 warps/block) for the non-seqidx path: register count
-        # is ~127 regs/thread, giving Block Limit Registers=2 and theoretical
-        # occupancy=25%, which improves latency hiding vs threads=128.
+        # threads=256 (8 warps/block) for the non-seqidx path: on the H200
+        # benchmark setup, the higher warp count improves latency hiding vs
+        # threads=128 with no measurable occupancy regression.
         #
         # threads=128 (4 warps/block) for the has_seq_idx path: the seq_idx
-        # branch adds extra live registers, pushing the count to ~133 regs/thread.
-        # At threads=256 that is 133*256=34048 regs/block, which exceeds 32768
-        # (65536/2) and drops Block Limit Registers to 1 (only 8 warps/SM,
-        # 2 warps/scheduler).  Switching to threads=128 gives 133*128=17024
-        # regs/block -> 3 blocks/SM -> 12 warps/SM -> 3 warps/scheduler ->
-        # 18.75% theoretical occupancy, recovering the latency-hiding budget.
+        # branch adds extra live registers, raising per-block register pressure.
+        # At threads=256 this tips the register limiter to 1 block/SM, hurting
+        # occupancy.  Switching to threads=128 recovers the latency-hiding budget
+        # in the measured configs (H200, default block_n/block_p/block_l).
         if self.has_seq_idx:
             return {
                 "block_n": 128,
