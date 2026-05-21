@@ -4,12 +4,12 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, bench_kernel
-from benchmarks.ops.attention.gqa_fp8_utils import (
+from tileops.manifest import load_workloads
+from tileops.ops import GroupedQueryAttentionPrefillFP8TensorCoreFwdOp
+from tileops.testing.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
 )
-from tileops.manifest import load_workloads
-from tileops.ops import GroupedQueryAttentionPrefillFP8TensorCoreFwdOp
 
 _OP_NAME = "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp"
 
@@ -41,21 +41,31 @@ def _manifest_cases() -> list[GQAFp8TensorCoreBenchCase]:
                     dim=dim,
                     out_dtype=out_dtype,
                     label=f"{workload['label']}-{dtype_name}",
-                ))
+                )
+            )
     return cases
 
 
 def _make_inputs(case: GQAFp8TensorCoreBenchCase) -> tuple[torch.Tensor, ...]:
     torch.manual_seed(0)
-    q = torch.randn(
-        case.batch, case.seq_len, case.heads, case.dim, device="cuda",
-        dtype=torch.float16) * 0.25
-    k = torch.randn(
-        case.batch, case.seq_len, case.heads_kv, case.dim, device="cuda",
-        dtype=torch.float16) * 0.25
-    v = torch.randn(
-        case.batch, case.seq_len, case.heads_kv, case.dim, device="cuda",
-        dtype=torch.float16) * 0.25
+    q = (
+        torch.randn(
+            case.batch, case.seq_len, case.heads, case.dim, device="cuda", dtype=torch.float16
+        )
+        * 0.25
+    )
+    k = (
+        torch.randn(
+            case.batch, case.seq_len, case.heads_kv, case.dim, device="cuda", dtype=torch.float16
+        )
+        * 0.25
+    )
+    v = (
+        torch.randn(
+            case.batch, case.seq_len, case.heads_kv, case.dim, device="cuda", dtype=torch.float16
+        )
+        * 0.25
+    )
     q_fp8, q_descale = quantize_q_fa3_gqa_descale(q, case.heads_kv)
     k_fp8, k_descale = quantize_kv_fa3_descale(k)
     v_fp8, v_descale = quantize_kv_fa3_descale(v)
@@ -74,9 +84,9 @@ def _fa3_gqa_fp8_fwd():
             k,
             v,
             causal=False,
-            q_descale=q_descale,
-            k_descale=k_descale,
-            v_descale=v_descale,
+            descale_q=q_descale,
+            descale_k=k_descale,
+            descale_v=v_descale,
         )
 
     return _run
