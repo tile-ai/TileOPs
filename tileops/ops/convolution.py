@@ -499,9 +499,9 @@ class Conv3dFwdOp(Op):
         self,
         n: int,
         c_in: int,
-        d_in: int,
-        h_in: int,
-        w_in: int,
+        d: int,
+        h: int,
+        w: int,
         c_out: int,
         kernel_size: int | Tuple[int, int, int],
         stride: int | Tuple[int, int, int] = 1,
@@ -515,18 +515,18 @@ class Conv3dFwdOp(Op):
     ) -> None:
         _validate_positive_int("n", n, "Conv3d")
         _validate_positive_int("c_in", c_in, "Conv3d")
-        _validate_positive_int("d_in", d_in, "Conv3d")
-        _validate_positive_int("h_in", h_in, "Conv3d")
-        _validate_positive_int("w_in", w_in, "Conv3d")
+        _validate_positive_int("d", d, "Conv3d")
+        _validate_positive_int("h", h, "Conv3d")
+        _validate_positive_int("w", w, "Conv3d")
         _validate_positive_int("c_out", c_out, "Conv3d")
         _validate_conv_groups("Conv3d", c_in, c_out, groups)
         if groups != 1:
             raise NotImplementedError("Conv3d currently supports groups=1 only")
         self.n = n
         self.c_in = c_in
-        self.d_in = d_in
-        self.h_in = h_in
-        self.w_in = w_in
+        self.d = d
+        self.h = h
+        self.w = w
         self.c_out = c_out
         self.kernel_size = _triple(kernel_size)
         self.stride = _triple(stride)
@@ -536,7 +536,7 @@ class Conv3dFwdOp(Op):
         )
         _validate_conv_params(
             op_name="Conv3d",
-            input_size=(d_in, h_in, w_in),
+            input_size=(d, h, w),
             kernel_size=self.kernel_size,
             stride=self.stride,
             padding=self.padding,
@@ -555,9 +555,9 @@ class Conv3dFwdOp(Op):
         self.kernel = self.kernel_map["conv3d_kernel"](
             n=n,
             c_in=c_in,
-            d_in=d_in,
-            h_in=h_in,
-            w_in=w_in,
+            d_in=d,
+            h_in=h,
+            w_in=w,
             c_out=c_out,
             kernel_d=self.kernel_size[0],
             kernel_h=self.kernel_size[1],
@@ -586,7 +586,7 @@ class Conv3dFwdOp(Op):
             "Conv3d",
             "input",
             input,
-            (self.n, self.d_in, self.h_in, self.w_in, self.c_in),
+            (self.n, self.d, self.h, self.w, self.c_in),
         )
         _validate_tensor_shape(
             "Conv3d",
@@ -614,9 +614,9 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
         self,
         n: int,
         c_in: int,
-        d_in: int,
-        h_in: int,
-        w_in: int,
+        d: int,
+        h: int,
+        w: int,
         c_out: int,
         kernel_size: int | Tuple[int, int, int],
         stride: int | Tuple[int, int, int] = 1,
@@ -636,9 +636,9 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
         super().__init__(
             n=n,
             c_in=c_in,
-            d_in=d_in,
-            h_in=h_in,
-            w_in=w_in,
+            d=d,
+            h=h,
+            w=w,
             c_out=c_out,
             kernel_size=kernel_size,
             stride=stride,
@@ -661,7 +661,7 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
             "Conv3d",
             "input",
             input,
-            (self.n, self.d_in, self.h_in, self.w_in, self.c_in),
+            (self.n, self.d, self.h, self.w, self.c_in),
         )
         _validate_tensor_shape(
             "Conv3d",

@@ -281,9 +281,9 @@ class Conv3dBenchCase:
         self,
         n: int,
         c_in: int,
-        d_in: int,
-        h_in: int,
-        w_in: int,
+        d: int,
+        h: int,
+        w: int,
         c_out: int,
         kernel_size: tuple[int, int, int],
         stride: tuple[int, int, int],
@@ -292,9 +292,9 @@ class Conv3dBenchCase:
     ) -> None:
         self.n = n
         self.c_in = c_in
-        self.d_in = d_in
-        self.h_in = h_in
-        self.w_in = w_in
+        self.d = d
+        self.h = h
+        self.w = w
         self.c_out = c_out
         self.kernel_size = kernel_size
         self.stride = stride
@@ -303,7 +303,7 @@ class Conv3dBenchCase:
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         x = torch.randn(
-            self.n, self.d_in, self.h_in, self.w_in, self.c_in,
+            self.n, self.d, self.h, self.w, self.c_in,
             device="cuda", dtype=self.dtype,
         ).contiguous()
         weight = torch.randn(
@@ -350,18 +350,18 @@ class Conv3dBenchmark(BenchmarkBase[Conv3dBenchCase]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
-        out_d = (t.d_in + 2 * t.padding[0] - t.kernel_size[0]) // t.stride[0] + 1
-        out_h = (t.h_in + 2 * t.padding[1] - t.kernel_size[1]) // t.stride[1] + 1
-        out_w = (t.w_in + 2 * t.padding[2] - t.kernel_size[2]) // t.stride[2] + 1
+        out_d = (t.d + 2 * t.padding[0] - t.kernel_size[0]) // t.stride[0] + 1
+        out_h = (t.h + 2 * t.padding[1] - t.kernel_size[1]) // t.stride[1] + 1
+        out_w = (t.w + 2 * t.padding[2] - t.kernel_size[2]) // t.stride[2] + 1
         return 2.0 * t.n * t.c_out * out_d * out_h * out_w * t.c_in * t.kernel_size[0] * t.kernel_size[1] * t.kernel_size[2]
 
     def calculate_memory(self) -> Optional[float]:
         t = self.workload
-        out_d = (t.d_in + 2 * t.padding[0] - t.kernel_size[0]) // t.stride[0] + 1
-        out_h = (t.h_in + 2 * t.padding[1] - t.kernel_size[1]) // t.stride[1] + 1
-        out_w = (t.w_in + 2 * t.padding[2] - t.kernel_size[2]) // t.stride[2] + 1
+        out_d = (t.d + 2 * t.padding[0] - t.kernel_size[0]) // t.stride[0] + 1
+        out_h = (t.h + 2 * t.padding[1] - t.kernel_size[1]) // t.stride[1] + 1
+        out_w = (t.w + 2 * t.padding[2] - t.kernel_size[2]) // t.stride[2] + 1
         bytes_ = (
-            t.n * t.c_in * t.d_in * t.h_in * t.w_in
+            t.n * t.c_in * t.d * t.h * t.w
             + t.c_out * t.c_in * t.kernel_size[0] * t.kernel_size[1] * t.kernel_size[2]
             + t.n * t.c_out * out_d * out_h * out_w
         ) * t.dtype.itemsize
@@ -376,15 +376,15 @@ _CONV3D_BENCH_PARAMS = [
 
 
 @pytest.mark.parametrize(
-    "n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype, tune",
+    "n, c_in, d, h, w, c_out, kernel_size, stride, padding, dtype, tune",
     _CONV3D_BENCH_PARAMS,
 )
 def test_conv3d_bench(
     n: int,
     c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
+    d: int,
+    h: int,
+    w: int,
     c_out: int,
     kernel_size: tuple[int, int, int],
     stride: tuple[int, int, int],
@@ -392,7 +392,7 @@ def test_conv3d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = Conv3dBenchCase(n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype)
+    test = Conv3dBenchCase(n, c_in, d, h, w, c_out, kernel_size, stride, padding, dtype)
     bm = Conv3dBenchmark(test)
     inputs = test.gen_inputs()
     x, weight, bias = inputs
@@ -400,9 +400,9 @@ def test_conv3d_bench(
     op = Conv3dBiasFwdOp(
         n=n,
         c_in=c_in,
-        d_in=d_in,
-        h_in=h_in,
-        w_in=w_in,
+        d=d,
+        h=h,
+        w=w,
         c_out=c_out,
         kernel_size=kernel_size,
         stride=stride,

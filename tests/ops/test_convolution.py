@@ -534,7 +534,7 @@ def test_conv2d_dispatches_5x5_kernel() -> None:
 
 class Conv3dFixture(FixtureBase):
     PARAMS = [
-        ("n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype, tune", [
+        ("n, c_in, d, h, w, c_out, kernel_size, stride, padding, dtype, tune", [
             pytest.param(
                 1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.float16, False,
                 marks=pytest.mark.smoke,
@@ -570,9 +570,9 @@ class Conv3dTest(TestBase):
         self,
         n: int,
         c_in: int,
-        d_in: int,
-        h_in: int,
-        w_in: int,
+        d: int,
+        h: int,
+        w: int,
         c_out: int,
         kernel_size: tuple[int, int, int],
         stride: tuple[int, int, int],
@@ -581,9 +581,9 @@ class Conv3dTest(TestBase):
     ) -> None:
         self.n = n
         self.c_in = c_in
-        self.d_in = d_in
-        self.h_in = h_in
-        self.w_in = w_in
+        self.d = d
+        self.h = h
+        self.w = w
         self.c_out = c_out
         self.kernel_size = kernel_size
         self.stride = stride
@@ -592,7 +592,7 @@ class Conv3dTest(TestBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         x = torch.randn(
-            self.n, self.d_in, self.h_in, self.w_in, self.c_in,
+            self.n, self.d, self.h, self.w, self.c_in,
             device="cuda", dtype=self.dtype,
         ).contiguous()
         weight = torch.randn(
@@ -624,9 +624,9 @@ class Conv3dTest(TestBase):
 def test_conv3d(
     n: int,
     c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
+    d: int,
+    h: int,
+    w: int,
     c_out: int,
     kernel_size: tuple[int, int, int],
     stride: tuple[int, int, int],
@@ -634,13 +634,13 @@ def test_conv3d(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = Conv3dTest(n, c_in, d_in, h_in, w_in, c_out, kernel_size, stride, padding, dtype)
+    test = Conv3dTest(n, c_in, d, h, w, c_out, kernel_size, stride, padding, dtype)
     op = Conv3dBiasFwdOp(
         n=n,
         c_in=c_in,
-        d_in=d_in,
-        h_in=h_in,
-        w_in=w_in,
+        d=d,
+        h=h,
+        w=w,
         c_out=c_out,
         kernel_size=kernel_size,
         stride=stride,
@@ -657,9 +657,9 @@ def test_conv3d_no_bias_matches_torch() -> None:
     op = Conv3dFwdOp(
         n=1,
         c_in=8,
-        d_in=4,
-        h_in=16,
-        w_in=16,
+        d=4,
+        h=16,
+        w=16,
         c_out=16,
         kernel_size=3,
         stride=2,
@@ -684,9 +684,9 @@ def test_conv3d_bias_requires_bias_tensor() -> None:
     op = Conv3dBiasFwdOp(
         n=1,
         c_in=8,
-        d_in=4,
-        h_in=16,
-        w_in=16,
+        d=4,
+        h=16,
+        w=16,
         c_out=16,
         kernel_size=3,
         stride=2,
@@ -712,9 +712,9 @@ def test_conv3d_accepts_zero_bias() -> None:
     op = Conv3dBiasFwdOp(
         n=1,
         c_in=8,
-        d_in=8,
-        h_in=16,
-        w_in=16,
+        d=8,
+        h=16,
+        w=16,
         c_out=16,
         kernel_size=3,
         stride=2,
@@ -740,9 +740,9 @@ def test_conv3d_dispatches_kernel() -> None:
     op = Conv3dFwdOp(
         n=1,
         c_in=8,
-        d_in=8,
-        h_in=16,
-        w_in=16,
+        d=8,
+        h=16,
+        w=16,
         c_out=16,
         kernel_size=3,
         stride=1,
