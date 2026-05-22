@@ -13,7 +13,14 @@ from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["Conv1dBiasFwdOp", "Conv1dFwdOp", "Conv2dOp", "Conv3dOp"]
+__all__ = [
+    "Conv1dBiasFwdOp",
+    "Conv1dFwdOp",
+    "Conv2dBiasFwdOp",
+    "Conv2dFwdOp",
+    "Conv3dBiasFwdOp",
+    "Conv3dFwdOp",
+]
 
 
 def _conv_tuple(
@@ -310,7 +317,7 @@ def _pair(value: int | Tuple[int, int]) -> Tuple[int, int]:
     return _conv_tuple(value, 2, "value", "Conv2d")  # type: ignore[return-value]
 
 
-class Conv2dOp(Op):
+class Conv2dFwdOp(Op):
 
     def __init__(
         self,
@@ -322,16 +329,21 @@ class Conv2dOp(Op):
         kernel_size: int | Tuple[int, int],
         stride: int | Tuple[int, int] = 1,
         padding: int | Tuple[int, int] | str = 0,
-        bias: bool = False,
+        dilation: int | Tuple[int, int] = 1,
+        groups: int = 1,
         dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        _has_bias: bool = False,
     ) -> None:
         _validate_positive_int("n", n, "Conv2d")
         _validate_positive_int("c_in", c_in, "Conv2d")
         _validate_positive_int("h", h, "Conv2d")
         _validate_positive_int("w", w, "Conv2d")
         _validate_positive_int("c_out", c_out, "Conv2d")
+        _validate_conv_groups("Conv2d", c_in, c_out, groups)
+        if groups != 1:
+            raise NotImplementedError("Conv2d currently supports groups=1 only")
         self.n = n
         self.c_in = c_in
         self.h = h
@@ -339,15 +351,23 @@ class Conv2dOp(Op):
         self.c_out = c_out
         self.kernel_size = _pair(kernel_size)
         self.stride = _pair(stride)
-        self.padding = _conv_padding_to_tuple(padding, self.stride, self.kernel_size, "Conv2d")
+        dilation_tuple = _conv_tuple(dilation, 2, "dilation", "Conv2d")
+        self.padding = _conv_padding_to_tuple(
+            padding, self.stride, self.kernel_size, "Conv2d", dilation_tuple
+        )
         _validate_conv_params(
             op_name="Conv2d",
             input_size=(h, w),
             kernel_size=self.kernel_size,
             stride=self.stride,
             padding=self.padding,
+            dilation=dilation_tuple,
         )
-        self.has_bias = bias
+        if dilation_tuple != (1, 1):
+            raise NotImplementedError("Conv2d currently supports dilation=1 only")
+        self.dilation = dilation_tuple
+        self.groups = groups
+        self.has_bias = _has_bias
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
@@ -362,13 +382,14 @@ class Conv2dOp(Op):
             pad_h=self.padding[0],
             pad_w=self.padding[1],
             dtype=dtype,
-            has_bias=bias,
+            has_bias=_has_bias,
             tune=tune,
         )
         if (
             self.kernel_size == (1, 1)
             and self.stride == (1, 1)
             and self.padding == (0, 0)
+            and self.dilation == (1, 1)
             and "conv2d_1x1_kernel" in self.kernel_map
         ):
             self.kernel = self.kernel_map["conv2d_1x1_kernel"](**kernel_kwargs)
@@ -380,7 +401,7 @@ class Conv2dOp(Op):
             )
         else:
             raise NotImplementedError(
-                "Conv2dOp requires 'conv2d_1x1_kernel' or 'conv2d_kernel' in kernel_map"
+                "Conv2dFwdOp requires 'conv2d_1x1_kernel' or 'conv2d_kernel' in kernel_map"
             )
 
     @property
@@ -392,78 +413,151 @@ class Conv2dOp(Op):
 
     def forward(
         self,
-        x: torch.Tensor,
+        input: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        _validate_tensor_shape("Conv2d", "x", x, (self.n, self.h, self.w, self.c_in))
+        _validate_tensor_shape("Conv2d", "input", input, (self.n, self.h, self.w, self.c_in))
         _validate_tensor_shape(
             "Conv2d",
             "weight",
             weight,
             (self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1]),
         )
-        if bias is not None:
-            _validate_tensor_shape("Conv2d", "bias", bias, (self.c_out,))
-        return self.kernel(x, weight, bias)
+        return self.kernel(input, weight, None)
+
+
+class Conv2dBiasFwdOp(Conv2dFwdOp):
+    """Conv2d forward with bias=True default.
+
+    Identical to :class:`Conv2dFwdOp` but defaults ``bias=True`` so the
+    manifest key ``Conv2dBiasFwdOp`` resolves to a distinct class name.
+    """
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        h: int,
+        w: int,
+        c_out: int,
+        kernel_size: int | Tuple[int, int],
+        stride: int | Tuple[int, int] = 1,
+        padding: int | Tuple[int, int] | str = 0,
+        dilation: int | Tuple[int, int] = 1,
+        groups: int = 1,
+        bias: bool = True,
+        dtype: torch.dtype = torch.float16,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        if not bias:
+            raise ValueError(
+                "Conv2dBiasFwdOp requires bias=True. "
+                "Use Conv2dFwdOp for the no-bias variant."
+            )
+        super().__init__(
+            n=n,
+            c_in=c_in,
+            h=h,
+            w=w,
+            c_out=c_out,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            dtype=dtype,
+            kernel_map=kernel_map,
+            tune=tune,
+            _has_bias=True,
+        )
+
+    def forward(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> torch.Tensor:
+        _validate_tensor_shape("Conv2d", "input", input, (self.n, self.h, self.w, self.c_in))
+        _validate_tensor_shape(
+            "Conv2d",
+            "weight",
+            weight,
+            (self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1]),
+        )
+        _validate_tensor_shape("Conv2d", "bias", bias, (self.c_out,))
+        return self.kernel(input, weight, bias)
 
 
 def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
     return _conv_tuple(value, 3, "value", "Conv3d")  # type: ignore[return-value]
 
 
-class Conv3dOp(Op):
+class Conv3dFwdOp(Op):
 
     def __init__(
         self,
         n: int,
         c_in: int,
-        d_in: int,
-        h_in: int,
-        w_in: int,
+        d: int,
+        h: int,
+        w: int,
         c_out: int,
         kernel_size: int | Tuple[int, int, int],
         stride: int | Tuple[int, int, int] = 1,
         padding: int | Tuple[int, int, int] | str = 0,
-        bias: bool = False,
+        dilation: int | Tuple[int, int, int] = 1,
+        groups: int = 1,
         dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        _has_bias: bool = False,
     ) -> None:
         _validate_positive_int("n", n, "Conv3d")
         _validate_positive_int("c_in", c_in, "Conv3d")
-        _validate_positive_int("d_in", d_in, "Conv3d")
-        _validate_positive_int("h_in", h_in, "Conv3d")
-        _validate_positive_int("w_in", w_in, "Conv3d")
+        _validate_positive_int("d", d, "Conv3d")
+        _validate_positive_int("h", h, "Conv3d")
+        _validate_positive_int("w", w, "Conv3d")
         _validate_positive_int("c_out", c_out, "Conv3d")
+        _validate_conv_groups("Conv3d", c_in, c_out, groups)
+        if groups != 1:
+            raise NotImplementedError("Conv3d currently supports groups=1 only")
         self.n = n
         self.c_in = c_in
-        self.d_in = d_in
-        self.h_in = h_in
-        self.w_in = w_in
+        self.d = d
+        self.h = h
+        self.w = w
         self.c_out = c_out
         self.kernel_size = _triple(kernel_size)
         self.stride = _triple(stride)
-        self.padding = _conv_padding_to_tuple(padding, self.stride, self.kernel_size, "Conv3d")
+        dilation_tuple = _conv_tuple(dilation, 3, "dilation", "Conv3d")
+        self.padding = _conv_padding_to_tuple(
+            padding, self.stride, self.kernel_size, "Conv3d", dilation_tuple
+        )
         _validate_conv_params(
             op_name="Conv3d",
-            input_size=(d_in, h_in, w_in),
+            input_size=(d, h, w),
             kernel_size=self.kernel_size,
             stride=self.stride,
             padding=self.padding,
+            dilation=dilation_tuple,
         )
-        self.has_bias = bias
+        if dilation_tuple != (1, 1, 1):
+            raise NotImplementedError("Conv3d currently supports dilation=1 only")
+        self.dilation = dilation_tuple
+        self.groups = groups
+        self.has_bias = _has_bias
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
         if "conv3d_kernel" not in self.kernel_map:
-            raise NotImplementedError("Conv3dOp requires 'conv3d_kernel' in kernel_map")
+            raise NotImplementedError("Conv3dFwdOp requires 'conv3d_kernel' in kernel_map")
         self.kernel = self.kernel_map["conv3d_kernel"](
             n=n,
             c_in=c_in,
-            d_in=d_in,
-            h_in=h_in,
-            w_in=w_in,
+            d_in=d,
+            h_in=h,
+            w_in=w,
             c_out=c_out,
             kernel_d=self.kernel_size[0],
             kernel_h=self.kernel_size[1],
@@ -475,7 +569,7 @@ class Conv3dOp(Op):
             pad_h=self.padding[1],
             pad_w=self.padding[2],
             dtype=dtype,
-            has_bias=bias,
+            has_bias=_has_bias,
             tune=tune,
         )
 
@@ -485,15 +579,14 @@ class Conv3dOp(Op):
 
     def forward(
         self,
-        x: torch.Tensor,
+        input: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         _validate_tensor_shape(
             "Conv3d",
-            "x",
-            x,
-            (self.n, self.d_in, self.h_in, self.w_in, self.c_in),
+            "input",
+            input,
+            (self.n, self.d, self.h, self.w, self.c_in),
         )
         _validate_tensor_shape(
             "Conv3d",
@@ -507,6 +600,80 @@ class Conv3dOp(Op):
                 self.kernel_size[2],
             ),
         )
-        if bias is not None:
-            _validate_tensor_shape("Conv3d", "bias", bias, (self.c_out,))
-        return self.kernel(x, weight, bias)
+        return self.kernel(input, weight, None)
+
+
+class Conv3dBiasFwdOp(Conv3dFwdOp):
+    """Conv3d forward with bias=True default.
+
+    Identical to :class:`Conv3dFwdOp` but defaults ``bias=True`` so the
+    manifest key ``Conv3dBiasFwdOp`` resolves to a distinct class name.
+    """
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        d: int,
+        h: int,
+        w: int,
+        c_out: int,
+        kernel_size: int | Tuple[int, int, int],
+        stride: int | Tuple[int, int, int] = 1,
+        padding: int | Tuple[int, int, int] | str = 0,
+        dilation: int | Tuple[int, int, int] = 1,
+        groups: int = 1,
+        bias: bool = True,
+        dtype: torch.dtype = torch.float16,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        if not bias:
+            raise ValueError(
+                "Conv3dBiasFwdOp requires bias=True. "
+                "Use Conv3dFwdOp for the no-bias variant."
+            )
+        super().__init__(
+            n=n,
+            c_in=c_in,
+            d=d,
+            h=h,
+            w=w,
+            c_out=c_out,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            dtype=dtype,
+            kernel_map=kernel_map,
+            tune=tune,
+            _has_bias=True,
+        )
+
+    def forward(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> torch.Tensor:
+        _validate_tensor_shape(
+            "Conv3d",
+            "input",
+            input,
+            (self.n, self.d, self.h, self.w, self.c_in),
+        )
+        _validate_tensor_shape(
+            "Conv3d",
+            "weight",
+            weight,
+            (
+                self.c_out,
+                self.c_in,
+                self.kernel_size[0],
+                self.kernel_size[1],
+                self.kernel_size[2],
+            ),
+        )
+        _validate_tensor_shape("Conv3d", "bias", bias, (self.c_out,))
+        return self.kernel(input, weight, bias)
