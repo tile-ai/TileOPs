@@ -20,7 +20,14 @@ from .attention import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
-from .convolution import Conv1dBiasFwdOp, Conv1dFwdOp, Conv2dOp, Conv3dOp
+from .convolution import (
+    Conv1dBiasFwdOp,
+    Conv1dFwdOp,
+    Conv2dBiasFwdOp,
+    Conv2dFwdOp,
+    Conv3dBiasFwdOp,
+    Conv3dFwdOp,
+)
 from .da_cumsum import DaCumsumFwdOp
 from .deltanet import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
 from .deltanet_recurrence import DeltaNetDecodeOp
@@ -107,8 +114,10 @@ __all__ = [
     "BatchNormFwdOp",
     "Conv1dBiasFwdOp",
     "Conv1dFwdOp",
-    "Conv2dOp",
-    "Conv3dOp",
+    "Conv2dBiasFwdOp",
+    "Conv2dFwdOp",
+    "Conv3dBiasFwdOp",
+    "Conv3dFwdOp",
     "DaCumsumFwdOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
     "DropoutOp",
