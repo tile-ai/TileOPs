@@ -74,7 +74,7 @@ class Kernel(ABC):
         """
         return None
 
-    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
         if not hasattr(self, 'kernel') or self.kernel is None:

@@ -582,27 +582,34 @@ _SSD_STATE_PASSING_FWD_BENCH_PARAMS = [
     _SSD_STATE_PASSING_FWD_BENCH_PARAMS,
 )
 def test_ssd_state_passing_fwd_bench(
-    batch: int, num_chunks: int, n_heads: int, d_state: int, dtype: torch.dtype, tune: bool,
+    batch: int, num_chunks: int, n_heads: int, d_state: int,
+    dtype: torch.dtype, tune: bool,
 ) -> None:
     test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
     bm = SSDStatePassingFwdBenchmark(test)
     inputs = test.gen_inputs()
+    states, dA_chunk_cumsum, initial_states = inputs
 
     op = SSDStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     if _mamba_state_passing_fwd is not None:
-        states, dA_chunk_cumsum, initial_states = inputs
-
         def mamba_fwd():
-            # mamba_ssm _state_passing_fwd expects (b, h, c) for dA_chunk_cumsum,
-            # matching TileOPs layout — no permutation needed.
+            # mamba_ssm _state_passing_fwd: dA_chunk_cumsum layout (b, h, c) matches
+            # TileOPs — no permutation needed.  out_dtype=float32 matches TileOPs output
+            # dtype for an apples-to-apples comparison.
             return _mamba_state_passing_fwd(
                 states.contiguous(),
                 dA_chunk_cumsum.contiguous(),
                 initial_states=initial_states.contiguous(),
+                out_dtype=torch.float32,
             )
+
+        # Pre-warm: run once outside bm.profile so the Triton autotuner
+        # selects its best config before the CUPTI window opens.
+        mamba_fwd()
+        torch.cuda.synchronize()
 
         result_mamba = bm.profile(mamba_fwd)
         BenchmarkReport.record(op, locals(), result_mamba, tag="mamba")
