@@ -113,6 +113,7 @@ def _ssd_state_passing_fwd_kernel(
                 dA_shared = T.alloc_shared((C,), accum_dtype)
                 for c in T.Parallel(C):
                     dA_shared[c] = dA_chunk_cumsum[bb, bh, c]
+                T.sync_threads()
 
                 # ------------------------------------------------------------
                 # Initialize running state from initial_states (or zero).
