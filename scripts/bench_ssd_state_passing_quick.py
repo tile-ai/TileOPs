@@ -23,13 +23,10 @@ WORKLOADS = [
 ]
 
 CONFIGS = [
-    {"block_d": 128, "threads": 128},
-    {"block_d":  64, "threads": 128},
-    {"block_d":  32, "threads": 128},
-    {"block_d":  16, "threads": 128},
-    {"block_d":  64, "threads": 256},
-    {"block_d":  32, "threads": 256},
-    {"block_d":  16, "threads": 256},
+    {"block_d": 256, "threads": 128},
+    {"block_d": 128, "threads":  64},
+    {"block_d":  64, "threads":  32},
+    {"block_d":  32, "threads":  16},
 ]
 
 WARMUP = 20

@@ -70,6 +70,9 @@ def _ssd_state_passing_fwd_kernel(
         # Each thread handles 2 d-state elements (lo and hi halves of block_d).
         # threads = block_d // 2; lo covers [d0 .. d0+threads-1],
         # hi covers [d0+threads .. d0+block_d-1].
+        assert threads == block_d // 2, (
+            f"threads must equal block_d // 2 (got threads={threads}, block_d={block_d})"
+        )
         states_shape = (B, C, H, D)
         dA_shape = (B, H, C)
         init_shape = (B, H, D)
