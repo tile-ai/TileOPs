@@ -315,6 +315,7 @@ def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune)
 @pytest.mark.parametrize("config", [
     {"block_d": 64,  "threads": 32,  "vectorize": True},
     {"block_d": 128, "threads": 64,  "vectorize": True},
+    {"block_d": 256, "threads": 128, "vectorize": True},
 ])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_ssd_state_passing_fwd_vectorize(config, dtype):

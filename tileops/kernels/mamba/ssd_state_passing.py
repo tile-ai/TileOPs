@@ -11,7 +11,8 @@ Inputs:
 
 Outputs:
   out:               (batch, num_chunks, n_heads, d_state)
-                     -- running state s_c after each chunk
+                     -- running state s_{c-1} before each chunk c
+                        (out[:, 0] = s_{-1} = initial_states)
   final_states:      (batch, n_heads, d_state)
                      -- final running state s_{C-1}
 
@@ -21,7 +22,7 @@ For each (b, h, m), the kernel computes the serial scan:
 
 with s_{-1} = initial_states[b, h, :] (or 0 if not provided).
 
-  out[b, c, h, m]      = s_c[m]
+  out[b, c, h, m]      = s_{c-1}[m]   (state before processing chunk c)
   final_states[b, h, m] = s_{C-1}[m]
 
 Parallelization:
@@ -283,6 +284,7 @@ class SSDStatePassingFwdKernel(Kernel):
 
     Inputs:  states, dA_chunk_cumsum, initial_states
     Outputs: out  (batch, num_chunks, n_heads, d_state), float32
+                  out[:, c] = s_{c-1} (state before chunk c; out[:,0] = initial_states)
              final_states  (batch, n_heads, d_state), float32
 
     Config keys
