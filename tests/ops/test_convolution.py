@@ -11,6 +11,7 @@ from tileops.kernels.convolution import (
     Conv2d1x1Kernel,
     Conv2dKernel,
     Conv3dKernel,
+    DirectConv1dKernel,
     GroupConv1dKernel,
 )
 from tileops.ops import Conv1dBiasFwdOp, Conv1dFwdOp, Conv2dOp, Conv3dOp
@@ -323,7 +324,6 @@ def test_conv1d_groups_matches_torch(op_cls, groups: int, c_in: int, c_out: int,
 @pytest.mark.parametrize(
     "groups, c_in, c_out",
     [
-        pytest.param(64, 64, 64, id="depthwise-cing1-coutg1"),
         pytest.param(3, 48, 72, id="coutg24"),
     ],
 )
@@ -338,6 +338,38 @@ def test_conv1d_groups_rejects_unimplemented_shapes(groups: int, c_in: int, c_ou
             padding=1,
             groups=groups,
         )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("use_bias", [False, True], ids=["no-bias", "bias"])
+def test_conv1d_depthwise_conformer_matches_torch(use_bias: bool) -> None:
+    """Conformer convolution modules use depthwise Conv1d with groups=channels."""
+    n, channels, l_in = 1, 64, 128
+    kernel_size = 31
+    padding = kernel_size // 2
+    op_cls = Conv1dBiasFwdOp if use_bias else Conv1dFwdOp
+    op_kwargs = {"bias": True} if use_bias else {}
+    op = op_cls(
+        n=n,
+        c_in=channels,
+        l_in=l_in,
+        c_out=channels,
+        kernel_size=kernel_size,
+        stride=1,
+        padding=padding,
+        groups=channels,
+        **op_kwargs,
+    )
+    assert isinstance(op.kernel, DirectConv1dKernel)
+    x = torch.randn(n, channels, l_in, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(channels, 1, kernel_size, device="cuda", dtype=torch.float16).contiguous()
+    bias = (
+        torch.randn(channels, device="cuda", dtype=torch.float16).contiguous()
+        if use_bias else None
+    )
+    out = op(x, weight, bias) if use_bias else op(x, weight)
+    ref = F.conv1d(x, weight, bias=bias, stride=1, padding=padding, groups=channels).contiguous()
+    torch.testing.assert_close(out, ref, atol=5e-3, rtol=5e-3)
 
 
 @pytest.mark.smoke

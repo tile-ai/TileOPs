@@ -8,6 +8,7 @@ from tileops.kernels.convolution import (
     Conv2d1x1Kernel,
     Conv2dKernel,
     Conv3dKernel,
+    DirectConv1dKernel,
     GroupConv1dKernel,
 )
 from tileops.kernels.kernel_base import Kernel
@@ -212,6 +213,22 @@ class Conv1dFwdOp(Op):
             and "conv1d_pointwise_kernel" in self.kernel_map
         ):
             self.kernel = self.kernel_map["conv1d_pointwise_kernel"](**kernel_kwargs)
+        elif (
+            self.groups > 1
+            and self.c_in_g == 1
+            and self.c_out_g == 1
+            and "direct_conv1d_kernel" in self.kernel_map
+        ):
+            self.kernel = self.kernel_map["direct_conv1d_kernel"](
+                **kernel_kwargs,
+                kernel_l=self.kernel_size,
+                stride_l=self.stride,
+                pad_l=self.padding,
+                dilation_l=self.dilation,
+                groups=self.groups,
+                c_in_g=self.c_in_g,
+                c_out_g=self.c_out_g,
+            )
         elif self.groups > 1 and "group_conv1d_kernel" in self.kernel_map:
             self.kernel = self.kernel_map["group_conv1d_kernel"](
                 **kernel_kwargs,
@@ -242,6 +259,7 @@ class Conv1dFwdOp(Op):
         return {
             "conv1d_pointwise_kernel": Conv1dPointwiseKernel,
             "conv1d_kernel": Conv1dKernel,
+            "direct_conv1d_kernel": DirectConv1dKernel,
             "group_conv1d_kernel": GroupConv1dKernel,
         }
 
