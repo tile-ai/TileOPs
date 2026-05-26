@@ -11,6 +11,7 @@ from tileops.kernels.convolution import (
     Conv2d1x1Kernel,
     Conv2dKernel,
     Conv3dKernel,
+    GroupConv1dKernel,
 )
 from tileops.ops import Conv1dBiasFwdOp, Conv1dFwdOp, Conv2dOp, Conv3dOp
 
@@ -319,6 +320,43 @@ def test_conv1d_groups_matches_torch(op_cls, groups: int, c_in: int, c_out: int,
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    "groups, c_in, c_out",
+    [
+        pytest.param(64, 64, 64, id="depthwise-cing1-coutg1"),
+        pytest.param(3, 48, 72, id="coutg24"),
+    ],
+)
+def test_conv1d_groups_rejects_unimplemented_shapes(groups: int, c_in: int, c_out: int) -> None:
+    with pytest.raises(NotImplementedError):
+        Conv1dFwdOp(
+            n=1,
+            c_in=c_in,
+            l_in=128,
+            c_out=c_out,
+            kernel_size=3,
+            padding=1,
+            groups=groups,
+        )
+
+
+@pytest.mark.smoke
+def test_conv1d_grouped_kernel_locks_block_m_to_channels_per_group() -> None:
+    op = Conv1dFwdOp(
+        n=1,
+        c_in=32,
+        l_in=128,
+        c_out=64,
+        kernel_size=3,
+        padding=1,
+        groups=2,
+    )
+    assert isinstance(op.kernel, GroupConv1dKernel)
+    assert op.kernel.config["block_m"] == 32
+    assert {config["block_m"] for config in op.kernel.autotune_configs} == {16, 32}
+
+
+@pytest.mark.smoke
 def test_conv1d_groups_forces_generic_kernel() -> None:
     """When groups>1, pointwise conditions must not dispatch to Conv1dPointwiseKernel."""
     op = Conv1dFwdOp(
@@ -331,7 +369,7 @@ def test_conv1d_groups_forces_generic_kernel() -> None:
         padding=0,
         groups=2,
     )
-    assert isinstance(op.kernel, Conv1dKernel)
+    assert isinstance(op.kernel, GroupConv1dKernel)
     assert not isinstance(op.kernel, Conv1dPointwiseKernel)
 
 

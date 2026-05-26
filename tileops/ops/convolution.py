@@ -8,6 +8,7 @@ from tileops.kernels.convolution import (
     Conv2d1x1Kernel,
     Conv2dKernel,
     Conv3dKernel,
+    GroupConv1dKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 
@@ -211,8 +212,8 @@ class Conv1dFwdOp(Op):
             and "conv1d_pointwise_kernel" in self.kernel_map
         ):
             self.kernel = self.kernel_map["conv1d_pointwise_kernel"](**kernel_kwargs)
-        elif "conv1d_kernel" in self.kernel_map:
-            self.kernel = self.kernel_map["conv1d_kernel"](
+        elif self.groups > 1 and "group_conv1d_kernel" in self.kernel_map:
+            self.kernel = self.kernel_map["group_conv1d_kernel"](
                 **kernel_kwargs,
                 kernel_l=self.kernel_size,
                 stride_l=self.stride,
@@ -222,9 +223,18 @@ class Conv1dFwdOp(Op):
                 c_in_g=self.c_in_g,
                 c_out_g=self.c_out_g,
             )
+        elif self.groups == 1 and "conv1d_kernel" in self.kernel_map:
+            self.kernel = self.kernel_map["conv1d_kernel"](
+                **kernel_kwargs,
+                kernel_l=self.kernel_size,
+                stride_l=self.stride,
+                pad_l=self.padding,
+                dilation_l=self.dilation,
+            )
         else:
             raise NotImplementedError(
-                "Conv1dFwdOp requires 'conv1d_pointwise_kernel' or 'conv1d_kernel' in kernel_map"
+                "Conv1dFwdOp requires 'conv1d_pointwise_kernel', 'conv1d_kernel', "
+                "or 'group_conv1d_kernel' in kernel_map"
             )
 
     @property
@@ -232,6 +242,7 @@ class Conv1dFwdOp(Op):
         return {
             "conv1d_pointwise_kernel": Conv1dPointwiseKernel,
             "conv1d_kernel": Conv1dKernel,
+            "group_conv1d_kernel": GroupConv1dKernel,
         }
 
     def forward(
