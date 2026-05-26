@@ -1,4 +1,6 @@
 """Tests for FusedMoEExpertsNopadPersistent3WGFwdOp/PaddedFwdOp and supporting ABCs."""
+import logging
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -166,6 +168,45 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
             expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
         )
 
+        assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
+
+    @pytest.mark.smoke
+    def test_forward_fallback_path_unaligned_dims(self, caplog):
+        """Unaligned dims must trigger the MoeGroupedGemmNopadKernel fallback
+        and still produce correct output.
+
+        H=128, F=96: gate_up_n=192 is not divisible by 3WG block_n=256, so the
+        op selects MoeGroupedGemmNopadKernel instead of the 3WG persistent
+        kernel.
+        """
+        T, H, F_dim, E, K = 64, 128, 96, 4, 2
+        dtype = torch.bfloat16
+        hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
+        w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
+        w2 = torch.randn(E, H, F_dim, dtype=dtype, device="cuda") * 0.02
+        weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
+        ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
+
+        with caplog.at_level(
+            logging.WARNING, logger="tileops.ops.moe.experts.nopad"
+        ):
+            experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+                num_tokens=T, num_experts=E, top_k=K,
+                hidden_size=H, ffn_size=F_dim, dtype=dtype,
+            )
+        assert any(
+            "falling back to MoeGroupedGemmNopadKernel" in rec.message
+            for rec in caplog.records
+        ), f"expected fallback warning, got: {[rec.message for rec in caplog.records]}"
+
+        ref_out = _torch_ref_moe(hidden, w1, w2, weights, ids)
+        output = torch.empty(T, H, dtype=dtype, device="cuda")
+        ws1 = torch.empty(0, device="cuda")
+        ws2 = torch.empty(0, device="cuda")
+        experts.forward(
+            output, hidden, w1, w2, weights, ids,
+            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=E,
+        )
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
 

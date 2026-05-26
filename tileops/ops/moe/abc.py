@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+import torch
 from torch import Tensor
 
 from tileops.ops.op_base import Op
@@ -17,6 +18,49 @@ __all__ = [
     "WeightedReduce",
     "WeightedReduceNoOp",
 ]
+
+
+def _validate_fused_moe_experts_dtypes(
+    op_dtype: torch.dtype,
+    output: Tensor,
+    hidden_states: Tensor,
+    w_gate_up: Tensor,
+    w_down: Tensor,
+    topk_weights: Tensor,
+    topk_ids: Tensor,
+    expert_map: Tensor | None,
+    workspace1: Tensor,
+    workspace2: Tensor,
+) -> None:
+    """Shared dtype validator for FusedMoEExperts subclasses.
+
+    Concrete subclasses route through this helper because the manifest-driven
+    ``_validate_dtypes`` codegen path does not handle ``Optional[Tensor]``
+    inputs (``expert_map`` is None for single-GPU); having one shared body
+    avoids drift between the nopad and padded implementations.
+    """
+    allowed = (torch.float16, torch.bfloat16)
+    if op_dtype not in allowed:
+        raise ValueError(f"op dtype must be one of {allowed}, got {op_dtype}")
+    for name, t in (
+        ("output", output),
+        ("hidden_states", hidden_states),
+        ("w_gate_up", w_gate_up),
+        ("w_down", w_down),
+    ):
+        if t.dtype != op_dtype:
+            raise ValueError(
+                f"Expected {name}.dtype == op dtype ({op_dtype}), got {t.dtype}"
+            )
+    if topk_weights.dtype != torch.float32:
+        raise ValueError(f"Expected topk_weights.dtype == float32, got {topk_weights.dtype}")
+    if topk_ids.dtype != torch.int32:
+        raise ValueError(f"Expected topk_ids.dtype == int32, got {topk_ids.dtype}")
+    if expert_map is not None and expert_map.dtype != torch.int32:
+        raise ValueError(f"Expected expert_map.dtype == int32, got {expert_map.dtype}")
+    for name, t in (("workspace1", workspace1), ("workspace2", workspace2)):
+        if t.dtype not in allowed:
+            raise ValueError(f"Expected {name}.dtype in {allowed}, got {t.dtype}")
 
 
 @dataclass

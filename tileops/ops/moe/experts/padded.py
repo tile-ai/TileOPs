@@ -10,7 +10,12 @@ from torch import Tensor
 from tileops.kernels.grouped_gemm import _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS
 from tileops.ops.elementwise import SiluAndMulFwdOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
-from tileops.ops.moe.abc import FusedMoEExpertsModular, WeightedReduce, WeightedReduceNoOp
+from tileops.ops.moe.abc import (
+    FusedMoEExpertsModular,
+    WeightedReduce,
+    WeightedReduceNoOp,
+    _validate_fused_moe_experts_dtypes,
+)
 from tileops.ops.moe.permute_padded import MoePermutePaddedFwdOp
 from tileops.ops.moe.unpermute import MoeUnpermuteFwdOp
 
@@ -101,28 +106,11 @@ class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
         workspace1: Tensor,
         workspace2: Tensor,
     ) -> None:
-        allowed = (torch.float16, torch.bfloat16)
-        if self.dtype not in allowed:
-            raise ValueError(f"self.dtype must be one of {allowed}, got {self.dtype}")
-        for name, t in (
-            ("output", output),
-            ("hidden_states", hidden_states),
-            ("w_gate_up", w_gate_up),
-            ("w_down", w_down),
-        ):
-            if t.dtype != self.dtype:
-                raise ValueError(
-                    f"Expected {name}.dtype == self.dtype ({self.dtype}), got {t.dtype}"
-                )
-        if topk_weights.dtype != torch.float32:
-            raise ValueError(f"Expected topk_weights.dtype == float32, got {topk_weights.dtype}")
-        if topk_ids.dtype != torch.int32:
-            raise ValueError(f"Expected topk_ids.dtype == int32, got {topk_ids.dtype}")
-        if expert_map is not None and expert_map.dtype != torch.int32:
-            raise ValueError(f"Expected expert_map.dtype == int32, got {expert_map.dtype}")
-        for name, t in (("workspace1", workspace1), ("workspace2", workspace2)):
-            if t.dtype not in allowed:
-                raise ValueError(f"Expected {name}.dtype in {allowed}, got {t.dtype}")
+        _validate_fused_moe_experts_dtypes(
+            self.dtype,
+            output, hidden_states, w_gate_up, w_down,
+            topk_weights, topk_ids, expert_map, workspace1, workspace2,
+        )
 
     @property
     def default_kernel_map(self) -> dict:

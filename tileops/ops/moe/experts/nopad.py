@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import torch
@@ -13,12 +14,19 @@ from tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg import (
 )
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 from tileops.ops.elementwise import SiluAndMulFwdOp
-from tileops.ops.moe.abc import FusedMoEExpertsModular, WeightedReduce, WeightedReduceNoOp
+from tileops.ops.moe.abc import (
+    FusedMoEExpertsModular,
+    WeightedReduce,
+    WeightedReduceNoOp,
+    _validate_fused_moe_experts_dtypes,
+)
 from tileops.ops.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
 from tileops.ops.moe.permute_nopad import MoePermuteNopadFwdOp
 from tileops.ops.moe.unpermute import MoeUnpermuteFwdOp
 
 __all__ = ["FusedMoEExpertsNopadPersistent3WGFwdOp"]
+
+_logger = logging.getLogger(__name__)
 
 
 class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
@@ -29,6 +37,12 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
 
     forward() output shape is (T, H): reduction is done internally by
     MoeUnpermuteFwdOp, so make_weighted_reduce() returns WeightedReduceNoOp.
+
+    Performance note: the 3WG persistent kernel is throughput-tuned for
+    prefill-scale workloads; small-batch decode (num_tokens ≲ 512) may run
+    a few percent behind tile-scheduler kernels. Decode-heavy deployments
+    can pass ``gemm_kernel=MoeGroupedGemmNopadKernel`` to bypass 3WG and
+    use the lighter tile-scheduler path explicitly.
     """
 
     def __init__(
@@ -67,6 +81,13 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             gate_up_ok = (gate_up_n % _3wg_block_n == 0) and (hidden_size % _3wg_block_k == 0)
             down_ok = (hidden_size % _3wg_block_n == 0) and (ffn_size % _3wg_block_k == 0)
             if not (gate_up_ok and down_ok):
+                _logger.warning(
+                    "FusedMoEExpertsNopadPersistent3WGFwdOp: dims not aligned "
+                    "to 3WG block (gate_up_n=%d, hidden_size=%d, ffn_size=%d; "
+                    "block_n=%d, block_k=%d) — falling back to "
+                    "MoeGroupedGemmNopadKernel.",
+                    gate_up_n, hidden_size, ffn_size, _3wg_block_n, _3wg_block_k,
+                )
                 kernel_cls = MoeGroupedGemmNopadKernel
 
         self._permute = MoePermuteNopadFwdOp(
@@ -104,28 +125,11 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         workspace1: Tensor,
         workspace2: Tensor,
     ) -> None:
-        allowed = (torch.float16, torch.bfloat16)
-        if self.dtype not in allowed:
-            raise ValueError(f"self.dtype must be one of {allowed}, got {self.dtype}")
-        for name, t in (
-            ("output", output),
-            ("hidden_states", hidden_states),
-            ("w_gate_up", w_gate_up),
-            ("w_down", w_down),
-        ):
-            if t.dtype != self.dtype:
-                raise ValueError(
-                    f"Expected {name}.dtype == self.dtype ({self.dtype}), got {t.dtype}"
-                )
-        if topk_weights.dtype != torch.float32:
-            raise ValueError(f"Expected topk_weights.dtype == float32, got {topk_weights.dtype}")
-        if topk_ids.dtype != torch.int32:
-            raise ValueError(f"Expected topk_ids.dtype == int32, got {topk_ids.dtype}")
-        if expert_map is not None and expert_map.dtype != torch.int32:
-            raise ValueError(f"Expected expert_map.dtype == int32, got {expert_map.dtype}")
-        for name, t in (("workspace1", workspace1), ("workspace2", workspace2)):
-            if t.dtype not in allowed:
-                raise ValueError(f"Expected {name}.dtype in {allowed}, got {t.dtype}")
+        _validate_fused_moe_experts_dtypes(
+            self.dtype,
+            output, hidden_states, w_gate_up, w_down,
+            topk_weights, topk_ids, expert_map, workspace1, workspace2,
+        )
 
     def workspace_shapes(
         self, M: int, N: int, K: int, topk: int, num_experts: int,

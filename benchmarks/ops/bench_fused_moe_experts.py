@@ -18,16 +18,9 @@ Baselines:
   - vllm-triton:       vLLM Triton fused_experts (default backend)
   - vllm-cutlass:      vLLM CUTLASS fused_experts (when importable)
   - torch-ref:         per-expert GEMM loop with index_add_ (fallback)
-
-Usage:
-    # TileOPs kernels (tileops-tl9 env):
-    TILELANG_CLEANUP_TEMP_FILES=1 conda run -n tileops-tl9 python -m pytest benchmarks/ops/bench_moe_experts_nopad.py -vvs
-
-    # vLLM baseline (tileops env, has vLLM with CUDA 12):
-    conda run -n tileops python /tmp/bench_vllm_baseline.py
 """
 
-import sys
+import warnings
 from typing import Optional
 
 import pytest
@@ -53,8 +46,14 @@ except ImportError:
             cutlass_moe as _vllm_cutlass_moe,
         )
         _VLLM_CUTLASS_AVAILABLE = True
-    except ImportError:
+    except ImportError as _cutlass_import_err:
         _VLLM_CUTLASS_AVAILABLE = False
+        warnings.warn(
+            f"vLLM CUTLASS MoE baseline unavailable ({_cutlass_import_err}); "
+            "the vllm-cutlass column will be omitted from results.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import load_workloads
