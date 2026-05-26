@@ -15,7 +15,6 @@ __all__ = [
     "Conv2d1x1Kernel",
     "Conv2dKernel",
     "Conv3dKernel",
-    "DirectConv1dKernel",
     "GroupConv1dKernel",
 ]
 
@@ -44,7 +43,8 @@ def conv_shared_memory_bytes(
 
 
 def _group_conv1d_block_m_choices(c_out_g: int) -> list[int]:
-    return [block_m for block_m in [16, 32, 64, 128] if c_out_g % block_m == 0]
+    del c_out_g
+    return [16, 32, 64, 128]
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +239,120 @@ def _conv1d_direct_kernel(
     return _conv1d_direct_func
 
 
+@functools.lru_cache(maxsize=64)
+def _conv1d_group_kernel(
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_l: int,
+    dilation_l: int,
+    has_bias: bool,
+    dtype: str = "float16",
+    groups: int = 1,
+    c_in_g: int = 0,
+    c_out_g: int = 0,
+):
+    accum_dtype = "float"
+    out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+    c_in_g = c_in_g if c_in_g > 0 else c_in // groups
+    c_out_g = c_out_g if c_out_g > 0 else c_out // groups
+    k_total = c_in_g * kernel_l
+
+    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _conv1d_group_func(
+        block_m: int,
+        block_n: int,
+        block_k: int,
+        num_stages: int,
+        threads: int,
+        enable_rasterization: bool,
+    ):
+        @T.prim_func
+        def _conv1d_group_main(
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in_g, kernel_l), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                T.ceildiv(out_l, block_n),
+                T.ceildiv(c_out_g, block_m),
+                n * groups,
+                threads=threads,
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                T.use_swizzle(10, enable=enable_rasterization)
+                T.clear(out_local)
+
+                batch_id = bz // groups
+                group_id = bz % groups
+
+                for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
+                    for i, k in T.Parallel(block_m, block_k):
+                        oc_g = by * block_m + i
+                        oc = group_id * c_out_g + oc_g
+                        k_idx = k_iter * block_k + k
+                        kw = k_idx // c_in_g
+                        ci_g = k_idx % c_in_g
+                        weight_shared[i, k] = T.if_then_else(
+                            (oc_g < c_out_g) & (k_idx < k_total),
+                            weight[oc, ci_g, kw],
+                            T.cast(0.0, dtype),
+                        )
+
+                    for k, j in T.Parallel(block_k, block_n):
+                        k_idx = k_iter * block_k + k
+                        ol = bx * block_n + j
+                        kw = k_idx // c_in_g
+                        ci_g = k_idx % c_in_g
+                        il = ol * stride_l + kw * dilation_l - pad_l
+                        data_shared[k, j] = T.if_then_else(
+                            (k_idx < k_total)
+                            & (ol < out_l)
+                            & (il >= 0)
+                            & (il < l_in),
+                            x[batch_id, group_id * c_in_g + ci_g, il],
+                            T.cast(0.0, dtype),
+                        )
+
+                    T.gemm(weight_shared, data_shared, out_local)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc_g = by * block_m + i
+                    oc = group_id * c_out_g + oc_g
+                    ol = bx * block_n + j
+                    if has_bias:
+                        out_shared[i, j] = T.if_then_else(
+                            (oc_g < c_out_g) & (ol < out_l),
+                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                            T.cast(0.0, dtype),
+                        )
+                    else:
+                        out_shared[i, j] = T.if_then_else(
+                            (oc_g < c_out_g) & (ol < out_l),
+                            T.cast(out_local[i, j], dtype),
+                            T.cast(0.0, dtype),
+                        )
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc_g = by * block_m + i
+                    oc = group_id * c_out_g + oc_g
+                    ol = bx * block_n + j
+                    if oc_g < c_out_g and ol < out_l:
+                        out[batch_id, oc, ol] = out_shared[i, j]
+
+        return _conv1d_group_main
+
+    return _conv1d_group_func
+
+
 @functools.lru_cache(maxsize=32)
 def _conv1d_pointwise_kernel(
     n: int,
@@ -380,6 +494,36 @@ def _conv1d_direct_wrapped_kernel(
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
+@torch.library.custom_op("top::conv1d_group_wrapped_kernel", mutates_args=())
+def _conv1d_group_wrapped_kernel(
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_l: int,
+    dilation_l: int,
+    has_bias: bool,
+    dtype: str,
+    groups: int,
+    c_in_g: int,
+    c_out_g: int,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasterization: bool,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    return _conv1d_group_kernel(
+        n, c_in, l_in, c_out, kernel_l, stride_l, pad_l, dilation_l, has_bias, dtype, groups, c_in_g, c_out_g
+    )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
+
+
 @torch.library.custom_op("top::conv1d_pointwise_wrapped_kernel", mutates_args=())
 def _conv1d_pointwise_wrapped_kernel(
     n: int,
@@ -442,6 +586,33 @@ def _(
     dilation_l: int,
     has_bias: bool,
     dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasterization: bool,
+    *inputs: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
+    out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+    return torch.empty((n, c_out, out_l), dtype=inputs[0].dtype, device=inputs[0].device)
+
+
+@_conv1d_group_wrapped_kernel.register_fake
+def _(
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_l: int,
+    dilation_l: int,
+    has_bias: bool,
+    dtype: str,
+    groups: int,
+    c_in_g: int,
+    c_out_g: int,
     block_m: int,
     block_n: int,
     block_k: int,
@@ -729,107 +900,6 @@ class Conv1dKernel(Kernel):
         )
 
 
-class DirectConv1dKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        l_in: int,
-        c_out: int,
-        kernel_l: int,
-        stride_l: int,
-        pad_l: int,
-        dtype: torch.dtype,
-        dilation_l: int = 1,
-        has_bias: bool = False,
-        groups: int = 1,
-        c_in_g: Optional[int] = None,
-        c_out_g: Optional[int] = None,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
-        self.n = n
-        self.c_in = c_in
-        self.l_in = l_in
-        self.c_out = c_out
-        self.kernel_l = kernel_l
-        self.stride_l = stride_l
-        self.pad_l = pad_l
-        self.dilation_l = dilation_l
-        self.groups = groups
-        self.c_in_g = c_in_g if c_in_g is not None else c_in // groups
-        self.c_out_g = c_out_g if c_out_g is not None else c_out // groups
-        self.dtype = dtype
-        self.has_bias = has_bias
-        self._validate_direct_shape()
-        self.kernel = _conv1d_direct_kernel(
-            n,
-            c_in,
-            l_in,
-            c_out,
-            kernel_l,
-            stride_l,
-            pad_l,
-            dilation_l,
-            has_bias,
-            self.dtype_str,
-        )
-        self.init_config(config, tune)
-
-    def _validate_direct_shape(self) -> None:
-        if self.groups <= 1:
-            raise ValueError("DirectConv1dKernel requires groups > 1")
-        if self.c_in_g != 1 or self.c_out_g != 1:
-            raise NotImplementedError(
-                f"DirectConv1dKernel currently requires c_in_g == c_out_g == 1, "
-                f"but got c_in_g={self.c_in_g}, c_out_g={self.c_out_g}"
-            )
-
-    @property
-    def default_config(self) -> dict:
-        return {
-            "block_m": 1,
-            "block_n": 128,
-            "block_k": 1,
-            "num_stages": 1,
-            "threads": 128,
-            "enable_rasterization": True,
-        }
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if bias is None:
-            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        return _conv1d_direct_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.l_in,
-            self.c_out,
-            self.kernel_l,
-            self.stride_l,
-            self.pad_l,
-            self.dilation_l,
-            self.has_bias,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["enable_rasterization"],
-            x,
-            weight,
-            bias,
-        )
-
-
 class GroupConv1dKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
 
@@ -865,60 +935,81 @@ class GroupConv1dKernel(Kernel):
         self.c_out_g = c_out_g if c_out_g is not None else c_out // groups
         self.dtype = dtype
         self.has_bias = has_bias
-        self.out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
-        self.m = n * self.out_l
-        self.k_total = self.c_in_g * kernel_l
+        self.use_direct = self.c_in_g == 1 and self.c_out_g == 1
         self._validate_group_shape()
-        self._weight_flat_cache_source: Optional[torch.Tensor] = None
-        self._weight_flat_cache_version: Optional[int] = None
-        self._weight_flat_cache: Optional[torch.Tensor] = None
-        self.kernel = _conv1d_kernel(
-            n,
-            c_in,
-            l_in,
-            c_out,
-            kernel_l,
-            stride_l,
-            pad_l,
-            dilation_l,
-            has_bias,
-            self.dtype_str,
-            groups,
-            self.c_in_g,
-            self.c_out_g,
-        )
+        if self.use_direct:
+            self.kernel = _conv1d_direct_kernel(
+                n,
+                c_in,
+                l_in,
+                c_out,
+                kernel_l,
+                stride_l,
+                pad_l,
+                dilation_l,
+                has_bias,
+                self.dtype_str,
+            )
+        else:
+            self.kernel = _conv1d_group_kernel(
+                n,
+                c_in,
+                l_in,
+                c_out,
+                kernel_l,
+                stride_l,
+                pad_l,
+                dilation_l,
+                has_bias,
+                self.dtype_str,
+                groups,
+                self.c_in_g,
+                self.c_out_g,
+            )
         self.init_config(config, tune)
-        if self.config["block_m"] not in self._block_m_choices:
+        if not self.use_direct and self.config["block_m"] % 16 != 0:
             raise ValueError(
-                f"GroupConv1dKernel requires block_m to divide c_out_g and be a multiple "
-                f"of 16; got block_m={self.config['block_m']}, c_out_g={self.c_out_g}"
+                f"GroupConv1dKernel requires block_m to be a multiple of 16; "
+                f"got block_m={self.config['block_m']}"
+            )
+        if not self.use_direct and self.config["block_k"] % 16 != 0:
+            raise ValueError(
+                f"GroupConv1dKernel requires block_k to be a multiple of 16; "
+                f"got block_k={self.config['block_k']}"
             )
 
     def _validate_group_shape(self) -> None:
         if self.groups <= 1:
             raise ValueError("GroupConv1dKernel requires groups > 1")
-        if self.c_out_g < 16 or self.c_out_g % 16 != 0:
-            raise NotImplementedError(
-                f"GroupConv1dKernel currently requires c_out_g >= 16 and divisible by 16, "
-                f"but got c_out_g={self.c_out_g}"
-            )
-        if self.c_in_g < 16 or self.c_in_g % 16 != 0:
-            raise NotImplementedError(
-                f"GroupConv1dKernel currently requires c_in_g >= 16 and divisible by 16, "
-                f"but got c_in_g={self.c_in_g}"
-            )
-        if not self._block_m_choices:
-            raise NotImplementedError(
-                f"GroupConv1dKernel found no supported block_m for c_out_g={self.c_out_g}"
+        if self.use_direct:
+            return
+        if self.c_in % self.groups != 0 or self.c_out % self.groups != 0:
+            raise ValueError(
+                f"GroupConv1dKernel requires c_in and c_out divisible by groups; "
+                f"got c_in={self.c_in}, c_out={self.c_out}, groups={self.groups}"
             )
 
     @property
     def _block_m_choices(self) -> list[int]:
+        if self.use_direct:
+            return [1]
         return _group_conv1d_block_m_choices(self.c_out_g)
 
     @property
     def default_config(self) -> dict:
-        block_m = 64 if 64 in self._block_m_choices else max(self._block_m_choices)
+        if self.use_direct:
+            return {
+                "block_m": 1,
+                "block_n": 128,
+                "block_k": 1,
+                "num_stages": 1,
+                "threads": 128,
+                "enable_rasterization": True,
+            }
+        block_m = next(
+            (choice for choice in self._block_m_choices if choice >= self.c_out_g),
+            max(self._block_m_choices),
+        )
         sm_version = get_sm_version()
         if sm_version in {90}:
             return {
@@ -940,6 +1031,8 @@ class GroupConv1dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if self.use_direct:
+            return [self.default_config]
         shared_memory_limit_bytes = get_shared_memory_limit_bytes()
         configs = itertools.product(
             self._block_m_choices,
@@ -965,21 +1058,6 @@ class GroupConv1dKernel(Kernel):
             })
         return valid_configs
 
-    def _get_weight_flat(self, weight: torch.Tensor) -> torch.Tensor:
-        weight_version = weight._version
-        if (
-            self._weight_flat_cache_source is weight
-            and self._weight_flat_cache_version == weight_version
-            and self._weight_flat_cache is not None
-        ):
-            return self._weight_flat_cache
-
-        weight_flat = weight.permute(0, 2, 1).contiguous().view(self.c_out, self.k_total)
-        self._weight_flat_cache_source = weight
-        self._weight_flat_cache_version = weight_version
-        self._weight_flat_cache = weight_flat
-        return weight_flat
-
     def forward(
         self,
         x: torch.Tensor,
@@ -988,8 +1066,29 @@ class GroupConv1dKernel(Kernel):
     ) -> torch.Tensor:
         if bias is None:
             bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        weight_flat = self._get_weight_flat(weight)
-        return _conv1d_wrapped_kernel(
+        if self.use_direct:
+            return _conv1d_direct_wrapped_kernel(
+                self.n,
+                self.c_in,
+                self.l_in,
+                self.c_out,
+                self.kernel_l,
+                self.stride_l,
+                self.pad_l,
+                self.dilation_l,
+                self.has_bias,
+                self.dtype_str,
+                self.config["block_m"],
+                self.config["block_n"],
+                self.config["block_k"],
+                self.config["num_stages"],
+                self.config["threads"],
+                self.config["enable_rasterization"],
+                x,
+                weight,
+                bias,
+            )
+        return _conv1d_group_wrapped_kernel(
             self.n,
             self.c_in,
             self.l_in,
@@ -1010,7 +1109,7 @@ class GroupConv1dKernel(Kernel):
             self.config["threads"],
             self.config["enable_rasterization"],
             x,
-            weight_flat,
+            weight,
             bias,
         )
 

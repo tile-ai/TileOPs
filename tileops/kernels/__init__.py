@@ -38,7 +38,6 @@ from .convolution import (
     Conv2d1x1Kernel,
     Conv2dKernel,
     Conv3dKernel,
-    DirectConv1dKernel,
     GroupConv1dKernel,
 )
 from .deltanet import DeltaNetBwdKernel, DeltaNetFwdKernel
@@ -94,7 +93,6 @@ __all__ = [
     "DeltaNetDecodeFP32Kernel",
     "DeltaNetDecodeKernel",
     "DeltaNetFwdKernel",
-    "DirectConv1dKernel",
     "DropoutKernel",
     "EngramDecodeKernel",
     "EngramGateConvBwdKernel",

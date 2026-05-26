@@ -62,7 +62,6 @@ Conv1dFwdOp:
     kernel_map:
       conv1d_pointwise_kernel: Conv1dPointwiseKernel
       conv1d_kernel: Conv1dKernel
-      direct_conv1d_kernel: DirectConv1dKernel
       group_conv1d_kernel: GroupConv1dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
@@ -116,7 +115,6 @@ Conv1dBiasFwdOp:
     kernel_map:
       conv1d_pointwise_kernel: Conv1dPointwiseKernel
       conv1d_kernel: Conv1dKernel
-      direct_conv1d_kernel: DirectConv1dKernel
       group_conv1d_kernel: GroupConv1dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
