@@ -311,6 +311,23 @@ def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune)
     test.check(op, *inputs, atol=atol, rtol=rtol)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("config", [
+    {"block_d": 64,  "threads": 32,  "vectorize": True},
+    {"block_d": 128, "threads": 64,  "vectorize": True},
+])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_ssd_state_passing_fwd_vectorize(config, dtype):
+    """Exercises the vectorize=True code path (lo/hi split per thread)."""
+    batch, num_chunks, n_heads, d_state = 2, 4, 8, 128
+    test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
+    op = SSDStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=False)
+    op.kernel.config = config
+    inputs = test.gen_inputs()
+    atol = 1e-3 if dtype == torch.float16 else 1.6e-2
+    test.check(op, *inputs, atol=atol, rtol=1e-3)
+
+
 def ssd_decode_ref(
     A: torch.Tensor,      # (H, P, N)     float32
     dt: torch.Tensor,     # (B, H, P)     float32
