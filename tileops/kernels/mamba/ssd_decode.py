@@ -181,20 +181,21 @@ def _ssd_decode_kernel(
                 #   x[b,h,p] and dt[b,h,p] depend only on pp, not on n_blk,
                 #   so reading them once before the loop eliminates
                 #   ceil(N/block_n) redundant global loads per thread.
-                #   Each (pp, nn) thread reads the same p_idx address →
-                #   warp-uniform access → single L2 transaction per pp-row.
+                #   Allocated as (block_p,) — one scalar per pp — so each
+                #   thread stores exactly one value, not block_n redundant
+                #   copies.  Loaded by T.Parallel(block_p) only.
                 # --------------------------------------------------------
-                x_frag  = T.alloc_fragment((block_p, block_n), accum_dtype)
-                dt_frag = T.alloc_fragment((block_p, block_n), accum_dtype)
-                for pp, nn in T.Parallel(block_p, block_n):
+                x_frag  = T.alloc_fragment((block_p,), accum_dtype)
+                dt_frag = T.alloc_fragment((block_p,), accum_dtype)
+                for pp in T.Parallel(block_p):
                     p_idx = p0 + pp
                     valid_p = p_idx < P
-                    x_frag[pp, nn] = T.if_then_else(
+                    x_frag[pp] = T.if_then_else(
                         valid_p,
                         T.cast(x[b, h, p_idx], accum_dtype),
                         T.float32(0.0),
                     )
-                    dt_frag[pp, nn] = T.if_then_else(
+                    dt_frag[pp] = T.if_then_else(
                         valid_p,
                         dt[b, h, p_idx],
                         T.float32(0.0),
@@ -234,8 +235,8 @@ def _ssd_decode_kernel(
                             T.float32(0.0),
                         )
 
-                        dA_val = T.exp(dt_frag[pp, nn] * A_val)
-                        new_s = dA_val * old_s + dt_frag[pp, nn] * x_frag[pp, nn] * B_val
+                        dA_val = T.exp(dt_frag[pp] * A_val)
+                        new_s = dA_val * old_s + dt_frag[pp] * x_frag[pp] * B_val
                         if valid:
                             state[b, h, p_idx, n_idx] = new_s
 
