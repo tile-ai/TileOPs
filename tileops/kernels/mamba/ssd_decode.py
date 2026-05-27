@@ -159,8 +159,8 @@ def _ssd_decode_kernel(
             # block_n threads access consecutive n-positions in A, state, B, C
             # → stride-1 loads, perfectly coalesced within each warp.
             #
-            # x and dt are indexed by pp only → warp broadcast (all threads
-            # with the same pp share the same address, single cache-line hit).
+            # x and dt only depend on pp (not nn or n_blk) — loaded once into
+            # x_frag/dt_frag before the n_blk loop to avoid redundant HBM reads.
             #
             # y reduction: each thread accumulates a partial sum in a register
             # (y_frag), then a log-depth tree reduction in shared memory
@@ -177,6 +177,30 @@ def _ssd_decode_kernel(
                 T.clear(y_frag)
 
                 # --------------------------------------------------------
+                # Hoist x and dt loads out of the n_blk loop.
+                #   x[b,h,p] and dt[b,h,p] depend only on pp, not on n_blk,
+                #   so reading them once before the loop eliminates
+                #   ceil(N/block_n) redundant global loads per thread.
+                #   Each (pp, nn) thread reads the same p_idx address →
+                #   warp-uniform access → single L2 transaction per pp-row.
+                # --------------------------------------------------------
+                x_frag  = T.alloc_fragment((block_p, block_n), accum_dtype)
+                dt_frag = T.alloc_fragment((block_p, block_n), accum_dtype)
+                for pp, nn in T.Parallel(block_p, block_n):
+                    p_idx = p0 + pp
+                    valid_p = p_idx < P
+                    x_frag[pp, nn] = T.if_then_else(
+                        valid_p,
+                        T.cast(x[b, h, p_idx], accum_dtype),
+                        T.float32(0.0),
+                    )
+                    dt_frag[pp, nn] = T.if_then_else(
+                        valid_p,
+                        dt[b, h, p_idx],
+                        T.float32(0.0),
+                    )
+
+                # --------------------------------------------------------
                 # Main loop: 2D parallel state update.
                 #   T.Parallel(block_p, block_n) maps (pp, nn) → thread index.
                 #   Adjacent threads in the same pp-row access consecutive n
@@ -189,16 +213,6 @@ def _ssd_decode_kernel(
                         n_idx = n0 + nn
                         valid = (p_idx < P) and (n_idx < N)
 
-                        x_val = T.if_then_else(
-                            valid,
-                            T.cast(x[b, h, p_idx], accum_dtype),
-                            T.float32(0.0),
-                        )
-                        dt_val = T.if_then_else(
-                            valid,
-                            dt[b, h, p_idx],
-                            T.float32(0.0),
-                        )
                         A_val = T.if_then_else(
                             valid,
                             A[h, p_idx, n_idx],
@@ -220,8 +234,8 @@ def _ssd_decode_kernel(
                             T.float32(0.0),
                         )
 
-                        dA_val = T.exp(dt_val * A_val)
-                        new_s = dA_val * old_s + dt_val * x_val * B_val
+                        dA_val = T.exp(dt_frag[pp, nn] * A_val)
+                        new_s = dA_val * old_s + dt_frag[pp, nn] * x_frag[pp, nn] * B_val
                         if valid:
                             state[b, h, p_idx, n_idx] = new_s
 

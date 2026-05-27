@@ -142,22 +142,23 @@ def _da_cumsum_fwd_kernel(
                 #   Round d, stride 2^d: thread ll active when
                 #   (ll + 1) % (2 * stride) == 0  ↔  ll is the right element
                 #   of each active pair.  Each pair is disjoint → no RAW hazard.
-                #   Unrolled at Python trace-time; stride is a compile-time int.
+                #   ll is already bound to the thread index; use it directly
+                #   rather than launching a nested T.Parallel loop.
+                #   Rounds are unrolled at Python trace-time; each stride is a
+                #   compile-time constant.
                 # ---------------------------------------------------------
                 for _d in range(_num_rounds):
                     _stride = 1 << _d
-                    for _ll in T.Parallel(Q):
-                        if (_ll + 1) % (2 * _stride) == 0:
-                            scan_smem[_ll] = scan_smem[_ll] + scan_smem[_ll - _stride]
+                    if (ll + 1) % (2 * _stride) == 0:
+                        scan_smem[ll] = scan_smem[ll] + scan_smem[ll - _stride]
                     T.sync_threads()
 
                 # ---------------------------------------------------------
                 # Step 4: clear the last element (convert total→identity for
                 # the exclusive scan).
                 # ---------------------------------------------------------
-                for _ll in T.Parallel(Q):
-                    if _ll == Q - 1:
-                        scan_smem[_ll] = T.float32(0.0)
+                if ll == Q - 1:
+                    scan_smem[ll] = T.float32(0.0)
 
                 T.sync_threads()
 
@@ -173,12 +174,11 @@ def _da_cumsum_fwd_kernel(
 
                 for _d in range(_num_rounds):
                     _stride = 1 << (_num_rounds - 1 - _d)
-                    for _ll in T.Parallel(Q):
-                        if (_ll + 1) % (2 * _stride) == 0:
-                            temp_left[0]  = scan_smem[_ll - _stride]
-                            temp_right[0] = scan_smem[_ll]
-                            scan_smem[_ll - _stride] = temp_right[0]
-                            scan_smem[_ll]           = temp_left[0] + temp_right[0]
+                    if (ll + 1) % (2 * _stride) == 0:
+                        temp_left[0]  = scan_smem[ll - _stride]
+                        temp_right[0] = scan_smem[ll]
+                        scan_smem[ll - _stride] = temp_right[0]
+                        scan_smem[ll]           = temp_left[0] + temp_right[0]
                     T.sync_threads()
 
                 # ---------------------------------------------------------
