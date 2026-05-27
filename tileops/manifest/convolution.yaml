@@ -8,7 +8,7 @@ Conv1dFwdOp:
   ref_api: "torch.nn.functional.conv1d"
   # Equivalent to torch.nn.functional.conv1d (bias=None)
   family: convolution
-  status: spec-only  # TODO: pointwise kernel still groups=1 only; promote after full validation
+  status: spec-only  # TODO: impl lacks dilation, groups, string padding
 
   signature:
     inputs:
@@ -72,7 +72,7 @@ Conv1dBiasFwdOp:
   ref_api: "torch.nn.functional.conv1d"
   # Equivalent to torch.nn.functional.conv1d (bias≠None)
   family: convolution
-  status: spec-only  # TODO: pointwise kernel still groups=1 only; promote after full validation
+  status: spec-only  # TODO: impl lacks dilation, groups, string padding
   variant_of: Conv1dFwdOp
 
   signature:

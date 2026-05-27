@@ -60,24 +60,24 @@ class Conv1dFixture(FixtureBase):
                 id="full-dilation-k3-d2-fp16",
             ),
             pytest.param(
+                1, 32, 128, 64, 3, 1, "valid", 1, 1, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-padding-valid-fp16",
+            ),
+            pytest.param(
+                1, 32, 128, 64, 3, 1, "same", 1, 1, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-padding-same-fp16",
+            ),
+            pytest.param(
                 1, 32, 128, 64, 3, 1, 1, 1, 2, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-groups2-k3-fp16",
             ),
             pytest.param(
-                1, 32, 128, 64, 1, 1, 0, 1, 2, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-groups2-pointwise-k1-fp16",
-            ),
-            pytest.param(
                 1, 48, 128, 72, 3, 1, 1, 1, 3, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-groups3-coutg24-fp16",
-            ),
-            pytest.param(
-                1, 30, 128, 48, 3, 1, 1, 1, 3, torch.float16, False,
-                marks=pytest.mark.full,
-                id="full-groups3-cing10-fp16",
             ),
             pytest.param(
                 1, 64, 128, 64, 31, 1, 15, 1, 64, torch.float16, False,
@@ -98,7 +98,7 @@ class Conv1dTest(TestBase):
         c_out: int,
         kernel_size: int,
         stride: int,
-        padding: int,
+        padding: int | str,
         dilation: int,
         groups: int,
         dtype: torch.dtype,
@@ -149,7 +149,7 @@ def test_conv1d(
     c_out: int,
     kernel_size: int,
     stride: int,
-    padding: int,
+    padding: int | str,
     dilation: int,
     groups: int,
     dtype: torch.dtype,
@@ -172,7 +172,7 @@ def test_conv1d(
     if groups > 1:
         assert isinstance(op.kernel, GroupConv1dKernel)
         assert op.kernel.use_direct is (c_in // groups == 1 and c_out // groups == 1)
-    atol, rtol = ((5e-3, 5e-3) if groups > 1 else (1e-3, 1e-3))
+    atol, rtol = (1e-3, 1e-3)
     if dtype == torch.bfloat16:
         atol, rtol = (1.6e-2, 1.6e-2)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
@@ -282,32 +282,6 @@ def test_conv1d_dispatches_kernel(
         dilation=dilation,
     )
     assert isinstance(op.kernel, expected_kernel)
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "padding, kernel_size, stride",
-    [
-        pytest.param("valid", 3, 1, id="valid"),
-        pytest.param("same", 3, 1, id="same"),
-    ],
-)
-def test_conv1d_string_padding_matches_torch(padding: str, kernel_size: int, stride: int) -> None:
-    n, c_in, l_in, c_out = 1, 32, 128, 64
-    op = Conv1dFwdOp(
-        n=n,
-        c_in=c_in,
-        l_in=l_in,
-        c_out=c_out,
-        kernel_size=kernel_size,
-        stride=stride,
-        padding=padding,
-    )
-    x = torch.randn(n, c_in, l_in, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(c_out, c_in, kernel_size, device="cuda", dtype=torch.float16).contiguous()
-    out = op(x, weight)
-    ref = F.conv1d(x, weight, bias=None, stride=stride, padding=padding).contiguous()
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
 class Conv2dFixture(FixtureBase):

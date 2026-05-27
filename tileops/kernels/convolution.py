@@ -63,15 +63,10 @@ def _conv1d_kernel(
     dilation_l: int,
     has_bias: bool,
     dtype: str = "float16",
-    groups: int = 1,
-    c_in_g: int = 0,
-    c_out_g: int = 0,
 ):
     accum_dtype = "float"
     out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
-    c_in_g = c_in_g if c_in_g > 0 else c_in // groups
-    c_out_g = c_out_g if c_out_g > 0 else c_out // groups
-    k_total = c_in_g * kernel_l
+    k_total = c_in * kernel_l
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _conv1d_func(
@@ -120,12 +115,11 @@ def _conv1d_kernel(
                     for i, j in T.Parallel(block_k, block_n):
                         k_idx = k_iter * block_k + i
                         ol = bx * block_n + j
-                        kw = k_idx // c_in_g
-                        ci = k_idx % c_in_g
-                        group_id = (by * block_m) // c_out_g
+                        kw = k_idx // c_in
+                        ci = k_idx % c_in
                         il = ol * stride_l + kw * dilation_l - pad_l
                         if tile_full:
-                            data_shared[i, j] = x[bz, group_id * c_in_g + ci, il]
+                            data_shared[i, j] = x[bz, ci, il]
                         else:
                             in_bound = (
                                 (k_idx < k_total)
@@ -135,7 +129,7 @@ def _conv1d_kernel(
                             )
                             data_shared[i, j] = T.if_then_else(
                                 in_bound,
-                                x[bz, group_id * c_in_g + ci, il],
+                                x[bz, ci, il],
                                 T.cast(0.0, dtype),
                             )
 
@@ -218,7 +212,8 @@ def _conv1d_direct_kernel(
                         valid = (oc < c_out) & (ol < out_l) & (il >= 0) & (il < l_in)
                         out_local[i, j] += T.if_then_else(
                             valid,
-                            T.cast(x[bz, oc, il] * weight[oc, 0, kw], accum_dtype),
+                            T.cast(x[bz, oc, il], accum_dtype)
+                            * T.cast(weight[oc, 0, kw], accum_dtype),
                             T.cast(0.0, accum_dtype),
                         )
 
@@ -449,9 +444,6 @@ def _conv1d_wrapped_kernel(
     dilation_l: int,
     has_bias: bool,
     dtype: str,
-    groups: int,
-    c_in_g: int,
-    c_out_g: int,
     block_m: int,
     block_n: int,
     block_k: int,
@@ -463,7 +455,7 @@ def _conv1d_wrapped_kernel(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _conv1d_kernel(
-        n, c_in, l_in, c_out, kernel_l, stride_l, pad_l, dilation_l, has_bias, dtype, groups, c_in_g, c_out_g
+        n, c_in, l_in, c_out, kernel_l, stride_l, pad_l, dilation_l, has_bias, dtype
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
@@ -559,9 +551,6 @@ def _(
     dilation_l: int,
     has_bias: bool,
     dtype: str,
-    groups: int,
-    c_in_g: int,
-    c_out_g: int,
     block_m: int,
     block_n: int,
     block_k: int,
@@ -885,9 +874,6 @@ class Conv1dKernel(Kernel):
             self.dilation_l,
             self.has_bias,
             self.dtype_str,
-            1,
-            self.c_in,
-            self.c_out,
             self.config["block_m"],
             self.config["block_n"],
             self.config["block_k"],
