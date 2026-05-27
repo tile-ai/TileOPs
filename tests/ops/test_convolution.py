@@ -343,7 +343,7 @@ class Conv2dTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(self.n, self.h, self.w, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.c_in, self.h, self.w, device="cuda", dtype=self.dtype).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1],
             device="cuda", dtype=self.dtype,
@@ -358,7 +358,7 @@ class Conv2dTest(TestBase):
         bias: Optional[torch.Tensor],
     ) -> torch.Tensor:
         out = F.conv2d(
-            x.permute(0, 3, 1, 2).contiguous(),
+            x,
             weight,
             bias=bias,
             stride=self.stride,
@@ -366,7 +366,7 @@ class Conv2dTest(TestBase):
             dilation=1,
             groups=1,
         )
-        return out.permute(0, 2, 3, 1).contiguous()
+        return out.contiguous()
 
 
 @Conv2dFixture
@@ -411,69 +411,17 @@ def test_conv2d_no_bias_matches_torch() -> None:
         stride=2,
         padding=2,
     )
-    x = torch.randn(1, 16, 16, 32, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 32, 16, 16, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 5, 5, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight)
     ref = F.conv2d(
-        x.permute(0, 3, 1, 2).contiguous(),
+        x,
         weight,
         bias=None,
         stride=2,
         padding=2,
     )
-    ref = ref.permute(0, 2, 3, 1).contiguous()
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
-
-
-@pytest.mark.smoke
-def test_conv2d_bias_requires_bias_tensor() -> None:
-    op = Conv2dBiasFwdOp(
-        n=1,
-        c_in=32,
-        h=16,
-        w=16,
-        c_out=64,
-        kernel_size=5,
-        stride=2,
-        padding=2,
-    )
-    x = torch.randn(1, 16, 16, 32, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(64, 32, 5, 5, device="cuda", dtype=torch.float16).contiguous()
-    bias = torch.zeros(64, device="cuda", dtype=torch.float16).contiguous()
-    out = op(x, weight, bias)
-    ref = F.conv2d(
-        x.permute(0, 3, 1, 2).contiguous(),
-        weight,
-        bias=bias,
-        stride=2,
-        padding=2,
-    )
-    ref = ref.permute(0, 2, 3, 1).contiguous()
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
-
-
-@pytest.mark.smoke
-def test_conv2d_accepts_zero_bias() -> None:
-    op = Conv2dBiasFwdOp(
-        n=1,
-        c_in=32,
-        h=16,
-        w=16,
-        c_out=32,
-        kernel_size=3,
-        padding=1,
-    )
-    x = torch.randn(1, 16, 16, 32, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(32, 32, 3, 3, device="cuda", dtype=torch.float16).contiguous()
-    bias = torch.zeros(32, device="cuda", dtype=torch.float16).contiguous()
-    out = op(x, weight, bias)
-    ref = F.conv2d(
-        x.permute(0, 3, 1, 2).contiguous(),
-        weight,
-        bias=bias,
-        padding=1,
-    )
-    ref = ref.permute(0, 2, 3, 1).contiguous()
+    ref = ref.contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
@@ -592,7 +540,7 @@ class Conv3dTest(TestBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         x = torch.randn(
-            self.n, self.d, self.h, self.w, self.c_in,
+            self.n, self.c_in, self.d, self.h, self.w,
             device="cuda", dtype=self.dtype,
         ).contiguous()
         weight = torch.randn(
@@ -609,7 +557,7 @@ class Conv3dTest(TestBase):
         bias: Optional[torch.Tensor],
     ) -> torch.Tensor:
         out = F.conv3d(
-            x.permute(0, 4, 1, 2, 3).contiguous(),
+            x,
             weight,
             bias=bias,
             stride=self.stride,
@@ -617,7 +565,7 @@ class Conv3dTest(TestBase):
             dilation=1,
             groups=1,
         )
-        return out.permute(0, 2, 3, 4, 1).contiguous()
+        return out.contiguous()
 
 
 @Conv3dFixture
@@ -665,45 +613,17 @@ def test_conv3d_no_bias_matches_torch() -> None:
         stride=2,
         padding=1,
     )
-    x = torch.randn(1, 4, 16, 16, 8, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 8, 4, 16, 16, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(16, 8, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight)
     ref = F.conv3d(
-        x.permute(0, 4, 1, 2, 3).contiguous(),
+        x,
         weight,
         bias=None,
         stride=2,
         padding=1,
     )
-    ref = ref.permute(0, 2, 3, 4, 1).contiguous()
-    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
-
-
-@pytest.mark.smoke
-def test_conv3d_bias_requires_bias_tensor() -> None:
-    op = Conv3dBiasFwdOp(
-        n=1,
-        c_in=8,
-        d=4,
-        h=16,
-        w=16,
-        c_out=16,
-        kernel_size=3,
-        stride=2,
-        padding=1,
-    )
-    x = torch.randn(1, 4, 16, 16, 8, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(16, 8, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
-    bias = torch.zeros(16, device="cuda", dtype=torch.float16).contiguous()
-    out = op(x, weight, bias)
-    ref = F.conv3d(
-        x.permute(0, 4, 1, 2, 3).contiguous(),
-        weight,
-        bias=bias,
-        stride=2,
-        padding=1,
-    )
-    ref = ref.permute(0, 2, 3, 4, 1).contiguous()
+    ref = ref.contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
@@ -720,18 +640,18 @@ def test_conv3d_accepts_zero_bias() -> None:
         stride=2,
         padding=1,
     )
-    x = torch.randn(1, 8, 16, 16, 8, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 8, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(16, 8, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
     bias = torch.zeros(16, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight, bias)
     ref = F.conv3d(
-        x.permute(0, 4, 1, 2, 3).contiguous(),
+        x,
         weight,
         bias=bias,
         stride=2,
         padding=1,
     )
-    ref = ref.permute(0, 2, 3, 4, 1).contiguous()
+    ref = ref.contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 

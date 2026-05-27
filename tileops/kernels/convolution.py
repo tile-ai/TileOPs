@@ -620,21 +620,21 @@ def _conv2d_1x1_kernel(
     ):
         @T.prim_func
         def _conv2d_1x1_main(
-            x: T.Tensor((n, h, w, c_in), dtype),  # type: ignore
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
             weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
-            out: T.Tensor((n, h, w, c_out), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, h, w), dtype),  # type: ignore
             bias: T.Tensor((c_out,), dtype),  # type: ignore
         ):
-            x_flat = T.Tensor((n, hw, c_in), dtype, x.data)
-            out_flat = T.Tensor((n, hw, c_out), dtype, out.data)
+            x_flat = T.Tensor((n, c_in, hw), dtype, x.data)
+            out_flat = T.Tensor((n, c_out, hw), dtype, out.data)
             with T.Kernel(
-                T.ceildiv(c_out, block_n),
-                T.ceildiv(hw, block_m),
+                T.ceildiv(hw, block_n),
+                T.ceildiv(c_out, block_m),
                 n,
                 threads=threads,
             ) as (bx, by, bz):
-                data_shared = T.alloc_shared((block_m, block_k), dtype)
-                weight_shared = T.alloc_shared((block_n, block_k), dtype)
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
@@ -642,22 +642,22 @@ def _conv2d_1x1_kernel(
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(c_in, block_k), num_stages=num_stages):
-                    T.copy(x_flat[bz, by * block_m, k_iter * block_k], data_shared)
-                    T.copy(weight[bx * block_n, k_iter * block_k], weight_shared)
-                    T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
+                    T.copy(weight[by * block_m, k_iter * block_k], weight_shared)
+                    T.copy(x_flat[bz, k_iter * block_k, bx * block_n], data_shared)
+                    T.gemm(weight_shared, data_shared, out_local)
 
                 for i, j in T.Parallel(block_m, block_n):
-                    m_idx = by * block_m + i
-                    oc = bx * block_n + j
+                    oc = by * block_m + i
+                    hw_idx = bx * block_n + j
                     if has_bias:
                         out_shared[i, j] = T.if_then_else(
-                            (m_idx < hw) & (oc < c_out),
+                            (oc < c_out) & (hw_idx < hw),
                             T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
                             T.cast(0.0, dtype),
                         )
                     else:
                         out_shared[i, j] = T.if_then_else(
-                            (m_idx < hw) & (oc < c_out),
+                            (oc < c_out) & (hw_idx < hw),
                             T.cast(out_local[i, j], dtype),
                             T.cast(0.0, dtype),
                         )
@@ -707,92 +707,76 @@ def _conv2d_kernel(
     ):
         @T.prim_func
         def _conv2d_main(
-            x: T.Tensor((n, h, w, c_in), dtype),  # type: ignore
-            weight: T.Tensor((kernel_h, kernel_w, c_in, c_out), dtype),  # type: ignore
-            out: T.Tensor((n, out_h, out_w, c_out), dtype),  # type: ignore
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
             bias: T.Tensor((c_out,), dtype),  # type: ignore
         ):
-            use_hopper_im2col = (
-                get_sm_version() == 90
-                and stride_h == stride_w
-                and pad_h == pad_w
-                and kernel_h == kernel_w
-                and c_in % block_k == 0
-            )
+            out_hw = out_h * out_w
             with T.Kernel(
-                T.ceildiv(c_out, block_n),
-                T.ceildiv(n * out_h * out_w, block_m),
+                T.ceildiv(out_hw, block_n),
+                T.ceildiv(c_out, block_m),
+                n,
                 threads=threads,
-            ) as (bx, by):
-                data_shared = T.alloc_shared((block_m, block_k), dtype)
-                weight_shared = T.alloc_shared((block_k, block_n), dtype)
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                weight_flat = T.Tensor((k_total, c_out), dtype, weight.data)
-                out_flat = T.Tensor((n * out_h * out_w, c_out), dtype, out.data)
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
+                out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
-                    if use_hopper_im2col:
-                        T.c2d_im2col(x, data_shared, by, k_iter, kernel_h, stride_h, 1, pad_h)
-                    else:
-                        for i, j in T.Parallel(block_m, block_k):
-                            m_idx = by * block_m + i
-                            k_idx = k_iter * block_k + j
-                            kh = k_idx // (kernel_w * c_in)
-                            kw = (k_idx // c_in) % kernel_w
-                            ci = k_idx % c_in
-                            out_idx = m_idx % (out_h * out_w)
-                            batch = m_idx // (out_h * out_w)
-                            oh = out_idx // out_w
-                            ow = out_idx % out_w
-                            ih = oh * stride_h + kh - pad_h
-                            iw = ow * stride_w + kw - pad_w
-                            in_bound = (
-                                (m_idx < n * out_h * out_w)
-                                & (k_idx < k_total)
-                                & (ih >= 0)
-                                & (iw >= 0)
-                                & (ih < h)
-                                & (iw < w)
-                            )
-                            data_shared[i, j] = T.if_then_else(
-                                in_bound,
-                                x[batch, ih, iw, ci],
-                                T.cast(0.0, dtype),
-                            )
+                    for i, j in T.Parallel(block_k, block_n):
+                        k_idx = k_iter * block_k + i
+                        spatial_idx = bx * block_n + j
+                        ci = k_idx // (kernel_h * kernel_w)
+                        kernel_idx = k_idx % (kernel_h * kernel_w)
+                        kh = kernel_idx // kernel_w
+                        kw = kernel_idx % kernel_w
+                        oh = spatial_idx // out_w
+                        ow = spatial_idx % out_w
+                        ih = oh * stride_h + kh - pad_h
+                        iw = ow * stride_w + kw - pad_w
+                        in_bound = (
+                            (spatial_idx < out_hw)
+                            & (k_idx < k_total)
+                            & (ih >= 0)
+                            & (iw >= 0)
+                            & (ih < h)
+                            & (iw < w)
+                        )
+                        data_shared[i, j] = T.if_then_else(
+                            in_bound,
+                            x[bz, ci, ih, iw],
+                            T.cast(0.0, dtype),
+                        )
 
-                    T.copy(weight_flat[k_iter * block_k, bx * block_n], weight_shared)
+                    T.copy(weight_flat[by * block_m, k_iter * block_k], weight_shared)
 
-                    T.gemm(data_shared, weight_shared, out_local)
+                    T.gemm(weight_shared, data_shared, out_local)
 
                 for i, j in T.Parallel(block_m, block_n):
-                    m_idx = by * block_m + i
-                    oc = bx * block_n + j
+                    oc = by * block_m + i
+                    spatial_idx = bx * block_n + j
                     if has_bias:
                         out_shared[i, j] = T.if_then_else(
-                            (m_idx < n * out_h * out_w) & (oc < c_out),
+                            (oc < c_out) & (spatial_idx < out_hw),
                             T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
                             T.cast(0.0, dtype),
                         )
                     else:
                         out_shared[i, j] = T.if_then_else(
-                            (m_idx < n * out_h * out_w) & (oc < c_out),
+                            (oc < c_out) & (spatial_idx < out_hw),
                             T.cast(out_local[i, j], dtype),
                             T.cast(0.0, dtype),
                         )
 
-                if use_hopper_im2col:
-                    T.copy(out_shared, out_flat[by * block_m, bx * block_n])
-                else:
-                    for i, j in T.Parallel(block_m, block_n):
-                        m_idx = by * block_m + i
-                        oc = bx * block_n + j
-                        if m_idx < n * out_h * out_w and oc < c_out:
-                            out_flat[m_idx, oc] = out_shared[i, j]
+                T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
 
         return _conv2d_main
 
@@ -840,7 +824,7 @@ def _(
     enable_rasterization: bool,
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
-    return torch.empty((n, h, w, c_out), dtype=inputs[0].dtype, device=inputs[0].device)
+    return torch.empty((n, c_out, h, w), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
 @torch.library.custom_op("top::conv2d_wrapped_kernel", mutates_args=())
@@ -898,7 +882,7 @@ def _(
 ) -> torch.Tensor:
     out_h = (h + 2 * pad_h - kernel_h) // stride_h + 1
     out_w = (w + 2 * pad_w - kernel_w) // stride_w + 1
-    return torch.empty((n, out_h, out_w, c_out), dtype=inputs[0].dtype, device=inputs[0].device)
+    return torch.empty((n, c_out, out_h, out_w), dtype=inputs[0].dtype, device=inputs[0].device)
 
 class Conv2dKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -1022,8 +1006,6 @@ class Conv2dKernel(Kernel):
     ) -> torch.Tensor:
         if bias is None:
             bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        # OIHW -> HWIO to match the kernel layout expected by the implicit GEMM path.
-        weight_hwcf = weight.permute(2, 3, 1, 0).contiguous()
         return _conv2d_wrapped_kernel(
             self.n,
             self.c_in,
@@ -1045,7 +1027,7 @@ class Conv2dKernel(Kernel):
             self.config["threads"],
             self.config["enable_rasterization"],
             x,
-            weight_hwcf,
+            weight,
             bias,
         )
 
@@ -1231,45 +1213,46 @@ def _conv3d_kernel(
     ):
         @T.prim_func
         def _conv3d_main(
-            x: T.Tensor((n, d_in, h_in, w_in, c_in), dtype),  # type: ignore
-            weight: T.Tensor((kernel_d, kernel_h, kernel_w, c_in, c_out), dtype),  # type: ignore
-            out: T.Tensor((n, out_d, out_h, out_w, c_out), dtype),  # type: ignore
+            x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
             bias: T.Tensor((c_out,), dtype),  # type: ignore
         ):
+            out_dhw = out_d * out_h * out_w
             with T.Kernel(
-                T.ceildiv(c_out, block_n),
-                T.ceildiv(n * out_d * out_h * out_w, block_m),
+                T.ceildiv(out_dhw, block_n),
+                T.ceildiv(c_out, block_m),
+                n,
                 threads=threads,
-            ) as (bx, by):
-                data_shared = T.alloc_shared((block_m, block_k), dtype)
-                weight_shared = T.alloc_shared((block_k, block_n), dtype)
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                weight_flat = T.Tensor((k_total, c_out), dtype, weight.data)
-                out_flat = T.Tensor((n * out_d * out_h * out_w, c_out), dtype, out.data)
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
+                out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
 
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
-                    for i, j in T.Parallel(block_m, block_k):
-                        m_idx = by * block_m + i
-                        k_idx = k_iter * block_k + j
-                        kd = k_idx // (kernel_h * kernel_w * c_in)
-                        kh = (k_idx // (kernel_w * c_in)) % kernel_h
-                        kw = (k_idx // c_in) % kernel_w
-                        ci = k_idx % c_in
-                        out_idx = m_idx % (out_d * out_h * out_w)
-                        batch = m_idx // (out_d * out_h * out_w)
-                        od = out_idx // (out_h * out_w)
-                        oh = (out_idx // out_w) % out_h
-                        ow = out_idx % out_w
+                    for i, j in T.Parallel(block_k, block_n):
+                        k_idx = k_iter * block_k + i
+                        spatial_idx = bx * block_n + j
+                        ci = k_idx // (kernel_d * kernel_h * kernel_w)
+                        kernel_idx = k_idx % (kernel_d * kernel_h * kernel_w)
+                        kd = kernel_idx // (kernel_h * kernel_w)
+                        kh = (kernel_idx // kernel_w) % kernel_h
+                        kw = kernel_idx % kernel_w
+                        od = spatial_idx // (out_h * out_w)
+                        oh = (spatial_idx // out_w) % out_h
+                        ow = spatial_idx % out_w
                         id_ = od * stride_d + kd - pad_d
                         ih = oh * stride_h + kh - pad_h
                         iw = ow * stride_w + kw - pad_w
                         in_bound = (
-                            (m_idx < n * out_d * out_h * out_w)
+                            (spatial_idx < out_dhw)
                             & (k_idx < k_total)
                             & (id_ >= 0)
                             & (ih >= 0)
@@ -1280,34 +1263,30 @@ def _conv3d_kernel(
                         )
                         data_shared[i, j] = T.if_then_else(
                             in_bound,
-                            x[batch, id_, ih, iw, ci],
+                            x[bz, ci, id_, ih, iw],
                             T.cast(0.0, dtype),
                         )
 
-                    T.copy(weight_flat[k_iter * block_k, bx * block_n], weight_shared)
-                    T.gemm(data_shared, weight_shared, out_local)
+                    T.copy(weight_flat[by * block_m, k_iter * block_k], weight_shared)
+                    T.gemm(weight_shared, data_shared, out_local)
 
                 for i, j in T.Parallel(block_m, block_n):
-                    m_idx = by * block_m + i
-                    oc = bx * block_n + j
+                    oc = by * block_m + i
+                    spatial_idx = bx * block_n + j
                     if has_bias:
                         out_shared[i, j] = T.if_then_else(
-                            (m_idx < n * out_d * out_h * out_w) & (oc < c_out),
+                            (oc < c_out) & (spatial_idx < out_dhw),
                             T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
                             T.cast(0.0, dtype),
                         )
                     else:
                         out_shared[i, j] = T.if_then_else(
-                            (m_idx < n * out_d * out_h * out_w) & (oc < c_out),
+                            (oc < c_out) & (spatial_idx < out_dhw),
                             T.cast(out_local[i, j], dtype),
                             T.cast(0.0, dtype),
                         )
 
-                for i, j in T.Parallel(block_m, block_n):
-                    m_idx = by * block_m + i
-                    oc = bx * block_n + j
-                    if m_idx < n * out_d * out_h * out_w and oc < c_out:
-                        out_flat[m_idx, oc] = out_shared[i, j]
+                T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
 
         return _conv3d_main
 
@@ -1394,7 +1373,11 @@ def _(
     out_d = (d_in + 2 * pad_d - kernel_d) // stride_d + 1
     out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
     out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
-    return torch.empty((n, out_d, out_h, out_w, c_out), dtype=inputs[0].dtype, device=inputs[0].device)
+    return torch.empty(
+        (n, c_out, out_d, out_h, out_w),
+        dtype=inputs[0].dtype,
+        device=inputs[0].device,
+    )
 
 
 class Conv3dKernel(Kernel):
@@ -1523,8 +1506,6 @@ class Conv3dKernel(Kernel):
     ) -> torch.Tensor:
         if bias is None:
             bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
-        # OIDHW -> DHWIO so the kernel can flatten weights into [K_total, C_out].
-        weight_kdhwio = weight.permute(2, 3, 4, 1, 0).contiguous()
         return _conv3d_wrapped_kernel(
             self.n,
             self.c_in,
@@ -1550,6 +1531,6 @@ class Conv3dKernel(Kernel):
             self.config["threads"],
             self.config["enable_rasterization"],
             x,
-            weight_kdhwio,
+            weight,
             bias,
         )
