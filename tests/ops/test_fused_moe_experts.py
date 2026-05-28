@@ -368,3 +368,60 @@ class TestBuildActivationOp:
     def test_invalid_activation_raises(self):
         with pytest.raises(ValueError, match="activation must be one of"):
             build_activation_op("unknown_act", M=16, N=32, dtype=torch.bfloat16)
+
+
+class TestFusedMoeActivationInjection:
+
+    def _make_experts(self):
+        return FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+        )
+
+    @pytest.mark.smoke
+    def test_injection_with_explicit_activation_raises(self):
+        """Passing experts= and an explicit activation= must raise ValueError."""
+        from tileops.ops.moe.fused_moe import FusedMoe
+        experts = self._make_experts()
+        with pytest.raises(ValueError, match="activation must not be set"):
+            FusedMoe(
+                num_tokens=128, num_experts=4, top_k=2,
+                hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+                experts=experts, activation="gelu_and_mul",
+            )
+
+    @pytest.mark.smoke
+    def test_injection_with_explicit_default_activation_raises(self):
+        """Even activation='silu_and_mul' + experts= must raise (sentinel catches this)."""
+        from tileops.ops.moe.fused_moe import FusedMoe
+        experts = self._make_experts()
+        with pytest.raises(ValueError, match="activation must not be set"):
+            FusedMoe(
+                num_tokens=128, num_experts=4, top_k=2,
+                hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+                experts=experts, activation="silu_and_mul",
+            )
+
+    @pytest.mark.smoke
+    def test_injection_without_activation_works(self):
+        """experts= without activation= should succeed."""
+        from tileops.ops.moe.fused_moe import FusedMoe
+        experts = self._make_experts()
+        moe = FusedMoe(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            experts=experts,
+        )
+        assert moe.activation == "silu_and_mul"
+
+    @pytest.mark.smoke
+    def test_default_path_activation_forwarded(self):
+        """FusedMoe(activation='gelu_and_mul') creates experts with gelu_and_mul."""
+        from tileops.ops.moe.fused_moe import FusedMoe
+        moe = FusedMoe(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            activation="gelu_and_mul",
+        )
+        assert moe.activation == "gelu_and_mul"
+        assert moe._experts.activation == "gelu_and_mul"
