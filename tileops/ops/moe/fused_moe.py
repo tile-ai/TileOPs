@@ -18,11 +18,16 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
-from tileops.ops.moe.experts.nopad import FusedMoEExpertsNopadPersistent3WGFwdOp
-from tileops.ops.moe.experts.padded import FusedMoEExpertsPaddedFwdOp
 from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
+from tileops.ops.moe.routed_expert import (
+    FusedMoEExpertsNopadPersistent3WGFwdOp,
+    FusedMoEExpertsPaddedFwdOp,
+)
+from tileops.ops.moe.routed_expert.abc import (
+    FusedMoEExpertsModular,
+    FusedMoEPrepareAndFinalize,
+)
 
 from ..op_base import Op
 

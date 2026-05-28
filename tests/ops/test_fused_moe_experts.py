@@ -5,12 +5,14 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tileops.ops.moe.abc import (
+from tileops.ops.moe.routed_expert.abc import (
     WeightedReduce,
     WeightedReduceNoOp,
 )
-from tileops.ops.moe.experts.nopad import FusedMoEExpertsNopadPersistent3WGFwdOp
-from tileops.ops.moe.experts.padded import FusedMoEExpertsPaddedFwdOp
+from tileops.ops.moe.routed_expert.fused_routed_expert import (
+    FusedMoEExpertsNopadPersistent3WGFwdOp,
+    FusedMoEExpertsPaddedFwdOp,
+)
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 
 
