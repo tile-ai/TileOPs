@@ -425,3 +425,18 @@ class TestFusedMoeActivationInjection:
         )
         assert moe.activation == "gelu_and_mul"
         assert moe._experts.activation == "gelu_and_mul"
+
+
+class TestSharedFusedMoeActivation:
+
+    @pytest.mark.smoke
+    def test_activation_forwarded_to_routed_experts(self):
+        """SharedFusedMoE(activation='gelu_and_mul') reaches the routed-experts path."""
+        from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
+        moe = SharedFusedMoE(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            activation="gelu_and_mul",
+        )
+        assert moe.activation == "gelu_and_mul"
+        assert moe._experts.activation == "gelu_and_mul"

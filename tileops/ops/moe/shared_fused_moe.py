@@ -83,6 +83,7 @@ class SharedFusedMoE(FusedMoe):
         layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
+        activation: Optional[str] = None,
         shared_ffn_size: Optional[int] = None,
         tp_size: int = 1,
         tp_rank: int = 0,
@@ -100,6 +101,7 @@ class SharedFusedMoE(FusedMoe):
             layout=layout,
             dtype=dtype,
             expert_map=expert_map,
+            activation=activation,
         )
 
         if tp_size < 1:
