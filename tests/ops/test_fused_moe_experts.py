@@ -52,10 +52,8 @@ def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation
         h = hidden[t_idx].float()
         gate_up = h @ w1[e].float().t()
         gate, up = gate_up[:, :F_dim], gate_up[:, F_dim:]
-        if activation == "silu_and_mul":
-            act = F.silu(gate) * up
-        else:  # gelu_and_mul — exact erf GELU matches GeluAndMulFwdKernel
-            act = F.gelu(gate) * up
+        # gelu_and_mul uses exact erf GELU which matches GeluAndMulFwdKernel
+        act = F.silu(gate) * up if activation == "silu_and_mul" else F.gelu(gate) * up
         down = act @ w2[e].float().t()
         output.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
     return output.to(hidden.dtype)
