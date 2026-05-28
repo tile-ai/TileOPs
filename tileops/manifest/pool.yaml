@@ -29,7 +29,11 @@ AvgPool1dFwdOp:
       - "0 <= _pW <= _kW // 2"
       - "L_out == max(((L_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((L_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((L_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= L_in + _pW else 0), 0)"
 
-  workloads: []
+  workloads:
+    # Temporal/audio downsampling cases, expressed in PyTorch NCL layout.
+    - {input_shape: [4, 128, 4096], kernel_size: 3, stride: 2, padding: 1, dtypes: [float16], label: "audio-downsample-fp16"}
+    - {input_shape: [2, 256, 32000], kernel_size: 5, stride: 4, padding: 2, dtypes: [float16], label: "long-temporal-fp16"}
+    - {input_shape: [2, 128, 2048], kernel_size: 4, stride: 2, padding: 1, ceil_mode: true, count_include_pad: false, dtypes: [bfloat16], label: "ceil-bf16"}
 
   roofline:
     vars:
@@ -80,7 +84,11 @@ AvgPool2dFwdOp:
       - "H_out == max(((H_in + 2 * _pH - _kH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
       - "W_out == max(((W_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
 
-  workloads: []
+  workloads:
+    # Vision backbone pooling cases, expressed in PyTorch NCHW layout.
+    - {input_shape: [2, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "vision-3x3-s2"}
+    - {input_shape: [2, 128, 56, 56], kernel_size: [5, 5], stride: [2, 2], padding: [2, 2], dtypes: [float16], label: "vision-5x5-s2"}
+    - {input_shape: [3, 96, 55, 57], kernel_size: [3, 5], stride: [2, 2], padding: [1, 2], ceil_mode: true, count_include_pad: false, divisor_override: 7, dtypes: [bfloat16], label: "ceil-divisor-bf16"}
 
   roofline:
     vars:
@@ -139,7 +147,11 @@ AvgPool3dFwdOp:
       - "H_out == max(((H_in + 2 * _pH - _kH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
       - "W_out == max(((W_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
 
-  workloads: []
+  workloads:
+    # Video/spatiotemporal pooling cases, expressed in PyTorch NCDHW layout.
+    - {input_shape: [1, 32, 16, 56, 56], kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "video-2x2x2"}
+    - {input_shape: [2, 64, 8, 28, 28], kernel_size: [2, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, count_include_pad: false, dtypes: [float16], label: "ceil-video"}
+    - {input_shape: [2, 24, 10, 20, 22], kernel_size: [2, 2, 3], stride: [2, 2, 2], padding: [0, 1, 1], divisor_override: 7, dtypes: [bfloat16], label: "divisor-bf16"}
 
   roofline:
     vars:
