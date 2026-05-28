@@ -1,0 +1,168 @@
+# pool.yaml -- manifest entries for the 'pool' family.
+#
+# Source of truth for pooling op interfaces. These entries are generated from
+# PyTorch functional reference APIs and intentionally remain spec-only until
+# the existing TileOPs pool implementation is aligned to this contract.
+
+AvgPool1dFwdOp:
+  ref_api: "torch.nn.functional.avg_pool1d"
+  family: pool
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, L_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, L_out]"}
+    params:
+      kernel_size: {type: "int | tuple[int]"}
+      stride: {type: "int | tuple[int] | None", default: null}
+      padding: {type: "int | tuple[int]", default: 0}
+      ceil_mode: {type: bool, default: false}
+      count_include_pad: {type: bool, default: true}
+    shape_rules:
+      - "_kW == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      - "_sW == (_kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      - "_pW == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_kW > 0"
+      - "_sW > 0"
+      - "0 <= _pW <= _kW // 2"
+      - "L_out == max(((L_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((L_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((L_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= L_in + _pW else 0), 0)"
+
+  workloads: []
+
+  roofline:
+    vars:
+      kW: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
+      sW: "kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      pW: "padding[0] if isinstance(padding, (tuple, list)) else padding"
+      out_W: "max(((L_in + 2 * pW - kW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((L_in + 2 * pW - kW + sW - 1) // sW + 1) > 0 and (((L_in + 2 * pW - kW + sW - 1) // sW + 1) - 1) * sW >= L_in + pW else 0), 0)"
+    flops: "N * C * out_W * kW"
+    bytes: "(N * C * L_in + N * C * out_W) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/pool/avg_pool1d.py
+    kernel_map:
+      avg_pool1d_kernel: AvgPool1dKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: false
+
+AvgPool2dFwdOp:
+  ref_api: "torch.nn.functional.avg_pool2d"
+  family: pool
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
+    params:
+      kernel_size: {type: "int | tuple[int, int]"}
+      stride: {type: "int | tuple[int, int] | None", default: null}
+      padding: {type: "int | tuple[int, int]", default: 0}
+      ceil_mode: {type: bool, default: false}
+      count_include_pad: {type: bool, default: true}
+      divisor_override: {type: "int | None", default: null}
+    shape_rules:
+      - "_kH == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      - "_kW == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
+      - "_sH == (_kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      - "_sW == (_kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
+      - "_pH == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_pW == (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
+      - "_kH > 0 and _kW > 0"
+      - "_sH > 0 and _sW > 0"
+      - "0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
+      - "divisor_override is None or divisor_override != 0"
+      - "H_out == max(((H_in + 2 * _pH - _kH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
+      - "W_out == max(((W_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+
+  workloads: []
+
+  roofline:
+    vars:
+      kH: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
+      kW: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      sH: "kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      sW: "kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      pH: "padding[0] if isinstance(padding, (tuple, list)) else padding"
+      pW: "padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      out_H: "max(((H_in + 2 * pH - kH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - kH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - kH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
+      out_W: "max(((W_in + 2 * pW - kW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - kW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - kW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
+    flops: "N * C * out_H * out_W * kH * kW"
+    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/pool/avg_pool2d.py
+    kernel_map:
+      avg_pool2d_kernel: AvgPool2dKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: false
+
+AvgPool3dFwdOp:
+  ref_api: "torch.nn.functional.avg_pool3d"
+  family: pool
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, D_in, H_in, W_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, D_out, H_out, W_out]"}
+    params:
+      kernel_size: {type: "int | tuple[int, int, int]"}
+      stride: {type: "int | tuple[int, int, int] | None", default: null}
+      padding: {type: "int | tuple[int, int, int]", default: 0}
+      ceil_mode: {type: bool, default: false}
+      count_include_pad: {type: bool, default: true}
+      divisor_override: {type: "int | None", default: null}
+    shape_rules:
+      - "_kD == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      - "_kH == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      - "_kW == (kernel_size[2] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      - "_sD == (_kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      - "_sH == (_kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) else stride))"
+      - "_sW == (_kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) else stride))"
+      - "_pD == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_pH == (padding[1] if isinstance(padding, (tuple, list)) else padding)"
+      - "_pW == (padding[2] if isinstance(padding, (tuple, list)) else padding)"
+      - "_kD > 0 and _kH > 0 and _kW > 0"
+      - "_sD > 0 and _sH > 0 and _sW > 0"
+      - "0 <= _pD <= _kD // 2 and 0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
+      - "divisor_override is None or divisor_override != 0"
+      - "D_out == max(((D_in + 2 * _pD - _kD + (_sD - 1 if ceil_mode else 0)) // _sD + 1) - (1 if ceil_mode and ((D_in + 2 * _pD - _kD + _sD - 1) // _sD + 1) > 0 and (((D_in + 2 * _pD - _kD + _sD - 1) // _sD + 1) - 1) * _sD >= D_in + _pD else 0), 0)"
+      - "H_out == max(((H_in + 2 * _pH - _kH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
+      - "W_out == max(((W_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+
+  workloads: []
+
+  roofline:
+    vars:
+      kD: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
+      kH: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) else kernel_size"
+      kW: "kernel_size[2] if isinstance(kernel_size, (tuple, list)) else kernel_size"
+      sD: "kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      sH: "kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) else stride)"
+      sW: "kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) else stride)"
+      pD: "padding[0] if isinstance(padding, (tuple, list)) else padding"
+      pH: "padding[1] if isinstance(padding, (tuple, list)) else padding"
+      pW: "padding[2] if isinstance(padding, (tuple, list)) else padding"
+      out_D: "max(((D_in + 2 * pD - kD + (sD - 1 if ceil_mode else 0)) // sD + 1) - (1 if ceil_mode and ((D_in + 2 * pD - kD + sD - 1) // sD + 1) > 0 and (((D_in + 2 * pD - kD + sD - 1) // sD + 1) - 1) * sD >= D_in + pD else 0), 0)"
+      out_H: "max(((H_in + 2 * pH - kH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - kH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - kH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
+      out_W: "max(((W_in + 2 * pW - kW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - kW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - kW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
+    flops: "N * C * out_D * out_H * out_W * kD * kH * kW"
+    bytes: "(N * C * D_in * H_in * W_in + N * C * out_D * out_H * out_W) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/pool/avg_pool3d.py
+    kernel_map:
+      avg_pool3d_kernel: AvgPool3dKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: false
