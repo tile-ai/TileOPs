@@ -100,7 +100,9 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             n=ffn_size * 2, k=hidden_size, dtype=dtype,
             kernel_map={"moe_grouped_gemm_kernel": kernel_cls, **(kernel_map or {})},
         )
-        self._silu_and_mul = SiluAndMulFwdOp(M=numel, N=ffn_size, dtype=dtype)
+        self._silu_and_mul = SiluAndMulFwdOp(
+            M=numel, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
+        )
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel, num_experts=num_experts_local,
             n=hidden_size, k=ffn_size, dtype=dtype,

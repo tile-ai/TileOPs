@@ -70,7 +70,9 @@ class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
             n=ffn_size * 2, k=hidden_size, dtype=dtype,
             kernel_map=kernel_map,
         )
-        self._silu_and_mul = SiluAndMulFwdOp(M=padded_batch_sum, N=ffn_size, dtype=dtype)
+        self._silu_and_mul = SiluAndMulFwdOp(
+            M=padded_batch_sum, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
+        )
         self._gemm_down = GroupedGemmOp(
             batch_sum=padded_batch_sum, batch_count=num_experts,
             n=hidden_size, k=ffn_size, dtype=dtype,
