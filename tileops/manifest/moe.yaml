@@ -51,7 +51,7 @@ MoePermutePaddedFwdOp:
 
   source:
     kernel: tileops/kernels/moe/permute_padded.py
-    op: tileops/ops/moe/permute_padded.py
+    op: tileops/ops/moe/routed_expert/permute_padded.py
     test: tests/ops/test_moe_permute.py
     bench: benchmarks/ops/bench_moe_permute.py
     bench_manifest_driven: true
@@ -163,7 +163,7 @@ MoePermuteNopadFwdOp:
 
   source:
     kernel: tileops/kernels/moe/permute_nopad.py
-    op: tileops/ops/moe/permute_nopad.py
+    op: tileops/ops/moe/routed_expert/permute_nopad.py
     test: tests/ops/test_moe_permute_nopad.py
     bench: benchmarks/ops/bench_moe_permute_nopad.py
     bench_manifest_driven: true
@@ -209,7 +209,7 @@ MoeUnpermuteFwdOp:
 
   source:
     kernel: tileops/kernels/moe/unpermute.py
-    op: tileops/ops/moe/unpermute.py
+    op: tileops/ops/moe/routed_expert/unpermute.py
     test: tests/ops/test_moe_unpermute.py
     bench: benchmarks/ops/bench_moe_unpermute.py
     bench_manifest_driven: true
@@ -251,7 +251,7 @@ MoeGroupedGemmNopadFwdOp:
 
   source:
     kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
-    op: tileops/ops/moe/moe_grouped_gemm_nopad.py
+    op: tileops/ops/moe/routed_expert/moe_grouped_gemm_nopad.py
     test: tests/ops/test_moe_grouped_gemm_nopad.py
     bench: benchmarks/ops/bench_moe_grouped_gemm_nopad.py
     kernel_map:
@@ -318,7 +318,7 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
 
   source:
     kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
-    op: tileops/ops/moe/experts/nopad.py
+    op: tileops/ops/moe/routed_expert/fused_routed_expert.py
     test: tests/ops/test_fused_moe_experts.py
     bench: benchmarks/ops/bench_fused_moe_experts.py
     bench_manifest_driven: false
@@ -389,7 +389,7 @@ FusedMoEExpertsPaddedFwdOp:
 
   source:
     kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
-    op: tileops/ops/moe/experts/padded.py
+    op: tileops/ops/moe/routed_expert/fused_routed_expert.py
     test: tests/ops/test_fused_moe_experts.py
     bench: benchmarks/ops/bench_fused_moe_experts.py
     bench_manifest_driven: false
