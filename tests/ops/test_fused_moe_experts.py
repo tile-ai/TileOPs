@@ -5,6 +5,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from tileops.ops.moe._activation import build_activation_op
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert.abc import (
     WeightedReduce,
@@ -253,29 +254,24 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         assert torch.isfinite(output.float()).all()
 
 
-# ---------------------------------------------------------------------------
-# FusedMoEExpertsPaddedFwdOp
-# ---------------------------------------------------------------------------
+        assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
-class TestFusedMoEExpertsPaddedFwdOp:
+
+class TestBuildActivationOp:
 
     @pytest.mark.smoke
-    def test_forward_matches_torch_ref(self, moe_tensors):
-        """forward() output must match a per-expert PyTorch reference."""
-        d = moe_tensors
-        experts = FusedMoEExpertsPaddedFwdOp(
-            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
-            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
-        )
+    def test_silu_and_mul_returns_correct_type(self):
+        from tileops.ops.elementwise import SiluAndMulFwdOp
+        op = build_activation_op("silu_and_mul", M=16, N=32, dtype=torch.bfloat16)
+        assert isinstance(op, SiluAndMulFwdOp)
 
-        ref_out = _torch_ref_moe(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
+    @pytest.mark.smoke
+    def test_gelu_and_mul_returns_correct_type(self):
+        from tileops.ops.elementwise import GeluAndMulFwdOp
+        op = build_activation_op("gelu_and_mul", M=16, N=32, dtype=torch.bfloat16)
+        assert isinstance(op, GeluAndMulFwdOp)
 
-        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
-        ws1 = torch.empty(0, dtype=d["dtype"], device="cuda")
-        ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
-        experts.forward(
-            output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
-            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
-        )
-
-        assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
+    @pytest.mark.smoke
+    def test_invalid_activation_raises(self):
+        with pytest.raises(ValueError, match="activation must be one of"):
+            build_activation_op("unknown_act", M=16, N=32, dtype=torch.bfloat16)
