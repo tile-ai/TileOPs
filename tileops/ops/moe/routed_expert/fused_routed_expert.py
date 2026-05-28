@@ -19,8 +19,8 @@ from tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg import (
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
-from tileops.ops.elementwise import SiluAndMulFwdOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
+from tileops.ops.moe._activation import build_activation_op
 
 from .abc import (
     FusedMoEExpertsModular,
@@ -62,6 +62,7 @@ class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
         top_k: int,
         hidden_size: int,
         ffn_size: int,
+        activation: str = "silu_and_mul",
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[Tensor] = None,
@@ -92,8 +93,9 @@ class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
             n=ffn_size * 2, k=hidden_size, dtype=dtype,
             kernel_map=kernel_map,
         )
-        self._silu_and_mul = SiluAndMulFwdOp(
-            M=padded_batch_sum, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
+        self.activation = activation
+        self._activation_op = build_activation_op(
+            activation, M=padded_batch_sum, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
         )
         self._gemm_down = GroupedGemmOp(
             batch_sum=padded_batch_sum, batch_count=num_experts,
@@ -173,7 +175,7 @@ class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
         gate_up_pad = self._gemm_gate_up(
             perm_h_pad, w_gate_up, padded_sizes, padded_offsets, padded_offsets
         )
-        act_pad = self._silu_and_mul(gate_up_pad)
+        act_pad = self._activation_op(gate_up_pad)
         mm2_pad = self._gemm_down(
             act_pad, w_down, padded_sizes, padded_offsets, padded_offsets
         )
@@ -217,6 +219,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         top_k: int,
         hidden_size: int,
         ffn_size: int,
+        activation: str = "silu_and_mul",
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[Tensor] = None,
@@ -265,8 +268,9 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             n=ffn_size * 2, k=hidden_size, dtype=dtype,
             kernel_map={"moe_grouped_gemm_kernel": kernel_cls, **(kernel_map or {})},
         )
-        self._silu_and_mul = SiluAndMulFwdOp(
-            M=numel, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
+        self.activation = activation
+        self._activation_op = build_activation_op(
+            activation, M=numel, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
         )
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel, num_experts=num_experts_local,
@@ -342,7 +346,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         )
         perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(hidden_states, topk_ids)
         gate_up = self._gemm_gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
-        act = self._silu_and_mul(gate_up)
+        act = self._activation_op(gate_up)
         mm2 = self._gemm_down(act, w_down, true_sizes, true_offsets)
         result = self._unpermute(mm2, fwd_idx, topk_weights)
         if self._routed_scaling_factor != 1.0:

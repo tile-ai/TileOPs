@@ -37,6 +37,30 @@ def _torch_ref_moe(hidden, w1, w2, topk_weights, topk_ids):
     return output.to(hidden.dtype)
 
 
+def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation="silu_and_mul"):
+    """Per-expert PyTorch reference supporting silu_and_mul and gelu_and_mul."""
+    T, H = hidden.shape
+    E, twoF, _ = w1.shape
+    F_dim = twoF // 2
+    output = torch.zeros(T, H, dtype=torch.float32, device=hidden.device)
+    ids_i64 = topk_ids.to(torch.int64)
+    for e in range(E):
+        mask = (ids_i64 == e)
+        if not mask.any():
+            continue
+        t_idx, k_idx = mask.nonzero(as_tuple=True)
+        h = hidden[t_idx].float()
+        gate_up = h @ w1[e].float().t()
+        gate, up = gate_up[:, :F_dim], gate_up[:, F_dim:]
+        if activation == "silu_and_mul":
+            act = F.silu(gate) * up
+        else:  # gelu_and_mul — exact erf GELU matches GeluAndMulFwdKernel
+            act = F.gelu(gate) * up
+        down = act @ w2[e].float().t()
+        output.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
+    return output.to(hidden.dtype)
+
+
 @pytest.mark.smoke
 def test_abc_imports():
     """ABCs and data structures can be imported."""
@@ -253,7 +277,76 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         # Output must be finite (no NaN/Inf from the -1 fwd_idx path).
         assert torch.isfinite(output.float()).all()
 
+    @pytest.mark.smoke
+    @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
+    def test_forward_matches_torch_ref_activation(self, moe_tensors, activation):
+        """forward() output matches PyTorch reference for each activation."""
+        d = moe_tensors
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+            activation=activation,
+        )
+        assert experts.activation == activation
+        ref_out = _torch_ref_moe_activation(
+            d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"], activation=activation,
+        )
+        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
+        ws1 = torch.empty(0, dtype=d["dtype"], device="cuda")
+        ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
+        experts.forward(
+            output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
+            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
+        )
+        assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
+
+# ---------------------------------------------------------------------------
+# FusedMoEExpertsPaddedFwdOp
+# ---------------------------------------------------------------------------
+
+class TestFusedMoEExpertsPaddedFwdOp:
+
+    @pytest.mark.smoke
+    def test_forward_matches_torch_ref(self, moe_tensors):
+        """forward() output must match a per-expert PyTorch reference."""
+        d = moe_tensors
+        experts = FusedMoEExpertsPaddedFwdOp(
+            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+        )
+
+        ref_out = _torch_ref_moe(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
+
+        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
+        ws1 = torch.empty(0, device="cuda")
+        ws2 = torch.empty(0, device="cuda")
+        experts.forward(
+            output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
+            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
+        )
+
+        assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
+
+    @pytest.mark.smoke
+    @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
+    def test_forward_matches_torch_ref_activation(self, moe_tensors, activation):
+        d = moe_tensors
+        experts = FusedMoEExpertsPaddedFwdOp(
+            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+            activation=activation,
+        )
+        assert experts.activation == activation
+        ref_out = _torch_ref_moe_activation(
+            d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"], activation=activation,
+        )
+        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
+        ws1, ws2 = torch.empty(0, device="cuda"), torch.empty(0, device="cuda")
+        experts.forward(
+            output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
+            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
+        )
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
 
