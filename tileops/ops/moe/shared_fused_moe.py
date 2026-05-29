@@ -83,10 +83,11 @@ class SharedFusedMoE(FusedMoe):
         layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
-        activation: str = "silu_and_mul",
         shared_ffn_size: Optional[int] = None,
         tp_size: int = 1,
         tp_rank: int = 0,
+        *,
+        activation: str = "silu_and_mul",
     ):
         super().__init__(
             num_tokens=num_tokens,

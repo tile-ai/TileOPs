@@ -76,6 +76,7 @@ class FusedMoe(Op):
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
         activation: str = "silu_and_mul",
     ):
         self.num_tokens = num_tokens
@@ -115,16 +116,24 @@ class FusedMoe(Op):
             )
 
         if experts is not None:
-            if activation != "silu_and_mul":
-                raise ValueError(
-                    "activation must not be set to a non-default value when "
-                    "'experts' is provided; activation is owned by the injected "
-                    "experts instance. "
-                    f"Got activation={activation!r}, experts={type(experts).__name__}."
-                )
             # All in-tree FusedMoEExperts*FwdOp set self.activation in __init__;
-            # getattr fallback is dead code in practice but keeps this layer robust.
-            self.activation = getattr(experts, "activation", "silu_and_mul")
+            # getattr fallback is dead code in practice but keeps this layer
+            # robust against third-party experts implementations.
+            experts_activation = getattr(experts, "activation", "silu_and_mul")
+            # Reject only conflicting non-default values. Passing the default
+            # ("silu_and_mul") alongside experts= is silently accepted because
+            # it cannot be distinguished from the bare experts= call. Passing
+            # an explicit value that matches the injected experts' activation
+            # is also accepted.
+            if activation != "silu_and_mul" and activation != experts_activation:
+                raise ValueError(
+                    "activation conflicts with the injected experts instance: "
+                    f"got activation={activation!r}, "
+                    f"experts.activation={experts_activation!r} "
+                    f"(experts={type(experts).__name__}). "
+                    "Either omit activation or pass the same value."
+                )
+            self.activation = experts_activation
             self._experts: FusedMoEExpertsModular = experts
         else:
             self.activation = activation
@@ -213,6 +222,7 @@ class FusedMoeFwdOp(FusedMoe):
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
         activation: str = "silu_and_mul",
     ):
         super().__init__(
@@ -268,6 +278,7 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
         activation: str = "silu_and_mul",
     ):
         super().__init__(

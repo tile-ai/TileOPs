@@ -62,11 +62,12 @@ class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
         top_k: int,
         hidden_size: int,
         ffn_size: int,
-        activation: str = "silu_and_mul",
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[Tensor] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        activation: str = "silu_and_mul",
     ):
         self.dispatch_kernel(kernel_map)
         if expert_map is not None:
@@ -219,12 +220,13 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         top_k: int,
         hidden_size: int,
         ffn_size: int,
-        activation: str = "silu_and_mul",
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[Tensor] = None,
         gemm_kernel: Optional[type] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        activation: str = "silu_and_mul",
     ):
         self.dispatch_kernel(kernel_map)
         self.num_tokens = num_tokens

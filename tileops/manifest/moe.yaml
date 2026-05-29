@@ -296,7 +296,7 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
       hidden_size: {type: int}
       ffn_size: {type: int}
       routed_scaling_factor: {type: float, default: 1.0}
-      activation: {type: str, default: silu_and_mul}
+      activation: {type: str, default: silu_and_mul, kw_only: true}
     shape_rules:
     - "hidden_states.shape == (num_tokens, hidden_size)"
     - "w_gate_up.shape     == (num_experts, 2 * ffn_size, hidden_size)"
@@ -369,7 +369,7 @@ FusedMoEExpertsPaddedFwdOp:
       hidden_size: {type: int}
       ffn_size: {type: int}
       routed_scaling_factor: {type: float, default: 1.0}
-      activation: {type: str, default: silu_and_mul}
+      activation: {type: str, default: silu_and_mul, kw_only: true}
     shape_rules:
     - "hidden_states.shape == (num_tokens, hidden_size)"
     - "w_gate_up.shape     == (num_experts, 2 * ffn_size, hidden_size)"
@@ -425,7 +425,7 @@ FusedMoeFwdOp:
       scoring_func: {type: str, default: softmax}
       renormalize: {type: bool, default: false}
       routed_scaling_factor: {type: float, default: 1.0}
-      activation: {type: str, default: silu_and_mul}
+      activation: {type: str, default: silu_and_mul, kw_only: true}
     shape_rules:
     - "hidden_states.shape == (num_tokens, hidden_size)"
     - "gating_output.shape == (num_tokens, num_experts)"
@@ -480,7 +480,7 @@ FusedMoeFwdCbFwdOp:
       scoring_func: {type: str, default: sigmoid}
       renormalize: {type: bool, default: false}
       routed_scaling_factor: {type: float, default: 1.0}
-      activation: {type: str, default: silu_and_mul}
+      activation: {type: str, default: silu_and_mul, kw_only: true}
     shape_rules:
     - "hidden_states.shape   == (num_tokens, hidden_size)"
     - "gating_output.shape   == (num_tokens, num_experts)"

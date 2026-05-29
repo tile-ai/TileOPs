@@ -1,8 +1,11 @@
 """Activation registry for MoE expert pipelines."""
 from __future__ import annotations
 
+from typing import Dict, Optional
+
 import torch
 
+from tileops.kernels.kernel_base import Kernel
 from tileops.ops.elementwise import GeluAndMulFwdOp, SiluAndMulFwdOp
 
 __all__ = ["build_activation_op"]
@@ -18,7 +21,7 @@ def build_activation_op(
     M: int,
     N: int,
     dtype: torch.dtype,
-    kernel_map=None,
+    kernel_map: Optional[Dict[str, Kernel]] = None,
 ):
     """Construct the activation sub-Op for an MoE experts pipeline.
 

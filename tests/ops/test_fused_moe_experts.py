@@ -370,23 +370,36 @@ class TestBuildActivationOp:
 
 class TestFusedMoeActivationInjection:
 
-    def _make_experts(self):
+    def _make_experts(self, activation="silu_and_mul"):
         return FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=128, num_experts=4, top_k=2,
             hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            activation=activation,
         )
 
     @pytest.mark.smoke
-    def test_injection_with_explicit_activation_raises(self):
-        """Passing experts= and a non-default activation= must raise ValueError."""
+    def test_injection_with_conflicting_activation_raises(self):
+        """experts= + activation= that disagree must raise ValueError."""
         from tileops.ops.moe.fused_moe import FusedMoe
-        experts = self._make_experts()
-        with pytest.raises(ValueError, match="activation must not be set"):
+        experts = self._make_experts(activation="silu_and_mul")
+        with pytest.raises(ValueError, match="activation conflicts"):
             FusedMoe(
                 num_tokens=128, num_experts=4, top_k=2,
                 hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
                 experts=experts, activation="gelu_and_mul",
             )
+
+    @pytest.mark.smoke
+    def test_injection_with_matching_activation_works(self):
+        """experts= + activation= that match the injected experts is accepted."""
+        from tileops.ops.moe.fused_moe import FusedMoe
+        experts = self._make_experts(activation="gelu_and_mul")
+        moe = FusedMoe(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            experts=experts, activation="gelu_and_mul",
+        )
+        assert moe.activation == "gelu_and_mul"
 
     @pytest.mark.smoke
     def test_injection_without_activation_works(self):
