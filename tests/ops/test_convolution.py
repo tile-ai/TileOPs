@@ -11,6 +11,7 @@ from tileops.kernels.convolution import (
     Conv2d1x1Kernel,
     Conv2dKernel,
     Conv3dKernel,
+    GroupConv1dKernel,
 )
 from tileops.ops import (
     Conv1dBiasFwdOp,
@@ -24,46 +25,71 @@ from tileops.ops import (
 
 class Conv1dFixture(FixtureBase):
     PARAMS = [
-        ("n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, dtype, tune", [
+        ("n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, groups, dtype, tune", [
             pytest.param(
-                2, 64, 512, 128, 3, 1, 1, 1, torch.float16, False,
+                2, 64, 512, 128, 3, 1, 1, 1, 1, torch.float16, False,
                 marks=[pytest.mark.smoke, pytest.mark.packaging],
                 id="smoke-tcn-k3-s1-fp16",
             ),
             pytest.param(
-                2, 64, 512, 128, 3, 1, 1, 1, torch.bfloat16, False,
+                2, 64, 512, 128, 3, 1, 1, 1, 1, torch.bfloat16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-tcn-k3-s1-bf16",
             ),
             pytest.param(
-                4, 256, 32000, 512, 1, 1, 0, 1, torch.float16, False,
+                4, 256, 32000, 512, 1, 1, 0, 1, 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-convtasnet-pointwise-k1-s1-fp16",
             ),
             pytest.param(
-                4, 128, 4096, 256, 3, 1, 1, 1, torch.float16, False,
+                4, 128, 4096, 256, 3, 1, 1, 1, 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-seanet-residual-k3-s1-fp16",
             ),
             pytest.param(
-                4, 64, 16000, 128, 5, 2, 2, 1, torch.float16, False,
+                4, 64, 16000, 128, 5, 2, 2, 1, 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-audio-downsample-k5-s2-fp16",
             ),
             pytest.param(
-                1, 32, 256, 64, 7, 1, 3, 1, torch.float16, False,
+                1, 32, 256, 64, 7, 1, 3, 1, 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-small-seanet-stem-k7-s1-fp16",
             ),
             pytest.param(
-                2, 128, 4096, 256, 3, 2, 1, 1, torch.bfloat16, False,
+                2, 128, 4096, 256, 3, 2, 1, 1, 1, torch.bfloat16, False,
                 marks=pytest.mark.full,
                 id="full-sequence-downsample-k3-s2-bf16",
             ),
             pytest.param(
-                1, 32, 512, 64, 3, 1, 2, 2, torch.float16, False,
+                1, 32, 512, 64, 3, 1, 2, 2, 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-dilation-k3-d2-fp16",
+            ),
+            pytest.param(
+                1, 32, 128, 64, 3, 1, "valid", 1, 1, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-padding-valid-fp16",
+            ),
+            pytest.param(
+                1, 32, 128, 64, 3, 1, "same", 1, 1, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-padding-same-fp16",
+            ),
+            pytest.param(
+                1, 32, 128, 64, 3, 1, 1, 1, 2, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-groups2-k3-fp16",
+            ),
+            pytest.param(
+                1, 48, 128, 72, 3, 1, 1, 1, 3, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-groups3-coutg24-fp16",
+            ),
+            pytest.param(
+                1, 64, 128, 64, 31, 1, 15, 1, 64, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-conformer-depthwise-k31-fp16",
             ),
         ]),
     ]
@@ -79,8 +105,9 @@ class Conv1dTest(TestBase):
         c_out: int,
         kernel_size: int,
         stride: int,
-        padding: int,
+        padding: int | str,
         dilation: int,
+        groups: int,
         dtype: torch.dtype,
     ) -> None:
         self.n = n
@@ -91,12 +118,13 @@ class Conv1dTest(TestBase):
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
+        self.groups = groups
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
         weight = torch.randn(
-            self.c_out, self.c_in, self.kernel_size,
+            self.c_out, self.c_in // self.groups, self.kernel_size,
             device="cuda", dtype=self.dtype,
         ).contiguous()
         bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
@@ -115,7 +143,7 @@ class Conv1dTest(TestBase):
             stride=self.stride,
             padding=self.padding,
             dilation=self.dilation,
-            groups=1,
+            groups=self.groups,
         )
         return out.contiguous()
 
@@ -128,12 +156,13 @@ def test_conv1d(
     c_out: int,
     kernel_size: int,
     stride: int,
-    padding: int,
+    padding: int | str,
     dilation: int,
+    groups: int,
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = Conv1dTest(n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, dtype)
+    test = Conv1dTest(n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, groups, dtype)
     op = Conv1dBiasFwdOp(
         n=n,
         c_in=c_in,
@@ -143,10 +172,16 @@ def test_conv1d(
         stride=stride,
         padding=padding,
         dilation=dilation,
+        groups=groups,
         dtype=dtype,
         tune=tune,
     )
-    atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
+    if groups > 1:
+        assert isinstance(op.kernel, GroupConv1dKernel)
+        assert op.kernel.use_direct is (c_in // groups == 1 and c_out // groups == 1)
+    atol, rtol = (1e-3, 1e-3)
+    if dtype == torch.bfloat16:
+        atol, rtol = (1.6e-2, 1.6e-2)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 

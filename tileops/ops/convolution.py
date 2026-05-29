@@ -8,6 +8,7 @@ from tileops.kernels.convolution import (
     Conv2d1x1Kernel,
     Conv2dKernel,
     Conv3dKernel,
+    GroupConv1dKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 
@@ -171,12 +172,13 @@ class Conv1dFwdOp(Op):
         _validate_positive_int("l_in", l_in, "Conv1d")
         _validate_positive_int("c_out", c_out, "Conv1d")
         _validate_conv_groups("Conv1d", c_in, c_out, groups)
-        if groups != 1:
-            raise NotImplementedError("Conv1d currently supports groups=1 only")
         self.n = n
         self.c_in = c_in
         self.l_in = l_in
         self.c_out = c_out
+        self.groups = groups
+        self.c_in_g = c_in // groups
+        self.c_out_g = c_out // groups
         kernel_size_tuple = _conv_tuple(kernel_size, 1, "kernel_size", "Conv1d")
         stride_tuple = _conv_tuple(stride, 1, "stride", "Conv1d")
         dilation_tuple = _conv_tuple(dilation, 1, "dilation", "Conv1d")
@@ -195,7 +197,6 @@ class Conv1dFwdOp(Op):
         self.stride = stride_tuple[0]
         self.padding = padding_tuple[0]
         self.dilation = dilation_tuple[0]
-        self.groups = groups
         self.has_bias = _has_bias
         self.dtype = dtype
 
@@ -210,14 +211,26 @@ class Conv1dFwdOp(Op):
             tune=tune,
         )
         if (
-            self.kernel_size == 1
+            self.groups == 1
+            and self.kernel_size == 1
             and self.stride == 1
             and self.padding == 0
             and self.dilation == 1
             and "conv1d_pointwise_kernel" in self.kernel_map
         ):
             self.kernel = self.kernel_map["conv1d_pointwise_kernel"](**kernel_kwargs)
-        elif "conv1d_kernel" in self.kernel_map:
+        elif self.groups > 1 and "group_conv1d_kernel" in self.kernel_map:
+            self.kernel = self.kernel_map["group_conv1d_kernel"](
+                **kernel_kwargs,
+                kernel_l=self.kernel_size,
+                stride_l=self.stride,
+                pad_l=self.padding,
+                dilation_l=self.dilation,
+                groups=self.groups,
+                c_in_g=self.c_in_g,
+                c_out_g=self.c_out_g,
+            )
+        elif self.groups == 1 and "conv1d_kernel" in self.kernel_map:
             self.kernel = self.kernel_map["conv1d_kernel"](
                 **kernel_kwargs,
                 kernel_l=self.kernel_size,
@@ -227,7 +240,8 @@ class Conv1dFwdOp(Op):
             )
         else:
             raise NotImplementedError(
-                "Conv1dFwdOp requires 'conv1d_pointwise_kernel' or 'conv1d_kernel' in kernel_map"
+                "Conv1dFwdOp requires 'conv1d_pointwise_kernel', 'conv1d_kernel', "
+                "or 'group_conv1d_kernel' in kernel_map"
             )
 
     @property
@@ -235,6 +249,7 @@ class Conv1dFwdOp(Op):
         return {
             "conv1d_pointwise_kernel": Conv1dPointwiseKernel,
             "conv1d_kernel": Conv1dKernel,
+            "group_conv1d_kernel": GroupConv1dKernel,
         }
 
     def forward(
@@ -247,7 +262,7 @@ class Conv1dFwdOp(Op):
             "Conv1d",
             "weight",
             weight,
-            (self.c_out, self.c_in, self.kernel_size),
+            (self.c_out, self.c_in // self.groups, self.kernel_size),
         )
         return self.kernel(input, weight, None)
 
@@ -307,7 +322,7 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
             "Conv1d",
             "weight",
             weight,
-            (self.c_out, self.c_in, self.kernel_size),
+            (self.c_out, self.c_in // self.groups, self.kernel_size),
         )
         _validate_tensor_shape("Conv1d", "bias", bias, (self.c_out,))
         return self.kernel(input, weight, bias)

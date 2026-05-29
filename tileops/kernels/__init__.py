@@ -39,6 +39,7 @@ from .convolution import (
     Conv2d1x1Kernel,
     Conv2dKernel,
     Conv3dKernel,
+    GroupConv1dKernel,
 )
 from .deltanet import DeltaNetBwdKernel, DeltaNetFwdKernel
 from .deltanet_recurrence import DeltaNetDecodeFP32Kernel, DeltaNetDecodeKernel
@@ -131,6 +132,7 @@ __all__ = [
     "GatedDeltaNetFwdKernel",
     "GemmKernel",
     "GemvKernel",
+    "GroupConv1dKernel",
     "GroupNormKernel",
     "GroupedGemmKernel",
     "Kernel",
