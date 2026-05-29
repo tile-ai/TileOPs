@@ -155,8 +155,8 @@ def test_moe_experts_nopad_bench(
         hidden_size=hidden_size, ffn_size=ffn_size, dtype=dtype,
     )
     output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
-    ws1 = torch.empty(0, device="cuda")
-    ws2 = torch.empty(0, device="cuda")
+    ws1 = torch.empty(0, dtype=dtype, device="cuda")
+    ws2 = torch.empty(0, dtype=dtype, device="cuda")
 
     # -- TileOPs nopad (3WG persistent) --------------------------------------
     nopad = FusedMoEExpertsNopadPersistent3WGFwdOp(**kwargs)

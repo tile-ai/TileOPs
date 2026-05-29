@@ -190,7 +190,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
 
         with caplog.at_level(
-            logging.WARNING, logger="tileops.ops.moe.experts.nopad"
+            logging.WARNING, logger="tileops.ops.moe.routed_expert.fused_routed_expert"
         ):
             experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
                 num_tokens=T, num_experts=E, top_k=K,

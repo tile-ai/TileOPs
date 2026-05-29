@@ -167,8 +167,9 @@ class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
         )
         result = self._unpermute(mm2_pad, fwd_idx, topk_weights)
         if self._routed_scaling_factor != 1.0:
-            result = result * self._routed_scaling_factor
-        output.copy_(result)
+            torch.mul(result, self._routed_scaling_factor, out=output)
+        else:
+            output.copy_(result)
 
 
 class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
