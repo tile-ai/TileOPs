@@ -40,6 +40,9 @@ __all__ = [
 
 _logger = logging.getLogger(__name__)
 
+# Padded MoE uses NT GEMM layout (A non-transposed, B transposed); pull
+# block_m from the matching default config so this stays in sync if the
+# kernel's default block dims change.
 _BLOCK_M: int = _GEMM_DEFAULT_CONFIGS[(False, True)]["block_m"]
 
 
@@ -132,6 +135,15 @@ class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
             output, hidden_states, w_gate_up, w_down,
             topk_weights, topk_ids, expert_map, workspace1, workspace2,
         )
+        # workspace_shapes() returns ((0,), (0,)) for this implementation; flag
+        # callers that pass non-empty workspaces (likely a pipeline mismatch).
+        if workspace1.numel() != 0 or workspace2.numel() != 0:
+            raise ValueError(
+                "workspace1 and workspace2 must be empty (numel == 0) for "
+                "FusedMoEExpertsPaddedFwdOp; got "
+                f"workspace1.numel()={workspace1.numel()}, "
+                f"workspace2.numel()={workspace2.numel()}."
+            )
 
     @property
     def default_kernel_map(self) -> dict:
@@ -186,6 +198,16 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
     a few percent behind tile-scheduler kernels. Decode-heavy deployments
     can pass ``gemm_kernel=MoeGroupedGemmNopadKernel`` to bypass 3WG and
     use the lighter tile-scheduler path explicitly.
+
+    Example (decode-optimized opt-out):
+        from tileops.kernels.moe.moe_grouped_gemm_nopad import (
+            MoeGroupedGemmNopadKernel,
+        )
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=T, num_experts=E, top_k=K,
+            hidden_size=H, ffn_size=F,
+            gemm_kernel=MoeGroupedGemmNopadKernel,
+        )
     """
 
     def __init__(
@@ -275,6 +297,15 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             output, hidden_states, w_gate_up, w_down,
             topk_weights, topk_ids, expert_map, workspace1, workspace2,
         )
+        # workspace_shapes() returns ((0,), (0,)) for this implementation; flag
+        # callers that pass non-empty workspaces (likely a pipeline mismatch).
+        if workspace1.numel() != 0 or workspace2.numel() != 0:
+            raise ValueError(
+                "workspace1 and workspace2 must be empty (numel == 0) for "
+                "FusedMoEExpertsNopadPersistent3WGFwdOp; got "
+                f"workspace1.numel()={workspace1.numel()}, "
+                f"workspace2.numel()={workspace2.numel()}."
+            )
 
     def workspace_shapes(
         self, M: int, N: int, K: int, topk: int, num_experts: int,

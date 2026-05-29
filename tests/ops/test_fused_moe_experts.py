@@ -211,6 +211,47 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         )
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
+    @pytest.mark.smoke
+    def test_forward_with_expert_map_runs(self):
+        """expert_map (EP mode) must construct + forward without raising.
+
+        This is a smoke check that the EP path is wired up — the Nopad+3WG
+        implementation supports expert_map (unlike Padded which raises). The
+        per-expert numerical correctness check under expert_map filtering is
+        non-trivial to write a torch reference for and is left to a follow-up
+        end-to-end test against vLLM.
+        """
+        T, H, F_dim, E_global, E_local, K = 64, 128, 64, 8, 4, 2
+        dtype = torch.bfloat16
+        # Map first E_local experts to local ids 0..E_local-1; rest to -1.
+        expert_map = torch.full((E_global,), -1, dtype=torch.int32, device="cuda")
+        expert_map[:E_local] = torch.arange(E_local, dtype=torch.int32, device="cuda")
+
+        hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
+        # Weights sized to local experts only, since nopad's _gemm_gate_up
+        # is constructed with num_experts_local.
+        w1 = torch.randn(E_local, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
+        w2 = torch.randn(E_local, H, F_dim, dtype=dtype, device="cuda") * 0.02
+        weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
+        # Mix local + non-local expert ids to exercise the -1 fwd_idx path.
+        ids = torch.randint(0, E_global, (T, K), dtype=torch.int32, device="cuda")
+
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=T, num_experts=E_global, top_k=K,
+            hidden_size=H, ffn_size=F_dim, dtype=dtype,
+            expert_map=expert_map,
+        )
+        output = torch.empty(T, H, dtype=dtype, device="cuda")
+        ws1 = torch.empty(0, dtype=dtype, device="cuda")
+        ws2 = torch.empty(0, dtype=dtype, device="cuda")
+        experts.forward(
+            output, hidden, w1, w2, weights, ids,
+            expert_map=expert_map, workspace1=ws1, workspace2=ws2,
+            num_experts=E_global,
+        )
+        # Output must be finite (no NaN/Inf from the -1 fwd_idx path).
+        assert torch.isfinite(output.float()).all()
+
 
 # ---------------------------------------------------------------------------
 # FusedMoEExpertsPaddedFwdOp
