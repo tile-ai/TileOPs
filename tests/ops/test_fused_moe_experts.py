@@ -42,6 +42,20 @@ def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation
     T, H = hidden.shape
     E, twoF, _ = w1.shape
     F_dim = twoF // 2
+    # gelu_and_mul uses exact erf GELU which matches GeluAndMulFwdKernel.
+    # Resolve once outside the per-expert loop so an unsupported activation
+    # raises immediately rather than silently falling back to a wrong
+    # reference value when this helper is extended.
+    _ACT_FNS = {
+        "silu_and_mul": lambda gate, up: F.silu(gate) * up,  # noqa: E731
+        "gelu_and_mul": lambda gate, up: F.gelu(gate) * up,  # noqa: E731
+    }
+    if activation not in _ACT_FNS:
+        raise ValueError(
+            f"_torch_ref_moe_activation has no reference for activation={activation!r}; "
+            "extend this helper before adding the activation to the registry."
+        )
+    gated = _ACT_FNS[activation]
     output = torch.zeros(T, H, dtype=torch.float32, device=hidden.device)
     ids_i64 = topk_ids.to(torch.int64)
     for e in range(E):
@@ -52,8 +66,7 @@ def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation
         h = hidden[t_idx].float()
         gate_up = h @ w1[e].float().t()
         gate, up = gate_up[:, :F_dim], gate_up[:, F_dim:]
-        # gelu_and_mul uses exact erf GELU which matches GeluAndMulFwdKernel
-        act = F.silu(gate) * up if activation == "silu_and_mul" else F.gelu(gate) * up
+        act = gated(gate, up)
         down = act @ w2[e].float().t()
         output.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
     return output.to(hidden.dtype)
@@ -439,3 +452,31 @@ class TestSharedFusedMoeActivation:
         )
         assert moe.activation == "gelu_and_mul"
         assert moe._experts.activation == "gelu_and_mul"
+
+    @pytest.mark.smoke
+    def test_shared_expert_with_non_default_activation_raises(self):
+        """shared_ffn_size + non-silu activation must raise NotImplementedError.
+
+        SharedExpertMLPKernel hardcodes silu_and_mul; allowing a different
+        activation here would silently produce mixed outputs (routed=gelu,
+        shared=silu).
+        """
+        from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
+        with pytest.raises(NotImplementedError, match="shared-expert path only supports"):
+            SharedFusedMoE(
+                num_tokens=128, num_experts=4, top_k=2,
+                hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+                shared_ffn_size=128,
+                activation="gelu_and_mul",
+            )
+
+    @pytest.mark.smoke
+    def test_shared_expert_with_default_activation_works(self):
+        """shared_ffn_size + silu_and_mul (default) is fine."""
+        from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
+        moe = SharedFusedMoE(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            shared_ffn_size=128,
+        )
+        assert moe.activation == "silu_and_mul"
