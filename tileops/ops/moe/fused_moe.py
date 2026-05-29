@@ -8,8 +8,8 @@ Two manifest identities share a single composite implementation:
   applied during top-k selection (Kimi K2 style).
 
 The shared core (`FusedMoe`) wires `FusedTopKOp` (routing),
-`MoEPrepareAndFinalize` (quantization / EP dispatch), and an
-`MoEExpertsModular` implementation (permute + GEMM + unpermute). Shared
+`FusedMoEPrepareAndFinalize` (quantization / EP dispatch), and an
+`FusedMoEExpertsModular` implementation (permute + GEMM + unpermute). Shared
 expert handling belongs to `SharedFusedMoE`.
 """
 
@@ -18,11 +18,16 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.ops.moe.abc import MoEExpertsModular, MoEPrepareAndFinalize
-from tileops.ops.moe.experts.nopad import MoEExpertsNopadFwdOp
-from tileops.ops.moe.experts.padded import MoEExpertsPaddedFwdOp
 from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
+from tileops.ops.moe.routed_expert import (
+    FusedMoEExpertsNopadPersistent3WGFwdOp,
+    FusedMoEExpertsPaddedFwdOp,
+)
+from tileops.ops.moe.routed_expert.abc import (
+    FusedMoEExpertsModular,
+    FusedMoEPrepareAndFinalize,
+)
 
 from ..op_base import Op
 
@@ -68,8 +73,8 @@ class FusedMoe(Op):
         layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
-        prepare_finalize: Optional[MoEPrepareAndFinalize] = None,
-        experts: Optional[MoEExpertsModular] = None,
+        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
+        experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         self.num_tokens = num_tokens
@@ -97,7 +102,7 @@ class FusedMoe(Op):
             kernel_map=kernel_map,
         )
 
-        self._prepare: MoEPrepareAndFinalize = (
+        self._prepare: FusedMoEPrepareAndFinalize = (
             prepare_finalize if prepare_finalize is not None
             else MoEPrepareAndFinalizeNoDPEP()
         )
@@ -109,11 +114,11 @@ class FusedMoe(Op):
             )
 
         if experts is not None:
-            self._experts: MoEExpertsModular = experts
+            self._experts: FusedMoEExpertsModular = experts
         else:
             if layout not in ("nopad", "padded"):
                 raise ValueError(f"Unknown layout {layout!r}; expected 'nopad' or 'padded'")
-            experts_cls = MoEExpertsNopadFwdOp if layout == "nopad" else MoEExpertsPaddedFwdOp
+            experts_cls = FusedMoEExpertsNopadPersistent3WGFwdOp if layout == "nopad" else FusedMoEExpertsPaddedFwdOp
             self._experts = experts_cls(
                 num_tokens=num_tokens,
                 num_experts=num_experts,
@@ -156,11 +161,12 @@ class FusedMoe(Op):
         output = hidden_states.new_empty(hidden_states.shape)
         expert_out_shape = self._experts.output_shape(T_prime, self.hidden_size)
         expert_out = output if expert_out_shape == tuple(hidden_states.shape) else hidden_states.new_empty(expert_out_shape)
-        self._experts.apply(
+        self._experts.forward(
             expert_out, r.hidden_q, w_gate_up, w_down,
             r.topk_weights, r.topk_ids,
-            self.num_experts, expert_map=self.expert_map,
+            expert_map=self.expert_map,
             workspace1=ws1, workspace2=ws2,
+            num_experts=self.num_experts,
         )
 
         self._prepare.finalize(
@@ -191,8 +197,8 @@ class FusedMoeFwdOp(FusedMoe):
         layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
-        prepare_finalize: Optional[MoEPrepareAndFinalize] = None,
-        experts: Optional[MoEExpertsModular] = None,
+        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
+        experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         super().__init__(
@@ -244,8 +250,8 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
         layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
-        prepare_finalize: Optional[MoEPrepareAndFinalize] = None,
-        experts: Optional[MoEExpertsModular] = None,
+        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
+        experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         super().__init__(
