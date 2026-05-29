@@ -76,7 +76,7 @@ class FusedMoe(Op):
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
-        activation: Optional[str] = None,
+        activation: str = "silu_and_mul",
     ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -115,10 +115,11 @@ class FusedMoe(Op):
             )
 
         if experts is not None:
-            if activation is not None:
+            if activation != "silu_and_mul":
                 raise ValueError(
-                    "activation must not be set when 'experts' is provided; "
-                    "activation is owned by the injected experts instance. "
+                    "activation must not be set to a non-default value when "
+                    "'experts' is provided; activation is owned by the injected "
+                    "experts instance. "
                     f"Got activation={activation!r}, experts={type(experts).__name__}."
                 )
             # All in-tree FusedMoEExperts*FwdOp set self.activation in __init__;
@@ -126,8 +127,7 @@ class FusedMoe(Op):
             self.activation = getattr(experts, "activation", "silu_and_mul")
             self._experts: FusedMoEExpertsModular = experts
         else:
-            resolved = activation if activation is not None else "silu_and_mul"
-            self.activation = resolved
+            self.activation = activation
             if layout not in ("nopad", "padded"):
                 raise ValueError(f"Unknown layout {layout!r}; expected 'nopad' or 'padded'")
             experts_cls = FusedMoEExpertsNopadPersistent3WGFwdOp if layout == "nopad" else FusedMoEExpertsPaddedFwdOp
@@ -137,7 +137,7 @@ class FusedMoe(Op):
                 top_k=top_k,
                 hidden_size=hidden_size,
                 ffn_size=ffn_size,
-                activation=resolved,
+                activation=activation,
                 routed_scaling_factor=routed_scaling_factor,
                 dtype=dtype,
                 expert_map=expert_map,
@@ -213,7 +213,7 @@ class FusedMoeFwdOp(FusedMoe):
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
-        activation: Optional[str] = None,
+        activation: str = "silu_and_mul",
     ):
         super().__init__(
             num_tokens=num_tokens,
@@ -268,7 +268,7 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
-        activation: Optional[str] = None,
+        activation: str = "silu_and_mul",
     ):
         super().__init__(
             num_tokens=num_tokens,

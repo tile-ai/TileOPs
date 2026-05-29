@@ -317,8 +317,8 @@ class TestFusedMoEExpertsPaddedFwdOp:
         ref_out = _torch_ref_moe(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
 
         output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
-        ws1 = torch.empty(0, device="cuda")
-        ws2 = torch.empty(0, device="cuda")
+        ws1 = torch.empty(0, dtype=d["dtype"], device="cuda")
+        ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
         experts.forward(
             output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
             expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
@@ -340,7 +340,7 @@ class TestFusedMoEExpertsPaddedFwdOp:
             d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"], activation=activation,
         )
         output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
-        ws1, ws2 = torch.empty(0, device="cuda"), torch.empty(0, device="cuda")
+        ws1, ws2 = torch.empty(0, dtype=d["dtype"], device="cuda"), torch.empty(0, dtype=d["dtype"], device="cuda")
         experts.forward(
             output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
             expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
@@ -378,7 +378,7 @@ class TestFusedMoeActivationInjection:
 
     @pytest.mark.smoke
     def test_injection_with_explicit_activation_raises(self):
-        """Passing experts= and an explicit activation= must raise ValueError."""
+        """Passing experts= and a non-default activation= must raise ValueError."""
         from tileops.ops.moe.fused_moe import FusedMoe
         experts = self._make_experts()
         with pytest.raises(ValueError, match="activation must not be set"):
@@ -386,18 +386,6 @@ class TestFusedMoeActivationInjection:
                 num_tokens=128, num_experts=4, top_k=2,
                 hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
                 experts=experts, activation="gelu_and_mul",
-            )
-
-    @pytest.mark.smoke
-    def test_injection_with_explicit_default_activation_raises(self):
-        """Even activation='silu_and_mul' + experts= must raise (sentinel catches this)."""
-        from tileops.ops.moe.fused_moe import FusedMoe
-        experts = self._make_experts()
-        with pytest.raises(ValueError, match="activation must not be set"):
-            FusedMoe(
-                num_tokens=128, num_experts=4, top_k=2,
-                hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
-                experts=experts, activation="silu_and_mul",
             )
 
     @pytest.mark.smoke
