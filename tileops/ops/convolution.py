@@ -431,7 +431,7 @@ class Conv2dFwdOp(Op):
         input: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
-        _validate_tensor_shape("Conv2d", "input", input, (self.n, self.h, self.w, self.c_in))
+        _validate_tensor_shape("Conv2d", "input", input, (self.n, self.c_in, self.h, self.w))
         _validate_tensor_shape(
             "Conv2d",
             "weight",
@@ -493,7 +493,7 @@ class Conv2dBiasFwdOp(Conv2dFwdOp):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ) -> torch.Tensor:
-        _validate_tensor_shape("Conv2d", "input", input, (self.n, self.h, self.w, self.c_in))
+        _validate_tensor_shape("Conv2d", "input", input, (self.n, self.c_in, self.h, self.w))
         _validate_tensor_shape(
             "Conv2d",
             "weight",
@@ -601,7 +601,7 @@ class Conv3dFwdOp(Op):
             "Conv3d",
             "input",
             input,
-            (self.n, self.d, self.h, self.w, self.c_in),
+            (self.n, self.c_in, self.d, self.h, self.w),
         )
         _validate_tensor_shape(
             "Conv3d",
@@ -676,7 +676,7 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
             "Conv3d",
             "input",
             input,
-            (self.n, self.d, self.h, self.w, self.c_in),
+            (self.n, self.c_in, self.d, self.h, self.w),
         )
         _validate_tensor_shape(
             "Conv3d",

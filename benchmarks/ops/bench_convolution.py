@@ -151,7 +151,7 @@ class Conv2dBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(self.n, self.h, self.w, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.c_in, self.h, self.w, device="cuda", dtype=self.dtype).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1],
             device="cuda", dtype=self.dtype,
@@ -159,7 +159,7 @@ class Conv2dBenchCase:
         bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
         return x, weight, bias
 
-    def ref_program_nchw(
+    def ref_program(
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
@@ -174,23 +174,6 @@ class Conv2dBenchCase:
             dilation=1,
             groups=1,
         )
-
-    def ref_program_nhwc(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        return F.conv2d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=1,
-            groups=1,
-        )
-
 
 class Conv2dBenchmark(BenchmarkBase[Conv2dBenchCase]):
 
@@ -265,14 +248,8 @@ def test_conv2d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("conv2d", locals(), result, tag="tileops")
 
-    x_nchw = x.permute(0, 3, 1, 2).contiguous()
-    x_nhwc = x_nchw.contiguous(memory_format=torch.channels_last)
-
-    result_bl = bm.profile(test.ref_program_nchw, x_nchw, weight, bias)
-    BenchmarkReport.record("conv2d", locals(), result_bl, tag="torch-nchw")
-
-    result_bl = bm.profile(test.ref_program_nhwc, x_nhwc, weight, bias)
-    BenchmarkReport.record("conv2d", locals(), result_bl, tag="torch-nhwc")
+    result_bl = bm.profile(test.ref_program, x, weight, bias)
+    BenchmarkReport.record("conv2d", locals(), result_bl, tag="torch")
 
 
 class Conv3dBenchCase:
@@ -303,7 +280,7 @@ class Conv3dBenchCase:
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         x = torch.randn(
-            self.n, self.d, self.h, self.w, self.c_in,
+            self.n, self.c_in, self.d, self.h, self.w,
             device="cuda", dtype=self.dtype,
         ).contiguous()
         weight = torch.randn(
@@ -313,7 +290,7 @@ class Conv3dBenchCase:
         bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
         return x, weight, bias
 
-    def ref_program_ncdhw(
+    def ref_program(
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
@@ -328,23 +305,6 @@ class Conv3dBenchCase:
             dilation=1,
             groups=1,
         )
-
-    def ref_program_ndhwc(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        return F.conv3d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=1,
-            groups=1,
-        )
-
 
 class Conv3dBenchmark(BenchmarkBase[Conv3dBenchCase]):
 
@@ -413,11 +373,5 @@ def test_conv3d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("conv3d", locals(), result, tag="tileops")
 
-    x_ncdhw = x.permute(0, 4, 1, 2, 3).contiguous()
-    x_ndhwc = x_ncdhw.contiguous(memory_format=torch.channels_last_3d)
-
-    result_bl = bm.profile(test.ref_program_ncdhw, x_ncdhw, weight, bias)
-    BenchmarkReport.record("conv3d", locals(), result_bl, tag="torch-ncdhw")
-
-    result_bl = bm.profile(test.ref_program_ndhwc, x_ndhwc, weight, bias)
-    BenchmarkReport.record("conv3d", locals(), result_bl, tag="torch-ndhwc")
+    result_bl = bm.profile(test.ref_program, x, weight, bias)
+    BenchmarkReport.record("conv3d", locals(), result_bl, tag="torch")

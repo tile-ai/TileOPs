@@ -46,10 +46,7 @@ TILELANG_019_BENCH_PATHS = {
     "benchmarks/ops/bench_grouped_gemm.py",
 }
 
-TILELANG_019_BENCH_PREFIXES = (
-    "benchmarks/ops/bench_convolution.py::test_conv2d_bench",
-    "benchmarks/ops/bench_convolution.py::test_conv3d_bench",
-)
+TILELANG_019_BENCH_PREFIXES = ()
 
 TILELANG_019_BENCH_NODEIDS = {
     "benchmarks/ops/bench_gemm.py::test_gemm_bench[wide-fp16]",
