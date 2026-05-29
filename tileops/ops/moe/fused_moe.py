@@ -116,10 +116,19 @@ class FusedMoe(Op):
             )
 
         if experts is not None:
-            # All in-tree FusedMoEExperts*FwdOp set self.activation in __init__;
-            # getattr fallback is dead code in practice but keeps this layer
-            # robust against third-party experts implementations.
-            experts_activation = getattr(experts, "activation", "silu_and_mul")
+            # All in-tree FusedMoEExperts*FwdOp set self.activation in __init__.
+            # We require it to be present rather than falling back silently —
+            # a missing attribute on a third-party experts implementation would
+            # otherwise let a non-matching `activation` argument be silently
+            # accepted, producing a wrong-activation pipeline.
+            if not hasattr(experts, "activation"):
+                raise ValueError(
+                    f"injected experts instance ({type(experts).__name__}) "
+                    "is missing the required `.activation` attribute. "
+                    "Set it in __init__ to the activation string this experts "
+                    "implementation uses (e.g. 'silu_and_mul')."
+                )
+            experts_activation = experts.activation
             # Reject only conflicting non-default values. Passing the default
             # ("silu_and_mul") alongside experts= is silently accepted because
             # it cannot be distinguished from the bare experts= call. Passing

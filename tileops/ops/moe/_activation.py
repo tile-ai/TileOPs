@@ -6,11 +6,11 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.ops.elementwise import GeluAndMulFwdOp, SiluAndMulFwdOp
+from tileops.ops.elementwise import FusedGatedOp, GeluAndMulFwdOp, SiluAndMulFwdOp
 
 __all__ = ["build_activation_op"]
 
-_ACTIVATION_REGISTRY: dict[str, type] = {
+_ACTIVATION_REGISTRY: Dict[str, type] = {
     "silu_and_mul": SiluAndMulFwdOp,
     "gelu_and_mul": GeluAndMulFwdOp,
 }
@@ -22,7 +22,7 @@ def build_activation_op(
     N: int,
     dtype: torch.dtype,
     kernel_map: Optional[Dict[str, Kernel]] = None,
-):
+) -> FusedGatedOp:
     """Construct the activation sub-Op for an MoE experts pipeline.
 
     Args:
@@ -31,6 +31,9 @@ def build_activation_op(
         N: Half column dim — the activation output width (= ffn_size).
         dtype: Activation/output dtype.
         kernel_map: Forwarded to the inner activation op for kernel dispatch.
+
+    Returns:
+        A ``FusedGatedOp`` instance configured for ``(M, 2N) -> (M, N)``.
 
     Raises:
         ValueError: If ``activation`` is not a registered key.

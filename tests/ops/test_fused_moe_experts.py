@@ -42,13 +42,18 @@ def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation
     T, H = hidden.shape
     E, twoF, _ = w1.shape
     F_dim = twoF // 2
-    # gelu_and_mul uses exact erf GELU which matches GeluAndMulFwdKernel.
+    # gelu_and_mul: PyTorch's F.gelu(x, approximate="none") is exact erf GELU,
+    # which matches GeluAndMulFwdKernel's `x * 0.5 * (1 + erf(x/sqrt(2)))`. We
+    # pass approximate="none" explicitly so this is locked at the test level —
+    # PyTorch's default happens to be "none", but a different default in some
+    # future version would silently switch the reference to tanh approximation
+    # (which is GeluTanhAndMulFwdKernel, a separate registry entry).
     # Resolve once outside the per-expert loop so an unsupported activation
     # raises immediately rather than silently falling back to a wrong
     # reference value when this helper is extended.
     _ACT_FNS = {
         "silu_and_mul": lambda gate, up: F.silu(gate) * up,  # noqa: E731
-        "gelu_and_mul": lambda gate, up: F.gelu(gate) * up,  # noqa: E731
+        "gelu_and_mul": lambda gate, up: F.gelu(gate, approximate="none") * up,  # noqa: E731
     }
     if activation not in _ACT_FNS:
         raise ValueError(
@@ -437,6 +442,49 @@ class TestFusedMoeActivationInjection:
         )
         assert moe.activation == "gelu_and_mul"
         assert moe._experts.activation == "gelu_and_mul"
+
+    @pytest.mark.smoke
+    def test_injection_without_activation_attribute_raises(self):
+        """A third-party experts instance missing .activation must raise.
+
+        Catches the silent-fallback footgun: without .activation, the conflict
+        guard would default to comparing against 'silu_and_mul' and could
+        silently accept a non-matching activation argument.
+        """
+        from tileops.ops.moe.fused_moe import FusedMoe
+        from tileops.ops.moe.routed_expert.abc import FusedMoEExpertsModular
+
+        class ExpertsWithoutActivation(FusedMoEExpertsModular):
+            """Stand-in for a third-party experts impl that forgot .activation."""
+
+            def __init__(self):
+                pass
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+            def workspace_shapes(self, M, N, K, topk, num_experts):
+                return ((0,), (0,))
+
+            def output_shape(self, T_prime, H):
+                return (T_prime, H)
+
+            def forward(self, output, hidden_states, w_gate_up, w_down,
+                        topk_weights, topk_ids, expert_map, workspace1,
+                        workspace2, num_experts):
+                pass
+
+            def make_weighted_reduce(self):
+                from tileops.ops.moe.routed_expert.abc import WeightedReduceNoOp
+                return WeightedReduceNoOp()
+
+        with pytest.raises(ValueError, match="missing the required `.activation`"):
+            FusedMoe(
+                num_tokens=128, num_experts=4, top_k=2,
+                hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+                experts=ExpertsWithoutActivation(),
+            )
 
 
 class TestSharedFusedMoeActivation:

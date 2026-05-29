@@ -89,6 +89,19 @@ class SharedFusedMoE(FusedMoe):
         *,
         activation: str = "silu_and_mul",
     ):
+        # SharedExpertMLPKernel hardcodes silu_and_mul internally. Allowing a
+        # non-default activation alongside an enabled shared expert would
+        # silently produce mixed outputs (routed=gelu, shared=silu). Validate
+        # before super().__init__() to avoid building routed experts that
+        # would be discarded by the exception.
+        if shared_ffn_size is not None and activation != "silu_and_mul":
+            raise NotImplementedError(
+                "SharedFusedMoE shared-expert path only supports "
+                f"activation='silu_and_mul', got {activation!r}. "
+                "The routed-experts path is configurable, but "
+                "SharedExpertMLPKernel does not yet plumb activation."
+            )
+
         super().__init__(
             num_tokens=num_tokens,
             num_experts=num_experts,
@@ -104,17 +117,6 @@ class SharedFusedMoE(FusedMoe):
             expert_map=expert_map,
             activation=activation,
         )
-
-        # SharedExpertMLPKernel hardcodes silu_and_mul internally. Allowing a
-        # non-default activation alongside an enabled shared expert would
-        # silently produce mixed outputs (routed=gelu, shared=silu).
-        if shared_ffn_size is not None and activation != "silu_and_mul":
-            raise NotImplementedError(
-                "SharedFusedMoE shared-expert path only supports "
-                f"activation='silu_and_mul', got {activation!r}. "
-                "The routed-experts path is configurable, but "
-                "SharedExpertMLPKernel does not yet plumb activation."
-            )
 
         if tp_size < 1:
             raise ValueError(f"tp_size must be >= 1, got {tp_size}")
