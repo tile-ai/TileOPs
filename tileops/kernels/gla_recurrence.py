@@ -9,7 +9,7 @@ where gk is per-key-dimension log-space gate [B, H, DK].
 
 Optimization:
   - T.Pipelined + T.copy: async prefetch state tiles from HBM
-  - T.gemm: fused matvec via [padded_q_gated; ...] @ S_tile, using tensor cores
+  - fp32 scalar accumulation for the recurrent matvec
   - Native dtype: bf16/fp16 halve state bandwidth vs fp32
   - K-tiling: small shared memory footprint → high occupancy
 """
@@ -26,12 +26,10 @@ __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
 
 _LOG2E = 1.4426950408889634
 _DEFAULT_K_TILE = 16
-# T.gemm requires M divisible by 16; we use row 0 (q_gated), rest padded to 0
-_GEMM_M = 16
 
 
 # =============================================================================
-# TC (tensor-core) kernel — bf16 / fp16
+# Low-precision decode kernel — bf16 / fp16, fp32 accumulation
 # =============================================================================
 
 @functools.lru_cache(maxsize=32)
@@ -71,54 +69,33 @@ def _gla_decode_tl(
             new_state: T.Tensor([batch, head, dim_k, dim_v], dtype),
         ):
             with T.Kernel(batch, head, threads=threads) as (bid, hid):
-                # State tile for Pass 1 (T.Pipelined + T.gemm)
                 h_tile = T.alloc_shared([k_tile, dim_v], dtype)
-                # Separate state tile for Pass 2 — avoids cross-pipeline
-                # shared-memory race when two T.Pipelined loops reuse the
-                # same buffer (the producer warpgroup for Pass 2 can start
-                # TMA loads before the consumer warpgroup finishes reading
-                # h_tile in the last Pass 1 gemm iteration).
-                h_tile2 = T.alloc_shared([k_tile, dim_v], dtype)
-                # Padded [_GEMM_M, k_tile] for T.gemm (row 0 = q_gated, rest = 0)
-                q_tile = T.alloc_shared([_GEMM_M, k_tile], dtype)
-                # Gemm accumulator (registers): row 0 = S @ q_gated
-                acc = T.alloc_fragment([_GEMM_M, dim_v], accum_dtype)
-                # Shared buffer to extract gemm result from fragment
-                # T.copy requires ≥2 rows from fragment; we use row 0 only
-                acc_shared = T.alloc_shared([2, dim_v], accum_dtype)
-                # Shared buffer for v (reused in state update)
                 v_shared = T.alloc_shared([dim_v], accum_dtype)
-                # Local (register) dot product — avoids shared-memory race
+                sq_frag = T.alloc_fragment([dim_v], accum_dtype)
                 qk_dot = T.alloc_local([1], accum_dtype)
-
-                # Zero-init padding rows of q_tile (rows 1..15)
-                for i, j in T.Parallel(_GEMM_M, k_tile):
-                    q_tile[i, j] = T.cast(T.float32(0.0), dtype)
 
                 # Preload v into shared (for reuse in output and state update)
                 for j in T.Parallel(dim_v):
                     v_shared[j] = T.cast(v[bid, hid, j], accum_dtype)
 
-                # === Pass 1: Tiled pipelined gemm for fused matvec ===
-                # Compute S @ q_gated where q_gated = q * exp(gk)
-                T.clear(acc)
-                for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
-                    # Fill row 0 with q_gated for this tile
-                    for i in T.Parallel(k_tile):
-                        gk_val = T.cast(gk[bid, hid, kt * k_tile + i], accum_dtype)
-                        alpha_i = T.exp2(gk_val * _LOG2E)
-                        q_tile[0, i] = T.cast(
-                            T.cast(q[bid, hid, kt * k_tile + i], accum_dtype) * alpha_i,
-                            dtype,
+                # Full-fp32 matvec.  TileLang 0.1.9 cannot reliably lower the
+                # old tensor-core fragment copy here for fp16/bf16, and TF32
+                # style matvec precision is too loose for recurrent decode.
+                # TODO: restore a tensor-core fast path once fragment copies
+                # lower reliably without sacrificing recurrent decode numerics.
+                T.fill(sq_frag, 0.0)
+                for kk in T.Serial(dim_k):
+                    gk_val = T.cast(gk[bid, hid, kk], accum_dtype)
+                    alpha_i = T.exp2(gk_val * _LOG2E)
+                    q_gated = T.cast(q[bid, hid, kk], accum_dtype) * alpha_i
+                    for j in T.Parallel(dim_v):
+                        sq_frag[j] = (
+                            sq_frag[j]
+                            + q_gated * T.cast(state[bid, hid, kk, j], accum_dtype)
                         )
-                    T.gemm(q_tile, h_tile, acc, policy=T.GemmWarpPolicy.FullRow)
 
-                # Copy gemm result from fragment to shared (rows 0-1; use row 0)
-                T.copy(acc[:2, :], acc_shared)
-
-                # q . k dot product (must be AFTER T.gemm to avoid
-                # corrupting fragment state)
+                # Keep this scalar reduction separate from the matvec's
+                # dim_v-parallel inner loop.
                 qk_dot[0] = T.float32(0.0)
                 for kk in T.Serial(dim_k):
                     qk_dot[0] += (
@@ -129,20 +106,19 @@ def _gla_decode_tl(
                 # o = scale * (S @ q_gated) + scale * (q . k) * v
                 for j in T.Parallel(dim_v):
                     o[bid, hid, j] = T.cast(
-                        scale * acc_shared[0, j] + scale * qk_dot[0] * v_shared[j],
+                        scale * sq_frag[j] + scale * qk_dot[0] * v_shared[j],
                         dtype,
                     )
 
                 # === Pass 2: State update with async prefetch ===
-                # Uses h_tile2 (separate buffer) to avoid cross-pipeline race.
                 # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile2)
+                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
                     for kk, j in T.Parallel(k_tile, dim_v):
                         gk_val = T.cast(gk[bid, hid, kt * k_tile + kk], accum_dtype)
                         alpha_i = T.exp2(gk_val * _LOG2E)
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
-                            alpha_i * T.cast(h_tile2[kk, j], accum_dtype)
+                            alpha_i * T.cast(h_tile[kk, j], accum_dtype)
                             + T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype)
                             * v_shared[j],
                             dtype,
@@ -199,11 +175,12 @@ def _gla_decode_wrapped_kernel_fake(
 
 
 class GLADecodeKernel(Kernel):
-    """GLA single-step decode kernel (tensor-core path).
+    """GLA single-step decode kernel for low-precision inputs.
 
-    Uses T.Pipelined + T.copy for async state prefetch and T.gemm for
-    the fused matvec. Optimized for float16 and bfloat16 using tensor
-    cores; the Op dispatches float32 to GLADecodeFP32Kernel instead.
+    Uses T.Pipelined + T.copy for async state prefetch and full-fp32
+    scalar accumulation for the recurrent matvec.  The scalar path avoids
+    TileLang 0.1.9 fragment-copy lowering failures on fp16/bf16 and keeps
+    decode numerics aligned with the fp32 reference.
     """
 
     supported_archs: list[int] = [80, 89, 90]

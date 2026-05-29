@@ -16,13 +16,7 @@ TILELANG_019_BENCH_SKIP_REASON = (
 
 TILELANG_019_BENCH_PATHS = {
     # Linear attention / recurrent ops.
-    "benchmarks/ops/bench_deltanet.py",
-    "benchmarks/ops/bench_deltanet_recurrence.py",
     "benchmarks/ops/bench_engram.py",
-    "benchmarks/ops/bench_gated_deltanet.py",
-    "benchmarks/ops/bench_gated_deltanet_recurrence.py",
-    "benchmarks/ops/bench_gla_chunkwise.py",
-    "benchmarks/ops/bench_gla_recurrence.py",
     # Attention.
     "benchmarks/ops/attention/bench_gqa_decode.py",
     "benchmarks/ops/attention/bench_gqa_decode_paged.py",

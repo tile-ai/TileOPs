@@ -66,8 +66,8 @@ class GatedDeltaNetDecodeTest(_GatedDeltaNetDecodeTestWorkload, TestBase):
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
-        # T.gemm uses tensor cores (TF32) which truncate fp32 mantissa to
-        # 10 bits, giving ~1e-4 error per op; 5e-4 accommodates accumulation.
+        # Keep fp32 tolerance aligned with the scalar decode reference path;
+        # multi-step recurrence still accumulates small rounding differences.
         return {"atol": 5e-4, "rtol": 5e-4}
     elif dtype == torch.float16:
         return {"atol": 1e-2, "rtol": 1e-2}
@@ -79,64 +79,12 @@ class GatedDeltaNetDecodeFixture(FixtureBase):
     PARAMS = [
         ("batch, heads, dim_k, dim_v, dtype, tune", [
             pytest.param(1, 4, 64, 64, torch.float32, False, marks=pytest.mark.smoke),
-            pytest.param(
-                1,
-                4,
-                64,
-                64,
-                torch.float16,
-                False,
-                marks=[
-                    pytest.mark.smoke,
-                    pytest.mark.skip(
-                        reason="Low-precision gated deltanet decode fails under tilelang 0.1.9 due to numerics regression; re-enable when decode produces correct results."
-                    ),
-                ],
-            ),
-            pytest.param(
-                1,
-                4,
-                64,
-                64,
-                torch.bfloat16,
-                False,
-                marks=[
-                    pytest.mark.smoke,
-                    pytest.mark.skip(
-                        reason="Low-precision gated deltanet decode fails under tilelang 0.1.9 due to numerics regression; re-enable when decode produces correct results."
-                    ),
-                ],
-            ),
+            pytest.param(1, 4, 64, 64, torch.float16, False, marks=pytest.mark.smoke),
+            pytest.param(1, 4, 64, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
             pytest.param(2, 8, 64, 64, torch.float32, False, marks=pytest.mark.full),
             pytest.param(2, 4, 128, 128, torch.float32, False, marks=pytest.mark.full),
-            pytest.param(
-                2,
-                8,
-                64,
-                64,
-                torch.float16,
-                False,
-                marks=[
-                    pytest.mark.full,
-                    pytest.mark.skip(
-                        reason="Low-precision gated deltanet decode fails under tilelang 0.1.9 due to numerics regression; re-enable when decode produces correct results."
-                    ),
-                ],
-            ),
-            pytest.param(
-                2,
-                8,
-                64,
-                64,
-                torch.bfloat16,
-                False,
-                marks=[
-                    pytest.mark.full,
-                    pytest.mark.skip(
-                        reason="Low-precision gated deltanet decode fails under tilelang 0.1.9 due to numerics regression; re-enable when decode produces correct results."
-                    ),
-                ],
-            ),
+            pytest.param(2, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(2, 8, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 
