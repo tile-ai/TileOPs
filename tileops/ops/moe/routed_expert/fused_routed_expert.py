@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Dict, Optional
 
 import torch
 from torch import Tensor
@@ -17,6 +17,7 @@ from tileops.kernels.grouped_gemm import (
 from tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg import (
     _DEFAULT_CONFIG as _3WG_DEFAULT_CONFIG,
 )
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 from tileops.ops.elementwise import SiluAndMulFwdOp
 from tileops.ops.grouped_gemm import GroupedGemmOp
@@ -61,7 +62,7 @@ class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[Tensor] = None,
-        kernel_map=None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         self.dispatch_kernel(kernel_map)
         if expert_map is not None:
@@ -150,6 +151,10 @@ class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
         workspace2: Tensor,
         num_experts: int,
     ) -> None:
+        self._validate_dtypes(
+            output, hidden_states, w_gate_up, w_down,
+            topk_weights, topk_ids, expert_map, workspace1, workspace2,
+        )
         perm_h_pad, padded_offsets, padded_sizes, _, fwd_idx = self._permute(
             hidden_states, topk_ids
         )
@@ -193,7 +198,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[Tensor] = None,
         gemm_kernel: Optional[type] = None,
-        kernel_map=None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         self.dispatch_kernel(kernel_map)
         self.num_tokens = num_tokens
@@ -299,6 +304,10 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         workspace2: Tensor,
         num_experts: int,
     ) -> None:
+        self._validate_dtypes(
+            output, hidden_states, w_gate_up, w_down,
+            topk_weights, topk_ids, expert_map, workspace1, workspace2,
+        )
         perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(hidden_states, topk_ids)
         gate_up = self._gemm_gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
         act = self._silu_and_mul(gate_up)

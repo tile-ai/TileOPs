@@ -163,8 +163,8 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         ref_out = _torch_ref_moe(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
 
         output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
-        ws1 = torch.empty(0, device="cuda")
-        ws2 = torch.empty(0, device="cuda")
+        ws1 = torch.empty(0, dtype=d["dtype"], device="cuda")
+        ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
         experts.forward(
             output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
             expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
@@ -203,8 +203,8 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
 
         ref_out = _torch_ref_moe(hidden, w1, w2, weights, ids)
         output = torch.empty(T, H, dtype=dtype, device="cuda")
-        ws1 = torch.empty(0, device="cuda")
-        ws2 = torch.empty(0, device="cuda")
+        ws1 = torch.empty(0, dtype=dtype, device="cuda")
+        ws2 = torch.empty(0, dtype=dtype, device="cuda")
         experts.forward(
             output, hidden, w1, w2, weights, ids,
             expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=E,
@@ -230,8 +230,8 @@ class TestFusedMoEExpertsPaddedFwdOp:
         ref_out = _torch_ref_moe(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
 
         output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
-        ws1 = torch.empty(0, device="cuda")
-        ws2 = torch.empty(0, device="cuda")
+        ws1 = torch.empty(0, dtype=d["dtype"], device="cuda")
+        ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
         experts.forward(
             output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
             expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
