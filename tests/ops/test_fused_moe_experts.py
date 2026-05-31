@@ -5,6 +5,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from tileops.ops.moe._activation import build_activation_op
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert.abc import (
     WeightedReduce,
@@ -31,6 +32,46 @@ def _torch_ref_moe(hidden, w1, w2, topk_weights, topk_ids):
         h = hidden[t_idx].float()
         gate_up = h @ w1[e].float().t()
         act = F.silu(gate_up[:, :F_dim]) * gate_up[:, F_dim:]
+        down = act @ w2[e].float().t()
+        output.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
+    return output.to(hidden.dtype)
+
+
+def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation="silu_and_mul"):
+    """Per-expert PyTorch reference supporting silu_and_mul and gelu_and_mul."""
+    T, H = hidden.shape
+    E, twoF, _ = w1.shape
+    F_dim = twoF // 2
+    # gelu_and_mul: PyTorch's F.gelu(x, approximate="none") is exact erf GELU,
+    # which matches GeluAndMulFwdKernel's `x * 0.5 * (1 + erf(x/sqrt(2)))`. We
+    # pass approximate="none" explicitly so this is locked at the test level —
+    # PyTorch's default happens to be "none", but a different default in some
+    # future version would silently switch the reference to tanh approximation
+    # (which is GeluTanhAndMulFwdKernel, a separate registry entry).
+    # Resolve once outside the per-expert loop so an unsupported activation
+    # raises immediately rather than silently falling back to a wrong
+    # reference value when this helper is extended.
+    _ACT_FNS = {
+        "silu_and_mul": lambda gate, up: F.silu(gate) * up,  # noqa: E731
+        "gelu_and_mul": lambda gate, up: F.gelu(gate, approximate="none") * up,  # noqa: E731
+    }
+    if activation not in _ACT_FNS:
+        raise ValueError(
+            f"_torch_ref_moe_activation has no reference for activation={activation!r}; "
+            "extend this helper before adding the activation to the registry."
+        )
+    gated = _ACT_FNS[activation]
+    output = torch.zeros(T, H, dtype=torch.float32, device=hidden.device)
+    ids_i64 = topk_ids.to(torch.int64)
+    for e in range(E):
+        mask = (ids_i64 == e)
+        if not mask.any():
+            continue
+        t_idx, k_idx = mask.nonzero(as_tuple=True)
+        h = hidden[t_idx].float()
+        gate_up = h @ w1[e].float().t()
+        gate, up = gate_up[:, :F_dim], gate_up[:, F_dim:]
+        act = gated(gate, up)
         down = act @ w2[e].float().t()
         output.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
     return output.to(hidden.dtype)
@@ -252,6 +293,29 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         # Output must be finite (no NaN/Inf from the -1 fwd_idx path).
         assert torch.isfinite(output.float()).all()
 
+    @pytest.mark.smoke
+    @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
+    def test_forward_matches_torch_ref_activation(self, moe_tensors, activation):
+        """forward() output matches PyTorch reference for each activation."""
+        d = moe_tensors
+        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+            activation=activation,
+        )
+        assert experts.activation == activation
+        ref_out = _torch_ref_moe_activation(
+            d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"], activation=activation,
+        )
+        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
+        ws1 = torch.empty(0, dtype=d["dtype"], device="cuda")
+        ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
+        experts.forward(
+            output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
+            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
+        )
+        assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
+
 
 # ---------------------------------------------------------------------------
 # FusedMoEExpertsPaddedFwdOp
@@ -279,3 +343,188 @@ class TestFusedMoEExpertsPaddedFwdOp:
         )
 
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
+
+    @pytest.mark.smoke
+    @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
+    def test_forward_matches_torch_ref_activation(self, moe_tensors, activation):
+        d = moe_tensors
+        experts = FusedMoEExpertsPaddedFwdOp(
+            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
+            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+            activation=activation,
+        )
+        assert experts.activation == activation
+        ref_out = _torch_ref_moe_activation(
+            d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"], activation=activation,
+        )
+        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
+        ws1, ws2 = torch.empty(0, dtype=d["dtype"], device="cuda"), torch.empty(0, dtype=d["dtype"], device="cuda")
+        experts.forward(
+            output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
+            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
+        )
+        assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
+
+
+class TestBuildActivationOp:
+
+    @pytest.mark.smoke
+    def test_silu_and_mul_returns_correct_type(self):
+        from tileops.ops.elementwise import SiluAndMulFwdOp
+        op = build_activation_op("silu_and_mul", M=16, N=32, dtype=torch.bfloat16)
+        assert isinstance(op, SiluAndMulFwdOp)
+
+    @pytest.mark.smoke
+    def test_gelu_and_mul_returns_correct_type(self):
+        from tileops.ops.elementwise import GeluAndMulFwdOp
+        op = build_activation_op("gelu_and_mul", M=16, N=32, dtype=torch.bfloat16)
+        assert isinstance(op, GeluAndMulFwdOp)
+
+    @pytest.mark.smoke
+    def test_invalid_activation_raises(self):
+        with pytest.raises(ValueError, match="activation must be one of"):
+            build_activation_op("unknown_act", M=16, N=32, dtype=torch.bfloat16)
+
+
+class TestFusedMoeActivationInjection:
+
+    def _make_experts(self, activation="silu_and_mul"):
+        return FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            activation=activation,
+        )
+
+    @pytest.mark.smoke
+    def test_injection_with_conflicting_activation_raises(self):
+        """experts= + activation= that disagree must raise ValueError."""
+        from tileops.ops.moe.fused_moe import FusedMoe
+        experts = self._make_experts(activation="silu_and_mul")
+        with pytest.raises(ValueError, match="activation conflicts"):
+            FusedMoe(
+                num_tokens=128, num_experts=4, top_k=2,
+                hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+                experts=experts, activation="gelu_and_mul",
+            )
+
+    @pytest.mark.smoke
+    def test_injection_with_matching_activation_works(self):
+        """experts= + activation= that match the injected experts is accepted."""
+        from tileops.ops.moe.fused_moe import FusedMoe
+        experts = self._make_experts(activation="gelu_and_mul")
+        moe = FusedMoe(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            experts=experts, activation="gelu_and_mul",
+        )
+        assert moe.activation == "gelu_and_mul"
+
+    @pytest.mark.smoke
+    def test_injection_without_activation_works(self):
+        """experts= without activation= should succeed."""
+        from tileops.ops.moe.fused_moe import FusedMoe
+        experts = self._make_experts()
+        moe = FusedMoe(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            experts=experts,
+        )
+        assert moe.activation == "silu_and_mul"
+
+    @pytest.mark.smoke
+    def test_default_path_activation_forwarded(self):
+        """FusedMoe(activation='gelu_and_mul') creates experts with gelu_and_mul."""
+        from tileops.ops.moe.fused_moe import FusedMoe
+        moe = FusedMoe(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            activation="gelu_and_mul",
+        )
+        assert moe.activation == "gelu_and_mul"
+        assert moe._experts.activation == "gelu_and_mul"
+
+    @pytest.mark.smoke
+    def test_injection_without_activation_attribute_raises(self):
+        """A third-party experts instance missing .activation must raise.
+
+        Catches the silent-fallback footgun: without .activation, the conflict
+        guard would default to comparing against 'silu_and_mul' and could
+        silently accept a non-matching activation argument.
+        """
+        from tileops.ops.moe.fused_moe import FusedMoe
+        from tileops.ops.moe.routed_expert.abc import FusedMoEExpertsModular
+
+        class ExpertsWithoutActivation(FusedMoEExpertsModular):
+            """Stand-in for a third-party experts impl that forgot .activation."""
+
+            def __init__(self):
+                pass
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+            def workspace_shapes(self, M, N, K, topk, num_experts):
+                return ((0,), (0,))
+
+            def output_shape(self, T_prime, H):
+                return (T_prime, H)
+
+            def forward(self, output, hidden_states, w_gate_up, w_down,
+                        topk_weights, topk_ids, expert_map, workspace1,
+                        workspace2, num_experts):
+                pass
+
+            def make_weighted_reduce(self):
+                from tileops.ops.moe.routed_expert.abc import WeightedReduceNoOp
+                return WeightedReduceNoOp()
+
+        with pytest.raises(ValueError, match="missing the required `.activation`"):
+            FusedMoe(
+                num_tokens=128, num_experts=4, top_k=2,
+                hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+                experts=ExpertsWithoutActivation(),
+            )
+
+
+class TestSharedFusedMoeActivation:
+
+    @pytest.mark.smoke
+    def test_activation_forwarded_to_routed_experts(self):
+        """SharedFusedMoE(activation='gelu_and_mul') reaches the routed-experts path."""
+        from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
+        moe = SharedFusedMoE(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            activation="gelu_and_mul",
+        )
+        assert moe.activation == "gelu_and_mul"
+        assert moe._experts.activation == "gelu_and_mul"
+
+    @pytest.mark.smoke
+    def test_shared_expert_with_non_default_activation_raises(self):
+        """shared_ffn_size + non-silu activation must raise NotImplementedError.
+
+        SharedExpertMLPKernel hardcodes silu_and_mul; allowing a different
+        activation here would silently produce mixed outputs (routed=gelu,
+        shared=silu).
+        """
+        from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
+        with pytest.raises(NotImplementedError, match="shared-expert path only supports"):
+            SharedFusedMoE(
+                num_tokens=128, num_experts=4, top_k=2,
+                hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+                shared_ffn_size=128,
+                activation="gelu_and_mul",
+            )
+
+    @pytest.mark.smoke
+    def test_shared_expert_with_default_activation_works(self):
+        """shared_ffn_size + silu_and_mul (default) is fine."""
+        from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
+        moe = SharedFusedMoE(
+            num_tokens=128, num_experts=4, top_k=2,
+            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            shared_ffn_size=128,
+        )
+        assert moe.activation == "silu_and_mul"

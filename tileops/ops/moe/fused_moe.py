@@ -76,6 +76,8 @@ class FusedMoe(Op):
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        activation: str = "silu_and_mul",
     ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -114,8 +116,36 @@ class FusedMoe(Op):
             )
 
         if experts is not None:
+            # All in-tree FusedMoEExperts*FwdOp set self.activation in __init__.
+            # We require it to be present rather than falling back silently —
+            # a missing attribute on a third-party experts implementation would
+            # otherwise let a non-matching `activation` argument be silently
+            # accepted, producing a wrong-activation pipeline.
+            if not hasattr(experts, "activation"):
+                raise ValueError(
+                    f"injected experts instance ({type(experts).__name__}) "
+                    "is missing the required `.activation` attribute. "
+                    "Set it in __init__ to the activation string this experts "
+                    "implementation uses (e.g. 'silu_and_mul')."
+                )
+            experts_activation = experts.activation
+            # Reject only conflicting non-default values. Passing the default
+            # ("silu_and_mul") alongside experts= is silently accepted because
+            # it cannot be distinguished from the bare experts= call. Passing
+            # an explicit value that matches the injected experts' activation
+            # is also accepted.
+            if activation != "silu_and_mul" and activation != experts_activation:
+                raise ValueError(
+                    "activation conflicts with the injected experts instance: "
+                    f"got activation={activation!r}, "
+                    f"experts.activation={experts_activation!r} "
+                    f"(experts={type(experts).__name__}). "
+                    "Either omit activation or pass the same value."
+                )
+            self.activation = experts_activation
             self._experts: FusedMoEExpertsModular = experts
         else:
+            self.activation = activation
             if layout not in ("nopad", "padded"):
                 raise ValueError(f"Unknown layout {layout!r}; expected 'nopad' or 'padded'")
             experts_cls = FusedMoEExpertsNopadPersistent3WGFwdOp if layout == "nopad" else FusedMoEExpertsPaddedFwdOp
@@ -125,6 +155,7 @@ class FusedMoe(Op):
                 top_k=top_k,
                 hidden_size=hidden_size,
                 ffn_size=ffn_size,
+                activation=activation,
                 routed_scaling_factor=routed_scaling_factor,
                 dtype=dtype,
                 expert_map=expert_map,
@@ -200,6 +231,8 @@ class FusedMoeFwdOp(FusedMoe):
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        activation: str = "silu_and_mul",
     ):
         super().__init__(
             num_tokens=num_tokens,
@@ -217,6 +250,7 @@ class FusedMoeFwdOp(FusedMoe):
             prepare_finalize=prepare_finalize,
             experts=experts,
             kernel_map=kernel_map,
+            activation=activation,
         )
 
     def forward(
@@ -253,6 +287,8 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        activation: str = "silu_and_mul",
     ):
         super().__init__(
             num_tokens=num_tokens,
@@ -270,6 +306,7 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
             prepare_finalize=prepare_finalize,
             experts=experts,
             kernel_map=kernel_map,
+            activation=activation,
         )
 
     def forward(

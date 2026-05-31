@@ -296,6 +296,7 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
       hidden_size: {type: int}
       ffn_size: {type: int}
       routed_scaling_factor: {type: float, default: 1.0}
+      activation: {type: str, default: silu_and_mul, kw_only: true}
     shape_rules:
     - "hidden_states.shape == (num_tokens, hidden_size)"
     - "w_gate_up.shape     == (num_experts, 2 * ffn_size, hidden_size)"
@@ -326,6 +327,7 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
       permute_nopad_kernel: MoePermuteNopadKernel
       moe_grouped_gemm_kernel: GroupedGemmPersistent3WGKernel
       silu_and_mul: SiluAndMulFwdKernel
+      gelu_and_mul: GeluAndMulFwdKernel
       unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoEExpertsPaddedFwdOp:
@@ -367,6 +369,7 @@ FusedMoEExpertsPaddedFwdOp:
       hidden_size: {type: int}
       ffn_size: {type: int}
       routed_scaling_factor: {type: float, default: 1.0}
+      activation: {type: str, default: silu_and_mul, kw_only: true}
     shape_rules:
     - "hidden_states.shape == (num_tokens, hidden_size)"
     - "w_gate_up.shape     == (num_experts, 2 * ffn_size, hidden_size)"
@@ -397,6 +400,7 @@ FusedMoEExpertsPaddedFwdOp:
       permute_kernel: MoePermutePaddedKernel
       grouped_gemm_kernel: GroupedGemmKernel
       silu_and_mul: SiluAndMulFwdKernel
+      gelu_and_mul: GeluAndMulFwdKernel
       unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoeFwdOp:
@@ -421,6 +425,7 @@ FusedMoeFwdOp:
       scoring_func: {type: str, default: softmax}
       renormalize: {type: bool, default: false}
       routed_scaling_factor: {type: float, default: 1.0}
+      activation: {type: str, default: silu_and_mul, kw_only: true}
     shape_rules:
     - "hidden_states.shape == (num_tokens, hidden_size)"
     - "gating_output.shape == (num_tokens, num_experts)"
@@ -448,6 +453,7 @@ FusedMoeFwdOp:
       permute_nopad_kernel: MoePermuteNopadKernel
       moe_grouped_gemm_kernel: GroupedGemmPersistent3WGKernel
       silu_and_mul: SiluAndMulFwdKernel
+      gelu_and_mul: GeluAndMulFwdKernel
       unpermute_kernel: MoeUnpermuteKernel
 
 FusedMoeFwdCbFwdOp:
@@ -474,6 +480,7 @@ FusedMoeFwdCbFwdOp:
       scoring_func: {type: str, default: sigmoid}
       renormalize: {type: bool, default: false}
       routed_scaling_factor: {type: float, default: 1.0}
+      activation: {type: str, default: silu_and_mul, kw_only: true}
     shape_rules:
     - "hidden_states.shape   == (num_tokens, hidden_size)"
     - "gating_output.shape   == (num_tokens, num_experts)"
@@ -499,4 +506,5 @@ FusedMoeFwdCbFwdOp:
       permute_nopad_kernel: MoePermuteNopadKernel
       moe_grouped_gemm_kernel: GroupedGemmPersistent3WGKernel
       silu_and_mul: SiluAndMulFwdKernel
+      gelu_and_mul: GeluAndMulFwdKernel
       unpermute_kernel: MoeUnpermuteKernel
