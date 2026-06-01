@@ -28,11 +28,11 @@ def _ref_grouped_gemm_fused_act(A, B, true_sizes, true_offsets, activation):
     numel, K = A.shape
     E, two_N, _ = B.shape
     N = two_N // 2
-    C = torch.zeros(numel, N, dtype=A.dtype, device=A.device)
 
     # Move to CPU to avoid CUBLAS issues with small batch sizes
     A_cpu = A.cpu().float()
     B_cpu = B.cpu().float()
+    C_cpu = torch.zeros(numel, N, dtype=torch.float32, device="cpu")
 
     for e in range(E):
         offset = true_offsets[e].item()
@@ -60,9 +60,10 @@ def _ref_grouped_gemm_fused_act(A, B, true_sizes, true_offsets, activation):
         else:
             raise ValueError(f"Unknown activation: {activation}")
 
-        C[offset:offset + size] = act_out.to(A.dtype).cuda()
+        C_cpu[offset:offset + size] = act_out
 
-    return C
+    # Single transfer to GPU at the end
+    return C_cpu.to(A.dtype).cuda()
 
 
 @pytest.mark.smoke

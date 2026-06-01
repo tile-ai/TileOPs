@@ -119,10 +119,12 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
             self.numel, self.K, dtype=self.dtype, device="cuda") * 0.02
         B_dummy = torch.randn(
             self.num_experts, self.N * 2, self.K, dtype=self.dtype, device="cuda") * 0.02
-        per = max(1, self.numel // self.num_experts)
+        # Distribute tokens evenly across experts to avoid negative sizes
+        per_expert = self.numel // self.num_experts
+        remainder = self.numel % self.num_experts
         sizes = torch.full(
-            (self.num_experts,), per, dtype=torch.int32, device="cuda")
-        sizes[-1] = self.numel - per * (self.num_experts - 1)
+            (self.num_experts,), per_expert, dtype=torch.int32, device="cuda")
+        sizes[:remainder] += 1
         offsets = torch.zeros(
             self.num_experts, dtype=torch.int32, device="cuda")
         offsets[1:] = torch.cumsum(sizes[:-1], dim=0)

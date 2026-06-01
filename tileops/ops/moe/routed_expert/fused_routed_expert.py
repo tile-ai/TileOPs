@@ -163,6 +163,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
 
         # Store the final resolved value after all fallback checks
         self.use_fused_activation = use_fused_activation
+        self.activation = activation
 
         self._permute = MoePermuteNopadFwdOp(
             total_tokens=num_tokens, top_k=top_k, num_experts=num_experts,
@@ -186,7 +187,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
                 n=ffn_size * 2, k=hidden_size, dtype=dtype,
                 kernel_map={"moe_grouped_gemm_kernel": kernel_cls, **(kernel_map or {})},
             )
-            self.activation = activation
+            # activation already set above
             self._activation_op = build_activation_op(
                 activation, M=numel, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
             )
