@@ -1,11 +1,11 @@
-"""Benchmark: TileOPs MoE Routed Expert 性能报告
+"""Benchmark: TileOPs MoE Routed Expert Performance Report
 
-对比实现：
+Comparison implementations:
 1. TileOPs (Separate): gate_up GEMM → activation → down GEMM
 2. TileOPs (Fused): gate_up GEMM with fused activation → down GEMM
-3. CUTLASS Grouped GEMM: 参考数据（仅GEMM部分）
+3. CUTLASS Grouped GEMM: reference data (GEMM only)
 
-运行：
+Run:
     conda activate tileops-tl9
     python benchmarks/ops/bench_moe_routed_expert_final.py
 """
@@ -20,14 +20,14 @@ from tilelang.profiler import do_bench
 from tileops.ops.moe.routed_expert.fused_routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
 
 # CUTLASS reference numbers (H200, SM90, CUDA 12.9)
-# 这些是 grouped GEMM 的性能，不包含 routing/activation
-# 用作理论上限参考
+# These are grouped GEMM performance numbers, excluding routing/activation
+# Used as theoretical upper bound reference
 _CUTLASS_GROUPED_GEMM_TFLOPS = {
     # (M_per_expert, N, K, num_experts): TFLOPS (Cooperative schedule)
-    (64, 256, 1024, 64): 429,   # 对应 512 tokens, 64 experts, top_k=8
-    (512, 256, 1024, 64): 429,  # 对应 4096 tokens, 64 experts, top_k=8
-    (32, 256, 2048, 128): 493,  # 对应 512 tokens, 128 experts, top_k=8
-    (256, 256, 2048, 128): 493, # 对应 4096 tokens, 128 experts, top_k=8
+    (64, 256, 1024, 64): 429,   # corresponds to 512 tokens, 64 experts, top_k=8
+    (512, 256, 1024, 64): 429,  # corresponds to 4096 tokens, 64 experts, top_k=8
+    (32, 256, 2048, 128): 493,  # corresponds to 512 tokens, 128 experts, top_k=8
+    (256, 256, 2048, 128): 493, # corresponds to 4096 tokens, 128 experts, top_k=8
 }
 
 
@@ -42,7 +42,7 @@ def _bench(fn, warmup=10, rep=100) -> float:
 
 
 def _build_uniform_routing(num_tokens, num_experts, top_k, device):
-    """构建均匀分布的 routing：每个 expert 处理相同数量的 tokens，且每个 token 的 top-k expert 互不相同。"""
+    """Build uniform routing distribution: each expert processes the same number of tokens, and each token's top-k experts are unique."""
     assert top_k <= num_experts, "top_k cannot be greater than num_experts"
 
     # Generate a uniform distribution of expert IDs where each token has unique experts
@@ -50,18 +50,18 @@ def _build_uniform_routing(num_tokens, num_experts, top_k, device):
     for i in range(num_tokens):
         topk_ids[i] = torch.arange(i * top_k, (i + 1) * top_k, dtype=torch.int32, device=device) % num_experts
 
-    # 均匀权重
+    # Uniform weights
     topk_weights = torch.ones(num_tokens, top_k, dtype=torch.float32, device=device) / top_k
 
     return topk_weights, topk_ids
 
 
 def benchmark_final():
-    """最终的 MoE 性能报告。"""
+    """Final MoE performance report."""
     device = "cuda"
     dtype = torch.bfloat16
 
-    # 测试配置
+    # Test configurations
     configs = [
         # (num_tokens, num_experts, top_k, hidden_size, ffn_size, label)
         (512, 64, 8, 1024, 128, "decode-small"),
@@ -73,34 +73,34 @@ def benchmark_final():
     activations = ["silu_and_mul", "gelu_and_mul"]
 
     print("=" * 120)
-    print("TileOPs MoE Routed Expert 性能报告")
+    print("TileOPs MoE Routed Expert Performance Report")
     print("=" * 120)
     print()
-    print(f"环境: GPU={torch.cuda.get_device_name()}, dtype={dtype}")
+    print(f"Environment: GPU={torch.cuda.get_device_name()}, dtype={dtype}")
     print()
 
     all_results = []
 
     for activation in activations:
         print(f"\n{'='*120}")
-        print(f"激活函数: {activation}")
+        print(f"Activation: {activation}")
         print(f"{'='*120}\n")
 
         results = []
 
         for num_tokens, num_experts, top_k, hidden_size, ffn_size, label in configs:
-            print(f"配置: {label}")
+            print(f"Configuration: {label}")
             print(f"  num_tokens={num_tokens}, num_experts={num_experts}, top_k={top_k}")
             print(f"  hidden_size={hidden_size}, ffn_size={ffn_size}")
 
-            # 创建输入
+            # Create inputs
             torch.manual_seed(42)
             hidden_states = torch.randn(num_tokens, hidden_size, dtype=dtype, device=device)
             w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=device)
             w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=device)
             topk_weights, topk_ids = _build_uniform_routing(num_tokens, num_experts, top_k, device)
 
-            # 计算 FLOPs (完整的 MoE pipeline)
+            # Calculate FLOPs (complete MoE pipeline)
             flops_gate_up = num_tokens * top_k * (2 * ffn_size) * hidden_size * 2
             flops_down = num_tokens * top_k * hidden_size * ffn_size * 2
             total_flops = flops_gate_up + flops_down
@@ -174,7 +174,7 @@ def benchmark_final():
             result['fused_tflops'] = tflops_fused
             result['speedup'] = time_sep / time_fused
 
-            # 3. CUTLASS参考
+            # 3. CUTLASS reference
             tokens_per_expert = (num_tokens * top_k) // num_experts
             cutlass_key = (tokens_per_expert, 2 * ffn_size, hidden_size, num_experts)
             cutlass_tflops = _CUTLASS_GROUPED_GEMM_TFLOPS.get(cutlass_key)
@@ -191,16 +191,16 @@ def benchmark_final():
 
         all_results.extend(results)
 
-        # 每个activation的汇总
+        # Summary per activation
         avg_speedup = sum(r['speedup'] for r in results) / len(results)
-        print(f"平均加速比 ({activation}): {avg_speedup:.2f}x\n")
+        print(f"Average speedup ({activation}): {avg_speedup:.2f}x\n")
 
-    # 最终汇总表
+    # Final summary table
     print("=" * 120)
-    print("完整汇总表")
+    print("Complete Summary Table")
     print("=" * 120)
     print()
-    print(f"{'配置':<20} {'激活函数':<15} {'Separate':<15} {'Fused':<15} {'加速比':<10} {'CUTLASS*':<15}")
+    print(f"{'Config':<20} {'Activation':<15} {'Separate':<15} {'Fused':<15} {'Speedup':<10} {'CUTLASS*':<15}")
     print("-" * 120)
 
     for r in all_results:
@@ -210,12 +210,12 @@ def benchmark_final():
               f"{r['speedup']:.2f}x      {cutlass_str:<15}")
 
     print()
-    print("* CUTLASS 数据仅包含 grouped GEMM (gate_up)，不含完整 MoE pipeline")
+    print("* CUTLASS data only includes grouped GEMM (gate_up), not the full MoE pipeline")
     print()
 
-    # 按场景分组的平均加速比
+    # Average speedup grouped by scenario
     print("=" * 120)
-    print("按场景分组的平均加速比")
+    print("Average Speedup by Scenario")
     print("=" * 120)
     print()
 
@@ -224,15 +224,15 @@ def benchmark_final():
     silu_results = [r for r in all_results if r['activation'] == 'silu_and_mul']
     gelu_results = [r for r in all_results if r['activation'] == 'gelu_and_mul']
 
-    print(f"Decode 场景平均加速比:  {sum(r['speedup'] for r in decode_results) / len(decode_results):.2f}x")
-    print(f"Prefill 场景平均加速比: {sum(r['speedup'] for r in prefill_results) / len(prefill_results):.2f}x")
-    print(f"SiLU 激活函数平均加速比: {sum(r['speedup'] for r in silu_results) / len(silu_results):.2f}x")
-    print(f"GELU 激活函数平均加速比: {sum(r['speedup'] for r in gelu_results) / len(gelu_results):.2f}x")
-    print(f"总体平均加速比:         {sum(r['speedup'] for r in all_results) / len(all_results):.2f}x")
+    print(f"Decode average speedup:  {sum(r['speedup'] for r in decode_results) / len(decode_results):.2f}x")
+    print(f"Prefill average speedup: {sum(r['speedup'] for r in prefill_results) / len(prefill_results):.2f}x")
+    print(f"SiLU average speedup: {sum(r['speedup'] for r in silu_results) / len(silu_results):.2f}x")
+    print(f"GELU average speedup: {sum(r['speedup'] for r in gelu_results) / len(gelu_results):.2f}x")
+    print(f"Overall average speedup:         {sum(r['speedup'] for r in all_results) / len(all_results):.2f}x")
     print()
 
     print("=" * 120)
-    print("Benchmark 完成!")
+    print("Benchmark completed!")
     print("=" * 120)
 
 
