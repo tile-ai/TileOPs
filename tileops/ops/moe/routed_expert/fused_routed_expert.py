@@ -154,9 +154,11 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
                     "Disabling fused activation."
                 )
                 use_fused_activation = False
-            elif ffn_size > 128:
+            elif ffn_size != 128:
                 _logger.warning(
-                    "use_fused_activation=True requires ffn_size <= 128 (TMA boxDim limit). "
+                    "use_fused_activation=True requires ffn_size to be exactly 128 "
+                    "(due to 3WG block alignment requiring gate_up_n % 256 == 0, "
+                    "combined with TMA boxDim limit <= 256). "
                     f"Got ffn_size={ffn_size}. Disabling fused activation."
                 )
                 use_fused_activation = False

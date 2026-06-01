@@ -22,7 +22,6 @@ import os
 import tilelang
 import tilelang.language as T
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -212,7 +211,11 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
         Returns:
             C: [numel, N] GEMM output with fused activation.
         """
-        C = torch.zeros(self.numel, self.N, dtype=self.dtype, device=A.device)
+        # Reuse C buffer to avoid repeated allocations
+        if getattr(self, "_C_buffer", None) is None or self._C_buffer.device != A.device:
+            self._C_buffer = torch.zeros(self.numel, self.N, dtype=self.dtype, device=A.device)
+        C = self._C_buffer
+
         block_m = self.config["block_m"]
         # N-dimension tiling is not supported: the epilogue assumes block_n
         # spans the full gate_up width (2N). Bind it here rather than trusting
@@ -235,7 +238,13 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
 
         required_rows = self.numel + block_m
         if A.shape[0] < required_rows:
-            A = F.pad(A, (0, 0, 0, required_rows - A.shape[0]))
+            # Reuse A padding buffer to avoid repeated allocations
+            if (getattr(self, "_A_padded", None) is None or
+                self._A_padded.shape[0] < required_rows or
+                self._A_padded.device != A.device):
+                self._A_padded = torch.zeros(required_rows, self.K, dtype=self.dtype, device=A.device)
+            self._A_padded[:A.shape[0]].copy_(A)
+            A = self._A_padded
 
         gemm_fn = _persistent_grouped_gemm_v2_fused_act_kernel(
             self.numel, self.num_experts, self.N, self.K,
