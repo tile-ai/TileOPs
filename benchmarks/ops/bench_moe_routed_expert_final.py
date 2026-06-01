@@ -42,21 +42,13 @@ def _bench(fn, warmup=10, rep=100) -> float:
 
 
 def _build_uniform_routing(num_tokens, num_experts, top_k, device):
-    """构建均匀分布的 routing：每个 expert 处理相同数量的 tokens。"""
-    tokens_per_expert = (num_tokens * top_k) // num_experts
+    """构建均匀分布的 routing：每个 expert 处理相同数量的 tokens，且每个 token 的 top-k expert 互不相同。"""
+    assert top_k <= num_experts, "top_k cannot be greater than num_experts"
 
-    # 构建 topk_ids: 每个 expert 被均匀分配
+    # Generate a uniform distribution of expert IDs where each token has unique experts
     topk_ids = torch.zeros(num_tokens, top_k, dtype=torch.int32, device=device)
-    expert_idx = 0
-    token_count = 0
-
     for i in range(num_tokens):
-        for k in range(top_k):
-            topk_ids[i, k] = expert_idx
-            token_count += 1
-            if token_count >= tokens_per_expert and expert_idx < num_experts - 1:
-                expert_idx += 1
-                token_count = 0
+        topk_ids[i] = torch.arange(i * top_k, (i + 1) * top_k, dtype=torch.int32, device=device) % num_experts
 
     # 均匀权重
     topk_weights = torch.ones(num_tokens, top_k, dtype=torch.float32, device=device) / top_k
