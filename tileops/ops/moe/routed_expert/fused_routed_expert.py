@@ -16,6 +16,9 @@ from tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg import (
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
+from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
+    MoeGroupedGemmPersistent3WGFusedActKernel,
+)
 from tileops.ops.moe._activation import build_activation_op
 
 from .abc import (
@@ -75,7 +78,17 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
+        use_fused_activation: bool = False,
     ):
+        """Initialize FusedMoEExperts with optional fused activation.
+
+        Args:
+            use_fused_activation: If True, use MoeGroupedGemmPersistent3WGFusedActKernel
+                to fuse gate_up GEMM with activation in the epilogue. This eliminates
+                one kernel launch and one global memory round-trip.
+                Limitations: requires ffn_size <= 128 due to TMA boxDim constraint.
+                Only works with GroupedGemmPersistent3WGKernel (3WG).
+        """
         self.dispatch_kernel(kernel_map)
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -107,21 +120,78 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
                     gate_up_n, hidden_size, ffn_size, _3wg_block_n, _3wg_block_k,
                 )
                 kernel_cls = MoeGroupedGemmNopadKernel
+                if use_fused_activation:
+                    _logger.warning(
+                        "use_fused_activation=True requires 3WG kernel, "
+                        "but falling back to tile scheduler. Disabling fused activation."
+                    )
+                    use_fused_activation = False
+
+        # Check fused activation constraints
+        if use_fused_activation:
+            if not torch.cuda.is_available():
+                _logger.warning(
+                    "use_fused_activation=True requires CUDA to be available. "
+                    "Disabling fused activation."
+                )
+                use_fused_activation = False
+            elif torch.cuda.get_device_capability()[0] < 9:
+                _logger.warning(
+                    "use_fused_activation=True requires an SM90+ (Hopper or newer) "
+                    "GPU. Disabling fused activation."
+                )
+                use_fused_activation = False
+            elif activation not in ("silu_and_mul", "gelu_and_mul"):
+                _logger.warning(
+                    "use_fused_activation=True only supports 'silu_and_mul' or "
+                    "'gelu_and_mul' activations. "
+                    f"Got activation={activation!r}. Disabling fused activation."
+                )
+                use_fused_activation = False
+            elif kernel_cls is not GroupedGemmPersistent3WGKernel:
+                _logger.warning(
+                    "use_fused_activation=True only works with GroupedGemmPersistent3WGKernel. "
+                    "Disabling fused activation."
+                )
+                use_fused_activation = False
+            elif ffn_size > 128:
+                _logger.warning(
+                    "use_fused_activation=True requires ffn_size <= 128 (TMA boxDim limit). "
+                    f"Got ffn_size={ffn_size}. Disabling fused activation."
+                )
+                use_fused_activation = False
+
+        # Store the final resolved value after all fallback checks
+        self.use_fused_activation = use_fused_activation
 
         self._permute = MoePermuteNopadFwdOp(
             total_tokens=num_tokens, top_k=top_k, num_experts=num_experts,
             hidden_size=hidden_size, dtype=dtype, expert_map=expert_map,
             kernel_map=kernel_map,
         )
-        self._gemm_gate_up = MoeGroupedGemmNopadFwdOp(
-            numel=numel, num_experts=num_experts_local,
-            n=ffn_size * 2, k=hidden_size, dtype=dtype,
-            kernel_map={"moe_grouped_gemm_kernel": kernel_cls, **(kernel_map or {})},
-        )
-        self.activation = activation
-        self._activation_op = build_activation_op(
-            activation, M=numel, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
-        )
+
+        # Choose between fused and separate gate_up GEMM + activation
+        if use_fused_activation:
+            # Fused path: gate_up GEMM with activation in epilogue
+            self._gemm_gate_up_fused = MoeGroupedGemmPersistent3WGFusedActKernel(
+                numel=numel, num_experts=num_experts_local,
+                N=ffn_size, K=hidden_size, dtype=dtype, activation=activation,
+            )
+            self._gemm_gate_up = None
+            self._activation_op = None
+        else:
+            # Separate path: gate_up GEMM → activation
+            self._gemm_gate_up = MoeGroupedGemmNopadFwdOp(
+                numel=numel, num_experts=num_experts_local,
+                n=ffn_size * 2, k=hidden_size, dtype=dtype,
+                kernel_map={"moe_grouped_gemm_kernel": kernel_cls, **(kernel_map or {})},
+            )
+            self.activation = activation
+            self._activation_op = build_activation_op(
+                activation, M=numel, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
+            )
+            self._gemm_gate_up_fused = None
+
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel, num_experts=num_experts_local,
             n=hidden_size, k=ffn_size, dtype=dtype,
@@ -195,8 +265,15 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             topk_weights, topk_ids, expert_map, workspace1, workspace2,
         )
         perm_h, true_offsets, true_sizes, _, fwd_idx = self._permute(hidden_states, topk_ids)
-        gate_up = self._gemm_gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
-        act = self._activation_op(gate_up)
+
+        if self.use_fused_activation:
+            # Fused path: gate_up GEMM with activation in epilogue
+            act = self._gemm_gate_up_fused(perm_h, w_gate_up, true_sizes, true_offsets)
+        else:
+            # Separate path: gate_up GEMM → activation
+            gate_up = self._gemm_gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
+            act = self._activation_op(gate_up)
+
         mm2 = self._gemm_down(act, w_down, true_sizes, true_offsets)
         result = self._unpermute(mm2, fwd_idx, topk_weights)
         if self._routed_scaling_factor != 1.0:

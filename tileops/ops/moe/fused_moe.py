@@ -55,6 +55,9 @@ class FusedMoe(Op):
         prepare_finalize: Override the PrepareAndFinalize implementation.
         experts: Override the Experts implementation.
         kernel_map: Override the dispatched kernel map.
+        activation: Activation function ("silu_and_mul" or "gelu_and_mul").
+        use_fused_activation: Fuse activation into gate_up GEMM epilogue for better performance.
+            Requires ffn_size <= 128 and 3WG kernel. Automatically falls back if constraints not met.
     """
 
     def __init__(
@@ -75,6 +78,7 @@ class FusedMoe(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
+        use_fused_activation: bool = False,
     ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -153,6 +157,7 @@ class FusedMoe(Op):
                 dtype=dtype,
                 expert_map=expert_map,
                 kernel_map=kernel_map,
+                use_fused_activation=use_fused_activation,
             )
 
     @property
@@ -225,6 +230,7 @@ class FusedMoeFwdOp(FusedMoe):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
+        use_fused_activation: bool = False,
     ):
         super().__init__(
             num_tokens=num_tokens,
@@ -242,6 +248,7 @@ class FusedMoeFwdOp(FusedMoe):
             experts=experts,
             kernel_map=kernel_map,
             activation=activation,
+            use_fused_activation=use_fused_activation,
         )
 
     def forward(
@@ -279,6 +286,7 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
+        use_fused_activation: bool = False,
     ):
         super().__init__(
             num_tokens=num_tokens,
@@ -296,6 +304,7 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
             experts=experts,
             kernel_map=kernel_map,
             activation=activation,
+            use_fused_activation=use_fused_activation,
         )
 
     def forward(
