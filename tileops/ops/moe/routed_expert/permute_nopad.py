@@ -15,7 +15,7 @@ __all__ = ["MoePermuteNopadFwdOp"]
 class MoePermuteNopadFwdOp(Op):
     """Route tokens to tight (non-padded) expert-contiguous layout.
 
-    Unlike MoePermutePaddedFwdOp, the output perm_h has exactly T*K rows with no
+    The output perm_h has exactly T*K rows with no
     inter-expert padding, enabling smaller intermediate tensors throughout
     the MoE pipeline.
 
