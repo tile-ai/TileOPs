@@ -85,8 +85,7 @@ class MoeUnpermuteFixture(FixtureBase):
 @MoeUnpermuteFixture
 def test_moe_unpermute_op(total_tokens, top_k, hidden_size, dtype):
     test = MoeUnpermuteTest(total_tokens, top_k, hidden_size, dtype)
-    op = MoeUnpermuteFwdOp(total_tokens, top_k, hidden_size, dtype,
-                        padded_batch_sum=test.padded_batch_sum)
+    op = MoeUnpermuteFwdOp(total_tokens, top_k, hidden_size, dtype)
     mm2_pad, fwd_idx, topk_weights = test.gen_inputs()
 
     output = op(mm2_pad, fwd_idx, topk_weights)
