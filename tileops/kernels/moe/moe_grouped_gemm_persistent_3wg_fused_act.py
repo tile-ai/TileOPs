@@ -211,10 +211,7 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
         Returns:
             C: [numel, N] GEMM output with fused activation.
         """
-        # Reuse C buffer to avoid repeated allocations
-        if getattr(self, "_C_buffer", None) is None or self._C_buffer.device != A.device:
-            self._C_buffer = torch.zeros(self.numel, self.N, dtype=self.dtype, device=A.device)
-        C = self._C_buffer
+        C = torch.zeros(self.numel, self.N, dtype=self.dtype, device=A.device)
 
         block_m = self.config["block_m"]
         # N-dimension tiling is not supported: the epilogue assumes block_n
@@ -238,13 +235,9 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
 
         required_rows = self.numel + block_m
         if A.shape[0] < required_rows:
-            # Reuse A padding buffer to avoid repeated allocations
-            if (getattr(self, "_A_padded", None) is None or
-                self._A_padded.shape[0] < required_rows or
-                self._A_padded.device != A.device):
-                self._A_padded = torch.zeros(required_rows, self.K, dtype=self.dtype, device=A.device)
-            self._A_padded[:A.shape[0]].copy_(A)
-            A = self._A_padded
+            A_padded = torch.zeros(required_rows, self.K, dtype=self.dtype, device=A.device)
+            A_padded[:A.shape[0]].copy_(A)
+            A = A_padded
 
         gemm_fn = _persistent_grouped_gemm_v2_fused_act_kernel(
             self.numel, self.num_experts, self.N, self.K,
@@ -396,18 +389,19 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, N, K, dtype, activation,
 
             tx = T.get_thread_binding()
 
+            # Initialize shared memory (all threads must participate in sync)
+            if tx == 0:
+                s_cum[0] = T.int32(0)
+                for e in T.serial(num_experts):
+                    s_cum[e + 1] = s_cum[e] + (true_sizes[e] + (block_m - 1)) // block_m
+                s_total[0] = s_cum[num_experts] * T.int32(_num_pid_n)
+            T.sync_threads()
+
             # ═════════════════════════════════════════════════════════
             # Producer WG: tx < 128
             # ═════════════════════════════════════════════════════════
             if tx < 128:
                 T.dec_max_nreg(24)
-
-                if tx == 0:
-                    s_cum[0] = T.int32(0)
-                    for e in T.serial(num_experts):
-                        s_cum[e + 1] = s_cum[e] + (true_sizes[e] + (block_m - 1)) // block_m
-                    s_total[0] = s_cum[num_experts] * T.int32(_num_pid_n)
-                T.sync_threads()
 
                 for w in T.serial(_max_waves):
                     total = s_total[0]
@@ -512,7 +506,6 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, N, K, dtype, activation,
             # ═════════════════════════════════════════════════════════
             elif tx < 256:
                 T.inc_max_nreg(240)
-                T.sync_threads()
 
                 for w in T.serial(_max_waves):
                     total = s_total[0]
@@ -601,7 +594,6 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, N, K, dtype, activation,
             # ═════════════════════════════════════════════════════════
             else:
                 T.inc_max_nreg(240)
-                T.sync_threads()
 
                 for w in T.serial(_max_waves):
                     total = s_total[0]
@@ -767,18 +759,19 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, N, K, dtype, activati
 
             tx = T.get_thread_binding()
 
+            # Initialize shared memory (all threads must participate in sync)
+            if tx == 0:
+                s_cum[0] = T.int32(0)
+                for e in T.serial(num_experts):
+                    s_cum[e + 1] = s_cum[e] + (true_sizes[e] + (block_m - 1)) // block_m
+                s_total[0] = s_cum[num_experts] * T.int32(_num_pid_n)
+            T.sync_threads()
+
             # ═════════════════════════════════════════════════════════
             # Producer WG: tx < 128
             # ═════════════════════════════════════════════════════════
             if tx < 128:
                 T.dec_max_nreg(24)
-
-                if tx == 0:
-                    s_cum[0] = T.int32(0)
-                    for e in T.serial(num_experts):
-                        s_cum[e + 1] = s_cum[e] + (true_sizes[e] + (block_m - 1)) // block_m
-                    s_total[0] = s_cum[num_experts] * T.int32(_num_pid_n)
-                T.sync_threads()
 
                 for w in T.serial(_max_waves):
                     total = s_total[0]
@@ -842,7 +835,6 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, N, K, dtype, activati
             # ═════════════════════════════════════════════════════════
             elif tx < 256:
                 T.inc_max_nreg(240)
-                T.sync_threads()
 
                 for w in T.serial(_max_waves):
                     total = s_total[0]
@@ -927,7 +919,6 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, N, K, dtype, activati
             # ═════════════════════════════════════════════════════════
             else:
                 T.inc_max_nreg(240)
-                T.sync_threads()
 
                 for w in T.serial(_max_waves):
                     total = s_total[0]
