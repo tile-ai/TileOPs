@@ -137,7 +137,7 @@ def test_kimi_k2_ep_distributed(T, E_global, K, H, F, world_size):
         hidden_size=H, ffn_size=F,
         scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
         routed_scaling_factor=2.827,
-        layout="nopad", dtype=dtype,
+        dtype=dtype,
         expert_map=expert_map,
     )
     out_local = op_local(hidden, gating, w_gate_up_local, w_down_local, correction_bias)
@@ -152,7 +152,7 @@ def test_kimi_k2_ep_distributed(T, E_global, K, H, F, world_size):
             hidden_size=H, ffn_size=F,
             scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
             routed_scaling_factor=2.827,
-            layout="nopad", dtype=dtype,
+            dtype=dtype,
         )
         out_full = op_full(hidden, gating, w_gate_up_full, w_down_full, correction_bias)
 
@@ -214,7 +214,7 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
         hidden_size=H, ffn_size=F,
         scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
         routed_scaling_factor=2.827,
-        layout="nopad", dtype=dtype,
+        dtype=dtype,
         expert_map=expert_map,
         shared_ffn_size=shared_F,
     )
@@ -233,7 +233,7 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
             hidden_size=H, ffn_size=F,
             scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
             routed_scaling_factor=2.827,
-            layout="nopad", dtype=dtype,
+            dtype=dtype,
             shared_ffn_size=shared_F,
         )
         shared_out_full, routed_out_full = op_full(
@@ -308,7 +308,7 @@ def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
         hidden_size=H, ffn_size=F,
         scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
         routed_scaling_factor=2.827,
-        layout="nopad", dtype=dtype,
+        dtype=dtype,
         expert_map=expert_map,
     )
     out_tileops = op_tileops(hidden, gating, w_gate_up_local, w_down_local, correction_bias)
@@ -384,7 +384,7 @@ def test_fused_moe_vs_vllm_ep_layer(T, E_global, K, H, F, world_size):
         hidden_size=H, ffn_size=F,
         scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
         routed_scaling_factor=2.827,
-        layout="nopad", dtype=dtype,
+        dtype=dtype,
         expert_map=expert_map,
     )
     out_tileops = op_tileops(hidden, gating, w_gate_up_local, w_down_local, correction_bias)

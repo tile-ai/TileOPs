@@ -80,7 +80,6 @@ class SharedFusedMoE(FusedMoe):
         renormalize: bool = False,
         with_correction_bias: bool = False,
         routed_scaling_factor: float = 1.0,
-        layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
         shared_ffn_size: Optional[int] = None,
@@ -112,7 +111,6 @@ class SharedFusedMoE(FusedMoe):
             renormalize=renormalize,
             with_correction_bias=with_correction_bias,
             routed_scaling_factor=routed_scaling_factor,
-            layout=layout,
             dtype=dtype,
             expert_map=expert_map,
             activation=activation,
@@ -126,8 +124,6 @@ class SharedFusedMoE(FusedMoe):
             raise ValueError(
                 f"shared_ffn_size ({shared_ffn_size}) must be divisible by tp_size ({tp_size})"
             )
-        if shared_ffn_size is not None and layout == "padded":
-            raise ValueError("layout='padded' is not supported with shared experts")
 
         self.shared_ffn_size = shared_ffn_size
         self.tp_size = tp_size

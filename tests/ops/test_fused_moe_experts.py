@@ -1,4 +1,4 @@
-"""Tests for FusedMoEExpertsNopadPersistent3WGFwdOp/PaddedFwdOp and supporting ABCs."""
+"""Tests for FusedMoEExpertsNopadPersistent3WGFwdOp and supporting ABCs."""
 import logging
 
 import pytest
@@ -13,7 +13,6 @@ from tileops.ops.moe.routed_expert.abc import (
 )
 from tileops.ops.moe.routed_expert.fused_routed_expert import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
-    FusedMoEExpertsPaddedFwdOp,
 )
 
 
@@ -257,7 +256,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         """expert_map (EP mode) must construct + forward without raising.
 
         This is a smoke check that the EP path is wired up — the Nopad+3WG
-        implementation supports expert_map (unlike Padded which raises). The
+        implementation supports expert_map. The
         per-expert numerical correctness check under expert_map filtering is
         non-trivial to write a torch reference for and is left to a follow-up
         end-to-end test against vLLM.
@@ -310,55 +309,6 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
         ws1 = torch.empty(0, dtype=d["dtype"], device="cuda")
         ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
-        experts.forward(
-            output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
-            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
-        )
-        assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
-
-
-# ---------------------------------------------------------------------------
-# FusedMoEExpertsPaddedFwdOp
-# ---------------------------------------------------------------------------
-
-class TestFusedMoEExpertsPaddedFwdOp:
-
-    @pytest.mark.smoke
-    def test_forward_matches_torch_ref(self, moe_tensors):
-        """forward() output must match a per-expert PyTorch reference."""
-        d = moe_tensors
-        experts = FusedMoEExpertsPaddedFwdOp(
-            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
-            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
-        )
-
-        ref_out = _torch_ref_moe(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
-
-        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
-        ws1 = torch.empty(0, dtype=d["dtype"], device="cuda")
-        ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
-        experts.forward(
-            output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
-            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],
-        )
-
-        assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
-
-    @pytest.mark.smoke
-    @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
-    def test_forward_matches_torch_ref_activation(self, moe_tensors, activation):
-        d = moe_tensors
-        experts = FusedMoEExpertsPaddedFwdOp(
-            num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
-            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
-            activation=activation,
-        )
-        assert experts.activation == activation
-        ref_out = _torch_ref_moe_activation(
-            d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"], activation=activation,
-        )
-        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
-        ws1, ws2 = torch.empty(0, dtype=d["dtype"], device="cuda"), torch.empty(0, dtype=d["dtype"], device="cuda")
         experts.forward(
             output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
             expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=d["E"],

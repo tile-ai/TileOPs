@@ -22,7 +22,6 @@ from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
-    FusedMoEExpertsPaddedFwdOp,
 )
 from tileops.ops.moe.routed_expert.abc import (
     FusedMoEExpertsModular,
@@ -51,7 +50,6 @@ class FusedMoe(Op):
         renormalize: Renormalize top-k weights to sum to 1.
         with_correction_bias: Accept `correction_bias` during routing.
         routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
-        layout: "nopad" (default) or "padded". Ignored when `experts` is provided.
         dtype: Activation and weight dtype.
         expert_map: [E_global] int32 for Expert Parallel local filtering.
         prepare_finalize: Override the PrepareAndFinalize implementation.
@@ -70,7 +68,6 @@ class FusedMoe(Op):
         renormalize: bool = False,
         with_correction_bias: bool = False,
         routed_scaling_factor: float = 1.0,
-        layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
@@ -88,7 +85,6 @@ class FusedMoe(Op):
         self.renormalize = renormalize
         self.with_correction_bias = with_correction_bias
         self.routed_scaling_factor = routed_scaling_factor
-        self.layout = layout
         self.dtype = dtype
         self.expert_map = expert_map
 
@@ -146,10 +142,7 @@ class FusedMoe(Op):
             self._experts: FusedMoEExpertsModular = experts
         else:
             self.activation = activation
-            if layout not in ("nopad", "padded"):
-                raise ValueError(f"Unknown layout {layout!r}; expected 'nopad' or 'padded'")
-            experts_cls = FusedMoEExpertsNopadPersistent3WGFwdOp if layout == "nopad" else FusedMoEExpertsPaddedFwdOp
-            self._experts = experts_cls(
+            self._experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
                 num_tokens=num_tokens,
                 num_experts=num_experts,
                 top_k=top_k,
@@ -225,7 +218,6 @@ class FusedMoeFwdOp(FusedMoe):
         scoring_func: str = "softmax",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
-        layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
@@ -244,7 +236,6 @@ class FusedMoeFwdOp(FusedMoe):
             renormalize=renormalize,
             with_correction_bias=False,
             routed_scaling_factor=routed_scaling_factor,
-            layout=layout,
             dtype=dtype,
             expert_map=expert_map,
             prepare_finalize=prepare_finalize,
@@ -281,7 +272,6 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
         scoring_func: str = "sigmoid",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
-        layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
@@ -300,7 +290,6 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
             renormalize=renormalize,
             with_correction_bias=True,
             routed_scaling_factor=routed_scaling_factor,
-            layout=layout,
             dtype=dtype,
             expert_map=expert_map,
             prepare_finalize=prepare_finalize,

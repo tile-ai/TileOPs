@@ -1,7 +1,7 @@
-"""Benchmark for FusedMoEExpertsNopadPersistent3WGFwdOp / FusedMoEExpertsPaddedFwdOp.
+"""Benchmark for FusedMoEExpertsNopadPersistent3WGFwdOp.
 
 Measures the permute + grouped-GEMM + unpermute pipeline without routing.
-Both nopad (3WG persistent kernel) and padded layouts are benchmarked side-by-side
+The nopad (3WG persistent kernel) layout is benchmarked
 against vLLM Triton fused_experts and vLLM CUTLASS fused_experts (when available).
 
 Workloads match the manifest entries (shared workload set):
@@ -14,7 +14,6 @@ Workloads match the manifest entries (shared workload set):
 
 Baselines:
   - tileops-nopad-3wg: FusedMoEExpertsNopadPersistent3WGFwdOp (default 3WG kernel)
-  - tileops-padded:    FusedMoEExpertsPaddedFwdOp
   - vllm-triton:       vLLM Triton fused_experts (default backend)
   - vllm-cutlass:      vLLM CUTLASS fused_experts (when importable)
   - torch-ref:         per-expert GEMM loop with index_add_ (fallback)
@@ -59,7 +58,6 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import load_workloads
 from tileops.ops.moe import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
-    FusedMoEExpertsPaddedFwdOp,
 )
 from workloads.workload_base import WorkloadBase
 
@@ -173,22 +171,6 @@ def test_moe_experts_nopad_bench(
 
     result = bm.profile(_nopad_fn, hidden, w1, w2, topk_weights, topk_ids)
     BenchmarkReport.record(nopad, locals(), result, tag="tileops-nopad-3wg")
-
-    # -- TileOPs padded -------------------------------------------------------
-    padded = FusedMoEExpertsPaddedFwdOp(**kwargs)
-
-    def _padded_fn(hidden, w1, w2, topk_weights, topk_ids):
-        padded.forward(
-            output, hidden, w1, w2, topk_weights, topk_ids,
-            expert_map=None, workspace1=ws1, workspace2=ws2, num_experts=num_experts,
-        )
-        return output
-
-    _padded_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup / JIT compile
-    torch.cuda.synchronize()
-
-    result_pad = bm.profile(_padded_fn, hidden, w1, w2, topk_weights, topk_ids)
-    BenchmarkReport.record(padded, locals(), result_pad, tag="tileops-padded")
 
     # -- vLLM Triton baseline -------------------------------------------------
     if _VLLM_TRITON_AVAILABLE:

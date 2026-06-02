@@ -197,7 +197,7 @@ def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
             num_tokens=T, num_experts=E, top_k=K,
             hidden_size=H, ffn_size=F,
             scoring_func="softmax", renormalize=False,
-            layout="nopad", dtype=dtype,
+            dtype=dtype,
             shared_ffn_size=F_s,
             tp_size=tp_size, tp_rank=tp_rank,
         )

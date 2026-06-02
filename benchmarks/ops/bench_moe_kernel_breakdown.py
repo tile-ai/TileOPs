@@ -1,10 +1,9 @@
-"""Per-kernel breakdown profiling: vLLM CUTLASS vs TileOPs padded vs TileOPs nopad.
+"""Per-kernel breakdown profiling: vLLM CUTLASS vs TileOPs nopad.
 
 Decomposes each pipeline into individual stages and measures each separately
 so we can identify where time is spent and where the next improvement lies.
 
 Stages measured:
-  padded : FusedTopK | Permute | GEMM_gate_up | SiluAndMul | GEMM_down | Unpermute
   nopad  : FusedTopK | Permute | Sched | GEMM_gate_up | SiluAndMul | Sched | GEMM_down | Unpermute
   vLLM   : torch.profiler top-CUDA-kernel breakdown
 """
@@ -24,11 +23,9 @@ from tileops.kernels.moe.moe_grouped_gemm_nopad import (
     _tile_scheduler_kernel,
 )
 from tileops.ops.elementwise import SiluAndMulFwdOp
-from tileops.ops.grouped_gemm import GroupedGemmOp
 from tileops.ops.moe import (
     FusedTopKOp,
     MoePermuteNopadFwdOp,
-    MoePermutePaddedFwdOp,
     MoeUnpermuteFwdOp,
 )
 
@@ -43,7 +40,6 @@ CONFIGS = [
     (4096, 256,  8, 2048, 1024, "softmax", True),
 ]
 DTYPE = torch.bfloat16
-_BLOCK_M = 64   # GroupedGemmOp NT default
 WARMUP = 50
 ITERS  = 200
 
@@ -88,52 +84,6 @@ def gen_inputs(T, E, K, H, F):
 
 
 # ── Stage decompositions ─────────────────────────────────────────────────────
-
-def profile_padded(T, E, K, H, F, scoring_func, renormalize):
-    numel = T * K
-    padded = numel + E * (_BLOCK_M - 1)
-    hidden, gating, w_gu, w_down = gen_inputs(T, E, K, H, F)
-
-    # Build ops
-    topk_op    = FusedTopKOp(T, E, K, scoring_func, renormalize)
-    permute_op = MoePermutePaddedFwdOp(T, K, E, H, DTYPE, block_m=_BLOCK_M)
-    gemm_gu    = GroupedGemmOp(padded, E, F * 2, H, DTYPE)
-    silu_op    = SiluAndMulFwdOp(M=padded, N=F, dtype=DTYPE)
-    gemm_dn    = GroupedGemmOp(padded, E, H, F, DTYPE)
-    unp_op     = MoeUnpermuteFwdOp(T, K, H, DTYPE, padded_batch_sum=padded)
-
-    # Warm-up full pass to compile all kernels
-    tw, tids = topk_op(gating)
-    ph, po, ps, _, fi = permute_op(hidden, tids)
-    gu = gemm_gu(ph, w_gu, ps, po, po)
-    ac = silu_op(gu)
-    mm = gemm_dn(ac, w_down, ps, po, po)
-    unp_op(mm, fi, tw)
-    torch.cuda.synchronize()
-
-    # Pre-compute routing (shared)
-    tw, tids = topk_op(gating)
-    ph, po, ps, _, fi = permute_op(hidden, tids)
-    gu = gemm_gu(ph, w_gu, ps, po, po)
-    ac = silu_op(gu)
-    mm = gemm_dn(ac, w_down, ps, po, po)
-
-    t_topk    = bench(topk_op, gating)
-    t_permute = bench(permute_op, hidden, tids)
-    t_gu      = bench(gemm_gu, ph, w_gu, ps, po, po)
-    t_silu    = bench(silu_op, gu)
-    t_dn      = bench(gemm_dn, ac, w_down, ps, po, po)
-    t_unp     = bench(unp_op, mm, fi, tw)
-
-    return [
-        ("FusedTopK",     t_topk),
-        ("Permute(padded)", t_permute),
-        ("GEMM gate+up",  t_gu),
-        ("SiluAndMul",    t_silu),
-        ("GEMM down",     t_dn),
-        ("Unpermute",     t_unp),
-    ]
-
 
 def profile_nopad(T, E, K, H, F, scoring_func, renormalize):
     numel = T * K
@@ -240,11 +190,6 @@ def main():
         print(f"\n{'='*65}")
         print(f"  {title}")
         print(f"{'='*65}")
-
-        # ── TileOPs padded ────────────────────────────────────────────────
-        print("\n[TileOPs PADDED]")
-        stages_pad = profile_padded(T, E, K, H, F, scoring, renorm)
-        print_breakdown(title, stages_pad)
 
         # ── TileOPs nopad ─────────────────────────────────────────────────
         print("\n[TileOPs NOPAD]")

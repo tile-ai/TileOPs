@@ -1,4 +1,4 @@
-"""FusedMoEExperts implementations: padded and nopad+3WG variants."""
+"""FusedMoEExperts implementation: nopad + 3WG persistent variant."""
 
 from __future__ import annotations
 
@@ -9,9 +9,6 @@ import torch
 from torch import Tensor
 
 from tileops.kernels.grouped_gemm import (
-    _DEFAULT_CONFIGS as _GEMM_DEFAULT_CONFIGS,
-)
-from tileops.kernels.grouped_gemm import (
     GroupedGemmPersistent3WGKernel,
 )
 from tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg import (
@@ -19,7 +16,6 @@ from tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg import (
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
-from tileops.ops.grouped_gemm import GroupedGemmOp
 from tileops.ops.moe._activation import build_activation_op
 
 from .abc import (
@@ -30,161 +26,13 @@ from .abc import (
 )
 from .moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
 from .permute_nopad import MoePermuteNopadFwdOp
-from .permute_padded import MoePermutePaddedFwdOp
 from .unpermute import MoeUnpermuteFwdOp
 
 __all__ = [
     "FusedMoEExpertsNopadPersistent3WGFwdOp",
-    "FusedMoEExpertsPaddedFwdOp",
 ]
 
 _logger = logging.getLogger(__name__)
-
-# Padded MoE uses NT GEMM layout (A non-transposed, B transposed); pull
-# block_m from the matching default config so this stays in sync if the
-# kernel's default block dims change.
-_BLOCK_M: int = _GEMM_DEFAULT_CONFIGS[(False, True)]["block_m"]
-
-
-class FusedMoEExpertsPaddedFwdOp(FusedMoEExpertsModular):
-    """Expert GEMM using block_m-aligned padded layout (reference baseline).
-
-    Internal pipeline: MoePermutePaddedFwdOp → gate_up GEMM → SwiGLU →
-    down GEMM → MoeUnpermuteFwdOp (weighted reduction included).
-
-    expert_map is not supported; raises NotImplementedError if non-None.
-    """
-
-    def __init__(
-        self,
-        num_tokens: int,
-        num_experts: int,
-        top_k: int,
-        hidden_size: int,
-        ffn_size: int,
-        routed_scaling_factor: float = 1.0,
-        dtype: torch.dtype = torch.bfloat16,
-        expert_map: Optional[Tensor] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        *,
-        activation: str = "silu_and_mul",
-    ):
-        self.dispatch_kernel(kernel_map)
-        if expert_map is not None:
-            raise NotImplementedError(
-                "expert_map is not supported for padded layout. "
-                "Use FusedMoEExpertsNopadPersistent3WGFwdOp for EP mode."
-            )
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.hidden_size = hidden_size
-        self.ffn_size = ffn_size
-        self.dtype = dtype
-        numel = num_tokens * top_k
-        padded_batch_sum = numel + (num_experts * (_BLOCK_M - 1))
-
-        self._permute = MoePermutePaddedFwdOp(
-            total_tokens=num_tokens, top_k=top_k, num_experts=num_experts,
-            hidden_size=hidden_size, dtype=dtype, block_m=_BLOCK_M,
-            kernel_map=kernel_map,
-        )
-        self._gemm_gate_up = GroupedGemmOp(
-            batch_sum=padded_batch_sum, batch_count=num_experts,
-            n=ffn_size * 2, k=hidden_size, dtype=dtype,
-            kernel_map=kernel_map,
-        )
-        self.activation = activation
-        self._activation_op = build_activation_op(
-            activation, M=padded_batch_sum, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
-        )
-        self._gemm_down = GroupedGemmOp(
-            batch_sum=padded_batch_sum, batch_count=num_experts,
-            n=hidden_size, k=ffn_size, dtype=dtype,
-            kernel_map=kernel_map,
-        )
-        self._unpermute = MoeUnpermuteFwdOp(
-            total_tokens=num_tokens, top_k=top_k,
-            hidden_size=hidden_size, dtype=dtype, padded_batch_sum=padded_batch_sum,
-            kernel_map=kernel_map,
-        )
-        self._routed_scaling_factor = routed_scaling_factor
-
-    def workspace_shapes(
-        self, M: int, N: int, K: int, topk: int, num_experts: int,
-    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        return ((0,), (0,))
-
-    def output_shape(self, T_prime: int, H: int) -> tuple[int, int]:
-        return (T_prime, H)
-
-    def make_weighted_reduce(self) -> WeightedReduce:
-        return WeightedReduceNoOp()
-
-    def _validate_dtypes(
-        self,
-        output: Tensor,
-        hidden_states: Tensor,
-        w_gate_up: Tensor,
-        w_down: Tensor,
-        topk_weights: Tensor,
-        topk_ids: Tensor,
-        expert_map: Tensor | None,
-        workspace1: Tensor,
-        workspace2: Tensor,
-    ) -> None:
-        _validate_fused_moe_experts_dtypes(
-            self.dtype,
-            output, hidden_states, w_gate_up, w_down,
-            topk_weights, topk_ids, expert_map, workspace1, workspace2,
-        )
-        # workspace_shapes() returns ((0,), (0,)) for this implementation; flag
-        # callers that pass non-empty workspaces (likely a pipeline mismatch).
-        if workspace1.numel() != 0 or workspace2.numel() != 0:
-            raise ValueError(
-                "workspace1 and workspace2 must be empty (numel == 0) for "
-                "FusedMoEExpertsPaddedFwdOp; got "
-                f"workspace1.numel()={workspace1.numel()}, "
-                f"workspace2.numel()={workspace2.numel()}."
-            )
-
-    @property
-    def default_kernel_map(self) -> dict:
-        # All sub-kernels are owned by the inner Ops (permute / GEMM / SiLU / unpermute).
-        return {}
-
-    def forward(
-        self,
-        output: Tensor,
-        hidden_states: Tensor,
-        w_gate_up: Tensor,
-        w_down: Tensor,
-        topk_weights: Tensor,
-        topk_ids: Tensor,
-        expert_map: Tensor | None,
-        workspace1: Tensor,
-        workspace2: Tensor,
-        num_experts: int,
-    ) -> None:
-        self._validate_dtypes(
-            output, hidden_states, w_gate_up, w_down,
-            topk_weights, topk_ids, expert_map, workspace1, workspace2,
-        )
-        perm_h_pad, padded_offsets, padded_sizes, _, fwd_idx = self._permute(
-            hidden_states, topk_ids
-        )
-        gate_up_pad = self._gemm_gate_up(
-            perm_h_pad, w_gate_up, padded_sizes, padded_offsets, padded_offsets
-        )
-        act_pad = self._activation_op(gate_up_pad)
-        mm2_pad = self._gemm_down(
-            act_pad, w_down, padded_sizes, padded_offsets, padded_offsets
-        )
-        result = self._unpermute(mm2_pad, fwd_idx, topk_weights)
-        if self._routed_scaling_factor != 1.0:
-            torch.mul(result, self._routed_scaling_factor, out=output)
-        else:
-            output.copy_(result)
 
 
 class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
