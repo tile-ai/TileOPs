@@ -14,6 +14,9 @@ from tileops.ops.moe.routed_expert.abc import (
 from tileops.ops.moe.routed_expert.fused_routed_expert import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
 )
+from tileops.ops.moe.routed_expert.moe_grouped_gemm_nopad_fused_act import (
+    MoeGroupedGemmNopad3WGFusedActFwdOp,
+)
 
 
 def _torch_ref_moe(hidden, w1, w2, topk_weights, topk_ids):
@@ -478,3 +481,29 @@ class TestSharedFusedMoeActivation:
             shared_ffn_size=128,
         )
         assert moe.activation == "silu_and_mul"
+
+
+@pytest.mark.smoke
+def test_fused_act_fwd_op_shape_and_values():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Requires SM90")
+    T_count, E, top_k, ffn, K = 256, 8, 2, 768, 128
+    numel = T_count * top_k
+    per = numel // E
+    sizes = torch.full((E,), per, dtype=torch.int32, device="cuda")
+    sizes[-1] = numel - per * (E - 1)
+    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
+    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    B = torch.randn(E, 2 * ffn, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    op = MoeGroupedGemmNopad3WGFusedActFwdOp(
+        numel=numel, num_experts=E, ffn=ffn, k=K, dtype=torch.bfloat16,
+        activation="silu_and_mul")
+    out = op(A, B, sizes, offsets)
+    assert out.shape == (numel, ffn)
+    exp = torch.zeros(numel, ffn, dtype=torch.bfloat16, device="cuda")
+    for e in range(E):
+        n, o = int(sizes[e]), int(offsets[e])
+        gu = A[o:o+n].float() @ B[e].float().t()
+        exp[o:o+n] = (F.silu(gu[:, :ffn]) * gu[:, ffn:]).to(torch.bfloat16)
+    torch.testing.assert_close(out, exp, rtol=2e-2, atol=2e-2)
