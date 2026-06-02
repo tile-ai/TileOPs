@@ -97,7 +97,7 @@ def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype)
     inputs = test.gen_inputs()
 
     if op_cls.__name__ == "ClampScalarFwdOp":
-        op = op_cls(input=(n_total,), dtype=dtype, **extra_kwargs)
+        op = op_cls(input=shape, dtype=dtype, **extra_kwargs)
     else:
         op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
     result = bm.profile(op, *inputs)
@@ -593,7 +593,7 @@ def test_fp8_unary_independent_bench(
     inputs = test.gen_inputs()
 
     if op_cls.__name__ == "ClampScalarFwdOp":
-        op = op_cls(input=(n_total,), dtype=dtype, **extra_kwargs)
+        op = op_cls(input=shape, dtype=dtype, **extra_kwargs)
     else:
         op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
     result = bm.profile(op, *inputs)
