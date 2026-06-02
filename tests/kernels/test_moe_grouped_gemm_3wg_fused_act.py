@@ -111,3 +111,35 @@ def test_pingpong_partial_m_tile():
     C = k(A, B, sizes, offsets)
     ref = _ref_fused_act(A, B, sizes, offsets, ffn, "silu_and_mul")
     torch.testing.assert_close(C, ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
+@pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
+@pytest.mark.parametrize("dist", ["uniform", "skewed"])
+def test_cooperative_against_reference(activation, dist):
+    T_count, E, top_k, ffn, K = 512, 16, 2, 1536, 128   # real-scale ffn, multiple N-tiles
+    A, B, sizes, offsets, numel = make_inputs(T_count, E, top_k, ffn, K, torch.bfloat16, dist)
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    k = MoeGroupedGemmPersistent3WGFusedActKernel(   # default config: block_m=128 cooperative, ns=3
+        numel=numel, num_experts=E, N=ffn, K=K, dtype=torch.bfloat16,
+        activation=activation, sm_count=sm)
+    assert k.config["block_m"] >= 128, "expected cooperative template (block_m>=128)"
+    C = k(A, B, sizes, offsets)
+    ref = _ref_fused_act(A, B, sizes, offsets, ffn, activation)
+    torch.testing.assert_close(C, ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
+def test_many_zero_experts():
+    """Many zero-size experts -> many waves, tight C_shared reuse (race regression)."""
+    T_count, E, top_k, ffn, K = 256, 64, 2, 768, 128
+    A, B, sizes, offsets, numel = make_inputs(T_count, E, top_k, ffn, K, torch.bfloat16, "skewed")
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    k = MoeGroupedGemmPersistent3WGFusedActKernel(
+        numel=numel, num_experts=E, N=ffn, K=K, dtype=torch.bfloat16,
+        activation="silu_and_mul", sm_count=sm)
+    for _ in range(5):  # repeat: race is intermittent
+        C = k(A, B, sizes, offsets)
+        ref = _ref_fused_act(A, B, sizes, offsets, ffn, "silu_and_mul")
+        assert not torch.isnan(C).any(), "NaN in output (C_shared reuse race)"
+        torch.testing.assert_close(C, ref, rtol=2e-2, atol=2e-2)
