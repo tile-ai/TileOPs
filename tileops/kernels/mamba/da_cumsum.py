@@ -68,7 +68,10 @@ def _da_cumsum_fwd_kernel(
     # Parallel Blelloch scan requires Q to be a power of 2.
     # Mamba standard chunk sizes (64, 128, 256, 512) always satisfy this.
     _is_pow2 = Q > 0 and (Q & (Q - 1)) == 0
-    assert _is_pow2, f"chunk_len must be a power of 2 for the parallel scan; got {Q}"
+    if not _is_pow2:
+        raise ValueError(
+            f"chunk_len must be a power of 2 for the parallel scan; got {Q}"
+        )
     _num_rounds = int(math.log2(Q))
 
     @tilelang.jit(out_idx=[-2, -1])
@@ -284,6 +287,12 @@ class DaCumsumFwdKernel(Kernel):
             dt_softplus, has_dt_bias, dt_min, dt_max,
         )
         self.init_config(config, tune)
+        if self.config.get("threads") != self.chunk_len:
+            raise ValueError(
+                f"DaCumsumFwdKernel requires threads == chunk_len "
+                f"({self.chunk_len}) for the parallel Blelloch scan, "
+                f"but got threads={self.config.get('threads')}."
+            )
 
     @property
     def default_config(self) -> dict:
