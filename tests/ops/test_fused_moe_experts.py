@@ -319,6 +319,41 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
 
+@pytest.mark.parametrize(
+    "activation",
+    [
+        pytest.param("silu_and_mul", marks=pytest.mark.smoke),
+        pytest.param("gelu_and_mul", marks=pytest.mark.nightly),
+    ],
+)
+def test_use_fused_activation_parity(activation):
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Requires SM90")
+    torch.manual_seed(0)
+    T_count, E, top_k, H, Fdim = 256, 8, 2, 256, 768
+    hidden = torch.randn(T_count, H, dtype=torch.bfloat16, device="cuda") * 0.02
+    w_gate_up = torch.randn(E, 2 * Fdim, H, dtype=torch.bfloat16, device="cuda") * 0.02
+    w_down = torch.randn(E, H, Fdim, dtype=torch.bfloat16, device="cuda") * 0.02
+    topk_w = torch.rand(T_count, top_k, dtype=torch.float32, device="cuda")
+    topk_ids = torch.randint(0, E, (T_count, top_k), dtype=torch.int32, device="cuda")
+
+    def run(use_fused):
+        op = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=T_count, num_experts=E, top_k=top_k, hidden_size=H,
+            ffn_size=Fdim, dtype=torch.bfloat16, activation=activation,
+            use_fused_activation=use_fused)
+        out = torch.empty(T_count, H, dtype=torch.bfloat16, device="cuda")
+        ws = torch.empty(0, dtype=torch.bfloat16, device="cuda")
+        op.forward(out, hidden, w_gate_up, w_down, topk_w, topk_ids, None, ws, ws, E)
+        return out
+
+    fused_out = run(True)
+    assert fused_out.shape == (T_count, H)
+    # bf16 fused-vs-unfused accumulation differs slightly; tolerance covers the
+    # fused-epilogue vs separate-activation-kernel rounding gap.
+    torch.testing.assert_close(fused_out, run(False), rtol=3e-2, atol=3e-2)
+
+
 class TestBuildActivationOp:
 
     @pytest.mark.smoke
