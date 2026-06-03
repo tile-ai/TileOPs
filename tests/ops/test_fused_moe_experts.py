@@ -524,9 +524,8 @@ def test_fused_act_fwd_op_shape_and_values():
         pytest.skip("Requires SM90")
     T_count, E, top_k, ffn, K = 256, 8, 2, 768, 128
     numel = T_count * top_k
-    per = numel // E
-    sizes = torch.full((E,), per, dtype=torch.int32, device="cuda")
-    sizes[-1] = numel - per * (E - 1)
+    sizes = torch.full((E,), numel // E, dtype=torch.int32, device="cuda")
+    sizes[:numel % E] += 1  # spread remainder; safe when numel < E
     offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
     offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
     A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02

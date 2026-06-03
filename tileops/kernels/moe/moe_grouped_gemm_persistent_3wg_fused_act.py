@@ -15,7 +15,6 @@ import os
 import tilelang
 import tilelang.language as T
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -110,9 +109,9 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
         best_ms, best_cfg = float("inf"), None
         A = torch.randn(self.numel, self.K, dtype=self.dtype, device="cuda") * 0.02
         B = torch.randn(self.num_experts, 2 * self.N, self.K, dtype=self.dtype, device="cuda") * 0.02
-        per = max(1, self.numel // self.num_experts)
-        sizes = torch.full((self.num_experts,), per, dtype=torch.int32, device="cuda")
-        sizes[-1] = self.numel - per * (self.num_experts - 1)
+        sizes = torch.full((self.num_experts,), self.numel // self.num_experts,
+                           dtype=torch.int32, device="cuda")
+        sizes[:self.numel % self.num_experts] += 1  # spread remainder; safe when numel < E
         offsets = torch.zeros(self.num_experts, dtype=torch.int32, device="cuda")
         offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
         for cfg in self.autotune_configs:
@@ -138,9 +137,11 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
             raise ValueError(f"K-aligned only: K={self.K}, block_k={bk}")
         if self.N % bn != 0:
             raise ValueError(f"ffn must be divisible by block_n: N={self.N}, block_n={bn}")
-        required_rows = self.numel + bm
-        if A.shape[0] < required_rows:
-            A = F.pad(A, (0, 0, 0, required_rows - A.shape[0]))
+        # A is intentionally NOT padded.  The producer's last M-tile TMA may
+        # address rows past `numel`, but SM90 TMA zero-fills out-of-bounds rows
+        # (the descriptor's globalDim is `numel`) and the partial-tile epilogue
+        # stores only rows i < arows, so those rows are masked out regardless.
+        # This avoids a [numel, K] device copy of A on every forward.
         fn = _fused_act_kernel(
             self.numel, self.num_experts, self.N, self.K,
             self.dtype_str, self.activation, self.sm_count, bk,
@@ -175,7 +176,7 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
     # Pingpong: each CTA processes 2 tiles per wave (one per math WG).
     _max_waves = (_total_ctas_ub + 2 * sm_count - 1) // (2 * sm_count) + 1
     _k_iters = K // block_k
-    A_shape = (numel + block_m, K)
+    A_shape = (numel, K)  # no M-pad; TMA zero-fills OOB last-tile rows (epilogue masks them)
 
     act = _act_expr(activation)
 
@@ -568,7 +569,7 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
     # the case where _total_ctas_ub is not a multiple of sm_count.
     _max_waves = (_total_ctas_ub + sm_count - 1) // sm_count + 1
     _k_iters = K // block_k
-    A_shape = (numel + block_m, K)
+    A_shape = (numel, K)  # no M-pad; TMA zero-fills OOB last-tile rows (epilogue masks them)
 
     act = _act_expr(activation)
 

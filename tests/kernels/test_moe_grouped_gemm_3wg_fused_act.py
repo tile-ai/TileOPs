@@ -17,9 +17,8 @@ def make_inputs(T, E, top_k, ffn, K, dtype, distribution="uniform", seed=42):
     numel = T * top_k
     dev = "cuda"
     if distribution == "uniform":
-        tpe = max(1, numel // E)
-        sizes = torch.full((E,), tpe, dtype=torch.int32, device=dev)
-        sizes[-1] = numel - tpe * (E - 1)
+        sizes = torch.full((E,), numel // E, dtype=torch.int32, device=dev)
+        sizes[:numel % E] += 1  # spread remainder; safe when numel < E
     else:  # skewed: a few fat experts, many size-0/1 (exercises many waves)
         sizes = torch.zeros(E, dtype=torch.int32, device=dev)
         top = max(1, E // 8)
