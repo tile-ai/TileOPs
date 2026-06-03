@@ -404,8 +404,6 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
                         n_start_0 = n_tile_0 * T.int32(block_n)
                         arows_0 = T.min(T.int32(block_m),
                                         true_sizes[expert_id_0] - row_0)
-                        acols_0 = T.min(T.int32(block_n),
-                                        T.int32(ffn) - n_start_0)
 
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             slot = gi_cons_0 % num_stages
@@ -442,14 +440,17 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
                             # guarantees the prior wave's TMA store finished
                             # reading C_shared.  MUST be a named barrier
                             # (barrier_id + arrive_count=128), NOT a CTA-wide
-                            # T.sync_threads() — this branch is warpgroup-
-                            # divergent and a CTA-wide sync would deadlock.
+                            # T.sync_threads(): the producer WG never enters this
+                            # epilogue and the two consumer WGs may take different
+                            # paths this wave, so a CTA-wide sync would wait on
+                            # warpgroups that never arrive and deadlock.
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
                             T.copy(C_shared_wg0, C[m_start_0, n_start_0])
                         else:
+                            # acols == block_n always (ffn % block_n == 0 enforced by forward()); no j-guard needed.
                             for i, j in T.Parallel(block_m, block_n):
-                                if i < arows_0 and j < acols_0:
+                                if i < arows_0:
                                     C[m_start_0 + i, n_start_0 + j] = C_local_cast_wg0[i, j]
 
             # ═════════════════════════════════════════════════════════
@@ -483,8 +484,6 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
                         n_start_1 = n_tile_1 * T.int32(block_n)
                         arows_1 = T.min(T.int32(block_m),
                                         true_sizes[expert_id_1] - row_1)
-                        acols_1 = T.min(T.int32(block_n),
-                                        T.int32(ffn) - n_start_1)
 
                         for k in T.Pipelined(_k_iters, num_stages=0):
                             slot = gi_cons_1 % num_stages
@@ -523,8 +522,9 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
                             T.copy(C_local_cast_wg1, C_shared_wg1)
                             T.copy(C_shared_wg1, C[m_start_1, n_start_1])
                         else:
+                            # acols == block_n always (ffn % block_n == 0 enforced by forward()); no j-guard needed.
                             for i, j in T.Parallel(block_m, block_n):
-                                if i < arows_1 and j < acols_1:
+                                if i < arows_1:
                                     C[m_start_1 + i, n_start_1 + j] = C_local_cast_wg1[i, j]
 
     return _gemm_main_fused
@@ -778,8 +778,10 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
                             # guarantees the prior wave's TMA store finished
                             # reading C_shared.  MUST be a named barrier
                             # (barrier_id + arrive_count=128), NOT a CTA-wide
-                            # T.sync_threads() — this branch is warpgroup-
-                            # divergent and a CTA-wide sync would deadlock.
+                            # T.sync_threads(): the producer WG never enters this
+                            # epilogue and the two consumer WGs may take different
+                            # paths this wave, so a CTA-wide sync would wait on
+                            # warpgroups that never arrive and deadlock.
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
                             T.copy(C_shared_wg0, C[m_start, n_start])
