@@ -33,6 +33,7 @@ Notation:
 """
 
 import functools
+import math
 from typing import Callable, Optional, Tuple
 
 import tilelang
@@ -64,60 +65,131 @@ def _da_cumsum_fwd_kernel(
     H = n_heads
     S = seq_len
 
+    # Parallel Blelloch scan requires Q to be a power of 2.
+    # Mamba standard chunk sizes (64, 128, 256, 512) always satisfy this.
+    _is_pow2 = Q > 0 and (Q & (Q - 1)) == 0
+    if not _is_pow2:
+        raise ValueError(
+            f"chunk_len must be a power of 2 for the parallel scan; got {Q}"
+        )
+    _num_rounds = int(math.log2(Q))
+
     @tilelang.jit(out_idx=[-2, -1])
     def kernel_func(threads: int):
         @T.prim_func
         def main(
-            dt:        T.Tensor((B, S, H), accum_dtype),        # type: ignore  # raw dt input
-            A:         T.Tensor((H,),      accum_dtype),         # type: ignore
-            dt_bias:   T.Tensor((H,),      accum_dtype),         # type: ignore  # may be dummy zeros if not has_dt_bias
-            dt_out:    T.Tensor((B, H, C, Q), accum_dtype),     # type: ignore  # output: processed dt
-            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),     # type: ignore  # output: inclusive cumsum
+            dt:        T.Tensor((B, S, H), accum_dtype),         # type: ignore  # raw dt input
+            A:         T.Tensor((H,),      accum_dtype),          # type: ignore
+            dt_bias:   T.Tensor((H,),      accum_dtype),          # type: ignore  # may be dummy zeros
+            dt_out:    T.Tensor((B, H, C, Q), accum_dtype),      # type: ignore  # output: processed dt
+            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),      # type: ignore  # output: inclusive cumsum
         ):
-            # Grid: one block per (batch, head, chunk).
-            # The serial scan over Q positions runs within each block.
+            # ------------------------------------------------------------------
+            # Grid: one block per (batch, head, chunk) — same as serial version.
+            # threads = Q: one thread per chunk position.
+            #
+            # Algorithm: Blelloch work-efficient parallel prefix scan (O(Q) work,
+            # O(log Q) depth).  A single shared-memory buffer scan_smem[Q] is
+            # modified in-place; the up-sweep and down-sweep phases each operate
+            # on disjoint pairs within each round, so no double-buffering is
+            # needed — a single T.sync_threads() per round suffices.
+            #
+            # Each thread retains its processed dt value (dA_ll) in a local
+            # register throughout the scan so the inclusive sum can be recovered
+            # at the end as: inclusive[ll] = exclusive_scan[ll] + dA_ll.
+            # ------------------------------------------------------------------
             with T.Kernel(B, H, C, threads=threads) as (bb, bh, bc):
-                # Load the per-head decay parameter once (scalar, constant across chunk).
+                ll = T.get_thread_binding(0)
                 dA_head = A[bh]
+                seq_idx = bc * Q + ll
+                in_bounds = seq_idx < S
 
-                # Running prefix accumulator for the inclusive cumsum.
-                running = T.alloc_local((1,), accum_dtype)
-                running[0] = T.float32(0.0)
+                # ---------------------------------------------------------
+                # Step 1: load and process dt; store dt_out.
+                # ---------------------------------------------------------
+                dt_val = T.if_then_else(
+                    in_bounds,
+                    dt[bb, seq_idx, bh],
+                    T.float32(0.0),
+                )
 
-                for l in T.serial(Q):
-                    seq_idx = bc * Q + l
-                    in_bounds = seq_idx < S
+                if has_dt_bias:
+                    dt_val = dt_val + dt_bias[bh]
 
-                    # Step 1: load raw dt; zero-pad out-of-bounds tail positions.
+                if dt_softplus:
                     dt_val = T.if_then_else(
-                        in_bounds,
-                        dt[bb, seq_idx, bh],
-                        T.float32(0.0),
+                        dt_val <= T.float32(20.0),
+                        T.log(T.float32(1.0) + T.exp(dt_val)),
+                        dt_val,
                     )
 
-                    # Step 2: add per-head bias (compile-time conditional).
-                    if has_dt_bias:
-                        dt_val = dt_val + dt_bias[bh]
+                dt_val = T.min(T.max(dt_val, T.float32(dt_min)), T.float32(dt_max))
+                dt_val = T.if_then_else(in_bounds, dt_val, T.float32(0.0))
 
-                    # Step 3: softplus with large-value bypass (compile-time conditional).
-                    # Uses log(1 + exp(x)) for x <= 20; identity for x > 20 to avoid overflow.
-                    if dt_softplus:
-                        dt_val = T.if_then_else(
-                            dt_val <= T.float32(20.0),
-                            T.log(T.float32(1.0) + T.exp(dt_val)),
-                            dt_val,
-                        )
+                dt_out[bb, bh, bc, ll] = dt_val
 
-                    # Step 4: clamp to [dt_min, dt_max].
-                    dt_val = T.min(T.max(dt_val, T.float32(dt_min)), T.float32(dt_max))
+                # ---------------------------------------------------------
+                # Step 2: load into scan buffer.
+                #   dA_ll is the per-thread register holding dt_val * A[h];
+                #   it is used after the scan to convert exclusive → inclusive.
+                # ---------------------------------------------------------
+                dA_ll = dt_val * dA_head
 
-                    # Step 5: re-apply out-of-bounds zero mask after bias/softplus/clamp.
-                    dt_val = T.if_then_else(in_bounds, dt_val, T.float32(0.0))
+                scan_smem = T.alloc_shared((Q,), accum_dtype)
+                scan_smem[ll] = dA_ll
 
-                    # Step 6: store processed dt and accumulate dA_cumsum.
-                    dt_out[bb, bh, bc, l] = dt_val
-                    running[0] = running[0] + dt_val * dA_head
-                    dA_cumsum[bb, bh, bc, l] = running[0]
+                T.sync_threads()
+
+                # ---------------------------------------------------------
+                # Step 3: Blelloch up-sweep (reduce phase).
+                #   Round d, stride 2^d: thread ll active when
+                #   (ll + 1) % (2 * stride) == 0  ↔  ll is the right element
+                #   of each active pair.  Each pair is disjoint → no RAW hazard.
+                #   ll is already bound to the thread index; use it directly
+                #   rather than launching a nested T.Parallel loop.
+                #   Rounds are unrolled at Python trace-time; each stride is a
+                #   compile-time constant.
+                # ---------------------------------------------------------
+                for _d in range(_num_rounds):
+                    _stride = 1 << _d
+                    if (ll + 1) % (2 * _stride) == 0:
+                        scan_smem[ll] = scan_smem[ll] + scan_smem[ll - _stride]
+                    T.sync_threads()
+
+                # ---------------------------------------------------------
+                # Step 4: clear the last element (convert total→identity for
+                # the exclusive scan).
+                # ---------------------------------------------------------
+                if ll == Q - 1:
+                    scan_smem[ll] = T.float32(0.0)
+
+                T.sync_threads()
+
+                # ---------------------------------------------------------
+                # Step 5: Blelloch down-sweep (distribute phase).
+                #   Active threads same as up-sweep but in reverse stride order.
+                #   Each active thread does a swap+add on a disjoint pair.
+                #   temp_left/right are per-thread local registers used to
+                #   capture both values before either write occurs.
+                # ---------------------------------------------------------
+                temp_left  = T.alloc_local((1,), accum_dtype)
+                temp_right = T.alloc_local((1,), accum_dtype)
+
+                for _d in range(_num_rounds):
+                    _stride = 1 << (_num_rounds - 1 - _d)
+                    if (ll + 1) % (2 * _stride) == 0:
+                        temp_left[0]  = scan_smem[ll - _stride]
+                        temp_right[0] = scan_smem[ll]
+                        scan_smem[ll - _stride] = temp_right[0]
+                        scan_smem[ll]           = temp_left[0] + temp_right[0]
+                    T.sync_threads()
+
+                # ---------------------------------------------------------
+                # Step 6: write outputs.
+                #   scan_smem[ll] is now the exclusive prefix; adding dA_ll
+                #   (this thread's original contribution) gives the inclusive sum.
+                # ---------------------------------------------------------
+                dA_cumsum[bb, bh, bc, ll] = scan_smem[ll] + dA_ll
 
         return main
 
@@ -215,21 +287,22 @@ class DaCumsumFwdKernel(Kernel):
             dt_softplus, has_dt_bias, dt_min, dt_max,
         )
         self.init_config(config, tune)
+        if self.config.get("threads") != self.chunk_len:
+            raise ValueError(
+                f"DaCumsumFwdKernel requires threads == chunk_len "
+                f"({self.chunk_len}) for the parallel Blelloch scan, "
+                f"but got threads={self.config.get('threads')}."
+            )
 
     @property
     def default_config(self) -> dict:
-        # The inner loop is a serial prefix scan with no inner parallelism,
-        # so a single thread per block is the natural choice.
-        return {"threads": 1}
+        # threads = chunk_len: one thread per chunk position for the Blelloch scan.
+        return {"threads": self.chunk_len}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # The inner scan is T.serial(Q): every thread executes the same loop
-        # and writes to the same locations.  Multiple threads cause redundant
-        # work and write contention with no benefit.  threads=1 is the only
-        # valid configuration until the scan is parallelised (e.g. warp-level
-        # __shfl_up reduce).
-        return [{"threads": 1}]
+        # threads must equal chunk_len for the parallel Blelloch scan.
+        return [{"threads": self.chunk_len}]
 
     def forward(
         self,
