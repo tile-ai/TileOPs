@@ -83,7 +83,12 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             CUDA is available, the device is SM90+, the 3WG kernel is selected,
             activation is silu_and_mul or gelu_and_mul, and ffn_size is a
             multiple of the fused kernel's block_n (128). Default False
-            reproduces the unfused pipeline exactly.
+            reproduces the unfused pipeline exactly. Performance: at production
+            FFN sizes this is roughly break-even for compute-bound prefill (the
+            dual-B epilogue is constrained to block_n=128, offsetting the
+            eliminated gate_up round-trip) and a small (~3%) win for
+            memory-bound decode; benefits grow as the token count shrinks.
+            Default False is recommended for prefill-heavy serving.
 
     Example (decode-optimized opt-out):
         from tileops.kernels.moe.moe_grouped_gemm_nopad import (
