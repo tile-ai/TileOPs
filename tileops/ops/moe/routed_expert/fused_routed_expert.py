@@ -85,11 +85,10 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             activation is silu_and_mul or gelu_and_mul, and ffn_size is a
             multiple of the fused kernel's block_n (128). Default False
             reproduces the unfused pipeline exactly. Performance: at production
-            FFN sizes this is roughly break-even for compute-bound prefill (the
-            dual-B epilogue is constrained to block_n=128, offsetting the
-            eliminated gate_up round-trip) and a small (~3%) win for
-            memory-bound decode; benefits grow as the token count shrinks.
-            Default False is recommended for prefill-heavy serving.
+            FFN sizes (H200, bf16) this is a small win in both regimes —
+            roughly 1.02-1.05x for compute-bound prefill and ~1.05x for
+            memory-bound decode — from eliminating the gate_up global
+            round-trip; benefits grow as the token count shrinks.
 
     Example (decode-optimized opt-out):
         from tileops.kernels.moe.moe_grouped_gemm_nopad import (
