@@ -1196,12 +1196,14 @@ def _conv2d_kernel(
     stride_w: int,
     pad_h: int,
     pad_w: int,
+    dilation_h: int,
+    dilation_w: int,
     has_bias: bool,
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    out_h = (h + 2 * pad_h - kernel_h) // stride_h + 1
-    out_w = (w + 2 * pad_w - kernel_w) // stride_w + 1
+    out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     k_total = kernel_h * kernel_w * c_in
 
     # Re-enable automatic async copy once TileLang lowers scalar cp.async
@@ -1254,8 +1256,8 @@ def _conv2d_kernel(
                         kw = kernel_idx % kernel_w
                         oh = spatial_idx // out_w
                         ow = spatial_idx % out_w
-                        ih = oh * stride_h + kh - pad_h
-                        iw = ow * stride_w + kw - pad_w
+                        ih = oh * stride_h + kh * dilation_h - pad_h
+                        iw = ow * stride_w + kw * dilation_w - pad_w
                         in_bound = (
                             (spatial_idx < out_hw)
                             & (k_idx < k_total)
@@ -1354,6 +1356,8 @@ def _conv2d_wrapped_kernel(
     stride_w: int,
     pad_h: int,
     pad_w: int,
+    dilation_h: int,
+    dilation_w: int,
     has_bias: bool,
     dtype: str,
     block_m: int,
@@ -1367,7 +1371,7 @@ def _conv2d_wrapped_kernel(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _conv2d_kernel(
-        n, c_in, h, w, c_out, kernel_h, kernel_w, stride_h, stride_w, pad_h, pad_w, has_bias, dtype
+        n, c_in, h, w, c_out, kernel_h, kernel_w, stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, has_bias, dtype
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
@@ -1384,6 +1388,8 @@ def _(
     stride_w: int,
     pad_h: int,
     pad_w: int,
+    dilation_h: int,
+    dilation_w: int,
     has_bias: bool,
     dtype: str,
     block_m: int,
@@ -1394,8 +1400,8 @@ def _(
     enable_rasterization: bool,
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
-    out_h = (h + 2 * pad_h - kernel_h) // stride_h + 1
-    out_w = (w + 2 * pad_w - kernel_w) // stride_w + 1
+    out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     return torch.empty((n, c_out, out_h, out_w), dtype=inputs[0].dtype, device=inputs[0].device)
 
 class Conv2dKernel(Kernel):
@@ -1414,6 +1420,8 @@ class Conv2dKernel(Kernel):
         stride_w: int,
         pad_h: int,
         pad_w: int,
+        dilation_h: int,
+        dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
         config: Optional[dict] = None,
@@ -1431,10 +1439,12 @@ class Conv2dKernel(Kernel):
         self.stride_w = stride_w
         self.pad_h = pad_h
         self.pad_w = pad_w
+        self.dilation_h = dilation_h
+        self.dilation_w = dilation_w
         self.dtype = dtype
         self.has_bias = has_bias
-        self.out_h = (h + 2 * pad_h - kernel_h) // stride_h + 1
-        self.out_w = (w + 2 * pad_w - kernel_w) // stride_w + 1
+        self.out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+        self.out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
         self.m = n * self.out_h * self.out_w
         self.k_total = c_in * kernel_h * kernel_w
 
@@ -1450,6 +1460,8 @@ class Conv2dKernel(Kernel):
             stride_w,
             pad_h,
             pad_w,
+            dilation_h,
+            dilation_w,
             has_bias,
             self.dtype_str,
         )
@@ -1532,6 +1544,8 @@ class Conv2dKernel(Kernel):
             self.stride_w,
             self.pad_h,
             self.pad_w,
+            self.dilation_h,
+            self.dilation_w,
             self.has_bias,
             self.dtype_str,
             self.config["block_m"],
@@ -1701,13 +1715,16 @@ def _conv3d_kernel(
     pad_d: int,
     pad_h: int,
     pad_w: int,
+    dilation_d: int,
+    dilation_h: int,
+    dilation_w: int,
     has_bias: bool,
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    out_d = (d_in + 2 * pad_d - kernel_d) // stride_d + 1
-    out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
-    out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
+    out_d = (d_in + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
+    out_h = (h_in + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w_in + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     k_total = kernel_d * kernel_h * kernel_w * c_in
 
     # Re-enable automatic async copy once TileLang lowers scalar cp.async
@@ -1762,9 +1779,9 @@ def _conv3d_kernel(
                         od = spatial_idx // (out_h * out_w)
                         oh = (spatial_idx // out_w) % out_h
                         ow = spatial_idx % out_w
-                        id_ = od * stride_d + kd - pad_d
-                        ih = oh * stride_h + kh - pad_h
-                        iw = ow * stride_w + kw - pad_w
+                        id_ = od * stride_d + kd * dilation_d - pad_d
+                        ih = oh * stride_h + kh * dilation_h - pad_h
+                        iw = ow * stride_w + kw * dilation_w - pad_w
                         in_bound = (
                             (spatial_idx < out_dhw)
                             & (k_idx < k_total)
@@ -1824,6 +1841,9 @@ def _conv3d_wrapped_kernel(
     pad_d: int,
     pad_h: int,
     pad_w: int,
+    dilation_d: int,
+    dilation_h: int,
+    dilation_w: int,
     has_bias: bool,
     dtype: str,
     block_m: int,
@@ -1852,6 +1872,9 @@ def _conv3d_wrapped_kernel(
         pad_d,
         pad_h,
         pad_w,
+        dilation_d,
+        dilation_h,
+        dilation_w,
         has_bias,
         dtype,
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
@@ -1874,6 +1897,9 @@ def _(
     pad_d: int,
     pad_h: int,
     pad_w: int,
+    dilation_d: int,
+    dilation_h: int,
+    dilation_w: int,
     has_bias: bool,
     dtype: str,
     block_m: int,
@@ -1884,9 +1910,9 @@ def _(
     enable_rasterization: bool,
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
-    out_d = (d_in + 2 * pad_d - kernel_d) // stride_d + 1
-    out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
-    out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
+    out_d = (d_in + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
+    out_h = (h_in + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w_in + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     return torch.empty(
         (n, c_out, out_d, out_h, out_w),
         dtype=inputs[0].dtype,
@@ -1914,6 +1940,9 @@ class Conv3dKernel(Kernel):
         pad_d: int,
         pad_h: int,
         pad_w: int,
+        dilation_d: int,
+        dilation_h: int,
+        dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
         config: Optional[dict] = None,
@@ -1935,11 +1964,14 @@ class Conv3dKernel(Kernel):
         self.pad_d = pad_d
         self.pad_h = pad_h
         self.pad_w = pad_w
+        self.dilation_d = dilation_d
+        self.dilation_h = dilation_h
+        self.dilation_w = dilation_w
         self.dtype = dtype
         self.has_bias = has_bias
-        self.out_d = (d_in + 2 * pad_d - kernel_d) // stride_d + 1
-        self.out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
-        self.out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
+        self.out_d = (d_in + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
+        self.out_h = (h_in + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+        self.out_w = (w_in + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
         self.m = n * self.out_d * self.out_h * self.out_w
         self.k_total = c_in * kernel_d * kernel_h * kernel_w
 
@@ -1959,6 +1991,9 @@ class Conv3dKernel(Kernel):
             pad_d,
             pad_h,
             pad_w,
+            dilation_d,
+            dilation_h,
+            dilation_w,
             has_bias,
             self.dtype_str,
         )
@@ -2036,6 +2071,9 @@ class Conv3dKernel(Kernel):
             self.pad_d,
             self.pad_h,
             self.pad_w,
+            self.dilation_d,
+            self.dilation_h,
+            self.dilation_w,
             self.has_bias,
             self.dtype_str,
             self.config["block_m"],

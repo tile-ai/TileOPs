@@ -378,8 +378,6 @@ class Conv2dFwdOp(Op):
             padding=self.padding,
             dilation=dilation_tuple,
         )
-        if dilation_tuple != (1, 1):
-            raise NotImplementedError("Conv2d currently supports dilation=1 only")
         self.dilation = dilation_tuple
         self.groups = groups
         self.has_bias = _has_bias
@@ -413,6 +411,8 @@ class Conv2dFwdOp(Op):
                 **kernel_kwargs,
                 kernel_h=self.kernel_size[0],
                 kernel_w=self.kernel_size[1],
+                dilation_h=self.dilation[0],
+                dilation_w=self.dilation[1],
             )
         else:
             raise NotImplementedError(
@@ -557,8 +557,6 @@ class Conv3dFwdOp(Op):
             padding=self.padding,
             dilation=dilation_tuple,
         )
-        if dilation_tuple != (1, 1, 1):
-            raise NotImplementedError("Conv3d currently supports dilation=1 only")
         self.dilation = dilation_tuple
         self.groups = groups
         self.has_bias = _has_bias
@@ -583,6 +581,9 @@ class Conv3dFwdOp(Op):
             pad_d=self.padding[0],
             pad_h=self.padding[1],
             pad_w=self.padding[2],
+            dilation_d=self.dilation[0],
+            dilation_h=self.dilation[1],
+            dilation_w=self.dilation[2],
             dtype=dtype,
             has_bias=_has_bias,
             tune=tune,
