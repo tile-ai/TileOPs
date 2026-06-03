@@ -14,14 +14,15 @@ from tileops.kernels.grouped_gemm import (
 from tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg import (
     _DEFAULT_CONFIG as _3WG_DEFAULT_CONFIG,
 )
+from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
+
 # Imported unconditionally: the eligibility check reads its block_n even when
 # use_fused_activation ends up False. The wrapper class itself is deferred to
 # the fused branch (imported lazily in __init__).
 from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
     _DEFAULT_CONFIG as _FUSED_ACT_DEFAULT_CONFIG,
 )
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 from tileops.ops.moe._activation import build_activation_op
 
 from .abc import (
@@ -77,7 +78,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         activation: Gated activation applied to gate_up: 'silu_and_mul' or
             'gelu_and_mul'.
         use_fused_activation: If True, fuse the activation into the gate_up
-            GEMM epilogue via MoeGroupedGemmNopad3WGFusedActKernel (avoids
+            GEMM epilogue via MoeGroupedGemmPersistent3WGFusedActKernel (avoids
             materializing the [numel, 2*ffn] gate_up in global memory). Falls
             back to the separate activation op (with a logged warning) unless:
             CUDA is available, the device is SM90+, the 3WG kernel is selected,
