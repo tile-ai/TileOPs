@@ -114,11 +114,21 @@ class MoeGroupedGemmPersistent3WGFusedActKernel(Kernel):
         sizes[:self.numel % self.num_experts] += 1  # spread remainder; safe when numel < E
         offsets = torch.zeros(self.num_experts, dtype=torch.int32, device="cuda")
         offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+        # Output shape is config-independent; allocate C once and time the
+        # compiled kernel directly so per-config measurements exclude the C
+        # alloc/zero and per-call lru_cache lookup that self.forward incurs.
+        C = torch.empty(self.numel, self.N, dtype=self.dtype, device="cuda")
         for cfg in self.autotune_configs:
             try:
-                self.config = cfg
-                self.forward(A, B, sizes, offsets)
-                ms = _do_bench(lambda: self.forward(A, B, sizes, offsets), warmup=warmup, rep=rep)
+                bm, bn, bk = cfg["block_m"], cfg["block_n"], cfg["block_k"]
+                fn = _fused_act_kernel(
+                    self.numel, self.num_experts, self.N, self.K,
+                    self.dtype_str, self.activation, self.sm_count, bk,
+                )(bm, bn, bk, cfg["num_stages"], cfg["threads"],
+                  cfg.get("group_size_m", 1))
+                fn(A, B, sizes, offsets, C)  # warmup + JIT compile
+                ms = _do_bench(lambda fn=fn: fn(A, B, sizes, offsets, C),
+                               warmup=warmup, rep=rep)
                 if ms < best_ms:
                     best_ms, best_cfg = ms, cfg
             except Exception:
