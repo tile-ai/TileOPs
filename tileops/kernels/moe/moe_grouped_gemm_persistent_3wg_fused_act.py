@@ -163,7 +163,9 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
     the [numel, 2*ffn] gate_up tensor never reaches global memory.
     """
     accum_dtype = "float"
-    log2_up = max(1, math.ceil(math.log2(num_experts + 1)))
+    # Binary search over [0, num_experts-1] (num_experts elements) needs
+    # ceil(log2(num_experts)) iterations to converge to one element.
+    log2_up = max(1, math.ceil(math.log2(num_experts)))
 
     assert threads == 384, (
         f"fused-act pingpong persistent grouped GEMM requires threads=384 "
@@ -545,7 +547,9 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
     never reaches global memory.
     """
     accum_dtype = "float"
-    log2_up = max(1, math.ceil(math.log2(num_experts + 1)))
+    # Binary search over [0, num_experts-1] (num_experts elements) needs
+    # ceil(log2(num_experts)) iterations to converge to one element.
+    log2_up = max(1, math.ceil(math.log2(num_experts)))
 
     assert threads == 384, (
         f"fused-act cooperative persistent grouped GEMM requires threads=384 "
