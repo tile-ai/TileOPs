@@ -95,12 +95,13 @@ class SSDChunkScanFwdOp(Op):
         cb = cb.contiguous()
         dA_cumsum = dA_cumsum.contiguous()
         C = C.contiguous()
-        # Pre-cast to fp16 here so the kernel's forward() sees a float16 tensor
-        # and avoids a redundant .half() allocation on the hot path.
+        # Pre-cast prev_states to the kernel's compute dtype (fp16 or bf16).
+        # No-op when the caller already passes the right dtype, avoiding a
+        # redundant allocation on the hot path.
         prev_states = (
             prev_states.contiguous()
-            if prev_states.dtype == torch.float16
-            else prev_states.half().contiguous()
+            if prev_states.dtype == self.dtype
+            else prev_states.to(self.dtype).contiguous()
         )
         dt = dt.contiguous()
 
