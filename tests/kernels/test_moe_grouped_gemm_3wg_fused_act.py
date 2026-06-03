@@ -92,7 +92,7 @@ def test_pingpong_partial_m_tile():
     """Force arows < block_m so the predicated STG fallback path runs."""
     # Per-expert sizes deliberately NOT multiples of block_m (64): 50, 30, 70, 90
     # -> each expert's last M-tile is partial.
-    E, top_k, ffn, K = 4, 1, 256, 128
+    E, _, ffn, K = 4, 1, 256, 128
     sizes_list = [50, 30, 70, 90]
     numel = sum(sizes_list)
     dev = "cuda"
