@@ -9,8 +9,9 @@ Official-aligned interface (matches _chunk_scan_fwd in mamba_ssm):
   dA_cumsum:    (batch, n_heads, num_chunks, chunk_len)        float32
   C:            (batch, seqlen, n_groups, d_state)             dtype
                 -- readout matrix; seqlen-fused, group-owned
-  prev_states:  (batch, num_chunks, n_heads, d_head, d_state)  float32
+  prev_states:  (batch, num_chunks, n_heads, d_head, d_state)  float16
                 -- state entering each chunk; P before N (official convention)
+                -- stored as fp16 to halve HBM3 bandwidth vs float32
   dt:           (batch, n_heads, num_chunks, chunk_len)        dtype
 
 Output:
@@ -100,7 +101,7 @@ def _ssd_chunk_scan_fwd_kernel(
         cb_shape         = (B, C, G, Q, Q)     # [B, C, G, L, L]  group-owned
         dA_shape         = (B, H, C, Q)        # [B, H, C, L]
         c_shape          = (B, S, G, N)        # [B, S, G, N]     group-owned
-        states_shape     = (B, C, H, P, N)     # [B, C, H, P, N]  P before N
+        states_shape     = (B, C, H, P, N)     # [B, C, H, P, N]  P before N  (fp16)
         dt_shape         = (B, H, C, Q)        # [B, H, C, L]
         out_shape        = (B, S, H, P)        # [B, S, H, P]
 
@@ -110,7 +111,7 @@ def _ssd_chunk_scan_fwd_kernel(
             cb:          T.Tensor(cb_shape, dtype),           # type: ignore
             dA_cumsum:   T.Tensor(dA_shape, accum_dtype),    # type: ignore
             C_mat:       T.Tensor(c_shape, dtype),            # type: ignore
-            prev_states: T.Tensor(states_shape, accum_dtype),  # type: ignore
+            prev_states: T.Tensor(states_shape, dtype),  # type: ignore  fp16 (halves HBM3 traffic)
             dt:          T.Tensor(dt_shape, dtype),           # type: ignore
             out:         T.Tensor(out_shape, accum_dtype),   # type: ignore
         ):
@@ -165,7 +166,7 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # prev_states[b, c, h, p, n]  layout: [B, C, H, P, N]  float32
+                    # prev_states[b, c, h, p, n]  layout: [B, C, H, P, N]  fp16
                     # Iterate (block_p, block_n) so consecutive threads vary nn (the contiguous N
                     # dim), giving coalesced 128-byte loads instead of strided-by-N accesses.
                     for pp, nn in T.Parallel(block_p, block_n):
@@ -173,7 +174,7 @@ def _ssd_chunk_scan_fwd_kernel(
                         p_abs = p0 + pp
                         state_tile[nn, pp] = T.if_then_else(
                             (n_abs < N) and (p_abs < P),
-                            T.cast(prev_states[bz, bc, bh, p_abs, n_abs], dtype),
+                            prev_states[bz, bc, bh, p_abs, n_abs],
                             T.cast(T.float32(0.0), dtype),
                         )
 
@@ -440,7 +441,7 @@ class SSDChunkScanFwdKernel(Kernel):
       cb:          [B, C, G, L, L]     dtype       group-owned
       dA_cumsum:   [B, H, C, L]        float32
       C:           [B, S, G, N]        dtype       seqlen-fused, group-owned
-      prev_states: [B, C, H, P, N]     float32     P before N
+      prev_states: [B, C, H, P, N]     float16     P before N  (fp16 halves HBM3 traffic)
       dt:          [B, H, C, L]        dtype
 
     Output:
@@ -531,17 +532,25 @@ class SSDChunkScanFwdKernel(Kernel):
             cb:          [B, C, G, L, L]     dtype
             dA_cumsum:   [B, H, C, L]        float32
             C:           [B, S, G, N]        dtype
-            prev_states: [B, C, H, P, N]     float32     P before N
+            prev_states: [B, C, H, P, N]     float16     P before N  (fp16 halves HBM3 traffic)
             dt:          [B, H, C, L]        dtype
 
         Returns:
             out: [B, S, H, P]  float32
         """
-        return _ssd_chunk_scan_fwd_wrapped(
+        # Call the raw JIT kernel directly rather than through the custom_op dispatch
+        # wrapper (_ssd_chunk_scan_fwd_wrapped). The wrapper adds Python / torch-dispatch
+        # overhead per call.
+        # prev_states is cast to fp16 here if needed; callers that can pre-cast to fp16
+        # avoid this allocation on the hot path.
+        ps = prev_states if prev_states.dtype == torch.float16 else prev_states.half()
+        return _ssd_chunk_scan_fwd_kernel(
             self.batch, self.num_chunks, self.chunk_len, self.n_heads,
             self.d_head, self.d_state, self.n_groups, self.dtype_str,
+        )(
             self.config["block_l"], self.config["block_p"], self.config["block_n"],
             self.config["block_s"], self.config["threads"],
+        )(
             x.contiguous(), cb.contiguous(), dA_cumsum.contiguous(),
-            C.contiguous(), prev_states.contiguous(), dt.contiguous(),
+            C.contiguous(), ps.contiguous(), dt.contiguous(),
         )
