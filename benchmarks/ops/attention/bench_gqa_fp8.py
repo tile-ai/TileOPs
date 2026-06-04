@@ -84,9 +84,9 @@ def _fa3_gqa_fp8_fwd():
             k,
             v,
             causal=False,
-            descale_q=q_descale,
-            descale_k=k_descale,
-            descale_v=v_descale,
+            q_descale=q_descale,
+            k_descale=k_descale,
+            v_descale=v_descale,
         )
 
     return _run
