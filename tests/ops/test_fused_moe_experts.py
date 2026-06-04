@@ -354,6 +354,27 @@ def test_use_fused_activation_parity(activation):
     torch.testing.assert_close(fused_out, run(False), rtol=3e-2, atol=3e-2)
 
 
+@pytest.mark.smoke
+def test_use_fused_activation_disabled_on_gemm_override():
+    """A moe_grouped_gemm_kernel override must disable fusion.
+
+    The fused gate_up wrapper cannot honor a moe_grouped_gemm_kernel override
+    (it keys off moe_grouped_gemm_fused_act_kernel), so enabling fusion would
+    apply the override only to the down GEMM, leaving a fused 3WG gate_up — an
+    inconsistent pipeline. Eligibility must fall back to the unfused path.
+    """
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Requires SM90")
+    from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
+    experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        num_tokens=256, num_experts=8, top_k=2, hidden_size=256, ffn_size=768,
+        dtype=torch.bfloat16, activation="silu_and_mul", use_fused_activation=True,
+        kernel_map={"moe_grouped_gemm_kernel": MoeGroupedGemmNopadKernel},
+    )
+    assert experts.use_fused_activation is False
+    assert experts._activation_op is not None
+
+
 class TestBuildActivationOp:
 
     @pytest.mark.smoke

@@ -149,6 +149,15 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
                 )
                 kernel_cls = MoeGroupedGemmNopadKernel
 
+        # A caller can steer the gate_up GEMM either via gemm_kernel (already
+        # folded into kernel_cls) or via kernel_map["moe_grouped_gemm_kernel"]
+        # (merged into the unfused gate_up / down ops below). The fused gate_up
+        # wrapper keys off "moe_grouped_gemm_fused_act_kernel" and cannot honor a
+        # "moe_grouped_gemm_kernel" override, so enabling fusion alongside a
+        # non-3WG override would silently produce a fused 3WG gate_up next to an
+        # overridden down GEMM. Disable fusion in that case so the override
+        # applies uniformly through the unfused path.
+        gemm_override = (kernel_map or {}).get("moe_grouped_gemm_kernel")
         self.use_fused_activation = use_fused_activation
         if use_fused_activation:
             fused_block_n = _FUSED_ACT_DEFAULT_CONFIG["block_n"]
@@ -156,13 +165,16 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
                 torch.cuda.is_available()
                 and torch.cuda.get_device_capability()[0] >= 9
                 and kernel_cls is GroupedGemmPersistent3WGKernel
+                and (gemm_override is None
+                     or gemm_override is GroupedGemmPersistent3WGKernel)
                 and activation in ("silu_and_mul", "gelu_and_mul")
                 and (ffn_size % fused_block_n == 0)
             )
             if not ok:
                 _logger.warning(
                     "use_fused_activation=True not eligible (requires CUDA + SM90 + "
-                    "GroupedGemmPersistent3WGKernel + activation in {silu_and_mul, "
+                    "GroupedGemmPersistent3WGKernel gate_up GEMM with no conflicting "
+                    "moe_grouped_gemm_kernel override + activation in {silu_and_mul, "
                     "gelu_and_mul} + ffn_size %% %d == 0); falling back to unfused "
                     "activation. ffn_size=%d, activation=%s.",
                     fused_block_n, ffn_size, activation,

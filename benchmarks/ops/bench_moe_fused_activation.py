@@ -13,9 +13,10 @@ Shape (fused-eligible: ffn_size % 128 == 0):
   H=2048, F=768, E=8, K=2, dtype=bfloat16, activation=silu_and_mul
   Model reference: Qwen2.5/Mistral-scale MoE configuration.
 
-Timing covers only the experts forward pass (gate_up GEMM → activation →
-down GEMM → weighted reduce); permute and unpermute are identical across
-all three variants and are excluded.
+Timing covers the full experts forward() (permute → gate_up GEMM → activation
+→ down GEMM → unpermute/weighted reduce). permute and unpermute are identical
+across the fused and unfused variants, so the fused-vs-unfused ratio isolates
+the gate_up + activation change even though both endpoints are timed end-to-end.
 
 Memory note: the unfused path materialises a [numel, 2*ffn_size] gate_up
 intermediate in HBM before reading it back for the activation, whereas the
