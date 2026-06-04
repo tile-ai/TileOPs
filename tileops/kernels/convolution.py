@@ -1,6 +1,6 @@
 import functools
 import itertools
-from typing import Optional
+from typing import Optional, Tuple
 
 import tilelang
 import tilelang.language as T
@@ -59,13 +59,14 @@ def _conv1d_kernel(
     c_out: int,
     kernel_l: int,
     stride_l: int,
-    pad_l: int,
+    pad_left: int,
+    pad_right: int,
     dilation_l: int,
     has_bias: bool,
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     k_total = c_in * kernel_l
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -100,8 +101,8 @@ def _conv1d_kernel(
 
                 tile_ol_start = bx * block_n
                 tile_ol_end = tile_ol_start + block_n - 1
-                tile_input_start = tile_ol_start * stride_l - pad_l
-                tile_input_end = tile_ol_end * stride_l + (kernel_l - 1) * dilation_l - pad_l
+                tile_input_start = tile_ol_start * stride_l - pad_left
+                tile_input_end = tile_ol_end * stride_l + (kernel_l - 1) * dilation_l - pad_left
                 tile_spatial_full = (
                     (tile_ol_end < out_l)
                     & (tile_input_start >= 0)
@@ -117,7 +118,7 @@ def _conv1d_kernel(
                         ol = bx * block_n + j
                         kw = k_idx // c_in
                         ci = k_idx % c_in
-                        il = ol * stride_l + kw * dilation_l - pad_l
+                        il = ol * stride_l + kw * dilation_l - pad_left
                         if tile_full:
                             data_shared[i, j] = x[bz, ci, il]
                         else:
@@ -170,13 +171,14 @@ def _conv1d_direct_kernel(
     c_out: int,
     kernel_l: int,
     stride_l: int,
-    pad_l: int,
+    pad_left: int,
+    pad_right: int,
     dilation_l: int,
     has_bias: bool,
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _conv1d_direct_func(
@@ -208,7 +210,7 @@ def _conv1d_direct_kernel(
                     for i, j in T.Parallel(block_m, block_n):
                         oc = by * block_m + i
                         ol = bx * block_n + j
-                        il = ol * stride_l + kw * dilation_l - pad_l
+                        il = ol * stride_l + kw * dilation_l - pad_left
                         valid = (oc < c_out) & (ol < out_l) & (il >= 0) & (il < l_in)
                         out_local[i, j] += T.if_then_else(
                             valid,
@@ -242,7 +244,8 @@ def _conv1d_group_kernel(
     c_out: int,
     kernel_l: int,
     stride_l: int,
-    pad_l: int,
+    pad_left: int,
+    pad_right: int,
     dilation_l: int,
     has_bias: bool,
     dtype: str = "float16",
@@ -251,7 +254,7 @@ def _conv1d_group_kernel(
     c_out_g: int = 0,
 ):
     accum_dtype = "float"
-    out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     c_in_g = c_in_g if c_in_g > 0 else c_in // groups
     c_out_g = c_out_g if c_out_g > 0 else c_out // groups
     k_total = c_in_g * kernel_l
@@ -307,7 +310,7 @@ def _conv1d_group_kernel(
                         ol = bx * block_n + j
                         kw = k_idx // c_in_g
                         ci_g = k_idx % c_in_g
-                        il = ol * stride_l + kw * dilation_l - pad_l
+                        il = ol * stride_l + kw * dilation_l - pad_left
                         data_shared[k, j] = T.if_then_else(
                             (k_idx < k_total)
                             & (ol < out_l)
@@ -440,7 +443,8 @@ def _conv1d_wrapped_kernel(
     c_out: int,
     kernel_l: int,
     stride_l: int,
-    pad_l: int,
+    pad_left: int,
+    pad_right: int,
     dilation_l: int,
     has_bias: bool,
     dtype: str,
@@ -455,7 +459,7 @@ def _conv1d_wrapped_kernel(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _conv1d_kernel(
-        n, c_in, l_in, c_out, kernel_l, stride_l, pad_l, dilation_l, has_bias, dtype
+        n, c_in, l_in, c_out, kernel_l, stride_l, pad_left, pad_right, dilation_l, has_bias, dtype
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
@@ -467,7 +471,8 @@ def _conv1d_direct_wrapped_kernel(
     c_out: int,
     kernel_l: int,
     stride_l: int,
-    pad_l: int,
+    pad_left: int,
+    pad_right: int,
     dilation_l: int,
     has_bias: bool,
     dtype: str,
@@ -482,7 +487,7 @@ def _conv1d_direct_wrapped_kernel(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _conv1d_direct_kernel(
-        n, c_in, l_in, c_out, kernel_l, stride_l, pad_l, dilation_l, has_bias, dtype
+        n, c_in, l_in, c_out, kernel_l, stride_l, pad_left, pad_right, dilation_l, has_bias, dtype
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
@@ -494,7 +499,8 @@ def _conv1d_group_wrapped_kernel(
     c_out: int,
     kernel_l: int,
     stride_l: int,
-    pad_l: int,
+    pad_left: int,
+    pad_right: int,
     dilation_l: int,
     has_bias: bool,
     dtype: str,
@@ -512,7 +518,7 @@ def _conv1d_group_wrapped_kernel(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     return _conv1d_group_kernel(
-        n, c_in, l_in, c_out, kernel_l, stride_l, pad_l, dilation_l, has_bias, dtype, groups, c_in_g, c_out_g
+        n, c_in, l_in, c_out, kernel_l, stride_l, pad_left, pad_right, dilation_l, has_bias, dtype, groups, c_in_g, c_out_g
     )(block_m, block_n, block_k, num_stages, threads, enable_rasterization)(x, weight, bias)
 
 
@@ -547,7 +553,8 @@ def _(
     c_out: int,
     kernel_l: int,
     stride_l: int,
-    pad_l: int,
+    pad_left: int,
+    pad_right: int,
     dilation_l: int,
     has_bias: bool,
     dtype: str,
@@ -559,7 +566,7 @@ def _(
     enable_rasterization: bool,
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
-    out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     return torch.empty((n, c_out, out_l), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
@@ -571,7 +578,8 @@ def _(
     c_out: int,
     kernel_l: int,
     stride_l: int,
-    pad_l: int,
+    pad_left: int,
+    pad_right: int,
     dilation_l: int,
     has_bias: bool,
     dtype: str,
@@ -583,7 +591,7 @@ def _(
     enable_rasterization: bool,
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
-    out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     return torch.empty((n, c_out, out_l), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
@@ -595,7 +603,8 @@ def _(
     c_out: int,
     kernel_l: int,
     stride_l: int,
-    pad_l: int,
+    pad_left: int,
+    pad_right: int,
     dilation_l: int,
     has_bias: bool,
     dtype: str,
@@ -610,7 +619,7 @@ def _(
     enable_rasterization: bool,
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
-    out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     return torch.empty((n, c_out, out_l), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
@@ -753,7 +762,7 @@ class Conv1dKernel(Kernel):
         c_out: int,
         kernel_l: int,
         stride_l: int,
-        pad_l: int,
+        pad_l: Tuple[int, int],
         dtype: torch.dtype,
         dilation_l: int = 1,
         has_bias: bool = False,
@@ -768,10 +777,11 @@ class Conv1dKernel(Kernel):
         self.kernel_l = kernel_l
         self.stride_l = stride_l
         self.pad_l = pad_l
+        self.pad_left, self.pad_right = pad_l
         self.dilation_l = dilation_l
         self.dtype = dtype
         self.has_bias = has_bias
-        self.out_l = (l_in + 2 * pad_l - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+        self.out_l = (l_in + sum(pad_l) - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
         self.m = n * self.out_l
         self.k_total = c_in * kernel_l
         self._weight_flat_cache_source: Optional[torch.Tensor] = None
@@ -784,7 +794,8 @@ class Conv1dKernel(Kernel):
             c_out,
             kernel_l,
             stride_l,
-            pad_l,
+            self.pad_left,
+            self.pad_right,
             dilation_l,
             has_bias,
             self.dtype_str,
@@ -870,7 +881,8 @@ class Conv1dKernel(Kernel):
             self.c_out,
             self.kernel_l,
             self.stride_l,
-            self.pad_l,
+            self.pad_left,
+            self.pad_right,
             self.dilation_l,
             self.has_bias,
             self.dtype_str,
@@ -897,7 +909,7 @@ class GroupConv1dKernel(Kernel):
         c_out: int,
         kernel_l: int,
         stride_l: int,
-        pad_l: int,
+        pad_l: Tuple[int, int],
         dtype: torch.dtype,
         dilation_l: int = 1,
         has_bias: bool = False,
@@ -915,6 +927,7 @@ class GroupConv1dKernel(Kernel):
         self.kernel_l = kernel_l
         self.stride_l = stride_l
         self.pad_l = pad_l
+        self.pad_left, self.pad_right = pad_l
         self.dilation_l = dilation_l
         self.groups = groups
         self.c_in_g = c_in_g if c_in_g is not None else c_in // groups
@@ -931,7 +944,8 @@ class GroupConv1dKernel(Kernel):
                 c_out,
                 kernel_l,
                 stride_l,
-                pad_l,
+                self.pad_left,
+                self.pad_right,
                 dilation_l,
                 has_bias,
                 self.dtype_str,
@@ -944,7 +958,8 @@ class GroupConv1dKernel(Kernel):
                 c_out,
                 kernel_l,
                 stride_l,
-                pad_l,
+                self.pad_left,
+                self.pad_right,
                 dilation_l,
                 has_bias,
                 self.dtype_str,
@@ -1060,7 +1075,8 @@ class GroupConv1dKernel(Kernel):
                 self.c_out,
                 self.kernel_l,
                 self.stride_l,
-                self.pad_l,
+                self.pad_left,
+                self.pad_right,
                 self.dilation_l,
                 self.has_bias,
                 self.dtype_str,
@@ -1081,7 +1097,8 @@ class GroupConv1dKernel(Kernel):
             self.c_out,
             self.kernel_l,
             self.stride_l,
-            self.pad_l,
+            self.pad_left,
+            self.pad_right,
             self.dilation_l,
             self.has_bias,
             self.dtype_str,

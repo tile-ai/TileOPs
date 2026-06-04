@@ -265,6 +265,37 @@ def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
+    "op_cls, use_bias",
+    [
+        pytest.param(Conv1dFwdOp, False, id="no-bias"),
+        pytest.param(Conv1dBiasFwdOp, True, id="bias"),
+    ],
+)
+def test_conv1d_same_padding_even_kernel_matches_torch(op_cls, use_bias: bool) -> None:
+    n, c_in, l_in, c_out, kernel_size = 1, 16, 129, 32, 2
+    op_kwargs = {"bias": use_bias} if op_cls is Conv1dBiasFwdOp else {}
+    op = op_cls(
+        n=n,
+        c_in=c_in,
+        l_in=l_in,
+        c_out=c_out,
+        kernel_size=kernel_size,
+        padding="same",
+        **op_kwargs,
+    )
+    x = torch.randn(n, c_in, l_in, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(c_out, c_in, kernel_size, device="cuda", dtype=torch.float16).contiguous()
+    bias = (
+        torch.randn(c_out, device="cuda", dtype=torch.float16).contiguous()
+        if use_bias else None
+    )
+    out = op(x, weight, bias) if use_bias else op(x, weight)
+    ref = F.conv1d(x, weight, bias=bias, padding="same").contiguous()
+    torch.testing.assert_close(out, ref, atol=2e-3, rtol=3e-3)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
     "kernel_size, stride, padding, dilation, expected_kernel",
     [
         pytest.param(3, 1, 1, 1, Conv1dKernel, id="generic"),
