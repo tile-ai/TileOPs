@@ -375,6 +375,36 @@ def test_use_fused_activation_disabled_on_gemm_override():
     assert experts._activation_op is not None
 
 
+@pytest.mark.smoke
+def test_top_level_api_forwards_use_fused_activation():
+    """FusedMoe and its subclasses thread use_fused_activation to the default experts."""
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Requires SM90")
+    from tileops.ops.moe.fused_moe import FusedMoe, FusedMoeFwdCbFwdOp, FusedMoeFwdOp
+    from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
+    common = dict(num_tokens=256, num_experts=8, top_k=2, hidden_size=256,
+                  ffn_size=768, dtype=torch.bfloat16)
+    for cls in (FusedMoe, FusedMoeFwdOp, FusedMoeFwdCbFwdOp, SharedFusedMoE):
+        assert cls(**common, use_fused_activation=True)._experts.use_fused_activation is True
+        assert cls(**common)._experts.use_fused_activation is False
+
+
+@pytest.mark.smoke
+def test_use_fused_activation_rejected_with_injected_experts():
+    """The flag only configures the default experts; combining it with an
+    injected experts= instance must raise rather than silently no-op."""
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Requires SM90")
+    from tileops.ops.moe.fused_moe import FusedMoeFwdOp
+    experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        num_tokens=256, num_experts=8, top_k=2, hidden_size=256, ffn_size=768,
+        dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="use_fused_activation"):
+        FusedMoeFwdOp(num_tokens=256, num_experts=8, top_k=2, hidden_size=256,
+                      ffn_size=768, dtype=torch.bfloat16, experts=experts,
+                      use_fused_activation=True)
+
+
 class TestBuildActivationOp:
 
     @pytest.mark.smoke
