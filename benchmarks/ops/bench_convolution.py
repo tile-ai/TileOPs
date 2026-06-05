@@ -138,6 +138,7 @@ class Conv2dBenchCase:
         kernel_size: tuple[int, int],
         stride: tuple[int, int],
         padding: tuple[int, int],
+        dilation: tuple[int, int],
         dtype: torch.dtype,
     ) -> None:
         self.n = n
@@ -148,6 +149,7 @@ class Conv2dBenchCase:
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
+        self.dilation = dilation
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
@@ -171,7 +173,7 @@ class Conv2dBenchCase:
             bias=bias,
             stride=self.stride,
             padding=self.padding,
-            dilation=1,
+            dilation=self.dilation,
             groups=1,
         )
 
@@ -179,14 +181,14 @@ class Conv2dBenchmark(BenchmarkBase[Conv2dBenchCase]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
-        out_h = (t.h + 2 * t.padding[0] - t.kernel_size[0]) // t.stride[0] + 1
-        out_w = (t.w + 2 * t.padding[1] - t.kernel_size[1]) // t.stride[1] + 1
+        out_h = (t.h + 2 * t.padding[0] - t.dilation[0] * (t.kernel_size[0] - 1) - 1) // t.stride[0] + 1
+        out_w = (t.w + 2 * t.padding[1] - t.dilation[1] * (t.kernel_size[1] - 1) - 1) // t.stride[1] + 1
         return 2.0 * t.n * t.c_out * out_h * out_w * t.c_in * t.kernel_size[0] * t.kernel_size[1]
 
     def calculate_memory(self) -> Optional[float]:
         t = self.workload
-        out_h = (t.h + 2 * t.padding[0] - t.kernel_size[0]) // t.stride[0] + 1
-        out_w = (t.w + 2 * t.padding[1] - t.kernel_size[1]) // t.stride[1] + 1
+        out_h = (t.h + 2 * t.padding[0] - t.dilation[0] * (t.kernel_size[0] - 1) - 1) // t.stride[0] + 1
+        out_w = (t.w + 2 * t.padding[1] - t.dilation[1] * (t.kernel_size[1] - 1) - 1) // t.stride[1] + 1
         bytes_ = (
             t.n * t.c_in * t.h * t.w
             + t.c_out * t.c_in * t.kernel_size[0] * t.kernel_size[1]
@@ -196,24 +198,26 @@ class Conv2dBenchmark(BenchmarkBase[Conv2dBenchCase]):
 
 
 _CONV2D_BENCH_PARAMS = [
-    pytest.param(2, 64, 56, 56, 64, (3, 3), (1, 1), (1, 1), torch.float16, True, id="resnet-3x3-fp16"),
-    pytest.param(1, 3, 112, 112, 64, (3, 3), (2, 2), (1, 1), torch.float16, True, id="stem-3x3-s2-fp16"),
-    pytest.param(1, 128, 56, 56, 256, (3, 3), (2, 2), (1, 1), torch.float16, True, id="stage-transition-3x3-s2-fp16"),
-    pytest.param(1, 256, 112, 112, 512, (3, 3), (1, 1), (1, 1), torch.float16, True, id="highres-3x3-s1-fp16"),
-    pytest.param(1, 64, 56, 56, 128, (5, 5), (1, 1), (2, 2), torch.float16, True, id="midres-5x5-s1-fp16"),
-    pytest.param(1, 128, 56, 56, 256, (5, 5), (2, 2), (2, 2), torch.float16, True, id="stage-transition-5x5-s2-fp16"),
-    pytest.param(1, 128, 28, 28, 128, (3, 3), (2, 2), (1, 1), torch.bfloat16, True, id="stride2-bf16"),
-    pytest.param(2, 64, 56, 56, 256, (1, 1), (1, 1), (0, 0), torch.float16, True, id="resnet-1x1-fp16"),
-    pytest.param(2, 128, 28, 28, 512, (1, 1), (1, 1), (0, 0), torch.float16, True, id="bottleneck-expand-1x1-fp16"),
-    pytest.param(2, 512, 28, 28, 128, (1, 1), (1, 1), (0, 0), torch.float16, True, id="bottleneck-reduce-1x1-fp16"),
-    pytest.param(1, 256, 14, 14, 1024, (1, 1), (1, 1), (0, 0), torch.float16, True, id="late-stage-1x1-fp16"),
-    pytest.param(1, 512, 7, 7, 2048, (1, 1), (1, 1), (0, 0), torch.float16, True, id="classifier-1x1-fp16"),
-    pytest.param(2, 64, 56, 56, 256, (1, 1), (1, 1), (0, 0), torch.bfloat16, True, id="resnet-1x1-bf16"),
+    pytest.param(2, 64, 56, 56, 64, (3, 3), (1, 1), (1, 1), (1, 1), torch.float16, True, id="resnet-3x3-fp16"),
+    pytest.param(1, 3, 112, 112, 64, (3, 3), (2, 2), (1, 1), (1, 1), torch.float16, True, id="stem-3x3-s2-fp16"),
+    pytest.param(1, 128, 56, 56, 256, (3, 3), (2, 2), (1, 1), (1, 1), torch.float16, True, id="stage-transition-3x3-s2-fp16"),
+    pytest.param(1, 256, 112, 112, 512, (3, 3), (1, 1), (1, 1), (1, 1), torch.float16, True, id="highres-3x3-s1-fp16"),
+    pytest.param(1, 64, 56, 56, 128, (5, 5), (1, 1), (2, 2), (1, 1), torch.float16, True, id="midres-5x5-s1-fp16"),
+    pytest.param(1, 128, 56, 56, 256, (5, 5), (2, 2), (2, 2), (1, 1), torch.float16, True, id="stage-transition-5x5-s2-fp16"),
+    pytest.param(1, 128, 28, 28, 128, (3, 3), (2, 2), (1, 1), (1, 1), torch.bfloat16, True, id="stride2-bf16"),
+    pytest.param(2, 64, 56, 56, 256, (1, 1), (1, 1), (0, 0), (1, 1), torch.float16, True, id="resnet-1x1-fp16"),
+    pytest.param(2, 128, 28, 28, 512, (1, 1), (1, 1), (0, 0), (1, 1), torch.float16, True, id="bottleneck-expand-1x1-fp16"),
+    pytest.param(2, 512, 28, 28, 128, (1, 1), (1, 1), (0, 0), (1, 1), torch.float16, True, id="bottleneck-reduce-1x1-fp16"),
+    pytest.param(1, 256, 14, 14, 1024, (1, 1), (1, 1), (0, 0), (1, 1), torch.float16, True, id="late-stage-1x1-fp16"),
+    pytest.param(1, 512, 7, 7, 2048, (1, 1), (1, 1), (0, 0), (1, 1), torch.float16, True, id="classifier-1x1-fp16"),
+    pytest.param(2, 64, 56, 56, 256, (1, 1), (1, 1), (0, 0), (1, 1), torch.bfloat16, True, id="resnet-1x1-bf16"),
+    # DeepLabV3/DeepLabV3+ ASPP branch: 3x3 atrous conv on stride-16 encoder features.
+    pytest.param(1, 2048, 32, 32, 256, (3, 3), (1, 1), (12, 12), (12, 12), torch.float16, True, id="deeplabv3-aspp-3x3-rate12-fp16"),
 ]
 
 
 @pytest.mark.parametrize(
-    "n, c_in, h, w, c_out, kernel_size, stride, padding, dtype, tune",
+    "n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, dtype, tune",
     _CONV2D_BENCH_PARAMS,
 )
 def test_conv2d_bench(
@@ -225,10 +229,11 @@ def test_conv2d_bench(
     kernel_size: tuple[int, int],
     stride: tuple[int, int],
     padding: tuple[int, int],
+    dilation: tuple[int, int],
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = Conv2dBenchCase(n, c_in, h, w, c_out, kernel_size, stride, padding, dtype)
+    test = Conv2dBenchCase(n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, dtype)
     bm = Conv2dBenchmark(test)
     inputs = test.gen_inputs()
     x, weight, bias = inputs
@@ -242,6 +247,7 @@ def test_conv2d_bench(
         kernel_size=kernel_size,
         stride=stride,
         padding=padding,
+        dilation=dilation,
         dtype=dtype,
         tune=tune,
     )
@@ -265,6 +271,7 @@ class Conv3dBenchCase:
         kernel_size: tuple[int, int, int],
         stride: tuple[int, int, int],
         padding: tuple[int, int, int],
+        dilation: tuple[int, int, int],
         dtype: torch.dtype,
     ) -> None:
         self.n = n
@@ -276,6 +283,7 @@ class Conv3dBenchCase:
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
+        self.dilation = dilation
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
@@ -302,7 +310,7 @@ class Conv3dBenchCase:
             bias=bias,
             stride=self.stride,
             padding=self.padding,
-            dilation=1,
+            dilation=self.dilation,
             groups=1,
         )
 
@@ -310,16 +318,16 @@ class Conv3dBenchmark(BenchmarkBase[Conv3dBenchCase]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
-        out_d = (t.d + 2 * t.padding[0] - t.kernel_size[0]) // t.stride[0] + 1
-        out_h = (t.h + 2 * t.padding[1] - t.kernel_size[1]) // t.stride[1] + 1
-        out_w = (t.w + 2 * t.padding[2] - t.kernel_size[2]) // t.stride[2] + 1
+        out_d = (t.d + 2 * t.padding[0] - t.dilation[0] * (t.kernel_size[0] - 1) - 1) // t.stride[0] + 1
+        out_h = (t.h + 2 * t.padding[1] - t.dilation[1] * (t.kernel_size[1] - 1) - 1) // t.stride[1] + 1
+        out_w = (t.w + 2 * t.padding[2] - t.dilation[2] * (t.kernel_size[2] - 1) - 1) // t.stride[2] + 1
         return 2.0 * t.n * t.c_out * out_d * out_h * out_w * t.c_in * t.kernel_size[0] * t.kernel_size[1] * t.kernel_size[2]
 
     def calculate_memory(self) -> Optional[float]:
         t = self.workload
-        out_d = (t.d + 2 * t.padding[0] - t.kernel_size[0]) // t.stride[0] + 1
-        out_h = (t.h + 2 * t.padding[1] - t.kernel_size[1]) // t.stride[1] + 1
-        out_w = (t.w + 2 * t.padding[2] - t.kernel_size[2]) // t.stride[2] + 1
+        out_d = (t.d + 2 * t.padding[0] - t.dilation[0] * (t.kernel_size[0] - 1) - 1) // t.stride[0] + 1
+        out_h = (t.h + 2 * t.padding[1] - t.dilation[1] * (t.kernel_size[1] - 1) - 1) // t.stride[1] + 1
+        out_w = (t.w + 2 * t.padding[2] - t.dilation[2] * (t.kernel_size[2] - 1) - 1) // t.stride[2] + 1
         bytes_ = (
             t.n * t.c_in * t.d * t.h * t.w
             + t.c_out * t.c_in * t.kernel_size[0] * t.kernel_size[1] * t.kernel_size[2]
@@ -329,14 +337,16 @@ class Conv3dBenchmark(BenchmarkBase[Conv3dBenchCase]):
 
 
 _CONV3D_BENCH_PARAMS = [
-    pytest.param(1, 3, 16, 112, 112, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.float16, True, id="r3d-stem-k3-s1-fp16"),
-    pytest.param(1, 64, 8, 56, 56, 128, (3, 3, 3), (2, 2, 2), (1, 1, 1), torch.float16, True, id="video-stage-downsample-k3-s2-fp16"),
-    pytest.param(1, 32, 32, 64, 64, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), torch.bfloat16, True, id="unet-encoder-k3-s1-bf16"),
+    pytest.param(1, 3, 16, 112, 112, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), torch.float16, True, id="r3d-stem-k3-s1-fp16"),
+    pytest.param(1, 64, 8, 56, 56, 128, (3, 3, 3), (2, 2, 2), (1, 1, 1), (1, 1, 1), torch.float16, True, id="video-stage-downsample-k3-s2-fp16"),
+    pytest.param(1, 32, 32, 64, 64, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), torch.bfloat16, True, id="unet-encoder-k3-s1-bf16"),
+    # 3D U-Net + 3D ASPP medical segmentation branch: 3x3x3 atrous conv on low-resolution volume features.
+    pytest.param(1, 256, 8, 16, 16, 256, (3, 3, 3), (1, 1, 1), (6, 6, 6), (6, 6, 6), torch.float16, True, id="3d-unet-aspp-3x3x3-rate6-fp16"),
 ]
 
 
 @pytest.mark.parametrize(
-    "n, c_in, d, h, w, c_out, kernel_size, stride, padding, dtype, tune",
+    "n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, dtype, tune",
     _CONV3D_BENCH_PARAMS,
 )
 def test_conv3d_bench(
@@ -349,10 +359,11 @@ def test_conv3d_bench(
     kernel_size: tuple[int, int, int],
     stride: tuple[int, int, int],
     padding: tuple[int, int, int],
+    dilation: tuple[int, int, int],
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = Conv3dBenchCase(n, c_in, d, h, w, c_out, kernel_size, stride, padding, dtype)
+    test = Conv3dBenchCase(n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, dtype)
     bm = Conv3dBenchmark(test)
     inputs = test.gen_inputs()
     x, weight, bias = inputs
@@ -367,6 +378,7 @@ def test_conv3d_bench(
         kernel_size=kernel_size,
         stride=stride,
         padding=padding,
+        dilation=dilation,
         dtype=dtype,
         tune=tune,
     )

@@ -125,7 +125,7 @@ Conv2dFwdOp:
   ref_api: "torch.nn.functional.conv2d"
   # Equivalent to torch.nn.functional.conv2d (bias=None)
   family: convolution
-  status: spec-only  # TODO: impl lacks dilation, groups
+  status: spec-only  # TODO: impl lacks groups
 
   signature:
     inputs:
@@ -136,7 +136,7 @@ Conv2dFwdOp:
     params:
       stride: {type: "int | tuple[int, int]", default: 1}
       padding: {type: "int | tuple[int, int] | str", default: 0}
-      dilation: {type: "int | tuple[int, int]", default: 1}  # TODO: not supported by kernel
+      dilation: {type: "int | tuple[int, int]", default: 1}
       groups: {type: int, default: 1}  # TODO: not supported by kernel
     shape_rules:
       - "C_in % groups == 0"
@@ -188,7 +188,7 @@ Conv2dBiasFwdOp:
   ref_api: "torch.nn.functional.conv2d"
   # Equivalent to torch.nn.functional.conv2d (bias≠None)
   family: convolution
-  status: spec-only  # TODO: impl lacks dilation, groups
+  status: spec-only  # TODO: impl lacks groups
   variant_of: Conv2dFwdOp
 
   signature:
@@ -201,7 +201,7 @@ Conv2dBiasFwdOp:
     params:
       stride: {type: "int | tuple[int, int]", default: 1}
       padding: {type: "int | tuple[int, int] | str", default: 0}
-      dilation: {type: "int | tuple[int, int]", default: 1}  # TODO: not supported by kernel
+      dilation: {type: "int | tuple[int, int]", default: 1}
       groups: {type: int, default: 1}  # TODO: not supported by kernel
     shape_rules:
       - "C_in % groups == 0"
@@ -254,7 +254,7 @@ Conv3dFwdOp:
   ref_api: "torch.nn.functional.conv3d"
   # Equivalent to torch.nn.functional.conv3d (bias=None)
   family: convolution
-  status: spec-only  # TODO: impl lacks dilation, groups
+  status: spec-only  # TODO: impl lacks groups
 
   signature:
     inputs:
@@ -265,7 +265,7 @@ Conv3dFwdOp:
     params:
       stride: {type: "int | tuple[int, int, int]", default: 1}
       padding: {type: "int | tuple[int, int, int] | str", default: 0}
-      dilation: {type: "int | tuple[int, int, int]", default: 1}  # TODO: not supported by kernel
+      dilation: {type: "int | tuple[int, int, int]", default: 1}
       groups: {type: int, default: 1}  # TODO: not supported by kernel
     shape_rules:
       - "C_in % groups == 0"
@@ -312,7 +312,7 @@ Conv3dBiasFwdOp:
   ref_api: "torch.nn.functional.conv3d"
   # Equivalent to torch.nn.functional.conv3d (bias≠None)
   family: convolution
-  status: spec-only  # TODO: impl lacks dilation, groups
+  status: spec-only  # TODO: impl lacks groups
   variant_of: Conv3dFwdOp
 
   signature:
@@ -325,7 +325,7 @@ Conv3dBiasFwdOp:
     params:
       stride: {type: "int | tuple[int, int, int]", default: 1}
       padding: {type: "int | tuple[int, int, int] | str", default: 0}
-      dilation: {type: "int | tuple[int, int, int]", default: 1}  # TODO: not supported by kernel
+      dilation: {type: "int | tuple[int, int, int]", default: 1}
       groups: {type: int, default: 1}  # TODO: not supported by kernel
     shape_rules:
       - "C_in % groups == 0"
