@@ -14,6 +14,9 @@ from tileops.ops.moe.routed_expert.abc import (
 from tileops.ops.moe.routed_expert.fused_routed_expert import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
 )
+from tileops.ops.moe.routed_expert.moe_grouped_gemm_nopad_fused_act import (
+    MoeGroupedGemmNopad3WGFusedActFwdOp,
+)
 
 
 def _torch_ref_moe(hidden, w1, w2, topk_weights, topk_ids):
@@ -316,6 +319,92 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
 
+@pytest.mark.parametrize(
+    "activation",
+    [
+        pytest.param("silu_and_mul", marks=pytest.mark.smoke),
+        pytest.param("gelu_and_mul", marks=pytest.mark.nightly),
+    ],
+)
+def test_use_fused_activation_parity(activation):
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Requires SM90")
+    torch.manual_seed(0)
+    T_count, E, top_k, H, Fdim = 256, 8, 2, 256, 768
+    hidden = torch.randn(T_count, H, dtype=torch.bfloat16, device="cuda") * 0.02
+    w_gate_up = torch.randn(E, 2 * Fdim, H, dtype=torch.bfloat16, device="cuda") * 0.02
+    w_down = torch.randn(E, H, Fdim, dtype=torch.bfloat16, device="cuda") * 0.02
+    topk_w = torch.rand(T_count, top_k, dtype=torch.float32, device="cuda")
+    topk_ids = torch.randint(0, E, (T_count, top_k), dtype=torch.int32, device="cuda")
+
+    def run(use_fused):
+        op = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            num_tokens=T_count, num_experts=E, top_k=top_k, hidden_size=H,
+            ffn_size=Fdim, dtype=torch.bfloat16, activation=activation,
+            use_fused_activation=use_fused)
+        out = torch.empty(T_count, H, dtype=torch.bfloat16, device="cuda")
+        ws = torch.empty(0, dtype=torch.bfloat16, device="cuda")
+        op.forward(out, hidden, w_gate_up, w_down, topk_w, topk_ids, None, ws, ws, E)
+        return out
+
+    fused_out = run(True)
+    assert fused_out.shape == (T_count, H)
+    # bf16 fused-vs-unfused accumulation differs slightly; tolerance covers the
+    # fused-epilogue vs separate-activation-kernel rounding gap.
+    torch.testing.assert_close(fused_out, run(False), rtol=3e-2, atol=3e-2)
+
+
+@pytest.mark.smoke
+def test_use_fused_activation_disabled_on_gemm_override():
+    """A moe_grouped_gemm_kernel override must disable fusion.
+
+    The fused gate_up wrapper cannot honor a moe_grouped_gemm_kernel override
+    (it keys off moe_grouped_gemm_fused_act_kernel), so enabling fusion would
+    apply the override only to the down GEMM, leaving a fused 3WG gate_up — an
+    inconsistent pipeline. Eligibility must fall back to the unfused path.
+    """
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Requires SM90")
+    from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
+    experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        num_tokens=256, num_experts=8, top_k=2, hidden_size=256, ffn_size=768,
+        dtype=torch.bfloat16, activation="silu_and_mul", use_fused_activation=True,
+        kernel_map={"moe_grouped_gemm_kernel": MoeGroupedGemmNopadKernel},
+    )
+    assert experts.use_fused_activation is False
+    assert experts._activation_op is not None
+
+
+@pytest.mark.smoke
+def test_top_level_api_forwards_use_fused_activation():
+    """FusedMoe and its subclasses thread use_fused_activation to the default experts."""
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Requires SM90")
+    from tileops.ops.moe.fused_moe import FusedMoe, FusedMoeFwdCbFwdOp, FusedMoeFwdOp
+    from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
+    common = dict(num_tokens=256, num_experts=8, top_k=2, hidden_size=256,
+                  ffn_size=768, dtype=torch.bfloat16)
+    for cls in (FusedMoe, FusedMoeFwdOp, FusedMoeFwdCbFwdOp, SharedFusedMoE):
+        assert cls(**common, use_fused_activation=True)._experts.use_fused_activation is True
+        assert cls(**common)._experts.use_fused_activation is False
+
+
+@pytest.mark.smoke
+def test_use_fused_activation_rejected_with_injected_experts():
+    """The flag only configures the default experts; combining it with an
+    injected experts= instance must raise rather than silently no-op."""
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Requires SM90")
+    from tileops.ops.moe.fused_moe import FusedMoeFwdOp
+    experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        num_tokens=256, num_experts=8, top_k=2, hidden_size=256, ffn_size=768,
+        dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="use_fused_activation"):
+        FusedMoeFwdOp(num_tokens=256, num_experts=8, top_k=2, hidden_size=256,
+                      ffn_size=768, dtype=torch.bfloat16, experts=experts,
+                      use_fused_activation=True)
+
+
 class TestBuildActivationOp:
 
     @pytest.mark.smoke
@@ -478,3 +567,28 @@ class TestSharedFusedMoeActivation:
             shared_ffn_size=128,
         )
         assert moe.activation == "silu_and_mul"
+
+
+@pytest.mark.smoke
+def test_fused_act_fwd_op_shape_and_values():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Requires SM90")
+    T_count, E, top_k, ffn, K = 256, 8, 2, 768, 128
+    numel = T_count * top_k
+    sizes = torch.full((E,), numel // E, dtype=torch.int32, device="cuda")
+    sizes[:numel % E] += 1  # spread remainder; safe when numel < E
+    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
+    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    B = torch.randn(E, 2 * ffn, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    op = MoeGroupedGemmNopad3WGFusedActFwdOp(
+        numel=numel, num_experts=E, ffn=ffn, k=K, dtype=torch.bfloat16,
+        activation="silu_and_mul")
+    out = op(A, B, sizes, offsets)
+    assert out.shape == (numel, ffn)
+    exp = torch.zeros(numel, ffn, dtype=torch.bfloat16, device="cuda")
+    for e in range(E):
+        n, o = int(sizes[e]), int(offsets[e])
+        gu = A[o:o+n].float() @ B[e].float().t()
+        exp[o:o+n] = (F.silu(gu[:, :ffn]) * gu[:, ffn:]).to(torch.bfloat16)
+    torch.testing.assert_close(out, exp, rtol=2e-2, atol=2e-2)
