@@ -102,12 +102,19 @@ def _da_cumsum_fwd_kernel(
                     seq_idx = bc * Q + j
                     in_b    = T.And(bh < H, seq_idx < S)
 
+                    # Clamp indices to valid range before memory reads.
+                    # T.if_then_else lowers to a select instruction (not a branch),
+                    # so both arms are evaluated — out-of-bounds indices must be
+                    # clamped to prevent illegal memory access on padding threads.
+                    safe_bh      = T.min(bh, H - 1)
+                    safe_seq_idx = T.min(seq_idx, S - 1)
+
                     # Load dt; zero-pad out-of-bounds positions.
-                    val = T.if_then_else(in_b, dt[bb, seq_idx, bh], T.float32(0.0))
+                    val = T.if_then_else(in_b, dt[bb, safe_seq_idx, safe_bh], T.float32(0.0))
 
                     # Optional bias addition.
                     if has_dt_bias:
-                        bias = T.if_then_else(bh < H, dt_bias[bh], T.float32(0.0))
+                        bias = T.if_then_else(bh < H, dt_bias[safe_bh], T.float32(0.0))
                         val  = val + bias
 
                     # Optional softplus (log(1+exp(x))) with large-value bypass.
@@ -125,7 +132,7 @@ def _da_cumsum_fwd_kernel(
                     val = T.if_then_else(in_b, val, T.float32(0.0))
 
                     # Compute A[h] * dt_val for the cumsum input.
-                    a_val = T.if_then_else(bh < H, A[bh], T.float32(0.0))
+                    a_val = T.if_then_else(bh < H, A[safe_bh], T.float32(0.0))
 
                     dt_shared[i, j] = val
                     dA_shared[i, j] = val * a_val

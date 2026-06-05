@@ -171,9 +171,11 @@ def _ssd_chunk_scan_fwd_kernel(
                     for pp, nn in T.Parallel(block_p, block_n):
                         n_abs = n0 + nn
                         p_abs = p0 + pp
+                        safe_n = T.min(n_abs, N - 1)
+                        safe_p = T.min(p_abs, P - 1)
                         state_tile[nn, pp] = T.if_then_else(
                             (n_abs < N) and (p_abs < P),
-                            T.cast(prev_states[bz, bc, bh, p_abs, n_abs], dtype),
+                            T.cast(prev_states[bz, bc, bh, safe_p, safe_n], dtype),
                             T.cast(T.float32(0.0), dtype),
                         )
 

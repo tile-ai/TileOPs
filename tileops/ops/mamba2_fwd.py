@@ -242,9 +242,8 @@ class Mamba2FwdOp:
 
         # ── 4. SSDStatePassing ───────────────────────────────────────────────
         chunk_states_flat = chunk_states.reshape(batch, num_chunks, n_heads, d_head * d_state)
-        # torch.select_copy produces a contiguous tensor directly, avoiding the
-        # copy kernel that .contiguous() on a strided slice would trigger.
-        dA_chunk_cumsum = torch.select_copy(dA_cumsum, dim=3, index=chunk_size - 1)  # (B, H, C)
+        # Standard slice + clone: contiguous tensor, portable across all PyTorch versions.
+        dA_chunk_cumsum = dA_cumsum[..., chunk_size - 1].clone()  # (B, H, C)
 
         if initial_states is None:
             init_flat = self._zero_init_flat
@@ -256,7 +255,7 @@ class Mamba2FwdOp:
         )
 
         # Unflatten to (B, C, H, P, N) in storage dtype for chunk_scan.
-        prev_states  = prev_states_flat.reshape(batch, num_chunks, n_heads, d_head, d_state).to(self.dtype)
+        prev_states  = prev_states_flat.reshape(batch, num_chunks, n_heads, d_head, d_state)
         dt_out_typed = dt_out.to(self.dtype)
 
         # ── 5. SSDChunkScan ──────────────────────────────────────────────────
