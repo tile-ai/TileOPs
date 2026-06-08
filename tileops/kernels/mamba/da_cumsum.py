@@ -137,10 +137,12 @@ def _da_cumsum_fwd_kernel(
                     dt_shared[i, j] = val
                     dA_shared[i, j] = val * a_val
 
+                T.sync_threads()
                 # ── Step 2: parallel prefix sum along Q dimension ────────────
                 # T.cumsum operates in-place on the shared tile, replacing each
                 # element with the inclusive prefix sum up to that position.
                 T.cumsum(dA_shared, dim=1)
+                T.sync_threads()
 
                 # ── Step 3: write outputs ─────────────────────────────────────
                 for i, j in T.Parallel(block_h, Q):

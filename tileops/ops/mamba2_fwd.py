@@ -43,7 +43,7 @@ def _get_cb_fn(chunk_size: int, dtype: torch.dtype):
         # dA_g: (B, C, G, Q)  float32
         # fused: sub + exp + masked-zero in a single kernel launch
         diff = dA_g.unsqueeze(-1) - dA_g.unsqueeze(-2)   # (B, C, G, Q, Q)
-        return torch.where(mask, diff.exp(), diff.new_zeros(1)).to(dtype)
+        return torch.where(mask, diff.exp(), 0.0).to(dtype)
 
     return torch.compile(_build_cb, fullgraph=True)
 
