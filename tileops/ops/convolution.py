@@ -96,7 +96,7 @@ def _validate_conv_params(
     input_size: Tuple[int, ...],
     kernel_size: Tuple[int, ...],
     stride: Tuple[int, ...],
-    padding: Tuple[int, ...],
+    padding: Tuple[int | Tuple[int, int], ...],
     dilation: Optional[Tuple[int, ...]] = None,
 ) -> None:
     ndim = len(input_size)
@@ -116,11 +116,18 @@ def _validate_conv_params(
         ("input_size", input_size),
         ("kernel_size", kernel_size),
         ("stride", stride),
-        ("padding", padding),
         ("dilation", dilation),
     ):
         if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
             raise TypeError(f"{op_name} {name} must contain only ints")
+    for pad in padding:
+        if isinstance(pad, tuple):
+            if len(pad) != 2:
+                raise ValueError(f"{op_name} asymmetric padding entries must have length 2")
+            if not all(isinstance(v, int) and not isinstance(v, bool) for v in pad):
+                raise TypeError(f"{op_name} padding must contain only ints")
+        elif not isinstance(pad, int) or isinstance(pad, bool):
+            raise TypeError(f"{op_name} padding must contain only ints or int pairs")
 
     if any(v <= 0 for v in input_size):
         raise ValueError(f"{op_name} input spatial dimensions must be greater than zero")
@@ -128,13 +135,18 @@ def _validate_conv_params(
         raise ValueError(f"{op_name} kernel_size must be greater than zero")
     if any(v <= 0 for v in stride):
         raise ValueError(f"{op_name} stride must be greater than zero")
-    if any(v < 0 for v in padding):
+    if any(any(axis_pad < 0 for axis_pad in pad) if isinstance(pad, tuple) else pad < 0 for pad in padding):
         raise ValueError(f"{op_name} padding must be non-negative")
     if any(v <= 0 for v in dilation):
         raise ValueError(f"{op_name} dilation must be greater than zero")
 
     output_size = tuple(
-        (input_dim + 2 * pad - dilation_dim * (kernel_dim - 1) - 1) // stride_dim + 1
+        (
+            input_dim
+            + (sum(pad) if isinstance(pad, tuple) else 2 * pad)
+            - dilation_dim * (kernel_dim - 1)
+            - 1
+        ) // stride_dim + 1
         for input_dim, kernel_dim, stride_dim, pad, dilation_dim in zip(
             input_size, kernel_size, stride, padding, dilation, strict=True
         )
@@ -147,6 +159,51 @@ def _validate_tensor_shape(op_name: str, name: str, tensor: torch.Tensor, expect
     actual_shape = tuple(tensor.shape)
     if actual_shape != expected_shape:
         raise ValueError(f"{op_name} expects {name} shape {expected_shape}, but got {actual_shape}")
+
+
+def _conv1d_padding_pair_and_l_out(
+    l_in: int,
+    kernel_size: int,
+    stride: int | Tuple[int],
+    padding: int | Tuple[int] | str,
+    dilation: int | Tuple[int],
+) -> tuple[int, int, int]:
+    kernel_size_tuple = _conv_tuple(kernel_size, 1, "kernel_size", "Conv1d")
+    stride_tuple = _conv_tuple(stride, 1, "stride", "Conv1d")
+    dilation_tuple = _conv_tuple(dilation, 1, "dilation", "Conv1d")
+    if padding == "same":
+        if stride_tuple[0] != 1:
+            raise ValueError("Conv1d padding='same' requires stride == 1")
+        total_pad = dilation_tuple[0] * (kernel_size_tuple[0] - 1)
+        pad_left = total_pad // 2
+        return pad_left, total_pad - pad_left, l_in
+    padding_tuple = _conv_padding_to_tuple(
+        padding, stride_tuple, kernel_size_tuple, "Conv1d", dilation_tuple
+    )
+    l_out = (
+        l_in
+        + 2 * padding_tuple[0]
+        - dilation_tuple[0] * (kernel_size_tuple[0] - 1)
+        - 1
+    ) // stride_tuple[0] + 1
+    return padding_tuple[0], padding_tuple[0], l_out
+
+
+def _conv1d_l_out(
+    l_in: int,
+    kernel_size: int,
+    stride: int | Tuple[int],
+    padding: int | Tuple[int] | str,
+    dilation: int | Tuple[int],
+) -> int:
+    _, _, l_out = _conv1d_padding_pair_and_l_out(
+        l_in,
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+    )
+    return l_out
 
 
 class Conv1dFwdOp(Op):
@@ -182,21 +239,29 @@ class Conv1dFwdOp(Op):
         kernel_size_tuple = _conv_tuple(kernel_size, 1, "kernel_size", "Conv1d")
         stride_tuple = _conv_tuple(stride, 1, "stride", "Conv1d")
         dilation_tuple = _conv_tuple(dilation, 1, "dilation", "Conv1d")
-        padding_tuple = _conv_padding_to_tuple(
-            padding, stride_tuple, kernel_size_tuple, "Conv1d", dilation_tuple
+        pad_left, pad_right, out_l = _conv1d_padding_pair_and_l_out(
+            l_in,
+            kernel_size_tuple[0],
+            stride_tuple,
+            padding,
+            dilation_tuple,
         )
         _validate_conv_params(
             op_name="Conv1d",
             input_size=(l_in,),
             kernel_size=kernel_size_tuple,
             stride=stride_tuple,
-            padding=padding_tuple,
+            padding=((pad_left, pad_right),),
             dilation=dilation_tuple,
         )
         self.kernel_size = kernel_size_tuple[0]
         self.stride = stride_tuple[0]
-        self.padding = padding_tuple[0]
+        self.padding = pad_left
+        self.padding_right = pad_right
+        self.padding_pair = (pad_left, pad_right)
+        self._padding_arg = padding
         self.dilation = dilation_tuple[0]
+        self.out_l = out_l
         self.has_bias = _has_bias
         self.dtype = dtype
 
@@ -224,7 +289,7 @@ class Conv1dFwdOp(Op):
                 **kernel_kwargs,
                 kernel_l=self.kernel_size,
                 stride_l=self.stride,
-                pad_l=self.padding,
+                pad_l=self.padding_pair,
                 dilation_l=self.dilation,
                 groups=self.groups,
                 c_in_g=self.c_in_g,
@@ -235,7 +300,7 @@ class Conv1dFwdOp(Op):
                 **kernel_kwargs,
                 kernel_l=self.kernel_size,
                 stride_l=self.stride,
-                pad_l=self.padding,
+                pad_l=self.padding_pair,
                 dilation_l=self.dilation,
             )
         else:
@@ -257,6 +322,7 @@ class Conv1dFwdOp(Op):
         input: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
+        self._validate_dtypes(input, weight)
         _validate_tensor_shape("Conv1d", "input", input, (self.n, self.c_in, self.l_in))
         _validate_tensor_shape(
             "Conv1d",
@@ -265,6 +331,47 @@ class Conv1dFwdOp(Op):
             (self.c_out, self.c_in // self.groups, self.kernel_size),
         )
         return self.kernel(input, weight, None)
+
+    def _infer_output_shapes(
+        self,
+        input_shape: tuple[int, int, int],
+        weight_shape: tuple[int, int, int],
+    ) -> Dict[str, tuple[int, int, int]]:
+        n, _, l_in = input_shape
+        c_out, _, kernel_size = weight_shape
+        l_out = _conv1d_l_out(
+            l_in,
+            kernel_size,
+            self.stride,
+            getattr(self, "_padding_arg", self.padding),
+            self.dilation,
+        )
+        return {"output": (n, c_out, l_out)}
+
+    def _validate_dtypes(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+    ) -> None:
+        if input.dtype not in {torch.float16, torch.bfloat16}:
+            raise ValueError(f"input.dtype must be float16 or bfloat16, got {input.dtype}")
+        if weight.dtype != input.dtype:
+            raise ValueError(
+                f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
+            )
+        if self.dtype is not None and input.dtype != self.dtype:
+            raise ValueError(f"input.dtype must match op dtype {self.dtype}, got {input.dtype}")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        l_out = self.out_l
+        flops = 2 * self.n * self.c_out * l_out * self.c_in_g * self.kernel_size
+        elem_bytes = torch.tensor([], dtype=self.dtype).element_size()
+        bytes_ = (
+            self.n * self.c_in * self.l_in
+            + self.c_out * self.c_in_g * self.kernel_size
+            + self.n * self.c_out * l_out
+        ) * elem_bytes
+        return int(flops), int(bytes_)
 
 
 class Conv1dBiasFwdOp(Conv1dFwdOp):
@@ -317,6 +424,7 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ) -> torch.Tensor:
+        self._validate_dtypes(input, weight, bias)
         _validate_tensor_shape("Conv1d", "input", input, (self.n, self.c_in, self.l_in))
         _validate_tensor_shape(
             "Conv1d",
@@ -326,6 +434,42 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
         )
         _validate_tensor_shape("Conv1d", "bias", bias, (self.c_out,))
         return self.kernel(input, weight, bias)
+
+    def _infer_output_shapes(
+        self,
+        input_shape: tuple[int, int, int],
+        weight_shape: tuple[int, int, int],
+        bias_shape: tuple[int],
+    ) -> Dict[str, tuple[int, int, int]]:
+        del bias_shape
+        return super()._infer_output_shapes(input_shape, weight_shape)
+
+    def _validate_dtypes(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> None:
+        super()._validate_dtypes(input, weight)
+        if bias.dtype != input.dtype:
+            raise ValueError(
+                f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}"
+            )
+
+    def eval_roofline(self) -> tuple[int, int]:
+        l_out = self.out_l
+        flops = (
+            2 * self.n * self.c_out * l_out * self.c_in_g * self.kernel_size
+            + self.n * self.c_out * l_out
+        )
+        elem_bytes = torch.tensor([], dtype=self.dtype).element_size()
+        bytes_ = (
+            self.n * self.c_in * self.l_in
+            + self.c_out * self.c_in_g * self.kernel_size
+            + self.c_out
+            + self.n * self.c_out * l_out
+        ) * elem_bytes
+        return int(flops), int(bytes_)
 
 
 def _pair(value: int | Tuple[int, int]) -> Tuple[int, int]:
