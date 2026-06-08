@@ -6,6 +6,8 @@ FixtureMeta / FixtureBase provide reusable pytest parametrize decorators.
 Correctness-only logic (ref_program, check, tolerances) stays in tests/.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Any, Callable, TypeVar
 
