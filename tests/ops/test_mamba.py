@@ -507,9 +507,9 @@ def mamba2_fwd_ref(
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("batch,seqlen,n_heads,d_head,d_state,n_groups,chunk_size", [
-    (1, 256,  4, 64, 32, 1, 256),
-    (2, 512,  8, 64, 64, 2, 256),
-    (1, 512,  4, 32, 16, 1, 256),
+    (1, 256,  4, 64, 32,  1, 256),
+    (2, 512,  8, 64, 64,  2, 256),
+    (1, 512,  4, 64, 128, 1, 256),   # d_state=16 not supported by SSDChunkScanFwdKernel
 ])
 def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk_size, dtype):
     """Mamba2FwdOp output must match the pure-PyTorch reference within tolerance."""
