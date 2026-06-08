@@ -95,7 +95,14 @@ class SSDChunkScanFwdOp(Op):
         cb = cb.contiguous()
         dA_cumsum = dA_cumsum.contiguous()
         C = C.contiguous()
-        prev_states = prev_states.contiguous()
+        # Pre-cast prev_states to the kernel's compute dtype (fp16 or bf16).
+        # No-op when the caller already passes the right dtype, avoiding a
+        # redundant allocation on the hot path.
+        prev_states = (
+            prev_states.contiguous()
+            if prev_states.dtype == self.dtype
+            else prev_states.to(self.dtype).contiguous()
+        )
         dt = dt.contiguous()
 
         return self.kernel(x, cb, dA_cumsum, C, prev_states, dt)
