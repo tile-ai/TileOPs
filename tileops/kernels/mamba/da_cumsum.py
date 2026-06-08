@@ -69,6 +69,10 @@ def _da_cumsum_fwd_kernel(
         block_h: Number of heads processed per CUDA block.  Must be a power of 2
                  and satisfy block_h * chunk_len <= shared memory budget.
     """
+    assert block_h > 0 and (block_h & (block_h - 1)) == 0, (
+        f"block_h must be a power of 2, got {block_h}"
+    )
+
     accum_dtype = "float"
 
     B = batch

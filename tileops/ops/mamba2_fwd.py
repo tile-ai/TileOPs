@@ -247,6 +247,8 @@ class Mamba2FwdOp:
 
         # ── 3. SSDChunkState ─────────────────────────────────────────────────
         # Pass pre-allocated seq_idx zeros; avoids a FillFunctor<int> per call.
+        # SSDChunkStateFwdOp is constructed with has_seq_idx=False, so the kernel
+        # ignores this tensor entirely — no shape check or data access occurs.
         chunk_states = self._chunk_state_op.forward(x, B, dt_out, dA_cumsum, self._zero_seq_idx)
         # chunk_states: (B, C, H, P, N)  float32
 
