@@ -138,7 +138,8 @@ def _mamba2_fwd_ref(
     # wx_intra transposed for matmul: (B, C, H, Q, P)
     wx_t = wx_intra.permute(0, 1, 3, 2, 4)
     # y_intra[b,c,h,l,p] = sum_s cb_heads[b,c,h,l,s] * wx_t[b,c,h,s,p]
-    y_intra = torch.einsum("bchlq,bchqp->bchlp", cb_heads, wx_t)
+    # result is (B, C, H, L, P); transpose to (B, C, Q, H, P) to match y_hist
+    y_intra = torch.einsum("bchlq,bchqp->bchlp", cb_heads, wx_t).permute(0, 1, 3, 2, 4)
 
     y = (y_hist + y_intra).reshape(b, S, h, p)
     return y
@@ -222,8 +223,8 @@ def test_mamba2_fwd_bench(batch, seqlen, n_heads, d_head, d_state, n_groups,
 
     # Pass inputs directly so bench_kernel clones them each iteration,
     # giving accurate per-clone addressing and fair kernel-only timing.
-    # dt_bias is float32 (non-sequence), A/dt_bias are small — include all.
-    result = bm.profile(op.forward, x, dt, A, B, C)
+    # Include dt_bias so all three paths see the same input distribution.
+    result = bm.profile(op.forward, x, dt, A, B, C, dt_bias)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # ── Official mamba_ssm Triton baseline ───────────────────────────────────

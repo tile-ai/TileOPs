@@ -16,10 +16,11 @@ Design notes
   with d_state = d_head * d_state_ssm (float32) so the TileOPs kernel is used
   instead of a Python for-loop.
 
-* CB (causal decay matrix per group) has shape (B, C, G, Q, Q).  It is
-  derived from dA_cumsum and must be computed on the critical path.  We build
-  it with vectorised PyTorch ops (one exp + one masked multiply) and avoid any
-  Python-level iteration.
+* CB (causal C@B coupling matrix per group) has shape (B, C, G, Q, Q).
+  It is the intra-chunk outer product C[l] @ B[s] (group-owned).
+  SSDChunkScanFwdKernel then multiplies cb by exp(dA[l] - dA[s]) * dt[s]
+  internally, so cb must contain only the C@B term — not the decay.
+  We compute cb via a batched matmul: C_chunked @ B_chunked^T, masked causal.
 
 * All intermediate tensors remain on-device; no host syncs between sub-ops.
 """
@@ -36,16 +37,25 @@ from .ssd_state_passing import SSDStatePassingFwdOp
 
 
 @functools.lru_cache(maxsize=32)
-def _get_cb_fn(chunk_size: int, dtype: torch.dtype):
-    """Return a torch.compile-fused CB-matrix builder for the given chunk_size."""
+def _get_cb_fn(dtype: torch.dtype):
+    """Return a torch.compile-fused CB-matrix builder.
 
-    def _build_cb(dA_g: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        # dA_g: (B, C, G, Q)  float32
-        # fused: sub + exp + masked-zero in a single kernel launch
-        diff = dA_g.unsqueeze(-1) - dA_g.unsqueeze(-2)   # (B, C, G, Q, Q)
-        return torch.where(mask, diff.exp(), 0.0).to(dtype)
+    Computes the causal C@B coupling matrix for one group:
+      cb[b, c, g, l, s] = C[b, c*Q+l, g, :] @ B[b, c*Q+s, g, :]^T,  for s <= l
+                         = 0                                           for s > l
+
+    This is a lower-triangular batched outer product in state-space dimension N,
+    matching _bmm_chunk_fwd from mamba_ssm. The kernel then multiplies cb by
+    exp(dA[l] - dA[s]) * dt[s] — so cb must not include any decay factor.
+    """
+    def _build_cb(C_g: torch.Tensor, B_g: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        # C_g, B_g: (B, C, G, Q, N)  in storage dtype
+        # mask:     (1, 1, 1, Q, Q)  lower-triangular bool
+        cb = torch.einsum("bcgln,bcgsn->bcgls", C_g.float(), B_g.float())  # (B, C, G, Q, Q)
+        return torch.where(mask, cb, 0.0).to(dtype)
 
     return torch.compile(_build_cb, fullgraph=True)
+
 
 __all__ = ["Mamba2FwdOp"]
 
@@ -154,11 +164,11 @@ class Mamba2FwdOp:
             tune=tune,
         )
 
-        # Causal mask for CB construction — allocated once, reused every forward.
-        # Shape: (1, 1, 1, chunk_size, chunk_size), broadcastable over (B, C, G, Q, Q).
+        # Causal mask for CB construction — lower-triangular (Q, Q), broadcast
+        # over (B, C, G, Q, Q).  Allocated once; moved to GPU on first forward.
         mask = torch.ones(chunk_size, chunk_size, dtype=torch.bool).tril()
-        self._cb_mask_cpu = mask      # keep cpu copy; move to GPU on first forward
-        self._cb_fn = _get_cb_fn(chunk_size, dtype)  # compiled fused kernel
+        self._cb_mask_cpu = mask
+        self._cb_fn = _get_cb_fn(dtype)  # compiled fused C@B kernel
 
         # Pre-allocated zero tensors — avoids FillFunctor kernel launches on the
         # hot path for optional inputs that are commonly omitted.
@@ -219,7 +229,6 @@ class Mamba2FwdOp:
             self._zero_init_flat  = self._zero_init_flat_cpu.to(dev)
             self._zero_seq_idx    = self._zero_seq_idx_cpu.to(dev)
             self._cb_mask         = self._cb_mask_cpu.to(dev).view(1, 1, 1, chunk_size, chunk_size)
-
         # ── 1. DaCumsum ──────────────────────────────────────────────────────
         if dt_bias is None:
             dt_bias = self._zero_dt_bias
@@ -229,11 +238,12 @@ class Mamba2FwdOp:
         # dA_cumsum: (B, H, C, Q)  float32
 
         # ── 2. CB matrix ─────────────────────────────────────────────────────
-        # One representative head per group (first head of each group).
-        hpg  = self._heads_per_group
-        dA_g = dA_cumsum[:, ::hpg, :, :].permute(0, 2, 1, 3)  # (B, C, G, Q) contiguous
-        # Fused: sub + exp + masked-zero in a single compiled kernel.
-        cb   = self._cb_fn(dA_g, self._cb_mask)               # (B, C, G, Q, Q)  dtype
+        # cb[b,c,g,l,s] = C[b,c*Q+l,g,:] @ B[b,c*Q+s,g,:]^T  for s <= l, else 0.
+        # Reshape seqlen-fused B/C into (B, C, G, Q, N) for the batched matmul.
+        n_groups  = self.n_groups
+        C_chunked = C.reshape(batch, num_chunks, chunk_size, n_groups, d_state).permute(0, 1, 3, 2, 4)  # (B, C, G, Q, N)
+        B_chunked = B.reshape(batch, num_chunks, chunk_size, n_groups, d_state).permute(0, 1, 3, 2, 4)  # (B, C, G, Q, N)
+        cb = self._cb_fn(C_chunked, B_chunked, self._cb_mask)  # (B, C, G, Q, Q)  dtype
 
         # ── 3. SSDChunkState ─────────────────────────────────────────────────
         # Pass pre-allocated seq_idx zeros; avoids a FillFunctor<int> per call.
