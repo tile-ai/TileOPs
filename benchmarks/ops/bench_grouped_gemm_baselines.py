@@ -334,3 +334,36 @@ CASES = [
     ("Llama4-128E down  T=131072",   131072,  128, 1,     5120,   8192,      1024, 5120,  8192),
     ("qwen3.5-397B down  T~52429",   52429,   512, 10,    4096,   1024,      1024, 2048,  1024),
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Framework benchmark: FLOP / memory model for the grouped GEMM.
+# ─────────────────────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class _GroupedGemmBaselineWorkload:
+    """Shape carrier for the grouped-GEMM roofline (uniform routing)."""
+
+    numel: int   # total rows = M_per_expert * num_experts
+    E: int       # num_experts
+    N: int       # per-expert output dim
+    K: int       # contraction dim
+    dtype: torch.dtype
+    label: str
+
+
+class GroupedGemmBaselinesBenchmark(BenchmarkBase[_GroupedGemmBaselineWorkload]):
+    """Hand-written roofline for the 3WG grouped GEMM vs external baselines.
+
+    The 3WG kernel is not an aligned Op (no manifest entry), so FLOP/memory are
+    computed directly here rather than via ``ManifestBenchmark`` — same approach
+    as the sibling ``bench_grouped_gemm.py``.
+    """
+
+    def calculate_flops(self) -> Optional[float]:
+        t = self.workload
+        return 2.0 * t.numel * t.N * t.K
+
+    def calculate_memory(self) -> Optional[float]:
+        t = self.workload
+        # A[numel, K] + B[E, N, K] + C[numel, N], all in `dtype`.
+        return (t.numel * t.K + t.E * t.N * t.K + t.numel * t.N) * t.dtype.itemsize
