@@ -389,6 +389,25 @@ def _case_id(label: str) -> str:
     return "-".join(label.replace("~", "").split())
 
 
+def _synced(fn):
+    """Wrap a zero-arg kernel launch to synchronize after each call.
+
+    The framework's CUPTI timing divides the active-window kernel time by the
+    repeat count, but a purely-async kernel lets warmup-region launches spill
+    into the active trace (~2x the kernel count), inflating the measured
+    latency. A per-call device sync drains the queue each iteration so the
+    active window contains exactly one completion per call — matching how the
+    3WG kernel already behaves (its alignment autodetect issues a device-to-host
+    copy per call). The sync blocks the host only; it is not counted in the
+    CUPTI kernel time.
+    """
+    def _run():
+        fn()
+        torch.cuda.synchronize()
+
+    return _run
+
+
 @pytest.mark.parametrize(
     "label, tokens, E, top_k, hidden, moe_inter, M, N, K",
     CASES,
@@ -419,12 +438,12 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         k3 = GroupedGemmPersistent3WGKernel(numel=numel, num_experts=E, N=N, K=K,
                                             dtype=_DTYPE, sm_count=sm)
         C_3wg = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
-        result = bm.profile(lambda A=A, B=B, C=C_3wg: k3(A, B, sizes, offsets, out=C))
+        result = bm.profile(_synced(lambda A=A, B=B, C=C_3wg: k3(A, B, sizes, offsets, out=C)))
         BenchmarkReport.record(_REPORT_NAME, locals(), result, tag="tileops")
 
         # ---- torch._grouped_mm (CUTLASS; allocates its own output) ----
         try:
-            r = bm.profile(lambda A=A, B_KN=B_KN: torch._grouped_mm(A, B_KN, offs_cumsum))
+            r = bm.profile(_synced(lambda A=A, B_KN=B_KN: torch._grouped_mm(A, B_KN, offs_cumsum)))
             BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="torch")
         except torch.cuda.OutOfMemoryError:
             raise
@@ -435,7 +454,7 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         if _HAS_DEEP_GEMM:
             D = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
             try:
-                r = bm.profile(lambda A=A, B=B, D=D: _deepgemm_launch(A, B, D, m_indices))
+                r = bm.profile(_synced(lambda A=A, B=B, D=D: _deepgemm_launch(A, B, D, m_indices)))
                 BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="deepgemm")
             except torch.cuda.OutOfMemoryError:
                 raise
@@ -450,7 +469,7 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         grid = lambda meta: (meta["NUM_SM"],)  # noqa: E731
         try:
             r = bm.profile(
-                lambda: _grouped_matmul_kernel[grid](a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds, E))
+                _synced(lambda: _grouped_matmul_kernel[grid](a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds, E)))
             BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="triton")
         except torch.cuda.OutOfMemoryError:
             raise
@@ -465,7 +484,7 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
             _set_triton_allocator()
             try:
                 r = bm.profile(
-                    lambda: _grouped_matmul_tma_kernel[grid](a_p, b_p, c_p, gs, gl, E, NUM_SM=sm))
+                    _synced(lambda: _grouped_matmul_tma_kernel[grid](a_p, b_p, c_p, gs, gl, E, NUM_SM=sm)))
                 BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="triton-tma")
             except torch.cuda.OutOfMemoryError:
                 raise
