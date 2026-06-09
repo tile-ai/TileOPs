@@ -31,25 +31,27 @@ see ``CASES`` below for the per-model parameters.
 from __future__ import annotations
 
 import os
-import sys
 import time
+from dataclasses import dataclass
+from typing import Optional
 
-# Repeated multi-GB output allocations inside do_bench fragment the caching
-# allocator; expandable segments keep the largest cases (M=8192, ~70 GB of live
-# operands) from OOMing on reserved-but-unallocated memory. Must be set before
-# the first CUDA init, i.e. before torch is imported.
+# Repeated multi-GB output allocations fragment the caching allocator;
+# expandable segments keep the largest cases (M=8192, ~70-130 GB of live
+# operands) from OOMing on reserved-but-unallocated memory, and let the
+# single-process teardown reclaim cleanly between cases. Must be set before the
+# first CUDA init, i.e. before torch is imported.
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
+import pytest  # noqa: E402
 import torch  # noqa: E402
-import triton  # noqa: E402
-import triton.language as tl  # noqa: E402
-from tilelang.profiler import do_bench  # noqa: E402
 
+# Triton is a hard dependency of this benchmark's baseline kernels; skip the
+# whole module (rather than error at collection) if it is absent.
+triton = pytest.importorskip("triton")  # noqa: E402
+tl = pytest.importorskip("triton.language")  # noqa: E402
+
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport  # noqa: E402
 from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel  # noqa: E402
 
 try:
@@ -61,17 +63,11 @@ except Exception:  # pragma: no cover - environment dependent
     _HAS_DEEP_GEMM = False
 
 _DTYPE = torch.bfloat16
-_WARMUP = 25
-_REP = 100
 
-# DeepGEMM's large-M workspace bug ("doesn't have storage") is deterministic
-# WITHIN a process (per-call retries cannot recover it) but flips between process
-# launches, because DeepGEMM's first-call JIT autotune is nondeterministic and
-# some picked configs hit the bug. So the driver relaunches a case subprocess up
-# to _DG_MAX_ATTEMPTS times when DeepGEMM drops out; _run_one signals this via
-# _DG_RETRY_EXIT.
-_DG_RETRY_EXIT = 17
-_DG_MAX_ATTEMPTS = 4
+# Fixed report group name: all CASES record under this single op so the nightly
+# report groups them as one op with N configs. Frozen — changing it resets that
+# op's 14-day perf history.
+_REPORT_NAME = "grouped_gemm_3wg_baselines"
 
 
 def _num_sms() -> int:
@@ -277,10 +273,6 @@ def gen_inputs(numel, E, N, K):
     return A, B, sizes, offsets, m_indices, offs_cumsum, per
 
 
-def tflops(ms, numel, N, K):
-    return 2.0 * numel * N * K / ms * 1e-9
-
-
 def _warmup_gpu(seconds=2.0):
     """Ramp the SM clock to its sustained state before any measurement.
 
@@ -320,122 +312,6 @@ def _deepgemm_launch(A, B, D, m_indices, tries=8):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Per-case driver.
-# ─────────────────────────────────────────────────────────────────────────────
-def run_case(label, tokens, E, top_k, hidden, moe_inter, M, N, K):
-    numel = M * E  # == tokens * top_k (uniform routing)
-    flops = 2.0 * numel * N * K
-    sm = _num_sms()
-
-    print(f"\n{'═' * 92}")
-    print(f"  {label}")
-    print(f"  grouped GEMM: M_total={numel}, N={N}, K={K}, experts={E}, M/expert={M}, bf16")
-    print(f"  (MoE prefill: tokens={tokens}, top_k={top_k}, hidden={hidden}, "
-          f"moe_inter={moe_inter}; sm_count={sm})")
-    print(f"  FLOPs = {flops / 1e12:.3f} TFLOP")
-    print(f"{'═' * 92}")
-
-    _warmup_gpu()
-    A, B, sizes, offsets, m_indices, offs_cumsum, per = gen_inputs(numel, E, N, K)
-    B_KN = B.transpose(1, 2).contiguous()  # [E, K, N] for torch & non-TMA triton
-
-    results = []  # (name, ms)
-
-    # Fairness contract: every timed lambda operates on a PRE-ALLOCATED output
-    # and pre-conditioned inputs, so do_bench measures the GEMM kernel alone —
-    # not per-call buffer allocation. DeepGEMM (pre-allocated `D`) and both
-    # Triton kernels (pre-allocated `group_c`) already do this; tileops-3wg now
-    # matches via `out=`. The lone exception is torch._grouped_mm, whose public
-    # API has no out-param and allocates its result internally — it stays taxed,
-    # but it is only a reference baseline and does not enter the 3wg-vs-deepgemm
-    # comparison. Uniform routing makes every per-expert M a multiple of 128, so
-    # the 3WG kernel takes its aligned fast path (no A padding), exactly like
-    # DeepGEMM's contiguous-layout alignment requirement.
-
-    # ---- ours: 3-WG persistent ----
-    k3 = GroupedGemmPersistent3WGKernel(numel=numel, num_experts=E, N=N, K=K, dtype=_DTYPE, sm_count=sm)
-    C_3wg = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
-    # Tensors are bound as lambda defaults (not free closure vars) so the later
-    # ``del`` of the large operands does not make pyflakes flag them as F821.
-    ms = do_bench(lambda A=A, B=B, C=C_3wg: k3(A, B, sizes, offsets, out=C),
-                  warmup=_WARMUP, rep=_REP)
-    results.append(("tileops-3wg", ms))
-    del C_3wg
-    torch.cuda.empty_cache()
-
-    # ---- torch._grouped_mm (CUTLASS) ----
-    ms = do_bench(lambda A=A, B_KN=B_KN: torch._grouped_mm(A, B_KN, offs_cumsum),
-                  warmup=_WARMUP, rep=_REP)
-    results.append(("torch", ms))
-    torch.cuda.empty_cache()
-
-    # ---- deepgemm: contiguous grouped GEMM ----
-    if _HAS_DEEP_GEMM:
-        D = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
-        try:
-            ms = do_bench(
-                lambda A=A, B=B, D=D: _deepgemm_launch(A, B, D, m_indices),
-                warmup=_WARMUP, rep=_REP)
-            results.append(("deepgemm", ms))
-        except Exception as exc:  # pragma: no cover
-            print(f"  [skip] deepgemm grouped: {exc}")
-        del D
-        torch.cuda.empty_cache()
-
-    # ---- triton 08-grouped-gemm (ported, bf16) ----
-    group_a = [A[e * per:(e + 1) * per] for e in range(E)]
-    group_c = [torch.empty(per, N, dtype=_DTYPE, device="cuda") for _ in range(E)]
-    # non-TMA wants B[e] as [K, N]
-    group_b_kn = [B_KN[e] for e in range(E)]
-    a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds = _build_triton_ptrs(group_a, group_b_kn, group_c)
-    grid = lambda meta: (meta["NUM_SM"],)  # noqa: E731
-
-    def _triton():
-        _grouped_matmul_kernel[grid](a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds, E)
-
-    try:
-        ms = do_bench(_triton, warmup=_WARMUP, rep=_REP)
-        results.append(("triton", ms))
-    except Exception as exc:  # pragma: no cover
-        print(f"  [skip] triton: {exc}")
-    del group_c, group_b_kn, B_KN
-    torch.cuda.empty_cache()
-
-    # ---- triton + TMA (Hopper, NT layout = our B[e]) ----
-    if _supports_tma():
-        group_c_tma = [torch.empty(per, N, dtype=_DTYPE, device="cuda") for _ in range(E)]
-        group_b_nk = [B[e] for e in range(E)]  # [N, K]
-        a_p, b_p, c_p, gs, gl = _build_triton_ptrs(group_a, group_b_nk, group_c_tma)
-        _set_triton_allocator()
-
-        def _triton_tma():
-            _grouped_matmul_tma_kernel[grid](a_p, b_p, c_p, gs, gl, E, NUM_SM=sm)
-
-        try:
-            ms = do_bench(_triton_tma, warmup=_WARMUP, rep=_REP)
-            results.append(("triton-tma", ms))
-        except Exception as exc:  # pragma: no cover
-            print(f"  [skip] triton-tma: {exc}")
-        del group_c_tma
-        torch.cuda.empty_cache()
-
-    # ---- report ----
-    # Absolute TFLOPS are bounded by the sustained SM clock, which on this H200 is
-    # power-capped (~700 W -> ~1.4 GHz under full bf16 tensor load, vs 1.98 GHz max),
-    # so the meaningful signal is the relative gap, not the raw number.
-    ours = next((ms for n, ms in results if n == "tileops-3wg"), None)
-    print(f"\n  {'impl':>14}  {'ms':>9}  {'TFLOPS':>9}  {'vs ours':>9}")
-    print(f"  {'-' * 14}  {'-' * 9}  {'-' * 9}  {'-' * 9}")
-    for name, ms in results:
-        spd = f"{ms / ours:.2f}x" if ours else "-"
-        print(f"  {name:>14}  {ms:>9.3f}  {tflops(ms, numel, N, K):>9.1f}  {spd:>9}")
-
-    del A, B, group_a
-    torch.cuda.empty_cache()
-    return results
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Model cases (prefill, bf16). M = tokens * top_k / num_experts (uniform).
 # N/K are the single-expert GEMM dims. up/gate GEMMs fuse gate+up -> N = 2*inter.
 # NOTE: qwen3.5 'down' N is carried verbatim from the source table (2048); it
@@ -457,58 +333,3 @@ CASES = [
     ("Llama4-128E down  T=131072",   131072,  128, 1,     5120,   8192,      1024, 5120,  8192),
     ("qwen3.5-397B down  T~52429",   52429,   512, 10,    4096,   1024,      1024, 2048,  1024),
 ]
-
-
-def _run_one(idx):
-    """Run a single case in-process (used by the per-case subprocess).
-
-    Exits with ``_DG_RETRY_EXIT`` when DeepGEMM is installed but dropped out of
-    this case (its process-deterministic large-M workspace bug), so the driver
-    relaunches a fresh process and re-rolls DeepGEMM's JIT autotune."""
-    label, tokens, E, top_k, hidden, moe_inter, M, N, K = CASES[idx]
-    results = run_case(label, tokens, E, top_k, hidden, moe_inter, M, N, K)
-    if _HAS_DEEP_GEMM and not any(name == "deepgemm" for name, _ in results):
-        sys.exit(_DG_RETRY_EXIT)
-
-
-def main():
-    """Drive all cases, each in its own subprocess.
-
-    The largest cases (M=8192) hold ~70-130 GB of live operands; running them in
-    the same process leaks across cases (do_bench / autotune retain references)
-    and OOMs. A fresh process per case lets the OS reclaim everything, at the cost
-    of recompiling kernels each time.
-    """
-    import subprocess
-
-    only = None
-    if "--case" in sys.argv:
-        only = int(sys.argv[sys.argv.index("--case") + 1])
-
-    if only is not None:
-        print(f"GPU: {torch.cuda.get_device_name(0)}  |  deep_gemm: "
-              f"{'yes' if _HAS_DEEP_GEMM else 'NO (deepgemm skipped)'}")
-        _run_one(only)
-        return
-
-    print(f"GPU: {torch.cuda.get_device_name(0)}  |  deep_gemm: "
-          f"{'yes' if _HAS_DEEP_GEMM else 'NO (deepgemm skipped)'}  |  "
-          f"{len(CASES)} cases, one subprocess each")
-    for idx in range(len(CASES)):
-        for attempt in range(1, _DG_MAX_ATTEMPTS + 1):
-            rc = subprocess.run([sys.executable, "-u", __file__, "--case", str(idx)],
-                                env=os.environ).returncode
-            if rc != _DG_RETRY_EXIT:
-                break
-            if attempt < _DG_MAX_ATTEMPTS:
-                print(f"  [case {idx}: DeepGEMM hit its workspace bug; relaunching "
-                      f"(attempt {attempt + 1}/{_DG_MAX_ATTEMPTS})]")
-        if rc == _DG_RETRY_EXIT:
-            print(f"  [case {idx}: DeepGEMM still skipped after {_DG_MAX_ATTEMPTS} "
-                  f"launches — reporting without it]")
-        elif rc != 0:
-            print(f"  [case {idx} exited rc={rc}]")
-
-
-if __name__ == "__main__":
-    main()
