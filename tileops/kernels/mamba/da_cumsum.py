@@ -270,7 +270,9 @@ class DaCumsumFwdKernel(Kernel):
         for bh in [1, 2, 4, 8, 16]:
             if bh > self.n_heads:
                 break
-            threads = min(bh * self.chunk_len, 1024)
+            if bh * self.chunk_len > 1024:
+                break
+            threads = bh * self.chunk_len
             valid.append({"block_h": bh, "threads": threads})
         return valid
 
