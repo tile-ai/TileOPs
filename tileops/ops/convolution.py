@@ -9,6 +9,8 @@ from tileops.kernels.convolution import (
     Conv2dKernel,
     Conv3dKernel,
     GroupConv1dKernel,
+    GroupConv2dKernel,
+    GroupConv3dKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 
@@ -476,6 +478,16 @@ def _pair(value: int | Tuple[int, int]) -> Tuple[int, int]:
     return _conv_tuple(value, 2, "value", "Conv2d")  # type: ignore[return-value]
 
 
+def _conv_out_dim(
+    input_size: int,
+    kernel_size: int,
+    stride: int,
+    padding: int,
+    dilation: int,
+) -> int:
+    return (input_size + 2 * padding - dilation * (kernel_size - 1) - 1) // stride + 1
+
+
 class Conv2dFwdOp(Op):
 
     def __init__(
@@ -501,13 +513,14 @@ class Conv2dFwdOp(Op):
         _validate_positive_int("w", w, "Conv2d")
         _validate_positive_int("c_out", c_out, "Conv2d")
         _validate_conv_groups("Conv2d", c_in, c_out, groups)
-        if groups != 1:
-            raise NotImplementedError("Conv2d currently supports groups=1 only")
         self.n = n
         self.c_in = c_in
         self.h = h
         self.w = w
         self.c_out = c_out
+        self.groups = groups
+        self.c_in_g = c_in // groups
+        self.c_out_g = c_out // groups
         self.kernel_size = _pair(kernel_size)
         self.stride = _pair(stride)
         dilation_tuple = _conv_tuple(dilation, 2, "dilation", "Conv2d")
@@ -523,7 +536,12 @@ class Conv2dFwdOp(Op):
             dilation=dilation_tuple,
         )
         self.dilation = dilation_tuple
-        self.groups = groups
+        self.out_h = _conv_out_dim(
+            h, self.kernel_size[0], self.stride[0], self.padding[0], self.dilation[0]
+        )
+        self.out_w = _conv_out_dim(
+            w, self.kernel_size[1], self.stride[1], self.padding[1], self.dilation[1]
+        )
         self.has_bias = _has_bias
         self.dtype = dtype
 
@@ -543,14 +561,15 @@ class Conv2dFwdOp(Op):
             tune=tune,
         )
         if (
-            self.kernel_size == (1, 1)
+            self.groups == 1
+            and self.kernel_size == (1, 1)
             and self.stride == (1, 1)
             and self.padding == (0, 0)
             and self.dilation == (1, 1)
             and "conv2d_1x1_kernel" in self.kernel_map
         ):
             self.kernel = self.kernel_map["conv2d_1x1_kernel"](**kernel_kwargs)
-        elif "conv2d_kernel" in self.kernel_map:
+        elif self.groups == 1 and "conv2d_kernel" in self.kernel_map:
             self.kernel = self.kernel_map["conv2d_kernel"](
                 **kernel_kwargs,
                 kernel_h=self.kernel_size[0],
@@ -558,9 +577,21 @@ class Conv2dFwdOp(Op):
                 dilation_h=self.dilation[0],
                 dilation_w=self.dilation[1],
             )
+        elif self.groups > 1 and "group_conv2d_kernel" in self.kernel_map:
+            self.kernel = self.kernel_map["group_conv2d_kernel"](
+                **kernel_kwargs,
+                kernel_h=self.kernel_size[0],
+                kernel_w=self.kernel_size[1],
+                dilation_h=self.dilation[0],
+                dilation_w=self.dilation[1],
+                groups=self.groups,
+                c_in_g=self.c_in_g,
+                c_out_g=self.c_out_g,
+            )
         else:
             raise NotImplementedError(
-                "Conv2dFwdOp requires 'conv2d_1x1_kernel' or 'conv2d_kernel' in kernel_map"
+                "Conv2dFwdOp requires 'conv2d_1x1_kernel', 'conv2d_kernel', "
+                "or 'group_conv2d_kernel' in kernel_map"
             )
 
     @property
@@ -568,6 +599,7 @@ class Conv2dFwdOp(Op):
         return {
             "conv2d_1x1_kernel": Conv2d1x1Kernel,
             "conv2d_kernel": Conv2dKernel,
+            "group_conv2d_kernel": GroupConv2dKernel,
         }
 
     def forward(
@@ -575,14 +607,66 @@ class Conv2dFwdOp(Op):
         input: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
+        self._validate_dtypes(input, weight)
         _validate_tensor_shape("Conv2d", "input", input, (self.n, self.c_in, self.h, self.w))
         _validate_tensor_shape(
             "Conv2d",
             "weight",
             weight,
-            (self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1]),
+            (self.c_out, self.c_in_g, self.kernel_size[0], self.kernel_size[1]),
         )
         return self.kernel(input, weight, None)
+
+    def _infer_output_shapes(
+        self,
+        input_shape: tuple[int, int, int, int],
+        weight_shape: tuple[int, int, int, int],
+    ) -> Dict[str, tuple[int, int, int, int]]:
+        n, _, h, w = input_shape
+        c_out, _, kernel_h, kernel_w = weight_shape
+        stride = _pair(self.stride)
+        dilation = _conv_tuple(self.dilation, 2, "dilation", "Conv2d")
+        padding = _conv_padding_to_tuple(
+            self.padding, stride, (kernel_h, kernel_w), "Conv2d", dilation
+        )
+        out_h = _conv_out_dim(h, kernel_h, stride[0], padding[0], dilation[0])
+        out_w = _conv_out_dim(w, kernel_w, stride[1], padding[1], dilation[1])
+        return {"output": (n, c_out, out_h, out_w)}
+
+    def _validate_dtypes(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+    ) -> None:
+        if input.dtype not in {torch.float32, torch.float16, torch.bfloat16}:
+            raise ValueError(
+                f"input.dtype must be float32, float16, or bfloat16, got {input.dtype}"
+            )
+        if weight.dtype != input.dtype:
+            raise ValueError(
+                f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
+            )
+        if self.dtype is not None and input.dtype != self.dtype:
+            raise ValueError(f"input.dtype must match op dtype {self.dtype}, got {input.dtype}")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        flops = (
+            2
+            * self.n
+            * self.c_out
+            * self.out_h
+            * self.out_w
+            * self.c_in_g
+            * self.kernel_size[0]
+            * self.kernel_size[1]
+        )
+        elem_bytes = torch.tensor([], dtype=self.dtype).element_size()
+        bytes_ = (
+            self.n * self.c_in * self.h * self.w
+            + self.c_out * self.c_in_g * self.kernel_size[0] * self.kernel_size[1]
+            + self.n * self.c_out * self.out_h * self.out_w
+        ) * elem_bytes
+        return int(flops), int(bytes_)
 
 
 class Conv2dBiasFwdOp(Conv2dFwdOp):
@@ -637,15 +721,58 @@ class Conv2dBiasFwdOp(Conv2dFwdOp):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ) -> torch.Tensor:
+        self._validate_dtypes(input, weight, bias)
         _validate_tensor_shape("Conv2d", "input", input, (self.n, self.c_in, self.h, self.w))
         _validate_tensor_shape(
             "Conv2d",
             "weight",
             weight,
-            (self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1]),
+            (self.c_out, self.c_in_g, self.kernel_size[0], self.kernel_size[1]),
         )
         _validate_tensor_shape("Conv2d", "bias", bias, (self.c_out,))
         return self.kernel(input, weight, bias)
+
+    def _infer_output_shapes(
+        self,
+        input_shape: tuple[int, int, int, int],
+        weight_shape: tuple[int, int, int, int],
+        bias_shape: tuple[int],
+    ) -> Dict[str, tuple[int, int, int, int]]:
+        del bias_shape
+        return super()._infer_output_shapes(input_shape, weight_shape)
+
+    def _validate_dtypes(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> None:
+        super()._validate_dtypes(input, weight)
+        if bias.dtype != input.dtype:
+            raise ValueError(
+                f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}"
+            )
+
+    def eval_roofline(self) -> tuple[int, int]:
+        flops = (
+            2
+            * self.n
+            * self.c_out
+            * self.out_h
+            * self.out_w
+            * self.c_in_g
+            * self.kernel_size[0]
+            * self.kernel_size[1]
+            + self.n * self.c_out * self.out_h * self.out_w
+        )
+        elem_bytes = torch.tensor([], dtype=self.dtype).element_size()
+        bytes_ = (
+            self.n * self.c_in * self.h * self.w
+            + self.c_out * self.c_in_g * self.kernel_size[0] * self.kernel_size[1]
+            + self.c_out
+            + self.n * self.c_out * self.out_h * self.out_w
+        ) * elem_bytes
+        return int(flops), int(bytes_)
 
 
 def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
@@ -679,14 +806,15 @@ class Conv3dFwdOp(Op):
         _validate_positive_int("w", w, "Conv3d")
         _validate_positive_int("c_out", c_out, "Conv3d")
         _validate_conv_groups("Conv3d", c_in, c_out, groups)
-        if groups != 1:
-            raise NotImplementedError("Conv3d currently supports groups=1 only")
         self.n = n
         self.c_in = c_in
         self.d = d
         self.h = h
         self.w = w
         self.c_out = c_out
+        self.groups = groups
+        self.c_in_g = c_in // groups
+        self.c_out_g = c_out // groups
         self.kernel_size = _triple(kernel_size)
         self.stride = _triple(stride)
         dilation_tuple = _conv_tuple(dilation, 3, "dilation", "Conv3d")
@@ -702,14 +830,20 @@ class Conv3dFwdOp(Op):
             dilation=dilation_tuple,
         )
         self.dilation = dilation_tuple
-        self.groups = groups
+        self.out_d = _conv_out_dim(
+            d, self.kernel_size[0], self.stride[0], self.padding[0], self.dilation[0]
+        )
+        self.out_h = _conv_out_dim(
+            h, self.kernel_size[1], self.stride[1], self.padding[1], self.dilation[1]
+        )
+        self.out_w = _conv_out_dim(
+            w, self.kernel_size[2], self.stride[2], self.padding[2], self.dilation[2]
+        )
         self.has_bias = _has_bias
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        if "conv3d_kernel" not in self.kernel_map:
-            raise NotImplementedError("Conv3dFwdOp requires 'conv3d_kernel' in kernel_map")
-        self.kernel = self.kernel_map["conv3d_kernel"](
+        kernel_kwargs = dict(
             n=n,
             c_in=c_in,
             d_in=d,
@@ -732,16 +866,33 @@ class Conv3dFwdOp(Op):
             has_bias=_has_bias,
             tune=tune,
         )
+        if self.groups == 1 and "conv3d_kernel" in self.kernel_map:
+            self.kernel = self.kernel_map["conv3d_kernel"](**kernel_kwargs)
+        elif self.groups > 1 and "group_conv3d_kernel" in self.kernel_map:
+            self.kernel = self.kernel_map["group_conv3d_kernel"](
+                **kernel_kwargs,
+                groups=self.groups,
+                c_in_g=self.c_in_g,
+                c_out_g=self.c_out_g,
+            )
+        else:
+            raise NotImplementedError(
+                "Conv3dFwdOp requires 'conv3d_kernel' or 'group_conv3d_kernel' in kernel_map"
+            )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"conv3d_kernel": Conv3dKernel}
+        return {
+            "conv3d_kernel": Conv3dKernel,
+            "group_conv3d_kernel": GroupConv3dKernel,
+        }
 
     def forward(
         self,
         input: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
+        self._validate_dtypes(input, weight)
         _validate_tensor_shape(
             "Conv3d",
             "input",
@@ -754,13 +905,71 @@ class Conv3dFwdOp(Op):
             weight,
             (
                 self.c_out,
-                self.c_in,
+                self.c_in_g,
                 self.kernel_size[0],
                 self.kernel_size[1],
                 self.kernel_size[2],
             ),
         )
         return self.kernel(input, weight, None)
+
+    def _infer_output_shapes(
+        self,
+        input_shape: tuple[int, int, int, int, int],
+        weight_shape: tuple[int, int, int, int, int],
+    ) -> Dict[str, tuple[int, int, int, int, int]]:
+        n, _, d, h, w = input_shape
+        c_out, _, kernel_d, kernel_h, kernel_w = weight_shape
+        stride = _triple(self.stride)
+        dilation = _conv_tuple(self.dilation, 3, "dilation", "Conv3d")
+        padding = _conv_padding_to_tuple(
+            self.padding, stride, (kernel_d, kernel_h, kernel_w), "Conv3d", dilation
+        )
+        out_d = _conv_out_dim(d, kernel_d, stride[0], padding[0], dilation[0])
+        out_h = _conv_out_dim(h, kernel_h, stride[1], padding[1], dilation[1])
+        out_w = _conv_out_dim(w, kernel_w, stride[2], padding[2], dilation[2])
+        return {"output": (n, c_out, out_d, out_h, out_w)}
+
+    def _validate_dtypes(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+    ) -> None:
+        if input.dtype not in {torch.float32, torch.float16, torch.bfloat16}:
+            raise ValueError(
+                f"input.dtype must be float32, float16, or bfloat16, got {input.dtype}"
+            )
+        if weight.dtype != input.dtype:
+            raise ValueError(
+                f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
+            )
+        if self.dtype is not None and input.dtype != self.dtype:
+            raise ValueError(f"input.dtype must match op dtype {self.dtype}, got {input.dtype}")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        flops = (
+            2
+            * self.n
+            * self.c_out
+            * self.out_d
+            * self.out_h
+            * self.out_w
+            * self.c_in_g
+            * self.kernel_size[0]
+            * self.kernel_size[1]
+            * self.kernel_size[2]
+        )
+        elem_bytes = torch.tensor([], dtype=self.dtype).element_size()
+        bytes_ = (
+            self.n * self.c_in * self.d * self.h * self.w
+            + self.c_out
+            * self.c_in_g
+            * self.kernel_size[0]
+            * self.kernel_size[1]
+            * self.kernel_size[2]
+            + self.n * self.c_out * self.out_d * self.out_h * self.out_w
+        ) * elem_bytes
+        return int(flops), int(bytes_)
 
 
 class Conv3dBiasFwdOp(Conv3dFwdOp):
@@ -817,6 +1026,7 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ) -> torch.Tensor:
+        self._validate_dtypes(input, weight, bias)
         _validate_tensor_shape(
             "Conv3d",
             "input",
@@ -829,7 +1039,7 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
             weight,
             (
                 self.c_out,
-                self.c_in,
+                self.c_in_g,
                 self.kernel_size[0],
                 self.kernel_size[1],
                 self.kernel_size[2],
@@ -837,3 +1047,51 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
         )
         _validate_tensor_shape("Conv3d", "bias", bias, (self.c_out,))
         return self.kernel(input, weight, bias)
+
+    def _infer_output_shapes(
+        self,
+        input_shape: tuple[int, int, int, int, int],
+        weight_shape: tuple[int, int, int, int, int],
+        bias_shape: tuple[int],
+    ) -> Dict[str, tuple[int, int, int, int, int]]:
+        del bias_shape
+        return super()._infer_output_shapes(input_shape, weight_shape)
+
+    def _validate_dtypes(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> None:
+        super()._validate_dtypes(input, weight)
+        if bias.dtype != input.dtype:
+            raise ValueError(
+                f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}"
+            )
+
+    def eval_roofline(self) -> tuple[int, int]:
+        flops = (
+            2
+            * self.n
+            * self.c_out
+            * self.out_d
+            * self.out_h
+            * self.out_w
+            * self.c_in_g
+            * self.kernel_size[0]
+            * self.kernel_size[1]
+            * self.kernel_size[2]
+            + self.n * self.c_out * self.out_d * self.out_h * self.out_w
+        )
+        elem_bytes = torch.tensor([], dtype=self.dtype).element_size()
+        bytes_ = (
+            self.n * self.c_in * self.d * self.h * self.w
+            + self.c_out
+            * self.c_in_g
+            * self.kernel_size[0]
+            * self.kernel_size[1]
+            * self.kernel_size[2]
+            + self.c_out
+            + self.n * self.c_out * self.out_d * self.out_h * self.out_w
+        ) * elem_bytes
+        return int(flops), int(bytes_)
