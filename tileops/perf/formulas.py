@@ -72,20 +72,57 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-def mha_fwd_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for multi-head attention forward (prefill).
+def _shape_or_attrs(op: Any | None, kwargs: dict[str, Any]) -> dict[str, Any]:
+    if op is not None and not isinstance(op, dict):
+        return vars(op)
+    if isinstance(op, dict):
+        return op
+    return kwargs
 
-    TODO: implement full formula based on B, S, H, D, is_causal.
-    """
-    raise NotImplementedError
+
+def mha_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for multi-head attention forward (prefill)."""
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        batch, seq_len, heads, dim = data["q_shape"]
+    else:
+        batch, seq_len, heads, dim = (
+            data["batch"],
+            data["seq_len"],
+            data["heads"],
+            data["dim"],
+        )
+    is_causal = bool(data.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    flops = 4 * batch * heads * seq_len * seq_len * dim
+    if is_causal:
+        flops //= 2
+    q_elems = batch * seq_len * heads * dim
+    kv_elems = q_elems
+    return int(flops), int(2 * (q_elems + kv_elems) * elem_bytes)
 
 
-def mha_bwd_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for multi-head attention backward.
+def mha_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for multi-head attention backward."""
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        batch, seq_len, heads, dim = data["q_shape"]
+    else:
+        batch, seq_len, heads, dim = (
+            data["batch"],
+            data["seq_len"],
+            data["heads"],
+            data["dim"],
+        )
+    is_causal = bool(data.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
-    TODO: implement full formula based on B, S, H, D, is_causal.
-    """
-    raise NotImplementedError
+    flops = 10 * batch * heads * seq_len * seq_len * dim
+    if is_causal:
+        flops //= 2
+    nbytes = batch * 7 * heads * seq_len * dim * elem_bytes
+    return int(flops), int(nbytes)
 
 
 # ---------------------------------------------------------------------------
@@ -93,12 +130,29 @@ def mha_bwd_roofline(**kwargs: Any) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def gqa_fwd_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for grouped-query attention forward (prefill).
+def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for grouped-query attention forward (prefill)."""
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        batch, seq_len, heads, dim = data["q_shape"]
+        _, _, heads_kv, _ = data["kv_shape"]
+    else:
+        batch, seq_len, heads, heads_kv, dim = (
+            data["batch"],
+            data["seq_len"],
+            data["heads"],
+            data["heads_kv"],
+            data["dim"],
+        )
+    is_causal = bool(data.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
-    TODO: implement full formula based on B, S, H, H_kv, D, is_causal.
-    """
-    raise NotImplementedError
+    flops = 4 * batch * heads * seq_len * seq_len * dim
+    if is_causal:
+        flops //= 2
+    q_elems = batch * seq_len * heads * dim
+    kv_elems = batch * seq_len * heads_kv * dim
+    return int(flops), int(2 * (q_elems + kv_elems) * elem_bytes)
 
 
 def _dtype_itemsize(dtype: Any) -> int:
@@ -120,38 +174,64 @@ def _causal_prefill_visible_scores(seq_len_q: int, seq_len_kv: int) -> int:
     return seq_len_q * seq_len_kv - seq_len_q * (seq_len_q - 1) // 2
 
 
-def gqa_prefill_fwd_roofline(**kwargs: Any) -> dict[str, int]:
+def gqa_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Conservative roofline for dense GQA prefill.
 
     Workloads bind ``q_shape`` and ``kv_shape``. Causal mode uses bottom-right
     alignment with ``S_q <= S_kv``.
     """
-    q_shape = kwargs["q_shape"]
-    kv_shape = kwargs.get("kv_shape", kwargs.get("k_shape"))
-    batch, seq_len_q, heads, dim = q_shape
-    _, seq_len_kv, heads_kv, _ = kv_shape
-    is_causal = bool(kwargs.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(kwargs.get("dtype", kwargs.get("dtypes", "float16")))
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        q_shape = data["q_shape"]
+        kv_shape = data.get("kv_shape", data.get("k_shape"))
+        batch, seq_len_q, heads, dim = q_shape
+        _, seq_len_kv, heads_kv, _ = kv_shape
+    else:
+        batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = (
+            data["batch"],
+            data["seq_len_q"],
+            data["seq_len_kv"],
+            data["heads"],
+            data["heads_kv"],
+            data["dim"],
+        )
+    is_causal = bool(data.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
     visible = (
         _causal_prefill_visible_scores(seq_len_q, seq_len_kv)
-        if is_causal else seq_len_q * seq_len_kv)
+        if is_causal
+        else seq_len_q * seq_len_kv
+    )
     flops = 4 * batch * heads * visible * dim
 
     q_elems = batch * seq_len_q * heads * dim
     kv_elems = batch * seq_len_kv * heads_kv * dim
     o_elems = q_elems
     nbytes = (q_elems + 2 * kv_elems + o_elems) * elem_bytes
-    return {"flops": int(flops), "bytes": int(nbytes)}
+    return int(flops), int(nbytes)
 
 
-def gqa_prefill_fp8_tensor_core_roofline(**kwargs: Any) -> dict[str, int]:
+def gqa_prefill_fp8_tensor_core_roofline(
+    op: Any | None = None,
+    **kwargs: Any,
+) -> tuple[int, int]:
     """Roofline for dense no-cache FP8 Tensor Core GQA prefill."""
-    q_shape = kwargs["q_shape"]
-    kv_shape = kwargs.get("kv_shape", kwargs.get("k_shape"))
-    batch, seq_len, heads, dim = q_shape
-    _, _, heads_kv, _ = kv_shape
-    out_bytes = _dtype_itemsize(kwargs.get("dtype", kwargs.get("dtypes", "float16")))
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        q_shape = data["q_shape"]
+        kv_shape = data.get("kv_shape", data.get("k_shape"))
+        batch, seq_len, heads, dim = q_shape
+        _, _, heads_kv, _ = kv_shape
+    else:
+        batch, seq_len, heads, heads_kv, dim = (
+            data["batch"],
+            data["seq_len"],
+            data["heads"],
+            data["heads_kv"],
+            data["dim"],
+        )
+    out_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
     flops = 4 * batch * heads * seq_len * seq_len * dim
     q_elems = batch * seq_len * heads * dim
@@ -159,7 +239,7 @@ def gqa_prefill_fp8_tensor_core_roofline(**kwargs: Any) -> dict[str, int]:
     # Public FP8 descales follow the FA3-compatible [batch, heads_kv] contract.
     descale_bytes = 3 * batch * heads_kv * 4
     nbytes = q_elems + 2 * kv_elems + q_elems * out_bytes + descale_bytes
-    return {"flops": int(flops), "bytes": int(nbytes)}
+    return int(flops), int(nbytes)
 
 
 def _distribute_total(total: int, batch: int, max_len: int) -> list[int]:
@@ -202,7 +282,9 @@ def gqa_prefill_varlen_fwd_roofline(**kwargs: Any) -> dict[str, int]:
     for q_len, kv_len in zip(q_lens, kv_lens, strict=True):
         visible += (
             _causal_prefill_visible_scores(int(q_len), int(kv_len))
-            if is_causal else int(q_len) * int(kv_len))
+            if is_causal
+            else int(q_len) * int(kv_len)
+        )
     flops = 4 * heads * visible * dim
 
     q_elems = total_q * heads * dim
@@ -213,25 +295,41 @@ def gqa_prefill_varlen_fwd_roofline(**kwargs: Any) -> dict[str, int]:
     return {"flops": int(flops), "bytes": int(nbytes)}
 
 
-def gqa_prefill_with_kv_cache_fwd_roofline(**kwargs: Any) -> dict[str, int]:
+def gqa_prefill_with_kv_cache_fwd_roofline(
+    op: Any | None = None,
+    **kwargs: Any,
+) -> tuple[int, int]:
     """Conservative roofline for contiguous-cache GQA prefill.
 
     The benchmark workload convention uses
     ``old_len = S_kv_cap - S_new`` for every batch item.
     """
-    q_shape = kwargs["q_shape"]
-    k_new_shape = kwargs["k_new_shape"]
-    k_cache_shape = kwargs["k_cache_shape"]
-    batch, seq_len_new, heads, dim = q_shape
-    _, _, heads_kv, _ = k_new_shape
-    _, seq_len_cap, _, _ = k_cache_shape
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        q_shape = data["q_shape"]
+        k_new_shape = data["k_new_shape"]
+        k_cache_shape = data["k_cache_shape"]
+        batch, seq_len_new, heads, dim = q_shape
+        _, _, heads_kv, _ = k_new_shape
+        _, seq_len_cap, _, _ = k_cache_shape
+    else:
+        seq_len_cap = data["seq_len_cap"] if "seq_len_cap" in data else data["seqlen_kv"]
+        batch, seq_len_new, heads, heads_kv, dim = (
+            data["batch"],
+            data["seq_len_new"],
+            data["heads"],
+            data["heads_kv"],
+            data["dim"],
+        )
     old_len = seq_len_cap - seq_len_new
-    is_causal = bool(kwargs.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(kwargs.get("dtype", kwargs.get("dtypes", "float16")))
+    is_causal = bool(data.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
     visible = (
         seq_len_new * old_len + seq_len_new * (seq_len_new + 1) // 2
-        if is_causal else seq_len_new * (old_len + seq_len_new))
+        if is_causal
+        else seq_len_new * (old_len + seq_len_new)
+    )
     flops = 4 * batch * heads * visible * dim
 
     q_elems = batch * seq_len_new * heads * dim
@@ -241,38 +339,44 @@ def gqa_prefill_with_kv_cache_fwd_roofline(**kwargs: Any) -> dict[str, int]:
     o_elems = q_elems
     cache_seqlens_bytes = batch * 4
     nbytes = (
-        (q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems) * elem_bytes
-        + cache_seqlens_bytes)
-    return {"flops": int(flops), "bytes": int(nbytes)}
+        q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems
+    ) * elem_bytes + cache_seqlens_bytes
+    return int(flops), int(nbytes)
 
 
-def gqa_prefill_paged_with_kv_cache_fwd_roofline(**kwargs: Any) -> dict[str, int]:
+def gqa_prefill_paged_with_kv_cache_fwd_roofline(
+    op: Any | None = None,
+    **kwargs: Any,
+) -> tuple[int, int]:
     """Conservative roofline for paged-cache GQA prefill.
 
     Paged workloads should bind explicit per-request ``q_lens`` and
     ``cache_lens``. If they are absent, fall back to a deterministic fill from
     aggregate metadata so older workload entries remain evaluable.
     """
-    total_q = int(kwargs["total_q"])
-    batch = int(kwargs["batch"])
-    heads = int(kwargs["heads"])
-    heads_kv = int(kwargs["heads_kv"])
-    dim = int(kwargs["dim"])
-    max_pages_per_req = int(kwargs["max_pages_per_req"])
-    page_size = int(kwargs["page_size"])
-    max_seqlen_q = int(kwargs["max_seqlen_q"])
-    is_causal = bool(kwargs.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(kwargs.get("dtype", kwargs.get("dtypes", "float16")))
+    data = _shape_or_attrs(op, kwargs)
+    total_q = int(data["total_q"]) if "total_q" in data else None
+    batch = int(data["batch"])
+    heads = int(data["heads"])
+    heads_kv = int(data["heads_kv"])
+    dim = int(data["dim"])
+    max_pages_per_req = int(data["max_pages_per_req"])
+    page_size = int(data["page_size"])
+    max_seqlen_q = int(data.get("max_seqlen_q", max_pages_per_req * page_size))
+    is_causal = bool(data.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
-    q_lens = kwargs.get("q_lens")
+    q_lens = data.get("q_lens")
+    if total_q is None and q_lens is not None:
+        total_q = int(sum(q_lens))
+    if total_q is None:
+        total_q = batch * max_seqlen_q
     if q_lens is None:
         q_lens = _distribute_total(total_q, batch, max_seqlen_q)
-    cache_lens = kwargs.get("cache_lens")
+    cache_lens = data.get("cache_lens")
     if cache_lens is None:
-        max_position = kwargs.get("max_position")
-        max_total_len = (
-            max_pages_per_req * page_size if max_position is None else int(max_position)
-        )
+        max_position = data.get("max_position")
+        max_total_len = max_pages_per_req * page_size if max_position is None else int(max_position)
         cache_lens = [max(max_total_len - int(q_len), 0) for q_len in q_lens]
 
     visible = 0
@@ -282,8 +386,7 @@ def gqa_prefill_paged_with_kv_cache_fwd_roofline(**kwargs: Any) -> dict[str, int
         old_len = int(old_len)
         old_kv_tokens += old_len
         visible += (
-            q_len * old_len + q_len * (q_len + 1) // 2
-            if is_causal else q_len * (old_len + q_len)
+            q_len * old_len + q_len * (q_len + 1) // 2 if is_causal else q_len * (old_len + q_len)
         )
     flops = 4 * heads * visible * dim
 
@@ -292,25 +395,35 @@ def gqa_prefill_paged_with_kv_cache_fwd_roofline(**kwargs: Any) -> dict[str, int
     new_kv_elems = 2 * total_q * heads_kv * dim
     append_kv_elems = new_kv_elems
     o_elems = q_elems
-    metadata_bytes = (
-        (batch + 1) * 4
-        + batch * 4
-        + batch * max_pages_per_req * 4
-    )
+    metadata_bytes = (batch + 1) * 4 + batch * 4 + batch * max_pages_per_req * 4
     nbytes = (
-        (q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems)
-        * elem_bytes
-        + metadata_bytes
-    )
-    return {"flops": int(flops), "bytes": int(nbytes)}
+        q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems
+    ) * elem_bytes + metadata_bytes
+    return int(flops), int(nbytes)
 
 
-def gqa_bwd_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for grouped-query attention backward.
+def gqa_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for grouped-query attention backward."""
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        batch, seq_len, heads, dim = data["q_shape"]
+        _, _, heads_kv, _ = data["kv_shape"]
+    else:
+        batch, seq_len, heads, heads_kv, dim = (
+            data["batch"],
+            data["seq_len"],
+            data["heads"],
+            data["heads_kv"],
+            data["dim"],
+        )
+    is_causal = bool(data.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
-    TODO: implement full formula based on B, S, H, H_kv, D, is_causal.
-    """
-    raise NotImplementedError
+    flops = 10 * batch * heads * seq_len * seq_len * dim
+    if is_causal:
+        flops //= 2
+    nbytes = batch * (3 * heads + 4 * heads_kv) * seq_len * dim * elem_bytes
+    return int(flops), int(nbytes)
 
 
 # ---------------------------------------------------------------------------
@@ -318,20 +431,52 @@ def gqa_bwd_roofline(**kwargs: Any) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def mha_decode_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for MHA decode with KV cache.
+def mha_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for MHA decode with KV cache."""
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        batch, seqlen_q, heads, dim = data["q_shape"]
+        _, seqlen_kv, _, _ = data["kv_shape"]
+    else:
+        batch, seqlen_q, heads, seqlen_kv, dim = (
+            data["batch"],
+            data["seqlen_q"],
+            data["heads"],
+            data["seqlen_kv"],
+            data["dim"],
+        )
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    flops = 4 * batch * heads * seqlen_q * seqlen_kv * dim
+    q_elems = batch * seqlen_q * heads * dim
+    kv_elems = batch * seqlen_kv * heads * dim
+    nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes
+    return int(flops), int(nbytes)
 
-    TODO: implement full formula based on B, H, N_kv, D.
-    """
-    raise NotImplementedError
 
-
-def mha_decode_paged_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for paged MHA decode with KV cache.
-
-    TODO: implement full formula based on B, H, N_kv, D, page_size.
-    """
-    raise NotImplementedError
+def mha_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for paged MHA decode with KV cache."""
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        batch, seqlen_q, heads, dim = data["q_shape"]
+        seqlen_kv, _, _ = data["kv_shape"]
+    else:
+        batch, seqlen_q, heads, seqlen_kv, dim = (
+            data["batch"],
+            data["seqlen_q"],
+            data["heads"],
+            data["seqlen_kv"],
+            data["dim"],
+        )
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    flops = 4 * batch * heads * seqlen_q * seqlen_kv * dim
+    q_elems = batch * seqlen_q * heads * dim
+    kv_elems = seqlen_kv * heads * dim
+    metadata_bytes = (
+        batch * 4
+        + batch * max(1, (seqlen_kv + int(data["page_size"]) - 1) // int(data["page_size"])) * 4
+    )
+    nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes + metadata_bytes
+    return int(flops), int(nbytes)
 
 
 # ---------------------------------------------------------------------------
@@ -339,20 +484,50 @@ def mha_decode_paged_roofline(**kwargs: Any) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def gqa_decode_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for GQA decode with KV cache.
+def gqa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for GQA decode with KV cache."""
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        batch, heads, dim = data["q_shape"]
+        _, seqlen_kv, heads_kv, _ = data["kv_shape"]
+    else:
+        batch, heads, heads_kv, seqlen_kv, dim = (
+            data["batch"],
+            data["heads"],
+            data["heads_kv"],
+            data["seqlen_kv"],
+            data["dim"],
+        )
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    flops = 4 * batch * heads * seqlen_kv * dim
+    q_elems = batch * heads * dim
+    kv_elems = batch * seqlen_kv * heads_kv * dim
+    nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes
+    return int(flops), int(nbytes)
 
-    TODO: implement full formula based on B, H, H_kv, N_kv, D.
-    """
-    raise NotImplementedError
 
-
-def gqa_decode_paged_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for paged GQA decode with KV cache.
-
-    TODO: implement full formula based on B, H, H_kv, N_kv, D, page_size.
-    """
-    raise NotImplementedError
+def gqa_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for paged GQA decode with KV cache."""
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        batch, heads, dim = data["q_shape"]
+        seqlen_kv, heads_kv, _ = data["kv_shape"]
+    else:
+        batch, heads, heads_kv, seqlen_kv, dim = (
+            data["batch"],
+            data["heads"],
+            data["heads_kv"],
+            data["seqlen_kv"],
+            data["dim"],
+        )
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    flops = 4 * batch * heads * seqlen_kv * dim
+    q_elems = batch * heads * dim
+    kv_elems = seqlen_kv * heads_kv * dim
+    page_size = int(data["page_size"])
+    metadata_bytes = batch * 4 + batch * max(1, (seqlen_kv + page_size - 1) // page_size) * 4
+    nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes + metadata_bytes
+    return int(flops), int(nbytes)
 
 
 # ---------------------------------------------------------------------------
@@ -360,20 +535,78 @@ def gqa_decode_paged_roofline(**kwargs: Any) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def gqa_sliding_window_fwd_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for GQA sliding window forward.
+def gqa_sliding_window_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for GQA sliding window forward."""
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        batch, seq_len, heads, dim = data["q_shape"]
+        _, _, heads_kv, _ = data["kv_shape"]
+    else:
+        batch, seq_len, heads, heads_kv, dim = (
+            data["batch"],
+            data["seq_len"],
+            data["heads"],
+            data["heads_kv"],
+            data["dim"],
+        )
+    is_causal = bool(data.get("is_causal", True))
+    wl = int(data.get("window_size_left", -1))
+    wr = int(data.get("window_size_right", -1))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
-    TODO: implement full formula based on B, S, H, H_kv, D, window_size.
-    """
-    raise NotImplementedError
+    total_attended = 0
+    for q_idx in range(seq_len):
+        hi = q_idx if is_causal else (min(seq_len - 1, q_idx + wr) if wr >= 0 else seq_len - 1)
+        lo = max(0, q_idx - wl) if wl >= 0 else 0
+        total_attended += hi - lo + 1
+    flops = 4 * batch * heads * total_attended * dim
+    nbytes = 2 * batch * seq_len * (heads + heads_kv) * dim * elem_bytes
+    return int(flops), int(nbytes)
 
 
-def gqa_sliding_window_varlen_fwd_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for variable-length GQA sliding window forward.
+def gqa_sliding_window_varlen_fwd_roofline(
+    op: Any | None = None,
+    **kwargs: Any,
+) -> tuple[int, int]:
+    """Roofline for variable-length GQA sliding window forward."""
+    data = _shape_or_attrs(op, kwargs)
+    batch = int(data["batch"])
+    heads = int(data["heads"])
+    heads_kv = int(data["heads_kv"])
+    dim = int(data["dim"])
+    total_q = int(data.get("total_q", 0))
+    total_k = int(data.get("total_k", 0))
+    max_seqlen_q = int(data.get("max_seqlen_q", total_q // batch if batch else total_q))
+    q_lens = data.get("q_lens")
+    k_lens = data.get("k_lens")
+    if q_lens is None:
+        q_lens = _distribute_total(total_q, batch, max_seqlen_q)
+    if k_lens is None:
+        max_seqlen_k = int(data.get("max_seqlen_k", total_k // batch if batch else total_k))
+        k_lens = _distribute_total(total_k, batch, max_seqlen_k)
+    total_q = sum(q_lens)
+    total_k = sum(k_lens)
+    is_causal = bool(data.get("is_causal", True))
+    wl = int(data.get("window_size_left", -1))
+    wr = int(data.get("window_size_right", -1))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
-    TODO: implement full formula based on B, H, H_kv, D, window_size.
-    """
-    raise NotImplementedError
+    total_attended = 0
+    for sq, sk in zip(q_lens, k_lens, strict=True):
+        offset = int(sk) - int(sq)
+        for q_pos in range(int(sq)):
+            hi = (
+                min(q_pos + offset, int(sk) - 1)
+                if is_causal
+                else (min(q_pos + offset + wr, int(sk) - 1) if wr >= 0 else int(sk) - 1)
+            )
+            lo = max(0, q_pos + offset - wl) if wl >= 0 else 0
+            total_attended += max(0, hi - lo + 1)
+    flops = 4 * heads * total_attended * dim
+    nbytes = (
+        total_q * heads * dim + 2 * total_k * heads_kv * dim + total_q * heads * dim
+    ) * elem_bytes
+    return int(flops), int(nbytes)
 
 
 # ---------------------------------------------------------------------------
@@ -381,20 +614,60 @@ def gqa_sliding_window_varlen_fwd_roofline(**kwargs: Any) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def deepseek_mla_decode_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for DeepSeek MLA decode with KV cache.
+def deepseek_mla_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for DeepSeek MLA decode with KV cache."""
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        batch, heads, dim = data["q_shape"]
+        _, seqlen_kv, heads_kv, _ = data["kv_shape"]
+        pe_dim = data["pe_dim"]
+    else:
+        batch, heads, heads_kv, seqlen_kv, dim, pe_dim = (
+            data["batch"],
+            data["heads"],
+            data["heads_kv"],
+            data["seqlen_kv"],
+            data["dim"],
+            data["pe_dim"],
+        )
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    flops = 2 * batch * heads * seqlen_kv * (2 * dim + pe_dim)
+    nbytes = (
+        batch * heads * (dim + pe_dim)
+        + batch * seqlen_kv * heads_kv * (dim + pe_dim)
+        + batch * heads * dim
+    ) * elem_bytes
+    return int(flops), int(nbytes)
 
-    TODO: implement full formula based on B, H, H_kv, N_kv, D, pe_dim.
-    """
-    raise NotImplementedError
 
-
-def deepseek_dsa_decode_roofline(**kwargs: Any) -> dict[str, int]:
-    """Roofline for DeepSeek sparse attention decode.
-
-    TODO: implement full formula based on B, H, S, S_kv, D, D_tail, topk.
-    """
-    raise NotImplementedError
+def deepseek_dsa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for DeepSeek sparse attention decode."""
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" in data:
+        batch, seq_len, heads, q_dim = data["q_shape"]
+        _, seq_len_kv, heads_kv, _ = data["kv_shape"]
+        dim_tail = data["dim_tail"]
+        dim = q_dim - dim_tail
+        topk = data["topk"]
+    else:
+        batch, seq_len, heads, seq_len_kv, dim, dim_tail, topk, heads_kv = (
+            data["batch"],
+            data["seq_len"],
+            data["heads"],
+            data["seq_len_kv"],
+            data["dim"],
+            data["dim_tail"],
+            data["topk"],
+            data["heads_kv"],
+        )
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    flops = 2 * batch * seq_len * heads * topk * (2 * dim + dim_tail)
+    q_elems = batch * seq_len * heads * (dim + dim_tail)
+    kv_elems = batch * seq_len_kv * heads_kv * (dim + dim_tail)
+    o_elems = batch * seq_len * heads * dim
+    index_bytes = batch * seq_len * heads_kv * topk * 4
+    nbytes = (q_elems + kv_elems + o_elems) * elem_bytes + index_bytes
+    return int(flops), int(nbytes)
 
 
 # ---------------------------------------------------------------------------

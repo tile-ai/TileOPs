@@ -42,6 +42,7 @@ MultiHeadAttentionFwdOp:
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha.py
     bench: benchmarks/ops/attention/bench_mha.py
+    bench_manifest_driven: true
 
 MultiHeadAttentionBwdOp:
   ref_api: "torch.nn.functional.scaled_dot_product_attention"
@@ -93,6 +94,7 @@ MultiHeadAttentionBwdOp:
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha.py
     bench: benchmarks/ops/attention/bench_mha.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionFwdOp:
   ref_api: "torch.nn.functional.scaled_dot_product_attention"
@@ -133,6 +135,7 @@ GroupedQueryAttentionFwdOp:
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionPrefillFwdOp:
   ref_api: "none"
@@ -175,6 +178,7 @@ GroupedQueryAttentionPrefillFwdOp:
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionPrefillFP8TensorCoreFwdOp:
   ref_api: "flash_attn_interface.flash_attn_func"
@@ -285,6 +289,7 @@ GroupedQueryAttentionPrefillWithKVCacheFwdOp:
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
   ref_api: "none"
@@ -350,6 +355,7 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_prefill_paged.py
     bench: benchmarks/ops/attention/bench_gqa.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp:
   ref_api: "none"
@@ -407,7 +413,7 @@ GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp:
   roofline:
     # Approximate: reuses the non-FP8 paged prefill estimate and does not model
     # online old-cache dequantization cost separately.
-    func: "tileops.perf.formulas.gqa_prefill_with_kv_cache_fwd_roofline"
+    func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
 
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
@@ -416,6 +422,7 @@ GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp:
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_prefill_paged.py
     bench: benchmarks/ops/attention/bench_gqa.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionBwdOp:
   ref_api: "torch.nn.functional.scaled_dot_product_attention"
@@ -468,6 +475,7 @@ GroupedQueryAttentionBwdOp:
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
+    bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
 # attention — decode (single-query against KV cache)
@@ -512,6 +520,7 @@ MultiHeadAttentionDecodeWithKVCacheFwdOp:
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha_decode.py
     bench: benchmarks/ops/attention/bench_mha_decode.py
+    bench_manifest_driven: true
 
 MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
   ref_api: "none"
@@ -539,22 +548,10 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
       - "o.shape == (B, S_q, H, D)"
 
   workloads:
-    # Llama-3.1-8B (H=32, D=128), short KV, page_size=1
-    - {q_shape: [32, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg1"}
-    # Llama-3.1-8B, short KV, page_size=64
-    - {q_shape: [32, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg64"}
-    # Llama-3.1-8B, long KV, page_size=1
-    - {q_shape: [8, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg1"}
-    # Llama-3.1-8B, long KV, page_size=64
-    - {q_shape: [8, 1, 32, 128], kv_shape: [131072, 32, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg64"}
-    # Llama-3.1-70B (H=64, D=128), short KV, page_size=1
-    - {q_shape: [16, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg1"}
-    # Llama-3.1-70B, short KV, page_size=64
-    - {q_shape: [16, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg64"}
-    # Llama-3.1-70B, long KV, page_size=1
-    - {q_shape: [4, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg1"}
-    # Llama-3.1-70B, long KV, page_size=64
-    - {q_shape: [4, 1, 64, 128], kv_shape: [131072, 64, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg64"}
+    - {q_shape: [1, 1, 16, 128], kv_shape: [512, 16, 128], page_size: 128, dtypes: [float16], label: "single-token-page128"}
+    - {q_shape: [2, 1, 8, 64], kv_shape: [1024, 8, 64], page_size: 256, dtypes: [float16], label: "batch2-page256"}
+    - {q_shape: [1, 1, 8, 64], kv_shape: [1024, 8, 64], page_size: 256, dtypes: [float16], label: "longer-cache"}
+    - {q_shape: [1, 1, 8, 64], kv_shape: [512, 8, 64], page_size: 256, dtypes: [float16], label: "shorter-cache"}
 
   roofline:
     func: "tileops.perf.formulas.mha_decode_paged_roofline"
@@ -566,6 +563,7 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha_decode_paged.py
     bench: benchmarks/ops/attention/bench_mha_decode_paged.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionDecodeWithKVCacheFwdOp:
   ref_api: "none"
@@ -607,6 +605,7 @@ GroupedQueryAttentionDecodeWithKVCacheFwdOp:
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_decode.py
     bench: benchmarks/ops/attention/bench_gqa_decode.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
   ref_api: "none"
@@ -634,22 +633,16 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
       - "H % H_kv == 0"
 
   workloads:
-    # Llama-3.1-8B (H=32, H_kv=8, D=128), short KV, page_size=1
-    - {q_shape: [32, 32, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg1"}
-    # Llama-3.1-8B, short KV, page_size=64
-    - {q_shape: [32, 32, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-4k-pg64"}
-    # Llama-3.1-8B, long KV, page_size=1
-    - {q_shape: [8, 32, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg1"}
-    # Llama-3.1-8B, long KV, page_size=64
-    - {q_shape: [8, 32, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-8b-32k-pg64"}
-    # Llama-3.1-70B (H=64, H_kv=8, D=128), short KV, page_size=1
-    - {q_shape: [16, 64, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg1"}
-    # Llama-3.1-70B, short KV, page_size=64
-    - {q_shape: [16, 64, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k-pg64"}
-    # Llama-3.1-70B, long KV, page_size=1
-    - {q_shape: [4, 64, 128], kv_shape: [131072, 8, 128], page_size: 1, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg1"}
-    # Llama-3.1-70B, long KV, page_size=64
-    - {q_shape: [4, 64, 128], kv_shape: [131072, 8, 128], page_size: 64, dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k-pg64"}
+    - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 64, dtypes: [float16], label: "serving-8b-p64"}
+    - {q_shape: [8, 32, 128], kv_shape: [32768, 8, 128], page_size: 64, dtypes: [float16], label: "serving-8b-long-p64"}
+    - {q_shape: [64, 32, 128], kv_shape: [2048, 8, 128], page_size: 64, dtypes: [float16], label: "throughput-8b-p64"}
+    - {q_shape: [8, 64, 128], kv_shape: [4096, 8, 128], page_size: 64, dtypes: [float16], label: "serving-70b-p64"}
+    - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 256, dtypes: [float16], label: "serving-8b-p256"}
+    - {q_shape: [8, 64, 128], kv_shape: [4096, 8, 128], page_size: 256, dtypes: [float16], label: "serving-70b-p256"}
+    - {q_shape: [4, 128, 128], kv_shape: [4096, 8, 128], page_size: 256, dtypes: [float16], label: "serving-405b-p256"}
+    - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "serving-8b-p16"}
+    - {q_shape: [64, 32, 128], kv_shape: [2048, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "throughput-8b-p16"}
+    - {q_shape: [8, 64, 128], kv_shape: [4096, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "serving-70b-p16"}
 
   roofline:
     func: "tileops.perf.formulas.gqa_decode_paged_roofline"
@@ -661,6 +654,7 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_decode_paged.py
     bench: benchmarks/ops/attention/bench_gqa_decode_paged.py
+    bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
 # attention — sliding window
@@ -707,6 +701,7 @@ GroupedQueryAttentionSlidingWindowFwdOp:
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_sliding_window.py
     bench: benchmarks/ops/attention/bench_gqa_sliding_window.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionSlidingWindowVarlenFwdOp:
   ref_api: "none"
@@ -754,6 +749,7 @@ GroupedQueryAttentionSlidingWindowVarlenFwdOp:
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_sliding_window_varlen.py
     bench: benchmarks/ops/attention/bench_gqa_sliding_window_varlen.py
+    bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
 # attention — Multi-Head Latent Attention / DeepSeek Sparse Attention decode
@@ -801,6 +797,7 @@ MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
     op: tileops/ops/attention/deepseek_mla.py
     test: tests/ops/attention/test_deepseek_mla_decode.py
     bench: benchmarks/ops/attention/bench_deepseek_mla_decode.py
+    bench_manifest_driven: true
 
 DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
   ref_api: "none"
@@ -828,12 +825,8 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
       - "o.shape == (B, S, H, D)"
 
   workloads:
-    # DeepSeek-V2 (H=128, H_kv=1, D=128, dim_tail=64, topk=8, stride_kv=64)
-    - {q_shape: [4, 1, 128, 192], kv_shape: [4, 4096, 1, 192], indices_shape: [4, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [float16, bfloat16], label: "deepseek-v2-4k"}
-    - {q_shape: [2, 1, 128, 192], kv_shape: [2, 32768, 1, 192], indices_shape: [2, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [float16, bfloat16], label: "deepseek-v2-32k"}
-    # DeepSeek-V3 (H=128, H_kv=1, D=128, dim_tail=64, topk=8, stride_kv=64)
-    - {q_shape: [4, 1, 128, 192], kv_shape: [4, 4096, 1, 192], indices_shape: [4, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [bfloat16], label: "deepseek-v3-4k"}
-    - {q_shape: [2, 1, 128, 192], kv_shape: [2, 32768, 1, 192], indices_shape: [2, 1, 1, 8], topk: 8, stride_kv: 64, dim_tail: 64, q_start_index_s: 0, dtypes: [bfloat16], label: "deepseek-v3-32k"}
+    - {q_shape: [1, 1024, 128, 576], kv_shape: [1, 2048, 1, 576], indices_shape: [1, 1024, 1, 2048], topk: 2048, stride_kv: 1, dim_tail: 64, q_start_index_s: 1024, dtypes: [float16], label: "single-batch-mainstream"}
+    - {q_shape: [1, 512, 128, 576], kv_shape: [1, 4096, 1, 576], indices_shape: [1, 512, 1, 1024], topk: 1024, stride_kv: 1, dim_tail: 64, q_start_index_s: 512, dtypes: [float16], label: "longer-kv-lower-topk"}
 
   roofline:
     func: "tileops.perf.formulas.deepseek_dsa_decode_roofline"
@@ -845,3 +838,4 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
     op: tileops/ops/attention/deepseek_dsa.py
     test: tests/ops/attention/test_deepseek_dsa_decode.py
     bench: benchmarks/ops/attention/bench_deepseek_dsa_decode.py
+    bench_manifest_driven: true

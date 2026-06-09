@@ -1,11 +1,13 @@
-from typing import Optional
-
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.ops.attention.manifest_params import dsa_decode_args, manifest_params
+from tileops.manifest import load_workloads
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.deepseek_dsa_decode import DsaDecodeTest
+
+_OP_NAME = "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp"
 
 
 class _DsaDecodeTestBaseline(DsaDecodeTest):
@@ -57,37 +59,11 @@ class _DsaDecodeTestBaseline(DsaDecodeTest):
         return o.to(torch.float16)
 
 
-class DsaDecodeBenchmark(BenchmarkBase[DsaDecodeTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        return t.batch * t.seq_len * (2 * t.dim + t.dim_tail) * t.topk * 2 * t.heads
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        # q: batch, seq_len, heads, dim + dim_tail
-        # kv: batch, seq_len_kv, heads_kv, dim + dim_tail
-        # indices: batch, seq_len, heads_kv, topk
-        # Output: batch, seq_len, heads, dim
-        q_memory = (
-            t.batch * t.seq_len * t.heads * (t.dim + t.dim_tail) * t.dtype.itemsize)
-        kv_memory = t.batch * t.seq_len_kv * t.heads_kv * (
-            t.dim + t.dim_tail) * t.dtype.itemsize
-        indices_memory = t.batch * t.seq_len * t.heads_kv * t.topk * 4  # int32
-        output_memory = t.batch * t.seq_len * t.heads * t.dim * t.dtype.itemsize
-        return q_memory + kv_memory + indices_memory + output_memory
-
-
-_DSA_DECODE_BENCH_PARAMS = [
-    pytest.param(
-        1, 128, 1024, 2048, 512, 64, 2048, 1, 1, 1024, None, torch.float16, False,
-        id="single-batch-mainstream",
-    ),
-    pytest.param(
-        1, 128, 512, 4096, 512, 64, 1024, 1, 1, 512, None, torch.float16, False,
-        id="longer-kv-lower-topk",
-    ),
-]
+_DSA_DECODE_BENCH_PARAMS = manifest_params(
+    load_workloads(_OP_NAME),
+    dsa_decode_args,
+    tune=False,
+)
 
 
 @pytest.mark.parametrize(
@@ -101,12 +77,12 @@ def test_dsa_decode_bench(batch: int, heads: int, seq_len_q: int, seq_len_kv: in
     test = _DsaDecodeTestBaseline(
         batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
         q_start_index_s, sm_scale=sm_scale, dtype=dtype)
-    bm = DsaDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
     op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
         batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
         q_start_index_s, sm_scale=sm_scale, dtype=dtype, tune=tune)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

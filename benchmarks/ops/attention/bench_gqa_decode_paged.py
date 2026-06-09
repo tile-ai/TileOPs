@@ -1,14 +1,17 @@
 import math
-from typing import Optional
 
 import pytest
 import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.ops.attention.manifest_params import gqa_decode_paged_args, manifest_params
+from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.gqa_decode_paged import GroupedQueryAttentionDecodePagedTest
+
+_OP_NAME = "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp"
 
 
 class _GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodePagedTest):
@@ -45,23 +48,6 @@ class _GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodeP
             out_b = out_b.squeeze(2)
             out_list.append(out_b)
         return torch.cat(out_list, dim=0)
-
-
-class GroupedQueryAttentionDecodePagedBenchmark(BenchmarkBase[GroupedQueryAttentionDecodePagedTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        flops_per_matmul = 2.0 * t.batch * t.heads * t.seqlen_kv * t.dim
-        flops = flops_per_matmul * 2
-        return flops
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        num_pages = t.seqlen_kv // t.page_size
-        # Q, output: batch * heads * dim; K,V: seqlen_kv * heads_kv * dim; block_table, real_seqlen_kv: int32
-        return (t.batch * t.heads * t.dim * 2 +
-                2 * t.seqlen_kv * t.heads_kv * t.dim) * t.dtype.itemsize + \
-            t.batch * num_pages * 4 + t.batch * 4
 
 
 def _fa3_gqa_decode_paged(test, k, v):
@@ -143,42 +129,10 @@ def _flashinfer_gqa_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
     return run_fn
 
 
-# GQA paged decode benchmark parameters.
-#
-# Paged KV cache is the standard in production serving (vLLM, SGLang).
-# Batch sizes reflect real multi-request serving: B=4-64.
-#
-# Three page_size tiers:
-#   64  — TileOPs current minimum supported page_size (block_N constraint)
-#   256 — FlashInfer's optimized page_size, also FA3-compatible (multiple of 256)
-#   16  — vLLM/SGLang default; skip-marked until kernel supports page_size<64
-#
-# Head profiles and KV cache lengths match non-paged decode configs.
-_GQA_DECODE_PAGED_BENCH_PARAMS = [
-    # ── page_size=64 (TileOPs minimum) ──
-    # 8B-class online serving (B=32, 4K context)
-    pytest.param(32, 32, 8, 4096, 128, 64, torch.float16, True, id="serving-8b-p64"),
-    # 8B-class long-context serving (B=8, 32K context)
-    pytest.param(8, 32, 8, 32768, 128, 64, torch.float16, True, id="serving-8b-long-p64"),
-    # 8B-class high-throughput batch (B=64, short output)
-    pytest.param(64, 32, 8, 2048, 128, 64, torch.float16, True, id="throughput-8b-p64"),
-    # 70B-class online serving
-    pytest.param(8, 64, 8, 4096, 128, 64, torch.float16, True, id="serving-70b-p64"),
-    # ── page_size=256 (FlashInfer optimized, FA3 compatible) ──
-    # 8B-class online serving
-    pytest.param(32, 32, 8, 4096, 128, 256, torch.float16, True, id="serving-8b-p256"),
-    # 70B-class online serving
-    pytest.param(8, 64, 8, 4096, 128, 256, torch.float16, True, id="serving-70b-p256"),
-    # 405B-class online serving (B=4, limited by model size)
-    pytest.param(4, 128, 8, 4096, 128, 256, torch.float16, True, id="serving-405b-p256"),
-    # ── page_size=16 (vLLM/SGLang default) — skip until kernel support ──
-    pytest.param(32, 32, 8, 4096, 128, 16, torch.float16, True, id="serving-8b-p16",
-                 marks=pytest.mark.skip(reason="page_size=16 not yet supported by kernel")),
-    pytest.param(64, 32, 8, 2048, 128, 16, torch.float16, True, id="throughput-8b-p16",
-                 marks=pytest.mark.skip(reason="page_size=16 not yet supported by kernel")),
-    pytest.param(8, 64, 8, 4096, 128, 16, torch.float16, True, id="serving-70b-p16",
-                 marks=pytest.mark.skip(reason="page_size=16 not yet supported by kernel")),
-]
+_GQA_DECODE_PAGED_BENCH_PARAMS = manifest_params(
+    load_workloads(_OP_NAME),
+    gqa_decode_paged_args,
+)
 
 
 @pytest.mark.parametrize(
@@ -188,12 +142,12 @@ _GQA_DECODE_PAGED_BENCH_PARAMS = [
 def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv: int, dim: int,
                                 page_size: int, dtype: torch.dtype, tune: bool) -> None:
     test = _GroupedQueryAttentionDecodePagedTestBaseline(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
-    bm = GroupedQueryAttentionDecodePagedBenchmark(test)
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
         batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune=tune)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
