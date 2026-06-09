@@ -426,6 +426,8 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         try:
             r = bm.profile(lambda A=A, B_KN=B_KN: torch._grouped_mm(A, B_KN, offs_cumsum))
             BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="torch")
+        except torch.cuda.OutOfMemoryError:
+            raise
         except Exception as exc:  # pragma: no cover - env dependent
             print(f"  [skip] torch._grouped_mm: {exc}")
 
@@ -435,6 +437,8 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
             try:
                 r = bm.profile(lambda A=A, B=B, D=D: _deepgemm_launch(A, B, D, m_indices))
                 BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="deepgemm")
+            except torch.cuda.OutOfMemoryError:
+                raise
             except Exception as exc:  # pragma: no cover - DeepGEMM workspace bug
                 print(f"  [skip] deepgemm: {exc}")
 
@@ -448,6 +452,8 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
             r = bm.profile(
                 lambda: _grouped_matmul_kernel[grid](a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds, E))
             BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="triton")
+        except torch.cuda.OutOfMemoryError:
+            raise
         except Exception as exc:  # pragma: no cover - env dependent
             print(f"  [skip] triton: {exc}")
 
@@ -461,6 +467,8 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
                 r = bm.profile(
                     lambda: _grouped_matmul_tma_kernel[grid](a_p, b_p, c_p, gs, gl, E, NUM_SM=sm))
                 BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="triton-tma")
+            except torch.cuda.OutOfMemoryError:
+                raise
             except Exception as exc:  # pragma: no cover - env dependent
                 print(f"  [skip] triton-tma: {exc}")
 
