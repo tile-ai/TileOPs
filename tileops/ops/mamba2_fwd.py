@@ -217,6 +217,12 @@ class Mamba2FwdOp:
             y:            (batch, seqlen, n_heads, d_head)   float32
             final_states: (batch, n_heads, d_head, d_state)  float32, or None
         """
+        if initial_states is not None and not self.has_initial_states:
+            raise ValueError(
+                "initial_states was provided but this op was constructed with "
+                "has_initial_states=False — the kernel ignores it, which would "
+                "silently produce wrong results.  Reconstruct with has_initial_states=True."
+            )
         batch, seqlen, n_heads, d_head = x.shape
         chunk_size   = self.chunk_size
         num_chunks   = seqlen // chunk_size
@@ -266,7 +272,7 @@ class Mamba2FwdOp:
             chunk_states_flat, dA_chunk_cumsum, init_flat,
         )
 
-        # Unflatten to (B, C, H, P, N) in storage dtype for chunk_scan.
+        # Unflatten to (B, C, H, P, N) in float32 (accum_dtype) for chunk_scan.
         prev_states  = prev_states_flat.reshape(batch, num_chunks, n_heads, d_head, d_state)
         dt_out_typed = dt_out.to(self.dtype)
 

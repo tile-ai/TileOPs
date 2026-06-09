@@ -55,7 +55,6 @@ def _da_cumsum_fwd_kernel(
     has_dt_bias: bool = False,
     dt_min: float = 0.0,
     dt_max: float = float("inf"),
-    block_h: int = 4,
 ) -> Callable:
     """Build a TileLang parallel dA_cumsum kernel.
 
@@ -66,13 +65,9 @@ def _da_cumsum_fwd_kernel(
     Q-step scan of the previous kernel and matches mamba_ssm's tl.cumsum approach.
 
     Args:
-        block_h: Number of heads processed per CUDA block.  Must be a power of 2
-                 and satisfy block_h * chunk_len <= shared memory budget.
+        block_h: Number of heads processed per CUDA block (passed to kernel_func).
+                 Must be a power of 2 and satisfy block_h * chunk_len <= 1024.
     """
-    assert block_h > 0 and (block_h & (block_h - 1)) == 0, (
-        f"block_h must be a power of 2, got {block_h}"
-    )
-
     accum_dtype = "float"
 
     B = batch
@@ -82,7 +77,7 @@ def _da_cumsum_fwd_kernel(
     S = seq_len
 
     @tilelang.jit(out_idx=[-2, -1])
-    def kernel_func(threads: int):
+    def kernel_func(block_h: int, threads: int):
         @T.prim_func
         def main(
             dt:        T.Tensor((B, S, H), accum_dtype),          # type: ignore  # raw dt input
@@ -179,8 +174,8 @@ def _da_cumsum_fwd_wrapped(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     return _da_cumsum_fwd_kernel(
         batch, num_chunks, chunk_len, n_heads, seq_len,
-        dt_softplus, has_dt_bias, dt_min, dt_max, block_h,
-    )(threads)(dt, A, dt_bias)
+        dt_softplus, has_dt_bias, dt_min, dt_max,
+    )(block_h, threads)(dt, A, dt_bias)
 
 
 @_da_cumsum_fwd_wrapped.register_fake
