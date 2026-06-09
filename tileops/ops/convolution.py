@@ -9,6 +9,8 @@ from tileops.kernels.convolution import (
     Conv2dKernel,
     Conv3dKernel,
     GroupConv1dKernel,
+    GroupConv2dKernel,
+    GroupConv3dKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 
@@ -501,13 +503,14 @@ class Conv2dFwdOp(Op):
         _validate_positive_int("w", w, "Conv2d")
         _validate_positive_int("c_out", c_out, "Conv2d")
         _validate_conv_groups("Conv2d", c_in, c_out, groups)
-        if groups != 1:
-            raise NotImplementedError("Conv2d currently supports groups=1 only")
         self.n = n
         self.c_in = c_in
         self.h = h
         self.w = w
         self.c_out = c_out
+        self.groups = groups
+        self.c_in_g = c_in // groups
+        self.c_out_g = c_out // groups
         self.kernel_size = _pair(kernel_size)
         self.stride = _pair(stride)
         dilation_tuple = _conv_tuple(dilation, 2, "dilation", "Conv2d")
@@ -523,7 +526,6 @@ class Conv2dFwdOp(Op):
             dilation=dilation_tuple,
         )
         self.dilation = dilation_tuple
-        self.groups = groups
         self.has_bias = _has_bias
         self.dtype = dtype
 
@@ -543,14 +545,15 @@ class Conv2dFwdOp(Op):
             tune=tune,
         )
         if (
-            self.kernel_size == (1, 1)
+            self.groups == 1
+            and self.kernel_size == (1, 1)
             and self.stride == (1, 1)
             and self.padding == (0, 0)
             and self.dilation == (1, 1)
             and "conv2d_1x1_kernel" in self.kernel_map
         ):
             self.kernel = self.kernel_map["conv2d_1x1_kernel"](**kernel_kwargs)
-        elif "conv2d_kernel" in self.kernel_map:
+        elif self.groups == 1 and "conv2d_kernel" in self.kernel_map:
             self.kernel = self.kernel_map["conv2d_kernel"](
                 **kernel_kwargs,
                 kernel_h=self.kernel_size[0],
@@ -558,9 +561,21 @@ class Conv2dFwdOp(Op):
                 dilation_h=self.dilation[0],
                 dilation_w=self.dilation[1],
             )
+        elif self.groups > 1 and "group_conv2d_kernel" in self.kernel_map:
+            self.kernel = self.kernel_map["group_conv2d_kernel"](
+                **kernel_kwargs,
+                kernel_h=self.kernel_size[0],
+                kernel_w=self.kernel_size[1],
+                dilation_h=self.dilation[0],
+                dilation_w=self.dilation[1],
+                groups=self.groups,
+                c_in_g=self.c_in_g,
+                c_out_g=self.c_out_g,
+            )
         else:
             raise NotImplementedError(
-                "Conv2dFwdOp requires 'conv2d_1x1_kernel' or 'conv2d_kernel' in kernel_map"
+                "Conv2dFwdOp requires 'conv2d_1x1_kernel', 'conv2d_kernel', "
+                "or 'group_conv2d_kernel' in kernel_map"
             )
 
     @property
@@ -568,6 +583,7 @@ class Conv2dFwdOp(Op):
         return {
             "conv2d_1x1_kernel": Conv2d1x1Kernel,
             "conv2d_kernel": Conv2dKernel,
+            "group_conv2d_kernel": GroupConv2dKernel,
         }
 
     def forward(
@@ -580,7 +596,7 @@ class Conv2dFwdOp(Op):
             "Conv2d",
             "weight",
             weight,
-            (self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1]),
+            (self.c_out, self.c_in_g, self.kernel_size[0], self.kernel_size[1]),
         )
         return self.kernel(input, weight, None)
 
@@ -642,7 +658,7 @@ class Conv2dBiasFwdOp(Conv2dFwdOp):
             "Conv2d",
             "weight",
             weight,
-            (self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1]),
+            (self.c_out, self.c_in_g, self.kernel_size[0], self.kernel_size[1]),
         )
         _validate_tensor_shape("Conv2d", "bias", bias, (self.c_out,))
         return self.kernel(input, weight, bias)
@@ -679,14 +695,15 @@ class Conv3dFwdOp(Op):
         _validate_positive_int("w", w, "Conv3d")
         _validate_positive_int("c_out", c_out, "Conv3d")
         _validate_conv_groups("Conv3d", c_in, c_out, groups)
-        if groups != 1:
-            raise NotImplementedError("Conv3d currently supports groups=1 only")
         self.n = n
         self.c_in = c_in
         self.d = d
         self.h = h
         self.w = w
         self.c_out = c_out
+        self.groups = groups
+        self.c_in_g = c_in // groups
+        self.c_out_g = c_out // groups
         self.kernel_size = _triple(kernel_size)
         self.stride = _triple(stride)
         dilation_tuple = _conv_tuple(dilation, 3, "dilation", "Conv3d")
@@ -702,14 +719,11 @@ class Conv3dFwdOp(Op):
             dilation=dilation_tuple,
         )
         self.dilation = dilation_tuple
-        self.groups = groups
         self.has_bias = _has_bias
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        if "conv3d_kernel" not in self.kernel_map:
-            raise NotImplementedError("Conv3dFwdOp requires 'conv3d_kernel' in kernel_map")
-        self.kernel = self.kernel_map["conv3d_kernel"](
+        kernel_kwargs = dict(
             n=n,
             c_in=c_in,
             d_in=d,
@@ -732,10 +746,26 @@ class Conv3dFwdOp(Op):
             has_bias=_has_bias,
             tune=tune,
         )
+        if self.groups == 1 and "conv3d_kernel" in self.kernel_map:
+            self.kernel = self.kernel_map["conv3d_kernel"](**kernel_kwargs)
+        elif self.groups > 1 and "group_conv3d_kernel" in self.kernel_map:
+            self.kernel = self.kernel_map["group_conv3d_kernel"](
+                **kernel_kwargs,
+                groups=self.groups,
+                c_in_g=self.c_in_g,
+                c_out_g=self.c_out_g,
+            )
+        else:
+            raise NotImplementedError(
+                "Conv3dFwdOp requires 'conv3d_kernel' or 'group_conv3d_kernel' in kernel_map"
+            )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"conv3d_kernel": Conv3dKernel}
+        return {
+            "conv3d_kernel": Conv3dKernel,
+            "group_conv3d_kernel": GroupConv3dKernel,
+        }
 
     def forward(
         self,
@@ -754,7 +784,7 @@ class Conv3dFwdOp(Op):
             weight,
             (
                 self.c_out,
-                self.c_in,
+                self.c_in_g,
                 self.kernel_size[0],
                 self.kernel_size[1],
                 self.kernel_size[2],
@@ -829,7 +859,7 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
             weight,
             (
                 self.c_out,
-                self.c_in,
+                self.c_in_g,
                 self.kernel_size[0],
                 self.kernel_size[1],
                 self.kernel_size[2],
