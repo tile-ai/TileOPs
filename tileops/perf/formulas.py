@@ -253,7 +253,10 @@ def _distribute_total(total: int, batch: int, max_len: int) -> list[int]:
     return lengths
 
 
-def gqa_prefill_varlen_fwd_roofline(**kwargs: Any) -> dict[str, int]:
+def gqa_prefill_varlen_fwd_roofline(
+    op: Any | None = None,
+    **kwargs: Any,
+) -> tuple[int, int]:
     """Conservative roofline for packed-varlen GQA prefill.
 
     Preferred workload binding supplies explicit ``q_lens`` and ``kv_lens``.
@@ -261,18 +264,27 @@ def gqa_prefill_varlen_fwd_roofline(**kwargs: Any) -> dict[str, int]:
     totals and ``max_seqlen_*`` so benchmark metadata remains reproducible.
     Causal mode uses bottom-right alignment independently per request.
     """
-    q_shape = kwargs["q_shape"]
-    k_shape = kwargs["k_shape"]
+    data = _shape_or_attrs(op, kwargs)
+    if "q_shape" not in data and data.get("_roofline_kwargs") is not None:
+        data = dict(data["_roofline_kwargs"])
+    q_shape = data["q_shape"]
+    k_shape = data["k_shape"]
     total_q, heads, dim = q_shape
     total_kv, heads_kv, _ = k_shape
-    batch = int(kwargs["batch"])
-    max_seqlen_q = int(kwargs["max_seqlen_q"])
-    max_seqlen_kv = int(kwargs["max_seqlen_kv"])
-    is_causal = bool(kwargs.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(kwargs.get("dtype", kwargs.get("dtypes", "float16")))
+    batch = int(data["batch"])
+    max_seqlen_q = int(data["max_seqlen_q"])
+    max_seqlen_kv = int(data["max_seqlen_kv"])
+    is_causal = bool(data.get("is_causal", True))
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
-    q_lens = kwargs.get("q_lens")
-    kv_lens = kwargs.get("kv_lens")
+    q_lens = data.get("q_lens")
+    kv_lens = data.get("kv_lens")
+    if q_lens is None and (cu_seqlens_q := data.get("cu_seqlens_q")) is not None:
+        values = [int(x) for x in cu_seqlens_q.detach().cpu().tolist()]
+        q_lens = [values[idx + 1] - values[idx] for idx in range(len(values) - 1)]
+    if kv_lens is None and (cu_seqlens_kv := data.get("cu_seqlens_kv")) is not None:
+        values = [int(x) for x in cu_seqlens_kv.detach().cpu().tolist()]
+        kv_lens = [values[idx + 1] - values[idx] for idx in range(len(values) - 1)]
     if q_lens is None:
         q_lens = _distribute_total(total_q, batch, max_seqlen_q)
     if kv_lens is None:
@@ -292,7 +304,7 @@ def gqa_prefill_varlen_fwd_roofline(**kwargs: Any) -> dict[str, int]:
     o_elems = q_elems
     cu_bytes = 2 * (batch + 1) * 4
     nbytes = (q_elems + 2 * kv_elems + o_elems) * elem_bytes + cu_bytes
-    return {"flops": int(flops), "bytes": int(nbytes)}
+    return int(flops), int(nbytes)
 
 
 def gqa_prefill_with_kv_cache_fwd_roofline(
