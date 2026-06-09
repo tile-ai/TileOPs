@@ -48,6 +48,7 @@ from .gated_linear_attn import GLADecodeOp
 from .gemm import GemmOp
 from .gla import GLABwdOp, GLAFwdOp
 from .grouped_gemm import GroupedGemmOp
+from .mamba2_fwd import Mamba2FwdOp
 from .mhc import MHCPostOp, MHCPreOp
 from .moe import MoePermuteAlignFwdOp
 from .norm import (
@@ -171,6 +172,7 @@ __all__ = [
     "Op",
     "MoePermuteAlignFwdOp",
     "RMSNormFwdOp",
+    "Mamba2FwdOp",
     "SSDChunkScanFwdOp",
     "SSDChunkStateFwdOp",
     "SSDDecodeOp",

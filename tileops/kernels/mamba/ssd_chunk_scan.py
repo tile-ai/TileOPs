@@ -159,9 +159,11 @@ def _ssd_chunk_scan_fwd_kernel(
                     for ll, nn in T.Parallel(block_l, block_n):
                         l_abs = l0 + ll
                         n_abs = n0 + nn
+                        safe_l = T.min(l_abs, Q - 1)
+                        safe_n_c = T.min(n_abs, N - 1)
                         c_tile[ll, nn] = T.if_then_else(
                             (l_abs < Q) and (n_abs < N),
-                            C_mat[bz, chunk_start + l_abs, bg, n_abs],
+                            C_mat[bz, chunk_start + safe_l, bg, safe_n_c],
                             T.cast(T.float32(0.0), dtype),
                         )
 
@@ -171,9 +173,11 @@ def _ssd_chunk_scan_fwd_kernel(
                     for pp, nn in T.Parallel(block_p, block_n):
                         n_abs = n0 + nn
                         p_abs = p0 + pp
+                        safe_n = T.min(n_abs, N - 1)
+                        safe_p = T.min(p_abs, P - 1)
                         state_tile[nn, pp] = T.if_then_else(
                             (n_abs < N) and (p_abs < P),
-                            T.cast(prev_states[bz, bc, bh, p_abs, n_abs], dtype),
+                            T.cast(prev_states[bz, bc, bh, safe_p, safe_n], dtype),
                             T.cast(T.float32(0.0), dtype),
                         )
 
@@ -198,9 +202,10 @@ def _ssd_chunk_scan_fwd_kernel(
                 exp_dA_l = T.alloc_shared((block_l,), accum_dtype)
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
+                    safe_l_da = T.min(l_abs, Q - 1)
                     exp_dA_l[ll] = T.if_then_else(
                         l_abs < Q,
-                        T.exp(dA_smem[l_abs]),
+                        T.exp(dA_smem[safe_l_da]),
                         T.float32(1.0),
                     )
                 T.sync_threads()
@@ -254,9 +259,10 @@ def _ssd_chunk_scan_fwd_kernel(
                 })
 
                 # anchor = dA_smem at l0, the largest value in this l-tile.
+                safe_l0 = T.min(l0, Q - 1)
                 anchor = T.if_then_else(
                     l0 < Q,
-                    dA_smem[l0],
+                    dA_smem[safe_l0],
                     T.float32(0.0),
                 )
 
@@ -264,9 +270,10 @@ def _ssd_chunk_scan_fwd_kernel(
                 # full-lower s-block without re-fetching dA_cumsum from global.
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
+                    safe_l_exp = T.min(l_abs, Q - 1)
                     dA_l_val = T.if_then_else(
                         l_abs < Q,
-                        dA_smem[l_abs],
+                        dA_smem[safe_l_exp],
                         anchor,
                     )
                     # dA_l_val - anchor <= 0 always, so exp <= 1 (no overflow).
@@ -281,9 +288,11 @@ def _ssd_chunk_scan_fwd_kernel(
                     for ll, ss in T.Parallel(block_l, block_s):
                         l_abs = l0 + ll
                         s_abs = s0 + ss
+                        safe_l_cb = T.min(l_abs, Q - 1)
+                        safe_s_cb = T.min(s_abs, Q - 1)
                         cb_tile[ll, ss] = T.if_then_else(
                             (l_abs < Q) and (s_abs < Q),
-                            cb[bz, bc, bg, l_abs, s_abs],
+                            cb[bz, bc, bg, safe_l_cb, safe_s_cb],
                             T.cast(T.float32(0.0), dtype),
                         )
 
@@ -291,9 +300,11 @@ def _ssd_chunk_scan_fwd_kernel(
                     for ss, pp in T.Parallel(block_s, block_p):
                         s_abs = s0 + ss
                         p_abs = p0 + pp
+                        safe_s_x = T.min(s_abs, Q - 1)
+                        safe_p_x = T.min(p_abs, P - 1)
                         x_tile[ss, pp] = T.if_then_else(
                             (s_abs < Q) and (p_abs < P),
-                            x[bz, chunk_start + s_abs, bh, p_abs],
+                            x[bz, chunk_start + safe_s_x, bh, safe_p_x],
                             T.cast(T.float32(0.0), dtype),
                         )
 
@@ -303,14 +314,15 @@ def _ssd_chunk_scan_fwd_kernel(
                     if s0 + block_s <= l0:
                         for ss in T.Parallel(block_s):
                             s_abs = s0 + ss
+                            safe_s_full = T.min(s_abs, Q - 1)
                             dA_s_val = T.if_then_else(
                                 s_abs < Q,
-                                dA_smem[s_abs],
+                                dA_smem[safe_s_full],
                                 anchor,
                             )
                             dt_val = T.if_then_else(
                                 s_abs < Q,
-                                dt_smem[s_abs],
+                                dt_smem[safe_s_full],
                                 T.float32(0.0),
                             )
                             # anchor - dA_s_val <= 0, so exp <= 1 (no overflow).
@@ -333,19 +345,21 @@ def _ssd_chunk_scan_fwd_kernel(
                             l_abs = l0 + ll
                             s_abs = s0 + ss
                             valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
+                            safe_l_diag = T.min(l_abs, Q - 1)
+                            safe_s_diag = T.min(s_abs, Q - 1)
                             dA_l_val = T.if_then_else(
                                 l_abs < Q,
-                                dA_smem[l_abs],
+                                dA_smem[safe_l_diag],
                                 T.float32(0.0),
                             )
                             dA_s_val = T.if_then_else(
                                 s_abs < Q,
-                                dA_smem[s_abs],
+                                dA_smem[safe_s_diag],
                                 T.float32(0.0),
                             )
                             dt_val = T.if_then_else(
                                 s_abs < Q,
-                                dt_smem[s_abs],
+                                dt_smem[safe_s_diag],
                                 T.float32(0.0),
                             )
                             lcb_cast[ll, ss] = T.if_then_else(
