@@ -276,13 +276,13 @@ def gen_inputs(numel, E, N, K):
 def _warmup_gpu(seconds=2.0):
     """Ramp the SM clock to its sustained state before any measurement.
 
-    Each case runs in a fresh subprocess; the FIRST one starts from an idle GPU
-    at base clock, and do_bench's 25-iter warmup is too short to fully ramp it,
-    which otherwise depresses that case's numbers (cold-start outlier). A couple
-    seconds of dense matmul pins the clock for every case (idempotent on warm
-    ones). Uses fp32 — this environment's bf16 ``torch.matmul`` (cublasGemmEx)
-    raises CUBLAS_STATUS_INVALID_VALUE, so the measured baselines all avoid it
-    and so must the warmup.
+    The benchmark process starts from an idle GPU at base clock, and the
+    framework's short per-call warmup does not fully ramp it, which otherwise
+    depresses the first case's numbers (cold-start outlier). A couple of seconds
+    of dense matmul pins the clock for every case (idempotent on warm ones). Uses
+    fp32 — this environment's bf16 ``torch.matmul`` (cublasGemmEx) raises
+    CUBLAS_STATUS_INVALID_VALUE, so the measured baselines all avoid it and so
+    must the warmup.
     """
     a = torch.randn(4096, 4096, dtype=torch.float32, device="cuda")
     b = torch.randn(4096, 4096, dtype=torch.float32, device="cuda")
@@ -299,9 +299,10 @@ def _deepgemm_launch(A, B, D, m_indices, tries=8):
 
     The error is raised before the kernel launches, so retrying the single call
     costs only host time and never pollutes the measured kernel time. This must
-    be per-call, not per-do_bench: a do_bench makes ~125 calls, so a ~1-2%
-    per-call failure rate makes whole-do_bench retries fail almost every time,
-    whereas a per-call retry lets every iteration complete."""
+    be per-call, not wrapping the whole measurement loop: the benchmark's timing
+    loop makes many calls per measurement, so a ~1-2% per-call failure rate would
+    make a whole-measurement retry fail almost every time, whereas a per-call
+    retry lets every iteration complete."""
     for _ in range(tries - 1):
         try:
             deep_gemm.m_grouped_bf16_gemm_nt_contiguous(A, B, D, m_indices)
