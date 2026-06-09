@@ -210,3 +210,148 @@ def test_cooperative_partial_m_tile():
     C_ref = ref(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Calling-cost parity with DeepGEMM: out= reuse + alignment-elided A padding
+# ════════════════════════════════════════════════════════════════════════
+import tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg as _g3wg_mod  # noqa: E402
+
+
+def _aligned_coop_inputs(seed=42):
+    """Cooperative-path inputs with every expert a multiple of block_m=128."""
+    E, N, K = 4, 256, 128
+    per = 256  # 2 full block_m=128 tiles per expert
+    numel = E * per
+    torch.manual_seed(seed)
+    sizes = torch.full((E,), per, dtype=torch.int32, device="cuda")
+    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
+    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    return A, B, sizes, offsets, numel, N, K, E
+
+
+@pytest.mark.nightly
+def test_out_param_reuse():
+    """Caller-provided ``out`` buffer is written in place and returned, with
+    no internal allocation, matching the result of the allocating path."""
+    A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    k3 = GroupedGemmPersistent3WGKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    C_alloc = k3(A, B, sizes, offsets)
+    out = torch.empty(numel, N, dtype=torch.bfloat16, device="cuda")
+    C_out = k3(A, B, sizes, offsets, out=out)
+    assert C_out.data_ptr() == out.data_ptr()
+    torch.testing.assert_close(C_out, C_alloc, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
+def test_aligned_skips_pad(monkeypatch):
+    """block_m-aligned per-expert sizes take the unpadded A_shape path: forward
+    never calls F.pad, and the result still matches the 2WG reference."""
+    A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+
+    # Reference (which itself pads) runs BEFORE installing the spy, so ``calls``
+    # only reflects the 3WG kernel under test.
+    ref = GroupedGemmPersistentKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    C_ref = ref(A, B, sizes, offsets)
+
+    calls = []
+    real_pad = _g3wg_mod.F.pad
+    monkeypatch.setattr(_g3wg_mod.F, "pad",
+                        lambda *a, **k: (calls.append(1), real_pad(*a, **k))[1])
+
+    k3 = GroupedGemmPersistent3WGKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    C_v2 = k3(A, B, sizes, offsets)
+    assert calls == [], "aligned sizes must not trigger F.pad"
+    torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
+def test_unaligned_still_pads(monkeypatch):
+    """Non-block_m-aligned sizes keep the defensive padded path (F.pad called)
+    and stay correct — the alignment fast-path must not regress generality."""
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    E, N, K = 4, 256, 128
+    sizes = torch.tensor([40, 90, 128, 200], dtype=torch.int32, device="cuda")
+    numel = int(sizes.sum().item())
+    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
+    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+    torch.manual_seed(0)
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
+
+    # Reference runs BEFORE the spy so ``calls`` only counts the 3WG kernel.
+    ref = GroupedGemmPersistentKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    C_ref = ref(A, B, sizes, offsets)
+
+    calls = []
+    real_pad = _g3wg_mod.F.pad
+    monkeypatch.setattr(_g3wg_mod.F, "pad",
+                        lambda *a, **k: (calls.append(1), real_pad(*a, **k))[1])
+
+    k3 = GroupedGemmPersistent3WGKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    C_v2 = k3(A, B, sizes, offsets)
+    assert calls, "unaligned sizes must still pad A"
+    torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
+def test_explicit_a_padded_bypasses_autodetect(monkeypatch):
+    """Passing ``a_padded`` explicitly skips the ``torch.all`` host sync and the
+    auto-detect: ``a_padded=False`` on aligned data takes the unpadded path (no
+    F.pad), ``a_padded=True`` forces the padded path (F.pad called). Both stay
+    correct."""
+    A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    ref = GroupedGemmPersistentKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    C_ref = ref(A, B, sizes, offsets)
+    k3 = GroupedGemmPersistent3WGKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+
+    # a_padded=False: no padding, no auto-detect torch.all.
+    calls = []
+    all_calls = []
+    real_pad, real_all = _g3wg_mod.F.pad, _g3wg_mod.torch.all
+    monkeypatch.setattr(_g3wg_mod.F, "pad",
+                        lambda *a, **k: (calls.append(1), real_pad(*a, **k))[1])
+    monkeypatch.setattr(_g3wg_mod.torch, "all",
+                        lambda *a, **k: (all_calls.append(1), real_all(*a, **k))[1])
+    C_unpad = k3(A, B, sizes, offsets, a_padded=False)
+    assert calls == [], "a_padded=False must not pad"
+    assert all_calls == [], "explicit a_padded must skip the torch.all auto-detect"
+    torch.testing.assert_close(C_unpad, C_ref, rtol=2e-2, atol=2e-2)
+
+    # a_padded=True: forces the padded path.
+    calls.clear()
+    C_pad = k3(A, B, sizes, offsets, a_padded=True)
+    assert calls, "a_padded=True must pad"
+    torch.testing.assert_close(C_pad, C_ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
+def test_out_buffer_validation():
+    """A caller-provided ``out`` with the wrong shape, dtype, or device is
+    rejected with a clear ValueError instead of corrupting silently."""
+    A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    k3 = GroupedGemmPersistent3WGKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+
+    with pytest.raises(ValueError, match="out shape"):
+        k3(A, B, sizes, offsets,
+           out=torch.empty(numel, N + 1, dtype=torch.bfloat16, device="cuda"))
+    with pytest.raises(ValueError, match="out dtype"):
+        k3(A, B, sizes, offsets,
+           out=torch.empty(numel, N, dtype=torch.float16, device="cuda"))
+    with pytest.raises(ValueError, match="out device"):
+        k3(A, B, sizes, offsets,
+           out=torch.empty(numel, N, dtype=torch.bfloat16, device="cpu"))
