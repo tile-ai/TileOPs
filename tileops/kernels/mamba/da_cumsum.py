@@ -66,7 +66,7 @@ def _da_cumsum_fwd_kernel(
 
     Args:
         block_h: Number of heads processed per CUDA block (passed to kernel_func).
-                 Must be a power of 2 and satisfy block_h * chunk_len <= 1024.
+                 Must satisfy block_h * chunk_len <= 1024.
     """
     accum_dtype = "float"
 
