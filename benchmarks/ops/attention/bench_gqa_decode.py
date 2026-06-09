@@ -1,13 +1,15 @@
-from typing import Optional
-
 import pytest
 import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.ops.attention.manifest_params import gqa_decode_args, manifest_params
+from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.gqa_decode import GroupedQueryAttentionDecodeTest
+
+_OP_NAME = "GroupedQueryAttentionDecodeWithKVCacheFwdOp"
 
 
 class _GroupedQueryAttentionDecodeTestBaseline(GroupedQueryAttentionDecodeTest):
@@ -21,23 +23,6 @@ class _GroupedQueryAttentionDecodeTestBaseline(GroupedQueryAttentionDecodeTest):
             output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd, enable_gqa=True)
         output = output_bhsd.transpose(1, 2).squeeze(1).contiguous()
         return output
-
-
-class GroupedQueryAttentionDecodeBenchmark(BenchmarkBase[GroupedQueryAttentionDecodeTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        flops_per_matmul = 2.0 * t.batch * t.heads * t.seq_len_kv * t.dim
-        flops = flops_per_matmul * 2
-        return flops
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        # Q: batch * 1 * heads * dim
-        # K, V: batch * seq_len_kv * heads_kv * dim
-        # Output: batch * 1 * heads * dim
-        return 2 * t.batch * t.dim * t.dtype.itemsize * (
-            t.heads + t.heads_kv * t.seq_len_kv)
 
 
 def _fa3_gqa_decode_fwd(test):
@@ -109,32 +94,17 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
     return run_fn
 
 
-# GQA decode (non-paged) benchmark parameters.
-#
-# Non-paged KV cache is used for single-request inference (no serving framework).
-# B=1 exclusively — multi-request scenarios use paged KV cache instead.
-# Configs target the three standard head profiles (see bench_gqa.py) with
-# KV cache lengths representing typical chat (4K) and long-context (32K) use.
-_GQA_DECODE_BENCH_PARAMS = [
-    # Single-user chat (8B-class, 4K context)
-    pytest.param(1, 32, 8, 4096, 128, torch.float16, True, id="llama8b-4k"),
-    # Long-context generation (8B-class, 32K context)
-    pytest.param(1, 32, 8, 32768, 128, torch.float16, True, id="llama8b-32k"),
-    # 70B-class single-request decode
-    pytest.param(1, 64, 8, 4096, 128, torch.float16, True, id="llama70b-4k"),
-    # 405B-class single-request decode
-    pytest.param(1, 128, 8, 8192, 128, torch.float16, True, id="llama405b-8k"),
-]
+_GQA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), gqa_decode_args)
 
 
 @pytest.mark.parametrize("batch, heads, heads_kv, seq_len_kv, dim, dtype, tune", _GQA_DECODE_BENCH_PARAMS)
 def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                           dtype: torch.dtype, tune: bool) -> None:
     test = _GroupedQueryAttentionDecodeTestBaseline(batch, heads, heads_kv, seq_len_kv, dim, dtype)
-    bm = GroupedQueryAttentionDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

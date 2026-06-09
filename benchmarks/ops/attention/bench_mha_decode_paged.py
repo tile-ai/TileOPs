@@ -1,13 +1,16 @@
 import math
-from typing import Optional
 
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.ops.attention.manifest_params import manifest_params, mha_decode_paged_args
+from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.mha_decode_paged import MhaDecodePagedTest
+
+_OP_NAME = "MultiHeadAttentionDecodePagedWithKVCacheFwdOp"
 
 
 class _MhaDecodePagedTestBaseline(MhaDecodePagedTest):
@@ -43,23 +46,6 @@ class _MhaDecodePagedTestBaseline(MhaDecodePagedTest):
             out_b = out_b.transpose(1, 2).contiguous()
             out_list.append(out_b)
         return torch.cat(out_list, dim=0)
-
-
-class MhaDecodePagedBenchmark(BenchmarkBase[MhaDecodePagedTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        flops_per_matmul = 2.0 * t.batch * t.heads * t.seqlen_q * t.seqlen_kv * t.dim
-        flops = flops_per_matmul * 2
-        return flops
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        num_pages = t.seqlen_kv // t.page_size
-        # Q, output: batch * seqlen_q * heads * dim; K,V: seqlen_kv * heads * dim; block_table, real_seqlen_kv: int32
-        return (t.batch * t.seqlen_q * t.heads * t.dim * 2 +
-                2 * t.seqlen_kv * t.heads * t.dim) * t.dtype.itemsize + \
-            t.batch * num_pages * 4 + t.batch * 4
 
 
 def _fa3_mha_decode_paged(test, k, v):
@@ -132,12 +118,7 @@ def _flashinfer_mha_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
     return run_fn
 
 
-_MHA_DECODE_PAGED_BENCH_PARAMS = [
-    pytest.param(1, 16, 1, 512, 128, 128, False, torch.float16, True, id="single-token-page128"),
-    pytest.param(2, 8, 1, 1024, 64, 256, False, torch.float16, True, id="batch2-page256"),
-    pytest.param(1, 8, 1, 1024, 64, 256, False, torch.float16, True, id="longer-cache"),
-    pytest.param(1, 8, 1, 512, 64, 256, False, torch.float16, True, id="shorter-cache"),
-]
+_MHA_DECODE_PAGED_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mha_decode_paged_args)
 
 
 @pytest.mark.parametrize(
@@ -148,12 +129,12 @@ def test_mha_decode_paged_bench(batch: int, heads: int, seqlen_q: int, seqlen_kv
                                 page_size: int, is_causal: bool, dtype: torch.dtype,
                                 tune: bool) -> None:
     test = _MhaDecodePagedTestBaseline(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
-    bm = MhaDecodePagedBenchmark(test)
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
         batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype, tune=tune)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

@@ -623,8 +623,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         kwargs = dict(self._roofline_kwargs)
         kwargs["q_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_q"))
         kwargs["kv_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_kv"))
-        result = gqa_prefill_varlen_fwd_roofline(**kwargs)
-        return result["flops"], result["bytes"]
+        return gqa_prefill_varlen_fwd_roofline(**kwargs)
 
 
 class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
