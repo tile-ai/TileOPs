@@ -367,3 +367,106 @@ class GroupedGemmBaselinesBenchmark(BenchmarkBase[_GroupedGemmBaselineWorkload])
         t = self.workload
         # A[numel, K] + B[E, N, K] + C[numel, N], all in `dtype`.
         return (t.numel * t.K + t.E * t.N * t.K + t.numel * t.N) * t.dtype.itemsize
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Session-scoped GPU clock warmup: pin the SM clock before the first case so
+# case 0 is not a cold-start outlier (the framework's per-call warmup is short).
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.fixture(scope="session", autouse=True)
+def _pin_gpu_clock():
+    if torch.cuda.is_available():
+        _warmup_gpu()
+    yield
+
+
+def _case_id(label: str) -> str:
+    """Stable, whitespace-collapsed pytest id from a CASES label.
+
+    Frozen alongside CASES: ids are the nightly report's per-config keys, so
+    changing them resets regression history for that config.
+    """
+    return "-".join(label.replace("~", "").split())
+
+
+@pytest.mark.parametrize(
+    "label, tokens, E, top_k, hidden, moe_inter, M, N, K",
+    CASES,
+    ids=[_case_id(c[0]) for c in CASES],
+)
+def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N, K):
+    """Time the 3WG kernel against torch / deepgemm / triton / triton-tma.
+
+    Each impl is timed via a zero-arg closure over pre-allocated outputs and
+    pre-conditioned inputs (the framework clone-pool is bypassed: inputs are
+    heterogeneous and exceed its 1 GB ceiling). A real CUDA OOM becomes a clean
+    skip; large operands are freed in ``finally`` so the next case starts from a
+    reclaimed allocator.
+    """
+    sm = _num_sms()
+    numel = M * E
+    # Pre-bind every operand name so the ``finally`` teardown can ``del`` them
+    # even if OOM aborts before they are assigned.
+    A = B = B_KN = C_3wg = D = None
+    group_a = group_c = group_c_tma = None
+    try:
+        A, B, sizes, offsets, m_indices, offs_cumsum, per = gen_inputs(numel, E, N, K)
+        B_KN = B.transpose(1, 2).contiguous()  # [E, K, N] for torch & non-TMA triton
+        workload = _GroupedGemmBaselineWorkload(numel, E, N, K, _DTYPE, label)
+        bm = GroupedGemmBaselinesBenchmark(workload)
+
+        # ---- ours: 3-WG persistent (pre-allocated out via out=) ----
+        k3 = GroupedGemmPersistent3WGKernel(numel=numel, num_experts=E, N=N, K=K,
+                                            dtype=_DTYPE, sm_count=sm)
+        C_3wg = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
+        result = bm.profile(lambda A=A, B=B, C=C_3wg: k3(A, B, sizes, offsets, out=C))
+        BenchmarkReport.record(_REPORT_NAME, locals(), result, tag="tileops")
+
+        # ---- torch._grouped_mm (CUTLASS; allocates its own output) ----
+        try:
+            r = bm.profile(lambda A=A, B_KN=B_KN: torch._grouped_mm(A, B_KN, offs_cumsum))
+            BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="torch")
+        except Exception as exc:  # pragma: no cover - env dependent
+            print(f"  [skip] torch._grouped_mm: {exc}")
+
+        # ---- deepgemm: contiguous grouped GEMM (pre-allocated D) ----
+        if _HAS_DEEP_GEMM:
+            D = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
+            try:
+                r = bm.profile(lambda A=A, B=B, D=D: _deepgemm_launch(A, B, D, m_indices))
+                BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="deepgemm")
+            except Exception as exc:  # pragma: no cover - DeepGEMM workspace bug
+                print(f"  [skip] deepgemm: {exc}")
+
+        # ---- triton 08-grouped-gemm (ported, bf16; pre-allocated group_c) ----
+        group_a = [A[e * per:(e + 1) * per] for e in range(E)]
+        group_c = [torch.empty(per, N, dtype=_DTYPE, device="cuda") for _ in range(E)]
+        group_b_kn = [B_KN[e] for e in range(E)]  # non-TMA wants B[e] as [K, N]
+        a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds = _build_triton_ptrs(group_a, group_b_kn, group_c)
+        grid = lambda meta: (meta["NUM_SM"],)  # noqa: E731
+        try:
+            r = bm.profile(
+                lambda: _grouped_matmul_kernel[grid](a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds, E))
+            BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="triton")
+        except Exception as exc:  # pragma: no cover - env dependent
+            print(f"  [skip] triton: {exc}")
+
+        # ---- triton + TMA (Hopper, NT layout = our B[e]) ----
+        if _supports_tma():
+            group_c_tma = [torch.empty(per, N, dtype=_DTYPE, device="cuda") for _ in range(E)]
+            group_b_nk = [B[e] for e in range(E)]  # [N, K]
+            a_p, b_p, c_p, gs, gl = _build_triton_ptrs(group_a, group_b_nk, group_c_tma)
+            _set_triton_allocator()
+            try:
+                r = bm.profile(
+                    lambda: _grouped_matmul_tma_kernel[grid](a_p, b_p, c_p, gs, gl, E, NUM_SM=sm))
+                BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="triton-tma")
+            except Exception as exc:  # pragma: no cover - env dependent
+                print(f"  [skip] triton-tma: {exc}")
+
+    except torch.cuda.OutOfMemoryError:
+        torch.cuda.empty_cache()
+        pytest.skip(f"{label}: CUDA OOM at M={M} (numel={numel}); skipped on this GPU")
+    finally:
+        del A, B, B_KN, C_3wg, D, group_a, group_c, group_c_tma
+        torch.cuda.empty_cache()
