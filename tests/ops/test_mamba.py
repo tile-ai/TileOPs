@@ -479,7 +479,7 @@ def mamba2_fwd_ref(
         prev_states_list.append(s.unsqueeze(1))
         scale = exp_dA_chunk[:, :, ci].view(b, h, 1, 1)
         s = scale * s + chunk_states[:, ci]
-    prev_states = torch.cat(prev_states_list, dim=1).to(x.dtype)  # (B, C, H, P, N)
+    prev_states = torch.cat(prev_states_list, dim=1)  # (B, C, H, P, N)  kept in float32 (accum_dtype)
 
     # Step 5: SSDChunkScan
     dA_c = dA_cumsum.permute(0, 2, 3, 1)  # (B, C, Q, H)
