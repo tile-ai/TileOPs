@@ -35,40 +35,59 @@ def _avg_pool1d_kernel(
             out: T.Tensor((n, c_in, out_l), dtype),  # type: ignore
         ):
             with T.Kernel(
+                T.ceildiv(out_l, block_m),
                 T.ceildiv(c_in, block_c),
-                T.ceildiv(n * out_l, block_m),
+                n,
                 threads=threads,
-            ) as (bx, by):
+            ) as (bx, by, bz):
+                T.use_swizzle(10)
+                tile_ol_start = bx * block_m
+                tile_ol_end = tile_ol_start + block_m - 1
+                tile_input_start = tile_ol_start * stride_l - pad_l
+                tile_input_end = tile_ol_end * stride_l + kernel_l - 1 - pad_l
+                tile_spatial_full = (
+                    (tile_ol_end < out_l)
+                    & (tile_input_start >= 0)
+                    & (tile_input_end < l_in)
+                )
                 for i, j in T.Parallel(block_m, block_c):
-                    m_idx = by * block_m + i
-                    c_idx = bx * block_c + j
-                    if m_idx < n * out_l and c_idx < c_in:
-                        batch = m_idx // out_l
-                        ol = m_idx % out_l
+                    ol = bx * block_m + i
+                    c_idx = by * block_c + j
+                    batch = bz
+                    if ol < out_l and c_idx < c_in:
                         sum_val = T.alloc_var(T.float32)
                         sum_val = T.cast(0.0, accum_dtype)
 
-                        for kw in T.serial(kernel_l):
-                            il = ol * stride_l + kw - pad_l
-                            if il >= 0 and il < l_in:
+                        if tile_spatial_full:
+                            for kw in T.serial(kernel_l):
+                                il = ol * stride_l + kw - pad_l
                                 sum_val += T.cast(x[batch, c_idx, il], accum_dtype)
+                            out[batch, c_idx, ol] = T.cast(
+                                sum_val / T.cast(kernel_l, accum_dtype),
+                                dtype,
+                            )
+                        else:
+                            for kw in T.serial(kernel_l):
+                                il = ol * stride_l + kw - pad_l
+                                if il >= 0 and il < l_in:
+                                    sum_val += T.cast(x[batch, c_idx, il], accum_dtype)
 
-                        window_start = ol * stride_l - pad_l
-                        window_end = window_start + kernel_l
-                        valid_start = T.max(window_start, 0)
-                        valid_end = T.min(window_end, l_in)
-                        valid_count = T.max(valid_end - valid_start, 0)
-                        padded_start = T.max(window_start, -pad_l)
-                        padded_end = T.min(window_end, l_in + pad_l)
-                        padded_count = T.max(padded_end - padded_start, 0)
-                        divisor = T.max(
-                            T.if_then_else(count_include_pad, padded_count, valid_count),
-                            1,
-                        )
-                        out[batch, c_idx, ol] = T.cast(
-                            sum_val / T.cast(divisor, accum_dtype),
-                            dtype,
-                        )
+                            window_start = ol * stride_l - pad_l
+                            window_end = window_start + kernel_l
+                            valid_start = T.max(window_start, 0)
+                            valid_end = T.min(window_end, l_in)
+                            valid_count = T.max(valid_end - valid_start, 0)
+                            padded_start = T.max(window_start, -pad_l)
+                            padded_end = T.min(window_end, l_in + pad_l)
+                            padded_count = T.max(padded_end - padded_start, 0)
+                            divisor = T.max(
+                                T.if_then_else(count_include_pad, padded_count, valid_count),
+                                1,
+                            )
+                            out[batch, c_idx, ol] = T.cast(
+                                sum_val / T.cast(divisor, accum_dtype),
+                                dtype,
+                            )
 
         return _avg_pool1d_main
 
