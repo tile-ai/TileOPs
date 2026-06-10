@@ -169,7 +169,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
                         })
         return configs
 
-    def forward(self, A, B, true_sizes, true_offsets, out=None, a_padded=None):
+    def forward(self, A, B, true_sizes, true_offsets, out=None, a_aligned=None):
         """Run the grouped GEMM ``C[e] = A[e] @ B[e]^T`` for every expert.
 
         Args:
@@ -179,13 +179,13 @@ class GroupedGemmPersistent3WGKernel(Kernel):
             true_offsets: ``[num_experts]`` int32 start offset per expert in A.
             out: optional ``[numel, N]`` output buffer to write into and reuse
                 across calls. Allocated internally with ``torch.empty`` if omitted.
-            a_padded: optional override for whether A needs ``block_m`` guard
-                rows. ``None`` (default) auto-detects from ``true_sizes`` — which
-                costs a host sync. Callers that know their routing is
-                block_m-aligned can pass ``False`` to take the unpadded fast path
-                without the sync; ``True`` forces the padded path. Passing
-                ``False`` on unaligned data reads out of bounds — only set it when
-                the alignment is guaranteed.
+            a_aligned: caller's assertion about whether every expert's row count
+                is ``block_m``-aligned. ``None`` (default) auto-detects from
+                ``true_sizes`` — which costs a host sync. ``True`` asserts aligned
+                routing and takes the unpadded fast path with no sync; ``False``
+                asserts unaligned routing and forces the padded path. Passing
+                ``True`` on unaligned data reads out of bounds and silently
+                corrupts the output — only set it when alignment is guaranteed.
 
         Returns:
             The ``[numel, N]`` output (``out`` if provided).
@@ -222,9 +222,17 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         # (the contiguous-layout case DeepGEMM mandates), no tile overreads, so
         # we compile the unpadded A_shape=(numel, K) variant and skip the F.pad
         # copy entirely — the dominant per-call overhead on aligned workloads.
-        # Auto-detect costs a host sync; callers can pass a_padded to skip it.
-        if a_padded is None:
-            a_padded = not bool(torch.all(true_sizes % block_m == 0))
+        #
+        # ``a_aligned`` is the caller's assertion about routing:
+        #   None  -> auto-detect (one ``torch.all`` host sync per call).
+        #   True  -> caller guarantees every expert row count is block_m-aligned;
+        #            skip both the pad and the sync. UNSAFE if the guarantee is
+        #            wrong — the last partial tile overreads and the output is
+        #            silently corrupt — so that contract lives with the caller.
+        #   False -> caller asserts unaligned routing; force the padded path.
+        if a_aligned is None:
+            a_aligned = bool(torch.all(true_sizes % block_m == 0))
+        a_padded = not a_aligned
         if a_padded:
             required_rows = self.numel + block_m
             if A.shape[0] < required_rows:

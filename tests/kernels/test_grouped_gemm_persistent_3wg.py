@@ -304,10 +304,10 @@ def test_unaligned_still_pads(monkeypatch):
 
 
 @pytest.mark.nightly
-def test_explicit_a_padded_bypasses_autodetect(monkeypatch):
-    """Passing ``a_padded`` explicitly skips the ``torch.all`` host sync and the
-    auto-detect: ``a_padded=False`` on aligned data takes the unpadded path (no
-    F.pad), ``a_padded=True`` forces the padded path (F.pad called). Both stay
+def test_explicit_a_aligned_bypasses_autodetect(monkeypatch):
+    """Passing ``a_aligned`` explicitly skips the ``torch.all`` host sync and the
+    auto-detect: ``a_aligned=True`` on aligned data takes the unpadded path (no
+    F.pad), ``a_aligned=False`` forces the padded path (F.pad called). Both stay
     correct."""
     A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
     sm = torch.cuda.get_device_properties(0).multi_processor_count
@@ -317,7 +317,7 @@ def test_explicit_a_padded_bypasses_autodetect(monkeypatch):
     k3 = GroupedGemmPersistent3WGKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
 
-    # a_padded=False: no padding, no auto-detect torch.all.
+    # a_aligned=True: no padding, no auto-detect torch.all.
     calls = []
     all_calls = []
     real_pad, real_all = _g3wg_mod.F.pad, _g3wg_mod.torch.all
@@ -325,15 +325,15 @@ def test_explicit_a_padded_bypasses_autodetect(monkeypatch):
                         lambda *a, **k: (calls.append(1), real_pad(*a, **k))[1])
     monkeypatch.setattr(_g3wg_mod.torch, "all",
                         lambda *a, **k: (all_calls.append(1), real_all(*a, **k))[1])
-    C_unpad = k3(A, B, sizes, offsets, a_padded=False)
-    assert calls == [], "a_padded=False must not pad"
-    assert all_calls == [], "explicit a_padded must skip the torch.all auto-detect"
+    C_unpad = k3(A, B, sizes, offsets, a_aligned=True)
+    assert calls == [], "a_aligned=True must not pad"
+    assert all_calls == [], "explicit a_aligned must skip the torch.all auto-detect"
     torch.testing.assert_close(C_unpad, C_ref, rtol=2e-2, atol=2e-2)
 
-    # a_padded=True: forces the padded path.
+    # a_aligned=False: forces the padded path.
     calls.clear()
-    C_pad = k3(A, B, sizes, offsets, a_padded=True)
-    assert calls, "a_padded=True must pad"
+    C_pad = k3(A, B, sizes, offsets, a_aligned=False)
+    assert calls, "a_aligned=False must pad"
     torch.testing.assert_close(C_pad, C_ref, rtol=2e-2, atol=2e-2)
 
 

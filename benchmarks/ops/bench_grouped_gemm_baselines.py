@@ -151,13 +151,13 @@ def _grouped_matmul_kernel(
         last_problem_end = last_problem_end + num_tiles
 
 
+# Trimmed from the full BLOCK_M×BLOCK_N×BLOCK_K×stages×warps grid to a handful of
+# representative Hopper configs: the full sweep added minutes of cold-start
+# autotune JIT with no measurable win on these grouped-GEMM shapes.
 _TMA_CONFIGS = [
-    triton.Config({"BLOCK_SIZE_M": bm, "BLOCK_SIZE_N": bn, "BLOCK_SIZE_K": bk}, num_stages=s, num_warps=w)
-    for bm in [128]
+    triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": bn, "BLOCK_SIZE_K": 64}, num_stages=s, num_warps=8)
     for bn in [128, 256]
-    for bk in [64, 128]
     for s in [3, 4]
-    for w in [4, 8]
 ]
 
 
@@ -258,7 +258,6 @@ def gen_inputs(numel, E, N, K):
     """
     assert numel % E == 0, f"numel={numel} not divisible by E={E}"
     per = numel // E
-    assert per % 128 == 0, f"per-expert M={per} must be a multiple of 128 (DeepGEMM contiguous)"
     torch.manual_seed(42)
     dev = "cuda"
 
@@ -314,10 +313,9 @@ def _deepgemm_launch(A, B, D, m_indices, tries=8):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Model cases (prefill, bf16). M = tokens * top_k / num_experts (uniform).
-# N/K are the single-expert GEMM dims. up/gate GEMMs fuse gate+up -> N = 2*inter.
-# NOTE: qwen3.5 'down' N is carried verbatim from the source table (2048); it
-# does not equal hidden (4096) like the other models' down GEMMs -- flagged but
-# left as-given pending confirmation.
+# N/K are the single-expert GEMM dims. up/gate GEMMs fuse gate+up -> N = 2*inter;
+# down GEMMs project the expert intermediate back to the residual stream, so
+# down N = hidden for every model.
 # ─────────────────────────────────────────────────────────────────────────────
 CASES = [
     # label,                         tokens,  E,   top_k, hidden, moe_inter, M,    N,     K
@@ -332,7 +330,7 @@ CASES = [
     ("GLM-5-744B  down  T=131072",   131072,  256, 8,     6144,   2048,      4096, 6144,  2048),
     ("GLM-5-744B  down  T=262144",   262144,  256, 8,     6144,   2048,      8192, 6144,  2048),
     ("Llama4-128E down  T=131072",   131072,  128, 1,     5120,   8192,      1024, 5120,  8192),
-    ("qwen3.5-397B down  T~52429",   52429,   512, 10,    4096,   1024,      1024, 2048,  1024),
+    ("qwen3.5-397B down  T~52429",   52429,   512, 10,    4096,   1024,      1024, 4096,  1024),
 ]
 
 
@@ -428,6 +426,7 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
     # even if OOM aborts before they are assigned.
     A = B = B_KN = C_3wg = D = None
     group_a = group_c = group_c_tma = None
+    group_b_kn = group_b_nk = None
     try:
         A, B, sizes, offsets, m_indices, offs_cumsum, per = gen_inputs(numel, E, N, K)
         B_KN = B.transpose(1, 2).contiguous()  # [E, K, N] for torch & non-TMA triton
@@ -438,12 +437,14 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         k3 = GroupedGemmPersistent3WGKernel(numel=numel, num_experts=E, N=N, K=K,
                                             dtype=_DTYPE, sm_count=sm)
         C_3wg = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
-        result = bm.profile(_synced(lambda A=A, B=B, C=C_3wg: k3(A, B, sizes, offsets, out=C)))
+        result = bm.profile(_synced(
+            lambda A=A, B=B, sz=sizes, off=offsets, C=C_3wg: k3(A, B, sz, off, out=C)))
         BenchmarkReport.record(_REPORT_NAME, locals(), result, tag="tileops")
 
         # ---- torch._grouped_mm (CUTLASS; allocates its own output) ----
         try:
-            r = bm.profile(_synced(lambda A=A, B_KN=B_KN: torch._grouped_mm(A, B_KN, offs_cumsum)))
+            r = bm.profile(_synced(
+                lambda A=A, B_KN=B_KN, off=offs_cumsum: torch._grouped_mm(A, B_KN, off)))
             BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="torch")
         except torch.cuda.OutOfMemoryError:
             raise
@@ -451,10 +452,16 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
             print(f"  [skip] torch._grouped_mm: {exc}")
 
         # ---- deepgemm: contiguous grouped GEMM (pre-allocated D) ----
-        if _HAS_DEEP_GEMM:
+        # DeepGEMM's contiguous layout requires every expert's M to be a multiple
+        # of 128. That is a deepgemm-only constraint, so skip just this baseline
+        # (not the whole case) when it does not hold.
+        if _HAS_DEEP_GEMM and per % 128 != 0:
+            print(f"  [skip] deepgemm: per-expert M={per} not a multiple of 128 (contiguous layout)")
+        elif _HAS_DEEP_GEMM:
             D = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
             try:
-                r = bm.profile(_synced(lambda A=A, B=B, D=D: _deepgemm_launch(A, B, D, m_indices)))
+                r = bm.profile(_synced(
+                    lambda A=A, B=B, D=D, mi=m_indices: _deepgemm_launch(A, B, D, mi)))
                 BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="deepgemm")
             except torch.cuda.OutOfMemoryError:
                 raise
@@ -495,5 +502,7 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         torch.cuda.empty_cache()
         pytest.skip(f"{label}: CUDA OOM at M={M} (numel={numel}); skipped on this GPU")
     finally:
-        del A, B, B_KN, C_3wg, D, group_a, group_c, group_c_tma
+        # group_b_kn / group_b_nk are sliced views of B / B_KN; del them too so
+        # those large tensors are actually reclaimable on the OOM-recovery path.
+        del A, B, B_KN, C_3wg, D, group_a, group_c, group_c_tma, group_b_kn, group_b_nk
         torch.cuda.empty_cache()
