@@ -34,13 +34,16 @@ from pathlib import Path
 
 import yaml
 
-from tileops.manifest.shape_rules import (
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tileops.manifest.shape_rules import (  # noqa: E402
     dim_range_validity,
     dim_uniqueness,
     reduced_axes,
 )
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_DIR = REPO_ROOT / "tileops" / "manifest"
 
 # Valid torch dtype base names (without same_as references)

@@ -525,6 +525,12 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # only WGs with a full tile reach the barrier.
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
+                            # Order the generic-proxy SMEM writes above before
+                            # the async-proxy TMA read below, and align all 128
+                            # WG0 threads so the TMA store never reads a
+                            # half-written C_shared (intra-wave write→read race).
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_shared_wg0,
                                    C[m_start_0, n_start_0])
                         else:
@@ -595,6 +601,10 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # WG1's own named barrier (id=5) guards C_shared reuse.
                             T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_local_cast_wg1, C_shared_wg1)
+                            # See the WG0 epilogue: fence + WG barrier order the
+                            # SMEM writes before the async TMA read.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_shared_wg1,
                                    C[m_start_1, n_start_1])
                         else:
@@ -843,6 +853,12 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # rationale (and why a CTA-wide sync would deadlock).
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
+                            # Order the generic-proxy SMEM writes above before
+                            # the async-proxy TMA read below, and align all 128
+                            # WG0 threads so the TMA store never reads a
+                            # half-written C_shared (intra-wave write→read race).
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_shared_wg0,
                                    C[m_start, n_start])
                         else:
@@ -910,6 +926,10 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # own named barrier (id=5).
                             T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_local_cast_wg1, C_shared_wg1)
+                            # See the top-half epilogue: fence + WG barrier order
+                            # the SMEM writes before the async TMA read.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_shared_wg1,
                                    C[m_start + half_m, n_start])
                         elif arows1 > T.int32(0):
