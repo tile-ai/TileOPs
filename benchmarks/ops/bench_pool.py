@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.kernels.pool.common import pool_output_dim
-from tileops.ops import AvgPool1dOp, AvgPool2dOp, AvgPool3dOp
+from tileops.ops import AvgPool1dFwdOp, AvgPool2dOp, AvgPool3dOp
 
 
 class AvgPool1dBenchCase:
@@ -34,7 +34,7 @@ class AvgPool1dBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.n, self.l_in, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -87,25 +87,20 @@ def test_avg_pool1d_bench(
     test = AvgPool1dBenchCase(n, c_in, l_in, kernel_size, stride, padding, ceil_mode, count_include_pad, dtype)
     bm = AvgPool1dBenchmark(test)
     inputs = test.gen_inputs()
-    (x,) = inputs
-    x_ncl = x.permute(0, 2, 1).contiguous()
 
-    op = AvgPool1dOp(
-        n=n,
-        c_in=c_in,
-        l_in=l_in,
+    op = AvgPool1dFwdOp(
         kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         ceil_mode=ceil_mode,
         count_include_pad=count_include_pad,
-        dtype=dtype,
         tune=tune,
     )
     result = bm.profile(op, *inputs)
+    _ = op.eval_roofline()
     BenchmarkReport.record("avg_pool1d", locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, x_ncl)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record("avg_pool1d", locals(), result_bl, tag="torch-ref")
 
 

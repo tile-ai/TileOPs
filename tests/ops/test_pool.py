@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import AvgPool1dKernel, AvgPool2dKernel, AvgPool3dKernel
-from tileops.ops import AvgPool1dOp, AvgPool2dOp, AvgPool3dOp
+from tileops.ops import AvgPool1dFwdOp, AvgPool2dOp, AvgPool3dOp
 
 
 class _DummyKernel(Kernel):
@@ -68,19 +68,18 @@ class AvgPool1dTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self, n: int, c_in: int, l_in: int) -> tuple[torch.Tensor]:
-        x = torch.randn(n, l_in, c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(n, c_in, l_in, device="cuda", dtype=self.dtype).contiguous()
         return (x,)
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        out = F.avg_pool1d(
-            x.permute(0, 2, 1).contiguous(),
+    def ref_program(self, input: torch.Tensor) -> torch.Tensor:
+        return F.avg_pool1d(
+            input,
             kernel_size=self.kernel_size,
             stride=self.stride,
             padding=self.padding,
             ceil_mode=self.ceil_mode,
             count_include_pad=self.count_include_pad,
         )
-        return out.permute(0, 2, 1).contiguous()
 
 
 @AvgPool1dFixture
@@ -97,16 +96,12 @@ def test_avg_pool1d(
     tune: bool,
 ) -> None:
     test = AvgPool1dTest(kernel_size, stride, padding, ceil_mode, count_include_pad, dtype)
-    op = AvgPool1dOp(
-        n=n,
-        c_in=c_in,
-        l_in=l_in,
+    op = AvgPool1dFwdOp(
         kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         ceil_mode=ceil_mode,
         count_include_pad=count_include_pad,
-        dtype=dtype,
         tune=tune,
     )
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
@@ -115,20 +110,23 @@ def test_avg_pool1d(
 
 @pytest.mark.smoke
 def test_avg_pool1d_dispatches_kernel() -> None:
-    op = AvgPool1dOp(n=1, c_in=32, l_in=128, kernel_size=3, stride=2, padding=1)
+    op = AvgPool1dFwdOp(kernel_size=3, stride=2, padding=1)
+    x = torch.randn(1, 32, 128, device="cuda", dtype=torch.float16)
+    out = op(x)
     assert isinstance(op.kernel, AvgPool1dKernel)
+    assert out.shape == (1, 32, 64)
 
 
 @pytest.mark.smoke
 def test_avg_pool1d_rejects_wrong_tuple_arity() -> None:
     with pytest.raises(ValueError, match="kernel_size must be an int or a tuple of 1 ints"):
-        AvgPool1dOp(n=1, c_in=8, l_in=32, kernel_size=(3, 4))
+        AvgPool1dFwdOp(kernel_size=(3, 4))
 
 
 @pytest.mark.smoke
 def test_avg_pool1d_rejects_non_positive_stride() -> None:
     with pytest.raises(ValueError, match="stride must be greater than zero"):
-        AvgPool1dOp(n=1, c_in=8, l_in=32, kernel_size=3, stride=0)
+        AvgPool1dFwdOp(kernel_size=3, stride=0)
 
 
 @pytest.mark.smoke
@@ -141,32 +139,24 @@ def test_avg_pool1d_rejects_non_positive_stride() -> None:
     ],
 )
 def test_avg_pool1d_rejects_bool_pool_params(kwargs: dict[str, object], match: str) -> None:
-    base_kwargs = {
-        "n": 1,
-        "c_in": 8,
-        "l_in": 32,
-        "kernel_size": 3,
-    }
+    base_kwargs = {"kernel_size": 3}
     base_kwargs.update(kwargs)
     with pytest.raises(TypeError, match=match):
-        AvgPool1dOp(**base_kwargs)
+        AvgPool1dFwdOp(**base_kwargs)
 
 
 @pytest.mark.smoke
-def test_avg_pool1d_forward_warns_on_ambiguous_nlc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_avg_pool1d_rejects_non_3d_input(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
-    op = AvgPool1dOp(
-        n=1,
-        c_in=8,
-        l_in=8,
-        kernel_size=2,
-        stride=2,
+    op = AvgPool1dFwdOp(
+        kernel_size=3,
+        stride=1,
+        padding=1,
         kernel_map={"avg_pool1d_kernel": _DummyKernel},
     )
-    x = torch.randn(1, 8, 8)
-    with pytest.warns(UserWarning, match="ambiguous NLC shape"):
-        out = op(x)
-    assert out is x
+    x = torch.randn(2, 8, 16, 4)
+    with pytest.raises(ValueError, match="expects input to be a 3D NCL tensor"):
+        op(x)
 
 
 class _DummyKernel(Kernel):

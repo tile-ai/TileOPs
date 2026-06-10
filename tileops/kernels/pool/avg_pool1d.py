@@ -31,16 +31,14 @@ def _avg_pool1d_kernel(
     def _avg_pool1d_func(block_m: int, block_c: int, threads: int):
         @T.prim_func
         def _avg_pool1d_main(
-            x: T.Tensor((n, l_in, c_in), dtype),  # type: ignore
-            out: T.Tensor((n, out_l, c_in), dtype),  # type: ignore
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            out: T.Tensor((n, c_in, out_l), dtype),  # type: ignore
         ):
             with T.Kernel(
                 T.ceildiv(c_in, block_c),
                 T.ceildiv(n * out_l, block_m),
                 threads=threads,
             ) as (bx, by):
-                out_flat = T.Tensor((n * out_l, c_in), dtype, out.data)
-
                 for i, j in T.Parallel(block_m, block_c):
                     m_idx = by * block_m + i
                     c_idx = bx * block_c + j
@@ -53,7 +51,7 @@ def _avg_pool1d_kernel(
                         for kw in T.serial(kernel_l):
                             il = ol * stride_l + kw - pad_l
                             if il >= 0 and il < l_in:
-                                sum_val += T.cast(x[batch, il, c_idx], accum_dtype)
+                                sum_val += T.cast(x[batch, c_idx, il], accum_dtype)
 
                         window_start = ol * stride_l - pad_l
                         window_end = window_start + kernel_l
@@ -67,7 +65,7 @@ def _avg_pool1d_kernel(
                             T.if_then_else(count_include_pad, padded_count, valid_count),
                             1,
                         )
-                        out_flat[m_idx, c_idx] = T.cast(
+                        out[batch, c_idx, ol] = T.cast(
                             sum_val / T.cast(divisor, accum_dtype),
                             dtype,
                         )
@@ -124,7 +122,7 @@ def _(
 ) -> torch.Tensor:
     _ = (count_include_pad, dtype, block_m, block_c, threads)
     out_l = pool_output_dim(l_in, kernel_l, stride_l, pad_l, ceil_mode)
-    return torch.empty((n, out_l, c_in), dtype=x.dtype, device=x.device)
+    return torch.empty((n, c_in, out_l), dtype=x.dtype, device=x.device)
 
 
 class AvgPool1dKernel(Kernel):
