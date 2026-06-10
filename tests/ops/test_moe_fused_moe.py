@@ -172,6 +172,69 @@ def test_fused_moe_qwen3(
     )
 
 
+# Cases for the FusedMoe non-determinism regression. The cooperative 3WG
+# grouped-GEMM TMA-store epilogue race is intermittent (~3% of calls at the
+# qwen3-medium scale) and only manifests inside the full FusedMoe pipeline
+# (adjacent activation/permute kernels keep the timing window open) — an
+# isolated grouped-GEMM loop never trips it, so this must run the op. The
+# nightly case repeats many times: at 3% per call, 200 repeats give >99%
+# detection. The smoke case is a fast path-coverage check.
+_DET_CASES = [
+    pytest.param(
+        dict(num_tokens=32, num_experts=8, top_k=2, hidden_size=64,
+             ffn_size=32, reps=3),
+        marks=pytest.mark.smoke, id="smoke",
+    ),
+    pytest.param(
+        dict(num_tokens=2048, num_experts=128, top_k=8, hidden_size=2048,
+             ffn_size=1024, reps=200),
+        marks=pytest.mark.nightly, id="qwen3-medium",
+    ),
+]
+
+
+@pytest.mark.parametrize("case", _DET_CASES)
+def test_fused_moe_deterministic(case):
+    """Regression for the cooperative 3WG grouped-GEMM TMA-store epilogue race.
+
+    The fast-path epilogue staged each full tile through a per-WG ``C_shared``
+    SMEM buffer without ordering the register→SMEM write before the async TMA
+    read, so the store could read a half-written ``C_shared`` on a small
+    fraction of calls, corrupting a sub-tile of the output non-deterministically.
+    The race only manifests inside the full FusedMoe pipeline; qwen3-medium
+    (E=128, ~128 rows/expert) drives the cooperative full-tile fast path heavily.
+    Run the op many times on fixed seed-42 inputs and assert every call matches
+    the PyTorch reference and is bitwise-identical to the first. Pre-fix the
+    qwen3-medium case trips within ~100 repeats; post-fix it is deterministic.
+    """
+    torch.manual_seed(42)
+    dev = "cuda"
+    dtype = torch.bfloat16
+    nt, ne, tk = case["num_tokens"], case["num_experts"], case["top_k"]
+    hs, ff, reps = case["hidden_size"], case["ffn_size"], case["reps"]
+    hidden = torch.randn(nt, hs, dtype=dtype, device=dev)
+    gating = torch.randn(nt, ne, dtype=dtype, device=dev)
+    w_gate_up = torch.randn(ne, ff * 2, hs, dtype=dtype, device=dev) * 0.02
+    w_down = torch.randn(ne, hs, ff, dtype=dtype, device=dev) * 0.02
+
+    op = FusedMoe(
+        num_tokens=nt, num_experts=ne, top_k=tk, hidden_size=hs,
+        ffn_size=ff, scoring_func="softmax", renormalize=False, dtype=dtype,
+    )
+    fk = FusedTopKOp(nt, ne, tk, "softmax", False)
+    topk_weights, topk_ids = fk(gating)
+    ref = _ref_moe_ffn(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
+
+    first = op(hidden, gating, w_gate_up, w_down)
+    torch.testing.assert_close(first.float(), ref.float(), rtol=1e-2, atol=1e-2)
+    for i in range(reps):
+        out = op(hidden, gating, w_gate_up, w_down)
+        assert torch.equal(out, first), (
+            f"non-deterministic FusedMoe output on call {i + 1}/{reps}: "
+            "3WG grouped-GEMM TMA-store epilogue write→read race regressed"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Test fixture — Kimi K2 config
 # ---------------------------------------------------------------------------
