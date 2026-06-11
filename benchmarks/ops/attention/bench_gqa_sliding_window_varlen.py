@@ -1,55 +1,32 @@
 """Benchmark for GroupedQueryAttentionSlidingWindowVarlenFwdOp vs FA3 baseline."""
-from typing import Optional
 
 import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.ops.attention.manifest_params import (
+    gqa_sliding_window_varlen_args,
+    manifest_params,
+)
+from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionSlidingWindowVarlenFwdOp
 from workloads.attention.gqa_sliding_window_varlen import (
     GroupedQueryAttentionSlidingWindowVarlenFwdTest,
 )
 
-_GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = [
-    pytest.param(1, [3000], [3000], 32, 8, 128, True, -1, -1, torch.float16, False, id="single-seq-causal"),
-    pytest.param(2, [1537, 3073], [1537, 3073], 32, 8, 128, True, 2000, -1, torch.float16, False, id="mixed-length-left-window"),
-    pytest.param(4, [1500, 2000, 3000, 3500], [1500, 2000, 3000, 3500], 32, 8, 128, False, 1500, 1500, torch.float16, False, id="moderate-batch-window"),
-    pytest.param(2, [512, 1024], [4096, 8192], 32, 8, 128, True, -1, -1, torch.float16, False, id="prefill-cache"),
-    pytest.param(2, [5001, 8193], [5001, 8193], 32, 8, 128, True, -1, -1, torch.float16, False, id="long-sequence-stress"),
-]
+_OP_NAME = "GroupedQueryAttentionSlidingWindowVarlenFwdOp"
 
-
-class GroupedQueryAttentionSlidingWindowVarlenFwdBenchmark(BenchmarkBase[GroupedQueryAttentionSlidingWindowVarlenFwdTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        """Approximate FLOPs for QK^T and PV GEMMs, summed over all samples."""
-        t = self.workload
-        total = 0.0
-        for sq, sk in zip(t.seqlens_q, t.seqlens_k, strict=True):
-            offset = sk - sq
-            seq_attended = 0
-            for q_pos in range(sq):
-                hi = min(q_pos + offset, sk - 1) if t.is_causal else (
-                    min(q_pos + offset + t.wr, sk - 1) if t.wr >= 0 else sk - 1)
-                lo = max(0, q_pos + offset - t.wl) if t.wl >= 0 else 0
-                seq_attended += max(0, hi - lo + 1)
-            total += 4 * t.heads * seq_attended * t.dim
-        return total
-
-    def calculate_memory(self) -> Optional[float]:
-        """Approximate bytes accessed: read Q/K/V, write O."""
-        t = self.workload
-        elem = torch.tensor([], dtype=t.dtype).element_size()
-        total_q = sum(t.seqlens_q)
-        total_k = sum(t.seqlens_k)
-        return (total_q * t.heads * t.dim +
-                total_k * t.heads_kv * t.dim * 2 +
-                total_q * t.heads * t.dim) * elem
+_GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = manifest_params(
+    load_workloads(_OP_NAME),
+    gqa_sliding_window_varlen_args,
+    tune=False,
+)
 
 
 def _torch_sliding_window_varlen_fwd(test):
     """Torch SDPA forward baseline: unpack varlen to padded batch, single SDPA call."""
+
     def fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q):
         B = test.batch
         seqlens_q = test.seqlens_q
@@ -65,9 +42,9 @@ def _torch_sliding_window_varlen_fwd(test):
         for i in range(B):
             qs, qe = cu_seqlens_q[i].item(), cu_seqlens_q[i + 1].item()
             ks, ke = cu_seqlens_k[i].item(), cu_seqlens_k[i + 1].item()
-            q_pad[i, :qe - qs] = q[qs:qe]
-            k_pad[i, :ke - ks] = k[ks:ke]
-            v_pad[i, :ke - ks] = v[ks:ke]
+            q_pad[i, : qe - qs] = q[qs:qe]
+            k_pad[i, : ke - ks] = k[ks:ke]
+            v_pad[i, : ke - ks] = v[ks:ke]
 
         # Build combined mask [B, max_sq, max_sk]
         q_idx = torch.arange(max_sq, device=q.device).view(1, -1, 1)
@@ -87,17 +64,22 @@ def _torch_sliding_window_varlen_fwd(test):
             mask = mask | (k_idx > q_idx + offsets + test.wr)
 
         attn_mask = torch.zeros(B, max_sq, max_sk, dtype=q.dtype, device=q.device)
-        attn_mask.masked_fill_(mask, float('-inf'))
+        attn_mask.masked_fill_(mask, float("-inf"))
 
         # SDPA call: transpose to [B, H, S, D], mask broadcasts as [B, 1, max_sq, max_sk]
         out = F.scaled_dot_product_attention(
-            q_pad.transpose(1, 2), k_pad.transpose(1, 2), v_pad.transpose(1, 2),
-            attn_mask=attn_mask.unsqueeze(1), enable_gqa=True)
+            q_pad.transpose(1, 2),
+            k_pad.transpose(1, 2),
+            v_pad.transpose(1, 2),
+            attn_mask=attn_mask.unsqueeze(1),
+            enable_gqa=True,
+        )
         out = out.transpose(1, 2)  # [B, max_sq, H, D]
 
         # Repack valid positions to [total_q, H, D]
-        parts = [out[i, :seqlens_q[i]] for i in range(B)]
+        parts = [out[i, : seqlens_q[i]] for i in range(B)]
         return torch.cat(parts, dim=0)
+
     return fn
 
 
@@ -110,7 +92,9 @@ def _fa3_varlen_baseline(max_seqlen_k, is_causal, wl, wr):
 
     def baseline_fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q):
         out = flash_attn_varlen_func(
-            q, k, v,
+            q,
+            k,
+            v,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_q=max_seqlen_q,
@@ -172,15 +156,29 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     tune: bool,
 ) -> None:
     test = GroupedQueryAttentionSlidingWindowVarlenFwdTest(
-        batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype)
-    bm = GroupedQueryAttentionSlidingWindowVarlenFwdBenchmark(test)
+        batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype
+    )
     inputs = test.gen_inputs()
     q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q = inputs
 
     op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
-        batch=batch, heads=heads, heads_kv=heads_kv, dim=dim,
-        is_causal=is_causal, window_size_left=wl, window_size_right=wr,
-        dtype=dtype, tune=tune)
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        is_causal=is_causal,
+        window_size_left=wl,
+        window_size_right=wr,
+        dtype=dtype,
+        tune=tune,
+    )
+    op.total_q = sum(seqlens_q)
+    op.total_k = sum(seqlens_k)
+    op.q_lens = seqlens_q
+    op.k_lens = seqlens_k
+    op.max_seqlen_q = max(seqlens_q)
+    op.max_seqlen_k = max(seqlens_k)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
 
     # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)

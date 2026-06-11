@@ -5,21 +5,67 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+import torch
 from torch import Tensor
 
+from tileops.ops.op_base import Op
+
 __all__ = [
-    "MoEExperts",
-    "MoEExpertsModular",
-    "MoEPrepareAndFinalize",
+    "FusedMoEExperts",
+    "FusedMoEExpertsModular",
+    "FusedMoEPrepareAndFinalize",
     "PrepareResult",
     "WeightedReduce",
     "WeightedReduceNoOp",
 ]
 
 
+def _validate_fused_moe_experts_dtypes(
+    op_dtype: torch.dtype,
+    output: Tensor,
+    hidden_states: Tensor,
+    w_gate_up: Tensor,
+    w_down: Tensor,
+    topk_weights: Tensor,
+    topk_ids: Tensor,
+    expert_map: Tensor | None,
+    workspace1: Tensor,
+    workspace2: Tensor,
+) -> None:
+    """Shared dtype validator for FusedMoEExperts subclasses.
+
+    Concrete subclasses route through this helper because the manifest-driven
+    ``_validate_dtypes`` codegen path does not handle ``Optional[Tensor]``
+    inputs (``expert_map`` is None for single-GPU); having one shared body
+    avoids drift between the nopad and padded implementations.
+    """
+    allowed = (torch.float16, torch.bfloat16)
+    if op_dtype not in allowed:
+        raise ValueError(f"op dtype must be one of {allowed}, got {op_dtype}")
+    for name, t in (
+        ("output", output),
+        ("hidden_states", hidden_states),
+        ("w_gate_up", w_gate_up),
+        ("w_down", w_down),
+    ):
+        if t.dtype != op_dtype:
+            raise ValueError(
+                f"Expected {name}.dtype == op dtype ({op_dtype}), got {t.dtype}"
+            )
+    if topk_weights.dtype != torch.float32:
+        raise ValueError(f"Expected topk_weights.dtype == float32, got {topk_weights.dtype}")
+    if topk_ids.dtype != torch.int32:
+        raise ValueError(f"Expected topk_ids.dtype == int32, got {topk_ids.dtype}")
+    if expert_map is not None and expert_map.dtype != torch.int32:
+        raise ValueError(f"Expected expert_map.dtype == int32, got {expert_map.dtype}")
+    for name, t in (("workspace1", workspace1), ("workspace2", workspace2)):
+        if t.dtype not in allowed:
+            raise ValueError(f"Expected {name}.dtype in {allowed}, got {t.dtype}")
+
+
 @dataclass
 class PrepareResult:
-    """Return value of MoEPrepareAndFinalize.prepare().
+    """Return value of FusedMoEPrepareAndFinalize.prepare().
 
     T = original token count; T' = post-dispatch count (T'==T when no EP).
     """
@@ -33,22 +79,22 @@ class PrepareResult:
 class WeightedReduce(ABC):
     """Apply topk_weights to expert outputs and reduce to [T, H].
 
-    Provided by MoEExpertsModular.make_weighted_reduce() and called inside
-    MoEPrepareAndFinalize.finalize().
+    Provided by FusedMoEExpertsModular.make_weighted_reduce() and called inside
+    FusedMoEPrepareAndFinalize.finalize().
     """
 
     @abstractmethod
     def apply(
         self,
         output: Tensor,        # [T, H]  write destination
-        expert_out: Tensor,    # output of MoEExperts.apply()
+        expert_out: Tensor,    # output of FusedMoEExperts.forward()
         topk_weights: Tensor,  # [T', K] float32
         topk_ids: Tensor,      # [T', K] int32
     ) -> None: ...
 
 
 class WeightedReduceNoOp(WeightedReduce):
-    """MoEExperts.apply() has already completed weighted reduction; output is [T, H].
+    """FusedMoEExperts.forward() has already completed weighted reduction; output is [T, H].
 
     finalize() copies expert_out to output (no-op when they are the same tensor).
     """
@@ -64,7 +110,7 @@ class WeightedReduceNoOp(WeightedReduce):
             output.copy_(expert_out, non_blocking=True)
 
 
-class MoEPrepareAndFinalize(ABC):
+class FusedMoEPrepareAndFinalize(ABC):
     """Abstraction over EP/TP communication and optional quantization.
 
     Responsibilities:
@@ -92,7 +138,7 @@ class MoEPrepareAndFinalize(ABC):
     def finalize(
         self,
         output: Tensor,                  # [T, H]  write destination (pre-allocated)
-        expert_out: Tensor,              # output of MoEExperts.apply()
+        expert_out: Tensor,              # output of FusedMoEExperts.forward()
         topk_weights: Tensor,            # [T', K] float32
         topk_ids: Tensor,                # [T', K] int32
         weight_and_reduce: WeightedReduce,
@@ -100,13 +146,13 @@ class MoEPrepareAndFinalize(ABC):
         """Post-condition: output.shape == (T, H)  (T = original token count)."""
 
 
-class MoEExperts(ABC):
+class FusedMoEExperts(Op, ABC):
     """Abstraction over the expert GEMM computation.
 
     Responsibilities:
     - workspace_shapes(): declare scratch memory needs
-    - output_shape(): declare the shape apply() writes
-    - apply(): full expert computation (permute + GEMM + activation + GEMM)
+    - output_shape(): declare the shape forward() writes
+    - forward(): full expert computation (permute + GEMM + activation + GEMM)
 
     Out of scope: routing, EP communication, quantization.
     """
@@ -129,7 +175,7 @@ class MoEExperts(ABC):
 
     @abstractmethod
     def output_shape(self, T_prime: int, H: int) -> tuple[int, int]:
-        """Return the shape of the tensor written by apply().
+        """Return the shape of the tensor written by forward().
 
         Implementations that perform internal unpermute + weighted reduction
         (Nopad, Padded) return (T_prime, H).  No-EP: T_prime == T.
@@ -137,26 +183,26 @@ class MoEExperts(ABC):
         """
 
     @abstractmethod
-    def apply(
+    def forward(
         self,
         output: Tensor,           # pre-allocated, shape == output_shape()
-        hidden_q: Tensor,         # [T', H] from PrepareResult.hidden_q
-        w1: Tensor,               # [E, 2F, H]
-        w2: Tensor,               # [E, H, F]
+        hidden_states: Tensor,    # [T', H] from PrepareResult.hidden_q
+        w_gate_up: Tensor,        # [E, 2F, H]
+        w_down: Tensor,           # [E, H, F]
         topk_weights: Tensor,     # [T', K] float32
         topk_ids: Tensor,         # [T', K] int32
-        num_experts: int,
         expert_map: Tensor | None,
         workspace1: Tensor,
         workspace2: Tensor,
+        num_experts: int,
     ) -> None:
         """Write expert computation result to output in-place."""
 
 
-class MoEExpertsModular(MoEExperts, ABC):
-    """Extends MoEExperts with pluggable weighted reduction.
+class FusedMoEExpertsModular(FusedMoEExperts, ABC):
+    """Extends FusedMoEExperts with pluggable weighted reduction.
 
-    Exposes make_weighted_reduce() so MoEPrepareAndFinalize.finalize() can
+    Exposes make_weighted_reduce() so FusedMoEPrepareAndFinalize.finalize() can
     reuse the expert's native reduction kernel.
     """
 

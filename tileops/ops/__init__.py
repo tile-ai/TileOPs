@@ -4,7 +4,9 @@ from .attention import (
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionDecodeWithKVCacheFwdOp,
     GroupedQueryAttentionFwdOp,
+    GroupedQueryAttentionPrefillFP8TensorCoreFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
+    GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
     GroupedQueryAttentionPrefillWithKVCacheFwdOp,
@@ -20,7 +22,14 @@ from .attention import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
-from .convolution import Conv1dBiasFwdOp, Conv1dFwdOp, Conv2dOp, Conv3dOp
+from .convolution import (
+    Conv1dBiasFwdOp,
+    Conv1dFwdOp,
+    Conv2dBiasFwdOp,
+    Conv2dFwdOp,
+    Conv3dBiasFwdOp,
+    Conv3dFwdOp,
+)
 from .da_cumsum import DaCumsumFwdOp
 from .deltanet import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
 from .deltanet_recurrence import DeltaNetDecodeOp
@@ -39,6 +48,7 @@ from .gated_linear_attn import GLADecodeOp
 from .gemm import GemmOp
 from .gla import GLABwdOp, GLAFwdOp
 from .grouped_gemm import GroupedGemmOp
+from .mamba2_fwd import Mamba2FwdOp
 from .mhc import MHCPostOp, MHCPreOp
 from .moe import MoePermuteAlignFwdOp
 from .norm import (
@@ -107,8 +117,10 @@ __all__ = [
     "BatchNormFwdOp",
     "Conv1dBiasFwdOp",
     "Conv1dFwdOp",
-    "Conv2dOp",
-    "Conv3dOp",
+    "Conv2dBiasFwdOp",
+    "Conv2dFwdOp",
+    "Conv3dBiasFwdOp",
+    "Conv3dFwdOp",
     "DaCumsumFwdOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
     "DropoutOp",
@@ -136,7 +148,9 @@ __all__ = [
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionFwdOp",
+    "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp",
     "GroupedQueryAttentionPrefillFwdOp",
+    "GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
     "GroupedQueryAttentionPrefillWithKVCacheFwdOp",
@@ -158,6 +172,7 @@ __all__ = [
     "Op",
     "MoePermuteAlignFwdOp",
     "RMSNormFwdOp",
+    "Mamba2FwdOp",
     "SSDChunkScanFwdOp",
     "SSDChunkStateFwdOp",
     "SSDDecodeOp",

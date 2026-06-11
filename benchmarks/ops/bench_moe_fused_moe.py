@@ -1,8 +1,8 @@
 """Benchmark for FusedMoeFwdOp / FusedMoeFwdCbFwdOp (routed MoE FFN).
 
 Workload shapes come from each op's manifest ``workloads`` (via
-``load_workloads``); the benchmark reports TileOPs latency (nopad + padded
-layouts) alongside the manifest-derived roofline (``op.eval_roofline()``)
+``load_workloads``); the benchmark reports TileOPs latency
+alongside the manifest-derived roofline (``op.eval_roofline()``)
 and a vLLM / torch-ref baseline.
 
 Coverage:
@@ -182,21 +182,13 @@ def _run_bench(
         forward_args_tileops = (hidden, gating, w_gate_up, w_down)
 
     # -- TileOPs nopad -----------------------------------------------------
-    op = op_cls(layout="nopad", **common_kwargs)
+    op = op_cls(**common_kwargs)
     bm = FusedMoeBenchmark(test, op)
     op(*forward_args_tileops)  # warmup / JIT compile
     torch.cuda.synchronize()
 
     result = bm.profile(op, *forward_args_tileops)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    # -- TileOPs padded ----------------------------------------------------
-    op_pad = op_cls(layout="padded", **common_kwargs)
-    op_pad(*forward_args_tileops)  # warmup
-    torch.cuda.synchronize()
-
-    result_pad = bm.profile(op_pad, *forward_args_tileops)
-    BenchmarkReport.record(op_pad, locals(), result_pad, tag="tileops-padded")
 
     # -- Baseline ----------------------------------------------------------
     # vLLM's ``fused_topk`` has no correction_bias parameter, so routing for

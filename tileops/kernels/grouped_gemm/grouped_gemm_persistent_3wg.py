@@ -462,6 +462,15 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                         T.copy(C_local_wg0, C_local_cast_wg0)
                         if arows_0 == T.int32(block_m):
                             # Fast path: full tile → SMEM staging → TMA store.
+                            # C_shared_wg0 is reused on every wave of this persistent
+                            # loop.  Before refilling it we must guarantee the
+                            # PREVIOUS wave's TMA store finished reading it; the
+                            # WG-scoped named barrier aligns all 128 WG0 threads after
+                            # the prior store (T.copy's store already drains via
+                            # tma_store_wait).  A CTA-wide T.sync_threads() would
+                            # deadlock here — this branch is warpgroup-divergent, so
+                            # only WGs with a full tile reach the barrier.
+                            T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
                             T.copy(C_shared_wg0,
                                    C[m_start_0, n_start_0])
@@ -530,6 +539,8 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                         T.copy(C_local_wg1, C_local_cast_wg1)
                         if arows_1 == T.int32(block_m):
                             # Fast path: full tile → SMEM staging → TMA store.
+                            # WG1's own named barrier (id=5) guards C_shared reuse.
+                            T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_local_cast_wg1, C_shared_wg1)
                             T.copy(C_shared_wg1,
                                    C[m_start_1, n_start_1])
@@ -771,6 +782,10 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                         T.copy(C_local_wg0, C_local_cast_wg0)
                         if arows0 == T.int32(half_m):
                             # Fast path: full top-half tile via TMA store.
+                            # WG-scoped named barrier guards C_shared reuse across
+                            # waves; see the pingpong WG0 epilogue for the full
+                            # rationale (and why a CTA-wide sync would deadlock).
+                            T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
                             T.copy(C_shared_wg0,
                                    C[m_start, n_start])
@@ -835,6 +850,9 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                         T.copy(C_local_wg1, C_local_cast_wg1)
                         if arows1 == T.int32(half_m):
                             # Fast path: full bottom-half tile via TMA store.
+                            # Same C_shared reuse ordering as the top half, on WG1's
+                            # own named barrier (id=5).
+                            T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_local_cast_wg1, C_shared_wg1)
                             T.copy(C_shared_wg1,
                                    C[m_start + half_m, n_start])

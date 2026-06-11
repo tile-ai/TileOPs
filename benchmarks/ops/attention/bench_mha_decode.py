@@ -1,13 +1,15 @@
-from typing import Optional
-
 import pytest
 import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.ops.attention.manifest_params import manifest_params, mha_decode_args
+from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.mha_decode import MhaDecodeTest
+
+_OP_NAME = "MultiHeadAttentionDecodeWithKVCacheFwdOp"
 
 
 class _MhaDecodeTestBaseline(MhaDecodeTest):
@@ -21,23 +23,6 @@ class _MhaDecodeTestBaseline(MhaDecodeTest):
             output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd)
         output = output_bhsd.transpose(1, 2).contiguous()
         return output
-
-
-class MhaDecodeBenchmark(BenchmarkBase[MhaDecodeTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        flops_per_matmul = 2.0 * t.batch * t.heads * t.seq_len_q * t.seq_len_kv * t.dim
-        flops = flops_per_matmul * 2
-        return flops
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        # Q: batch * seq_len_q * heads * dim
-        # K, V: batch * seq_len_kv * heads * dim
-        # Output: batch * seq_len_q * heads * dim
-        return (t.batch * t.heads * (2 * t.seq_len_q + 2 * t.seq_len_kv) * t.dim *
-                t.dtype.itemsize)
 
 
 def _fa3_mha_decode_fwd(test):
@@ -82,21 +67,17 @@ def _flashinfer_mha_decode_fwd(test, q, k, v):
     return run_fn
 
 
-_MHA_DECODE_BENCH_PARAMS = [
-    pytest.param(1, 32, 128, 8192, 128, torch.float16, True, id="fp16-long-cache"),
-    pytest.param(1, 32, 128, 8192, 128, torch.bfloat16, True, id="bf16-long-cache"),
-    pytest.param(1, 32, 128, 5, 128, torch.float16, True, id="short-kv-tail"),
-]
+_MHA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mha_decode_args)
 
 
 @pytest.mark.parametrize("b, h, s_q, s_kv, d, dtype, tune", _MHA_DECODE_BENCH_PARAMS)
 def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype,
                           tune: bool) -> None:
     test = _MhaDecodeTestBaseline(b, h, s_q, s_kv, d, dtype)
-    bm = MhaDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
     op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, dtype, tune=tune)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

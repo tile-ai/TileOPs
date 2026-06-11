@@ -29,7 +29,7 @@ def test_gqa_prefill_paged_mixed_manifest_matches_benchmark_lengths() -> None:
 def test_gqa_prefill_paged_roofline_accepts_mixed_manifest_workload() -> None:
     workload = _workload_by_label(_MIXED_QWEN_LABEL)
 
-    roofline = gqa_prefill_paged_with_kv_cache_fwd_roofline(**workload)
+    flops, nbytes = gqa_prefill_paged_with_kv_cache_fwd_roofline(**workload)
 
-    assert roofline["flops"] > 0
-    assert roofline["bytes"] > 0
+    assert flops > 0
+    assert nbytes > 0

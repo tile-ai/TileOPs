@@ -1,41 +1,18 @@
-from typing import Optional
-
 import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.ops.attention.manifest_params import manifest_params, mha_qkv_args
+from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from workloads.attention.mha import (
     MhaBwdTest,
     MhaFwdTest,
 )
 
-
-class MhaFwdBenchmark(BenchmarkBase[MhaFwdTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        flops_per_matmul = 2.0 * t.batch * t.heads * t.seq_len * t.seq_len * t.dim
-        flops = flops_per_matmul * 2
-        return flops / 2 if t.is_causal else flops
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        return 4 * t.batch * t.heads * t.seq_len * t.dim * t.dtype.itemsize
-
-
-class MhaBwdBenchmark(BenchmarkBase[MhaBwdTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        flops_per_matmul = 2.0 * t.batch * t.heads * t.seq_len * t.seq_len * t.dim
-        flops = flops_per_matmul * 5
-        return flops / 2 if t.is_causal else flops
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        return 7 * t.batch * t.heads * t.seq_len * t.dim * t.dtype.itemsize
+_MHA_FWD_OP = "MultiHeadAttentionFwdOp"
+_MHA_BWD_OP = "MultiHeadAttentionBwdOp"
 
 
 def _fa3_mha_fwd(test: MhaFwdTest):
@@ -124,21 +101,17 @@ def _torch_mha_bwd(test):
     return fn
 
 
-_MHA_FWD_BENCH_PARAMS = [
-    pytest.param(1, 1024, 8, 64, False, torch.float16, True, id="prefill-fp16"),
-    pytest.param(16, 2048, 16, 128, False, torch.float16, True, id="throughput-fp16"),
-    pytest.param(4, 4096, 16, 128, False, torch.bfloat16, True, id="long-seq-bf16"),
-]
+_MHA_FWD_BENCH_PARAMS = manifest_params(load_workloads(_MHA_FWD_OP), mha_qkv_args)
 
 
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", _MHA_FWD_BENCH_PARAMS)
 def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
                        dtype: torch.dtype, tune: bool) -> None:
     test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
-    bm = MhaFwdBenchmark(test)
     inputs = test.gen_inputs()
 
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
+    bm = ManifestBenchmark(_MHA_FWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -157,17 +130,17 @@ def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: b
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
 
-_MHA_BWD_BENCH_PARAMS = _MHA_FWD_BENCH_PARAMS
+_MHA_BWD_BENCH_PARAMS = manifest_params(load_workloads(_MHA_BWD_OP), mha_qkv_args)
 
 
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", _MHA_BWD_BENCH_PARAMS)
 def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
                        dtype: torch.dtype, tune: bool) -> None:
     test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)
-    bm = MhaBwdBenchmark(test)
     inputs = test.gen_inputs()
 
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
+    bm = ManifestBenchmark(_MHA_BWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

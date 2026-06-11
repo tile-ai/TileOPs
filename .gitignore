@@ -76,3 +76,4 @@ docs/plans/
 CLAUDE.local.md
 .claude/worktrees/
 docs/superpowers/
+*.ncu-rep

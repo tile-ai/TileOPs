@@ -270,8 +270,11 @@ jobs:
 
           install_dir="${RUNNER_TEMP}/bin"
           mkdir -p "$install_dir"
-          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
-            | bash -s -- "$ACTIONLINT_VERSION" "$install_dir"
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}" \
+            -o "${RUNNER_TEMP}/${tarball}"
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "$install_dir" actionlint
           echo "$install_dir" >> "$GITHUB_PATH"
 
       - name: Run actionlint

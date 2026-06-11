@@ -7,7 +7,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.permute_nopad import MoePermuteNopadKernel
 
-from ..op_base import Op
+from ...op_base import Op
 
 __all__ = ["MoePermuteNopadFwdOp"]
 
@@ -15,7 +15,7 @@ __all__ = ["MoePermuteNopadFwdOp"]
 class MoePermuteNopadFwdOp(Op):
     """Route tokens to tight (non-padded) expert-contiguous layout.
 
-    Unlike MoePermutePaddedFwdOp, the output perm_h has exactly T*K rows with no
+    The output perm_h has exactly T*K rows with no
     inter-expert padding, enabling smaller intermediate tensors throughout
     the MoE pipeline.
 

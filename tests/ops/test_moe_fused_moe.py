@@ -3,7 +3,6 @@
 Covers:
   - Qwen3 config: softmax, renormalize=False/True
   - Kimi K2 config: sigmoid, correction_bias, routed_scaling_factor=2.827
-  - layout="nopad" vs layout="padded" numerical agreement
   - expert_map local filtering (EP simulation without All-to-All)
   - vLLM correctness (optional, skipped when vLLM is not installed)
   - correction_bias routing precision (weights from original sigmoid, not biased)
@@ -144,17 +143,10 @@ def test_fused_moe_qwen3(
         num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
         hidden_size=hidden_size, ffn_size=ffn_size,
         scoring_func=scoring_func, renormalize=renormalize,
-        layout="nopad", dtype=dtype,
-    )
-    op_padded = FusedMoe(
-        num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
-        hidden_size=hidden_size, ffn_size=ffn_size,
-        scoring_func=scoring_func, renormalize=renormalize,
-        layout="padded", dtype=dtype,
+        dtype=dtype,
     )
 
     out_nopad = op_nopad(hidden, gating, w_gate_up, w_down)
-    out_padded = op_padded(hidden, gating, w_gate_up, w_down)
 
     assert out_nopad.shape == (num_tokens, hidden_size)
     assert out_nopad.dtype == dtype
@@ -165,7 +157,6 @@ def test_fused_moe_qwen3(
     ref = _ref_moe_ffn(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
 
     torch.testing.assert_close(out_nopad.float(), ref.float(), rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(out_padded.float(), ref.float(), rtol=1e-2, atol=1e-2)
 
     if _VLLM_AVAILABLE and scoring_func == "softmax":
         out_vllm = _vllm_fused_experts(
@@ -251,19 +242,10 @@ def test_fused_moe_kimi(
         scoring_func="sigmoid", renormalize=True,
         with_correction_bias=with_correction_bias,
         routed_scaling_factor=routed_scaling_factor,
-        layout="nopad", dtype=dtype,
-    )
-    op_padded = FusedMoe(
-        num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
-        hidden_size=hidden_size, ffn_size=ffn_size,
-        scoring_func="sigmoid", renormalize=True,
-        with_correction_bias=with_correction_bias,
-        routed_scaling_factor=routed_scaling_factor,
-        layout="padded", dtype=dtype,
+        dtype=dtype,
     )
 
     out_nopad = op_nopad(hidden, gating, w_gate_up, w_down, correction_bias)
-    out_padded = op_padded(hidden, gating, w_gate_up, w_down, correction_bias)
 
     assert out_nopad.shape == (num_tokens, hidden_size)
     assert out_nopad.dtype == dtype
@@ -279,7 +261,6 @@ def test_fused_moe_kimi(
         ref = ref * routed_scaling_factor
 
     torch.testing.assert_close(out_nopad.float(), ref.float(), rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(out_padded.float(), ref.float(), rtol=1e-2, atol=1e-2)
 
     print(
         f"PASS [T={num_tokens}, E={num_experts}, K={top_k}, "
@@ -445,7 +426,7 @@ def test_fused_moe_vs_vllm(
         hidden_size=hidden_size, ffn_size=ffn_size,
         scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
         routed_scaling_factor=routed_scaling_factor,
-        layout="nopad", dtype=dtype,
+        dtype=dtype,
     )
     out_tileops = op(hidden, gating, w_gate_up, w_down, correction_bias)
 

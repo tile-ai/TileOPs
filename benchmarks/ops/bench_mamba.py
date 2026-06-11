@@ -372,7 +372,7 @@ def ssd_chunk_state_fwd_ref(
     if seq_idx is not None:
         seq_chunked = seq_idx.reshape(b, c, Q)
         seq_end = seq_chunked[..., -1:]
-        same = (seq_chunked == seq_end).unsqueeze(3)
+        same = ((seq_end >= 0) & (seq_chunked == seq_end)).unsqueeze(3)
         weight = weight * same.permute(0, 1, 3, 2)
 
     w = weight.permute(0, 1, 3, 2).unsqueeze(-1).unsqueeze(-1)
@@ -416,11 +416,33 @@ class SSDChunkStateFwdBenchmark(BenchmarkBase[SSDChunkStateFwdTest]):
 
 
 _SSD_CHUNK_STATE_FWD_BENCH_PARAMS = [
-    pytest.param(1, 2,  64, 4,  64,  32, 1, torch.float16,  False, False, id="b1-c2-L64-h4-p64-n32-g1-fp16"),
-    pytest.param(2, 4,  64, 8,  64,  64, 2, torch.float16,  False, False, id="b2-c4-L64-h8-p64-n64-g2-fp16"),
-    pytest.param(1, 2, 128, 4, 128,  32, 1, torch.bfloat16, False, False, id="b1-c2-L128-h4-p128-n32-g1-bf16"),
-    pytest.param(2, 2,  64, 4,  64,  32, 2, torch.bfloat16, False, False, id="b2-c2-L64-h4-p64-n32-g2-bf16"),
-    pytest.param(2, 4,  64, 8,  64,  64, 2, torch.float16,  False, True,  id="b2-c4-L64-h8-p64-n64-g2-seqidx-fp16"),
+    # ── smoke / debug ────────────────────────────────────────────────────────
+    # Minimal shape for fast local iteration and CI smoke runs.
+    # Not used for PR performance claims.
+    pytest.param(1, 2, 64, 4, 64, 32, 1, torch.float16, False, False,
+                 id="debug-b1-c2-L64-h4-p64-n32-g1-fp16"),
+    # ── Production-scale configs (HuggingFace state-spaces/mamba2-*) ─────────
+    # All models: headdim=64, d_state=128, ngroups=1, chunk_size=256.
+    # nheads = d_model * expand / headdim.
+    # seqlen=2048 -> num_chunks=8 (L2k); seqlen=8192 -> num_chunks=32 (L8k).
+    # Grid = B*C*H blocks (needs >> 132 SMs on H200 to produce useful numbers).
+    #
+    # mamba2-370m: d_model=1024, expand=2 -> d_inner=2048, nheads=32
+    pytest.param(1,  8, 256, 32, 64, 128, 1, torch.float16,  False, False, id="mamba2-370m-b1-L2k-fp16"),
+    pytest.param(4,  8, 256, 32, 64, 128, 1, torch.float16,  False, False, id="mamba2-370m-b4-L2k-fp16"),
+    # mamba2-1.3b: d_model=2048, expand=2 -> d_inner=4096, nheads=64
+    pytest.param(1,  8, 256, 64, 64, 128, 1, torch.float16,  False, False, id="mamba2-1p3b-b1-L2k-fp16"),
+    pytest.param(4,  8, 256, 64, 64, 128, 1, torch.float16,  False, False, id="mamba2-1p3b-b4-L2k-fp16"),
+    # mamba2-2.7b: d_model=2560, expand=2 -> d_inner=5120, nheads=80
+    # Use bf16 to match the target production dtype for this model scale.
+    pytest.param(1,  8, 256, 80, 64, 128, 1, torch.bfloat16, False, False, id="mamba2-2p7b-b1-L2k-bf16"),
+    pytest.param(4,  8, 256, 80, 64, 128, 1, torch.bfloat16, False, False, id="mamba2-2p7b-b4-L2k-bf16"),
+    # Long-context: seqlen=8192
+    pytest.param(1, 32, 256, 64, 64, 128, 1, torch.float16,  False, False, id="mamba2-1p3b-b1-L8k-fp16"),
+    # seq_idx: latency (b1) and throughput (b4) cases exercise the separate
+    # has_seq_idx=True config branch (threads=128 vs threads=256 for non-seqidx).
+    pytest.param(1,  8, 256, 64, 64, 128, 1, torch.float16,  False, True,  id="mamba2-1p3b-b1-L2k-seqidx-fp16"),
+    pytest.param(4,  8, 256, 64, 64, 128, 1, torch.float16,  False, True,  id="mamba2-1p3b-b4-L2k-seqidx-fp16"),
 ]
 
 
@@ -560,27 +582,34 @@ _SSD_STATE_PASSING_FWD_BENCH_PARAMS = [
     _SSD_STATE_PASSING_FWD_BENCH_PARAMS,
 )
 def test_ssd_state_passing_fwd_bench(
-    batch: int, num_chunks: int, n_heads: int, d_state: int, dtype: torch.dtype, tune: bool,
+    batch: int, num_chunks: int, n_heads: int, d_state: int,
+    dtype: torch.dtype, tune: bool,
 ) -> None:
     test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
     bm = SSDStatePassingFwdBenchmark(test)
     inputs = test.gen_inputs()
+    states, dA_chunk_cumsum, initial_states = inputs
 
     op = SSDStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     if _mamba_state_passing_fwd is not None:
-        states, dA_chunk_cumsum, initial_states = inputs
-
         def mamba_fwd():
-            # mamba_ssm _state_passing_fwd expects (b, h, c) for dA_chunk_cumsum,
-            # matching TileOPs layout — no permutation needed.
+            # mamba_ssm _state_passing_fwd: dA_chunk_cumsum layout (b, h, c) matches
+            # TileOPs — no permutation needed.  out_dtype=float32 matches TileOPs output
+            # dtype for an apples-to-apples comparison.
             return _mamba_state_passing_fwd(
                 states.contiguous(),
                 dA_chunk_cumsum.contiguous(),
                 initial_states=initial_states.contiguous(),
+                out_dtype=torch.float32,
             )
+
+        # Pre-warm: run once outside bm.profile so the Triton autotuner
+        # selects its best config before the CUPTI window opens.
+        mamba_fwd()
+        torch.cuda.synchronize()
 
         result_mamba = bm.profile(mamba_fwd)
         BenchmarkReport.record(op, locals(), result_mamba, tag="mamba")

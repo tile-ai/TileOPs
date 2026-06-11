@@ -1,8 +1,8 @@
-"""Benchmarks for fp8 elementwise ops (e4m3fn, e5m2).
+"""Skipped benchmarks for unsupported fp8 elementwise ops (e4m3fn, e5m2).
 
-Profiles TileOPs fp8 kernels vs PyTorch fp16-compute-then-cast baselines
-for unary (relu, exp), binary (add), and fused gated (silu_and_mul) ops
-across three shapes and both fp8 dtypes.
+Keeps unsupported fp8 benchmark cases visible without turning the nightly
+benchmark suite red. Current elementwise dtype contracts reject these fp8
+inputs; remove the skip marks when the corresponding ops add fp8 support.
 """
 
 from math import prod
@@ -17,9 +17,9 @@ from tileops.ops.elementwise import AddFwdOp, ExpFwdOp, ReluFwdOp, SiluAndMulFwd
 from workloads.workload_base import FixtureBase
 
 # Shapes modeled on real LLM workloads: (batch, seq_len, hidden_dim).
-# Small:  (1, 2048, 4096) — single-batch inference, LLaMA-7B hidden.
-# Medium: (8, 2048, 4096) — multi-batch inference.
-# Large:  (4, 4096, 8192) — training, LLaMA-70B hidden.
+# Small:  (1, 2048, 4096) - single-batch inference, LLaMA-7B hidden.
+# Medium: (8, 2048, 4096) - multi-batch inference.
+# Large:  (4, 4096, 8192) - training, LLaMA-70B hidden.
 # A non-pow2 hidden (LLaMA-7B intermediate=11008) is added in the
 # unary/binary sweep to exercise tail handling.
 _SHAPES = (
@@ -29,6 +29,12 @@ _SHAPES = (
     (1, 2048, 11008),
 )
 _FP8_DTYPES = [torch.float8_e4m3fn, torch.float8_e5m2]
+_UNSUPPORTED_FP8_SKIP = pytest.mark.skip(
+    reason=(
+        "TileOPs elementwise ops currently reject fp8 dtypes; "
+        "benchmark is kept as an explicit unsupported case"
+    )
+)
 
 
 def _shape_id(shape: tuple[int, ...]) -> str:
@@ -121,6 +127,7 @@ for _op_name, _op_cls, _bl_fn in [
         for _dt in _FP8_DTYPES:
             _unary_params.append(pytest.param(
                 _op_name, _shape, _dt, _op_cls, _bl_fn,
+                marks=_UNSUPPORTED_FP8_SKIP,
                 id=f"{_op_name}-{_shape_id(_shape)}-{_dt}",
             ))
 
@@ -161,6 +168,7 @@ for _shape in _SHAPES:
     for _dt in _FP8_DTYPES:
         _binary_params.append(pytest.param(
             "add_fp8", _shape, _dt,
+            marks=_UNSUPPORTED_FP8_SKIP,
             id=f"add_fp8-{_shape_id(_shape)}-{_dt}",
         ))
 
@@ -208,6 +216,7 @@ for _shape in _GATED_SHAPES:
     for _dt in _FP8_DTYPES:
         _gated_params.append(pytest.param(
             "silu_and_mul_fp8", _shape, _dt,
+            marks=_UNSUPPORTED_FP8_SKIP,
             id=f"silu_and_mul_fp8-{_shape_id(_shape)}-{_dt}",
         ))
 

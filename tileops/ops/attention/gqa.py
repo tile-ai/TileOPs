@@ -11,11 +11,13 @@ from tileops.kernels.attention import (
     GQABwdWgmmaPipelinedKernel,
     GQADecodeKernel,
     GQADecodePagedKernel,
+    GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
     GQAFwdKernel,
     GQAFwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
     GQAPrefillFwdKernel,
+    GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeAppendKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
@@ -39,7 +41,9 @@ __all__ = [
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionFwdOp",
+    "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp",
     "GroupedQueryAttentionPrefillFwdOp",
+    "GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
     "GroupedQueryAttentionPrefillWithKVCacheFwdOp",
@@ -152,6 +156,11 @@ def _select_gqa_prefill_with_kv_cache_rope_append_kernel_cls() -> Type[Kernel]:
 
 def _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
     return GQAPrefillPagedWithKVCacheFwdKernel
+
+
+def _select_gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
+    # Selector hook for future FP8 paged-cache kernel variants.
+    return GQAPrefillPagedWithFP8KVCacheFwdKernel
 
 
 def _select_gqa_prefill_paged_with_kv_cache_rope_fwd_kernel_cls() -> Type[Kernel]:
@@ -292,6 +301,135 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return _attention_output(self.kernel(q, k, v))
+
+
+class GroupedQueryAttentionPrefillFP8TensorCoreFwdOp(Op):
+    """Dense non-causal FP8 Tensor Core GQA prefill. Layout: BSHD.
+
+    ``q_descale``, ``k_descale`` and ``v_descale`` use the FA3-compatible
+    public shape ``[batch, heads_kv]``. The kernel wrapper broadcasts these
+    per-batch/KV-head descales to its internal per-block scale layout.
+    """
+
+    def __init__(self,
+                 batch: int,
+                 heads: int,
+                 heads_kv: int,
+                 seq_len: int,
+                 dim: int,
+                 is_causal: bool = False,
+                 dtype: torch.dtype = torch.float16,
+                 kernel_map: Optional[Dict[str, Kernel]] = None,
+                 tune: bool = False) -> None:
+        _validate_gqa_dims(heads, heads_kv, dim)
+        if is_causal:
+            raise ValueError(
+                "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp currently supports non-causal prefill only."
+            )
+        if dim != 128:
+            raise ValueError(
+                "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp currently requires dim == 128."
+            )
+        if seq_len % 224 != 0:
+            raise ValueError(
+                "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp currently requires seq_len % 224 == 0."
+            )
+        if seq_len % 128 != 0:
+            raise ValueError(
+                "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp currently requires seq_len % 128 == 0."
+            )
+        _validate_attention_dtype(dtype)
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len = seq_len
+        self.dim = dim
+        self.is_causal = is_causal
+        self.dtype = dtype
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["gqa_prefill_fp8_tensor_core_fwd_kernel"](
+            batch, heads, heads_kv, seq_len, dim, self.dtype, tune=tune)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {
+            "gqa_prefill_fp8_tensor_core_fwd_kernel":
+            GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
+        }
+
+    def _infer_output_shapes(self,
+                             q_shape: tuple[int, ...],
+                             k_shape: tuple[int, ...],
+                             v_shape: tuple[int, ...],
+                             q_descale_shape: tuple[int, ...],
+                             k_descale_shape: tuple[int, ...],
+                             v_descale_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+        return {"o": tuple(q_shape)}
+
+    def _validate_dtypes(self,
+                         q: torch.Tensor,
+                         k: torch.Tensor,
+                         v: torch.Tensor,
+                         q_descale: torch.Tensor,
+                         k_descale: torch.Tensor,
+                         v_descale: torch.Tensor) -> None:
+        fp8_dtype = getattr(torch, "float8_e4m3fn", None)
+        if fp8_dtype is None:
+            raise ValueError("torch.float8_e4m3fn is required for this OP.")
+        if q.dtype != fp8_dtype or k.dtype != fp8_dtype or v.dtype != fp8_dtype:
+            raise ValueError("q/k/v must be torch.float8_e4m3fn.")
+        if q_descale.dtype != torch.float32 or k_descale.dtype != torch.float32 or v_descale.dtype != torch.float32:
+            raise ValueError("q_descale/k_descale/v_descale must be torch.float32.")
+
+    def _validate_shapes(self,
+                         q: torch.Tensor,
+                         k: torch.Tensor,
+                         v: torch.Tensor,
+                         q_descale: torch.Tensor,
+                         k_descale: torch.Tensor,
+                         v_descale: torch.Tensor) -> None:
+        q_shape = (self.batch, self.seq_len, self.heads, self.dim)
+        kv_shape = (self.batch, self.seq_len, self.heads_kv, self.dim)
+        descale_shape = (self.batch, self.heads_kv)
+        if tuple(q.shape) != q_shape:
+            raise ValueError(f"q must have shape {q_shape}, got {tuple(q.shape)}.")
+        if tuple(k.shape) != kv_shape:
+            raise ValueError(f"k must have shape {kv_shape}, got {tuple(k.shape)}.")
+        if tuple(v.shape) != kv_shape:
+            raise ValueError(f"v must have shape {kv_shape}, got {tuple(v.shape)}.")
+        if tuple(q_descale.shape) != descale_shape:
+            raise ValueError(
+                f"q_descale must have shape {descale_shape}, got {tuple(q_descale.shape)}."
+            )
+        if tuple(k_descale.shape) != descale_shape:
+            raise ValueError(
+                f"k_descale must have shape {descale_shape}, got {tuple(k_descale.shape)}."
+            )
+        if tuple(v_descale.shape) != descale_shape:
+            raise ValueError(
+                f"v_descale must have shape {descale_shape}, got {tuple(v_descale.shape)}."
+            )
+
+    def eval_roofline(self) -> tuple[int, int]:
+        flops = 4 * self.batch * self.heads * self.seq_len * self.seq_len * self.dim
+        q_bytes = self.batch * self.seq_len * self.heads * self.dim
+        kv_bytes = self.batch * self.seq_len * self.heads_kv * self.dim
+        # Public descales are FA3-compatible [batch, heads_kv] float32 tensors.
+        descale_bytes = 3 * self.batch * self.heads_kv * torch.float32.itemsize
+        out_bytes = self.batch * self.seq_len * self.heads * self.dim * self.dtype.itemsize
+        return int(flops), int(q_bytes + 2 * kv_bytes + descale_bytes + out_bytes)
+
+    def forward(self,
+                q: torch.Tensor,
+                k: torch.Tensor,
+                v: torch.Tensor,
+                q_descale: torch.Tensor,
+                k_descale: torch.Tensor,
+                v_descale: torch.Tensor) -> torch.Tensor:
+        self._validate_dtypes(q, k, v, q_descale, k_descale, v_descale)
+        self._validate_shapes(q, k, v, q_descale, k_descale, v_descale)
+        return _attention_output(self.kernel(q, k, v, q_descale, k_descale, v_descale))
 
 
 class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
@@ -485,8 +623,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         kwargs = dict(self._roofline_kwargs)
         kwargs["q_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_q"))
         kwargs["kv_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_kv"))
-        result = gqa_prefill_varlen_fwd_roofline(**kwargs)
-        return result["flops"], result["bytes"]
+        return gqa_prefill_varlen_fwd_roofline(**kwargs)
 
 
 class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
@@ -930,6 +1067,246 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         return _attention_output(
             self.kernel(q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens,
                         block_table, max_seqlen_q))
+
+    @property
+    def total_flops(self) -> int:
+        raise NotImplementedError(
+            "total_flops is not defined for paged varlen ops; "
+            "compute per-sample from cu_seqlens and cache_seqlens at call time.")
+
+    @property
+    def total_memory(self) -> int:
+        raise NotImplementedError(
+            "total_memory is not defined for paged varlen ops; "
+            "compute per-sample from cu_seqlens and cache_seqlens at call time.")
+
+
+class GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp(Op):
+    """Packed GQA prefill with paged FP8 KV cache append. Layout: THD.
+
+    This storage-only FP8 variant keeps ``q``, ``k_new`` and ``v_new`` in the
+    attention dtype, dequantizes old cache pages online with scalar
+    ``k_scale`` / ``v_scale``, and appends the current chunk quantized into
+    FP8 E4M3 pages for subsequent requests.
+    """
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        max_pages_per_req: int,
+        page_size: int,
+        dim: int,
+        is_causal: bool = True,
+        dtype: torch.dtype = torch.float16,
+        cache_dtype: torch.dtype | str = "float8_e4m3fn",
+        sm_scale: Optional[float] = None,
+        softcap: Optional[float] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        _validate_gqa_dims(heads, heads_kv, dim)
+        _validate_attention_dtype(dtype)
+        if isinstance(cache_dtype, str):
+            if cache_dtype != "float8_e4m3fn":
+                raise ValueError(
+                    "GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp currently supports "
+                    f"float8_e4m3fn cache only, got {cache_dtype}")
+            cache_dtype = torch.float8_e4m3fn
+        if cache_dtype != torch.float8_e4m3fn:
+            raise ValueError(
+                "GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp currently supports "
+                f"torch.float8_e4m3fn cache only, got {cache_dtype}")
+        if batch <= 0:
+            raise ValueError("batch must be positive")
+        if max_pages_per_req <= 0:
+            raise ValueError("max_pages_per_req must be positive")
+        if page_size <= 0:
+            raise ValueError("page_size must be positive")
+        if page_size & (page_size - 1) != 0:
+            raise ValueError("page_size must be a power of two")
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.groups = heads // heads_kv
+        self.max_pages_per_req = max_pages_per_req
+        self.page_size = page_size
+        self.max_cache_len = max_pages_per_req * page_size
+        self.dim = dim
+        self.is_causal = is_causal
+        self.dtype = dtype
+        self.cache_dtype = cache_dtype
+        self.sm_scale = _attention_scale(dim, sm_scale)
+        self.softcap = _score_softcap(softcap)
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel"](
+            batch=batch,
+            heads=heads,
+            heads_kv=heads_kv,
+            max_pages_per_req=max_pages_per_req,
+            page_size=page_size,
+            dim=dim,
+            is_causal=is_causal,
+            dtype=dtype,
+            sm_scale=self.sm_scale,
+            softcap=self.softcap,
+            tune=tune,
+        )
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {
+            "gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel":
+                _select_gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel_cls()
+        }
+
+    def _validate_forward_inputs(
+        self,
+        q: torch.Tensor,
+        k_new: torch.Tensor,
+        v_new: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        k_scale: torch.Tensor,
+        v_scale: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        block_table: torch.Tensor,
+        max_seqlen_q: int,
+    ) -> None:
+        tensors = {
+            "q": q,
+            "k_new": k_new,
+            "v_new": v_new,
+            "k_pages": k_pages,
+            "v_pages": v_pages,
+            "k_scale": k_scale,
+            "v_scale": v_scale,
+            "cu_seqlens_q": cu_seqlens_q,
+            "cache_seqlens": cache_seqlens,
+            "block_table": block_table,
+        }
+        for name, tensor in tensors.items():
+            if tensor.device.type != "cuda":
+                raise ValueError(f"{name} must be on a cuda device, got {tensor.device}")
+            if not tensor.is_contiguous():
+                raise ValueError(f"{name} must be contiguous")
+
+        expected_q_shape_tail = (self.heads, self.dim)
+        expected_kv_shape_tail = (self.heads_kv, self.dim)
+        if q.ndim != 3 or tuple(q.shape[1:]) != expected_q_shape_tail:
+            raise ValueError(
+                f"q must have shape [total_q, {self.heads}, {self.dim}], got {q.shape}")
+        if k_new.ndim != 3 or tuple(k_new.shape[1:]) != expected_kv_shape_tail:
+            raise ValueError(
+                f"k_new must have shape [total_q, {self.heads_kv}, {self.dim}], got "
+                f"{k_new.shape}")
+        if v_new.shape != k_new.shape:
+            raise ValueError(
+                f"v_new must have the same shape as k_new, got {v_new.shape} and "
+                f"{k_new.shape}")
+        if k_new.shape[0] != q.shape[0]:
+            raise ValueError(
+                f"k_new.shape[0] ({k_new.shape[0]}) must equal q.shape[0] ({q.shape[0]})")
+        if k_pages.ndim != 3 or tuple(k_pages.shape[1:]) != expected_kv_shape_tail:
+            raise ValueError(
+                f"k_pages must have shape [physical_tokens, {self.heads_kv}, {self.dim}], "
+                f"got {k_pages.shape}")
+        if v_pages.shape != k_pages.shape:
+            raise ValueError(
+                f"v_pages must have the same shape as k_pages, got {v_pages.shape} and "
+                f"{k_pages.shape}")
+        if k_pages.shape[0] % self.page_size != 0:
+            raise ValueError("k_pages physical token dimension must be divisible by page_size")
+        if k_scale.shape != (1,) or v_scale.shape != (1,):
+            raise ValueError(
+                f"k_scale and v_scale must have shape (1,), got {k_scale.shape} and "
+                f"{v_scale.shape}")
+        if cu_seqlens_q.shape != (self.batch + 1,):
+            raise ValueError(
+                f"cu_seqlens_q shape must be ({self.batch + 1},), got "
+                f"{tuple(cu_seqlens_q.shape)}")
+        if cache_seqlens.shape != (self.batch,):
+            raise ValueError(
+                f"cache_seqlens shape must be ({self.batch},), got "
+                f"{tuple(cache_seqlens.shape)}")
+        if block_table.shape != (self.batch, self.max_pages_per_req):
+            raise ValueError(
+                f"block_table shape must be ({self.batch}, {self.max_pages_per_req}), "
+                f"got {tuple(block_table.shape)}")
+
+        for name, tensor in [("q", q), ("k_new", k_new), ("v_new", v_new)]:
+            if tensor.dtype != self.dtype:
+                raise ValueError(f"Expected {name}.dtype {self.dtype}, got {tensor.dtype}")
+        for name, tensor in [("k_pages", k_pages), ("v_pages", v_pages)]:
+            if tensor.dtype != self.cache_dtype:
+                raise ValueError(
+                    f"Expected {name}.dtype {self.cache_dtype}, got {tensor.dtype}")
+        for name, tensor in [("k_scale", k_scale), ("v_scale", v_scale)]:
+            if tensor.dtype != torch.float32:
+                raise ValueError(f"{name} must have dtype torch.float32, got {tensor.dtype}")
+            if not torch.all(torch.isfinite(tensor) & (tensor > 0)).item():
+                raise ValueError(f"{name} must contain finite positive values")
+        for name, tensor in [("cu_seqlens_q", cu_seqlens_q),
+                             ("cache_seqlens", cache_seqlens),
+                             ("block_table", block_table)]:
+            if tensor.dtype != torch.int32:
+                raise ValueError(f"{name} must have dtype torch.int32, got {tensor.dtype}")
+
+        if int(cu_seqlens_q[0].item()) != 0:
+            raise ValueError("cu_seqlens_q[0] must be 0")
+        q_lens = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
+        if torch.any(q_lens < 0).item():
+            raise ValueError("cu_seqlens_q must be non-decreasing")
+        total_q = int(cu_seqlens_q[-1].item())
+        if total_q != q.shape[0]:
+            raise ValueError(f"cu_seqlens_q[-1] ({total_q}) must equal q.shape[0] ({q.shape[0]})")
+        actual_max_q = int(q_lens.max().item())
+        if max_seqlen_q < actual_max_q:
+            raise ValueError(
+                f"max_seqlen_q ({max_seqlen_q}) must be >= actual max Q "
+                f"sequence length ({actual_max_q})")
+
+        min_cache_len = int(cache_seqlens.min().item())
+        max_total_len = int((cache_seqlens + q_lens).max().item())
+        if min_cache_len < 0:
+            raise ValueError("cache_seqlens must be non-negative")
+        if max_total_len > self.max_cache_len:
+            raise ValueError(
+                "cache_seqlens + q_len exceeds paged KV capacity: "
+                f"max total length {max_total_len}, capacity {self.max_cache_len}")
+
+        num_pages = k_pages.shape[0] // self.page_size
+        min_page = int(block_table.min().item())
+        max_page = int(block_table.max().item())
+        if min_page < 0:
+            raise ValueError("block_table must contain non-negative physical page ids")
+        if max_page >= num_pages:
+            raise ValueError(
+                f"block_table references page {max_page}, but only {num_pages} pages exist")
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_new: torch.Tensor,
+        v_new: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        k_scale: torch.Tensor,
+        v_scale: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        block_table: torch.Tensor,
+        max_seqlen_q: int,
+    ) -> torch.Tensor:
+        self._validate_forward_inputs(
+            q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_seqlens_q,
+            cache_seqlens, block_table, max_seqlen_q)
+        return _attention_output(
+            self.kernel(q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_seqlens_q,
+                        cache_seqlens, block_table, max_seqlen_q))
 
     @property
     def total_flops(self) -> int:

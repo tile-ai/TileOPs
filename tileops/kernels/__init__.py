@@ -5,9 +5,11 @@ from .attention import (
     GQABwdWgmmaPipelinedKernel,
     GQADecodeKernel,
     GQADecodePagedKernel,
+    GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
     GQAFwdKernel,
     GQAFwdWgmmaPipelinedKernel,
     GQAPrefillFwdKernel,
+    GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeAppendKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
@@ -32,7 +34,14 @@ from .attention import (
     NSATopkVarlenKernel,
     SparseMlaKernel,
 )
-from .convolution import Conv1dKernel, Conv2d1x1Kernel, Conv2dKernel, Conv3dKernel
+from .convolution import (
+    Conv1dKernel,
+    Conv1dPointwiseKernel,
+    Conv2d1x1Kernel,
+    Conv2dKernel,
+    Conv3dKernel,
+    GroupConv1dKernel,
+)
 from .deltanet import DeltaNetBwdKernel, DeltaNetFwdKernel
 from .deltanet_recurrence import DeltaNetDecodeFP32Kernel, DeltaNetDecodeKernel
 from .dropout import DropoutKernel
@@ -78,6 +87,7 @@ __all__ = [
     "BatchNormFwdTrainKernel",
     "BinaryKernel",
     "Conv1dKernel",
+    "Conv1dPointwiseKernel",
     "Conv2d1x1Kernel",
     "Conv2dKernel",
     "Conv3dKernel",
@@ -103,9 +113,11 @@ __all__ = [
     "GQABwdWgmmaPipelinedKernel",
     "GQADecodeKernel",
     "GQADecodePagedKernel",
+    "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel",
     "GQAFwdKernel",
     "GQAFwdWgmmaPipelinedKernel",
     "GQAPrefillFwdKernel",
+    "GQAPrefillPagedWithFP8KVCacheFwdKernel",
     "GQAPrefillPagedWithKVCacheFwdKernel",
     "GQAPrefillPagedWithKVCacheRopeAppendKernel",
     "GQAPrefillPagedWithKVCacheRopeFwdKernel",
@@ -122,6 +134,7 @@ __all__ = [
     "GatedDeltaNetFwdKernel",
     "GemmKernel",
     "GemvKernel",
+    "GroupConv1dKernel",
     "GroupNormKernel",
     "GroupedGemmKernel",
     "Kernel",

@@ -16,13 +16,7 @@ TILELANG_019_BENCH_SKIP_REASON = (
 
 TILELANG_019_BENCH_PATHS = {
     # Linear attention / recurrent ops.
-    "benchmarks/ops/bench_deltanet.py",
-    "benchmarks/ops/bench_deltanet_recurrence.py",
     "benchmarks/ops/bench_engram.py",
-    "benchmarks/ops/bench_gated_deltanet.py",
-    "benchmarks/ops/bench_gated_deltanet_recurrence.py",
-    "benchmarks/ops/bench_gla_chunkwise.py",
-    "benchmarks/ops/bench_gla_recurrence.py",
     # Attention.
     "benchmarks/ops/attention/bench_gqa_decode.py",
     "benchmarks/ops/attention/bench_gqa_decode_paged.py",
@@ -46,10 +40,7 @@ TILELANG_019_BENCH_PATHS = {
     "benchmarks/ops/bench_grouped_gemm.py",
 }
 
-TILELANG_019_BENCH_PREFIXES = (
-    "benchmarks/ops/bench_convolution.py::test_conv2d_bench",
-    "benchmarks/ops/bench_convolution.py::test_conv3d_bench",
-)
+TILELANG_019_BENCH_PREFIXES = ()
 
 TILELANG_019_BENCH_NODEIDS = {
     "benchmarks/ops/bench_gemm.py::test_gemm_bench[wide-fp16]",

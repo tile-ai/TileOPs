@@ -8,8 +8,8 @@ Two manifest identities share a single composite implementation:
   applied during top-k selection (Kimi K2 style).
 
 The shared core (`FusedMoe`) wires `FusedTopKOp` (routing),
-`MoEPrepareAndFinalize` (quantization / EP dispatch), and an
-`MoEExpertsModular` implementation (permute + GEMM + unpermute). Shared
+`FusedMoEPrepareAndFinalize` (quantization / EP dispatch), and an
+`FusedMoEExpertsModular` implementation (permute + GEMM + unpermute). Shared
 expert handling belongs to `SharedFusedMoE`.
 """
 
@@ -18,11 +18,15 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.ops.moe.abc import MoEExpertsModular, MoEPrepareAndFinalize
-from tileops.ops.moe.experts.nopad import MoEExpertsNopadFwdOp
-from tileops.ops.moe.experts.padded import MoEExpertsPaddedFwdOp
 from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
+from tileops.ops.moe.routed_expert import (
+    FusedMoEExpertsNopadPersistent3WGFwdOp,
+)
+from tileops.ops.moe.routed_expert.abc import (
+    FusedMoEExpertsModular,
+    FusedMoEPrepareAndFinalize,
+)
 
 from ..op_base import Op
 
@@ -46,7 +50,6 @@ class FusedMoe(Op):
         renormalize: Renormalize top-k weights to sum to 1.
         with_correction_bias: Accept `correction_bias` during routing.
         routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
-        layout: "nopad" (default) or "padded". Ignored when `experts` is provided.
         dtype: Activation and weight dtype.
         expert_map: [E_global] int32 for Expert Parallel local filtering.
         prepare_finalize: Override the PrepareAndFinalize implementation.
@@ -65,12 +68,14 @@ class FusedMoe(Op):
         renormalize: bool = False,
         with_correction_bias: bool = False,
         routed_scaling_factor: float = 1.0,
-        layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
-        prepare_finalize: Optional[MoEPrepareAndFinalize] = None,
-        experts: Optional[MoEExpertsModular] = None,
+        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
+        experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        activation: str = "silu_and_mul",
+        use_fused_activation: bool = False,
     ):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -81,7 +86,6 @@ class FusedMoe(Op):
         self.renormalize = renormalize
         self.with_correction_bias = with_correction_bias
         self.routed_scaling_factor = routed_scaling_factor
-        self.layout = layout
         self.dtype = dtype
         self.expert_map = expert_map
 
@@ -97,7 +101,7 @@ class FusedMoe(Op):
             kernel_map=kernel_map,
         )
 
-        self._prepare: MoEPrepareAndFinalize = (
+        self._prepare: FusedMoEPrepareAndFinalize = (
             prepare_finalize if prepare_finalize is not None
             else MoEPrepareAndFinalizeNoDPEP()
         )
@@ -109,21 +113,59 @@ class FusedMoe(Op):
             )
 
         if experts is not None:
-            self._experts: MoEExpertsModular = experts
+            # use_fused_activation only configures the default experts
+            # implementation; an injected experts instance must be pre-configured
+            # by the caller. Reject the combination rather than silently ignoring
+            # the flag.
+            if use_fused_activation:
+                raise ValueError(
+                    "use_fused_activation=True cannot be combined with an injected "
+                    "experts= instance; the flag only configures the default experts "
+                    "implementation. Build the experts instance with "
+                    "use_fused_activation=True yourself instead."
+                )
+            # All in-tree FusedMoEExperts*FwdOp set self.activation in __init__.
+            # We require it to be present rather than falling back silently —
+            # a missing attribute on a third-party experts implementation would
+            # otherwise let a non-matching `activation` argument be silently
+            # accepted, producing a wrong-activation pipeline.
+            if not hasattr(experts, "activation"):
+                raise ValueError(
+                    f"injected experts instance ({type(experts).__name__}) "
+                    "is missing the required `.activation` attribute. "
+                    "Set it in __init__ to the activation string this experts "
+                    "implementation uses (e.g. 'silu_and_mul')."
+                )
+            experts_activation = experts.activation
+            # Reject only conflicting non-default values. Passing the default
+            # ("silu_and_mul") alongside experts= is silently accepted because
+            # it cannot be distinguished from the bare experts= call. Passing
+            # an explicit value that matches the injected experts' activation
+            # is also accepted.
+            if activation != "silu_and_mul" and activation != experts_activation:
+                raise ValueError(
+                    "activation conflicts with the injected experts instance: "
+                    f"got activation={activation!r}, "
+                    f"experts.activation={experts_activation!r} "
+                    f"(experts={type(experts).__name__}). "
+                    "Either omit activation or pass the same value."
+                )
+            self.activation = experts_activation
+            self._experts: FusedMoEExpertsModular = experts
         else:
-            if layout not in ("nopad", "padded"):
-                raise ValueError(f"Unknown layout {layout!r}; expected 'nopad' or 'padded'")
-            experts_cls = MoEExpertsNopadFwdOp if layout == "nopad" else MoEExpertsPaddedFwdOp
-            self._experts = experts_cls(
+            self.activation = activation
+            self._experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
                 num_tokens=num_tokens,
                 num_experts=num_experts,
                 top_k=top_k,
                 hidden_size=hidden_size,
                 ffn_size=ffn_size,
+                activation=activation,
                 routed_scaling_factor=routed_scaling_factor,
                 dtype=dtype,
                 expert_map=expert_map,
                 kernel_map=kernel_map,
+                use_fused_activation=use_fused_activation,
             )
 
     @property
@@ -156,11 +198,12 @@ class FusedMoe(Op):
         output = hidden_states.new_empty(hidden_states.shape)
         expert_out_shape = self._experts.output_shape(T_prime, self.hidden_size)
         expert_out = output if expert_out_shape == tuple(hidden_states.shape) else hidden_states.new_empty(expert_out_shape)
-        self._experts.apply(
+        self._experts.forward(
             expert_out, r.hidden_q, w_gate_up, w_down,
             r.topk_weights, r.topk_ids,
-            self.num_experts, expert_map=self.expert_map,
+            expert_map=self.expert_map,
             workspace1=ws1, workspace2=ws2,
+            num_experts=self.num_experts,
         )
 
         self._prepare.finalize(
@@ -188,12 +231,14 @@ class FusedMoeFwdOp(FusedMoe):
         scoring_func: str = "softmax",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
-        layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
-        prepare_finalize: Optional[MoEPrepareAndFinalize] = None,
-        experts: Optional[MoEExpertsModular] = None,
+        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
+        experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        activation: str = "silu_and_mul",
+        use_fused_activation: bool = False,
     ):
         super().__init__(
             num_tokens=num_tokens,
@@ -205,12 +250,13 @@ class FusedMoeFwdOp(FusedMoe):
             renormalize=renormalize,
             with_correction_bias=False,
             routed_scaling_factor=routed_scaling_factor,
-            layout=layout,
             dtype=dtype,
             expert_map=expert_map,
             prepare_finalize=prepare_finalize,
             experts=experts,
             kernel_map=kernel_map,
+            activation=activation,
+            use_fused_activation=use_fused_activation,
         )
 
     def forward(
@@ -241,12 +287,14 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
         scoring_func: str = "sigmoid",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
-        layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
-        prepare_finalize: Optional[MoEPrepareAndFinalize] = None,
-        experts: Optional[MoEExpertsModular] = None,
+        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
+        experts: Optional[FusedMoEExpertsModular] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        activation: str = "silu_and_mul",
+        use_fused_activation: bool = False,
     ):
         super().__init__(
             num_tokens=num_tokens,
@@ -258,12 +306,13 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
             renormalize=renormalize,
             with_correction_bias=True,
             routed_scaling_factor=routed_scaling_factor,
-            layout=layout,
             dtype=dtype,
             expert_map=expert_map,
             prepare_finalize=prepare_finalize,
             experts=experts,
             kernel_map=kernel_map,
+            activation=activation,
+            use_fused_activation=use_fused_activation,
         )
 
     def forward(

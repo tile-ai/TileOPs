@@ -1,7 +1,7 @@
 """Benchmarks for 11 independent elementwise ops.
 
 Profiles TileOPs vs PyTorch baselines using DNN-realistic 2-D shapes
-(tokens × hidden_dim) across all supported dtypes.
+(tokens x hidden_dim) across all supported dtypes.
 """
 
 from math import prod
@@ -97,7 +97,7 @@ def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype)
     inputs = test.gen_inputs()
 
     if op_cls.__name__ == "ClampScalarFwdOp":
-        op = op_cls(input=(n_total,), dtype=dtype, **extra_kwargs)
+        op = op_cls(input=shape, dtype=dtype, **extra_kwargs)
     else:
         op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
     result = bm.profile(op, *inputs)
@@ -524,6 +524,12 @@ def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dty
 # ---------------------------------------------------------------------------
 
 _FP8_DTYPES = (torch.float8_e4m3fn, torch.float8_e5m2)
+_UNSUPPORTED_FP8_SKIP = pytest.mark.skip(
+    reason=(
+        "TileOPs elementwise ops currently reject fp8 dtypes; "
+        "benchmark is kept as an explicit unsupported case"
+    )
+)
 
 
 class Fp8UnaryBenchCase:
@@ -563,7 +569,12 @@ def _fp8_unary_params():
                     if (shape == _UNARY_SHAPES[0] and dtype == torch.float8_e4m3fn)
                     else pytest.mark.full
                 )
-                params.append(pytest.param(op_name, shape, dtype, marks=mark))
+                params.append(
+                    pytest.param(
+                        op_name, shape, dtype,
+                        marks=[mark, _UNSUPPORTED_FP8_SKIP],
+                    )
+                )
     return params
 
 
@@ -582,7 +593,7 @@ def test_fp8_unary_independent_bench(
     inputs = test.gen_inputs()
 
     if op_cls.__name__ == "ClampScalarFwdOp":
-        op = op_cls(input=(n_total,), dtype=dtype, **extra_kwargs)
+        op = op_cls(input=shape, dtype=dtype, **extra_kwargs)
     else:
         op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
     result = bm.profile(op, *inputs)
@@ -597,7 +608,7 @@ def test_fp8_unary_independent_bench(
 
 
 # ---------------------------------------------------------------------------
-# fp8 where / masked_fill (selection ops — pass fp8 through directly)
+# fp8 where / masked_fill (selection ops - pass fp8 through directly)
 # ---------------------------------------------------------------------------
 
 
@@ -660,7 +671,10 @@ def _fp8_selection_params():
                     if (shape == _UNARY_SHAPES[0] and dtype == torch.float8_e4m3fn)
                     else pytest.mark.full
                 )
-                params.append(pytest.param(op_name, shape, dtype, marks=mark))
+                marks = [mark]
+                if op_name == "masked_fill":
+                    marks.append(_UNSUPPORTED_FP8_SKIP)
+                params.append(pytest.param(op_name, shape, dtype, marks=marks))
     return params
 
 

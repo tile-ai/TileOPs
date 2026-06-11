@@ -80,13 +80,28 @@ class SharedFusedMoE(FusedMoe):
         renormalize: bool = False,
         with_correction_bias: bool = False,
         routed_scaling_factor: float = 1.0,
-        layout: str = "nopad",
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
         shared_ffn_size: Optional[int] = None,
         tp_size: int = 1,
         tp_rank: int = 0,
+        *,
+        activation: str = "silu_and_mul",
+        use_fused_activation: bool = False,
     ):
+        # SharedExpertMLPKernel hardcodes silu_and_mul internally. Allowing a
+        # non-default activation alongside an enabled shared expert would
+        # silently produce mixed outputs (routed=gelu, shared=silu). Validate
+        # before super().__init__() to avoid building routed experts that
+        # would be discarded by the exception.
+        if shared_ffn_size is not None and activation != "silu_and_mul":
+            raise NotImplementedError(
+                "SharedFusedMoE shared-expert path only supports "
+                f"activation='silu_and_mul', got {activation!r}. "
+                "The routed-experts path is configurable, but "
+                "SharedExpertMLPKernel does not yet plumb activation."
+            )
+
         super().__init__(
             num_tokens=num_tokens,
             num_experts=num_experts,
@@ -97,9 +112,10 @@ class SharedFusedMoE(FusedMoe):
             renormalize=renormalize,
             with_correction_bias=with_correction_bias,
             routed_scaling_factor=routed_scaling_factor,
-            layout=layout,
             dtype=dtype,
             expert_map=expert_map,
+            activation=activation,
+            use_fused_activation=use_fused_activation,
         )
 
         if tp_size < 1:
@@ -110,8 +126,6 @@ class SharedFusedMoE(FusedMoe):
             raise ValueError(
                 f"shared_ffn_size ({shared_ffn_size}) must be divisible by tp_size ({tp_size})"
             )
-        if shared_ffn_size is not None and layout == "padded":
-            raise ValueError("layout='padded' is not supported with shared experts")
 
         self.shared_ffn_size = shared_ffn_size
         self.tp_size = tp_size

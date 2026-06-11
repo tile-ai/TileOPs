@@ -8,11 +8,11 @@ Conv1dFwdOp:
   ref_api: "torch.nn.functional.conv1d"
   # Equivalent to torch.nn.functional.conv1d (bias=None)
   family: convolution
-  status: spec-only  # TODO: impl lacks dilation, groups, string padding
+  status: implemented
 
   signature:
     inputs:
-      input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, L_in]"}
+      input: {dtype: "float16 | bfloat16", shape: "[N, C_in, L_in]"}
       weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kW]"}
     outputs:
       output: {dtype: "same_as(input)", shape: "[N, C_out, L_out]"}
@@ -60,7 +60,9 @@ Conv1dFwdOp:
   source:
     kernel: tileops/kernels/convolution.py
     kernel_map:
+      conv1d_pointwise_kernel: Conv1dPointwiseKernel
       conv1d_kernel: Conv1dKernel
+      group_conv1d_kernel: GroupConv1dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
@@ -70,12 +72,12 @@ Conv1dBiasFwdOp:
   ref_api: "torch.nn.functional.conv1d"
   # Equivalent to torch.nn.functional.conv1d (bias≠None)
   family: convolution
-  status: spec-only  # TODO: impl lacks dilation, groups, string padding
+  status: implemented
   variant_of: Conv1dFwdOp
 
   signature:
     inputs:
-      input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, L_in]"}
+      input: {dtype: "float16 | bfloat16", shape: "[N, C_in, L_in]"}
       weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kW]"}
       bias: {dtype: "same_as(input)", shape: "[C_out]"}
     outputs:
@@ -111,7 +113,257 @@ Conv1dBiasFwdOp:
   source:
     kernel: tileops/kernels/convolution.py
     kernel_map:
+      conv1d_pointwise_kernel: Conv1dPointwiseKernel
       conv1d_kernel: Conv1dKernel
+      group_conv1d_kernel: GroupConv1dKernel
+    op: tileops/ops/convolution.py
+    test: tests/ops/test_convolution.py
+    bench: benchmarks/ops/bench_convolution.py
+    bench_manifest_driven: false
+
+Conv2dFwdOp:
+  ref_api: "torch.nn.functional.conv2d"
+  # Equivalent to torch.nn.functional.conv2d (bias=None)
+  family: convolution
+  status: spec-only  # TODO: impl lacks groups
+
+  signature:
+    inputs:
+      input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, H, W]"}
+      weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kH, kW]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C_out, out_H, out_W]"}
+    params:
+      stride: {type: "int | tuple[int, int]", default: 1}
+      padding: {type: "int | tuple[int, int] | str", default: 0}
+      dilation: {type: "int | tuple[int, int]", default: 1}
+      groups: {type: int, default: 1}  # TODO: not supported by kernel
+    shape_rules:
+      - "C_in % groups == 0"
+      - "C_out % groups == 0"
+      - "C_in_g == C_in // groups"
+      - "_s_h == (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      - "_s_w == (stride[1] if isinstance(stride, (tuple, list)) else stride)"
+      - "_p_h == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_p_w == (padding[1] if isinstance(padding, (tuple, list)) else padding)"
+      - "_d_h == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_w == (dilation[1] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "not isinstance(_p_h, str) or _p_h in ('valid', 'same')"
+      - "not isinstance(_p_w, str) or _p_w in ('valid', 'same')"
+      - "_p_h != 'same' or _s_h == 1"
+      - "_p_w != 'same' or _s_w == 1"
+      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - _d_h * (kH - 1) - 1) // _s_h + 1"
+      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - _d_w * (kW - 1) - 1) // _s_w + 1"
+
+  workloads:
+    - {input_shape: [2, 64, 56, 56], C_out: 64, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], dtypes: [float16, bfloat16], label: "resnet-3x3-fp16"}
+    - {input_shape: [1, 3, 112, 112], C_out: 64, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "stem-3x3-s2-fp16"}
+    - {input_shape: [1, 128, 56, 56], C_out: 256, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "stage-transition-3x3-s2-fp16"}
+    - {input_shape: [1, 256, 112, 112], C_out: 512, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], dtypes: [float16], label: "highres-3x3-s1-fp16"}
+    - {input_shape: [1, 64, 56, 56], C_out: 128, kH: 5, kW: 5, stride: [1, 1], padding: [2, 2], dtypes: [float16], label: "midres-5x5-s1-fp16"}
+    - {input_shape: [1, 128, 56, 56], C_out: 256, kH: 5, kW: 5, stride: [2, 2], padding: [2, 2], dtypes: [float16], label: "stage-transition-5x5-s2-fp16"}
+    - {input_shape: [1, 128, 28, 28], C_out: 128, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], dtypes: [bfloat16], label: "stride2-bf16"}
+    - {input_shape: [2, 64, 56, 56], C_out: 256, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16, bfloat16], label: "resnet-1x1-fp16"}
+    - {input_shape: [2, 128, 28, 28], C_out: 512, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16], label: "bottleneck-expand-1x1-fp16"}
+    - {input_shape: [2, 512, 28, 28], C_out: 128, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16], label: "bottleneck-reduce-1x1-fp16"}
+    - {input_shape: [1, 256, 14, 14], C_out: 1024, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16], label: "late-stage-1x1-fp16"}
+    - {input_shape: [1, 512, 7, 7], C_out: 2048, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16], label: "classifier-1x1-fp16"}
+    - {input_shape: [2, 64, 56, 56], C_out: 256, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [bfloat16], label: "resnet-1x1-bf16"}
+
+  roofline:
+    flops: "2 * N * C_out * out_H * out_W * C_in * kH * kW"
+    bytes: "(N * C_in * H * W + C_out * C_in * kH * kW + N * C_out * out_H * out_W) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/convolution.py
+    kernel_map:
+      conv2d_kernel: Conv2dKernel
+      conv2d_1x1_kernel: Conv2d1x1Kernel
+    op: tileops/ops/convolution.py
+    test: tests/ops/test_convolution.py
+    bench: benchmarks/ops/bench_convolution.py
+    bench_manifest_driven: false
+
+Conv2dBiasFwdOp:
+  ref_api: "torch.nn.functional.conv2d"
+  # Equivalent to torch.nn.functional.conv2d (bias≠None)
+  family: convolution
+  status: spec-only  # TODO: impl lacks groups
+  variant_of: Conv2dFwdOp
+
+  signature:
+    inputs:
+      input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, H, W]"}
+      weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kH, kW]"}
+      bias: {dtype: "same_as(input)", shape: "[C_out]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C_out, out_H, out_W]"}
+    params:
+      stride: {type: "int | tuple[int, int]", default: 1}
+      padding: {type: "int | tuple[int, int] | str", default: 0}
+      dilation: {type: "int | tuple[int, int]", default: 1}
+      groups: {type: int, default: 1}  # TODO: not supported by kernel
+    shape_rules:
+      - "C_in % groups == 0"
+      - "C_out % groups == 0"
+      - "C_in_g == C_in // groups"
+      - "_s_h == (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      - "_s_w == (stride[1] if isinstance(stride, (tuple, list)) else stride)"
+      - "_p_h == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_p_w == (padding[1] if isinstance(padding, (tuple, list)) else padding)"
+      - "_d_h == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_w == (dilation[1] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "not isinstance(_p_h, str) or _p_h in ('valid', 'same')"
+      - "not isinstance(_p_w, str) or _p_w in ('valid', 'same')"
+      - "_p_h != 'same' or _s_h == 1"
+      - "_p_w != 'same' or _s_w == 1"
+      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - _d_h * (kH - 1) - 1) // _s_h + 1"
+      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - _d_w * (kW - 1) - 1) // _s_w + 1"
+
+  workloads:
+    - {input_shape: [2, 64, 56, 56], C_out: 64, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], dtypes: [float16, bfloat16], label: "resnet-3x3-fp16"}
+    - {input_shape: [1, 3, 112, 112], C_out: 64, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "stem-3x3-s2-fp16"}
+    - {input_shape: [1, 128, 56, 56], C_out: 256, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "stage-transition-3x3-s2-fp16"}
+    - {input_shape: [1, 256, 112, 112], C_out: 512, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], dtypes: [float16], label: "highres-3x3-s1-fp16"}
+    - {input_shape: [1, 64, 56, 56], C_out: 128, kH: 5, kW: 5, stride: [1, 1], padding: [2, 2], dtypes: [float16], label: "midres-5x5-s1-fp16"}
+    - {input_shape: [1, 128, 56, 56], C_out: 256, kH: 5, kW: 5, stride: [2, 2], padding: [2, 2], dtypes: [float16], label: "stage-transition-5x5-s2-fp16"}
+    - {input_shape: [1, 128, 28, 28], C_out: 128, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], dtypes: [bfloat16], label: "stride2-bf16"}
+    - {input_shape: [2, 64, 56, 56], C_out: 256, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16, bfloat16], label: "resnet-1x1-fp16"}
+    - {input_shape: [2, 128, 28, 28], C_out: 512, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16], label: "bottleneck-expand-1x1-fp16"}
+    - {input_shape: [2, 512, 28, 28], C_out: 128, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16], label: "bottleneck-reduce-1x1-fp16"}
+    - {input_shape: [1, 256, 14, 14], C_out: 1024, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16], label: "late-stage-1x1-fp16"}
+    - {input_shape: [1, 512, 7, 7], C_out: 2048, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16], label: "classifier-1x1-fp16"}
+    - {input_shape: [2, 64, 56, 56], C_out: 256, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [bfloat16], label: "resnet-1x1-bf16"}
+
+  roofline:
+    # bias adds one addition per output element
+    flops: "2 * N * C_out * out_H * out_W * C_in * kH * kW + N * C_out * out_H * out_W"
+    bytes: "(N * C_in * H * W + C_out * C_in * kH * kW + C_out + N * C_out * out_H * out_W) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/convolution.py
+    kernel_map:
+      conv2d_kernel: Conv2dKernel
+      conv2d_1x1_kernel: Conv2d1x1Kernel
+    op: tileops/ops/convolution.py
+    test: tests/ops/test_convolution.py
+    bench: benchmarks/ops/bench_convolution.py
+    bench_manifest_driven: false
+
+Conv3dFwdOp:
+  ref_api: "torch.nn.functional.conv3d"
+  # Equivalent to torch.nn.functional.conv3d (bias=None)
+  family: convolution
+  status: spec-only  # TODO: impl lacks groups
+
+  signature:
+    inputs:
+      input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, D, H, W]"}
+      weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kD, kH, kW]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C_out, out_D, out_H, out_W]"}
+    params:
+      stride: {type: "int | tuple[int, int, int]", default: 1}
+      padding: {type: "int | tuple[int, int, int] | str", default: 0}
+      dilation: {type: "int | tuple[int, int, int]", default: 1}
+      groups: {type: int, default: 1}  # TODO: not supported by kernel
+    shape_rules:
+      - "C_in % groups == 0"
+      - "C_out % groups == 0"
+      - "C_in_g == C_in // groups"
+      - "_s_d == (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      - "_s_h == (stride[1] if isinstance(stride, (tuple, list)) else stride)"
+      - "_s_w == (stride[2] if isinstance(stride, (tuple, list)) else stride)"
+      - "_p_d == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_p_h == (padding[1] if isinstance(padding, (tuple, list)) else padding)"
+      - "_p_w == (padding[2] if isinstance(padding, (tuple, list)) else padding)"
+      - "_d_d == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_h == (dilation[1] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_w == (dilation[2] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "not isinstance(_p_d, str) or _p_d in ('valid', 'same')"
+      - "not isinstance(_p_h, str) or _p_h in ('valid', 'same')"
+      - "not isinstance(_p_w, str) or _p_w in ('valid', 'same')"
+      - "_p_d != 'same' or _s_d == 1"
+      - "_p_h != 'same' or _s_h == 1"
+      - "_p_w != 'same' or _s_w == 1"
+      - "out_D == D if _p_d == 'same' else (D + 2 * (0 if _p_d == 'valid' else _p_d) - _d_d * (kD - 1) - 1) // _s_d + 1"
+      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - _d_h * (kH - 1) - 1) // _s_h + 1"
+      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - _d_w * (kW - 1) - 1) // _s_w + 1"
+
+  workloads:
+    - {input_shape: [1, 3, 16, 112, 112], C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], dtypes: [float16], label: "r3d-stem-k3-s1-fp16"}
+    - {input_shape: [1, 64, 8, 56, 56], C_out: 128, kD: 3, kH: 3, kW: 3, stride: [2, 2, 2], padding: [1, 1, 1], dtypes: [float16], label: "video-stage-downsample-k3-s2-fp16"}
+    - {input_shape: [1, 32, 32, 64, 64], C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], dtypes: [bfloat16], label: "unet-encoder-k3-s1-bf16"}
+
+  roofline:
+    flops: "2 * N * C_out * out_D * out_H * out_W * C_in * kD * kH * kW"
+    bytes: "(N * C_in * D * H * W + C_out * C_in * kD * kH * kW + N * C_out * out_D * out_H * out_W) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/convolution.py
+    kernel_map:
+      conv3d_kernel: Conv3dKernel
+    op: tileops/ops/convolution.py
+    test: tests/ops/test_convolution.py
+    bench: benchmarks/ops/bench_convolution.py
+    bench_manifest_driven: false
+
+Conv3dBiasFwdOp:
+  ref_api: "torch.nn.functional.conv3d"
+  # Equivalent to torch.nn.functional.conv3d (bias≠None)
+  family: convolution
+  status: spec-only  # TODO: impl lacks groups
+  variant_of: Conv3dFwdOp
+
+  signature:
+    inputs:
+      input: {dtype: "float32 | float16 | bfloat16", shape: "[N, C_in, D, H, W]"}
+      weight: {dtype: "same_as(input)", shape: "[C_out, C_in_g, kD, kH, kW]"}
+      bias: {dtype: "same_as(input)", shape: "[C_out]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C_out, out_D, out_H, out_W]"}
+    params:
+      stride: {type: "int | tuple[int, int, int]", default: 1}
+      padding: {type: "int | tuple[int, int, int] | str", default: 0}
+      dilation: {type: "int | tuple[int, int, int]", default: 1}
+      groups: {type: int, default: 1}  # TODO: not supported by kernel
+    shape_rules:
+      - "C_in % groups == 0"
+      - "C_out % groups == 0"
+      - "C_in_g == C_in // groups"
+      - "_s_d == (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      - "_s_h == (stride[1] if isinstance(stride, (tuple, list)) else stride)"
+      - "_s_w == (stride[2] if isinstance(stride, (tuple, list)) else stride)"
+      - "_p_d == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_p_h == (padding[1] if isinstance(padding, (tuple, list)) else padding)"
+      - "_p_w == (padding[2] if isinstance(padding, (tuple, list)) else padding)"
+      - "_d_d == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_h == (dilation[1] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_d_w == (dilation[2] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "not isinstance(_p_d, str) or _p_d in ('valid', 'same')"
+      - "not isinstance(_p_h, str) or _p_h in ('valid', 'same')"
+      - "not isinstance(_p_w, str) or _p_w in ('valid', 'same')"
+      - "_p_d != 'same' or _s_d == 1"
+      - "_p_h != 'same' or _s_h == 1"
+      - "_p_w != 'same' or _s_w == 1"
+      - "out_D == D if _p_d == 'same' else (D + 2 * (0 if _p_d == 'valid' else _p_d) - _d_d * (kD - 1) - 1) // _s_d + 1"
+      - "out_H == H if _p_h == 'same' else (H + 2 * (0 if _p_h == 'valid' else _p_h) - _d_h * (kH - 1) - 1) // _s_h + 1"
+      - "out_W == W if _p_w == 'same' else (W + 2 * (0 if _p_w == 'valid' else _p_w) - _d_w * (kW - 1) - 1) // _s_w + 1"
+
+  workloads:
+    - {input_shape: [1, 3, 16, 112, 112], C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], dtypes: [float16], label: "r3d-stem-k3-s1-fp16"}
+    - {input_shape: [1, 64, 8, 56, 56], C_out: 128, kD: 3, kH: 3, kW: 3, stride: [2, 2, 2], padding: [1, 1, 1], dtypes: [float16], label: "video-stage-downsample-k3-s2-fp16"}
+    - {input_shape: [1, 32, 32, 64, 64], C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], dtypes: [bfloat16], label: "unet-encoder-k3-s1-bf16"}
+
+  roofline:
+    # bias adds one addition per output element
+    flops: "2 * N * C_out * out_D * out_H * out_W * C_in * kD * kH * kW + N * C_out * out_D * out_H * out_W"
+    bytes: "(N * C_in * D * H * W + C_out * C_in * kD * kH * kW + C_out + N * C_out * out_D * out_H * out_W) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/convolution.py
+    kernel_map:
+      conv3d_kernel: Conv3dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
