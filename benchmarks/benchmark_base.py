@@ -84,6 +84,11 @@ _logger = logging.getLogger("tileops.bench")
 # A single test function may call record() multiple times (tileops + baseline).
 _bench_results = threading.local()
 
+# Kernel name substrings that identify L2-flush operations (cache.zero_()).
+# Filtered out of CUPTI timing so flush overhead is never counted as benchmark
+# kernel time.  Logged at DEBUG level so inadvertent filtering is detectable.
+_FLUSH_PATTERNS: tuple[str, ...] = ("FillFunctor", "fill_kernel", "Memset", "memset")
+
 
 def _sum_kernel_time_us(kineto_results):
     """Extract total CUDA kernel time directly from C++ Kineto events.
@@ -108,18 +113,19 @@ def _sum_kernel_time_us(kineto_results):
             (e.g. MHA decode split-path workspace fills, cuBLAS epilogue
             kernels, or any unexpected cuDNN helper).
     """
-    _FLUSH_PATTERNS = ("FillFunctor", "fill_kernel", "Memset", "memset")
     total_us = 0.0
     per_kernel: dict[str, float] = {}
+    excluded_kernel: dict[str, float] = {}
     for evt in kineto_results.events():
         if evt.device_type() == DeviceType.CUDA:
             name = evt.name()
-            if any(p in name for p in _FLUSH_PATTERNS):
-                continue
             dur = evt.duration_ns() / 1000.0
+            if any(p in name for p in _FLUSH_PATTERNS):
+                excluded_kernel[name] = excluded_kernel.get(name, 0.0) + dur
+                continue
             total_us += dur
             per_kernel[name] = per_kernel.get(name, 0.0) + dur
-    return total_us, per_kernel
+    return total_us, per_kernel, excluded_kernel
 
 
 # ---------------------------------------------------------------------------
@@ -233,9 +239,17 @@ def bench_kernel(
 
     def _on_trace_ready(prof):
         kr = prof.profiler.kineto_results
-        total_us, per_kernel = _sum_kernel_time_us(kr)
+        total_us, per_kernel, excluded_kernel = _sum_kernel_time_us(kr)
         trial_means.append(total_us / n_repeat * 1e-3)
         trial_breakdowns.append(per_kernel)
+        if excluded_kernel:
+            excluded_us = sum(excluded_kernel.values())
+            _logger.debug(
+                "CUPTI: excluded %.1f µs across %d flush/fill kernel(s): %s",
+                excluded_us,
+                len(excluded_kernel),
+                list(excluded_kernel.keys()),
+            )
 
     try:
         with suppress_stdout_stderr():
