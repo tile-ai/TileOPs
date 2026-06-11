@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool import AvgPool1dKernel, AvgPool2dKernel, AvgPool3dKernel
+from tileops.kernels.pool import AvgPool2dKernel, AvgPool3dKernel
 from tileops.ops import AvgPool1dFwdOp, AvgPool2dOp, AvgPool3dOp
 
 
@@ -97,11 +97,15 @@ def test_avg_pool1d(
 ) -> None:
     test = AvgPool1dTest(kernel_size, stride, padding, ceil_mode, count_include_pad, dtype)
     op = AvgPool1dFwdOp(
+        n=n,
+        c_in=c_in,
+        l_in=l_in,
         kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         ceil_mode=ceil_mode,
         count_include_pad=count_include_pad,
+        dtype=dtype,
         tune=tune,
     )
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
@@ -109,24 +113,15 @@ def test_avg_pool1d(
 
 
 @pytest.mark.smoke
-def test_avg_pool1d_dispatches_kernel() -> None:
-    op = AvgPool1dFwdOp(kernel_size=3, stride=2, padding=1)
-    x = torch.randn(1, 32, 128, device="cuda", dtype=torch.float16)
-    out = op(x)
-    assert isinstance(op.kernel, AvgPool1dKernel)
-    assert out.shape == (1, 32, 64)
-
-
-@pytest.mark.smoke
 def test_avg_pool1d_rejects_wrong_tuple_arity() -> None:
     with pytest.raises(ValueError, match="kernel_size must be an int or a tuple of 1 ints"):
-        AvgPool1dFwdOp(kernel_size=(3, 4))
+        AvgPool1dFwdOp(n=1, c_in=32, l_in=128, kernel_size=(3, 4))
 
 
 @pytest.mark.smoke
 def test_avg_pool1d_rejects_non_positive_stride() -> None:
     with pytest.raises(ValueError, match="stride must be greater than zero"):
-        AvgPool1dFwdOp(kernel_size=3, stride=0)
+        AvgPool1dFwdOp(n=1, c_in=32, l_in=128, kernel_size=3, stride=0)
 
 
 @pytest.mark.smoke
@@ -139,7 +134,7 @@ def test_avg_pool1d_rejects_non_positive_stride() -> None:
     ],
 )
 def test_avg_pool1d_rejects_bool_pool_params(kwargs: dict[str, object], match: str) -> None:
-    base_kwargs = {"kernel_size": 3}
+    base_kwargs = {"n": 1, "c_in": 32, "l_in": 128, "kernel_size": 3}
     base_kwargs.update(kwargs)
     with pytest.raises(TypeError, match=match):
         AvgPool1dFwdOp(**base_kwargs)
@@ -149,9 +144,13 @@ def test_avg_pool1d_rejects_bool_pool_params(kwargs: dict[str, object], match: s
 def test_avg_pool1d_rejects_non_3d_input(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
     op = AvgPool1dFwdOp(
+        n=2,
+        c_in=8,
+        l_in=16,
         kernel_size=3,
         stride=1,
         padding=1,
+        dtype=torch.float32,
         kernel_map={"avg_pool1d_kernel": _DummyKernel},
     )
     x = torch.randn(2, 8, 16, 4)

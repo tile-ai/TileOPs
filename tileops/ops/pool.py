@@ -16,19 +16,36 @@ from .op_base import Op
 __all__ = ["AvgPool1dFwdOp", "AvgPool2dOp", "AvgPool3dOp"]
 
 
+def _validate_positive_int(name: str, value: int, op_name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{op_name} {name} must be an int")
+    if value <= 0:
+        raise ValueError(f"{op_name} {name} must be greater than zero")
+
+
 class AvgPool1dFwdOp(Op):
     """Average pooling over PyTorch-compatible NCL inputs."""
 
     def __init__(
         self,
+        n: int,
+        c_in: int,
+        l_in: int,
         kernel_size: int | tuple[int],
         stride: Optional[int | tuple[int]] = None,
         padding: int | tuple[int] = 0,
         ceil_mode: bool = False,
         count_include_pad: bool = True,
+        dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        _validate_positive_int("n", n, "AvgPool1dFwdOp")
+        _validate_positive_int("c_in", c_in, "AvgPool1dFwdOp")
+        _validate_positive_int("l_in", l_in, "AvgPool1dFwdOp")
+        self.n = n
+        self.c_in = c_in
+        self.l_in = l_in
         self.kernel_size = _normalize_pool_dims("kernel_size", kernel_size, 1)[0]
         self.stride = (
             (self.kernel_size,)
@@ -48,12 +65,26 @@ class AvgPool1dFwdOp(Op):
         self.dispatch_kernel(kernel_map)
         if "avg_pool1d_kernel" not in self.kernel_map:
             raise NotImplementedError("AvgPool1dFwdOp requires 'avg_pool1d_kernel' in kernel_map")
-        self._kernel_cache: Dict[tuple[int, int, int, torch.dtype], Kernel] = {}
-        self.n = 0
-        self.c_in = 0
-        self.l_in = 0
-        self.out_l = 0
-        self.dtype = None
+        self.out_l = pool_output_dim(
+            self.l_in,
+            self.kernel_size,
+            self.stride,
+            self.padding,
+            self.ceil_mode,
+        )
+        self.dtype = dtype
+        self.kernel = self.kernel_map["avg_pool1d_kernel"](
+            n=n,
+            c_in=c_in,
+            l_in=l_in,
+            kernel_l=self.kernel_size,
+            stride_l=self.stride,
+            pad_l=self.padding,
+            ceil_mode=self.ceil_mode,
+            count_include_pad=self.count_include_pad,
+            dtype=dtype,
+            tune=tune,
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -78,24 +109,8 @@ class AvgPool1dFwdOp(Op):
                 "input.dtype must be float16, bfloat16, or float32, "
                 f"got {input.dtype}"
             )
-
-    def _get_kernel(self, input: torch.Tensor) -> Kernel:
-        n, c_in, l_in = input.shape
-        key = (n, c_in, l_in, input.dtype)
-        if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["avg_pool1d_kernel"](
-                n=n,
-                c_in=c_in,
-                l_in=l_in,
-                kernel_l=self.kernel_size,
-                stride_l=self.stride,
-                pad_l=self.padding,
-                ceil_mode=self.ceil_mode,
-                count_include_pad=self.count_include_pad,
-                dtype=input.dtype,
-                tune=self.tune,
-            )
-        return self._kernel_cache[key]
+        if input.dtype != self.dtype:
+            raise ValueError(f"input.dtype must match op dtype {self.dtype}, got {input.dtype}")
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         self._validate_dtypes(input)
@@ -105,22 +120,16 @@ class AvgPool1dFwdOp(Op):
             raise ValueError("input must be a CUDA tensor")
 
         input = input.contiguous()
-        self.n, self.c_in, self.l_in = input.shape
-        self.dtype = input.dtype
-        self.out_l = pool_output_dim(
-            self.l_in,
-            self.kernel_size,
-            self.stride,
-            self.padding,
-            self.ceil_mode,
-        )
-        kernel = self._get_kernel(input)
-        self.kernel = kernel
-        return kernel(input)
+        expected_shape = (self.n, self.c_in, self.l_in)
+        actual_shape = tuple(input.shape)
+        if actual_shape != expected_shape:
+            raise ValueError(
+                f"AvgPool1dFwdOp expects input shape {expected_shape}, "
+                f"but got {actual_shape}"
+            )
+        return self.kernel(input)
 
     def eval_roofline(self) -> tuple[int, int]:
-        if self.dtype is None or self.n <= 0 or self.c_in <= 0 or self.l_in <= 0:
-            raise ValueError("eval_roofline requires a prior forward() call")
         elem_bytes = torch.empty((), dtype=self.dtype).element_size()
         flops = self.n * self.c_in * self.out_l * self.kernel_size
         bytes_ = (self.n * self.c_in * self.l_in + self.n * self.c_in * self.out_l) * elem_bytes

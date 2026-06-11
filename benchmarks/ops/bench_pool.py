@@ -89,11 +89,15 @@ def test_avg_pool1d_bench(
     inputs = test.gen_inputs()
 
     op = AvgPool1dFwdOp(
+        n=n,
+        c_in=c_in,
+        l_in=l_in,
         kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         ceil_mode=ceil_mode,
         count_include_pad=count_include_pad,
+        dtype=dtype,
         tune=tune,
     )
     result = bm.profile(op, *inputs)
