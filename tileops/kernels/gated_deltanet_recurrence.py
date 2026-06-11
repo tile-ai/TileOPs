@@ -41,7 +41,9 @@ def _gated_deltanet_decode_raw_cuda_flastyle_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    v_tile: int = 32,
+    v_tile: int = 16,
+    raw_group_size: int = 2,
+    raw_maxrregcount: int = 146,
     dtype: str = "bfloat16",
 ):
     if dtype != "bfloat16":
@@ -50,8 +52,13 @@ def _gated_deltanet_decode_raw_cuda_flastyle_tl(
         raise ValueError("Raw CUDA Gated DeltaNet decode currently requires DK=DV=128.")
     if dim_v % v_tile != 0:
         raise ValueError(f"dim_v={dim_v} must be divisible by v_tile={v_tile}")
+    if raw_group_size * v_tile != 32:
+        raise ValueError("raw_group_size * v_tile must equal one warp")
+    if dim_k % raw_group_size != 0:
+        raise ValueError(f"dim_k={dim_k} must be divisible by raw_group_size={raw_group_size}")
 
     total_blocks = batch * head * (dim_v // v_tile)
+    k_chunk = dim_k // raw_group_size
     source = f"""
 #include <cuda_bf16.h>
 #include <math.h>
@@ -70,50 +77,86 @@ extern "C" __global__ void gdn_decode_raw_cuda_flastyle_entry(
   constexpr int kDimK = {dim_k};
   constexpr int kDimV = {dim_v};
   constexpr int kVTile = {v_tile};
+  constexpr int kGroupSize = {raw_group_size};
+  constexpr int kKChunk = {k_chunk};
   constexpr int kNumVTiles = kDimV / kVTile;
 
+  __shared__ float k_shared[kDimK];
+  __shared__ float q_shared[kDimK];
+
   const int lane = threadIdx.x;
-  if (lane >= kVTile) return;
+  const int v_lane = lane / kGroupSize;
+  const int k_rank = lane - v_lane * kGroupSize;
+  if (v_lane >= kVTile) return;
 
   const int block = blockIdx.x;
   const int vid = block % kNumVTiles;
   const int nh = block / kNumVTiles;
   if (nh >= kBatch * kHead) return;
 
-  const int v_idx = vid * kVTile + lane;
+  #pragma unroll
+  for (int kk = lane; kk < kDimK; kk += 32) {{
+    k_shared[kk] = __bfloat162float(k[nh * kDimK + kk]);
+    q_shared[kk] = __bfloat162float(q[nh * kDimK + kk]);
+  }}
+  __syncthreads();
+
+  const int v_idx = vid * kVTile + v_lane;
+  const int group_base_lane = v_lane * kGroupSize;
+  const int k_begin = k_rank * kKChunk;
   const int state_base = nh * kDimK * kDimV + v_idx;
   const float alpha = expf(__bfloat162float(g[nh]));
   const float beta_val = __bfloat162float(beta[nh]);
 
-  float h[kDimK];
-  float old_val = 0.0f;
-#pragma unroll
-  for (int kk = 0; kk < kDimK; ++kk) {{
+  float h[kKChunk];
+  float old_partial = 0.0f;
+#pragma unroll 64
+  for (int ii = 0; ii < kKChunk; ++ii) {{
+    const int kk = k_begin + ii;
     const float h_val = alpha * __bfloat162float(state[state_base + kk * kDimV]);
-    h[kk] = h_val;
-    old_val += h_val * __bfloat162float(k[nh * kDimK + kk]);
+    h[ii] = h_val;
+    old_partial += h_val * k_shared[kk];
   }}
 
-  const float v_new = beta_val * (__bfloat162float(v[nh * kDimV + v_idx]) - old_val);
-
+  float old_val = old_partial;
 #pragma unroll
-  for (int kk = 0; kk < kDimK; ++kk) {{
-    h[kk] += __bfloat162float(k[nh * kDimK + kk]) * v_new;
-    new_state[state_base + kk * kDimV] = __float2bfloat16(h[kk]);
+  for (int offset = kGroupSize / 2; offset > 0; offset >>= 1) {{
+    old_val += __shfl_down_sync(0xffffffff, old_val, offset, kGroupSize);
   }}
 
-  float out = 0.0f;
-#pragma unroll
-  for (int kk = 0; kk < kDimK; ++kk) {{
-    out += h[kk] * __bfloat162float(q[nh * kDimK + kk]);
+  float v_new = 0.0f;
+  if (k_rank == 0) {{
+    v_new = beta_val * (__bfloat162float(v[nh * kDimV + v_idx]) - old_val);
   }}
-  o[nh * kDimV + v_idx] = __float2bfloat16(out);
+  v_new = __shfl_sync(0xffffffff, v_new, group_base_lane, kGroupSize);
+
+  float out_partial = 0.0f;
+#pragma unroll 64
+  for (int ii = 0; ii < kKChunk; ++ii) {{
+    const int kk = k_begin + ii;
+    const float h_new = h[ii] + k_shared[kk] * v_new;
+    new_state[state_base + kk * kDimV] = __float2bfloat16(h_new);
+    out_partial += h_new * q_shared[kk];
+  }}
+
+  float out = out_partial;
+#pragma unroll
+  for (int offset = kGroupSize / 2; offset > 0; offset >>= 1) {{
+    out += __shfl_down_sync(0xffffffff, out, offset, kGroupSize);
+  }}
+  if (k_rank == 0) {{
+    o[nh * kDimV + v_idx] = __float2bfloat16(out);
+  }}
 }}
 """
 
+    raw_compile_flags = ["-O3", "-DENABLE_BF16", "--use_fast_math"]
+    if raw_maxrregcount > 0:
+        raw_compile_flags.append(f"--maxrregcount={raw_maxrregcount}")
+
     @tilelang.jit(
         out_idx=[-2, -1],
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=raw_compile_flags,
     )
     def _decode_func(threads=32):
         @T.prim_func
@@ -401,10 +444,11 @@ class GatedDeltaNetDecodeKernel(Kernel):
 class GatedDeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
     """Hopper bfloat16 decode kernel for the DK=DV=128 Gated DeltaNet case.
 
-    This path maps one warp to one (batch, head, V tile).  Each lane owns one
-    output value when v_tile=32 and keeps the K=128 state slice live in fp32
-    registers.  The implementation is intentionally narrow: it is used only for
-    bfloat16 DK=DV=128 decode on sm90+ devices.
+    This path maps one warp to one (batch, head, V tile).  Two lanes cooperate
+    on one output value when v_tile=16: each lane owns half of the K dimension,
+    K/Q are staged in shared memory once per CTA, and the per-lane state slice
+    stays live in fp32 registers.  The implementation is intentionally narrow:
+    it is used only for bfloat16 DK=DV=128 decode on sm90+ devices.
     """
 
     supported_archs: list[int] = [90]
@@ -434,6 +478,8 @@ class GatedDeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
             dim_k,
             dim_v,
             self.config["v_tile"],
+            self.config["raw_group_size"],
+            self.config["raw_maxrregcount"],
             self.dtype_str,
         )(self.config["threads"])
 
@@ -441,7 +487,9 @@ class GatedDeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
     def default_config(self) -> dict:
         return {
             "threads": 32,
-            "v_tile": 32,
+            "v_tile": 16,
+            "raw_group_size": 2,
+            "raw_maxrregcount": 146,
         }
 
     def forward(
