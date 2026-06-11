@@ -59,96 +59,6 @@ def _gated_deltanet_decode_raw_cuda_flastyle_tl(
 
     total_blocks = batch * head * (dim_v // v_tile)
     k_chunk = dim_k // raw_group_size
-    source = f"""
-#include <cuda_bf16.h>
-#include <math.h>
-
-extern "C" __global__ void gdn_decode_raw_cuda_flastyle_entry(
-    const __nv_bfloat16* __restrict__ beta,
-    const __nv_bfloat16* __restrict__ g,
-    const __nv_bfloat16* __restrict__ k,
-    __nv_bfloat16* __restrict__ new_state,
-    __nv_bfloat16* __restrict__ o,
-    const __nv_bfloat16* __restrict__ q,
-    const __nv_bfloat16* __restrict__ state,
-    const __nv_bfloat16* __restrict__ v) {{
-  constexpr int kBatch = {batch};
-  constexpr int kHead = {head};
-  constexpr int kDimK = {dim_k};
-  constexpr int kDimV = {dim_v};
-  constexpr int kVTile = {v_tile};
-  constexpr int kGroupSize = {raw_group_size};
-  constexpr int kKChunk = {k_chunk};
-  constexpr int kNumVTiles = kDimV / kVTile;
-
-  __shared__ float k_shared[kDimK];
-  __shared__ float q_shared[kDimK];
-
-  const int lane = threadIdx.x;
-  const int v_lane = lane / kGroupSize;
-  const int k_rank = lane - v_lane * kGroupSize;
-  if (v_lane >= kVTile) return;
-
-  const int block = blockIdx.x;
-  const int vid = block % kNumVTiles;
-  const int nh = block / kNumVTiles;
-  if (nh >= kBatch * kHead) return;
-
-  #pragma unroll
-  for (int kk = lane; kk < kDimK; kk += 32) {{
-    k_shared[kk] = __bfloat162float(k[nh * kDimK + kk]);
-    q_shared[kk] = __bfloat162float(q[nh * kDimK + kk]);
-  }}
-  __syncthreads();
-
-  const int v_idx = vid * kVTile + v_lane;
-  const int group_base_lane = v_lane * kGroupSize;
-  const int k_begin = k_rank * kKChunk;
-  const int state_base = nh * kDimK * kDimV + v_idx;
-  const float alpha = expf(__bfloat162float(g[nh]));
-  const float beta_val = __bfloat162float(beta[nh]);
-
-  float h[kKChunk];
-  float old_partial = 0.0f;
-#pragma unroll 64
-  for (int ii = 0; ii < kKChunk; ++ii) {{
-    const int kk = k_begin + ii;
-    const float h_val = alpha * __bfloat162float(state[state_base + kk * kDimV]);
-    h[ii] = h_val;
-    old_partial += h_val * k_shared[kk];
-  }}
-
-  float old_val = old_partial;
-#pragma unroll
-  for (int offset = kGroupSize / 2; offset > 0; offset >>= 1) {{
-    old_val += __shfl_down_sync(0xffffffff, old_val, offset, kGroupSize);
-  }}
-
-  float v_new = 0.0f;
-  if (k_rank == 0) {{
-    v_new = beta_val * (__bfloat162float(v[nh * kDimV + v_idx]) - old_val);
-  }}
-  v_new = __shfl_sync(0xffffffff, v_new, group_base_lane, kGroupSize);
-
-  float out_partial = 0.0f;
-#pragma unroll 64
-  for (int ii = 0; ii < kKChunk; ++ii) {{
-    const int kk = k_begin + ii;
-    const float h_new = h[ii] + k_shared[kk] * v_new;
-    new_state[state_base + kk * kDimV] = __float2bfloat16(h_new);
-    out_partial += h_new * q_shared[kk];
-  }}
-
-  float out = out_partial;
-#pragma unroll
-  for (int offset = kGroupSize / 2; offset > 0; offset >>= 1) {{
-    out += __shfl_down_sync(0xffffffff, out, offset, kGroupSize);
-  }}
-  if (k_rank == 0) {{
-    o[nh * kDimV + v_idx] = __float2bfloat16(out);
-  }}
-}}
-"""
 
     raw_compile_flags = ["-O3", "-DENABLE_BF16", "--use_fast_math"]
     if raw_maxrregcount > 0:
@@ -170,12 +80,54 @@ extern "C" __global__ void gdn_decode_raw_cuda_flastyle_entry(
             o: T.Tensor([batch, head, dim_v], dtype),
             new_state: T.Tensor([batch, head, dim_k, dim_v], dtype),
         ):
-            T.CUDASourceCodeKernel(
-                total_blocks,
-                threads=threads,
-                source_code_or_path=source,
-                entry_name="gdn_decode_raw_cuda_flastyle_entry",
-            )
+            with T.Kernel(total_blocks, threads=threads) as (block,):
+                tx = T.get_thread_binding()
+                vid = block % (dim_v // v_tile)
+                nh = block // (dim_v // v_tile)
+                bid = nh // head
+                hid = nh - bid * head
+                v_lane = tx // raw_group_size
+                k_rank = tx - v_lane * raw_group_size
+                v_idx = vid * v_tile + v_lane
+                k_begin = k_rank * k_chunk
+
+                k_shared = T.alloc_shared([dim_k], "float32")
+                q_shared = T.alloc_shared([dim_k], "float32")
+                h = T.alloc_local([k_chunk], "float32")
+                old_partial = T.alloc_var("float32", init=0.0)
+                out_partial = T.alloc_var("float32", init=0.0)
+                v_new = T.alloc_var("float32", init=0.0)
+
+                for i in T.serial(T.ceildiv(dim_k, 32)):
+                    kk = tx + i * 32
+                    if kk < dim_k:
+                        k_shared[kk] = T.cast(k[bid, hid, kk], "float32")
+                        q_shared[kk] = T.cast(q[bid, hid, kk], "float32")
+                T.sync_threads()
+
+                alpha = T.exp2(T.cast(g[bid, hid], "float32") * _LOG2E)
+                beta_val = T.cast(beta[bid, hid], "float32")
+
+                for ii in T.serial(k_chunk):
+                    kk = k_begin + ii
+                    h_val = alpha * T.cast(state[bid, hid, kk, v_idx], "float32")
+                    h[ii] = h_val
+                    old_partial += h_val * k_shared[kk]
+
+                old_val = old_partial + T.shfl_down(old_partial, 1, width=raw_group_size)
+                if k_rank == 0:
+                    v_new = beta_val * (T.cast(v[bid, hid, v_idx], "float32") - old_val)
+                v_new = T.shfl_sync(v_new, v_lane * raw_group_size, width=raw_group_size)
+
+                for ii in T.serial(k_chunk):
+                    kk = k_begin + ii
+                    h_new = h[ii] + k_shared[kk] * v_new
+                    new_state[bid, hid, kk, v_idx] = T.cast(h_new, dtype)
+                    out_partial += h_new * q_shared[kk]
+
+                out_val = out_partial + T.shfl_down(out_partial, 1, width=raw_group_size)
+                if k_rank == 0:
+                    o[bid, hid, v_idx] = T.cast(out_val, dtype)
 
         return gated_deltanet_decode_raw_cuda_flastyle
 
