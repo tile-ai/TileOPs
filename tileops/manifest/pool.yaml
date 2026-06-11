@@ -51,7 +51,7 @@ AvgPool1dFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 AvgPool2dFwdOp:
   ref_api: "torch.nn.functional.avg_pool2d"
