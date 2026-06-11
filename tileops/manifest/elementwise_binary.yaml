@@ -41,8 +41,8 @@ PreluFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/prelu.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
 # elementwise — two-input parametric ops (prelu, masked_fill)
@@ -89,8 +89,8 @@ MaskedFillFwdOp:
       masked_fill_tensor_value: MaskedFillTensorValueFwdKernel
     op: tileops/ops/elementwise/masked_fill.py
     test: tests/ops/test_special_elementwise_conformance.py
-    bench: benchmarks/ops/bench_masked_fill.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 MaskedFillScalarFwdOp:
   ref_api: "torch.Tensor.masked_fill"
@@ -131,8 +131,8 @@ MaskedFillScalarFwdOp:
       masked_fill: MaskedFillFwdKernel
     op: tileops/ops/elementwise/masked_fill.py
     test: tests/ops/test_special_elementwise.py
-    bench: benchmarks/ops/bench_independent_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 AddFwdOp:
   ref_api: "torch.add"
@@ -161,8 +161,8 @@ AddFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_binary_arith.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 SubFwdOp:
   ref_api: "torch.sub"
@@ -190,8 +190,8 @@ SubFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_binary_arith.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 MulFwdOp:
   ref_api: "torch.mul"
@@ -217,8 +217,8 @@ MulFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_binary_arith.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 DivFwdOp:
   ref_api: "torch.div"
@@ -247,8 +247,8 @@ DivFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_binary_arith.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 RemainderFwdOp:
   ref_api: "torch.remainder"
@@ -274,8 +274,8 @@ RemainderFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_binary_arith.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 PowFwdOp:
   ref_api: "torch.pow"
@@ -301,8 +301,8 @@ PowFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_binary_arith.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 FloorDivideFwdOp:
   ref_api: "torch.floor_divide"
@@ -328,8 +328,8 @@ FloorDivideFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_binary_arith.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 LerpFwdOp:
   ref_api: "torch.lerp"
@@ -360,8 +360,8 @@ LerpFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_binary_arith.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 MaximumFwdOp:
   ref_api: "torch.maximum"
@@ -387,8 +387,8 @@ MaximumFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_binary_arith.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 MinimumFwdOp:
   ref_api: "torch.minimum"
@@ -414,8 +414,8 @@ MinimumFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_binary_arith.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
 # elementwise -- binary comparison ops (broadcast, output: bool)
@@ -445,8 +445,8 @@ EqFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
-    bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 NeFwdOp:
   ref_api: "torch.ne"
@@ -472,8 +472,8 @@ NeFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
-    bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 GtFwdOp:
   ref_api: "torch.gt"
@@ -499,8 +499,8 @@ GtFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
-    bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 LtFwdOp:
   ref_api: "torch.lt"
@@ -526,8 +526,8 @@ LtFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
-    bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 GeFwdOp:
   ref_api: "torch.ge"
@@ -553,8 +553,8 @@ GeFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
-    bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 LeFwdOp:
   ref_api: "torch.le"
@@ -580,8 +580,8 @@ LeFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_comparison.py
-    bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
 # elementwise -- binary logical ops (broadcast, output: bool)
@@ -611,8 +611,8 @@ LogicalAndFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/logical.py
     test: tests/ops/test_logical.py
-    bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 LogicalOrFwdOp:
   ref_api: "torch.logical_or"
@@ -638,8 +638,8 @@ LogicalOrFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/logical.py
     test: tests/ops/test_logical.py
-    bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
 # elementwise -- binary bitwise ops (broadcast, output: same_as(input))
@@ -669,8 +669,8 @@ BitwiseAndFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/bitwise.py
     test: tests/ops/test_bitwise.py
-    bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 BitwiseOrFwdOp:
   ref_api: "torch.bitwise_or"
@@ -696,8 +696,8 @@ BitwiseOrFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/bitwise.py
     test: tests/ops/test_bitwise.py
-    bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 BitwiseXorFwdOp:
   ref_api: "torch.bitwise_xor"
@@ -723,5 +723,5 @@ BitwiseXorFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/bitwise.py
     test: tests/ops/test_bitwise.py
-    bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true

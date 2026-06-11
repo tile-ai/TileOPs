@@ -39,7 +39,7 @@ ExpFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 LogFwdOp:
   ref_api: "torch.log"
@@ -71,7 +71,7 @@ LogFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 SqrtFwdOp:
   ref_api: "torch.sqrt"
@@ -103,7 +103,7 @@ SqrtFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 RsqrtFwdOp:
   ref_api: "torch.rsqrt"
@@ -135,7 +135,7 @@ RsqrtFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 AbsFwdOp:
   ref_api: "torch.abs"
@@ -167,7 +167,7 @@ AbsFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 NegFwdOp:
   ref_api: "torch.neg"
@@ -199,7 +199,7 @@ NegFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 ReciprocalFwdOp:
   ref_api: "torch.reciprocal"
@@ -233,7 +233,7 @@ ReciprocalFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 SignFwdOp:
   ref_api: "torch.sign"
@@ -266,7 +266,7 @@ SignFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 SinFwdOp:
   ref_api: "torch.sin"
@@ -298,7 +298,7 @@ SinFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 CosFwdOp:
   ref_api: "torch.cos"
@@ -330,7 +330,7 @@ CosFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 FloorFwdOp:
   ref_api: "torch.floor"
@@ -362,7 +362,7 @@ FloorFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 CeilFwdOp:
   ref_api: "torch.ceil"
@@ -394,7 +394,7 @@ CeilFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 RoundFwdOp:
   ref_api: "torch.round"
@@ -428,7 +428,7 @@ RoundFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 TruncFwdOp:
   ref_api: "torch.trunc"
@@ -460,7 +460,7 @@ TruncFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 ErfFwdOp:
   ref_api: "torch.erf"
@@ -492,7 +492,7 @@ ErfFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Log1pFwdOp:
   ref_api: "torch.log1p"
@@ -525,7 +525,7 @@ Log1pFwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Expm1FwdOp:
   ref_api: "torch.expm1"
@@ -558,7 +558,7 @@ Expm1FwdOp:
     op: tileops/ops/elementwise/math_unary.py
     test: tests/ops/test_unary_math.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 SigmoidFwdOp:
   ref_api: "torch.sigmoid"
@@ -591,8 +591,8 @@ SigmoidFwdOp:
       sigmoid: SigmoidFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 TanhFwdOp:
   ref_api: "torch.tanh"
@@ -625,8 +625,8 @@ TanhFwdOp:
       tanh: TanhFwdKernel
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 LogicalNotFwdOp:
   ref_api: "torch.logical_not"
@@ -659,7 +659,7 @@ LogicalNotFwdOp:
     op: tileops/ops/elementwise/logical.py
     test: tests/ops/test_logical.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 BitwiseNotFwdOp:
   ref_api: "torch.bitwise_not"
@@ -691,7 +691,7 @@ BitwiseNotFwdOp:
     op: tileops/ops/elementwise/bitwise.py
     test: tests/ops/test_bitwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 IsnanFwdOp:
   ref_api: "torch.isnan"
@@ -724,7 +724,7 @@ IsnanFwdOp:
     op: tileops/ops/elementwise/predicates.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 IsinfFwdOp:
   ref_api: "torch.isinf"
@@ -757,7 +757,7 @@ IsinfFwdOp:
     op: tileops/ops/elementwise/predicates.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 IsfiniteFwdOp:
   ref_api: "torch.isfinite"
@@ -790,4 +790,4 @@ IsfiniteFwdOp:
     op: tileops/ops/elementwise/predicates.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
