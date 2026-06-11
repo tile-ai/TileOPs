@@ -1,4 +1,5 @@
 import logging
+import statistics
 import subprocess
 import threading
 from abc import ABC, abstractmethod
@@ -285,7 +286,6 @@ def bench_kernel(
     paired = sorted(zip(trial_means, trial_breakdowns, strict=False), key=lambda x: x[0])
     median_ms, median_breakdown = paired[len(paired) // 2]
 
-    import statistics
     stdev_ms = statistics.stdev(trial_means) if len(trial_means) > 1 else 0.0
 
     return {
