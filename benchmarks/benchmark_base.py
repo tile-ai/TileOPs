@@ -251,6 +251,7 @@ def bench_kernel(
                 list(excluded_kernel.keys()),
             )
 
+    cupti_ok = True
     try:
         with suppress_stdout_stderr():
             schedule = torch.profiler.schedule(
@@ -273,20 +274,11 @@ def bench_kernel(
                         cache.zero_()
                         _run(i)
                     profiler.step()
-    except RuntimeError as exc:
-        raise RuntimeError(
-            "CUPTI profiling failed. CUPTI is required for benchmarking — "
-            "ensure the CUDA toolkit provides CUPTI (libcupti.so must be on "
-            "LD_LIBRARY_PATH or discoverable by PyTorch's profiler). "
-            "Original error: " + str(exc)
-        ) from exc
+    except RuntimeError:
+        cupti_ok = False
 
     if not trial_means:
-        raise RuntimeError(
-            "CUPTI profiling produced no results. CUPTI is required for "
-            "benchmarking — ensure libcupti.so is available and the "
-            "torch.profiler CUDA activity backend is functional."
-        )
+        cupti_ok = False
 
     # Free the arg pool and release cached GPU memory to prevent
     # accumulation across hundreds of benchmark calls.
@@ -294,19 +286,50 @@ def bench_kernel(
         del arg_pool
     torch.cuda.empty_cache()
 
-    # Pick median trial
-    timing_backend = "cupti"
-    # Sort by mean latency; pick median trial's breakdown too
-    paired = sorted(zip(trial_means, trial_breakdowns, strict=False), key=lambda x: x[0])
-    median_ms, median_breakdown = paired[len(paired) // 2]
+    if cupti_ok:
+        # Pick median trial
+        timing_backend = "cupti"
+        # Sort by mean latency; pick median trial's breakdown too
+        paired = sorted(zip(trial_means, trial_breakdowns, strict=True), key=lambda x: x[0])
+        median_ms, median_breakdown = paired[len(paired) // 2]
+        stdev_ms = statistics.stdev(trial_means) if len(trial_means) > 1 else 0.0
+        return {
+            "latency_ms": median_ms,
+            "stdev_ms": stdev_ms,
+            "timing_backend": timing_backend,
+            "event_breakdown": median_breakdown,
+        }
 
-    stdev_ms = statistics.stdev(trial_means) if len(trial_means) > 1 else 0.0
+    # Fall back to CUDA event timing when CUPTI is unavailable.
+    _logger.warning(
+        "CUPTI unavailable or produced no results; falling back to CUDA event timing. "
+        "Ensure libcupti.so is on LD_LIBRARY_PATH for kernel-accurate measurements."
+    )
+    event_trial_means: list[float] = []
+    for _ in range(n_trials):
+        start_evt = torch.cuda.Event(enable_timing=True)
+        end_evt = torch.cuda.Event(enable_timing=True)
+        # Warmup
+        for i in range(n_repeat):
+            cache.zero_()
+            _run(i)
+        torch.cuda.synchronize()
+        start_evt.record()
+        for i in range(n_repeat):
+            cache.zero_()
+            _run(i)
+        end_evt.record()
+        torch.cuda.synchronize()
+        event_trial_means.append(start_evt.elapsed_time(end_evt) / n_repeat)
 
+    paired_ev = sorted(event_trial_means)
+    median_ms = paired_ev[len(paired_ev) // 2]
+    stdev_ms = statistics.stdev(event_trial_means) if len(event_trial_means) > 1 else 0.0
     return {
         "latency_ms": median_ms,
         "stdev_ms": stdev_ms,
-        "timing_backend": timing_backend,
-        "event_breakdown": median_breakdown,
+        "timing_backend": "cuda_event",
+        "event_breakdown": {},
     }
 
 
@@ -334,12 +357,7 @@ def _get_env_metadata() -> list[str]:
         )
         if result.returncode == 0:
             parts = [p.strip() for p in result.stdout.strip().split("\n")[0].split(",")]
-            driver       = parts[0] if len(parts) > 0 else "N/A"
-            mem_clock    = parts[1] if len(parts) > 1 else "N/A"
-            gr_clock     = parts[2] if len(parts) > 2 else "N/A"
-            sm_clock     = parts[3] if len(parts) > 3 else "N/A"
-            power_draw   = parts[4] if len(parts) > 4 else "N/A"
-            gpu_temp     = parts[5] if len(parts) > 5 else "N/A"
+            driver, mem_clock, gr_clock, sm_clock, power_draw, gpu_temp = (parts + ["N/A"] * 6)[:6]
         else:
             driver = mem_clock = gr_clock = sm_clock = power_draw = gpu_temp = "N/A"
     except (FileNotFoundError, subprocess.TimeoutExpired):
