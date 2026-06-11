@@ -50,15 +50,22 @@ class AvgPool1dBenchCase:
 
 class AvgPool1dBenchmark(BenchmarkBase[AvgPool1dBenchCase]):
 
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def __init__(self, test: AvgPool1dBenchCase, op: AvgPool1dFwdOp) -> None:
+        super().__init__(test)
+        self._op = op
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = self._op.eval_roofline()
+        return self._roofline_cache
+
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        out_l = pool_output_dim(t.l_in, t.kernel_size, t.stride, t.padding, t.ceil_mode)
-        return t.n * t.c_in * out_l * t.kernel_size
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        out_l = pool_output_dim(t.l_in, t.kernel_size, t.stride, t.padding, t.ceil_mode)
-        return (t.n * t.c_in * t.l_in + t.n * t.c_in * out_l) * t.dtype.itemsize
+        return self._get_roofline()[1]
 
 
 _AVG_POOL1D_BENCH_PARAMS = [
@@ -85,7 +92,6 @@ def test_avg_pool1d_bench(
     tune: bool,
 ) -> None:
     test = AvgPool1dBenchCase(n, c_in, l_in, kernel_size, stride, padding, ceil_mode, count_include_pad, dtype)
-    bm = AvgPool1dBenchmark(test)
     inputs = test.gen_inputs()
 
     op = AvgPool1dFwdOp(
@@ -100,8 +106,8 @@ def test_avg_pool1d_bench(
         dtype=dtype,
         tune=tune,
     )
+    bm = AvgPool1dBenchmark(test, op)
     result = bm.profile(op, *inputs)
-    _ = op.eval_roofline()
     BenchmarkReport.record("avg_pool1d", locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
