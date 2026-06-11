@@ -138,6 +138,11 @@ def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, has_dt_bias,
                 dt_softplus=dt_softplus,
             )
 
+        # Pre-warm: run once outside bm.profile so the Triton JIT compiler
+        # finishes compilation before the CUPTI window opens.
+        mamba_fwd()
+        torch.cuda.synchronize()
+
         result_mamba = bm.profile(mamba_fwd)
         BenchmarkReport.record(op, locals(), result_mamba, tag="mamba")
     else:
@@ -334,6 +339,11 @@ def test_ssd_chunk_scan_fwd_bench(
         def mamba_fwd():
             return _mamba_chunk_scan_fwd(cb, x, dt, dA_cumsum, C, prev_states)
 
+        # Triton JIT-compiles on first call; call once before profiling to
+        # avoid cold-start contaminating the warmup iterations inside bench_kernel.
+        mamba_fwd()
+        torch.cuda.synchronize()
+
         result_mamba = bm.profile(mamba_fwd)
         BenchmarkReport.record(op, locals(), result_mamba, tag="mamba")
     else:
@@ -480,6 +490,11 @@ def test_ssd_chunk_state_fwd_bench(
                 dA_cumsum.contiguous(),
                 seq_idx=seq_idx,
             )
+
+        # Pre-warm: run once outside bm.profile so the Triton JIT compiler
+        # finishes compilation before the CUPTI window opens.
+        mamba_fwd()
+        torch.cuda.synchronize()
 
         result_mamba = bm.profile(mamba_fwd)
         BenchmarkReport.record(op, locals(), result_mamba, tag="mamba")
