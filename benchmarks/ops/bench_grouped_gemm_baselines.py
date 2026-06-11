@@ -561,8 +561,10 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
                 records.append(("triton-tma", r))
 
         # Every baseline completed without hitting the OOM skip path: commit now.
-        for tag, rec in records:
-            BenchmarkReport.record(_REPORT_NAME, locals(), rec, tag=tag)
+        # Loop vars are underscore-prefixed so they are filtered out of the
+        # ``locals()`` params (record() would otherwise add a spurious column).
+        for _tag, _rec in records:
+            BenchmarkReport.record(_REPORT_NAME, locals(), _rec, tag=_tag)
 
     except torch.cuda.OutOfMemoryError:
         torch.cuda.empty_cache()
