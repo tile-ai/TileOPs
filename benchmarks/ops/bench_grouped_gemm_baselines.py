@@ -313,16 +313,49 @@ def _deepgemm_launch(A, B, D, m_indices, tries=8):
         try:
             deep_gemm.m_grouped_bf16_gemm_nt_contiguous(A, B, D, m_indices)
             return
-        except RuntimeError:
-            pass
+        except RuntimeError as exc:
+            # Only retry the known flaky workspace bug; surface any other
+            # RuntimeError (shape/layout/device) immediately so a real
+            # integration failure is not masked as a flaky [skip].
+            if "doesn't have storage" not in str(exc):
+                raise
     deep_gemm.m_grouped_bf16_gemm_nt_contiguous(A, B, D, m_indices)
 
 
+# All baselines agree to bf16 tolerance, so each is checked once against the 3WG
+# output before its timing is recorded — a layout bug or a future torch/Triton
+# behavior change would otherwise produce plausible TFLOPS for a wrong result.
+# The comparison is row-blocked in fp32: a single ``.float()`` on the largest
+# cases (numel up to ~2M x N) would itself OOM, which is why correctness was
+# dropped before; blocking keeps the peak to one chunk.
+_RTOL, _ATOL = 2e-2, 2e-2
+
+
+def _assert_close_chunked(actual, expected, *, what, chunk=8192):
+    """Row-blocked fp32 ``assert_close`` of two ``[rows, N]`` tensors."""
+    for i in range(0, actual.shape[0], chunk):
+        a = actual[i:i + chunk].float()
+        e = expected[i:i + chunk].float()
+        torch.testing.assert_close(
+            a, e, rtol=_RTOL, atol=_ATOL,
+            msg=lambda m, i=i: f"{what} disagrees with 3WG at rows [{i}:{i + chunk}]:\n{m}")
+        del a, e
+
+
+def _assert_groups_close(groups, ref, per, *, what):
+    """Per-expert compare of a list of ``[per, N]`` outputs against flat ``ref``."""
+    for e, g in enumerate(groups):
+        _assert_close_chunked(g, ref[e * per:(e + 1) * per], what=f"{what}[expert {e}]")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Model cases (prefill, bf16). M = tokens * top_k / num_experts (uniform).
-# N/K are the single-expert GEMM dims. up/gate GEMMs fuse gate+up -> N = 2*inter;
-# down GEMMs project the expert intermediate back to the residual stream, so
-# down N = hidden for every model.
+# Model cases (prefill, bf16). The benchmark runs ``numel = M * E`` routed rows;
+# M (per-expert rows, uniform) is round(tokens * top_k / E). The ``tokens`` column
+# is the model's prompt-token count for reference and need not divide evenly: e.g.
+# qwen ``52429 * 10 / 512 = 1023.996`` rounds to M=1024 (numel=524288), hence the
+# ``T~`` label. N/K are the single-expert GEMM dims. up/gate GEMMs fuse gate+up
+# -> N = 2*inter; down GEMMs project the expert intermediate back to the residual
+# stream, so down N = hidden for every model.
 # ─────────────────────────────────────────────────────────────────────────────
 CASES = [
     # label,                         tokens,  E,   top_k, hidden, moe_inter, M,    N,     K
@@ -450,17 +483,28 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         # fairness contract this benchmark is built around.
         result = bm.profile(_synced(
             lambda A=A, B=B, sz=sizes, off=offsets, C=C_3wg: k3(A, B, sz, off, out=C, a_aligned=True)))
-        BenchmarkReport.record(_REPORT_NAME, locals(), result, tag="tileops")
+        # Buffer (tag, result) and only commit to the global report once the whole
+        # case completes: a later baseline OOM turns into pytest.skip, and we must
+        # not leave partial rows in profile_run.log for a case reported as skipped.
+        # C_3wg now holds the 3WG output, used as the correctness reference below.
+        records = [("tileops", result)]
 
         # ---- torch._grouped_mm (CUTLASS; allocates its own output) ----
+        # Profiling failures (OOM / env) drop the baseline; the correctness check
+        # lives in the ``else`` so a real mismatch fails the test instead of being
+        # swallowed as a [skip].
         try:
             r = bm.profile(_synced(
                 lambda A=A, B_KN=B_KN, off=offs_cumsum: torch._grouped_mm(A, B_KN, off)))
-            BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="torch")
         except torch.cuda.OutOfMemoryError:
             raise
         except Exception as exc:  # pragma: no cover - env dependent
             print(f"  [skip] torch._grouped_mm: {exc}")
+        else:
+            # One untimed call to validate the [E, K, N] layout adaptation.
+            _assert_close_chunked(torch._grouped_mm(A, B_KN, offs_cumsum), C_3wg,
+                                  what="torch._grouped_mm")
+            records.append(("torch", r))
 
         # ---- deepgemm: contiguous grouped GEMM (pre-allocated D) ----
         # DeepGEMM's contiguous layout requires every expert's M to be a multiple
@@ -473,11 +517,13 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
             try:
                 r = bm.profile(_synced(
                     lambda A=A, B=B, D=D, mi=m_indices: _deepgemm_launch(A, B, D, mi)))
-                BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="deepgemm")
             except torch.cuda.OutOfMemoryError:
                 raise
             except Exception as exc:  # pragma: no cover - DeepGEMM workspace bug
                 print(f"  [skip] deepgemm: {exc}")
+            else:
+                _assert_close_chunked(D, C_3wg, what="deepgemm")  # D written in-place
+                records.append(("deepgemm", r))
 
         # ---- triton 08-grouped-gemm (ported, bf16; pre-allocated group_c) ----
         group_a = [A[e * per:(e + 1) * per] for e in range(E)]
@@ -488,11 +534,14 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         try:
             r = bm.profile(
                 _synced(lambda: _grouped_matmul_kernel[grid](a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds, E)))
-            BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="triton")
         except torch.cuda.OutOfMemoryError:
             raise
         except Exception as exc:  # pragma: no cover - env dependent
             print(f"  [skip] triton: {exc}")
+        else:
+            # Validate the [E, K, N] layout + per-expert group_c output.
+            _assert_groups_close(group_c, C_3wg, per, what="triton")
+            records.append(("triton", r))
 
         # ---- triton + TMA (Hopper, NT layout = our B[e]) ----
         if _supports_tma():
@@ -503,11 +552,17 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
             try:
                 r = bm.profile(
                     _synced(lambda: _grouped_matmul_tma_kernel[grid](a_p, b_p, c_p, gs, gl, E, NUM_SM=sm)))
-                BenchmarkReport.record(_REPORT_NAME, locals(), r, tag="triton-tma")
             except torch.cuda.OutOfMemoryError:
                 raise
             except Exception as exc:  # pragma: no cover - env dependent
                 print(f"  [skip] triton-tma: {exc}")
+            else:
+                _assert_groups_close(group_c_tma, C_3wg, per, what="triton-tma")
+                records.append(("triton-tma", r))
+
+        # Every baseline completed without hitting the OOM skip path: commit now.
+        for tag, rec in records:
+            BenchmarkReport.record(_REPORT_NAME, locals(), rec, tag=tag)
 
     except torch.cuda.OutOfMemoryError:
         torch.cuda.empty_cache()

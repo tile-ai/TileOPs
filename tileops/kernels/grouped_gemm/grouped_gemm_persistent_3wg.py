@@ -179,6 +179,8 @@ class GroupedGemmPersistent3WGKernel(Kernel):
             true_offsets: ``[num_experts]`` int32 start offset per expert in A.
             out: optional ``[numel, N]`` output buffer to write into and reuse
                 across calls. Allocated internally with ``torch.empty`` if omitted.
+                Must be contiguous and must not share storage with ``A`` or ``B``
+                (the kernel reads inputs and writes the output concurrently).
             a_aligned: caller's assertion about whether every expert's row count
                 is ``block_m``-aligned. ``None`` (default) auto-detects from
                 ``true_sizes`` — which costs a host sync. ``True`` asserts aligned
@@ -219,6 +221,12 @@ class GroupedGemmPersistent3WGKernel(Kernel):
             # with the wrong strides. Reject it here rather than corrupt silently.
             if not out.is_contiguous():
                 raise ValueError("out must be contiguous")
+            # ``out`` must not share storage with ``A`` or ``B``: the kernel
+            # reads the inputs and writes the output concurrently, so an aliased
+            # buffer (including a crafted view, e.g. when N == K) would race.
+            out_store = out.untyped_storage().data_ptr()
+            if out_store == A.untyped_storage().data_ptr() or out_store == B.untyped_storage().data_ptr():
+                raise ValueError("out must not alias A or B")
             C = out
 
         # Guard-row padding of A is only needed when some expert's row count is

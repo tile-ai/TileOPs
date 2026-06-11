@@ -360,3 +360,10 @@ def test_out_buffer_validation():
     with pytest.raises(ValueError, match="contiguous"):
         k3(A, B, sizes, offsets,
            out=torch.empty(N, numel, dtype=torch.bfloat16, device="cuda").t())
+    # out aliasing the input: A and out carved from one shared storage. Passes
+    # shape/dtype/device/contiguity but must be rejected (read/write race).
+    shared = torch.empty(numel * max(N, K), dtype=torch.bfloat16, device="cuda")
+    a_alias = shared[:numel * K].view(numel, K)
+    out_alias = shared[:numel * N].view(numel, N)
+    with pytest.raises(ValueError, match="alias"):
+        k3(a_alias, B, sizes, offsets, out=out_alias)
