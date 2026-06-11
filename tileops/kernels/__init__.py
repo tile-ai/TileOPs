@@ -51,7 +51,11 @@ from .fft import FFTC2CKernel
 from .fp8_lighting_indexer import FP8LightingIndexerKernel
 from .fp8_quant import FP8QuantKernel
 from .gated_deltanet import GatedDeltaNetBwdKernel, GatedDeltaNetFwdKernel
-from .gated_deltanet_recurrence import GatedDeltaNetDecodeFP32Kernel, GatedDeltaNetDecodeKernel
+from .gated_deltanet_recurrence import (
+    GatedDeltaNetDecodeFP32Kernel,
+    GatedDeltaNetDecodeKernel,
+    GatedDeltaNetDecodeRawCudaFlaStyleKernel,
+)
 from .gemm import GemmKernel, GemvKernel
 from .gla import GLABwdKernel, GLAFwdKernel
 from .gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
@@ -131,6 +135,7 @@ __all__ = [
     "GatedDeltaNetBwdKernel",
     "GatedDeltaNetDecodeFP32Kernel",
     "GatedDeltaNetDecodeKernel",
+    "GatedDeltaNetDecodeRawCudaFlaStyleKernel",
     "GatedDeltaNetFwdKernel",
     "GemmKernel",
     "GemvKernel",
