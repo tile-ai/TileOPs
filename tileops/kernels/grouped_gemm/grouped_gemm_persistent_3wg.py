@@ -214,6 +214,11 @@ class GroupedGemmPersistent3WGKernel(Kernel):
                 raise ValueError(f"out dtype must be {self.dtype}, got {out.dtype}")
             if out.device != A.device:
                 raise ValueError(f"out device must be {A.device}, got {out.device}")
+            # The kernel writes ``out`` as a compact (row-major contiguous) tensor;
+            # a non-contiguous view with the right logical shape would be written
+            # with the wrong strides. Reject it here rather than corrupt silently.
+            if not out.is_contiguous():
+                raise ValueError("out must be contiguous")
             C = out
 
         # Guard-row padding of A is only needed when some expert's row count is

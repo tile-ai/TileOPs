@@ -339,8 +339,8 @@ def test_explicit_a_aligned_bypasses_autodetect(monkeypatch):
 
 @pytest.mark.nightly
 def test_out_buffer_validation():
-    """A caller-provided ``out`` with the wrong shape, dtype, or device is
-    rejected with a clear ValueError instead of corrupting silently."""
+    """A caller-provided ``out`` with the wrong shape, dtype, device, or layout
+    is rejected with a clear ValueError instead of corrupting silently."""
     A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
     sm = torch.cuda.get_device_properties(0).multi_processor_count
     k3 = GroupedGemmPersistent3WGKernel(
@@ -355,3 +355,8 @@ def test_out_buffer_validation():
     with pytest.raises(ValueError, match="out device"):
         k3(A, B, sizes, offsets,
            out=torch.empty(numel, N, dtype=torch.bfloat16, device="cpu"))
+    # Non-contiguous view with the right logical shape (transpose of [N, numel]):
+    # passes shape/dtype/device but must be rejected on layout.
+    with pytest.raises(ValueError, match="contiguous"):
+        k3(A, B, sizes, offsets,
+           out=torch.empty(N, numel, dtype=torch.bfloat16, device="cuda").t())

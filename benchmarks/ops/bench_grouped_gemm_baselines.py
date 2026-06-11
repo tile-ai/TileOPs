@@ -64,6 +64,13 @@ except Exception:  # pragma: no cover - environment dependent
 
 _DTYPE = torch.bfloat16
 
+# The 3WG kernel and both Triton TMA paths are Hopper-specific; skip the whole
+# module (rather than error when the kernel is constructed) off CUDA / pre-SM90.
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
+    reason="Requires SM90 (Hopper)",
+)
+
 # Fixed report group name: all CASES record under this single op so the nightly
 # report groups them as one op with N configs. Frozen — changing it resets that
 # op's 14-day perf history.
@@ -437,8 +444,12 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         k3 = GroupedGemmPersistent3WGKernel(numel=numel, num_experts=E, N=N, K=K,
                                             dtype=_DTYPE, sm_count=sm)
         C_3wg = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
+        # Routing is uniform and block_m-aligned (per is a multiple of 128), so
+        # assert a_aligned=True: the profiled call then measures the GEMM alone,
+        # not the per-call torch.all auto-detect host sync — the GEMM-only
+        # fairness contract this benchmark is built around.
         result = bm.profile(_synced(
-            lambda A=A, B=B, sz=sizes, off=offsets, C=C_3wg: k3(A, B, sz, off, out=C)))
+            lambda A=A, B=B, sz=sizes, off=offsets, C=C_3wg: k3(A, B, sz, off, out=C, a_aligned=True)))
         BenchmarkReport.record(_REPORT_NAME, locals(), result, tag="tileops")
 
         # ---- torch._grouped_mm (CUTLASS; allocates its own output) ----
