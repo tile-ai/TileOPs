@@ -662,6 +662,29 @@ class TestVariantOf:
 class TestSignature:
     """signature checks that Op.forward() params match manifest inputs."""
 
+    def test_spec_only_null_source_op_skips_class_resolution(self, validator):
+        """Spec-only entries with source.op: null skip L1 implementation checks."""
+        entry = _make_entry(status="spec-only")
+        entry["source"]["op"] = None
+        warn_list = []
+
+        errors = validator.check_l1("MissingSpecOnlyOp", entry, warnings=warn_list)
+
+        assert errors == []
+        assert warn_list == [
+            "[signature] MissingSpecOnlyOp: skipped because status is spec-only "
+            "and source.op is null"
+        ]
+
+    def test_implemented_null_source_op_fails(self, validator):
+        """Implemented entries still require a resolvable source.op."""
+        entry = _make_entry(status="implemented")
+        entry["source"]["op"] = None
+
+        errors = validator.check_l1("MissingImplementedOp", entry)
+
+        assert errors == ["[signature] MissingImplementedOp: missing source.op"]
+
     def test_matching_signature_passes(self, validator):
         manifest_inputs = {"x": {"dtype": "float16"}, "weight": {"dtype": "same_as(x)"}}
         manifest_params = {}
