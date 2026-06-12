@@ -58,6 +58,11 @@ def _tensors_overlap(t1, t2) -> bool:
     frameworks (e.g. vLLM) slice inputs, weights, and outputs from a single
     pre-allocated workspace — so storage identity alone must not be rejected.
     """
+    # Pointers live in per-device address spaces, so two tensors on different
+    # devices can share a numeric data_ptr by coincidence — guard before any
+    # interval math.
+    if t1.device != t2.device:
+        return False
     if t1.untyped_storage().data_ptr() != t2.untyped_storage().data_ptr():
         return False
     t1_start, t1_end = t1.data_ptr(), t1.data_ptr() + t1.numel() * t1.element_size()
