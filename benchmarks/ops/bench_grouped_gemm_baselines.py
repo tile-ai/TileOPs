@@ -477,12 +477,11 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         k3 = GroupedGemmPersistent3WGKernel(numel=numel, num_experts=E, N=N, K=K,
                                             dtype=_DTYPE, sm_count=sm)
         C_3wg = torch.empty(numel, N, dtype=_DTYPE, device="cuda")
-        # Routing is uniform and block_m-aligned (per is a multiple of 128), so
-        # assert a_aligned=True: the profiled call then measures the GEMM alone,
-        # not the per-call torch.all auto-detect host sync — the GEMM-only
-        # fairness contract this benchmark is built around.
+        # The 3WG kernel zero-fills the last partial tile's A over-read via TMA
+        # OOB (no F.pad, no alignment host sync), so the profiled call measures
+        # the GEMM alone — the GEMM-only fairness contract this benchmark needs.
         result = bm.profile(_synced(
-            lambda A=A, B=B, sz=sizes, off=offsets, C=C_3wg: k3(A, B, sz, off, out=C, a_aligned=True)))
+            lambda A=A, B=B, sz=sizes, off=offsets, C=C_3wg: k3(A, B, sz, off, out=C)))
         # Buffer (tag, result) and only commit to the global report once the whole
         # case completes: a later baseline OOM turns into pytest.skip, and we must
         # not leave partial rows in profile_run.log for a case reported as skipped.

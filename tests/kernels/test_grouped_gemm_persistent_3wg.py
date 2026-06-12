@@ -213,11 +213,8 @@ def test_cooperative_partial_m_tile():
 
 
 # ════════════════════════════════════════════════════════════════════════
-# Calling-cost parity with DeepGEMM: out= reuse + alignment-elided A padding
+# Calling-cost parity with DeepGEMM: out= reuse
 # ════════════════════════════════════════════════════════════════════════
-import tileops.kernels.grouped_gemm.grouped_gemm_persistent_3wg as _g3wg_mod  # noqa: E402
-
-
 def _aligned_coop_inputs(seed=42):
     """Cooperative-path inputs with every expert a multiple of block_m=128."""
     E, N, K = 4, 256, 128
@@ -245,96 +242,6 @@ def test_out_param_reuse():
     C_out = k3(A, B, sizes, offsets, out=out)
     assert C_out.data_ptr() == out.data_ptr()
     torch.testing.assert_close(C_out, C_alloc, rtol=2e-2, atol=2e-2)
-
-
-@pytest.mark.nightly
-def test_aligned_skips_pad(monkeypatch):
-    """block_m-aligned per-expert sizes take the unpadded A_shape path: forward
-    never calls F.pad, and the result still matches the 2WG reference."""
-    A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
-    sm = torch.cuda.get_device_properties(0).multi_processor_count
-
-    # Reference (which itself pads) runs BEFORE installing the spy, so ``calls``
-    # only reflects the 3WG kernel under test.
-    ref = GroupedGemmPersistentKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
-    C_ref = ref(A, B, sizes, offsets)
-
-    calls = []
-    real_pad = _g3wg_mod.F.pad
-    monkeypatch.setattr(_g3wg_mod.F, "pad",
-                        lambda *a, **k: (calls.append(1), real_pad(*a, **k))[1])
-
-    k3 = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
-    C_v2 = k3(A, B, sizes, offsets)
-    assert calls == [], "aligned sizes must not trigger F.pad"
-    torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
-
-
-@pytest.mark.nightly
-def test_unaligned_still_pads(monkeypatch):
-    """Non-block_m-aligned sizes keep the defensive padded path (F.pad called)
-    and stay correct — the alignment fast-path must not regress generality."""
-    sm = torch.cuda.get_device_properties(0).multi_processor_count
-    E, N, K = 4, 256, 128
-    sizes = torch.tensor([40, 90, 128, 200], dtype=torch.int32, device="cuda")
-    numel = int(sizes.sum().item())
-    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
-    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
-    torch.manual_seed(0)
-    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
-    B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
-
-    # Reference runs BEFORE the spy so ``calls`` only counts the 3WG kernel.
-    ref = GroupedGemmPersistentKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
-    C_ref = ref(A, B, sizes, offsets)
-
-    calls = []
-    real_pad = _g3wg_mod.F.pad
-    monkeypatch.setattr(_g3wg_mod.F, "pad",
-                        lambda *a, **k: (calls.append(1), real_pad(*a, **k))[1])
-
-    k3 = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
-    C_v2 = k3(A, B, sizes, offsets)
-    assert calls, "unaligned sizes must still pad A"
-    torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
-
-
-@pytest.mark.nightly
-def test_explicit_a_aligned_bypasses_autodetect(monkeypatch):
-    """Passing ``a_aligned`` explicitly skips the ``torch.all`` host sync and the
-    auto-detect: ``a_aligned=True`` on aligned data takes the unpadded path (no
-    F.pad), ``a_aligned=False`` forces the padded path (F.pad called). Both stay
-    correct."""
-    A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
-    sm = torch.cuda.get_device_properties(0).multi_processor_count
-    ref = GroupedGemmPersistentKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
-    C_ref = ref(A, B, sizes, offsets)
-    k3 = GroupedGemmPersistent3WGKernel(
-        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
-
-    # a_aligned=True: no padding, no auto-detect torch.all.
-    calls = []
-    all_calls = []
-    real_pad, real_all = _g3wg_mod.F.pad, _g3wg_mod.torch.all
-    monkeypatch.setattr(_g3wg_mod.F, "pad",
-                        lambda *a, **k: (calls.append(1), real_pad(*a, **k))[1])
-    monkeypatch.setattr(_g3wg_mod.torch, "all",
-                        lambda *a, **k: (all_calls.append(1), real_all(*a, **k))[1])
-    C_unpad = k3(A, B, sizes, offsets, a_aligned=True)
-    assert calls == [], "a_aligned=True must not pad"
-    assert all_calls == [], "explicit a_aligned must skip the torch.all auto-detect"
-    torch.testing.assert_close(C_unpad, C_ref, rtol=2e-2, atol=2e-2)
-
-    # a_aligned=False: forces the padded path.
-    calls.clear()
-    C_pad = k3(A, B, sizes, offsets, a_aligned=False)
-    assert calls, "a_aligned=False must pad"
-    torch.testing.assert_close(C_pad, C_ref, rtol=2e-2, atol=2e-2)
 
 
 @pytest.mark.nightly
@@ -378,3 +285,32 @@ def test_out_buffer_validation():
     a_ws.copy_(A)
     res = k3(a_ws, B, sizes, offsets, out=out_ws)
     torch.testing.assert_close(res, C_ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
+def test_no_host_pad_on_unaligned(monkeypatch):
+    """OOB zero-fill: forward must not call F.pad even when experts are unaligned.
+
+    Guards T-A — the last expert's partial-tile A over-read is hardware
+    zero-filled (TMA globalDim=numel), so no physical guard rows are needed.
+    """
+    torch.manual_seed(0)
+    num_experts, N, K = 4, 256, 128          # default block_m=128 (cooperative)
+    sizes = torch.tensor([130, 70, 200, 33], dtype=torch.int32, device="cuda")
+    numel = int(sizes.sum())
+    offsets = torch.zeros(num_experts, dtype=torch.int32, device="cuda")
+    offsets[1:] = torch.cumsum(sizes[:-1], 0)
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    B = torch.randn(num_experts, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
+
+    calls = {"n": 0}
+    real_pad = torch.nn.functional.pad
+
+    def spy_pad(*args, **kwargs):
+        calls["n"] += 1
+        return real_pad(*args, **kwargs)
+
+    monkeypatch.setattr(torch.nn.functional, "pad", spy_pad)
+    kernel = GroupedGemmPersistent3WGKernel(numel, num_experts, N, K)
+    kernel(A, B, sizes, offsets)
+    assert calls["n"] == 0, "forward still calls F.pad; OOB zero-fill not in effect"

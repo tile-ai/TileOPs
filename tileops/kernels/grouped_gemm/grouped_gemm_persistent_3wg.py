@@ -31,7 +31,6 @@ import os
 import tilelang
 import tilelang.language as T
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -188,7 +187,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
                         })
         return configs
 
-    def forward(self, A, B, true_sizes, true_offsets, out=None, a_aligned=None):
+    def forward(self, A, B, true_sizes, true_offsets, out=None):
         """Run the grouped GEMM ``C[e] = A[e] @ B[e]^T`` for every expert.
 
         Args:
@@ -201,13 +200,6 @@ class GroupedGemmPersistent3WGKernel(Kernel):
                 Must be contiguous and must not overlap ``A`` or ``B`` in memory
                 (the kernel reads inputs and writes the output concurrently).
                 Disjoint slices of a shared workspace buffer are allowed.
-            a_aligned: caller's assertion about whether every expert's row count
-                is ``block_m``-aligned. ``None`` (default) auto-detects from
-                ``true_sizes`` — which costs a host sync. ``True`` asserts aligned
-                routing and takes the unpadded fast path with no sync; ``False``
-                asserts unaligned routing and forces the padded path. Passing
-                ``True`` on unaligned data reads out of bounds and silently
-                corrupts the output — only set it when alignment is guaranteed.
 
         Returns:
             The ``[numel, N]`` output (``out`` if provided).
@@ -250,28 +242,10 @@ class GroupedGemmPersistent3WGKernel(Kernel):
                 raise ValueError("out must not overlap A or B in memory")
             C = out
 
-        # Guard-row padding of A is only needed when some expert's row count is
-        # NOT a multiple of block_m: the last (partial) m-tile's full-block_m TMA
-        # load would then read past numel. When every expert is block_m-aligned
-        # (the contiguous-layout case DeepGEMM mandates), no tile overreads, so
-        # we compile the unpadded A_shape=(numel, K) variant and skip the F.pad
-        # copy entirely — the dominant per-call overhead on aligned workloads.
-        #
-        # ``a_aligned`` is the caller's assertion about routing:
-        #   None  -> auto-detect (one ``torch.all`` host sync per call).
-        #   True  -> caller guarantees every expert row count is block_m-aligned;
-        #            skip both the pad and the sync. UNSAFE if the guarantee is
-        #            wrong — the last partial tile overreads and the output is
-        #            silently corrupt — so that contract lives with the caller.
-        #   False -> caller asserts unaligned routing; force the padded path.
-        if a_aligned is None:
-            a_aligned = bool(torch.all(true_sizes % block_m == 0))
-        a_padded = not a_aligned
-        if a_padded:
-            required_rows = self.numel + block_m
-            if A.shape[0] < required_rows:
-                A = F.pad(A, (0, 0, 0, required_rows - A.shape[0]))
-
+        # TMA OOB zero-fill (descriptor globalDim = numel) makes the last expert's
+        # partial-tile A over-read hardware-zero-filled; the partial-tile epilogue
+        # masks the store. No F.pad / guard rows / alignment detection needed —
+        # mirrors moe_grouped_gemm_persistent_3wg_fused_act.py.
         gemm_fn = _persistent_grouped_gemm_v2_kernel(
             self.numel, self.num_experts, self.N, self.K,
             self.dtype_str, self.sm_count, block_k,
@@ -280,7 +254,6 @@ class GroupedGemmPersistent3WGKernel(Kernel):
             self.config["num_stages"],
             self.config["threads"],
             self.config.get("group_size_m", 1),
-            a_padded,
         )
         gemm_fn(A, B, true_sizes, true_offsets, C)
         return C
@@ -288,7 +261,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
 
 def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                           block_m, block_n, block_k, num_stages, threads,
-                          group_size_m, a_padded=True):
+                          group_size_m):
     """Build a @T.prim_func for the pingpong template (block_m <= 64).
 
     Two math WGs each work an independent tile per wave; each WG holds
@@ -312,10 +285,7 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
     # of 2 * sm_count.
     _max_waves = (_total_ctas_ub + 2 * sm_count - 1) // (2 * sm_count) + 1
     _k_iters = K // block_k
-    # Padded variant reserves block_m guard rows so the last partial m-tile's
-    # full-block_m TMA stays in-bounds; the aligned (a_padded=False) variant
-    # needs none (see GroupedGemmPersistent3WGKernel.forward).
-    A_shape = (numel + block_m, K) if a_padded else (numel, K)
+    A_shape = (numel, K)  # TMA zero-fills OOB last-tile rows; epilogue masks them
 
     @T.prim_func
     def _gemm_main_v2(
@@ -660,7 +630,7 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
 
 def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                              block_m, block_n, block_k, num_stages, threads,
-                             group_size_m, a_padded=True):
+                             group_size_m):
     """Build a @T.prim_func for the cooperative template (block_m >= 128).
 
     Both math WGs split the M dimension of one shared tile in half.
@@ -706,10 +676,7 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
     # the case where _total_ctas_ub is not a multiple of sm_count.
     _max_waves = (_total_ctas_ub + sm_count - 1) // sm_count + 1
     _k_iters = K // block_k
-    # Padded variant reserves block_m guard rows so the last partial m-tile's
-    # full-block_m TMA stays in-bounds; the aligned (a_padded=False) variant
-    # needs none (see GroupedGemmPersistent3WGKernel.forward).
-    A_shape = (numel + block_m, K) if a_padded else (numel, K)
+    A_shape = (numel, K)  # TMA zero-fills OOB last-tile rows; epilogue masks them
 
     @T.prim_func
     def _gemm_main_v2_coop(
@@ -1009,19 +976,16 @@ def _persistent_grouped_gemm_v2_kernel(numel, num_experts, N, K, dtype,
         },
         compile_flags=["-O3", "-DENABLE_BF16", "-include", _ANCHOR_HELPER_PATH],
     )
-    def _func(block_m, block_n, block_k, num_stages, threads, group_size_m,
-              a_padded=True):
+    def _func(block_m, block_n, block_k, num_stages, threads, group_size_m):
         if block_m <= 64:
             return _make_pingpong_kernel(
                 numel, num_experts, N, K, dtype, sm_count,
                 block_m, block_n, block_k, num_stages, threads, group_size_m,
-                a_padded,
             )
         else:
             return _make_cooperative_kernel(
                 numel, num_experts, N, K, dtype, sm_count,
                 block_m, block_n, block_k, num_stages, threads, group_size_m,
-                a_padded,
             )
 
     return _func
