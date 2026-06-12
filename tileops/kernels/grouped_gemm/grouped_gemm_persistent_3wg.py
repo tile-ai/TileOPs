@@ -51,6 +51,20 @@ _DEFAULT_CONFIG = {
 }
 
 
+def _tensors_overlap(t1, t2) -> bool:
+    """True if two tensors share storage AND their byte intervals overlap.
+
+    Sharing one storage with disjoint intervals is safe and common — serving
+    frameworks (e.g. vLLM) slice inputs, weights, and outputs from a single
+    pre-allocated workspace — so storage identity alone must not be rejected.
+    """
+    if t1.untyped_storage().data_ptr() != t2.untyped_storage().data_ptr():
+        return False
+    t1_start, t1_end = t1.data_ptr(), t1.data_ptr() + t1.numel() * t1.element_size()
+    t2_start, t2_end = t2.data_ptr(), t2.data_ptr() + t2.numel() * t2.element_size()
+    return t1_start < t2_end and t2_start < t1_end
+
+
 class GroupedGemmPersistent3WGKernel(Kernel):
     """V2 persistent grouped-GEMM kernel (K-aligned only)."""
 
@@ -179,8 +193,9 @@ class GroupedGemmPersistent3WGKernel(Kernel):
             true_offsets: ``[num_experts]`` int32 start offset per expert in A.
             out: optional ``[numel, N]`` output buffer to write into and reuse
                 across calls. Allocated internally with ``torch.empty`` if omitted.
-                Must be contiguous and must not share storage with ``A`` or ``B``
+                Must be contiguous and must not overlap ``A`` or ``B`` in memory
                 (the kernel reads inputs and writes the output concurrently).
+                Disjoint slices of a shared workspace buffer are allowed.
             a_aligned: caller's assertion about whether every expert's row count
                 is ``block_m``-aligned. ``None`` (default) auto-detects from
                 ``true_sizes`` — which costs a host sync. ``True`` asserts aligned
@@ -221,12 +236,13 @@ class GroupedGemmPersistent3WGKernel(Kernel):
             # with the wrong strides. Reject it here rather than corrupt silently.
             if not out.is_contiguous():
                 raise ValueError("out must be contiguous")
-            # ``out`` must not share storage with ``A`` or ``B``: the kernel
-            # reads the inputs and writes the output concurrently, so an aliased
-            # buffer (including a crafted view, e.g. when N == K) would race.
-            out_store = out.untyped_storage().data_ptr()
-            if out_store == A.untyped_storage().data_ptr() or out_store == B.untyped_storage().data_ptr():
-                raise ValueError("out must not alias A or B")
+            # ``out`` must not overlap ``A`` or ``B`` in memory: the kernel reads
+            # the inputs and writes the output concurrently, so overlapping byte
+            # ranges would race. Sharing one storage with disjoint intervals is
+            # allowed (the workspace-slicing pattern), so this checks real
+            # interval overlap, not storage identity.
+            if _tensors_overlap(out, A) or _tensors_overlap(out, B):
+                raise ValueError("out must not overlap A or B in memory")
             C = out
 
         # Guard-row padding of A is only needed when some expert's row count is

@@ -339,8 +339,9 @@ def test_explicit_a_aligned_bypasses_autodetect(monkeypatch):
 
 @pytest.mark.nightly
 def test_out_buffer_validation():
-    """A caller-provided ``out`` with the wrong shape, dtype, device, or layout
-    is rejected with a clear ValueError instead of corrupting silently."""
+    """A caller-provided ``out`` with the wrong shape, dtype, device, layout, or
+    one that overlaps A/B in memory is rejected with a clear ValueError instead
+    of corrupting silently; disjoint slices of a shared workspace are accepted."""
     A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
     sm = torch.cuda.get_device_properties(0).multi_processor_count
     k3 = GroupedGemmPersistent3WGKernel(
@@ -360,10 +361,20 @@ def test_out_buffer_validation():
     with pytest.raises(ValueError, match="contiguous"):
         k3(A, B, sizes, offsets,
            out=torch.empty(N, numel, dtype=torch.bfloat16, device="cuda").t())
-    # out aliasing the input: A and out carved from one shared storage. Passes
+    # out overlapping the input: A and out are the same storage region. Passes
     # shape/dtype/device/contiguity but must be rejected (read/write race).
     shared = torch.empty(numel * max(N, K), dtype=torch.bfloat16, device="cuda")
     a_alias = shared[:numel * K].view(numel, K)
-    out_alias = shared[:numel * N].view(numel, N)
-    with pytest.raises(ValueError, match="alias"):
+    out_alias = shared[:numel * N].view(numel, N)  # overlaps a_alias from byte 0
+    with pytest.raises(ValueError, match="overlap"):
         k3(a_alias, B, sizes, offsets, out=out_alias)
+
+    # Disjoint slices of one workspace must be ACCEPTED (vLLM-style): a_ws and
+    # out_ws share storage but their byte intervals do not overlap.
+    C_ref = k3(A, B, sizes, offsets)
+    ws = torch.empty(numel * K + numel * N, dtype=torch.bfloat16, device="cuda")
+    a_ws = ws[:numel * K].view(numel, K)
+    out_ws = ws[numel * K:].view(numel, N)
+    a_ws.copy_(A)
+    res = k3(a_ws, B, sizes, offsets, out=out_ws)
+    torch.testing.assert_close(res, C_ref, rtol=2e-2, atol=2e-2)
