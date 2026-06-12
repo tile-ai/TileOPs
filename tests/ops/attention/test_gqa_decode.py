@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.attention.gqa_decode import GQADecodeKernel
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.gqa_decode import (
     GroupedQueryAttentionDecodeTest as _GroupedQueryAttentionDecodeTestWorkload,
@@ -38,6 +39,18 @@ def test_gqa_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim:
     test = GroupedQueryAttentionDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dtype)
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_gqa_decode_default_split_policy() -> None:
+    qwen_like = GQADecodeKernel(1, 16, 2, 8192, 128, dtype="float16")
+    assert qwen_like.config["num_split"] == 32
+
+    llama_like = GQADecodeKernel(1, 40, 8, 8192, 128, dtype="float16")
+    assert llama_like.config["num_split"] == 16
+
+    batched_qwen_like = GQADecodeKernel(8, 16, 2, 8192, 128, dtype="float16")
+    assert batched_qwen_like.config["num_split"] == 16
 
 
 if __name__ == "__main__":

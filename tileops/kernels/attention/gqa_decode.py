@@ -373,13 +373,31 @@ class GQADecodeKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"block_H": 64, "block_N": 128, "num_split": 16, "num_stages": 2, "threads": 128}
+        return {
+            "block_H": 64,
+            "block_N": 128,
+            "num_split": self._default_num_split(),
+            "num_stages": 2,
+            "threads": 128,
+        }
+
+    def _default_num_split(self) -> int:
+        """Choose a conservative default split policy for GQA decode.
+
+        Single-request, high-ratio GQA decode with very few KV heads benefits
+        from more split parallelism. Keep the existing split=16 default for
+        other shapes to avoid changing batched Llama-like workloads.
+        """
+        kv_group_num = self.heads // self.groups
+        if self.batch == 1 and self.dim == 128 and self.groups <= 2 and kv_group_num >= 8:
+            return 32
+        return 16
 
     @property
     def autotune_configs(self) -> list[dict]:
         block_N = [64, 128]
         block_H = [64]
-        num_split = [2, 4, 8]
+        num_split = [2, 4, 8, 16, 32]
         num_stages = [1, 2, 3]
         threads = [128]
         _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
