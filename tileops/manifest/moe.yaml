@@ -126,6 +126,9 @@ MoeUnpermuteFwdOp:
       total_tokens: {type: int}
       top_k: {type: int}
       hidden_size: {type: int}
+      # Optional caller-provided output buffer (forward(out=...)); when omitted
+      # the op allocates. Declared so forward()'s out param matches the spec.
+      out: {type: tensor}
     shape_rules:
     - "output.shape == (total_tokens, hidden_size)"
 
