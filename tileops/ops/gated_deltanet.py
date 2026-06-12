@@ -9,6 +9,7 @@ from tileops.kernels.gated_deltanet import (
 from tileops.kernels.gated_deltanet_recurrence import (
     GatedDeltaNetDecodeFP32Kernel,
     GatedDeltaNetDecodeKernel,
+    GatedDeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 
@@ -332,6 +333,23 @@ class GatedDeltaNetDecodeOp(Op):
     element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
     """
 
+    @staticmethod
+    def _should_use_raw_cuda_decode(
+        dim_k: int,
+        dim_v: int,
+        dtype: torch.dtype,
+        tune: bool,
+    ) -> bool:
+        if tune or dtype != torch.bfloat16 or dim_k != 128 or dim_v != 128:
+            return False
+        if not torch.cuda.is_available():
+            return False
+        try:
+            major, _minor = torch.cuda.get_device_capability()
+        except Exception:
+            return False
+        return major >= 9
+
     def __init__(
         self,
         batch: int,
@@ -350,9 +368,14 @@ class GatedDeltaNetDecodeOp(Op):
 
         self.dispatch_kernel(kernel_map)
 
-        # Dispatch: fp32 -> FP32 kernel (no TF32), fp16/bf16 -> TC kernel
+        # Dispatch:
+        #   fp32 -> FP32 kernel (no TF32)
+        #   bf16 DK=DV=128 on Hopper -> raw CUDA warp-per-Vtile kernel
+        #   other fp16/bf16 shapes -> default TileLang kernel
         if dtype == torch.float32:
             kernel_cls = self.kernel_map["GatedDeltaNetDecodeFP32Kernel"]
+        elif self._should_use_raw_cuda_decode(dim_k, dim_v, dtype, tune):
+            kernel_cls = self.kernel_map["GatedDeltaNetDecodeRawCudaFlaStyleKernel"]
         else:
             kernel_cls = self.kernel_map["GatedDeltaNetDecodeKernel"]
         kernel_dtype = Kernel.dtype_to_str(dtype)
@@ -367,6 +390,7 @@ class GatedDeltaNetDecodeOp(Op):
         return {
             "GatedDeltaNetDecodeKernel": GatedDeltaNetDecodeKernel,
             "GatedDeltaNetDecodeFP32Kernel": GatedDeltaNetDecodeFP32Kernel,
+            "GatedDeltaNetDecodeRawCudaFlaStyleKernel": GatedDeltaNetDecodeRawCudaFlaStyleKernel,
         }
 
     def forward(

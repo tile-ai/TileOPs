@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.gated_deltanet_recurrence import GatedDeltaNetDecodeRawCudaFlaStyleKernel
 from tileops.ops import GatedDeltaNetDecodeOp
 from workloads.gated_deltanet import (
     GatedDeltaNetDecodeTest as _GatedDeltaNetDecodeTestWorkload,
@@ -85,6 +86,7 @@ class GatedDeltaNetDecodeFixture(FixtureBase):
             pytest.param(2, 4, 128, 128, torch.float32, False, marks=pytest.mark.full),
             pytest.param(2, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 8, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(1, 32, 128, 128, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -141,6 +143,41 @@ def test_gated_deltanet_decode_multi_step(
 
         torch.testing.assert_close(o_op, o_ref, **tols)
         torch.testing.assert_close(state_op, state_ref, **tols)
+
+
+@pytest.mark.smoke
+def test_gated_deltanet_decode_raw_cuda_config_requires_full_warp_mapping() -> None:
+    with pytest.raises(ValueError, match="threads .* must equal raw_group_size \\* v_tile"):
+        GatedDeltaNetDecodeRawCudaFlaStyleKernel(
+            1,
+            32,
+            128,
+            128,
+            dtype="bfloat16",
+            config={
+                "threads": 16,
+                "v_tile": 16,
+                "raw_group_size": 2,
+                "raw_maxrregcount": 146,
+            },
+        )
+
+
+@pytest.mark.smoke
+def test_gated_deltanet_decode_raw_cuda_dispatch_handles_capability_errors(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    def _raise_capability_error():
+        raise RuntimeError("mock capability failure")
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", _raise_capability_error)
+
+    assert not GatedDeltaNetDecodeOp._should_use_raw_cuda_decode(
+        128,
+        128,
+        torch.bfloat16,
+        tune=False,
+    )
 
 
 if __name__ == "__main__":
