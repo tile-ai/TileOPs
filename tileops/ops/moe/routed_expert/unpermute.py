@@ -62,6 +62,7 @@ class MoeUnpermuteFwdOp(Op):
         mm2_pad: torch.Tensor,
         fwd_idx: torch.Tensor,
         topk_weights: torch.Tensor,
+        out: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run moe_unpermute.
 
@@ -69,8 +70,10 @@ class MoeUnpermuteFwdOp(Op):
             mm2_pad: [padded_batch_sum, H] bf16/fp16 down-proj output (padded layout).
             fwd_idx: [T*K] int32 forward mapping: flat_idx → padded slot.
             topk_weights: [T, K] float32 routing weights.
+            out: optional [T, H] output buffer to write into; allocated internally
+                if omitted.
 
         Returns:
-            output: [T, H] bf16/fp16
+            output: [T, H] bf16/fp16 (``out`` if provided).
         """
-        return self.kernel(mm2_pad, fwd_idx, topk_weights)
+        return self.kernel(mm2_pad, fwd_idx, topk_weights, out=out)

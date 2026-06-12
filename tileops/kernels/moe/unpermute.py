@@ -148,6 +148,7 @@ class MoeUnpermuteKernel(Kernel):
         mm2_pad: torch.Tensor,
         fwd_idx: torch.Tensor,
         topk_weights: torch.Tensor,
+        out: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run moe_unpermute.
 
@@ -155,16 +156,28 @@ class MoeUnpermuteKernel(Kernel):
             mm2_pad: [padded_batch_sum, H] bf16/fp16 down-proj output (padded layout).
             fwd_idx: [T*K] int32 forward mapping: flat_idx → padded slot.
             topk_weights: [T, K] float32 routing weights.
+            out: optional [T, H] output buffer to write into and reuse across
+                calls. Allocated internally with ``torch.empty`` if omitted.
 
         Returns:
-            output: [T, H] bf16/fp16
+            output: [T, H] bf16/fp16 (``out`` if provided).
         """
         assert fwd_idx.dtype == torch.int32
         assert topk_weights.dtype == torch.float32
         assert mm2_pad.is_cuda
 
         dev = mm2_pad.device
-        output = torch.empty((self.num_tokens, self.hidden_size), dtype=self.dtype, device=dev)
+        if out is None:
+            output = torch.empty(
+                (self.num_tokens, self.hidden_size), dtype=self.dtype, device=dev)
+        else:
+            if tuple(out.shape) != (self.num_tokens, self.hidden_size):
+                raise ValueError(
+                    f"out shape must be {(self.num_tokens, self.hidden_size)}, "
+                    f"got {tuple(out.shape)}")
+            if out.dtype != self.dtype:
+                raise ValueError(f"out dtype must be {self.dtype}, got {out.dtype}")
+            output = out
 
         fn = self._unpermute_fn()
         fn(mm2_pad, fwd_idx, topk_weights, output)
