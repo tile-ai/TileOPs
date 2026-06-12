@@ -32,6 +32,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
 
 _ANCHOR_HELPER_PATH = os.path.abspath(
@@ -48,37 +49,6 @@ _DEFAULT_CONFIG = {
     "threads": 384,
     "group_size_m": 1,
 }
-
-
-def _tensors_overlap(t1, t2) -> bool:
-    """True if two tensors share storage AND their byte intervals overlap.
-
-    Sharing one storage with disjoint intervals is safe and common — serving
-    frameworks (e.g. vLLM) slice inputs, weights, and outputs from a single
-    pre-allocated workspace — so storage identity alone must not be rejected.
-    """
-    # Pointers live in per-device address spaces, so two tensors on different
-    # devices can share a numeric data_ptr by coincidence — guard before any
-    # interval math.
-    if t1.device != t2.device:
-        return False
-    if t1.untyped_storage().data_ptr() != t2.untyped_storage().data_ptr():
-        return False
-
-    # Byte span from data_ptr is the largest reachable element offset, not
-    # numel: a non-contiguous (sliced/transposed) view reaches past
-    # numel*element_size, so numel alone would under-estimate the span and miss
-    # a real overlap. max_offset = Σ (dim-1)·stride covers strided layouts;
-    # for a contiguous tensor it collapses to numel-1.
-    def _byte_span(t):
-        if t.numel() == 0:
-            return 0
-        max_off = sum((s - 1) * st for s, st in zip(t.shape, t.stride(), strict=True))
-        return (max_off + 1) * t.element_size()
-
-    t1_start, t1_end = t1.data_ptr(), t1.data_ptr() + _byte_span(t1)
-    t2_start, t2_end = t2.data_ptr(), t2.data_ptr() + _byte_span(t2)
-    return t1_start < t2_end and t2_start < t1_end
 
 
 class GroupedGemmPersistent3WGKernel(Kernel):
@@ -224,28 +194,12 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         if self.N % block_n != 0:
             raise ValueError(f"N-aligned only: N={self.N}, block_n={block_n}")
 
-        # Validate inputs against the compiled shapes. A wrong K or a cross-device
-        # tensor does not crash — it silently reads the wrong memory and returns
-        # garbage (same failure class as the _tensors_overlap cross-device guard),
-        # so reject here rather than corrupt. A.shape[0] may be exactly numel: the
-        # last partial tile's over-read past numel is TMA OOB zero-filled.
-        if A.shape[1] != self.K:
-            raise ValueError(f"A.shape[1] must be K={self.K}, got {A.shape[1]}")
-        if A.shape[0] < self.numel:
-            raise ValueError(
-                f"A.shape[0] must be >= numel={self.numel}, got {A.shape[0]}")
-        if tuple(B.shape) != (self.num_experts, self.N, self.K):
-            raise ValueError(
-                f"B shape must be {(self.num_experts, self.N, self.K)}, "
-                f"got {tuple(B.shape)}")
-        if tuple(true_sizes.shape) != (self.num_experts,):
-            raise ValueError(
-                f"true_sizes shape must be {(self.num_experts,)}, "
-                f"got {tuple(true_sizes.shape)}")
-        if tuple(true_offsets.shape) != (self.num_experts,):
-            raise ValueError(
-                f"true_offsets shape must be {(self.num_experts,)}, "
-                f"got {tuple(true_offsets.shape)}")
+        # TileLang's call-time adapter already validates ndim / per-dim static
+        # shape / dtype / stride / contiguity for every tensor arg and raises a
+        # clear error, so we do not duplicate those checks here. Its one gap is
+        # the device *index*: the adapter passes when either side's index is None
+        # (kernel compiled for a generic "cuda" device), so a cuda:0 vs cuda:1
+        # mix can slip through and read the wrong device's memory. Guard that.
         if not (B.device == true_sizes.device == true_offsets.device == A.device):
             raise ValueError(
                 "A, B, true_sizes, true_offsets must be on the same device")
@@ -276,7 +230,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
             # ranges would race. Sharing one storage with disjoint intervals is
             # allowed (the workspace-slicing pattern), so this checks real
             # interval overlap, not storage identity.
-            if _tensors_overlap(out, A) or _tensors_overlap(out, B):
+            if tensors_overlap(out, A) or tensors_overlap(out, B):
                 raise ValueError("out must not overlap A or B in memory")
             C = out
 

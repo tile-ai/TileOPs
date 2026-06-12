@@ -24,6 +24,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["MoeUnpermuteKernel"]
@@ -192,6 +193,11 @@ class MoeUnpermuteKernel(Kernel):
                 raise ValueError(f"out device must be {dev}, got {out.device}")
             if not out.is_contiguous():
                 raise ValueError("out must be contiguous")
+            # The kernel reads ``mm2_pad`` (gathered per token) while writing
+            # ``out`` concurrently, so an ``out`` overlapping ``mm2_pad`` in
+            # memory races. Disjoint slices of one workspace buffer are allowed.
+            if tensors_overlap(out, mm2_pad):
+                raise ValueError("out must not overlap mm2_pad in memory")
             output = out
 
         fn = self._unpermute_fn()

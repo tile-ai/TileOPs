@@ -160,5 +160,39 @@ def test_moe_unpermute_scaling():
     torch.testing.assert_close(got, ref, rtol=2e-2, atol=2e-2)
 
 
+@pytest.mark.smoke
+def test_moe_unpermute_out_buffer_validation():
+    """out= rejects wrong device / non-contiguous / mm2_pad-overlapping buffers,
+    but accepts disjoint slices of a shared workspace (vLLM-style)."""
+    torch.manual_seed(0)
+    T, K, H = 8, 2, 256
+    numel = T * K
+    dev = "cuda"
+    mm2_pad = torch.randn(numel, H, dtype=torch.bfloat16, device=dev) * 0.02
+    fwd_idx = torch.arange(numel, dtype=torch.int32, device=dev)
+    topk_weights = torch.softmax(
+        torch.randn(T, K, dtype=torch.float32, device=dev), dim=-1)
+    op = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+
+    with pytest.raises(ValueError, match="contiguous"):
+        op(mm2_pad, fwd_idx, topk_weights,
+           out=torch.empty(H, T, dtype=torch.bfloat16, device=dev).t())
+    # out overlapping mm2_pad: same storage, overlapping byte intervals.
+    ws = torch.empty(numel * H, dtype=torch.bfloat16, device=dev)
+    mm2_alias = ws[:numel * H].view(numel, H)
+    out_alias = ws[:T * H].view(T, H)          # overlaps mm2_alias from byte 0
+    mm2_alias.copy_(mm2_pad)
+    with pytest.raises(ValueError, match="overlap"):
+        op(mm2_alias, fwd_idx, topk_weights, out=out_alias)
+    # Disjoint slices of one workspace must be ACCEPTED.
+    ref = op(mm2_pad, fwd_idx, topk_weights)
+    ws2 = torch.empty(numel * H + T * H, dtype=torch.bfloat16, device=dev)
+    mm2_ws = ws2[:numel * H].view(numel, H)
+    out_ws = ws2[numel * H:].view(T, H)
+    mm2_ws.copy_(mm2_pad)
+    got = op(mm2_ws, fwd_idx, topk_weights, out=out_ws)
+    torch.testing.assert_close(got.float(), ref.float(), rtol=1e-2, atol=1e-2)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
