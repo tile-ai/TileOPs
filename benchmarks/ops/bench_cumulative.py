@@ -1,42 +1,35 @@
-"""Benchmarks for cumulative ops (cumsum, cumprod)."""
+"""Benchmarks for cumulative ops (cumsum, cumprod).
 
-from typing import Optional
+Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
+Workload shapes and roofline formulas are loaded from the ops manifest
+(tileops/manifest/).
+"""
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from workloads.workload_base import FixtureBase, WorkloadBase
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    workloads_to_params,
+)
+from workloads.workload_base import WorkloadBase
 
-
-class CumulativeBenchFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype, op_kind",
-            [
-                pytest.param(1024, 4096, torch.float16, "cumsum"),
-                pytest.param(1024, 4096, torch.bfloat16, "cumsum"),
-                pytest.param(4096, 4096, torch.float16, "cumsum"),
-                pytest.param(1024, 4096, torch.float16, "cumprod"),
-                pytest.param(1024, 4096, torch.bfloat16, "cumprod"),
-                pytest.param(4096, 4096, torch.float16, "cumprod"),
-            ],
-        ),
-    ]
+_CUMSUM_OP = "CumsumFwdOp"
+_CUMPROD_OP = "CumprodFwdOp"
 
 
 class CumulativeBenchTest(WorkloadBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        self.m = m
-        self.n = n
+    def __init__(self, shape: tuple, dtype: torch.dtype, op_kind: str):
+        self.shape = shape
         self.dtype = dtype
         self.op_kind = op_kind
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self.op_kind == "cumprod":
-            x = torch.rand(self.m, self.n, dtype=self.dtype, device="cuda") * 0.01 + 0.99
+            x = torch.rand(*self.shape, dtype=self.dtype, device="cuda") * 0.01 + 0.99
         else:
-            x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
+            x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -48,20 +41,7 @@ class CumulativeBenchTest(WorkloadBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-class CumulativeBenchmark(BenchmarkBase[CumulativeBenchTest]):
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        # Approximate: inclusive scan performs N-1 ops per row, rounded up to M*N
-        return t.m * t.n
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem_bytes = torch.tensor([], dtype=t.dtype).element_size()
-        # Read x (M*N) + write output (M*N)
-        return 2 * t.m * t.n * elem_bytes
-
-
-def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
+def _make_op(shape: tuple, dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.cumprod import CumprodFwdOp
     from tileops.ops.reduction.cumsum import CumsumFwdOp
@@ -71,16 +51,30 @@ def _make_op(m: int, n: int, dtype: torch.dtype, op_kind: str):
         "cumprod": CumprodFwdOp,
     }
     cls = op_map[op_kind]
-    return cls(N=n, dtype=dtype)
+    return cls(N=shape[-1], dtype=dtype, dim=-1)
 
 
-@CumulativeBenchFixture
-def test_cumulative_bench(m: int, n: int, dtype: torch.dtype, op_kind: str) -> None:
-    test = CumulativeBenchTest(m, n, dtype, op_kind)
-    bm = CumulativeBenchmark(test)
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMSUM_OP))
+def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = CumulativeBenchTest(shape, dtype, "cumsum")
     inputs = test.gen_inputs()
 
-    op = _make_op(m, n, dtype, op_kind)
+    op = _make_op(shape, dtype, "cumsum")
+    bm = ManifestBenchmark(_CUMSUM_OP, op, test)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+@pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMPROD_OP))
+def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
+    test = CumulativeBenchTest(shape, dtype, "cumprod")
+    inputs = test.gen_inputs()
+
+    op = _make_op(shape, dtype, "cumprod")
+    bm = ManifestBenchmark(_CUMPROD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
