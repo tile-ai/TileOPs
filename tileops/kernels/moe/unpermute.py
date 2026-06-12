@@ -185,6 +185,13 @@ class MoeUnpermuteKernel(Kernel):
                     f"got {tuple(out.shape)}")
             if out.dtype != self.dtype:
                 raise ValueError(f"out dtype must be {self.dtype}, got {out.dtype}")
+            # The kernel writes ``out`` on mm2_pad's device as a row-major compact
+            # tensor; a cross-device or non-contiguous ``out`` would scatter the
+            # store to the wrong memory. Reject rather than corrupt silently.
+            if out.device != dev:
+                raise ValueError(f"out device must be {dev}, got {out.device}")
+            if not out.is_contiguous():
+                raise ValueError("out must be contiguous")
             output = out
 
         fn = self._unpermute_fn()
