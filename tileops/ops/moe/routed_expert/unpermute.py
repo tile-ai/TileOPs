@@ -27,6 +27,8 @@ class MoeUnpermuteFwdOp(Op):
             use the default when mm2_pad comes from MoePermuteOp, as the padded
             buffer will be larger and the kernel will index out of bounds.
         kernel_map: Optional kernel override dict.
+        routed_scaling_factor: Scalar applied to the reduced output, folded into
+            the unpermute kernel. Defaults to 1.0 (no scaling).
 
     Example:
         >>> op = MoeUnpermuteFwdOp(total_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
@@ -41,6 +43,7 @@ class MoeUnpermuteFwdOp(Op):
         dtype: torch.dtype = torch.bfloat16,
         padded_batch_sum: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        routed_scaling_factor: float = 1.0,
     ) -> None:
         self.total_tokens = total_tokens
         self.top_k = top_k
@@ -50,7 +53,8 @@ class MoeUnpermuteFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["unpermute_kernel"](
-            total_tokens, top_k, hidden_size, self.padded_batch_sum, dtype
+            total_tokens, top_k, hidden_size, self.padded_batch_sum, dtype,
+            scaling=routed_scaling_factor,
         )
 
     @property

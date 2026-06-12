@@ -138,5 +138,27 @@ def test_moe_unpermute_out_param():
     torch.testing.assert_close(out.float(), ref.float(), rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.smoke
+def test_moe_unpermute_scaling():
+    """routed_scaling_factor scales the reduced output (folded into the kernel)."""
+    torch.manual_seed(0)
+    T, K, H = 8, 2, 256
+    numel = T * K
+    dev = "cuda"
+    mm2_pad = torch.randn(numel, H, dtype=torch.bfloat16, device=dev) * 0.02
+    fwd_idx = torch.arange(numel, dtype=torch.int32, device=dev)
+    topk_weights = torch.softmax(
+        torch.randn(T, K, dtype=torch.float32, device=dev), dim=-1)
+
+    scale = 2.827
+    base = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+    ref = base(mm2_pad, fwd_idx, topk_weights).float() * scale
+
+    scaled = MoeUnpermuteFwdOp(
+        T, K, H, torch.bfloat16, padded_batch_sum=numel, routed_scaling_factor=scale)
+    got = scaled(mm2_pad, fwd_idx, topk_weights).float()
+    torch.testing.assert_close(got, ref, rtol=2e-2, atol=2e-2)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

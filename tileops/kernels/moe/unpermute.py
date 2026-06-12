@@ -35,6 +35,7 @@ def _make_unpermute_kernel(
     hidden_size: int,
     padded_batch_sum: int,
     dtype: str,
+    scaling: float = 1.0,
 ):
     """One block per token. Threads cooperate over H dimension.
 
@@ -84,10 +85,14 @@ def _make_unpermute_kernel(
                     for j in T.Parallel(hidden_size):
                         acc[j] = acc[j] + T.Cast("float32", src[j]) * weight
 
-                # cast and store
+                # cast (and scale) then store
                 out_frag = T.alloc_fragment([hidden_size], dtype)
-                for j in T.Parallel(hidden_size):
-                    out_frag[j] = T.Cast(dtype, acc[j])
+                if scaling != 1.0:
+                    for j in T.Parallel(hidden_size):
+                        out_frag[j] = T.Cast(dtype, acc[j] * T.float32(scaling))
+                else:
+                    for j in T.Parallel(hidden_size):
+                        out_frag[j] = T.Cast(dtype, acc[j])
                 T.copy(out_frag, output[token_idx, 0:hidden_size])
 
         return _unpermute_main
@@ -108,6 +113,8 @@ class MoeUnpermuteKernel(Kernel):
         padded_batch_sum: Size of the padded mm2_pad buffer (≥ T*K).
         dtype: Data type of mm2_pad and output (bf16 or fp16).
         config: Optional config dict.
+        scaling: Scalar multiplied into the reduced output before the cast/store
+            (folds ``routed_scaling_factor``). Defaults to 1.0 (no scaling).
 
     Example:
         >>> kernel = MoeUnpermuteKernel(num_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
@@ -124,6 +131,7 @@ class MoeUnpermuteKernel(Kernel):
         padded_batch_sum: int,
         dtype: torch.dtype = torch.bfloat16,
         config: Optional[dict] = None,
+        scaling: float = 1.0,
     ):
         super().__init__()
         self.num_tokens = num_tokens
@@ -134,7 +142,7 @@ class MoeUnpermuteKernel(Kernel):
         self.numel = num_tokens * top_k
 
         self._unpermute_fn = _make_unpermute_kernel(
-            num_tokens, top_k, hidden_size, padded_batch_sum, self.dtype_str
+            num_tokens, top_k, hidden_size, padded_batch_sum, self.dtype_str, scaling
         )
 
         self.init_config(config, tune=False)
