@@ -530,6 +530,14 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
         group_b_kn = [B_KN[e] for e in range(E)]  # non-TMA wants B[e] as [K, N]
         a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds = _build_triton_ptrs(group_a, group_b_kn, group_c)
         grid = lambda meta: (meta["NUM_SM"],)  # noqa: E731
+        # Fair per-shape autotuning: the autotune key is only ``group_size`` (E),
+        # but M/N/K are passed in the group_gemm_sizes device tensor and are
+        # invisible to the key — so without this, the first same-E case's winning
+        # config (e.g. GLM up M=1024) is cached and reused for every later same-E
+        # case (down-proj, larger M), measuring a stale config. Clearing the
+        # in-memory cache before each case forces a re-autotune on this case's
+        # real tensors (disk cache is off: cache_results defaults False).
+        _grouped_matmul_kernel.cache.clear()
         try:
             r = bm.profile(
                 _synced(lambda: _grouped_matmul_kernel[grid](a_ptrs, b_ptrs, c_ptrs, g_sizes, g_lds, E)))
@@ -548,6 +556,9 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
             group_b_nk = [B[e] for e in range(E)]  # [N, K]
             a_p, b_p, c_p, gs, gl = _build_triton_ptrs(group_a, group_b_nk, group_c_tma)
             _set_triton_allocator()
+            # Re-autotune per case for the same reason as the non-TMA kernel
+            # above (key=["group_size"] collides different M/N/K under one E).
+            _grouped_matmul_tma_kernel.cache.clear()
             try:
                 r = bm.profile(
                     _synced(lambda: _grouped_matmul_tma_kernel[grid](a_p, b_p, c_p, gs, gl, E, NUM_SM=sm)))
