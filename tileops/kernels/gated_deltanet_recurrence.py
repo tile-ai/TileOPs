@@ -424,6 +424,12 @@ class GatedDeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
         self.dim_v = dim_v
         self.dtype = dtype
         self.init_config(config, tune=False)
+        required_threads = self.config["raw_group_size"] * self.config["v_tile"]
+        if self.config["threads"] != required_threads:
+            raise ValueError(
+                f"threads ({self.config['threads']}) must equal raw_group_size * v_tile "
+                f"({required_threads}) for the warp-lane mapping used by this kernel."
+            )
         self._kernel_fn = _gated_deltanet_decode_raw_cuda_flastyle_tl(
             batch,
             head,

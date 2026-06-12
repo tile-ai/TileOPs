@@ -344,7 +344,10 @@ class GatedDeltaNetDecodeOp(Op):
             return False
         if not torch.cuda.is_available():
             return False
-        major, _minor = torch.cuda.get_device_capability()
+        try:
+            major, _minor = torch.cuda.get_device_capability()
+        except Exception:
+            return False
         return major >= 9
 
     def __init__(
