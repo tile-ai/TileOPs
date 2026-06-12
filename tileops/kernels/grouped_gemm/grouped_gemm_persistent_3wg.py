@@ -31,8 +31,8 @@ import os
 import tilelang
 import tilelang.language as T
 import torch
-import torch.nn.functional as F
 
+from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
 
 _ANCHOR_HELPER_PATH = os.path.abspath(
@@ -169,8 +169,23 @@ class GroupedGemmPersistent3WGKernel(Kernel):
                         })
         return configs
 
-    def forward(self, A, B, true_sizes, true_offsets):
-        C = torch.zeros(self.numel, self.N, dtype=self.dtype, device=A.device)
+    def forward(self, A, B, true_sizes, true_offsets, out=None):
+        """Run the grouped GEMM ``C[e] = A[e] @ B[e]^T`` for every expert.
+
+        Args:
+            A: ``[numel, K]`` tokens, grouped by expert (tight, no padding).
+            B: ``[num_experts, N, K]`` expert weights (NT layout).
+            true_sizes: ``[num_experts]`` int32 row count per expert.
+            true_offsets: ``[num_experts]`` int32 start offset per expert in A.
+            out: optional ``[numel, N]`` output buffer to write into and reuse
+                across calls. Allocated internally with ``torch.empty`` if omitted.
+                Must be contiguous and must not overlap ``A`` or ``B`` in memory
+                (the kernel reads inputs and writes the output concurrently).
+                Disjoint slices of a shared workspace buffer are allowed.
+
+        Returns:
+            The ``[numel, N]`` output (``out`` if provided).
+        """
         block_m = self.config["block_m"]
         block_n = self.config["block_n"]
         block_k = self.config["block_k"]
@@ -178,9 +193,51 @@ class GroupedGemmPersistent3WGKernel(Kernel):
             raise ValueError(f"K-aligned only: K={self.K}, block_k={block_k}")
         if self.N % block_n != 0:
             raise ValueError(f"N-aligned only: N={self.N}, block_n={block_n}")
-        required_rows = self.numel + block_m
-        if A.shape[0] < required_rows:
-            A = F.pad(A, (0, 0, 0, required_rows - A.shape[0]))
+
+        # TileLang's call-time adapter already validates ndim / per-dim static
+        # shape / dtype / stride / contiguity for every tensor arg and raises a
+        # clear error, so we do not duplicate those checks here. Its one gap is
+        # the device *index*: the adapter passes when either side's index is None
+        # (kernel compiled for a generic "cuda" device), so a cuda:0 vs cuda:1
+        # mix can slip through and read the wrong device's memory. Guard that.
+        if not (B.device == true_sizes.device == true_offsets.device == A.device):
+            raise ValueError(
+                "A, B, true_sizes, true_offsets must be on the same device")
+
+        # Output buffer. Every row in [0, numel) belongs to some expert and is
+        # written by exactly one tile (full tiles via TMA-store, partial tiles
+        # via predicated STG), so an uninitialised buffer is correct — the prior
+        # ``torch.zeros`` memset was pure overhead. ``out`` lets the caller
+        # pre-allocate and reuse across calls (matches DeepGEMM's out-param),
+        # which is what fair benchmarking and steady-state serving both want.
+        if out is None:
+            C = torch.empty(self.numel, self.N, dtype=self.dtype, device=A.device)
+        else:
+            if tuple(out.shape) != (self.numel, self.N):
+                raise ValueError(
+                    f"out shape must be {(self.numel, self.N)}, got {tuple(out.shape)}")
+            if out.dtype != self.dtype:
+                raise ValueError(f"out dtype must be {self.dtype}, got {out.dtype}")
+            if out.device != A.device:
+                raise ValueError(f"out device must be {A.device}, got {out.device}")
+            # The kernel writes ``out`` as a compact (row-major contiguous) tensor;
+            # a non-contiguous view with the right logical shape would be written
+            # with the wrong strides. Reject it here rather than corrupt silently.
+            if not out.is_contiguous():
+                raise ValueError("out must be contiguous")
+            # ``out`` must not overlap ``A`` or ``B`` in memory: the kernel reads
+            # the inputs and writes the output concurrently, so overlapping byte
+            # ranges would race. Sharing one storage with disjoint intervals is
+            # allowed (the workspace-slicing pattern), so this checks real
+            # interval overlap, not storage identity.
+            if tensors_overlap(out, A) or tensors_overlap(out, B):
+                raise ValueError("out must not overlap A or B in memory")
+            C = out
+
+        # TMA OOB zero-fill (descriptor globalDim = numel) makes the last expert's
+        # partial-tile A over-read hardware-zero-filled; the partial-tile epilogue
+        # masks the store. No F.pad / guard rows / alignment detection needed —
+        # mirrors moe_grouped_gemm_persistent_3wg_fused_act.py.
         gemm_fn = _persistent_grouped_gemm_v2_kernel(
             self.numel, self.num_experts, self.N, self.K,
             self.dtype_str, self.sm_count, block_k,
@@ -220,7 +277,7 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
     # of 2 * sm_count.
     _max_waves = (_total_ctas_ub + 2 * sm_count - 1) // (2 * sm_count) + 1
     _k_iters = K // block_k
-    A_shape = (numel + block_m, K)
+    A_shape = (numel, K)  # TMA zero-fills OOB last-tile rows; epilogue masks them
 
     @T.prim_func
     def _gemm_main_v2(
@@ -611,7 +668,7 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
     # the case where _total_ctas_ub is not a multiple of sm_count.
     _max_waves = (_total_ctas_ub + sm_count - 1) // sm_count + 1
     _k_iters = K // block_k
-    A_shape = (numel + block_m, K)
+    A_shape = (numel, K)  # TMA zero-fills OOB last-tile rows; epilogue masks them
 
     @T.prim_func
     def _gemm_main_v2_coop(
