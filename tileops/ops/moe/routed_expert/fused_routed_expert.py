@@ -215,6 +215,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             total_tokens=num_tokens, top_k=top_k,
             hidden_size=hidden_size, dtype=dtype, padded_batch_sum=numel,
             kernel_map=kernel_map,
+            routed_scaling_factor=routed_scaling_factor,
         )
         self._routed_scaling_factor = routed_scaling_factor
 
@@ -282,8 +283,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         gate_up = self._gemm_gate_up(perm_h, w_gate_up, true_sizes, true_offsets)
         act = gate_up if self.use_fused_activation else self._activation_op(gate_up)
         mm2 = self._gemm_down(act, w_down, true_sizes, true_offsets)
-        result = self._unpermute(mm2, fwd_idx, topk_weights)
-        if self._routed_scaling_factor != 1.0:
-            torch.mul(result, self._routed_scaling_factor, out=output)
-        else:
-            output.copy_(result)
+        # Unpermute reduces into ``output`` directly and folds
+        # ``routed_scaling_factor`` into its prim_func — no separate copy/scale.
+        self._unpermute(mm2, fwd_idx, topk_weights, out=output)
