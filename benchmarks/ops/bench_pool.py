@@ -6,7 +6,10 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.kernels.pool.common import pool_output_dim
-from tileops.ops import AvgPool1dOp, AvgPool2dOp, AvgPool3dOp
+from tileops.manifest import load_workloads
+from tileops.ops import AvgPool1dFwdOp, AvgPool2dOp, AvgPool3dOp
+
+_AVG_POOL1D_OP_NAME = "AvgPool1dFwdOp"
 
 
 class AvgPool1dBenchCase:
@@ -34,7 +37,7 @@ class AvgPool1dBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.n, self.l_in, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -50,27 +53,57 @@ class AvgPool1dBenchCase:
 
 class AvgPool1dBenchmark(BenchmarkBase[AvgPool1dBenchCase]):
 
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def __init__(self, test: AvgPool1dBenchCase, op: AvgPool1dFwdOp) -> None:
+        super().__init__(test)
+        self._op = op
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = self._op.eval_roofline()
+        return self._roofline_cache
+
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        out_l = pool_output_dim(t.l_in, t.kernel_size, t.stride, t.padding, t.ceil_mode)
-        return t.n * t.c_in * out_l * t.kernel_size
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        out_l = pool_output_dim(t.l_in, t.kernel_size, t.stride, t.padding, t.ceil_mode)
-        return (t.n * t.c_in * t.l_in + t.n * t.c_in * out_l) * t.dtype.itemsize
+        return self._get_roofline()[1]
 
 
-_AVG_POOL1D_BENCH_PARAMS = [
-    pytest.param(4, 128, 4096, 3, 2, 1, False, True, torch.float16, True, id="audio-downsample-fp16"),
-    pytest.param(2, 256, 32000, 5, 4, 2, False, True, torch.float16, True, id="long-temporal-fp16"),
-    pytest.param(2, 128, 2048, 4, 2, 1, True, False, torch.bfloat16, True, id="ceil-bf16"),
-]
+def _avg_pool1d_bench_params() -> list:
+    params = []
+    for workload in load_workloads(_AVG_POOL1D_OP_NAME):
+        n, c_in, l_in = workload["input_shape"]
+        kernel_size = workload["kernel_size"]
+        stride = workload.get("stride")
+        padding = workload.get("padding", 0)
+        ceil_mode = workload.get("ceil_mode", False)
+        count_include_pad = workload.get("count_include_pad", True)
+        label = workload.get("label", f"{n}x{c_in}x{l_in}")
+        for dtype_str in workload["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(
+                pytest.param(
+                    n,
+                    c_in,
+                    l_in,
+                    kernel_size,
+                    stride,
+                    padding,
+                    ceil_mode,
+                    count_include_pad,
+                    dtype,
+                    True,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
+    return params
 
 
 @pytest.mark.parametrize(
     "n, c_in, l_in, kernel_size, stride, padding, ceil_mode, count_include_pad, dtype, tune",
-    _AVG_POOL1D_BENCH_PARAMS,
+    _avg_pool1d_bench_params(),
 )
 def test_avg_pool1d_bench(
     n: int,
@@ -85,12 +118,9 @@ def test_avg_pool1d_bench(
     tune: bool,
 ) -> None:
     test = AvgPool1dBenchCase(n, c_in, l_in, kernel_size, stride, padding, ceil_mode, count_include_pad, dtype)
-    bm = AvgPool1dBenchmark(test)
     inputs = test.gen_inputs()
-    (x,) = inputs
-    x_ncl = x.permute(0, 2, 1).contiguous()
 
-    op = AvgPool1dOp(
+    op = AvgPool1dFwdOp(
         n=n,
         c_in=c_in,
         l_in=l_in,
@@ -102,10 +132,11 @@ def test_avg_pool1d_bench(
         dtype=dtype,
         tune=tune,
     )
+    bm = AvgPool1dBenchmark(test, op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("avg_pool1d", locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, x_ncl)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record("avg_pool1d", locals(), result_bl, tag="torch-ref")
 
 

@@ -64,7 +64,7 @@ from .norm import (
     RMSNormFwdOp,
 )
 from .op_base import Op
-from .pool import AvgPool1dOp, AvgPool2dOp, AvgPool3dOp
+from .pool import AvgPool1dFwdOp, AvgPool2dOp, AvgPool3dOp
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---
 from .reduction import (
@@ -108,7 +108,7 @@ from .topk_selector import TopkSelectorOp
 
 __all__ = [
     "BinaryOp",
-    "AvgPool1dOp",
+    "AvgPool1dFwdOp",
     "AvgPool2dOp",
     "AvgPool3dOp",
     "AdaLayerNormFwdOp",
