@@ -1,0 +1,168 @@
+{
+  "by_status": {
+    "implemented": 125,
+    "spec-only": 12
+  },
+  "conformance_gaps": {
+    "implemented_with_fewer_than_two_workloads": [],
+    "implemented_without_bench_manifest_driven": [
+      "AdaLayerNormFwdOp",
+      "AdaLayerNormZeroFwdOp",
+      "ArgmaxFwdOp",
+      "ArgminFwdOp",
+      "BatchNormBwdOp",
+      "BatchNormFwdOp",
+      "Conv1dBiasFwdOp",
+      "Conv1dFwdOp",
+      "CumprodFwdOp",
+      "CumsumFwdOp",
+      "FusedAddLayerNormFwdOp",
+      "FusedAddRMSNormFwdOp",
+      "FusedMoEExpertsNopadPersistent3WGFwdOp",
+      "GroupNormFwdOp",
+      "GroupNormFwdOpNoAffine",
+      "InstanceNormFwdOp",
+      "InstanceNormFwdOpNoAffine",
+      "LayerNormFwdOp",
+      "MoeGroupedGemmNopadFwdOp",
+      "RMSNormFwdOp"
+    ],
+    "implemented_without_kernel_map": [
+      "AddFwdOp",
+      "BitwiseAndFwdOp",
+      "BitwiseOrFwdOp",
+      "BitwiseXorFwdOp",
+      "DivFwdOp",
+      "EluFwdOp",
+      "EqFwdOp",
+      "FloorDivideFwdOp",
+      "GeFwdOp",
+      "GeluFwdOp",
+      "GtFwdOp",
+      "HardsigmoidFwdOp",
+      "HardswishFwdOp",
+      "HardtanhFwdOp",
+      "LeFwdOp",
+      "LeakyReluFwdOp",
+      "LerpFwdOp",
+      "LogicalAndFwdOp",
+      "LogicalOrFwdOp",
+      "LtFwdOp",
+      "MaximumFwdOp",
+      "MinimumFwdOp",
+      "MishFwdOp",
+      "MulFwdOp",
+      "NanToNumFwdOp",
+      "NeFwdOp",
+      "PowFwdOp",
+      "PreluFwdOp",
+      "ReluFwdOp",
+      "RemainderFwdOp",
+      "SeluFwdOp",
+      "SiluFwdOp",
+      "SoftplusFwdOp",
+      "SubFwdOp"
+    ],
+    "implemented_without_roofline": [],
+    "spec_only_ops": [
+      "AlibiFwdOp",
+      "AvgPool1dFwdOp",
+      "AvgPool2dFwdOp",
+      "AvgPool3dFwdOp",
+      "Conv2dBiasFwdOp",
+      "Conv2dFwdOp",
+      "Conv3dBiasFwdOp",
+      "Conv3dFwdOp",
+      "GeluAndMulFwdOp",
+      "GeluTanhAndMulFwdOp",
+      "SiluAndMulFwdOp",
+      "SinusoidalFwdOp"
+    ]
+  },
+  "coverage": {
+    "bench_manifest_driven": 105,
+    "kernel_map": 103,
+    "ref_api": 137,
+    "roofline": 137,
+    "variant_of": 11
+  },
+  "families": [
+    {
+      "deprecated": 0,
+      "family": "attention",
+      "implemented": 17,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 17,
+      "workloads": 70
+    },
+    {
+      "deprecated": 0,
+      "family": "convolution",
+      "implemented": 2,
+      "pct_implemented": 0.3333333333333333,
+      "spec_only": 4,
+      "total": 6,
+      "workloads": 40
+    },
+    {
+      "deprecated": 0,
+      "family": "elementwise",
+      "implemented": 66,
+      "pct_implemented": 0.9295774647887324,
+      "spec_only": 5,
+      "total": 71,
+      "workloads": 142
+    },
+    {
+      "deprecated": 0,
+      "family": "moe",
+      "implemented": 7,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 7,
+      "workloads": 50
+    },
+    {
+      "deprecated": 0,
+      "family": "normalization",
+      "implemented": 12,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 12,
+      "workloads": 50
+    },
+    {
+      "deprecated": 0,
+      "family": "pool",
+      "implemented": 0,
+      "pct_implemented": 0.0,
+      "spec_only": 3,
+      "total": 3,
+      "workloads": 9
+    },
+    {
+      "deprecated": 0,
+      "family": "reduction",
+      "implemented": 19,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 19,
+      "workloads": 47
+    },
+    {
+      "deprecated": 0,
+      "family": "scan",
+      "implemented": 2,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 2,
+      "workloads": 4
+    }
+  ],
+  "pct_implemented": 0.9124087591240876,
+  "total_ops": 137,
+  "workloads_avg_per_implemented": 2.888,
+  "workloads_implemented_total": 361,
+  "workloads_total": 412
+}
