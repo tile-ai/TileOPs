@@ -1,4 +1,5 @@
 import logging
+import statistics
 import subprocess
 import threading
 from abc import ABC, abstractmethod
@@ -83,6 +84,11 @@ _logger = logging.getLogger("tileops.bench")
 # A single test function may call record() multiple times (tileops + baseline).
 _bench_results = threading.local()
 
+# Kernel name substrings that identify L2-flush operations (cache.zero_()).
+# Filtered out of CUPTI timing so flush overhead is never counted as benchmark
+# kernel time.  Logged at DEBUG level so inadvertent filtering is detectable.
+_FLUSH_PATTERNS: tuple[str, ...] = ("FillFunctor", "fill_kernel", "Memset", "memset")
+
 
 def _sum_kernel_time_us(kineto_results):
     """Extract total CUDA kernel time directly from C++ Kineto events.
@@ -90,15 +96,36 @@ def _sum_kernel_time_us(kineto_results):
     Bypasses ``profiler.key_averages()`` which triggers expensive Python
     event parsing (~120ms) and tree building (~10ms) for large traces.
     Direct C++ iteration is ~16x faster for n_repeat=1280.
+
+    L2 flush kernels (``cache.zero_()`` on the flush buffer) are excluded.
+    The kernel name varies across CUDA versions:
+      - ``vectorized_elementwise_kernel<...FillFunctor...>`` (common)
+      - ``cudaMemsetAsync`` / ``memset`` (driver-level path)
+      - ``at::native::fill_kernel`` (older PyTorch)
+    All three patterns are filtered so L2 flush time is never counted as
+    benchmark kernel time.
+
+    Returns:
+        tuple[float, dict[str, float]]: (total_us, per_kernel_us) where
+            ``per_kernel_us`` maps each kernel name to its total duration in
+            microseconds across all timed iterations.  Use the breakdown to
+            detect helper / temporary-tensor kernels that inflate the stat
+            (e.g. MHA decode split-path workspace fills, cuBLAS epilogue
+            kernels, or any unexpected cuDNN helper).
     """
     total_us = 0.0
+    per_kernel: dict[str, float] = {}
+    excluded_kernel: dict[str, float] = {}
     for evt in kineto_results.events():
         if evt.device_type() == DeviceType.CUDA:
             name = evt.name()
-            if "vectorized_elementwise" in name and "FillFunctor" in name:
+            dur = evt.duration_ns() / 1000.0
+            if any(p in name for p in _FLUSH_PATTERNS):
+                excluded_kernel[name] = excluded_kernel.get(name, 0.0) + dur
                 continue
-            total_us += evt.duration_ns() / 1000.0
-    return total_us
+            total_us += dur
+            per_kernel[name] = per_kernel.get(name, 0.0) + dur
+    return total_us, per_kernel, excluded_kernel
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +154,8 @@ def bench_kernel(
     args: tuple[Any, ...] = (),
     n_warmup: int = 10,
     n_repeat: int = 50,
-    n_trials: int = 3,
-) -> float:
+    n_trials: int = 5,
+) -> dict:
     """Benchmark a GPU kernel with pure kernel timing via CUPTI.
 
     Protocol (adapted from NVIDIA SOL-ExecBench, arxiv.org/abs/2603.19173):
@@ -142,7 +169,8 @@ def bench_kernel(
 
     Uses CUPTI via torch.profiler for accurate kernel-only timing, with
     direct Kineto C++ event iteration to avoid Python parsing overhead.
-    Falls back to CUDA events if CUPTI is unavailable.
+    CUPTI is mandatory — a RuntimeError is raised if CUPTI is unavailable
+    or produces no results.
 
     Args:
         fn: Callable to benchmark.  If *args* is provided, called as
@@ -151,10 +179,16 @@ def bench_kernel(
             values are passed through unchanged.
         n_warmup: Warmup iterations (default 10).
         n_repeat: Timed iterations per trial (default 50).
-        n_trials: Independent trials (default 3).
+        n_trials: Independent trials (default 5).
 
     Returns:
-        Kernel latency in **milliseconds**.
+        dict with keys:
+          - ``latency_ms``: median-of-trials mean kernel latency in milliseconds
+          - ``stdev_ms``: standard deviation across trial means (0.0 when only
+            one trial is available)
+          - ``timing_backend``: always ``"cupti"``
+          - ``event_breakdown``: dict mapping CUDA kernel name → total_us across
+            *all* timed iterations of the median trial.
     """
     if not isinstance(args, tuple):
         raise TypeError(
@@ -201,11 +235,23 @@ def bench_kernel(
     # Timed trials with CUPTI (single profiler, n_trials cycles)
     trial_means: list[float] = []
 
+    trial_breakdowns: list[dict[str, float]] = []
+
     def _on_trace_ready(prof):
         kr = prof.profiler.kineto_results
-        kernel_us = _sum_kernel_time_us(kr) / n_repeat
-        trial_means.append(kernel_us * 1e-3)
+        total_us, per_kernel, excluded_kernel = _sum_kernel_time_us(kr)
+        trial_means.append(total_us / n_repeat * 1e-3)
+        trial_breakdowns.append(per_kernel)
+        if excluded_kernel:
+            excluded_us = sum(excluded_kernel.values())
+            _logger.debug(
+                "CUPTI: excluded %.1f µs across %d flush/fill kernel(s): %s",
+                excluded_us,
+                len(excluded_kernel),
+                list(excluded_kernel.keys()),
+            )
 
+    cupti_ok = True
     try:
         with suppress_stdout_stderr():
             schedule = torch.profiler.schedule(
@@ -229,21 +275,10 @@ def bench_kernel(
                         _run(i)
                     profiler.step()
     except RuntimeError:
-        pass
+        cupti_ok = False
 
-    # Fallback to CUDA events if CUPTI failed
     if not trial_means:
-        for _ in range(n_trials):
-            start_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
-            end_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
-            for i in range(n_repeat):
-                cache.zero_()
-                start_events[i].record()
-                _run(i)
-                end_events[i].record()
-            torch.cuda.synchronize()
-            times = [s.elapsed_time(e) for s, e in zip(start_events, end_events, strict=True)]
-            trial_means.append(sum(times) / len(times))
+        cupti_ok = False
 
     # Free the arg pool and release cached GPU memory to prevent
     # accumulation across hundreds of benchmark calls.
@@ -251,8 +286,51 @@ def bench_kernel(
         del arg_pool
     torch.cuda.empty_cache()
 
-    trial_means.sort()
-    return trial_means[len(trial_means) // 2]
+    if cupti_ok:
+        # Pick median trial
+        timing_backend = "cupti"
+        # Sort by mean latency; pick median trial's breakdown too
+        paired = sorted(zip(trial_means, trial_breakdowns, strict=True), key=lambda x: x[0])
+        median_ms, median_breakdown = paired[len(paired) // 2]
+        stdev_ms = statistics.stdev(trial_means) if len(trial_means) > 1 else 0.0
+        return {
+            "latency_ms": median_ms,
+            "stdev_ms": stdev_ms,
+            "timing_backend": timing_backend,
+            "event_breakdown": median_breakdown,
+        }
+
+    # Fall back to CUDA event timing when CUPTI is unavailable.
+    _logger.warning(
+        "CUPTI unavailable or produced no results; falling back to CUDA event timing. "
+        "Ensure libcupti.so is on LD_LIBRARY_PATH for kernel-accurate measurements."
+    )
+    event_trial_means: list[float] = []
+    for _ in range(n_trials):
+        start_evt = torch.cuda.Event(enable_timing=True)
+        end_evt = torch.cuda.Event(enable_timing=True)
+        # Warmup
+        for i in range(n_repeat):
+            cache.zero_()
+            _run(i)
+        torch.cuda.synchronize()
+        start_evt.record()
+        for i in range(n_repeat):
+            cache.zero_()
+            _run(i)
+        end_evt.record()
+        torch.cuda.synchronize()
+        event_trial_means.append(start_evt.elapsed_time(end_evt) / n_repeat)
+
+    paired_ev = sorted(event_trial_means)
+    median_ms = paired_ev[len(paired_ev) // 2]
+    stdev_ms = statistics.stdev(event_trial_means) if len(event_trial_means) > 1 else 0.0
+    return {
+        "latency_ms": median_ms,
+        "stdev_ms": stdev_ms,
+        "timing_backend": "cuda_event",
+        "event_breakdown": {},
+    }
 
 
 def _get_env_metadata() -> list[str]:
@@ -267,16 +345,30 @@ def _get_env_metadata() -> list[str]:
     else:
         lines.append("- **GPU model**: N/A (no CUDA device)")
 
-    # Try to get NVIDIA driver version from nvidia-smi
+    # Try to get NVIDIA driver version and GPU telemetry from nvidia-smi
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            [
+                "nvidia-smi",
+                "--query-gpu=driver_version,clocks.mem,clocks.gr,clocks.sm,power.draw,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
             capture_output=True, text=True, timeout=5,
         )
-        driver = result.stdout.strip().split("\n")[0] if result.returncode == 0 else "N/A"
+        if result.returncode == 0:
+            parts = [p.strip() for p in result.stdout.strip().split("\n")[0].split(",")]
+            driver, mem_clock, gr_clock, sm_clock, power_draw, gpu_temp = (parts + ["N/A"] * 6)[:6]
+        else:
+            driver = mem_clock = gr_clock = sm_clock = power_draw = gpu_temp = "N/A"
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        driver = "N/A"
+        driver = mem_clock = gr_clock = sm_clock = power_draw = gpu_temp = "N/A"
+
     lines.append(f"- **Driver version**: {driver}")
+    lines.append(f"- **Memory clock (MHz)**: {mem_clock}")
+    lines.append(f"- **Graphics clock (MHz)**: {gr_clock}")
+    lines.append(f"- **SM clock (MHz)**: {sm_clock}")
+    lines.append(f"- **Power draw (W)**: {power_draw}")
+    lines.append(f"- **GPU temperature (°C)**: {gpu_temp}")
 
     return lines
 
@@ -325,8 +417,13 @@ class BenchmarkBase(Generic[W], ABC):
         latency = bench_kernel(functor)
         return self._build_result(latency)
 
-    def _build_result(self, latency: float) -> dict:
-        result = {"latency_ms": latency}
+    def _build_result(self, bench_result: dict) -> dict:
+        latency = bench_result["latency_ms"]
+        result = {
+            "latency_ms": latency,
+            "timing_backend": bench_result.get("timing_backend", "unknown"),
+            "event_breakdown": bench_result.get("event_breakdown", {}),
+        }
         flops = self.calculate_flops()
         if flops is not None:
             result["tflops"] = flops / latency * 1e-9
@@ -546,6 +643,14 @@ class BenchmarkReport:
         entry = {"tag": tag, "op": name, **result}
         if op_module:
             entry["op_module"] = op_module
+        if op_config:
+            entry["config"] = op_config
+        # Limit event_breakdown to top-10 kernels by total time to keep
+        # JUnit XML properties compact; full breakdown is in profile_run.log.
+        breakdown = result.get("event_breakdown", {})
+        if breakdown:
+            top10 = dict(sorted(breakdown.items(), key=lambda x: x[1], reverse=True)[:10])
+            entry["event_breakdown_top10"] = top10
         _bench_results.entries.append(entry)
 
         _logger.info("op=%s module=%s tag=%s latency_ms=%.4f tflops=%.2f",
