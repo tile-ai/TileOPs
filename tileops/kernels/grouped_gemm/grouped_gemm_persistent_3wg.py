@@ -16,9 +16,13 @@ Uses a *static-wave scheduler* (no atomic counter): each CTA enumerates
 its tile IDs as ``flat_id_0 = 2*(sm_count*w + pid)`` and
 ``flat_id_1 = flat_id_0 + 1`` for wave ``w ∈ [0, _max_waves)``.  Tiles past
 ``s_total`` are skipped via a valid mask.  This removes scheduler latency
-and produces a deterministic tile-to-CTA map (group-size=8 threadblock
-swizzle is deferred: the M axis is partitioned by expert via prefix-sum/
-binary-search, so naive swizzle across expert boundaries is unsafe).
+and produces a deterministic tile-to-CTA map.  The cooperative template
+applies a *threadblock swizzle* (``group_size_m``) on top: grouping
+consecutive m-tiles so concurrent CTAs in a wave reuse the same ``B[e]``
+columns in L2.  The M axis is partitioned by expert via prefix-sum/
+binary-search, but each tile resolves its own expert independently, so a
+group straddling an expert boundary stays correct (only L2 reuse is lost
+there); ``group_size_m=1`` recovers the plain row-major map exactly.
 
 A per-WG ring buffer with ``num_stages`` slots overlaps TMA loads with
 WGMMA.  Default ``num_stages=4`` (autotuned over {2..6} with H100 SMEM
@@ -47,7 +51,10 @@ _DEFAULT_CONFIG = {
     "block_k": 64,
     "num_stages": 3,
     "threads": 384,
-    "group_size_m": 1,
+    # Threadblock swizzle: group this many consecutive m-tiles so concurrent
+    # CTAs in a wave share B[e] columns in L2. 8 is the robust Triton-standard
+    # default (~5% over 1 on compute-bound MoE shapes); autotune sweeps it.
+    "group_size_m": 8,
 }
 
 
@@ -162,11 +169,14 @@ class GroupedGemmPersistent3WGKernel(Kernel):
                         smem_c = 2 * half_m * block_n * bytes_per_elem
                         if smem_main + smem_c > SMEM_LIMIT:
                             continue
-                        configs.append({
-                            "block_m": block_m, "block_n": block_n,
-                            "block_k": block_k, "num_stages": num_stages,
-                            "threads": 384, "group_size_m": 1,
-                        })
+                        # Threadblock swizzle width: larger groups give more L2
+                        # B-column reuse but saturate near num_pid_m per expert.
+                        for group_size_m in (1, 4, 8, 16):
+                            configs.append({
+                                "block_m": block_m, "block_n": block_n,
+                                "block_k": block_k, "num_stages": num_stages,
+                                "threads": 384, "group_size_m": group_size_m,
+                            })
         return configs
 
     def forward(self, A, B, true_sizes, true_offsets, out=None):
@@ -703,6 +713,12 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
             ns_ = T.alloc_local((1,), "int32")
             ex = T.alloc_local((1,), "int32")
             v = T.alloc_local((1,), "int32")
+            # Previous ring slot per math WG, for 1-deep WGMMA software
+            # pipelining: ab_empty release of slot(k-1) is deferred until
+            # wait_wgmma(1) confirms WGMMA(k-1) drained, so WGMMA(k) overlaps
+            # the next slot's barrier_wait instead of serializing behind it.
+            ps0 = T.alloc_local((1,), "int32")
+            ps1 = T.alloc_local((1,), "int32")
 
             T.annotate_layout({
                 A_smem_top: tilelang.layout.make_swizzled_layout(A_smem_top),
@@ -743,8 +759,19 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                     flat_id = T.int32(sm_count) * w + pid
 
                     if flat_id < total:
-                        m_tile = flat_id // T.int32(_num_pid_n)
-                        n_tile = flat_id % T.int32(_num_pid_n)
+                        # Threadblock swizzle: group_size_m consecutive m-tiles
+                        # share each n-tile, so concurrent CTAs in a wave reuse
+                        # the same B[e] columns in L2 (group_size_m=1 → identity).
+                        # Bijection over [0, num_pid_m*num_pid_n); the tail group
+                        # shrinks via min(). Expert is still resolved per-tile by
+                        # binary search, so straddling an expert boundary stays
+                        # correct (only the L2 benefit is lost there).
+                        _gin = T.int32(group_size_m * _num_pid_n)
+                        _fpm = (flat_id // _gin) * T.int32(group_size_m)
+                        _gsm = T.min(s_cum[num_experts] - _fpm,
+                                     T.int32(group_size_m))
+                        m_tile = _fpm + (flat_id % _gin) % _gsm
+                        n_tile = (flat_id % _gin) // _gsm
 
                         lo[0] = T.int32(0)
                         hi[0] = T.int32(num_experts - 1)
@@ -807,8 +834,19 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                     flat_id = T.int32(sm_count) * w + pid
 
                     if flat_id < total:
-                        m_tile = flat_id // T.int32(_num_pid_n)
-                        n_tile = flat_id % T.int32(_num_pid_n)
+                        # Threadblock swizzle: group_size_m consecutive m-tiles
+                        # share each n-tile, so concurrent CTAs in a wave reuse
+                        # the same B[e] columns in L2 (group_size_m=1 → identity).
+                        # Bijection over [0, num_pid_m*num_pid_n); the tail group
+                        # shrinks via min(). Expert is still resolved per-tile by
+                        # binary search, so straddling an expert boundary stays
+                        # correct (only the L2 benefit is lost there).
+                        _gin = T.int32(group_size_m * _num_pid_n)
+                        _fpm = (flat_id // _gin) * T.int32(group_size_m)
+                        _gsm = T.min(s_cum[num_experts] - _fpm,
+                                     T.int32(group_size_m))
+                        m_tile = _fpm + (flat_id % _gin) % _gsm
+                        n_tile = (flat_id % _gin) // _gsm
 
                         lo[0] = T.int32(0)
                         hi[0] = T.int32(num_experts - 1)
@@ -840,10 +878,19 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                                 policy=T.GemmWarpPolicy.FullRow,
                                 clear_accum=(k == 0),
                             )
-                            T.wait_wgmma(0)
-                            T.warpgroup_fence_operand(C_local_wg0, num_regs=64)
-                            T.barrier_arrive(ab_empty[slot])
+                            # 1-deep pipeline: keep WGMMA(k) in flight; only
+                            # drain WGMMA(k-1) and release its slot now.
+                            if k > 0:
+                                T.wait_wgmma(1)
+                                T.barrier_arrive(ab_empty[ps0[0]])
+                            ps0[0] = slot
                             gi_cons_0 = gi_cons_0 + 1
+
+                        # Drain the last WGMMA, release its slot, then fence the
+                        # accumulator once before the epilogue reads it.
+                        T.wait_wgmma(0)
+                        T.barrier_arrive(ab_empty[ps0[0]])
+                        T.warpgroup_fence_operand(C_local_wg0, num_regs=64)
 
                         # ── Epilogue (top half) ──
                         T.copy(C_local_wg0, C_local_cast_wg0)
@@ -880,8 +927,19 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                     flat_id = T.int32(sm_count) * w + pid
 
                     if flat_id < total:
-                        m_tile = flat_id // T.int32(_num_pid_n)
-                        n_tile = flat_id % T.int32(_num_pid_n)
+                        # Threadblock swizzle: group_size_m consecutive m-tiles
+                        # share each n-tile, so concurrent CTAs in a wave reuse
+                        # the same B[e] columns in L2 (group_size_m=1 → identity).
+                        # Bijection over [0, num_pid_m*num_pid_n); the tail group
+                        # shrinks via min(). Expert is still resolved per-tile by
+                        # binary search, so straddling an expert boundary stays
+                        # correct (only the L2 benefit is lost there).
+                        _gin = T.int32(group_size_m * _num_pid_n)
+                        _fpm = (flat_id // _gin) * T.int32(group_size_m)
+                        _gsm = T.min(s_cum[num_experts] - _fpm,
+                                     T.int32(group_size_m))
+                        m_tile = _fpm + (flat_id % _gin) % _gsm
+                        n_tile = (flat_id % _gin) // _gsm
 
                         lo[0] = T.int32(0)
                         hi[0] = T.int32(num_experts - 1)
@@ -914,10 +972,16 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                                 policy=T.GemmWarpPolicy.FullRow,
                                 clear_accum=(k == 0),
                             )
-                            T.wait_wgmma(0)
-                            T.warpgroup_fence_operand(C_local_wg1, num_regs=64)
-                            T.barrier_arrive(ab_empty[slot])
+                            # 1-deep pipeline (see WG0).
+                            if k > 0:
+                                T.wait_wgmma(1)
+                                T.barrier_arrive(ab_empty[ps1[0]])
+                            ps1[0] = slot
                             gi_cons_1 = gi_cons_1 + 1
+
+                        T.wait_wgmma(0)
+                        T.barrier_arrive(ab_empty[ps1[0]])
+                        T.warpgroup_fence_operand(C_local_wg1, num_regs=64)
 
                         # ── Epilogue (bottom half) ──
                         T.copy(C_local_wg1, C_local_cast_wg1)
