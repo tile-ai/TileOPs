@@ -44,6 +44,7 @@ CumsumFwdOp:
     op: tileops/ops/reduction/cumsum.py
     test: tests/ops/test_cumulative.py
     bench: benchmarks/ops/bench_cumulative.py
+    bench_manifest_driven: true
 
 CumprodFwdOp:
   ref_api: "torch.cumprod"
@@ -85,3 +86,4 @@ CumprodFwdOp:
     op: tileops/ops/reduction/cumprod.py
     test: tests/ops/test_cumulative.py
     bench: benchmarks/ops/bench_cumulative.py
+    bench_manifest_driven: true
