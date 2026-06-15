@@ -1,0 +1,56 @@
+# linear_attention.yaml -- manifest entries for linear-attention operators.
+#
+# Source of truth for linear-attention op interfaces. Spec-only entries define
+# the public Op contract before the implementation is wired up.
+
+GatedDeltaNetPrefillFwdOp:
+  # Inference prefill for Gated DeltaNet. This is intentionally separate from
+  # GatedDeltaNetFwdOp, which exposes training-forward artifacts needed by
+  # backward. Prefill returns only the prompt output and the recurrent state
+  # consumed by decode.
+  ref_api: "none"
+  family: linear_attention
+  status: spec-only
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+      g: {dtype: "same_as(q)"}
+      beta: {dtype: "same_as(q)"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+      final_state: {dtype: "same_as(q)"}
+    params:
+      chunk_size: {type: int, default: 64}
+    shape_rules:
+      - "q.shape == (B, H, S, DK)"
+      - "k.shape == (B, H, S, DK)"
+      - "v.shape == (B, H, S, DV)"
+      - "g.shape == (B, H, S)"
+      - "beta.shape == (B, H, S)"
+      - "o.shape == (B, H, S, DV)"
+      - "final_state.shape == (B, H, DK, DV)"
+      - "S % chunk_size == 0"
+
+  workloads:
+    # Inference-oriented BHSD rows. Unit tests should use smaller
+    # branch-covering shapes in tests/ops, not these benchmark workloads.
+    - {q_shape: [1, 16, 512, 128], k_shape: [1, 16, 512, 128], v_shape: [1, 16, 512, 128], g_shape: [1, 16, 512], beta_shape: [1, 16, 512], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b1-s512-h16-d128"}
+    - {q_shape: [4, 16, 2048, 64], k_shape: [4, 16, 2048, 64], v_shape: [4, 16, 2048, 128], g_shape: [4, 16, 2048], beta_shape: [4, 16, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b4-s2k-h16-dk64-dv128"}
+    - {q_shape: [1, 16, 8192, 128], k_shape: [1, 16, 8192, 128], v_shape: [1, 16, 8192, 128], g_shape: [1, 16, 8192], beta_shape: [1, 16, 8192], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b1-s8k-h16-d128"}
+
+  roofline:
+    # Placeholder while this entry is spec-only. The implementation PR should
+    # replace this with gated_deltanet_prefill_fwd_roofline.
+    flops: "0"
+    bytes: "0"
+
+  source:
+    # No concrete implementation files yet. The implementation PR should fill
+    # these paths and flip status to implemented.
+    kernel: null
+    op: null
+    test: null
+    bench: null
