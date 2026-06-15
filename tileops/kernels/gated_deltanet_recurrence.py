@@ -52,6 +52,8 @@ def _gated_deltanet_decode_raw_cuda_flastyle_tl(
         raise ValueError("Raw CUDA Gated DeltaNet decode currently requires DK=DV=128.")
     if dim_v % v_tile != 0:
         raise ValueError(f"dim_v={dim_v} must be divisible by v_tile={v_tile}")
+    if raw_group_size != 2:
+        raise ValueError("raw_group_size must equal 2 for the fixed two-lane reductions.")
     if raw_group_size * v_tile != 32:
         raise ValueError("raw_group_size * v_tile must equal one warp")
     if dim_k % raw_group_size != 0:
@@ -400,7 +402,11 @@ class GatedDeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
     on one output value when v_tile=16: each lane owns half of the K dimension,
     K/Q are staged in shared memory once per CTA, and the per-lane state slice
     stays live in fp32 registers.  The implementation is intentionally narrow:
-    it is used only for bfloat16 DK=DV=128 decode on sm90+ devices.
+    it is used only for bfloat16 DK=DV=128 decode on sm90 devices.
+
+    Unlike the sibling decode kernels, this Hopper-specialized path enables
+    --use_fast_math as an explicit speed/precision trade-off for the narrow
+    single-step decode workload.
     """
 
     supported_archs: list[int] = [90]
@@ -424,6 +430,11 @@ class GatedDeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
         self.dim_v = dim_v
         self.dtype = dtype
         self.init_config(config, tune=False)
+        if self.config["raw_group_size"] != 2:
+            raise ValueError(
+                "raw_group_size must equal 2 because this kernel uses fixed "
+                "two-lane shuffle reductions."
+            )
         required_threads = self.config["raw_group_size"] * self.config["v_tile"]
         if self.config["threads"] != required_threads:
             raise ValueError(
