@@ -680,6 +680,33 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
     _k_iters = K // block_k
     A_shape = (numel, K)  # TMA zero-fills OOB last-tile rows; epilogue masks them
 
+    # Threadblock-swizzle tile decode, shared by the producer and both math WGs
+    # (identical in all three, so factored out to keep them in lock-step).
+    # Groups ``group_size_m`` consecutive m-tiles so the ``sm_count`` consecutive
+    # flat_ids of a wave share each n-tile -> concurrent CTAs reuse the same
+    # ``B[e]`` columns in L2. A bijection over ``[0, num_pid_m * _num_pid_n)``;
+    # ``group_size_m=1`` is the identity (plain row-major) map. Each tile still
+    # resolves its expert by binary search, so a group straddling an expert
+    # boundary stays correct (only the L2 reuse is lost there).
+    #
+    # Full (non-tail) group: the remaining m-tiles cover a whole group, so the
+    # in-group ``%``/``//`` use the compile-time constant ``group_size_m`` (the
+    # compiler lowers them to shifts); only the last partial group falls to the
+    # runtime-remainder branch. The result is staged in ``swz_m``/``swz_n``
+    # because TileLang forbids reading a Var defined inside an IfFrame outside it
+    # (Buffer loads are exempt).
+    @T.macro
+    def _swizzle_decode(flat_id, s_cum, swz_m, swz_n):
+        _gin = T.int32(group_size_m * _num_pid_n)
+        _fpm = (flat_id // _gin) * T.int32(group_size_m)
+        if s_cum[num_experts] - _fpm >= T.int32(group_size_m):
+            swz_m[0] = _fpm + (flat_id % _gin) % T.int32(group_size_m)
+            swz_n[0] = (flat_id % _gin) // T.int32(group_size_m)
+        else:
+            _gsm = s_cum[num_experts] - _fpm
+            swz_m[0] = _fpm + (flat_id % _gin) % _gsm
+            swz_n[0] = (flat_id % _gin) // _gsm
+
     @T.prim_func
     def _gemm_main_v2_coop(
         A: T.Tensor(A_shape, dtype),                        # type: ignore  # noqa: F821
@@ -719,6 +746,9 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
             # the next slot's barrier_wait instead of serializing behind it.
             ps0 = T.alloc_local((1,), "int32")
             ps1 = T.alloc_local((1,), "int32")
+            # Swizzle decode output (staged; see _swizzle_decode).
+            swz_m = T.alloc_local((1,), "int32")
+            swz_n = T.alloc_local((1,), "int32")
 
             T.annotate_layout({
                 A_smem_top: tilelang.layout.make_swizzled_layout(A_smem_top),
@@ -759,19 +789,12 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                     flat_id = T.int32(sm_count) * w + pid
 
                     if flat_id < total:
-                        # Threadblock swizzle: group_size_m consecutive m-tiles
-                        # share each n-tile, so concurrent CTAs in a wave reuse
-                        # the same B[e] columns in L2 (group_size_m=1 → identity).
-                        # Bijection over [0, num_pid_m*num_pid_n); the tail group
-                        # shrinks via min(). Expert is still resolved per-tile by
-                        # binary search, so straddling an expert boundary stays
-                        # correct (only the L2 benefit is lost there).
-                        _gin = T.int32(group_size_m * _num_pid_n)
-                        _fpm = (flat_id // _gin) * T.int32(group_size_m)
-                        _gsm = T.min(s_cum[num_experts] - _fpm,
-                                     T.int32(group_size_m))
-                        m_tile = _fpm + (flat_id % _gin) % _gsm
-                        n_tile = (flat_id % _gin) // _gsm
+                        # Threadblock swizzle for L2 B-column reuse; staged in
+                        # swz_m/swz_n so the binary search below can read the
+                        # result outside the macro's tail-group IfFrame.
+                        _swizzle_decode(flat_id, s_cum, swz_m, swz_n)
+                        m_tile = swz_m[0]
+                        n_tile = swz_n[0]
 
                         lo[0] = T.int32(0)
                         hi[0] = T.int32(num_experts - 1)
@@ -834,19 +857,12 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                     flat_id = T.int32(sm_count) * w + pid
 
                     if flat_id < total:
-                        # Threadblock swizzle: group_size_m consecutive m-tiles
-                        # share each n-tile, so concurrent CTAs in a wave reuse
-                        # the same B[e] columns in L2 (group_size_m=1 → identity).
-                        # Bijection over [0, num_pid_m*num_pid_n); the tail group
-                        # shrinks via min(). Expert is still resolved per-tile by
-                        # binary search, so straddling an expert boundary stays
-                        # correct (only the L2 benefit is lost there).
-                        _gin = T.int32(group_size_m * _num_pid_n)
-                        _fpm = (flat_id // _gin) * T.int32(group_size_m)
-                        _gsm = T.min(s_cum[num_experts] - _fpm,
-                                     T.int32(group_size_m))
-                        m_tile = _fpm + (flat_id % _gin) % _gsm
-                        n_tile = (flat_id % _gin) // _gsm
+                        # Threadblock swizzle for L2 B-column reuse; staged in
+                        # swz_m/swz_n so the binary search below can read the
+                        # result outside the macro's tail-group IfFrame.
+                        _swizzle_decode(flat_id, s_cum, swz_m, swz_n)
+                        m_tile = swz_m[0]
+                        n_tile = swz_n[0]
 
                         lo[0] = T.int32(0)
                         hi[0] = T.int32(num_experts - 1)
@@ -927,19 +943,12 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                     flat_id = T.int32(sm_count) * w + pid
 
                     if flat_id < total:
-                        # Threadblock swizzle: group_size_m consecutive m-tiles
-                        # share each n-tile, so concurrent CTAs in a wave reuse
-                        # the same B[e] columns in L2 (group_size_m=1 → identity).
-                        # Bijection over [0, num_pid_m*num_pid_n); the tail group
-                        # shrinks via min(). Expert is still resolved per-tile by
-                        # binary search, so straddling an expert boundary stays
-                        # correct (only the L2 benefit is lost there).
-                        _gin = T.int32(group_size_m * _num_pid_n)
-                        _fpm = (flat_id // _gin) * T.int32(group_size_m)
-                        _gsm = T.min(s_cum[num_experts] - _fpm,
-                                     T.int32(group_size_m))
-                        m_tile = _fpm + (flat_id % _gin) % _gsm
-                        n_tile = (flat_id % _gin) // _gsm
+                        # Threadblock swizzle for L2 B-column reuse; staged in
+                        # swz_m/swz_n so the binary search below can read the
+                        # result outside the macro's tail-group IfFrame.
+                        _swizzle_decode(flat_id, s_cum, swz_m, swz_n)
+                        m_tile = swz_m[0]
+                        n_tile = swz_n[0]
 
                         lo[0] = T.int32(0)
                         hi[0] = T.int32(num_experts - 1)
