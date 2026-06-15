@@ -38,7 +38,7 @@ GatedDeltaNetPrefillFwdOp:
     # Inference-oriented BHSD rows. Unit tests should use smaller
     # branch-covering shapes in tests/ops, not these benchmark workloads.
     - {q_shape: [1, 16, 512, 128], k_shape: [1, 16, 512, 128], v_shape: [1, 16, 512, 128], g_shape: [1, 16, 512], beta_shape: [1, 16, 512], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b1-s512-h16-d128"}
-    - {q_shape: [1, 16, 2048, 128], k_shape: [1, 16, 2048, 128], v_shape: [1, 16, 2048, 128], g_shape: [1, 16, 2048], beta_shape: [1, 16, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b1-s2k-h16-d128"}
+    - {q_shape: [4, 16, 2048, 64], k_shape: [4, 16, 2048, 64], v_shape: [4, 16, 2048, 128], g_shape: [4, 16, 2048], beta_shape: [4, 16, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b4-s2k-h16-dk64-dv128"}
     - {q_shape: [1, 16, 8192, 128], k_shape: [1, 16, 8192, 128], v_shape: [1, 16, 8192, 128], g_shape: [1, 16, 8192], beta_shape: [1, 16, 8192], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b1-s8k-h16-d128"}
 
   roofline:
