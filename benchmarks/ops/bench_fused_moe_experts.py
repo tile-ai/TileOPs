@@ -101,11 +101,10 @@ class MoEExpertsTest(WorkloadBase):
 
 class MoEExpertsBenchmark(BenchmarkBase[MoEExpertsTest]):
 
-    _roofline_cache: Optional[tuple[float, float]] = None
-
     def __init__(self, test, op):
         super().__init__(test)
         self._op = op
+        self._roofline_cache: Optional[tuple[float, float]] = None
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:
@@ -129,9 +128,10 @@ def _manifest_params():
     for w in load_workloads(_OP_NAME):
         label = w.get("label", "unlabeled")
         for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
             params.append(pytest.param(
                 w["num_tokens"], w["num_experts"], w["top_k"],
-                w["hidden_size"], w["ffn_size"],
+                w["hidden_size"], w["ffn_size"], dtype,
                 id=f"{label}-{dtype_str}",
             ))
     return params
@@ -143,13 +143,13 @@ def _manifest_params():
 
 
 @pytest.mark.parametrize(
-    "num_tokens, num_experts, top_k, hidden_size, ffn_size",
+    "num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype",
     _manifest_params(),
 )
 def test_moe_experts_nopad_bench(
-    num_tokens: int, num_experts: int, top_k: int, hidden_size: int, ffn_size: int,
+    num_tokens: int, num_experts: int, top_k: int, hidden_size: int,
+    ffn_size: int, dtype: torch.dtype,
 ) -> None:
-    dtype = torch.bfloat16
     test = MoEExpertsTest(num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype)
     hidden, w1, w2, topk_weights, topk_ids = test.gen_inputs()
 

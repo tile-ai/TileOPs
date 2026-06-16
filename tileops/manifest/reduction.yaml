@@ -585,7 +585,6 @@ ArgmaxFwdOp:
     op: tileops/ops/reduction/argmax.py
     test: tests/ops/test_argreduce.py
     bench: benchmarks/ops/bench_argreduce.py
-    bench_manifest_driven: true
 
 ArgminFwdOp:
   ref_api: "torch.argmin"
@@ -629,7 +628,6 @@ ArgminFwdOp:
     op: tileops/ops/reduction/argmin.py
     test: tests/ops/test_argreduce.py
     bench: benchmarks/ops/bench_argreduce.py
-    bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
 # reduction -- logical reductions (output dtype: bool)
