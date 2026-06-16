@@ -46,11 +46,30 @@ def test_gqa_decode_default_split_policy() -> None:
     qwen_like = GQADecodeKernel(1, 16, 2, 8192, 128, dtype="float16")
     assert qwen_like.config["num_split"] == 32
 
+    short_qwen_like = GQADecodeKernel(1, 16, 2, 8, 128, dtype="float16")
+    assert short_qwen_like.config["num_split"] == 8
+
     llama_like = GQADecodeKernel(1, 40, 8, 8192, 128, dtype="float16")
     assert llama_like.config["num_split"] == 16
 
     batched_qwen_like = GQADecodeKernel(8, 16, 2, 8192, 128, dtype="float16")
     assert batched_qwen_like.config["num_split"] == 16
+
+
+@pytest.mark.smoke
+def test_gqa_decode_split_policy_filters_short_kv_autotune_configs() -> None:
+    kernel = GQADecodeKernel(1, 16, 2, 8, 128, dtype="float16")
+    assert {cfg["num_split"] for cfg in kernel.autotune_configs} == {2, 4, 8}
+
+    tiny_kernel = GQADecodeKernel(1, 16, 2, 1, 128, dtype="float16")
+    assert tiny_kernel.config["num_split"] == 1
+    assert {cfg["num_split"] for cfg in tiny_kernel.autotune_configs} == {1}
+
+
+@pytest.mark.smoke
+def test_gqa_decode_rejects_invalid_kv_heads() -> None:
+    with pytest.raises(ValueError, match="groups must be positive"):
+        GQADecodeKernel(1, 16, 0, 8192, 128, dtype="float16")
 
 
 if __name__ == "__main__":
