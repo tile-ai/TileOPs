@@ -38,10 +38,13 @@ def _make_unpermute_kernel(
     dtype: str,
     scaling: float = 1.0,
 ):
-    """One block per token. Threads cooperate over H dimension.
+    """One block per token; threads cooperate over the H dimension.
 
-    Each thread handles VEC=8 elements (128-bit uint4 load/store).
-    Accumulation in float32, cast to dtype on store.
+    Threads are capped at 256 (see below), so each thread handles ceil(H /
+    threads) elements: a clean multiple of VEC=8 (128-bit uint4 load/store)
+    when H // threads is, otherwise partially vectorized (e.g. H=7168 -> 256
+    threads -> 28 elems/thread = 3.5x VEC). Accumulation is in float32, cast to
+    dtype on store.
     """
     # Cap threads at 256 (the sweep optimum at H=7168: 512 is ~3% slower and
     # 1024 spills the fp32 acc[H] accumulator to local memory) but scale with
