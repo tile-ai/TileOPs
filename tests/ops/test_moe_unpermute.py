@@ -68,6 +68,13 @@ class MoeUnpermuteFixture(FixtureBase):
             pytest.param(1,    2,   64,  torch.bfloat16, marks=pytest.mark.full,  id="single-token"),
             pytest.param(8,    1,   64,  torch.bfloat16, marks=pytest.mark.full,  id="top-k-1"),
             pytest.param(32,   4,   64,  torch.bfloat16, marks=pytest.mark.full,  id="skewed"),
+            # Large H (8x the next-biggest case) with top_k=8 so the K-loop is
+            # actually pipelined (T.Pipelined num_stages=2): asserts correctness
+            # at a production-scale hidden size, where the framework must
+            # double-buffer the reused `src` fragment to avoid a WAR race
+            # between load(k+1) and accumulate(k). Smaller cases (H<=256) leave
+            # that on the benchmark path only.
+            pytest.param(64,   8,   2048, torch.bfloat16, marks=pytest.mark.full, id="large-h-pipeline"),
         ]),
     ]
 
@@ -115,6 +122,41 @@ def test_moe_unpermute_skewed():
         f"skewed mismatch: max_err={(output.float() - output_ref.float()).abs().max()}"
     )
     print("PASS skewed (all slots → first K padded positions)")
+
+
+@pytest.mark.smoke
+def test_moe_unpermute_ep_masking():
+    """EP mode: fwd_idx == -1 (non-local expert) must contribute zero, even
+    inside the pipelined K-loop (the slot-0 dummy read is zeroed by weight=0).
+
+    The shared `_ref_moe_unpermute` would index `mm2_pad[-1]` for a -1 slot, so
+    this test uses a reference that skips -1 — matching the kernel's masking.
+    """
+    torch.manual_seed(0)
+    T, K, H = 16, 4, 256
+    numel = T * K
+    dev = "cuda"
+    mm2_pad = torch.randn(numel, H, dtype=torch.bfloat16, device=dev) * 0.02
+    fwd_idx = torch.randperm(numel, device=dev).to(torch.int32)
+    fwd_idx[::3] = -1  # mark every 3rd slot non-local
+    assert (fwd_idx < 0).any(), "test must actually inject -1 slots"
+    topk_weights = torch.rand(T, K, dtype=torch.float32, device=dev)
+
+    op = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+    output = op(mm2_pad, fwd_idx, topk_weights)
+
+    # Reference matching the kernel's -1 semantics: skip non-local slots.
+    ref = torch.zeros(T, H, dtype=torch.float32, device=dev)
+    for i in range(T):
+        for k in range(K):
+            slot = int(fwd_idx[i * K + k].item())
+            if slot >= 0:
+                ref[i] += mm2_pad[slot].float() * topk_weights[i, k].item()
+
+    assert torch.allclose(output.float(), ref, atol=1e-2), (
+        f"EP -1 masking mismatch: max_err={(output.float() - ref).abs().max()}"
+    )
+    print("PASS ep-masking (fwd_idx=-1 contributes zero inside pipeline)")
 
 
 @pytest.mark.smoke

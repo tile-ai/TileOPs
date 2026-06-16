@@ -38,13 +38,21 @@ def _make_unpermute_kernel(
     dtype: str,
     scaling: float = 1.0,
 ):
-    """One block per token. Threads cooperate over H dimension.
+    """One block per token; threads cooperate over the H dimension.
 
-    Each thread handles VEC=8 elements (128-bit uint4 load/store).
-    Accumulation in float32, cast to dtype on store.
+    Threads are capped at 256 (see below), so each thread handles ceil(H /
+    threads) elements: a clean multiple of VEC=8 (128-bit uint4 load/store)
+    when H // threads is, otherwise partially vectorized (e.g. H=7168 -> 256
+    threads -> 28 elems/thread = 3.5x VEC). Accumulation is in float32, cast to
+    dtype on store.
     """
+    # Cap threads at 256 (the sweep optimum at H=7168: 512 is ~3% slower and
+    # 1024 spills the fp32 acc[H] accumulator to local memory) but scale with
+    # hidden_size // VEC and keep power-of-2 alignment, so small hidden sizes
+    # retain 128-bit (VEC=8) vectorized load/store instead of slow scalar 16-bit
+    # ops (e.g. H=512 -> 64 threads of 8 elems each, ~14% faster than 256).
     VEC = 8  # 8 x bf16/fp16 = 128 bits
-    threads = min(1024, hidden_size // VEC)
+    threads = min(256, hidden_size // VEC)
     if threads > 0:
         threads = 1 << (threads.bit_length() - 1)
     threads = max(threads, 1)
@@ -69,8 +77,12 @@ def _make_unpermute_kernel(
                 # zero accumulator
                 T.fill(acc, 0.0)
 
-                # accumulate K expert contributions
-                for k in T.serial(top_k):
+                # accumulate K expert contributions. Software-pipeline the
+                # gathers (num_stages=2) so each scattered row load overlaps the
+                # previous slot's accumulate — the K loads are latency-bound.
+                # Serial fallback when top_k < 2 (pipeline depth > trip count).
+                for k in (T.Pipelined(top_k, num_stages=2)
+                          if top_k >= 2 else T.serial(top_k)):
                     flat_idx = token_idx * T.int32(top_k) + k
                     raw_slot = fwd_idx[flat_idx]
                     # EP mode: fwd_idx == -1 marks non-local expert → zero contribution.
