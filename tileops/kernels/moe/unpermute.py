@@ -43,11 +43,10 @@ def _make_unpermute_kernel(
     Each thread handles VEC=8 elements (128-bit uint4 load/store).
     Accumulation in float32, cast to dtype on store.
     """
-    VEC = 8  # 8 x bf16/fp16 = 128 bits
-    threads = min(1024, hidden_size // VEC)
-    if threads > 0:
-        threads = 1 << (threads.bit_length() - 1)
-    threads = max(threads, 1)
+    # threads=256 is the sweep optimum for the per-token-block reduction: it
+    # balances per-thread ILP against occupancy. 512 is ~3% slower and 1024
+    # spills the fp32 acc[H] accumulator into local memory (H200, H=7168).
+    threads = min(256, hidden_size)
 
     numel = num_tokens * top_k
 
@@ -69,8 +68,10 @@ def _make_unpermute_kernel(
                 # zero accumulator
                 T.fill(acc, 0.0)
 
-                # accumulate K expert contributions
-                for k in T.serial(top_k):
+                # accumulate K expert contributions. Software-pipeline the
+                # gathers (num_stages=2) so each scattered row load overlaps the
+                # previous slot's accumulate — the K loads are latency-bound.
+                for k in T.Pipelined(top_k, num_stages=2):
                     flat_idx = token_idx * T.int32(top_k) + k
                     raw_slot = fwd_idx[flat_idx]
                     # EP mode: fwd_idx == -1 marks non-local expert → zero contribution.
