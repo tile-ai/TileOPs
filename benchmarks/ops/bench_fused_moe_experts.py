@@ -101,16 +101,22 @@ class MoEExpertsTest(WorkloadBase):
 
 class MoEExpertsBenchmark(BenchmarkBase[MoEExpertsTest]):
 
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def __init__(self, test, op):
+        super().__init__(test)
+        self._op = op
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = self._op.eval_roofline()
+        return self._roofline_cache
+
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        return t.num_tokens * t.top_k * 6 * t.ffn_size * t.hidden_size
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem = 2  # bfloat16
-        weights = t.num_experts * 3 * t.ffn_size * t.hidden_size * elem
-        tokens = 2 * t.num_tokens * t.hidden_size * elem
-        return weights + tokens
+        return self._get_roofline()[1]
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +152,6 @@ def test_moe_experts_nopad_bench(
     dtype = torch.bfloat16
     test = MoEExpertsTest(num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype)
     hidden, w1, w2, topk_weights, topk_ids = test.gen_inputs()
-    bm = MoEExpertsBenchmark(test)
 
     kwargs = dict(
         num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
@@ -158,6 +163,7 @@ def test_moe_experts_nopad_bench(
 
     # -- TileOPs nopad (3WG persistent) --------------------------------------
     nopad = FusedMoEExpertsNopadPersistent3WGFwdOp(**kwargs)
+    bm = MoEExpertsBenchmark(test, nopad)
 
     def _nopad_fn(hidden, w1, w2, topk_weights, topk_ids):
         nopad.forward(
