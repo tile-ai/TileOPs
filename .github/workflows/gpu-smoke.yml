@@ -542,7 +542,7 @@ jobs:
       - name: Validate GPU frequency
         run: |
           set -euo pipefail
-          TARGET_CLOCK_MHZ=1830
+          TARGET_CLOCK_MHZ=1500
           RETRIES=5
           SLEEP_SECONDS=2
 

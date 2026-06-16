@@ -101,7 +101,7 @@ jobs:
           source "${VENV_PATH}/bin/activate"
 
           # Validate GPU frequency
-          TARGET_CLOCK_MHZ=1830
+          TARGET_CLOCK_MHZ=1500
           RETRIES=5
           for i in $(seq 1 "${RETRIES}"); do
             gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
@@ -362,7 +362,7 @@ jobs:
           source "${VENV_PATH}/bin/activate"
 
           # Validate GPU frequency
-          TARGET_CLOCK_MHZ=1830
+          TARGET_CLOCK_MHZ=1500
           RETRIES=5
           for i in $(seq 1 "${RETRIES}"); do
             gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
