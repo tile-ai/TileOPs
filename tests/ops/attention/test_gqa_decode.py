@@ -28,6 +28,7 @@ class GroupedQueryAttentionDecodeFixture(FixtureBase):
         ("batch, heads, heads_kv, seq_len_kv, dim, dtype, tune", [
             pytest.param(1, 32, 8, 8192, 128, torch.float16, False, marks=pytest.mark.smoke),
             pytest.param(1, 32, 8, 8192, 128, torch.bfloat16, False, marks=pytest.mark.smoke),
+            pytest.param(1, 16, 2, 8192, 128, torch.float16, False, marks=pytest.mark.smoke),
             pytest.param(8, 64, 16, 8192, 128, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
@@ -67,9 +68,21 @@ def test_gqa_decode_split_policy_filters_short_kv_autotune_configs() -> None:
 
 
 @pytest.mark.smoke
-def test_gqa_decode_rejects_invalid_kv_heads() -> None:
+def test_gqa_decode_rejects_non_positive_groups() -> None:
     with pytest.raises(ValueError, match="groups must be positive"):
         GQADecodeKernel(1, 16, 0, 8192, 128, dtype="float16")
+
+
+@pytest.mark.smoke
+def test_gqa_decode_rejects_non_divisible_heads() -> None:
+    with pytest.raises(ValueError, match="heads must be divisible by groups"):
+        GQADecodeKernel(1, 15, 2, 8192, 128, dtype="float16")
+
+
+@pytest.mark.smoke
+def test_gqa_decode_rejects_non_positive_seqlen_kv() -> None:
+    with pytest.raises(ValueError, match="seqlen_kv must be positive"):
+        GQADecodeKernel(1, 16, 2, 0, 128, dtype="float16")
 
 
 if __name__ == "__main__":
