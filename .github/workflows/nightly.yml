@@ -78,6 +78,10 @@ jobs:
     needs: [cache-warmup]
     timeout-minutes: 120
     runs-on: [self-hosted, tile-ops, nightly]
+    env:
+      # Keep the long benchmark suite from fragmenting CUDA allocator segments
+      # before late large MoE input tensors allocate 14-21 GiB weight blocks.
+      PYTORCH_ALLOC_CONF: expandable_segments:True
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
