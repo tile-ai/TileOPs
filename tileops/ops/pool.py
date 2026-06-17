@@ -270,26 +270,17 @@ class AvgPool2dFwdOp(Op):
 
     def eval_roofline(self) -> tuple[int, int]:
         elem_bytes = torch.empty((), dtype=self.dtype).element_size()
-        out_h = pool_output_dim(
-            self.h_in,
-            self.kernel_size[0],
-            self.stride[0],
-            self.padding[0],
-            self.ceil_mode,
-        )
-        out_w = pool_output_dim(
-            self.w_in,
-            self.kernel_size[1],
-            self.stride[1],
-            self.padding[1],
-            self.ceil_mode,
-        )
         flops = (
-            self.n * self.c_in * out_h * out_w * self.kernel_size[0] * self.kernel_size[1]
+            self.n
+            * self.c_in
+            * self.out_h
+            * self.out_w
+            * self.kernel_size[0]
+            * self.kernel_size[1]
         )
         bytes_ = (
             self.n * self.c_in * self.h_in * self.w_in
-            + self.n * self.c_in * out_h * out_w
+            + self.n * self.c_in * self.out_h * self.out_w
         ) * elem_bytes
         return flops, bytes_
 
@@ -432,39 +423,18 @@ class AvgPool3dFwdOp(Op):
 
     def eval_roofline(self) -> tuple[int, int]:
         elem_bytes = torch.empty((), dtype=self.dtype).element_size()
-        out_d = pool_output_dim(
-            self.d_in,
-            self.kernel_size[0],
-            self.stride[0],
-            self.padding[0],
-            self.ceil_mode,
-        )
-        out_h = pool_output_dim(
-            self.h_in,
-            self.kernel_size[1],
-            self.stride[1],
-            self.padding[1],
-            self.ceil_mode,
-        )
-        out_w = pool_output_dim(
-            self.w_in,
-            self.kernel_size[2],
-            self.stride[2],
-            self.padding[2],
-            self.ceil_mode,
-        )
         flops = (
             self.n
             * self.c_in
-            * out_d
-            * out_h
-            * out_w
+            * self.out_d
+            * self.out_h
+            * self.out_w
             * self.kernel_size[0]
             * self.kernel_size[1]
             * self.kernel_size[2]
         )
         bytes_ = (
             self.n * self.c_in * self.d_in * self.h_in * self.w_in
-            + self.n * self.c_in * out_d * out_h * out_w
+            + self.n * self.c_in * self.out_d * self.out_h * self.out_w
         ) * elem_bytes
         return flops, bytes_
