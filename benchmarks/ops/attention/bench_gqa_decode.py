@@ -26,15 +26,18 @@ class _GroupedQueryAttentionDecodeTestBaseline(GroupedQueryAttentionDecodeTest):
 
 
 def _fa3_gqa_decode_fwd(test):
-    """Return FA3 forward baseline callable, or None if not installed."""
+    """Return FA3 KV-cache decode baseline callable, or None if not installed."""
     try:
-        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_with_kvcache  # noqa: PLC0415
     except ImportError:
         return None
 
+    cache_seqlens = torch.full(
+        (test.batch,), test.seq_len_kv, dtype=torch.int32, device="cuda")
+
     def baseline_fn(q, k, v):
-        # Q is (B, H, D) — add seq dim for flash_attn
-        out = flash_attn_func(q.unsqueeze(1), k, v)
+        # Q is (B, H, D); FA3 KV-cache decode expects (B, S_q, H, D).
+        out = flash_attn_with_kvcache(q.unsqueeze(1), k, v, cache_seqlens=cache_seqlens)
         out = out[0] if isinstance(out, tuple) else out
         return out.squeeze(1)
 
