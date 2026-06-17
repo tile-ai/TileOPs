@@ -299,7 +299,6 @@ FusedAddRMSNormFwdOp:
     op: tileops/ops/norm/fused_add_rms_norm.py
     test: tests/ops/test_fused_add_rms_norm.py
     bench: benchmarks/ops/bench_fused_add_rms_norm.py
-    bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
 # norm — spatial-norm ops (operate over spatial/channel dims, shape: [N, C, *spatial])
