@@ -198,6 +198,7 @@ MoeGroupedGemmNopadFwdOp:
     op: tileops/ops/moe/routed_expert/moe_grouped_gemm_nopad.py
     test: tests/ops/test_moe_grouped_gemm_nopad.py
     bench: benchmarks/ops/bench_moe_grouped_gemm_nopad.py
+    bench_manifest_driven: true
     kernel_map:
       moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
 
@@ -266,7 +267,7 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
     op: tileops/ops/moe/routed_expert/fused_routed_expert.py
     test: tests/ops/test_fused_moe_experts.py
     bench: benchmarks/ops/bench_fused_moe_experts.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
     kernel_map:
       permute_nopad_kernel: MoePermuteNopadKernel
       moe_grouped_gemm_kernel: GroupedGemmPersistent3WGKernel
