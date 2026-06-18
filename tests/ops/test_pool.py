@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import AvgPool2dKernel, AvgPool3dKernel
-from tileops.ops import AvgPool1dFwdOp, AvgPool2dOp, AvgPool3dOp
+from tileops.ops import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp
 
 
 class _DummyKernel(Kernel):
@@ -158,13 +158,6 @@ def test_avg_pool1d_rejects_non_3d_input(monkeypatch: pytest.MonkeyPatch) -> Non
         op(x)
 
 
-class _DummyKernel(Kernel):
-    supported_archs = [80]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x
-
-
 class AvgPool2dFixture(FixtureBase):
     PARAMS = [
         ("n, c_in, h_in, w_in, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override, dtype, tune", [
@@ -177,6 +170,11 @@ class AvgPool2dFixture(FixtureBase):
                 2, 64, 56, 56, (3, 3), None, (1, 1), False, True, None, torch.bfloat16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-3x3-default-stride-bf16",
+            ),
+            pytest.param(
+                1, 32, 28, 28, (3, 3), None, (1, 1), False, True, None, torch.float32, False,
+                marks=pytest.mark.smoke,
+                id="smoke-3x3-default-stride-fp32",
             ),
             pytest.param(
                 1, 128, 55, 57, (3, 5), (2, 2), (1, 2), True, False, None, torch.float16, False,
@@ -213,12 +211,12 @@ class AvgPool2dTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self, n: int, c_in: int, h_in: int, w_in: int) -> tuple[torch.Tensor]:
-        x = torch.randn(n, h_in, w_in, c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(n, c_in, h_in, w_in, device="cuda", dtype=self.dtype).contiguous()
         return (x,)
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        out = F.avg_pool2d(
-            x.permute(0, 3, 1, 2).contiguous(),
+    def ref_program(self, input: torch.Tensor) -> torch.Tensor:
+        return F.avg_pool2d(
+            input,
             kernel_size=self.kernel_size,
             stride=self.stride,
             padding=self.padding,
@@ -226,7 +224,6 @@ class AvgPool2dTest(TestBase):
             count_include_pad=self.count_include_pad,
             divisor_override=self.divisor_override,
         )
-        return out.permute(0, 2, 3, 1).contiguous()
 
 
 @AvgPool2dFixture
@@ -253,7 +250,7 @@ def test_avg_pool2d(
         divisor_override,
         dtype,
     )
-    op = AvgPool2dOp(
+    op = AvgPool2dFwdOp(
         n=n,
         c_in=c_in,
         h_in=h_in,
@@ -273,14 +270,22 @@ def test_avg_pool2d(
 
 @pytest.mark.smoke
 def test_avg_pool2d_dispatches_kernel() -> None:
-    op = AvgPool2dOp(n=1, c_in=32, h_in=28, w_in=28, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+    op = AvgPool2dFwdOp(
+        n=1,
+        c_in=32,
+        h_in=28,
+        w_in=28,
+        kernel_size=(3, 3),
+        stride=(2, 2),
+        padding=(1, 1),
+    )
     assert isinstance(op.kernel, AvgPool2dKernel)
 
 
 @pytest.mark.smoke
 def test_avg_pool2d_rejects_zero_divisor_override() -> None:
     with pytest.raises(ValueError, match="divisor_override must not be zero"):
-        AvgPool2dOp(
+        AvgPool2dFwdOp(
             n=1,
             c_in=8,
             h_in=16,
@@ -293,7 +298,7 @@ def test_avg_pool2d_rejects_zero_divisor_override() -> None:
 @pytest.mark.smoke
 def test_avg_pool2d_rejects_non_positive_stride() -> None:
     with pytest.raises(ValueError, match="stride must be greater than zero"):
-        AvgPool2dOp(
+        AvgPool2dFwdOp(
             n=1,
             c_in=8,
             h_in=16,
@@ -306,7 +311,7 @@ def test_avg_pool2d_rejects_non_positive_stride() -> None:
 @pytest.mark.smoke
 def test_avg_pool2d_rejects_invalid_padding() -> None:
     with pytest.raises(ValueError, match="padding must be at most half"):
-        AvgPool2dOp(
+        AvgPool2dFwdOp(
             n=1,
             c_in=8,
             h_in=16,
@@ -338,14 +343,14 @@ def test_avg_pool2d_rejects_invalid_param_types(kwargs: dict[str, object], match
     }
     base_kwargs.update(kwargs)
     with pytest.raises(TypeError, match=match):
-        AvgPool2dOp(**base_kwargs)
+        AvgPool2dFwdOp(**base_kwargs)
 
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_avg_pool2d_negative_divisor_override_matches_torch() -> None:
-    x = torch.randn(1, 8, 8, 4, device="cuda", dtype=torch.float16).contiguous()
-    op = AvgPool2dOp(
+    x = torch.randn(1, 4, 8, 8, device="cuda", dtype=torch.float16).contiguous()
+    op = AvgPool2dFwdOp(
         n=1,
         c_in=4,
         h_in=8,
@@ -358,55 +363,51 @@ def test_avg_pool2d_negative_divisor_override_matches_torch() -> None:
     )
     out = op(x)
     ref = F.avg_pool2d(
-        x.permute(0, 3, 1, 2).contiguous(),
+        x,
         kernel_size=(2, 2),
         stride=(2, 2),
         padding=(0, 0),
         divisor_override=-1,
-    ).permute(0, 2, 3, 1).contiguous()
+    )
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.smoke
-def test_avg_pool2d_forward_rejects_nchw_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_avg_pool2d_rejects_non_4d_input(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
-    op = AvgPool2dOp(
-        n=1,
-        c_in=4,
-        h_in=8,
-        w_in=8,
-        kernel_size=(2, 2),
-        stride=(2, 2),
+    op = AvgPool2dFwdOp(
+        n=2,
+        c_in=8,
+        h_in=16,
+        w_in=16,
+        kernel_size=(3, 3),
+        stride=(1, 1),
+        padding=(1, 1),
+        dtype=torch.float32,
         kernel_map={"avg_pool2d_kernel": _DummyKernel},
     )
-    x = torch.randn(1, 4, 8, 8)
-    with pytest.raises(ValueError, match="NHWC"):
+    x = torch.randn(2, 8, 16)
+    with pytest.raises(ValueError, match="expects input to be a 4D NCHW tensor"):
         op(x)
 
 
 @pytest.mark.smoke
-def test_avg_pool2d_forward_warns_on_ambiguous_nhwc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_avg_pool2d_rejects_wrong_nchw_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
-    op = AvgPool2dOp(
-        n=1,
+    op = AvgPool2dFwdOp(
+        n=2,
         c_in=8,
-        h_in=8,
-        w_in=8,
-        kernel_size=(2, 2),
-        stride=(2, 2),
+        h_in=16,
+        w_in=16,
+        kernel_size=(3, 3),
+        stride=(1, 1),
+        padding=(1, 1),
+        dtype=torch.float32,
         kernel_map={"avg_pool2d_kernel": _DummyKernel},
     )
-    x = torch.randn(1, 8, 8, 8)
-    with pytest.warns(UserWarning, match="ambiguous NHWC shape"):
-        out = op(x)
-    assert out is x
-
-
-class _DummyKernel(Kernel):
-    supported_archs = [80]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x
+    x = torch.randn(2, 16, 16, 8)
+    with pytest.raises(ValueError, match=r"expects input shape \(2, 8, 16, 16\)"):
+        op(x)
 
 
 class AvgPool3dFixture(FixtureBase):
@@ -421,6 +422,11 @@ class AvgPool3dFixture(FixtureBase):
                 1, 32, 16, 28, 28, (2, 2, 2), None, (0, 0, 0), False, True, None, torch.bfloat16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-2x2x2-default-stride-bf16",
+            ),
+            pytest.param(
+                1, 16, 8, 14, 14, (2, 2, 2), None, (0, 0, 0), False, True, None, torch.float32, False,
+                marks=pytest.mark.smoke,
+                id="smoke-2x2x2-default-stride-fp32",
             ),
             pytest.param(
                 1, 48, 15, 25, 27, (2, 3, 3), (2, 2, 2), (1, 1, 1), True, False, None, torch.float16, False,
@@ -456,13 +462,28 @@ class AvgPool3dTest(TestBase):
         self.divisor_override = divisor_override
         self.dtype = dtype
 
-    def gen_inputs(self, n: int, c_in: int, d_in: int, h_in: int, w_in: int) -> tuple[torch.Tensor]:
-        x = torch.randn(n, d_in, h_in, w_in, c_in, device="cuda", dtype=self.dtype).contiguous()
+    def gen_inputs(
+        self,
+        n: int,
+        c_in: int,
+        d_in: int,
+        h_in: int,
+        w_in: int,
+    ) -> tuple[torch.Tensor]:
+        x = torch.randn(
+            n,
+            c_in,
+            d_in,
+            h_in,
+            w_in,
+            device="cuda",
+            dtype=self.dtype,
+        ).contiguous()
         return (x,)
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        out = F.avg_pool3d(
-            x.permute(0, 4, 1, 2, 3).contiguous(),
+    def ref_program(self, input: torch.Tensor) -> torch.Tensor:
+        return F.avg_pool3d(
+            input,
             kernel_size=self.kernel_size,
             stride=self.stride,
             padding=self.padding,
@@ -470,7 +491,6 @@ class AvgPool3dTest(TestBase):
             count_include_pad=self.count_include_pad,
             divisor_override=self.divisor_override,
         )
-        return out.permute(0, 2, 3, 4, 1).contiguous()
 
 
 @AvgPool3dFixture
@@ -498,7 +518,7 @@ def test_avg_pool3d(
         divisor_override,
         dtype,
     )
-    op = AvgPool3dOp(
+    op = AvgPool3dFwdOp(
         n=n,
         c_in=c_in,
         d_in=d_in,
@@ -519,7 +539,7 @@ def test_avg_pool3d(
 
 @pytest.mark.smoke
 def test_avg_pool3d_dispatches_kernel() -> None:
-    op = AvgPool3dOp(
+    op = AvgPool3dFwdOp(
         n=1,
         c_in=16,
         d_in=8,
@@ -535,7 +555,7 @@ def test_avg_pool3d_dispatches_kernel() -> None:
 @pytest.mark.smoke
 def test_avg_pool3d_rejects_zero_divisor_override() -> None:
     with pytest.raises(ValueError, match="divisor_override must not be zero"):
-        AvgPool3dOp(
+        AvgPool3dFwdOp(
             n=1,
             c_in=8,
             d_in=8,
@@ -549,7 +569,7 @@ def test_avg_pool3d_rejects_zero_divisor_override() -> None:
 @pytest.mark.smoke
 def test_avg_pool3d_rejects_non_positive_stride() -> None:
     with pytest.raises(ValueError, match="stride must be greater than zero"):
-        AvgPool3dOp(
+        AvgPool3dFwdOp(
             n=1,
             c_in=8,
             d_in=8,
@@ -583,14 +603,14 @@ def test_avg_pool3d_rejects_invalid_param_types(kwargs: dict[str, object], match
     }
     base_kwargs.update(kwargs)
     with pytest.raises(TypeError, match=match):
-        AvgPool3dOp(**base_kwargs)
+        AvgPool3dFwdOp(**base_kwargs)
 
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_avg_pool3d_negative_divisor_override_matches_torch() -> None:
-    x = torch.randn(1, 4, 6, 6, 3, device="cuda", dtype=torch.float16).contiguous()
-    op = AvgPool3dOp(
+    x = torch.randn(1, 3, 4, 6, 6, device="cuda", dtype=torch.float16).contiguous()
+    op = AvgPool3dFwdOp(
         n=1,
         c_in=3,
         d_in=4,
@@ -604,50 +624,53 @@ def test_avg_pool3d_negative_divisor_override_matches_torch() -> None:
     )
     out = op(x)
     ref = F.avg_pool3d(
-        x.permute(0, 4, 1, 2, 3).contiguous(),
+        x,
         kernel_size=(2, 2, 2),
         stride=(2, 2, 2),
         padding=(0, 0, 0),
         divisor_override=-1,
-    ).permute(0, 2, 3, 4, 1).contiguous()
+    )
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.smoke
-def test_avg_pool3d_forward_rejects_ncdhw_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_avg_pool3d_rejects_non_5d_input(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
-    op = AvgPool3dOp(
+    op = AvgPool3dFwdOp(
         n=1,
-        c_in=3,
-        d_in=4,
-        h_in=6,
-        w_in=6,
+        c_in=4,
+        d_in=8,
+        h_in=8,
+        w_in=8,
         kernel_size=(2, 2, 2),
         stride=(2, 2, 2),
+        padding=(0, 0, 0),
+        dtype=torch.float32,
         kernel_map={"avg_pool3d_kernel": _DummyKernel},
     )
-    x = torch.randn(1, 3, 4, 6, 6)
-    with pytest.raises(ValueError, match="NDHWC"):
+    x = torch.randn(1, 4, 8, 8)
+    with pytest.raises(ValueError, match="expects input to be a 5D NCDHW tensor"):
         op(x)
 
 
 @pytest.mark.smoke
-def test_avg_pool3d_forward_warns_on_ambiguous_ndhwc_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_avg_pool3d_rejects_wrong_ncdhw_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
-    op = AvgPool3dOp(
+    op = AvgPool3dFwdOp(
         n=1,
         c_in=4,
-        d_in=4,
-        h_in=4,
-        w_in=4,
+        d_in=8,
+        h_in=8,
+        w_in=8,
         kernel_size=(2, 2, 2),
         stride=(2, 2, 2),
+        padding=(0, 0, 0),
+        dtype=torch.float32,
         kernel_map={"avg_pool3d_kernel": _DummyKernel},
     )
-    x = torch.randn(1, 4, 4, 4, 4)
-    with pytest.warns(UserWarning, match="ambiguous NDHWC shape"):
-        out = op(x)
-    assert out is x
+    x = torch.randn(1, 8, 8, 8, 4)
+    with pytest.raises(ValueError, match=r"expects input shape \(1, 4, 8, 8, 8\)"):
+        op(x)
 
 
 if __name__ == "__main__":

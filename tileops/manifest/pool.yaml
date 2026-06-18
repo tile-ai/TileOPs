@@ -56,7 +56,7 @@ AvgPool1dFwdOp:
 AvgPool2dFwdOp:
   ref_api: "torch.nn.functional.avg_pool2d"
   family: pool
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -85,7 +85,10 @@ AvgPool2dFwdOp:
       - "W_out == max(((W_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
 
   workloads:
-    # Vision backbone pooling cases, expressed in PyTorch NCHW layout.
+    # Real-model sources: ResNet-style and ConvNeXt-style vision backbones use
+    # 2D average-pooling/downsampling over NCHW feature maps at early and middle
+    # feature stages. The asymmetric ceil/divisor case is a stress workload for
+    # PyTorch avg_pool2d semantics, not a separate model family.
     - {input_shape: [2, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "vision-3x3-s2"}
     - {input_shape: [2, 128, 56, 56], kernel_size: [5, 5], stride: [2, 2], padding: [2, 2], dtypes: [float16], label: "vision-5x5-s2"}
     - {input_shape: [3, 96, 55, 57], kernel_size: [3, 5], stride: [2, 2], padding: [1, 2], ceil_mode: true, count_include_pad: false, divisor_override: 7, dtypes: [bfloat16], label: "ceil-divisor-bf16"}
@@ -110,12 +113,12 @@ AvgPool2dFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 AvgPool3dFwdOp:
   ref_api: "torch.nn.functional.avg_pool3d"
   family: pool
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -148,7 +151,9 @@ AvgPool3dFwdOp:
       - "W_out == max(((W_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
 
   workloads:
-    # Video/spatiotemporal pooling cases, expressed in PyTorch NCDHW layout.
+    # Real-model sources: I3D/SlowFast-style video CNNs use 3D spatiotemporal
+    # pooling over NCDHW activations. The ceil and divisor workloads stress
+    # PyTorch avg_pool3d semantics on video-like feature volumes.
     - {input_shape: [1, 32, 16, 56, 56], kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "video-2x2x2"}
     - {input_shape: [2, 64, 8, 28, 28], kernel_size: [2, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, count_include_pad: false, dtypes: [float16], label: "ceil-video"}
     - {input_shape: [2, 24, 10, 20, 22], kernel_size: [2, 2, 3], stride: [2, 2, 2], padding: [0, 1, 1], divisor_override: 7, dtypes: [bfloat16], label: "divisor-bf16"}
@@ -177,7 +182,7 @@ AvgPool3dFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 MaxPool1dFwdOp:
   ref_api: "torch.nn.functional.max_pool1d"
