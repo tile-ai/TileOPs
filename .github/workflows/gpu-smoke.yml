@@ -694,6 +694,9 @@ jobs:
           echo "Resolved pytest targets: ${PYTEST_TARGETS}"
           read -r -a TARGETS <<< "${PYTEST_TARGETS}"
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
+          # Self-heal: a reused/cached venv may predate the test deps (e.g. a
+          # trusted venv built without [dev]); ensure pytest is present.
+          python -m pytest --version >/dev/null 2>&1 || pip install pytest pytest-xdist
           python -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" --junit-xml=gpu_smoke_results.xml | tee gpu_smoke.log
 
       - name: Generate gpu-smoke report
