@@ -776,6 +776,12 @@ class UnaryKernel(Kernel):
             stacklevel=2,
         )
         self.config = dict(self.default_config)
+        # If autotune() runs after init_config() (e.g. a post-init re-tune),
+        # rebuild the cached kernel so forward() matches self.config. During the
+        # normal init flow _compiled_fn does not exist yet, so this is skipped
+        # and init_config() compiles it afterward.
+        if getattr(self, "_compiled_fn", None) is not None:
+            self.init_config(self.config)
 
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
@@ -984,6 +990,12 @@ class BinaryKernel(Kernel):
             stacklevel=2,
         )
         self.config = dict(self.default_config)
+        # If autotune() runs after init_config() (e.g. a post-init re-tune),
+        # rebuild the cached kernel so forward() matches self.config. During the
+        # normal init flow _compiled_fn does not exist yet, so this is skipped
+        # and init_config() compiles it afterward.
+        if getattr(self, "_compiled_fn", None) is not None:
+            self.init_config(self.config)
 
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
@@ -1136,6 +1148,12 @@ class FusedGatedKernel(Kernel):
             stacklevel=2,
         )
         self.config = dict(self.default_config)
+        # If autotune() runs after init_config() (e.g. a post-init re-tune),
+        # rebuild the cached kernel so forward() matches self.config. During the
+        # normal init flow _compiled_fn does not exist yet, so this is skipped
+        # and init_config() compiles it afterward.
+        if getattr(self, "_compiled_fn", None) is not None:
+            self.init_config(self.config)
 
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
