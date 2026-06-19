@@ -625,7 +625,10 @@ jobs:
             # — find-links is bypassed for a git-URL requirement — and pull the
             # rest with --no-deps so the git ref is never built. Fall back to the
             # source build when no wheel is staged. Revert when tilelang releases.
-            TILELANG_WHL="$(ls "${WHEEL_DIR}"/tilelang-*.whl 2>/dev/null | head -1 || true)"
+            TILELANG_WHL=""
+            for _whl in "${WHEEL_DIR}"/tilelang-*.whl; do
+              [[ -e "$_whl" ]] && TILELANG_WHL="$_whl" && break
+            done
             if [[ -n "$TILELANG_WHL" ]]; then
               echo "Reusing prebuilt tilelang wheel: ${TILELANG_WHL}"
               PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install --no-deps "${TILELANG_WHL}"
