@@ -637,16 +637,19 @@ jobs:
             # may use: WHEEL_DIR can be an ephemeral per-run dir that was not
             # seeded, so also look in the persistent trusted cache where the
             # wheel is staged.
+            SEARCH_DIRS=("${WHEEL_DIR:-}" "${TRUSTED_CACHE_ROOT:+${TRUSTED_CACHE_ROOT}/wheels}")
+            echo "[tilelang] searching for a prebuilt wheel in: ${SEARCH_DIRS[*]}"
             TILELANG_WHL=""
-            for _dir in "${WHEEL_DIR:-}" "${TRUSTED_CACHE_ROOT:+${TRUSTED_CACHE_ROOT}/wheels}"; do
-              [[ -n "$_dir" && -d "$_dir" ]] || continue
+            for _dir in "${SEARCH_DIRS[@]}"; do
+              [[ -n "$_dir" && -d "$_dir" ]] || { echo "[tilelang]   - $_dir : (missing dir)"; continue; }
+              echo "[tilelang]   - $_dir :"; ls -la "$_dir" 2>&1 | sed 's/^/[tilelang]       /'
               for _whl in "$_dir"/tilelang-*.whl; do
                 [[ -e "$_whl" ]] || continue
                 [[ -z "$TILELANG_WHL" || "$_whl" -nt "$TILELANG_WHL" ]] && TILELANG_WHL="$_whl"
               done
             done
             if [[ -n "$TILELANG_WHL" ]]; then
-              echo "Reusing prebuilt tilelang wheel: ${TILELANG_WHL}"
+              echo "::notice::[tilelang] FOUND prebuilt wheel ${TILELANG_WHL} — installing it, SKIPPING git source build"
               # Install the wheel WITH its runtime deps (numpy, cloudpickle,
               # psutil, ml-dtypes, ...) but pin torch/apache-tvm-ffi to our
               # ranges. Then install TileOPs editable --no-deps so the git
@@ -656,6 +659,7 @@ jobs:
               PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' --no-deps
               PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install einops pyyaml pytest pytest-xdist
             else
+              echo "::warning::[tilelang] NO prebuilt wheel found in [${SEARCH_DIRS[*]}] — FALLING BACK to git source build (clone + compile)"
               PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]'
             fi
 
