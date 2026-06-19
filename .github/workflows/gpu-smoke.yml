@@ -618,12 +618,22 @@ jobs:
           source "${VENV_PATH}/bin/activate"
           python -m pip install --upgrade pip setuptools wheel --no-user
           if [[ "$IS_FORK" == "true" ]]; then
-            FIND_LINKS_FLAG=""
-            if [[ -d "${WHEEL_DIR}" ]] && ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1; then
-              FIND_LINKS_FLAG="--find-links ${WHEEL_DIR}"
+            # TEMPORARY (while tilelang is pinned to a git commit): building it
+            # from source clones large submodules from github, which is
+            # unreliable on this runner. If a prebuilt tilelang wheel is staged
+            # in WHEEL_DIR (seeded from the trusted cache), install it directly
+            # — find-links is bypassed for a git-URL requirement — and pull the
+            # rest with --no-deps so the git ref is never built. Fall back to the
+            # source build when no wheel is staged. Revert when tilelang releases.
+            TILELANG_WHL="$(ls "${WHEEL_DIR}"/tilelang-*.whl 2>/dev/null | head -1 || true)"
+            if [[ -n "$TILELANG_WHL" ]]; then
+              echo "Reusing prebuilt tilelang wheel: ${TILELANG_WHL}"
+              PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install --no-deps "${TILELANG_WHL}"
+              PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' --no-deps
+              PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install "apache-tvm-ffi>=0.1.10,<=0.1.11" "torch>=2.1.0,<2.11.0" einops pyyaml pytest pytest-xdist
+            else
+              PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]'
             fi
-            # shellcheck disable=SC2086
-            PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' ${FIND_LINKS_FLAG}
 
             # Sync libtilelang.so mtime with trusted venv so compile cache keys match.
             # TileLang cache keys include the library's mtime (kernel_cache.py); a fresh
