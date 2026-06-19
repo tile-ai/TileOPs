@@ -608,17 +608,8 @@ jobs:
           fi
 
           if [[ "$VENV_REUSED" == "true" ]]; then
-            # Validate the cached venv before trusting it. A prior run that
-            # failed mid-install (e.g. a tilelang source build that aborted on a
-            # submodule clone) can leave a bare/incomplete venv cached here;
-            # reusing it skips install and breaks tests. Rebuild if key imports
-            # are missing.
-            if "${VENV_PATH}/bin/python" -c "import torch, tilelang, pytest" >/dev/null 2>&1; then
-              echo "Using cached venv at ${VENV_PATH}"
-              exit 0
-            fi
-            echo "Cached venv at ${VENV_PATH} is incomplete; rebuilding from scratch"
-            rm -rf "${VENV_PATH}"
+            echo "Using cached venv at ${VENV_PATH}"
+            exit 0
           fi
 
           echo "Creating fresh venv at ${VENV_PATH}"
@@ -627,39 +618,19 @@ jobs:
           source "${VENV_PATH}/bin/activate"
           python -m pip install --upgrade pip setuptools wheel --no-user
           if [[ "$IS_FORK" == "true" ]]; then
-            # TEMPORARY (while tilelang is pinned to a git commit): building it
-            # from source clones large submodules from github, which is
-            # unreliable on this runner. If a prebuilt tilelang wheel is staged
-            # in WHEEL_DIR (seeded from the trusted cache), install it instead of
-            # building the git URL. Fall back to the source build when no wheel
-            # is staged. Revert when tilelang releases.
-            # Pick the newest staged wheel. Search every cache dir the runner
-            # may use: WHEEL_DIR can be an ephemeral per-run dir that was not
-            # seeded, so also look in the persistent trusted cache where the
-            # wheel is staged.
-            SEARCH_DIRS=("${WHEEL_DIR:-}" "${TRUSTED_CACHE_ROOT:+${TRUSTED_CACHE_ROOT}/wheels}")
-            echo "[tilelang] searching for a prebuilt wheel in: ${SEARCH_DIRS[*]}"
-            TILELANG_WHL=""
-            for _dir in "${SEARCH_DIRS[@]}"; do
-              [[ -n "$_dir" && -d "$_dir" ]] || { echo "[tilelang]   - $_dir : (missing dir)"; continue; }
-              echo "[tilelang]   - $_dir :"; find "$_dir" -maxdepth 1 -type f -printf '[tilelang]       %f\n' 2>/dev/null || true
-              for _whl in "$_dir"/tilelang-*.whl; do
-                [[ -e "$_whl" ]] || continue
-                [[ -z "$TILELANG_WHL" || "$_whl" -nt "$TILELANG_WHL" ]] && TILELANG_WHL="$_whl"
-              done
-            done
-            if [[ -n "$TILELANG_WHL" ]]; then
-              echo "::notice::[tilelang] FOUND prebuilt wheel ${TILELANG_WHL} — installing it, SKIPPING git source build"
-              # Install the wheel WITH its runtime deps (numpy, cloudpickle,
-              # psutil, ml-dtypes, ...) but pin torch/apache-tvm-ffi to our
-              # ranges. Then install TileOPs editable --no-deps so the git
-              # tilelang URL is never built, and add TileOPs' own deps + test
-              # tools (not pulled by --no-deps).
-              PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install --find-links "${WHEEL_DIR}" "${TILELANG_WHL}" "apache-tvm-ffi>=0.1.10,<=0.1.11" "torch>=2.1.0,<2.11.0"
+            # tilelang is pinned to a git commit and is prebuilt into the runner
+            # image at /opt/tilelang-wheels (built with the image's own toolchain,
+            # so ABI-native; lives in the image layer, so it survives cache
+            # cleanup and container restart). Install it from there and never
+            # build the git URL. Fall back to a source build only if absent.
+            TL_WHL=$(compgen -G "/opt/tilelang-wheels/tilelang-*.whl" | head -1 || true)
+            if [[ -n "$TL_WHL" ]]; then
+              echo "Installing prebuilt tilelang wheel: $TL_WHL (skipping git source build)"
+              PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install "$TL_WHL" "apache-tvm-ffi>=0.1.10,<=0.1.11" "torch>=2.1.0,<2.11.0"
               PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' --no-deps
               PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install einops pyyaml pytest pytest-xdist
             else
-              echo "::warning::[tilelang] NO prebuilt wheel found in [${SEARCH_DIRS[*]}] — FALLING BACK to git source build (clone + compile)"
+              echo "No prebuilt tilelang wheel in /opt/tilelang-wheels; building from source"
               PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]'
             fi
 
@@ -719,9 +690,6 @@ jobs:
           echo "Resolved pytest targets: ${PYTEST_TARGETS}"
           read -r -a TARGETS <<< "${PYTEST_TARGETS}"
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
-          # Self-heal: a reused/cached venv may predate the test deps (e.g. a
-          # trusted venv built without [dev]); ensure pytest is present.
-          python -m pytest --version >/dev/null 2>&1 || pip install pytest pytest-xdist
           python -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" --junit-xml=gpu_smoke_results.xml | tee gpu_smoke.log
 
       - name: Generate gpu-smoke report
