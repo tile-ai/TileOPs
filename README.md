@@ -49,7 +49,7 @@ TileOPs can be installed from PyPI or built from source. A CUDA-capable GPU is r
 - PyTorch >= 2.1
 - CUDA Toolkit
 - NVIDIA GPU: **Hopper** (SM_90)
-- [TileLang](https://github.com/tile-ai/tilelang) == 0.1.9
+- [TileLang](https://github.com/tile-ai/tilelang) — pinned to a `main` commit, built from source (see the note below)
 
 ### From PyPI
 
@@ -68,6 +68,23 @@ make install    # dev dependencies + pre-commit hooks
 > [!NOTE]
 > If CUDA and TileLang are already installed system-wide and you encounter build issues:
 > `PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -v && pre-commit install`
+
+> [!IMPORTANT]
+> **TileOPs currently pins TileLang to a `main` commit** because it depends on a fix not
+> yet in a TileLang release. While this holds:
+>
+> - Installing **compiles TileLang from source** — a git commit has no prebuilt wheel, so
+>   `pip` builds TileLang and its submodules. A CUDA build toolchain is required and the
+>   first build is slow; the pinned commit is cached and reused afterward.
+> - **`pip install tileops` from PyPI is unavailable** during this phase: a published
+>   package cannot carry a git dependency. Install from source.
+> - On import, TileOPs preloads the CUDA driver (`libcuda.so.1`) into the global symbol
+>   namespace, working around a TileLang source-build gap where `libtvm_runtime.so` leaves
+>   driver symbols (e.g. `cuModuleLoadData`) unresolved. If you `import tilelang` **directly**
+>   (not via `tileops`) and hit `undefined symbol: cuModuleLoadData`, run with
+>   `LD_PRELOAD=/path/to/libcuda.so.1`.
+>
+> This reverts to a normal version pin once TileLang cuts a release.
 
 Verify:
 
