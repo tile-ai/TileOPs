@@ -760,28 +760,22 @@ class UnaryKernel(Kernel):
         ]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Override to handle serialization failures in the TileLang autotuner.
+        """Autotuning is unsupported for this kernel — fall back to default_config.
 
-        UnaryKernel JIT functions capture op_func closures that the autotuner
-        subprocess cannot serialize.  Catch the error and fall back to the
-        default config so that ``tune=True`` never crashes.
+        UnaryKernel captures a Python op_func closure the TileLang autotuner
+        cannot drive (older versions fail to serialize it for subprocess
+        compilation; tilelang main fails to bind the tunable params), so a tune
+        is guaranteed to fail. Skip it and fall back immediately so ``tune=True``
+        degrades gracefully without wasting time on a failing autotune.
         """
         import warnings
 
-        try:
-            super().autotune(warmup=warmup, rep=rep)
-        except Exception as exc:
-            # This kernel captures a Python op_func closure the TileLang
-            # autotuner cannot drive: older versions fail to serialize it for
-            # subprocess compilation ("not serializable"); tilelang main fails
-            # to bind the tunable params. Autotuning is unsupported here — fall
-            # back to default_config so tune=True degrades gracefully.
-            warnings.warn(
-                f"{self.__class__.__name__} autotuning unsupported "
-                f"({type(exc).__name__}: {exc}); falling back to default_config.",
-                stacklevel=2,
-            )
-            self.config = dict(self.default_config)
+        warnings.warn(
+            f"{self.__class__.__name__} autotuning unsupported "
+            f"(captures a Python closure); falling back to default_config.",
+            stacklevel=2,
+        )
+        self.config = dict(self.default_config)
 
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
@@ -974,28 +968,22 @@ class BinaryKernel(Kernel):
         ]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Override to handle serialization failures in the TileLang autotuner.
+        """Autotuning is unsupported for this kernel — fall back to default_config.
 
-        BinaryKernel JIT functions capture op_func closures that the autotuner
-        subprocess cannot serialize.  Catch the error and fall back to the
-        default config so that ``tune=True`` never crashes.
+        BinaryKernel captures a Python op_func closure the TileLang autotuner
+        cannot drive (older versions fail to serialize it for subprocess
+        compilation; tilelang main fails to bind the tunable params), so a tune
+        is guaranteed to fail. Skip it and fall back immediately so ``tune=True``
+        degrades gracefully without wasting time on a failing autotune.
         """
         import warnings
 
-        try:
-            super().autotune(warmup=warmup, rep=rep)
-        except Exception as exc:
-            # This kernel captures a Python op_func closure the TileLang
-            # autotuner cannot drive: older versions fail to serialize it for
-            # subprocess compilation ("not serializable"); tilelang main fails
-            # to bind the tunable params. Autotuning is unsupported here — fall
-            # back to default_config so tune=True degrades gracefully.
-            warnings.warn(
-                f"{self.__class__.__name__} autotuning unsupported "
-                f"({type(exc).__name__}: {exc}); falling back to default_config.",
-                stacklevel=2,
-            )
-            self.config = dict(self.default_config)
+        warnings.warn(
+            f"{self.__class__.__name__} autotuning unsupported "
+            f"(captures a Python closure); falling back to default_config.",
+            stacklevel=2,
+        )
+        self.config = dict(self.default_config)
 
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
@@ -1132,28 +1120,22 @@ class FusedGatedKernel(Kernel):
         ]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Override to handle serialization failures in the TileLang autotuner.
+        """Autotuning is unsupported for this kernel — fall back to default_config.
 
-        FusedGatedKernel JIT functions capture activation_func closures that
-        the autotuner subprocess cannot serialize.  Catch the error and fall
-        back to the default config so that ``tune=True`` never crashes.
+        FusedGatedKernel captures a Python activation_func closure the TileLang
+        autotuner cannot drive (older versions fail to serialize it for
+        subprocess compilation; tilelang main fails to bind the tunable params),
+        so a tune is guaranteed to fail. Skip it and fall back immediately so
+        ``tune=True`` degrades gracefully without wasting time on a failing tune.
         """
         import warnings
 
-        try:
-            super().autotune(warmup=warmup, rep=rep)
-        except Exception as exc:
-            # This kernel captures a Python activation_func closure the TileLang
-            # autotuner cannot drive: older versions fail to serialize it for
-            # subprocess compilation ("not serializable"); tilelang main fails
-            # to bind the tunable params. Autotuning is unsupported here — fall
-            # back to default_config so tune=True degrades gracefully.
-            warnings.warn(
-                f"{self.__class__.__name__} autotuning unsupported "
-                f"({type(exc).__name__}: {exc}); falling back to default_config.",
-                stacklevel=2,
-            )
-            self.config = dict(self.default_config)
+        warnings.warn(
+            f"{self.__class__.__name__} autotuning unsupported "
+            f"(captures a Python closure); falling back to default_config.",
+            stacklevel=2,
+        )
+        self.config = dict(self.default_config)
 
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""

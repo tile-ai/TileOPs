@@ -51,13 +51,12 @@ TileOPs can be installed from PyPI or built from source. A CUDA-capable GPU is r
 - NVIDIA GPU: **Hopper** (SM_90)
 - [TileLang](https://github.com/tile-ai/tilelang) — pinned to a `main` commit, built from source (see the note below)
 
-### From PyPI
-
-```bash
-pip install tileops
-```
-
 ### From source
+
+> [!NOTE]
+> Installing from PyPI (`pip install tileops`) is temporarily unavailable: TileOPs
+> pins TileLang to a `main` commit (see the note below), and a published package
+> cannot carry a git dependency. Build from source until TileLang has a release again.
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
