@@ -642,7 +642,7 @@ jobs:
             TILELANG_WHL=""
             for _dir in "${SEARCH_DIRS[@]}"; do
               [[ -n "$_dir" && -d "$_dir" ]] || { echo "[tilelang]   - $_dir : (missing dir)"; continue; }
-              echo "[tilelang]   - $_dir :"; ls -la "$_dir" 2>&1 | sed 's/^/[tilelang]       /'
+              echo "[tilelang]   - $_dir :"; find "$_dir" -maxdepth 1 -type f -printf '[tilelang]       %f\n' 2>/dev/null || true
               for _whl in "$_dir"/tilelang-*.whl; do
                 [[ -e "$_whl" ]] || continue
                 [[ -z "$TILELANG_WHL" || "$_whl" -nt "$TILELANG_WHL" ]] && TILELANG_WHL="$_whl"
