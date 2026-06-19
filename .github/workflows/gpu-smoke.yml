@@ -633,11 +633,17 @@ jobs:
             # in WHEEL_DIR (seeded from the trusted cache), install it instead of
             # building the git URL. Fall back to the source build when no wheel
             # is staged. Revert when tilelang releases.
-            # Pick the newest staged wheel (the shared cache may hold several).
+            # Pick the newest staged wheel. Search every cache dir the runner
+            # may use: WHEEL_DIR can be an ephemeral per-run dir that was not
+            # seeded, so also look in the persistent trusted cache where the
+            # wheel is staged.
             TILELANG_WHL=""
-            for _whl in "${WHEEL_DIR}"/tilelang-*.whl; do
-              [[ -e "$_whl" ]] || continue
-              [[ -z "$TILELANG_WHL" || "$_whl" -nt "$TILELANG_WHL" ]] && TILELANG_WHL="$_whl"
+            for _dir in "${WHEEL_DIR:-}" "${TRUSTED_CACHE_ROOT:-/data7/shared/ci-cache}/wheels" "/data7/shared/ci-cache/wheels"; do
+              [[ -n "$_dir" && -d "$_dir" ]] || continue
+              for _whl in "$_dir"/tilelang-*.whl; do
+                [[ -e "$_whl" ]] || continue
+                [[ -z "$TILELANG_WHL" || "$_whl" -nt "$TILELANG_WHL" ]] && TILELANG_WHL="$_whl"
+              done
             done
             if [[ -n "$TILELANG_WHL" ]]; then
               echo "Reusing prebuilt tilelang wheel: ${TILELANG_WHL}"
