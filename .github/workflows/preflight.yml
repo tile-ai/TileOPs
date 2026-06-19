@@ -253,7 +253,10 @@ jobs:
         # --no-deps and skip the git build.
         run: |
           pip install -e . --no-deps
-          pip install "tilelang==0.1.9" "torch>=2.1.0,<2.11.0" einops pyyaml
+          # Released tilelang 0.1.9 declares apache-tvm-ffi~=0.1.0, which pulls
+          # an incompatible 0.1.1x; cap it (the pin tileops carried before this
+          # PR) so the released wheel imports.
+          pip install "tilelang==0.1.9" "apache-tvm-ffi>=0.1.2,<0.1.10" "torch>=2.1.0,<2.11.0" einops pyyaml
 
       - name: Validate ops manifest
         run: python scripts/validate_manifest.py --levels schema,signature,shape,dtype,bench --strict
@@ -311,7 +314,10 @@ jobs:
         # skip the git build.
         run: |
           pip install -e . --no-deps
-          pip install "tilelang==0.1.9" "torch>=2.1.0,<2.11.0" einops pyyaml pytest pytest-xdist
+          # Released tilelang 0.1.9 declares apache-tvm-ffi~=0.1.0, which pulls
+          # an incompatible 0.1.1x; cap it (the pin tileops carried before this
+          # PR) so the released wheel imports.
+          pip install "tilelang==0.1.9" "apache-tvm-ffi>=0.1.2,<0.1.10" "torch>=2.1.0,<2.11.0" einops pyyaml pytest pytest-xdist
 
       - name: Run benchmark contract tests
         run: python -m pytest -q benchmarks/tests
