@@ -6,11 +6,13 @@ readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
     "torch>=2.1.0,<2.11.0",
-    "tilelang==0.1.9",
-    # FIXME(apache-tvm-ffi-pin): Remove once tilelang carries its own
-    # apache-tvm-ffi<0.1.10 pin (already on tilelang main, not yet released).
-    # Tracking: https://github.com/tile-ai/TileOPs/issues/969
-    "apache-tvm-ffi>=0.1.2,<0.1.10",
+    # Tracking tilelang main until its next release (see issue #969). Pinned to
+    # a commit for reproducibility and so pip can cache the built wheel — never
+    # float @main. tilelang main carries its own apache-tvm-ffi pin, so we no
+    # longer restate it here.
+    # FLIP PLAN: when tilelang cuts a release, replace this with
+    # `tilelang>=<version>` (the project becomes PyPI-publishable then).
+    "tilelang @ git+https://github.com/tile-ai/tilelang.git@65dbc9837beedf6882a40a08e18ea571d92fd6a5",
     "einops",
     "pyyaml>=6.0",
 ]
