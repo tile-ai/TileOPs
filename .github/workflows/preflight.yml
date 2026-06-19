@@ -247,7 +247,13 @@ jobs:
           python-version: "3.10"
 
       - name: Install TileOPs and validator dependencies
-        run: pip install -e .
+        # tilelang is pinned to a git commit (built from source); a CPU-only
+        # runner has no CUDA toolkit to compile it. Manifest validation only
+        # needs tilelang importable, so install the released wheel with
+        # --no-deps and skip the git build.
+        run: |
+          pip install -e . --no-deps
+          pip install "tilelang==0.1.9" "torch>=2.1.0,<2.11.0" einops pyyaml
 
       - name: Validate ops manifest
         run: python scripts/validate_manifest.py --levels schema,signature,shape,dtype,bench --strict
@@ -299,7 +305,13 @@ jobs:
           python-version: "3.10"
 
       - name: Install TileOPs (with dev extras)
-        run: pip install -e ".[dev]"
+        # tilelang is pinned to a git commit (built from source); a CPU-only
+        # runner has no CUDA toolkit to compile it. Contract tests only need
+        # tilelang importable, so install the released wheel with --no-deps and
+        # skip the git build.
+        run: |
+          pip install -e . --no-deps
+          pip install "tilelang==0.1.9" "torch>=2.1.0,<2.11.0" einops pyyaml pytest pytest-xdist
 
       - name: Run benchmark contract tests
         run: python -m pytest -q benchmarks/tests
