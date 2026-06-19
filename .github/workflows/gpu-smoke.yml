@@ -608,8 +608,17 @@ jobs:
           fi
 
           if [[ "$VENV_REUSED" == "true" ]]; then
-            echo "Using cached venv at ${VENV_PATH}"
-            exit 0
+            # Validate the cached venv before trusting it. A prior run that
+            # failed mid-install (e.g. a tilelang source build that aborted on a
+            # submodule clone) can leave a bare/incomplete venv cached here;
+            # reusing it skips install and breaks tests. Rebuild if key imports
+            # are missing.
+            if "${VENV_PATH}/bin/python" -c "import torch, tilelang, pytest" >/dev/null 2>&1; then
+              echo "Using cached venv at ${VENV_PATH}"
+              exit 0
+            fi
+            echo "Cached venv at ${VENV_PATH} is incomplete; rebuilding from scratch"
+            rm -rf "${VENV_PATH}"
           fi
 
           echo "Creating fresh venv at ${VENV_PATH}"
