@@ -638,7 +638,7 @@ jobs:
             # seeded, so also look in the persistent trusted cache where the
             # wheel is staged.
             TILELANG_WHL=""
-            for _dir in "${WHEEL_DIR:-}" "${TRUSTED_CACHE_ROOT:-/data7/shared/ci-cache}/wheels" "/data7/shared/ci-cache/wheels"; do
+            for _dir in "${WHEEL_DIR:-}" "${TRUSTED_CACHE_ROOT:+${TRUSTED_CACHE_ROOT}/wheels}"; do
               [[ -n "$_dir" && -d "$_dir" ]] || continue
               for _whl in "$_dir"/tilelang-*.whl; do
                 [[ -e "$_whl" ]] || continue
