@@ -89,8 +89,9 @@ BENCHMARK_*.md
 DEEPER_*.md
 HINTS.md
 ITERATIONS.md
-OPTIMIZATION_*.md
+OPTIMIZATION_REALITY_CHECK.md
 PHASE*.md
 
 # Temporary scripts
 bench-wrapper.sh
+trajectory/
