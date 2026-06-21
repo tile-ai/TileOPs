@@ -29,8 +29,12 @@ RUN python -m pip install \
         --index-url https://download.pytorch.org/whl/cu129 \
         --extra-index-url https://pypi.org/simple \
         -c /tmp/constraints.txt "torch==2.10.0+cu129"
+# scikit-build-core + patchelf are tilelang's PEP 517 build backend (its
+# [build-system].requires); --no-build-isolation in the next stage means pip will NOT
+# auto-install them, so they must be present here. cmake from pip provides >=3.26.1
+# (tilelang's [tool.scikit-build] floor); the jammy apt cmake is 3.22, too old.
 RUN python -m pip install -c /tmp/constraints.txt \
-        setuptools wheel ninja \
+        setuptools wheel ninja scikit-build-core patchelf cmake \
         triton apache-tvm-ffi cloudpickle ml_dtypes numpy psutil tqdm \
         typing_extensions Cython z3-solver torch_c_dlpack_ext einops "PyYAML>=6.0"
 
