@@ -85,7 +85,10 @@ ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     TILELANG_CACHE_DIR=/ci-cache/tilelang \
     TILELANG_TMP_DIR=/ci-cache/tilelang/tmp \
     TRITON_CACHE_DIR=/ci-cache/triton \
-    PIP_CACHE_DIR=/ci-cache/pip
+    PIP_CACHE_DIR=/ci-cache/pip \
+    PIP_NO_CACHE_DIR=0
+# Build stages set PIP_NO_CACHE_DIR=1 to keep image layers slim; re-enable caching
+# here so CI-runtime pip installs reuse the bind-mounted PIP_CACHE_DIR.
 ARG RUNNER_VERSION=2.334.0
 # Create the user (and its skeleton home) before WORKDIR so the home dir is owned by
 # ci-runner, not root. WORKDIR then sits inside that home and precedes the relative-path
