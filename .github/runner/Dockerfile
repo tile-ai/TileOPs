@@ -61,22 +61,35 @@ RUN python -c "import importlib.metadata as m, tilelang, torch, triton; \
 print('tilelang', m.version('tilelang')); print('torch', torch.__version__); print('triton', triton.__version__)"
 
 # ── post-fa3 ──
+# Bench / test layer: a future slim image (RFC §9) stops at `runtime` and skips everything
+# below. pytest/ruff are dev/test tooling; FlashAttention-3 below is a bench baseline.
 FROM runtime AS post-fa3
 RUN python -m pip install --no-cache-dir -c /tmp/constraints.txt \
         "pytest==9.0.2" "pytest-xdist>=3.0" "ruff==0.14.13"
-# Comparison baselines are best-effort: a failed install must not break the image.
-RUN python -m pip install --no-cache-dir --no-build-isolation "flash-attn-interface>=2.8.3" \
-    || echo "WARNING: flash-attn-interface install failed (non-fatal)"
+# FlashAttention-3 (Hopper) has no PyPI wheel — build it from the repo's hopper/ dir
+# (--recursive pulls the csrc/cutlass submodule the build needs). Best-effort: a bench
+# baseline must not break the image. The source tree is removed whether or not the build
+# succeeds, so it never lands in the image.
+RUN git clone --depth 1 --branch v2.8.3 --recursive \
+        https://github.com/Dao-AILab/flash-attention.git /tmp/flash-attention \
+        && cd /tmp/flash-attention/hopper && python setup.py install; \
+    status=$?; rm -rf /tmp/flash-attention; \
+    [ "$status" -eq 0 ] || echo "WARNING: FlashAttention-3 (hopper) build failed (non-fatal)"
 
 # ── fullstack ──
+# Bench baselines (comparison targets), dropped wholesale by a future slim image (RFC §9).
+# Install each independently and best-effort: one missing or unbuildable package must not
+# abort the rest or fail the image (flashinfer's PyPI name is `flashinfer-python`).
 FROM post-fa3 AS fullstack
-RUN python -m pip install --no-cache-dir --no-build-isolation -c /tmp/constraints.txt \
+RUN for pkg in \
         "flash-attn==2.8.3" \
         "flash-linear-attention==0.4.2" \
-        "flashinfer>=0.6.6" \
+        "flashinfer-python>=0.6.6" \
         "vllm==0.18.0" \
-        "sgl-kernel==0.3.21" \
-    || echo "WARNING: a bench baseline install failed (non-fatal)"
+        "sgl-kernel==0.3.21"; do \
+        python -m pip install --no-cache-dir --no-build-isolation -c /tmp/constraints.txt "$pkg" \
+            || echo "WARNING: bench baseline '$pkg' install failed (non-fatal)"; \
+    done
 
 # ── final ──
 FROM fullstack AS final
