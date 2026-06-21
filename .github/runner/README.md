@@ -34,14 +34,13 @@ add a numeric suffix (`:65dbc98-2`).
 
 ### Build args
 
-| Arg                | Default                                | Purpose                                                                                                                                                                                           |
-| ------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TILELANG_GIT_SHA` | *(required)*                           | tilelang commit to compile and bake.                                                                                                                                                              |
-| `BASE_IMAGE`       | `nvidia/cuda:12.9.1-devel-ubuntu22.04` | Public CUDA `devel` base (Python 3.12 via deadsnakes).                                                                                                                                            |
-| `MAX_JOBS`         | `64`                                   | Parallelism for the tilelang / extension builds.                                                                                                                                                  |
-| `NVCC_THREADS`     | `4`                                    | Per-`nvcc` threads.                                                                                                                                                                               |
-| `RUNNER_VERSION`   | `2.334.0`                              | GitHub Actions runner version baked into `final`.                                                                                                                                                 |
-| `RUNNER_SHA256`    | *(empty → skipped)*                    | Optional: published SHA-256 of the runner tarball; when set, the build verifies the download before extracting. Find it on the [runner release page](https://github.com/actions/runner/releases). |
+| Arg                | Default                                | Purpose                                                |
+| ------------------ | -------------------------------------- | ------------------------------------------------------ |
+| `TILELANG_GIT_SHA` | *(required)*                           | tilelang commit to compile and bake.                   |
+| `BASE_IMAGE`       | `nvidia/cuda:12.9.1-devel-ubuntu22.04` | Public CUDA `devel` base (Python 3.12 via deadsnakes). |
+| `MAX_JOBS`         | `64`                                   | Parallelism for the tilelang / extension builds.       |
+| `NVCC_THREADS`     | `4`                                    | Per-`nvcc` threads.                                    |
+| `RUNNER_VERSION`   | `2.334.0`                              | GitHub Actions runner version baked into `final`.      |
 
 ### Stages (`--target`)
 

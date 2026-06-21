@@ -85,20 +85,12 @@ ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     PIP_CACHE_DIR=/ci-cache/pip \
     PIP_NO_CACHE_DIR=0
 ARG RUNNER_VERSION=2.334.0
-# Optional: pin the runner tarball's published SHA-256 to verify integrity before
-# extraction. Empty skips the check (warns); set --build-arg RUNNER_SHA256=<hash> to enforce.
-ARG RUNNER_SHA256=
 # useradd before WORKDIR: home stays ci-runner-owned, and WORKDIR precedes the relative-path RUN (hadolint).
 RUN useradd -m -s /bin/bash ci-runner
 WORKDIR /home/ci-runner/runner
 RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && curl -fsSL -o runner.tar.gz \
         "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
-    && if [ -n "${RUNNER_SHA256}" ]; then \
-           echo "${RUNNER_SHA256}  runner.tar.gz" > runner.tar.gz.sha256 \
-           && sha256sum -c runner.tar.gz.sha256 \
-           && rm runner.tar.gz.sha256; \
-       else echo "WARNING: RUNNER_SHA256 unset — skipping runner tarball integrity check"; fi \
     && tar xzf runner.tar.gz && rm runner.tar.gz \
     && ./bin/installdependencies.sh \
     && mkdir -p /ci-cache/pip /ci-cache/tilelang/tmp /ci-cache/triton \
