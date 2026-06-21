@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Multi-stage TileOPs CI runner image (RFC §5.1). Built in the image-build env;
+# Multi-stage TileOPs CI runner image. Built in the image-build env;
 # published to ghcr.io. From a PUBLIC base — fully reproducible. NOT TileOPs source.
 ARG BASE_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04
 
@@ -15,13 +15,18 @@ FROM ${BASE_IMAGE} AS runtime
 # system-wide pip installs work in this single-purpose image.
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PIP_BREAK_SYSTEM_PACKAGES=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-dev python3-pip python-is-python3 git curl ca-certificates \
+        python3 python3-dev python3-venv python3-pip python-is-python3 git curl ca-certificates \
         build-essential cmake ninja-build unzip xz-utils sudo \
     && rm -rf /var/lib/apt/lists/*
 COPY constraints.txt /tmp/constraints.txt
-# torch from the cu129 index → 2.10.0+cu129, aligned with the base CUDA 12.9.
-RUN python -m pip install --index-url https://download.pytorch.org/whl/cu129 \
-        -c /tmp/constraints.txt "torch==2.10.0"
+# torch from the cu129 index → 2.10.0+cu129, aligned with the base CUDA 12.9. The
+# `+cu129` local-version pin forces the cu129 wheel from the pytorch index; the
+# PyPI extra-index supplies torch's pure-python transitive deps (sympy, networkx,
+# jinja2, filelock, fsspec, typing_extensions), which the pytorch index does not host.
+RUN python -m pip install \
+        --index-url https://download.pytorch.org/whl/cu129 \
+        --extra-index-url https://pypi.org/simple \
+        -c /tmp/constraints.txt "torch==2.10.0+cu129"
 RUN python -m pip install -c /tmp/constraints.txt \
         setuptools wheel ninja \
         triton apache-tvm-ffi cloudpickle ml_dtypes numpy psutil tqdm \
@@ -73,8 +78,8 @@ RUN python -m pip install --no-cache-dir --no-build-isolation -c /tmp/constraint
 
 # ── Stage: final — GitHub Actions runner; NO TileOPs source ──
 FROM fullstack AS final
-# Cache dirs as image ENV defaults (RFC §6.2): workflows/scripts read these, never
-# hardcode the path. The host persistent cache dir is bind-mounted to /ci-cache at
+# Cache dirs as image ENV defaults: workflows/scripts read these env vars rather than
+# hardcoding the path. The host persistent cache dir is bind-mounted to /ci-cache at
 # container start.
 ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     TILELANG_CACHE_DIR=/ci-cache/tilelang \
@@ -93,4 +98,9 @@ RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && tar xzf runner.tar.gz && rm runner.tar.gz \
     && ./bin/installdependencies.sh \
     && chown -R ci-runner:ci-runner /home/ci-runner
+# Standalone runner mode: entrypoint.sh configures an ephemeral runner (config.sh)
+# then runs one job (run.sh). chmod needs root, so set it before dropping to ci-runner.
+COPY --chown=ci-runner:ci-runner .github/runner/entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 USER ci-runner
+ENTRYPOINT ["./entrypoint.sh"]

@@ -1,4 +1,4 @@
-# Cross-layer version lock for CI / runner builds (RFC §4.1).
+# Cross-layer version lock for CI / runner builds.
 # Pins ONLY versions; never defines dependency membership (that is pyproject's job).
 # torch: bare `==2.10.0` is intentional — per PEP 440 it matches any local build
 # (`2.10.0+cu129` on the GPU image, the default build on CPU preflight). The CUDA
