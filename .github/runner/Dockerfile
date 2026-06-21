@@ -80,7 +80,8 @@ RUN python -m pip install --no-cache-dir --no-build-isolation -c /tmp/constraint
 FROM fullstack AS final
 # Cache dirs as image ENV defaults: workflows/scripts read these env vars rather than
 # hardcoding the path. The host persistent cache dir is bind-mounted to /ci-cache at
-# container start.
+# container start; the dirs are also pre-created below (owned by ci-runner) so the
+# defaults stay writable even when the image runs without that mount.
 ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     TILELANG_CACHE_DIR=/ci-cache/tilelang \
     TILELANG_TMP_DIR=/ci-cache/tilelang/tmp \
@@ -100,7 +101,8 @@ RUN mkdir -p /home/ci-runner/runner/_work/_tool \
         "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
     && tar xzf runner.tar.gz && rm runner.tar.gz \
     && ./bin/installdependencies.sh \
-    && chown -R ci-runner:ci-runner /home/ci-runner
+    && mkdir -p /ci-cache/pip /ci-cache/tilelang/tmp /ci-cache/triton \
+    && chown -R ci-runner:ci-runner /home/ci-runner /ci-cache
 # Standalone runner mode: entrypoint.sh configures an ephemeral runner (config.sh)
 # then runs one job (run.sh). chmod needs root, so set it before dropping to ci-runner.
 COPY --chown=ci-runner:ci-runner .github/runner/entrypoint.sh ./entrypoint.sh
