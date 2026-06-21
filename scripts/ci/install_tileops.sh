@@ -9,7 +9,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONSTRAINTS="${REPO_ROOT}/constraints.txt"
 
-if ! python -c "import tilelang" >/dev/null 2>&1; then
+if ! python3 -c "import tilelang" >/dev/null 2>&1; then
   {
     echo "::error::tilelang is not importable. Provision it first, then re-run:"
     echo "  release:  pip install --no-deps -c constraints.txt tilelang==0.1.9"
@@ -22,6 +22,6 @@ fi
 # tileops itself only. Its runtime deps (torch/einops/pyyaml) and any dev/bench
 # extras are provided by the runner image (or installed separately for local dev),
 # pinned by constraints.txt. --no-deps keeps pip away from tilelang.
-pip install -e "${REPO_ROOT}" --no-deps -c "${CONSTRAINTS}"
+python3 -m pip install -e "${REPO_ROOT}" --no-deps -c "${CONSTRAINTS}"
 
-python -c "import tileops, tilelang; print('install_tileops: tileops + tilelang import OK')"
+python3 -c "import tileops, tilelang; print('install_tileops: tileops + tilelang import OK')"

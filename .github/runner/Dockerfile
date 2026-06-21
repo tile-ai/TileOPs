@@ -16,12 +16,14 @@ FROM ${BASE_IMAGE} AS runtime
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PIP_BREAK_SYSTEM_PACKAGES=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-dev python3-pip python-is-python3 git curl ca-certificates \
+        build-essential cmake ninja-build unzip xz-utils sudo \
     && rm -rf /var/lib/apt/lists/*
 COPY constraints.txt /tmp/constraints.txt
 # torch from the cu129 index → 2.10.0+cu129, aligned with the base CUDA 12.9.
 RUN python -m pip install --index-url https://download.pytorch.org/whl/cu129 \
         -c /tmp/constraints.txt "torch==2.10.0"
 RUN python -m pip install -c /tmp/constraints.txt \
+        setuptools wheel ninja \
         triton apache-tvm-ffi cloudpickle ml_dtypes numpy psutil tqdm \
         typing_extensions Cython z3-solver torch_c_dlpack_ext einops "PyYAML>=6.0"
 
@@ -80,9 +82,12 @@ ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     TRITON_CACHE_DIR=/ci-cache/triton \
     PIP_CACHE_DIR=/ci-cache/pip
 ARG RUNNER_VERSION=2.334.0
+# Create the user (and its skeleton home) before WORKDIR so the home dir is owned by
+# ci-runner, not root. WORKDIR then sits inside that home and precedes the relative-path
+# runner-extraction RUN (hadolint requires WORKDIR before relative paths).
+RUN useradd -m -s /bin/bash ci-runner
 WORKDIR /home/ci-runner/runner
-RUN useradd -m -s /bin/bash ci-runner \
-    && mkdir -p /home/ci-runner/runner/_work/_tool \
+RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && curl -fsSL -o runner.tar.gz \
         "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
     && tar xzf runner.tar.gz && rm runner.tar.gz \
