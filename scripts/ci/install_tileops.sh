@@ -20,8 +20,9 @@ if ! python3 -c "import tilelang" >/dev/null 2>&1; then
 fi
 
 # tileops itself only. Its runtime deps (torch/einops/pyyaml) and any dev/bench
-# extras are provided by the runner image (or installed separately for local dev),
-# pinned by constraints.txt. --no-deps keeps pip away from tilelang.
+# extras are provided by the runner image (or installed separately for local dev).
+# constraints.txt version-locks the CI/runner stack it covers (torch, triton,
+# apache-tvm-ffi, and tilelang's runtime deps); --no-deps keeps pip away from tilelang.
 python3 -m pip install -e "${REPO_ROOT}" --no-deps -c "${CONSTRAINTS}"
 
 python3 -c "import tileops, tilelang; print('install_tileops: tileops + tilelang import OK')"
