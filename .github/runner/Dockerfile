@@ -1,16 +1,27 @@
 # syntax=docker/dockerfile:1.7
 # Multi-stage CI runner image.
-ARG BASE_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04
+ARG BASE_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu22.04
 
 # ── runtime ──
 # devel (not runtime) base: nvcc is needed at runtime for tilelang JIT.
 FROM ${BASE_IMAGE} AS runtime
-# python-is-python3: later stages call `python`. PIP_BREAK_SYSTEM_PACKAGES: bypass PEP 668.
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PIP_BREAK_SYSTEM_PACKAGES=1
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-dev python3-venv python3-pip python-is-python3 git curl ca-certificates \
-        build-essential cmake ninja-build unzip xz-utils sudo \
-    && rm -rf /var/lib/apt/lists/*
+# 22.04 ships python3.10; install 3.12 from deadsnakes and make it the default python.
+# software-properties-common is purged after adding the PPA to keep the image lean.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        software-properties-common ca-certificates curl gnupg \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-dev python3.12-venv \
+        git build-essential cmake ninja-build unzip xz-utils sudo \
+    && apt-get purge -y --auto-remove software-properties-common \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && python3.12 -m ensurepip --upgrade \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
+    && python -m pip install --upgrade pip
 COPY constraints.txt /tmp/constraints.txt
 # `+cu129` pin forces the cu129 wheel from the pytorch index; the PyPI extra-index
 # supplies torch's pure-python deps, which the pytorch index does not host.
@@ -24,14 +35,19 @@ RUN python -m pip install -c /tmp/constraints.txt \
         typing_extensions Cython z3-solver torch_c_dlpack_ext einops "PyYAML>=6.0"
 
 # Build tilelang once from the pinned commit; install --no-deps so pip never re-resolves it.
-ARG TILELANG_GIT_SHA=65dbc9837beedf6882a40a08e18ea571d92fd6a5
+# TILELANG_GIT_SHA is a required build-arg (no default): bump it via `--build-arg` and tag
+# the image `:<short-sha>` — the Dockerfile never carries a SHA literal.
+ARG TILELANG_GIT_SHA
 ARG MAX_JOBS=64
 ARG NVCC_THREADS=4
 # TORCH_CUDA_ARCH_LIST=9.0: the runner pool is Hopper (H200) only.
 ENV MAX_JOBS=${MAX_JOBS} NVCC_THREADS=${NVCC_THREADS} TORCH_CUDA_ARCH_LIST=9.0
-RUN git clone https://github.com/tile-ai/tilelang.git /tmp/tilelang \
+RUN if [ -z "${TILELANG_GIT_SHA}" ]; then \
+        echo "ERROR: build with --build-arg TILELANG_GIT_SHA=<commit>"; exit 1; \
+    fi \
+    && git clone https://github.com/tile-ai/tilelang.git /tmp/tilelang \
     && cd /tmp/tilelang \
-    && git checkout ${TILELANG_GIT_SHA} \
+    && git checkout "${TILELANG_GIT_SHA}" \
     && git submodule update --init --recursive \
     && mkdir -p /opt/tilelang-wheels \
     && python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
