@@ -113,6 +113,7 @@ RUN mkdir -p /home/ci-runner/runner/_work/_tool \
         "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
     && tar xzf runner.tar.gz && rm runner.tar.gz \
     && ./bin/installdependencies.sh \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /ci-cache/pip /ci-cache/tilelang/tmp /ci-cache/triton \
     && chown -R ci-runner:ci-runner /home/ci-runner /ci-cache
 # chmod as root before the USER drop.
