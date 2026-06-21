@@ -66,13 +66,16 @@ print('tilelang', m.version('tilelang')); print('torch', torch.__version__); pri
 FROM runtime AS post-fa3
 RUN python -m pip install --no-cache-dir -c /tmp/constraints.txt \
         "pytest==9.0.2" "pytest-xdist>=3.0" "ruff==0.14.13"
-# FlashAttention-3 (Hopper) has no PyPI wheel — build it from the repo's hopper/ dir
-# (--recursive pulls the csrc/cutlass submodule the build needs). Best-effort: a bench
-# baseline must not break the image. The source tree is removed whether or not the build
-# succeeds, so it never lands in the image.
-RUN git clone --depth 1 --branch v2.8.3 --recursive \
+# FlashAttention-3 (Hopper) has no PyPI wheel — build it from the repo's hopper/ dir.
+# Fetch ONLY the csrc/cutlass submodule the build needs: a full --recursive also pulls the
+# AMD composable_kernel submodule, which the sm_90 build never uses and which is large and
+# slow/timeout-prone to clone. Best-effort: a bench baseline must not break the image. The
+# source tree is removed whether or not the build succeeds, so it never lands in the image.
+RUN git clone --depth 1 --branch v2.8.3 \
         https://github.com/Dao-AILab/flash-attention.git /tmp/flash-attention \
-        && cd /tmp/flash-attention/hopper && python setup.py install; \
+        && cd /tmp/flash-attention \
+        && git submodule update --init --depth 1 csrc/cutlass \
+        && cd hopper && python setup.py install; \
     status=$?; rm -rf /tmp/flash-attention; \
     [ "$status" -eq 0 ] || echo "WARNING: FlashAttention-3 (hopper) build failed (non-fatal)"
 
