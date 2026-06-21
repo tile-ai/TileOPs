@@ -1,0 +1,19 @@
+# Cross-layer version lock for CI / runner builds (RFC §4.1).
+# Pins ONLY versions; never defines dependency membership (that is pyproject's job).
+# torch: bare `==2.10.0` is intentional — per PEP 440 it matches any local build
+# (`2.10.0+cu129` on the GPU image, the default build on CPU preflight). The CUDA
+# variant is chosen by the install index (`--index-url .../cu129` at base-image
+# build), NOT by this pin; adding `+cu129` here would break installs resolving
+# from PyPI (CPU preflight), so this single file works for both.
+torch==2.10.0
+triton==3.6.0
+apache-tvm-ffi==0.1.8.post2
+cloudpickle==3.1.2
+ml_dtypes==0.5.4
+numpy==2.4.4
+psutil==7.2.2
+tqdm==4.67.3
+typing_extensions==4.15.0
+Cython==3.2.4
+z3-solver==4.15.4.0
+torch_c_dlpack_ext==0.1.5

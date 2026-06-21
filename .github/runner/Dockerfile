@@ -1,85 +1,91 @@
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+# syntax=docker/dockerfile:1.7
+# Multi-stage TileOPs CI runner image (RFC §5.1). Built in the image-build env;
+# published to ghcr.io. From a PUBLIC base — fully reproducible. NOT TileOPs source.
+ARG BASE_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04
 
-ENV DEBIAN_FRONTEND=noninteractive
+# Public base: Ubuntu 24.04 (native python3.12) + CUDA 12.9 devel toolkit (nvcc is
+# needed at runtime for tilelang JIT, so we keep devel, not runtime). torch cu129
+# matches the base CUDA 12.9 → no LD_LIBRARY_PATH hack. Driver 575.57.08 caps CUDA at
+# 12.9 (13.x needs 580+). No DOCA/IB (single-node NCCL uses NVLink/P2P).
 
-# ── System dependencies ──────────────────────────────────────────────────────
+# ── Stage: runtime — python3.12 + torch cu129 + deps under constraints (einops/PyYAML float) + tilelang built once from SHA ──
+FROM ${BASE_IMAGE} AS runtime
+# 24.04 ships python3.12 natively. `python-is-python3` gives a `python` symlink
+# (later stages call `python`); PIP_BREAK_SYSTEM_PACKAGES bypasses PEP 668 so
+# system-wide pip installs work in this single-purpose image.
+ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PIP_BREAK_SYSTEM_PACKAGES=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl wget git rsync jq \
-        build-essential cmake libedit-dev libxml2-dev libtinfo-dev zlib1g-dev \
-        software-properties-common ca-certificates gnupg sudo unzip tar gzip \
+        python3 python3-dev python3-pip python-is-python3 git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+COPY constraints.txt /tmp/constraints.txt
+# torch from the cu129 index → 2.10.0+cu129, aligned with the base CUDA 12.9.
+RUN python -m pip install --index-url https://download.pytorch.org/whl/cu129 \
+        -c /tmp/constraints.txt "torch==2.10.0"
+RUN python -m pip install -c /tmp/constraints.txt \
+        triton apache-tvm-ffi cloudpickle ml_dtypes numpy psutil tqdm \
+        typing_extensions Cython z3-solver torch_c_dlpack_ext einops "PyYAML>=6.0"
 
-# ── Python 3.11 ──────────────────────────────────────────────────────────────
-RUN add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        python3.11 python3.11-dev python3.11-venv python3.11-distutils \
-    && rm -rf /var/lib/apt/lists/* \
-    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
-    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+# tilelang: main mode builds the wheel once from the pinned commit; the wheel is
+# kept at /opt/tilelang-wheels and installed --no-deps. For release mode, build the
+# image against a release tag instead (and skip this source build).
+ARG TILELANG_GIT_SHA=65dbc9837beedf6882a40a08e18ea571d92fd6a5
+ARG MAX_JOBS=64
+ARG NVCC_THREADS=4
+ENV MAX_JOBS=${MAX_JOBS} NVCC_THREADS=${NVCC_THREADS} TORCH_CUDA_ARCH_LIST=9.0
+RUN git clone https://github.com/tile-ai/tilelang.git /tmp/tilelang \
+    && cd /tmp/tilelang \
+    && git checkout ${TILELANG_GIT_SHA} \
+    && git submodule update --init --recursive \
+    && mkdir -p /opt/tilelang-wheels \
+    && python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
+    && python -m pip install --no-deps /opt/tilelang-wheels/tilelang-*.whl \
+    && rm -rf /tmp/tilelang
+RUN python -c "import importlib.metadata as m, tilelang, torch, triton; \
+print('tilelang', m.version('tilelang')); print('torch', torch.__version__); print('triton', triton.__version__)"
 
-# ── CI runner user & directories ─────────────────────────────────────────────
-RUN useradd -m -s /bin/bash ci-runner \
-    && mkdir -p /home/ci-runner/.tilelang/cache \
-               /home/ci-runner/.triton/cache \
-               /home/ci-runner/.cache/pip \
-               /home/ci-runner/.wheel-cache \
-               /home/ci-runner/runner/_work/_tool \
-    && chown -R ci-runner:ci-runner /home/ci-runner
+# ── Stage: post-fa3 — test tooling + FA3 (pip first, vendor fallback) ──
+FROM runtime AS post-fa3
+RUN python -m pip install --no-cache-dir -c /tmp/constraints.txt \
+        "pytest==9.0.2" "pytest-xdist>=3.0" "ruff==0.14.13"
+# FA3: prefer the pip wheel; if it cannot install on this stack, Task 4 replaces
+# this line with a vendored COPY + `python setup.py install` (hopper).
+RUN python -m pip install --no-cache-dir --no-build-isolation "flash-attn-interface>=2.8.3" \
+    || echo "WARNING: flash-attn-interface pip install failed — see Task 4 (vendor fallback)"
 
-# ── GitHub Actions Runner ────────────────────────────────────────────────────
-ARG RUNNER_VERSION=2.333.0
-RUN curl -o /tmp/runner.tar.gz -L \
-        https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz \
-    && cd /home/ci-runner/runner \
-    && tar xzf /tmp/runner.tar.gz \
-    && rm /tmp/runner.tar.gz \
-    && ./bin/installdependencies.sh \
-    && chown -R ci-runner:ci-runner /home/ci-runner/runner
-
-ENV MAX_JOBS=64 \
-    AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool
-
-# ── Python dependencies ──────────────────────────────────────────────────────
-RUN pip install --no-cache-dir \
-        "torch>=2.1.0,<2.11.0" \
-        "tilelang==0.1.9" \
-        einops numpy "tqdm>=4.62.3" "typing_extensions>=4.10.0" \
-        cloudpickle ml_dtypes psutil Cython \
-        setuptools wheel ninja
-
-RUN pip install --no-cache-dir \
-        "pytest==9.0.2" \
-        "pytest-xdist>=3.0" \
-        "pyyaml>=6.0"
-
-RUN MAX_JOBS=96 NVCC_THREADS=96 pip install --no-cache-dir --no-build-isolation "flash-attn==2.8.3" \
-    || echo "WARNING: flash-attn failed to install -- non-fatal"
-
-RUN MAX_JOBS=96 NVCC_THREADS=96 pip install --no-cache-dir --no-build-isolation "flash-attn-interface>=2.8.3" \
-    || echo "WARNING: flash-attn-interface (FA3) failed to install -- non-fatal"
-
-RUN MAX_JOBS=96 NVCC_THREADS=96 pip install --no-cache-dir --no-build-isolation \
+# ── Stage: fullstack — bench baselines (pip subset + vendored remainder) ──
+FROM post-fa3 AS fullstack
+RUN python -m pip install --no-cache-dir --no-build-isolation -c /tmp/constraints.txt \
+        "flash-attn==2.8.3" \
         "flash-linear-attention==0.4.2" \
         "flashinfer>=0.6.6" \
         "vllm==0.18.0" \
         "sgl-kernel==0.3.21" \
-    || echo "WARNING: Some bench deps failed to install -- non-fatal for runner image"
+    || echo "WARNING: a bench pip baseline failed — see Task 4"
+# Vendored remainder (cannot pip-install): mamba-ssm, native-sparse-attention,
+# and any pip baseline that failed above. Task 4 finalizes this set and the COPY
+# lines. Build context must contain .github/runner/vendor/<dep> (Prerequisites).
+# COPY .github/runner/vendor/mamba-ssm /tmp/vendor/mamba-ssm
+# RUN MAMBA_FORCE_BUILD=TRUE python -m pip install --no-cache-dir --no-build-isolation /tmp/vendor/mamba-ssm
+# COPY .github/runner/vendor/native-sparse-attention /tmp/vendor/native-sparse-attention
+# RUN python -m pip install --no-cache-dir --no-build-isolation /tmp/vendor/native-sparse-attention
 
-RUN MAX_JOBS=32 pip install --no-cache-dir \
-        "git+https://github.com/fla-org/native-sparse-attention.git@bd67af59b90afa34b25f61d2922e612d10dba3bd" \
-    || echo "WARNING: native-sparse-attention failed to install -- non-fatal"
-
-# ── Install TileOPs (editable) ───────────────────────────────────────────────
-WORKDIR /home/ci-runner/tileops
-COPY --chown=ci-runner:ci-runner . .
-RUN pip install --no-cache-dir --no-deps -e .
-
-# ── Entrypoint (for standalone runner mode) ──────────────────────────────────
-COPY --chown=ci-runner:ci-runner .github/runner/entrypoint.sh /home/ci-runner/runner/entrypoint.sh
-RUN chmod +x /home/ci-runner/runner/entrypoint.sh
-
-USER ci-runner
+# ── Stage: final — GitHub Actions runner; NO TileOPs source ──
+FROM fullstack AS final
+# Cache dirs as image ENV defaults (RFC §6.2): workflows/scripts read these, never
+# hardcode the path. The host persistent cache dir is bind-mounted to /ci-cache at
+# container start.
+ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
+    TILELANG_CACHE_DIR=/ci-cache/tilelang \
+    TILELANG_TMP_DIR=/ci-cache/tilelang/tmp \
+    TRITON_CACHE_DIR=/ci-cache/triton \
+    PIP_CACHE_DIR=/ci-cache/pip
+ARG RUNNER_VERSION=2.334.0
 WORKDIR /home/ci-runner/runner
-ENTRYPOINT ["./entrypoint.sh"]
+RUN useradd -m -s /bin/bash ci-runner \
+    && mkdir -p /home/ci-runner/runner/_work/_tool \
+    && curl -fsSL -o runner.tar.gz \
+        "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
+    && tar xzf runner.tar.gz && rm runner.tar.gz \
+    && ./bin/installdependencies.sh \
+    && chown -R ci-runner:ci-runner /home/ci-runner
+USER ci-runner
