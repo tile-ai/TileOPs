@@ -492,16 +492,14 @@ class SSDChunkScanFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Updated from AKO tuning (iter 25): 1.77x speedup (0.060ms vs 0.107ms)
-        # Key finding: threads=64 (2 warps) and block_n=64 optimal for this
-        # workload (Q=256, P=64, N=64). Reduces register pressure and enables
-        # higher occupancy vs threads=128, block_n=128 baseline.
+        # threads=64 (2 warps) balances parallelism with register pressure.
+        # block_n=64 keeps occupancy high for typical d_state sizes (64-128).
         return {
             "block_l": 64,
             "block_p": 64,
-            "block_n": min(64, self.d_state),  # Changed from 128 to 64
+            "block_n": min(64, self.d_state),
             "block_s": 64,
-            "threads": 64,  # Changed from 128 to 64
+            "threads": 64,
         }
 
     @property

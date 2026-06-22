@@ -379,19 +379,9 @@ class SSDChunkStateFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Updated from autotuning (2026-06-20): 1.03x speedup (0.0637ms -> 0.0619ms)
-        # Winning config: block_n=64, block_p=32 (reduced from 128, 64)
-        # Key finding: Smaller tile sizes reduce register pressure and improve
-        # occupancy by 2.9% for this workload (B=1, C=1, L=256, H=64, N=64).
-        #
-        # block_n=64 uses half the N-tile size vs block_n=128, improving register
-        # allocation. block_p=32 (vs 64) further reduces per-thread working set.
-        # block_l=128 and threads=256 unchanged - maintain GEMM depth and warp count.
-        #
-        # threads=128 (4 warps/block) for the has_seq_idx path: the seq_idx
-        # branch adds extra live registers, raising per-block register pressure.
-        # At threads=256 this tips the register limiter to 1 block/SM, hurting
-        # occupancy. Switching to threads=128 recovers the latency-hiding budget.
+        # Smaller tile sizes (block_n=64, block_p=32) reduce register pressure
+        # and improve occupancy. threads=128 for has_seq_idx path prevents
+        # excessive per-block register allocation.
         if self.has_seq_idx:
             return {
                 "block_n": 128,
@@ -400,8 +390,8 @@ class SSDChunkStateFwdKernel(Kernel):
                 "threads": 128,
             }
         return {
-            "block_n": 64,      # Reduced from 128
-            "block_p": 32,      # Reduced from 64
+            "block_n": 64,
+            "block_p": 32,
             "block_l": 128,
             "threads": 256,
         }
