@@ -174,8 +174,7 @@ def bench_kernel(
 
     Uses CUPTI via torch.profiler for accurate kernel-only timing, with
     direct Kineto C++ event iteration to avoid Python parsing overhead.
-    CUPTI is mandatory — a RuntimeError is raised if CUPTI is unavailable
-    or produces no results.
+    Falls back to CUDA event timing if CUPTI is unavailable (with a warning).
 
     Args:
         fn: Callable to benchmark.  If *args* is provided, called as
@@ -191,9 +190,9 @@ def bench_kernel(
           - ``latency_ms``: median-of-trials mean kernel latency in milliseconds
           - ``stdev_ms``: standard deviation across trial means (0.0 when only
             one trial is available)
-          - ``timing_backend``: always ``"cupti"``
+          - ``timing_backend``: ``"cupti"`` (preferred) or ``"cuda_event"`` (fallback)
           - ``event_breakdown``: dict mapping CUDA kernel name → total_us across
-            *all* timed iterations of the median trial.
+            *all* timed iterations of the median trial (empty for CUDA event fallback).
     """
     if not isinstance(args, tuple):
         raise TypeError(
