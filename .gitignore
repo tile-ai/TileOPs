@@ -95,28 +95,3 @@ PHASE*.md
 # Temporary scripts
 bench-wrapper.sh
 trajectory/
-
-# Optimization analysis documents (keep local)
-OPTIMIZATION_SUMMARY.md
-VECTORIZATION_ANALYSIS.md
-FUTURE_OPTIMIZATION_STRATEGIES.md
-ADVANCED_OPTIMIZATION_METHODS.md
-FP16_STRATEGY.md
-NEXT_OPTIMIZATION_PATHS.md
-NEXT_STEPS.md
-PROJECT_SUMMARY.md
-VECTORIZATION_PLAN.md
-
-# Temporary tuning/profiling scripts (keep local)
-scripts/analyze_kernel_bottleneck.py
-scripts/analyze_tensor_core.py
-scripts/bench_vectorized_chunk_scan.py
-scripts/profile_chunk_scan.py
-scripts/profile_vectorization.sh
-scripts/quick_bench_chunk_state.py
-scripts/quick_bench_state_passing.py
-scripts/test_fp16_support.py
-scripts/test_fp16_tile_sizes.py
-scripts/test_fp16_vectorized.py
-scripts/test_vectorized_chunk_scan.py
-scripts/validate_fp16_128.py
