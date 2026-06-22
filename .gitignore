@@ -77,21 +77,3 @@ CLAUDE.local.md
 .claude/worktrees/
 docs/superpowers/
 *.ncu-rep
-
-# AKO optimization files (keep local only)
-ako_*.json
-ako_*.db
-*.ako
-
-# Working documentation (keep local only)
-AKO_*.md
-BENCHMARK_*.md
-DEEPER_*.md
-HINTS.md
-ITERATIONS.md
-OPTIMIZATION_REALITY_CHECK.md
-PHASE*.md
-
-# Temporary scripts
-bench-wrapper.sh
-trajectory/
