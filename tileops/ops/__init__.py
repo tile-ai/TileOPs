@@ -43,6 +43,7 @@ from .gated_deltanet import (
     GatedDeltaNetDecodeOp,
     GatedDeltaNetFwdOp,
     GatedDeltaNetOp,
+    GatedDeltaNetPrefillFwdOp,
 )
 from .gated_linear_attn import GLADecodeOp
 from .gemm import GemmOp
@@ -138,6 +139,7 @@ __all__ = [
     "GatedDeltaNetDecodeOp",
     "GatedDeltaNetFwdOp",
     "GatedDeltaNetOp",
+    "GatedDeltaNetPrefillFwdOp",
     "GLABwdOp",
     "GLADecodeOp",
     "GLAFwdOp",
