@@ -530,8 +530,11 @@ class SSDChunkScanFwdKernel(Kernel):
             if bn <= self.d_state
         ] + [
             # threads=64 (2 warps/block) — more blocks/SM at cost of less ILP
-            {"block_l": 64, "block_p": 64, "block_n": block_n, "block_s": bs, "threads": 64}
+            # Include block_n=64 to cover the optimal config found via AKO tuning
+            {"block_l": 64, "block_p": 64, "block_n": bn, "block_s": bs, "threads": 64}
             for bs in [64, 128]
+            for bn in [64, 128]
+            if bn <= self.d_state
         ]
 
     def forward(
