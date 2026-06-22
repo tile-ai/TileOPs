@@ -84,10 +84,17 @@ _logger = logging.getLogger("tileops.bench")
 # A single test function may call record() multiple times (tileops + baseline).
 _bench_results = threading.local()
 
-# Kernel name substrings that identify L2-flush operations (cache.zero_()).
-# Filtered out of CUPTI timing so flush overhead is never counted as benchmark
-# kernel time.  Logged at DEBUG level so inadvertent filtering is detectable.
-_FLUSH_PATTERNS: tuple[str, ...] = ("FillFunctor", "fill_kernel", "Memset", "memset")
+# Kernel name substrings that identify L2-flush operations (cache.zero_() on
+# the dedicated _l2_flush_cache buffer).  Filtered out of CUPTI timing so flush
+# overhead is never counted as benchmark kernel time.
+#
+# Only match the specific fill-functor form used by torch.Tensor.zero_() /
+# at::fill_ on integer tensors.  Bare "Memset"/"memset"/"fill_kernel" are
+# intentionally excluded from the filter: they are too generic and would
+# silently drop real benchmark kernels that happen to call cuMemsetAsync or
+# an at::fill_ variant.  The vectorized_elementwise_kernel<...FillFunctor...>
+# pattern is specific enough to identify the flush without false positives.
+_FLUSH_PATTERNS: tuple[str, ...] = ("FillFunctor",)
 
 
 def _sum_kernel_time_us(kineto_results):
@@ -98,12 +105,10 @@ def _sum_kernel_time_us(kineto_results):
     Direct C++ iteration is ~16x faster for n_repeat=1280.
 
     L2 flush kernels (``cache.zero_()`` on the flush buffer) are excluded.
-    The kernel name varies across CUDA versions:
-      - ``vectorized_elementwise_kernel<...FillFunctor...>`` (common)
-      - ``cudaMemsetAsync`` / ``memset`` (driver-level path)
-      - ``at::native::fill_kernel`` (older PyTorch)
-    All three patterns are filtered so L2 flush time is never counted as
-    benchmark kernel time.
+    Only the ``FillFunctor`` pattern is filtered (matched by
+    ``vectorized_elementwise_kernel<...FillFunctor...>``).  Generic patterns
+    like ``"Memset"``, ``"memset"``, and ``"fill_kernel"`` are intentionally
+    *not* filtered to avoid silently dropping real benchmark kernels.
 
     Returns:
         tuple[float, dict[str, float]]: (total_us, per_kernel_us) where
@@ -307,20 +312,25 @@ def bench_kernel(
     )
     event_trial_means: list[float] = []
     for _ in range(n_trials):
-        start_evt = torch.cuda.Event(enable_timing=True)
-        end_evt = torch.cuda.Event(enable_timing=True)
+        start_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
+        end_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
         # Warmup
         for i in range(n_repeat):
             cache.zero_()
             _run(i)
         torch.cuda.synchronize()
-        start_evt.record()
+        # Timed iterations: flush is outside the event window so only _run() is measured.
         for i in range(n_repeat):
             cache.zero_()
+            start_events[i].record()
             _run(i)
-        end_evt.record()
+            end_events[i].record()
         torch.cuda.synchronize()
-        event_trial_means.append(start_evt.elapsed_time(end_evt) / n_repeat)
+        trial_us = sum(
+            s.elapsed_time(e) * 1e3
+            for s, e in zip(start_events, end_events, strict=True)
+        )
+        event_trial_means.append(trial_us / n_repeat * 1e-3)
 
     paired_ev = sorted(event_trial_means)
     median_ms = paired_ev[len(paired_ev) // 2]

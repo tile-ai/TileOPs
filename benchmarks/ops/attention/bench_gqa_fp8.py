@@ -111,7 +111,8 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
     inputs = _make_inputs(case)
     op(*inputs)
     torch.cuda.synchronize()
-    latency_ms = bench_kernel(op, args=inputs, n_warmup=1, n_repeat=3, n_trials=1)
+    bench_result = bench_kernel(op, args=inputs, n_warmup=1, n_repeat=3, n_trials=1)
+    latency_ms = bench_result["latency_ms"]
     flops, bytes_moved = op.eval_roofline()
     result = {
         "latency_ms": latency_ms,
@@ -124,7 +125,8 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
 
     fa3_fn = _fa3_gqa_fp8_fwd()
     if fa3_fn is not None:
-        fa3_latency_ms = bench_kernel(fa3_fn, args=inputs, n_warmup=1, n_repeat=3, n_trials=1)
+        fa3_bench = bench_kernel(fa3_fn, args=inputs, n_warmup=1, n_repeat=3, n_trials=1)
+        fa3_latency_ms = fa3_bench["latency_ms"]
         fa3_result = {
             "latency_ms": fa3_latency_ms,
             "tflops": flops / fa3_latency_ms * 1e-9 if fa3_latency_ms > 0 else 0.0,
