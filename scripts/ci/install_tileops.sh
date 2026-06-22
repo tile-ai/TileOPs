@@ -9,7 +9,7 @@ CONSTRAINTS="${REPO_ROOT}/constraints.txt"
 if ! python3 -c "import tilelang" >/dev/null 2>&1; then
   {
     echo "::error::tilelang is not importable. Provision it first, then re-run:"
-    echo "  release:  python3 -m pip install --no-deps -c \"${CONSTRAINTS}\" tilelang==0.1.9"
+    echo "  release:  python3 -m pip install --no-deps -c \"${CONSTRAINTS}\" tilelang==<version>"
     echo "  main:     python3 -m pip install --no-deps <prebuilt main-commit tilelang wheel>"
     echo "(the CI runner image bakes tilelang; this script never installs it)"
   } >&2
