@@ -1,0 +1,23 @@
+# Version lock for CI / runner builds. Pins versions only; membership lives in pyproject.
+# torch/torchvision/torchaudio bare (no `+cu129`): the CUDA variant comes from the install
+# index, not this pin, so the same lock also fits the CPU preflight. Do not add `+cu129`.
+# torchvision/torchaudio are pinned to vllm 0.19.1's exact requirements (the newest vllm on
+# the torch 2.10 / CUDA-12 line — vllm 0.20+ are CUDA-13 builds, unrunnable on a 12.9 driver).
+torch==2.10.0
+torchvision==0.25.0
+torchaudio==2.10.0
+triton==3.6.0
+# apache-tvm-ffi is ABI-coupled to the baked tilelang wheel: it MUST sit inside the range
+# tilelang's own metadata declares for the pinned commit (verified at build time by
+# scripts/ci/verify_runtime_stack.py). Re-confirm this pin whenever TILELANG_GIT_SHA changes.
+apache-tvm-ffi==0.1.11
+cloudpickle==3.1.2
+ml_dtypes==0.5.4
+# numpy<2.3 required by vllm 0.19.1's numba dep; 2.2.6 also satisfies tilelang (>=1.23.5).
+numpy==2.2.6
+psutil==7.2.2
+tqdm==4.67.3
+typing_extensions==4.15.0
+Cython==3.2.4
+z3-solver==4.15.4.0
+torch_c_dlpack_ext==0.1.5
