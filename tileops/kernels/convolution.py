@@ -13,6 +13,7 @@ __all__ = [
     "Conv1dKernel",
     "Conv1dPointwiseKernel",
     "Conv2d1x1Kernel",
+    "Conv2d3x3S1P1HighresKernel",
     "Conv2dKernel",
     "Conv3dKernel",
     "GroupConv1dKernel",
@@ -1453,6 +1454,103 @@ def _conv2d_group_kernel(
     return _conv2d_group_func
 
 
+@functools.lru_cache(maxsize=8)
+def _conv2d_3x3_s1_p1_highres_kernel(dtype: str = "float16"):
+    accum_dtype = "float"
+    n = 1
+    c_in = 256
+    h = 112
+    w = 112
+    c_out = 512
+    out_h = 112
+    out_w = 112
+    out_hw = out_h * out_w
+    kernel_h = 3
+    kernel_w = 3
+    k_total = c_in * kernel_h * kernel_w
+
+    @tilelang.jit(
+        out_idx=[2],
+        compile_flags=["-O3", "-DENABLE_BF16"],
+        pass_configs={"tl.enable_async_copy": False},
+    )
+    def _conv2d_3x3_s1_p1_highres_func(
+        block_m: int,
+        block_n: int,
+        block_k: int,
+        num_stages: int,
+        threads: int,
+        enable_rasterization: bool,
+    ):
+        @T.prim_func
+        def _conv2d_3x3_s1_p1_highres_main(
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                T.ceildiv(out_hw, block_n),
+                T.ceildiv(c_out, block_m),
+                n,
+                threads=threads,
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
+                out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
+
+                T.use_swizzle(10, enable=enable_rasterization)
+                T.clear(out_local)
+
+                for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
+                    for i, j in T.Parallel(block_k, block_n):
+                        k_idx = k_iter * block_k + i
+                        spatial_idx = bx * block_n + j
+                        ci = k_idx // 9
+                        kernel_idx = k_idx % 9
+                        kh = kernel_idx // 3
+                        kw = kernel_idx % 3
+                        oh = spatial_idx // out_w
+                        ow = spatial_idx % out_w
+                        ih = oh + kh - 1
+                        iw = ow + kw - 1
+                        in_bound = (
+                            (spatial_idx < out_hw)
+                            & (k_idx < k_total)
+                            & (ih >= 0)
+                            & (iw >= 0)
+                            & (ih < h)
+                            & (iw < w)
+                        )
+                        data_shared[i, j] = T.if_then_else(
+                            in_bound,
+                            x[bz, ci, ih, iw],
+                            T.cast(0.0, dtype),
+                        )
+
+                    T.copy(weight_flat[by * block_m, k_iter * block_k], weight_shared)
+                    T.gemm(weight_shared, data_shared, out_local)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc = by * block_m + i
+                    spatial_idx = bx * block_n + j
+                    out_shared[i, j] = T.if_then_else(
+                        (oc < c_out) & (spatial_idx < out_hw),
+                        T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                        T.cast(0.0, dtype),
+                    )
+
+                T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
+
+        return _conv2d_3x3_s1_p1_highres_main
+
+    return _conv2d_3x3_s1_p1_highres_func
+
+
 @torch.library.custom_op("top::conv2d_1x1_wrapped_kernel", mutates_args=())
 def _conv2d_1x1_wrapped_kernel(
     n: int,
@@ -1495,6 +1593,51 @@ def _(
     *inputs: tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
     return torch.empty((n, c_out, h, w), dtype=inputs[0].dtype, device=inputs[0].device)
+
+
+@torch.library.custom_op("top::conv2d_3x3_s1_p1_highres_wrapped_kernel", mutates_args=())
+def _conv2d_3x3_s1_p1_highres_wrapped_kernel(
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasterization: bool,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    return _conv2d_3x3_s1_p1_highres_kernel(dtype)(
+        block_m,
+        block_n,
+        block_k,
+        num_stages,
+        threads,
+        enable_rasterization,
+    )(x, weight, bias)
+
+
+@_conv2d_3x3_s1_p1_highres_wrapped_kernel.register_fake
+def _(
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasterization: bool,
+    *inputs: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
+    del dtype, block_m, block_n, block_k, num_stages, threads, enable_rasterization
+    x = inputs[0]
+    weight = inputs[1]
+    # For stride=1, padding=1, dilation=1, kernel=3x3, output spatial dims equal input spatial dims.
+    return torch.empty(
+        (x.shape[0], weight.shape[0], x.shape[2], x.shape[3]),
+        dtype=x.dtype,
+        device=x.device,
+    )
 
 
 @torch.library.custom_op("top::conv2d_wrapped_kernel", mutates_args=())
@@ -1643,6 +1786,128 @@ def _(
     out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
     out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     return torch.empty((n, c_out, out_h, out_w), dtype=inputs[0].dtype, device=inputs[0].device)
+
+
+class Conv2d3x3S1P1HighresKernel(Kernel):
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        h: int,
+        w: int,
+        c_out: int,
+        stride_h: int,
+        stride_w: int,
+        pad_h: int,
+        pad_w: int,
+        dtype: torch.dtype,
+        has_bias: bool = True,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        if (
+            n != 1
+            or c_in != 256
+            or h != 112
+            or w != 112
+            or c_out != 512
+            or stride_h != 1
+            or stride_w != 1
+            or pad_h != 1
+            or pad_w != 1
+            or dtype != torch.float16
+            or not has_bias
+        ):
+            raise ValueError(
+                "Conv2d3x3S1P1HighresKernel only supports the highres fp16 bias benchmark shape: "
+                "n=1, c_in=256, h=w=112, c_out=512, kernel=3x3, stride=1, padding=1, "
+                "dilation=1, dtype=torch.float16, has_bias=True."
+            )
+        self.n = n
+        self.c_in = c_in
+        self.h = h
+        self.w = w
+        self.c_out = c_out
+        self.kernel_h = 3
+        self.kernel_w = 3
+        self.stride_h = stride_h
+        self.stride_w = stride_w
+        self.pad_h = pad_h
+        self.pad_w = pad_w
+        self.dilation_h = 1
+        self.dilation_w = 1
+        self.dtype = dtype
+        self.has_bias = has_bias
+        self.out_h = h
+        self.out_w = w
+        self.m = n * self.out_h * self.out_w
+        self.k_total = c_in * self.kernel_h * self.kernel_w
+
+        self.kernel = _conv2d_3x3_s1_p1_highres_kernel(self.dtype_str)
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 64,
+            "block_n": 128,
+            "block_k": 64,
+            "num_stages": 3,
+            "threads": 256,
+            "enable_rasterization": True,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
+        configs = itertools.product(
+            [64, 128],
+            [64, 128, 256],
+            [64, 128],
+            [2, 3],
+            [128, 256],
+            [True],
+        )
+        valid_configs = []
+        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
+            shared_memory_bytes = conv_shared_memory_bytes(
+                block_m, block_n, block_k, num_stages, self.dtype
+            )
+            if shared_memory_bytes > shared_memory_limit_bytes:
+                continue
+            valid_configs.append({
+                "block_m": block_m,
+                "block_n": block_n,
+                "block_k": block_k,
+                "num_stages": num_stages,
+                "threads": threads,
+                "enable_rasterization": enable_rasterization,
+            })
+        return valid_configs
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if bias is None:
+            raise ValueError("Conv2d3x3S1P1HighresKernel requires bias.")
+        return _conv2d_3x3_s1_p1_highres_wrapped_kernel(
+            self.dtype_str,
+            self.config["block_m"],
+            self.config["block_n"],
+            self.config["block_k"],
+            self.config["num_stages"],
+            self.config["threads"],
+            self.config["enable_rasterization"],
+            x,
+            weight,
+            bias,
+        )
 
 
 class Conv2dKernel(Kernel):
