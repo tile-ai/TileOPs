@@ -222,8 +222,13 @@ def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) ->
     """
     data = _shape_or_attrs(op, kwargs)
     if "q_shape" in data:
-        batch, heads, seq_len, dim_k = data["q_shape"]
-        _, _, _, dim_v = data["v_shape"]
+        layout = str(data.get("layout", "bhtd")).lower()
+        if layout == "bthd":
+            batch, seq_len, heads, dim_k = data["q_shape"]
+            _, _, _, dim_v = data["v_shape"]
+        else:
+            batch, heads, seq_len, dim_k = data["q_shape"]
+            _, _, _, dim_v = data["v_shape"]
         chunk_size = data.get("chunk_size", 64)
     else:
         batch, heads, seq_len, dim_k, dim_v, chunk_size = (
