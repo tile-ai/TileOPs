@@ -68,6 +68,13 @@ class MoeUnpermuteFixture(FixtureBase):
             pytest.param(1,    2,   64,  torch.bfloat16, marks=pytest.mark.full,  id="single-token"),
             pytest.param(8,    1,   64,  torch.bfloat16, marks=pytest.mark.full,  id="top-k-1"),
             pytest.param(32,   4,   64,  torch.bfloat16, marks=pytest.mark.full,  id="skewed"),
+            # Large H (8x the next-biggest case) with top_k=8 so the K-loop is
+            # actually pipelined (T.Pipelined num_stages=2): asserts correctness
+            # at a production-scale hidden size, where the framework must
+            # double-buffer the reused `src` fragment to avoid a WAR race
+            # between load(k+1) and accumulate(k). Smaller cases (H<=256) leave
+            # that on the benchmark path only.
+            pytest.param(64,   8,   2048, torch.bfloat16, marks=pytest.mark.full, id="large-h-pipeline"),
         ]),
     ]
 
@@ -115,6 +122,118 @@ def test_moe_unpermute_skewed():
         f"skewed mismatch: max_err={(output.float() - output_ref.float()).abs().max()}"
     )
     print("PASS skewed (all slots → first K padded positions)")
+
+
+@pytest.mark.smoke
+def test_moe_unpermute_ep_masking():
+    """EP mode: fwd_idx == -1 (non-local expert) must contribute zero, even
+    inside the pipelined K-loop (the slot-0 dummy read is zeroed by weight=0).
+
+    The shared `_ref_moe_unpermute` would index `mm2_pad[-1]` for a -1 slot, so
+    this test uses a reference that skips -1 — matching the kernel's masking.
+    """
+    torch.manual_seed(0)
+    T, K, H = 16, 4, 256
+    numel = T * K
+    dev = "cuda"
+    mm2_pad = torch.randn(numel, H, dtype=torch.bfloat16, device=dev) * 0.02
+    fwd_idx = torch.randperm(numel, device=dev).to(torch.int32)
+    fwd_idx[::3] = -1  # mark every 3rd slot non-local
+    assert (fwd_idx < 0).any(), "test must actually inject -1 slots"
+    topk_weights = torch.rand(T, K, dtype=torch.float32, device=dev)
+
+    op = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+    output = op(mm2_pad, fwd_idx, topk_weights)
+
+    # Reference matching the kernel's -1 semantics: skip non-local slots.
+    ref = torch.zeros(T, H, dtype=torch.float32, device=dev)
+    for i in range(T):
+        for k in range(K):
+            slot = int(fwd_idx[i * K + k].item())
+            if slot >= 0:
+                ref[i] += mm2_pad[slot].float() * topk_weights[i, k].item()
+
+    assert torch.allclose(output.float(), ref, atol=1e-2), (
+        f"EP -1 masking mismatch: max_err={(output.float() - ref).abs().max()}"
+    )
+    print("PASS ep-masking (fwd_idx=-1 contributes zero inside pipeline)")
+
+
+@pytest.mark.smoke
+def test_moe_unpermute_out_param():
+    """out= writes into the caller's buffer and matches the allocate path."""
+    torch.manual_seed(0)
+    T, K, H = 8, 2, 256
+    numel = T * K
+    dev = "cuda"
+    mm2_pad = torch.randn(numel, H, dtype=torch.bfloat16, device=dev) * 0.02
+    fwd_idx = torch.arange(numel, dtype=torch.int32, device=dev)
+    topk_weights = torch.softmax(
+        torch.randn(T, K, dtype=torch.float32, device=dev), dim=-1)
+
+    op = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+    ref = op(mm2_pad, fwd_idx, topk_weights)
+
+    out = torch.empty((T, H), dtype=torch.bfloat16, device=dev)
+    got = op(mm2_pad, fwd_idx, topk_weights, out=out)
+    assert got.data_ptr() == out.data_ptr()       # wrote into the provided buffer
+    torch.testing.assert_close(out.float(), ref.float(), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.smoke
+def test_moe_unpermute_scaling():
+    """routed_scaling_factor scales the reduced output (folded into the kernel)."""
+    torch.manual_seed(0)
+    T, K, H = 8, 2, 256
+    numel = T * K
+    dev = "cuda"
+    mm2_pad = torch.randn(numel, H, dtype=torch.bfloat16, device=dev) * 0.02
+    fwd_idx = torch.arange(numel, dtype=torch.int32, device=dev)
+    topk_weights = torch.softmax(
+        torch.randn(T, K, dtype=torch.float32, device=dev), dim=-1)
+
+    scale = 2.827
+    base = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+    ref = base(mm2_pad, fwd_idx, topk_weights).float() * scale
+
+    scaled = MoeUnpermuteFwdOp(
+        T, K, H, torch.bfloat16, padded_batch_sum=numel, routed_scaling_factor=scale)
+    got = scaled(mm2_pad, fwd_idx, topk_weights).float()
+    torch.testing.assert_close(got, ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.smoke
+def test_moe_unpermute_out_buffer_validation():
+    """out= rejects wrong device / non-contiguous / mm2_pad-overlapping buffers,
+    but accepts disjoint slices of a shared workspace (vLLM-style)."""
+    torch.manual_seed(0)
+    T, K, H = 8, 2, 256
+    numel = T * K
+    dev = "cuda"
+    mm2_pad = torch.randn(numel, H, dtype=torch.bfloat16, device=dev) * 0.02
+    fwd_idx = torch.arange(numel, dtype=torch.int32, device=dev)
+    topk_weights = torch.softmax(
+        torch.randn(T, K, dtype=torch.float32, device=dev), dim=-1)
+    op = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+
+    with pytest.raises(ValueError, match="contiguous"):
+        op(mm2_pad, fwd_idx, topk_weights,
+           out=torch.empty(H, T, dtype=torch.bfloat16, device=dev).t())
+    # out overlapping mm2_pad: same storage, overlapping byte intervals.
+    ws = torch.empty(numel * H, dtype=torch.bfloat16, device=dev)
+    mm2_alias = ws[:numel * H].view(numel, H)
+    out_alias = ws[:T * H].view(T, H)          # overlaps mm2_alias from byte 0
+    mm2_alias.copy_(mm2_pad)
+    with pytest.raises(ValueError, match="overlap"):
+        op(mm2_alias, fwd_idx, topk_weights, out=out_alias)
+    # Disjoint slices of one workspace must be ACCEPTED.
+    ref = op(mm2_pad, fwd_idx, topk_weights)
+    ws2 = torch.empty(numel * H + T * H, dtype=torch.bfloat16, device=dev)
+    mm2_ws = ws2[:numel * H].view(numel, H)
+    out_ws = ws2[numel * H:].view(T, H)
+    mm2_ws.copy_(mm2_pad)
+    got = op(mm2_ws, fwd_idx, topk_weights, out=out_ws)
+    torch.testing.assert_close(got.float(), ref.float(), rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":

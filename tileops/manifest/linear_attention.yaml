@@ -1,0 +1,63 @@
+# linear_attention.yaml -- manifest entries for linear-attention operators.
+#
+# Source of truth for linear-attention op interfaces. Spec-only entries define
+# the public Op contract before the implementation is wired up.
+
+GatedDeltaNetPrefillFwdOp:
+  # Inference prefill for Gated DeltaNet. This is intentionally separate from
+  # GatedDeltaNetFwdOp, which exposes training-forward artifacts needed by
+  # backward. Prefill returns only the prompt output and the recurrent state
+  # consumed by decode.
+  ref_api: "none"
+  family: linear_attention
+  status: spec-only
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, H, S, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+      g: {dtype: "same_as(q)", shape: "[B, H, S]"}
+      beta: {dtype: "same_as(q)", shape: "[B, H, S]"}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+      final_state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+    params:
+      chunk_size: {type: "int | None", default: null}
+      layout: {type: str, default: "bhtd"}
+    shape_rules:
+      - "layout in ('bhtd', 'bhsd', 'bthd')"
+      - "layout == 'bthd' or q.shape == (B, H, S, DK)"
+      - "layout == 'bthd' or k.shape == (B, H, S, DK)"
+      - "layout == 'bthd' or v.shape == (B, H, S, DV)"
+      - "layout == 'bthd' or g.shape == (B, H, S)"
+      - "layout == 'bthd' or beta.shape == (B, H, S)"
+      - "layout == 'bthd' or o.shape == (B, H, S, DV)"
+      - "layout != 'bthd' or q.shape == (B, S, H, DK)"
+      - "layout != 'bthd' or k.shape == (B, S, H, DK)"
+      - "layout != 'bthd' or v.shape == (B, S, H, DV)"
+      - "layout != 'bthd' or g.shape == (B, S, H)"
+      - "layout != 'bthd' or beta.shape == (B, S, H)"
+      - "layout != 'bthd' or o.shape == (B, S, H, DV)"
+      - "final_state.shape == (B, H, DK, DV)"
+      - "chunk_size is None or S % chunk_size == 0"
+
+  workloads:
+    # Inference-oriented BHSD rows. Unit tests should use smaller
+    # branch-covering shapes in tests/ops, not these benchmark workloads.
+    - {q_shape: [1, 16, 512, 128], k_shape: [1, 16, 512, 128], v_shape: [1, 16, 512, 128], g_shape: [1, 16, 512], beta_shape: [1, 16, 512], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b1-s512-h16-d128"}
+    - {q_shape: [4, 16, 2048, 64], k_shape: [4, 16, 2048, 64], v_shape: [4, 16, 2048, 128], g_shape: [4, 16, 2048], beta_shape: [4, 16, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b4-s2k-h16-dk64-dv128"}
+    - {q_shape: [1, 16, 2048, 128], k_shape: [1, 16, 2048, 128], v_shape: [1, 16, 2048, 128], g_shape: [1, 16, 2048], beta_shape: [1, 16, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b1-s2k-h16-d128"}
+    - {q_shape: [1, 16, 8192, 128], k_shape: [1, 16, 8192, 128], v_shape: [1, 16, 8192, 128], g_shape: [1, 16, 8192], beta_shape: [1, 16, 8192], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b1-s8k-h16-d128"}
+
+  roofline:
+    func: "tileops.perf.formulas.gated_deltanet_prefill_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/gated_deltanet/gated_deltanet_prefill.py
+    kernel_map:
+      GatedDeltaNetPrefillFwdKernel: GatedDeltaNetPrefillFwdKernel
+    op: tileops/ops/gated_deltanet.py
+    test: tests/ops/test_gated_deltanet_prefill.py
+    bench: benchmarks/ops/bench_gated_deltanet_prefill.py
+    bench_manifest_driven: true

@@ -327,6 +327,8 @@ class SSDStatePassingFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        # Non-vectorized with threads=128 provides better latency hiding
+        # for small grids typical of state_passing workloads.
         return {
             "block_d": 64,
             "threads": 128,

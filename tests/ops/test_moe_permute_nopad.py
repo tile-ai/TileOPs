@@ -102,6 +102,11 @@ class MoePermuteNopadFixture(FixtureBase):
             pytest.param(4,  2, 4, 64,  torch.bfloat16, marks=pytest.mark.smoke, id="tiny-bf16"),
             pytest.param(4,  2, 4, 64,  torch.float16,  marks=pytest.mark.smoke, id="tiny-fp16"),
             pytest.param(16, 2, 8, 128, torch.bfloat16, marks=pytest.mark.full,  id="small"),
+            # numel = total_tokens * top_k = 10 is NOT a multiple of the gather
+            # kernel's ROWS_PER_BLOCK (8), so the last block's `if slot < numel`
+            # out-of-bounds guard is actually exercised — every other shape here
+            # has numel divisible by 8 and never hits the partial tail.
+            pytest.param(5,  2, 4, 64,  torch.bfloat16, marks=pytest.mark.full,  id="partial-tail-numel10"),
         ]),
     ]
 

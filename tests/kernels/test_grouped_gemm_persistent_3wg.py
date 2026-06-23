@@ -210,3 +210,107 @@ def test_cooperative_partial_m_tile():
     C_ref = ref(A, B, sizes, offsets)
     C_v2 = v2(A, B, sizes, offsets)
     torch.testing.assert_close(C_v2, C_ref, rtol=2e-2, atol=2e-2)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Calling-cost parity with DeepGEMM: out= reuse
+# ════════════════════════════════════════════════════════════════════════
+def _aligned_coop_inputs(seed=42):
+    """Cooperative-path inputs with every expert a multiple of block_m=128."""
+    E, N, K = 4, 256, 128
+    per = 256  # 2 full block_m=128 tiles per expert
+    numel = E * per
+    torch.manual_seed(seed)
+    sizes = torch.full((E,), per, dtype=torch.int32, device="cuda")
+    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
+    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    return A, B, sizes, offsets, numel, N, K, E
+
+
+@pytest.mark.nightly
+def test_out_param_reuse():
+    """Caller-provided ``out`` buffer is written in place and returned, with
+    no internal allocation, matching the result of the allocating path."""
+    A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    k3 = GroupedGemmPersistent3WGKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+    C_alloc = k3(A, B, sizes, offsets)
+    out = torch.empty(numel, N, dtype=torch.bfloat16, device="cuda")
+    C_out = k3(A, B, sizes, offsets, out=out)
+    assert C_out.data_ptr() == out.data_ptr()
+    torch.testing.assert_close(C_out, C_alloc, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
+def test_out_buffer_validation():
+    """A caller-provided ``out`` with the wrong shape, dtype, device, layout, or
+    one that overlaps A/B in memory is rejected with a clear ValueError instead
+    of corrupting silently; disjoint slices of a shared workspace are accepted."""
+    A, B, sizes, offsets, numel, N, K, E = _aligned_coop_inputs()
+    sm = torch.cuda.get_device_properties(0).multi_processor_count
+    k3 = GroupedGemmPersistent3WGKernel(
+        numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
+
+    with pytest.raises(ValueError, match="out shape"):
+        k3(A, B, sizes, offsets,
+           out=torch.empty(numel, N + 1, dtype=torch.bfloat16, device="cuda"))
+    with pytest.raises(ValueError, match="out dtype"):
+        k3(A, B, sizes, offsets,
+           out=torch.empty(numel, N, dtype=torch.float16, device="cuda"))
+    with pytest.raises(ValueError, match="out device"):
+        k3(A, B, sizes, offsets,
+           out=torch.empty(numel, N, dtype=torch.bfloat16, device="cpu"))
+    # Non-contiguous view with the right logical shape (transpose of [N, numel]):
+    # passes shape/dtype/device but must be rejected on layout.
+    with pytest.raises(ValueError, match="contiguous"):
+        k3(A, B, sizes, offsets,
+           out=torch.empty(N, numel, dtype=torch.bfloat16, device="cuda").t())
+    # out overlapping the input: A and out are the same storage region. Passes
+    # shape/dtype/device/contiguity but must be rejected (read/write race).
+    shared = torch.empty(numel * max(N, K), dtype=torch.bfloat16, device="cuda")
+    a_alias = shared[:numel * K].view(numel, K)
+    out_alias = shared[:numel * N].view(numel, N)  # overlaps a_alias from byte 0
+    with pytest.raises(ValueError, match="overlap"):
+        k3(a_alias, B, sizes, offsets, out=out_alias)
+
+    # Disjoint slices of one workspace must be ACCEPTED (vLLM-style): a_ws and
+    # out_ws share storage but their byte intervals do not overlap.
+    C_ref = k3(A, B, sizes, offsets)
+    ws = torch.empty(numel * K + numel * N, dtype=torch.bfloat16, device="cuda")
+    a_ws = ws[:numel * K].view(numel, K)
+    out_ws = ws[numel * K:].view(numel, N)
+    a_ws.copy_(A)
+    res = k3(a_ws, B, sizes, offsets, out=out_ws)
+    torch.testing.assert_close(res, C_ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.nightly
+def test_no_host_pad_on_unaligned(monkeypatch):
+    """OOB zero-fill: forward must not call F.pad even when experts are unaligned.
+
+    Guards T-A — the last expert's partial-tile A over-read is hardware
+    zero-filled (TMA globalDim=numel), so no physical guard rows are needed.
+    """
+    torch.manual_seed(0)
+    num_experts, N, K = 4, 256, 128          # default block_m=128 (cooperative)
+    sizes = torch.tensor([130, 70, 200, 33], dtype=torch.int32, device="cuda")
+    numel = int(sizes.sum())
+    offsets = torch.zeros(num_experts, dtype=torch.int32, device="cuda")
+    offsets[1:] = torch.cumsum(sizes[:-1], 0)
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    B = torch.randn(num_experts, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
+
+    calls = {"n": 0}
+    real_pad = torch.nn.functional.pad
+
+    def spy_pad(*args, **kwargs):
+        calls["n"] += 1
+        return real_pad(*args, **kwargs)
+
+    monkeypatch.setattr(torch.nn.functional, "pad", spy_pad)
+    kernel = GroupedGemmPersistent3WGKernel(numel, num_experts, N, K)
+    kernel(A, B, sizes, offsets)
+    assert calls["n"] == 0, "forward still calls F.pad; OOB zero-fill not in effect"

@@ -13,11 +13,10 @@ _OP_NAME = "FusedAddRMSNormFwdOp"
 
 class FusedAddRMSNormBenchmark(BenchmarkBase[FusedAddRMSNormTest]):
 
-    _roofline_cache: Optional[tuple[float, float]] = None
-
     def __init__(self, test, op):
         super().__init__(test)
         self._op = op
+        self._roofline_cache: Optional[tuple[float, float]] = None
 
     def _get_roofline(self) -> tuple[float, float]:
         if self._roofline_cache is None:

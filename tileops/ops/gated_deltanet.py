@@ -9,8 +9,10 @@ from tileops.kernels.gated_deltanet import (
 from tileops.kernels.gated_deltanet_recurrence import (
     GatedDeltaNetDecodeFP32Kernel,
     GatedDeltaNetDecodeKernel,
+    GatedDeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_version
 
 from .op_base import Op
 
@@ -332,6 +334,25 @@ class GatedDeltaNetDecodeOp(Op):
     element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
     """
 
+    @staticmethod
+    def _raw_cuda_decode_arch_supported() -> bool:
+        try:
+            sm_version = get_sm_version()
+        except Exception:
+            return False
+        return sm_version in GatedDeltaNetDecodeRawCudaFlaStyleKernel.supported_archs
+
+    @staticmethod
+    def _should_use_raw_cuda_decode(
+        dim_k: int,
+        dim_v: int,
+        dtype: torch.dtype,
+        tune: bool,
+    ) -> bool:
+        if tune or dtype != torch.bfloat16 or dim_k != 128 or dim_v != 128:
+            return False
+        return GatedDeltaNetDecodeOp._raw_cuda_decode_arch_supported()
+
     def __init__(
         self,
         batch: int,
@@ -350,9 +371,14 @@ class GatedDeltaNetDecodeOp(Op):
 
         self.dispatch_kernel(kernel_map)
 
-        # Dispatch: fp32 -> FP32 kernel (no TF32), fp16/bf16 -> TC kernel
+        # Dispatch:
+        #   fp32 -> FP32 kernel (no TF32)
+        #   bf16 DK=DV=128 on Hopper -> raw CUDA warp-per-Vtile kernel
+        #   other fp16/bf16 shapes -> default TileLang kernel
         if dtype == torch.float32:
             kernel_cls = self.kernel_map["GatedDeltaNetDecodeFP32Kernel"]
+        elif self._should_use_raw_cuda_decode(dim_k, dim_v, dtype, tune):
+            kernel_cls = self.kernel_map["GatedDeltaNetDecodeRawCudaFlaStyleKernel"]
         else:
             kernel_cls = self.kernel_map["GatedDeltaNetDecodeKernel"]
         kernel_dtype = Kernel.dtype_to_str(dtype)
@@ -364,10 +390,15 @@ class GatedDeltaNetDecodeOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
+        kernels = {
             "GatedDeltaNetDecodeKernel": GatedDeltaNetDecodeKernel,
             "GatedDeltaNetDecodeFP32Kernel": GatedDeltaNetDecodeFP32Kernel,
         }
+        if self._raw_cuda_decode_arch_supported():
+            kernels["GatedDeltaNetDecodeRawCudaFlaStyleKernel"] = (
+                GatedDeltaNetDecodeRawCudaFlaStyleKernel
+            )
+        return kernels
 
     def forward(
         self,

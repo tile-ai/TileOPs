@@ -818,6 +818,15 @@ def check_l1(
     sig = entry.get("signature", {})
     source = entry.get("source", {})
     op_file = source.get("op", "")
+    if not op_file:
+        if entry.get("status") == "spec-only":
+            if warnings is not None:
+                warnings.append(
+                    f"[signature] {op_name}: skipped because status is spec-only "
+                    "and source.op is null"
+                )
+            return []
+        return [f"[signature] {op_name}: missing source.op"]
 
     result = _resolve_op_class(op_file, op_name)
 

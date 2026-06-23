@@ -101,16 +101,21 @@ class MoEExpertsTest(WorkloadBase):
 
 class MoEExpertsBenchmark(BenchmarkBase[MoEExpertsTest]):
 
+    def __init__(self, test, op):
+        super().__init__(test)
+        self._op = op
+        self._roofline_cache: Optional[tuple[float, float]] = None
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = self._op.eval_roofline()
+        return self._roofline_cache
+
     def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        return t.num_tokens * t.top_k * 6 * t.ffn_size * t.hidden_size
+        return self._get_roofline()[0]
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem = 2  # bfloat16
-        weights = t.num_experts * 3 * t.ffn_size * t.hidden_size * elem
-        tokens = 2 * t.num_tokens * t.hidden_size * elem
-        return weights + tokens
+        return self._get_roofline()[1]
 
 
 # ---------------------------------------------------------------------------
@@ -123,9 +128,10 @@ def _manifest_params():
     for w in load_workloads(_OP_NAME):
         label = w.get("label", "unlabeled")
         for dtype_str in w["dtypes"]:
+            dtype = getattr(torch, dtype_str)
             params.append(pytest.param(
                 w["num_tokens"], w["num_experts"], w["top_k"],
-                w["hidden_size"], w["ffn_size"],
+                w["hidden_size"], w["ffn_size"], dtype,
                 id=f"{label}-{dtype_str}",
             ))
     return params
@@ -137,16 +143,15 @@ def _manifest_params():
 
 
 @pytest.mark.parametrize(
-    "num_tokens, num_experts, top_k, hidden_size, ffn_size",
+    "num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype",
     _manifest_params(),
 )
 def test_moe_experts_nopad_bench(
-    num_tokens: int, num_experts: int, top_k: int, hidden_size: int, ffn_size: int,
+    num_tokens: int, num_experts: int, top_k: int, hidden_size: int,
+    ffn_size: int, dtype: torch.dtype,
 ) -> None:
-    dtype = torch.bfloat16
     test = MoEExpertsTest(num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype)
     hidden, w1, w2, topk_weights, topk_ids = test.gen_inputs()
-    bm = MoEExpertsBenchmark(test)
 
     kwargs = dict(
         num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
@@ -158,6 +163,7 @@ def test_moe_experts_nopad_bench(
 
     # -- TileOPs nopad (3WG persistent) --------------------------------------
     nopad = FusedMoEExpertsNopadPersistent3WGFwdOp(**kwargs)
+    bm = MoEExpertsBenchmark(test, nopad)
 
     def _nopad_fn(hidden, w1, w2, topk_weights, topk_ids):
         nopad.forward(

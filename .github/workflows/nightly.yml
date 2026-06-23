@@ -78,6 +78,10 @@ jobs:
     needs: [cache-warmup]
     timeout-minutes: 120
     runs-on: [self-hosted, tile-ops, nightly]
+    env:
+      # Keep the long benchmark suite from fragmenting CUDA allocator segments
+      # before late large MoE input tensors allocate 14-21 GiB weight blocks.
+      PYTORCH_ALLOC_CONF: expandable_segments:True
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -101,7 +105,7 @@ jobs:
           source "${VENV_PATH}/bin/activate"
 
           # Validate GPU frequency
-          TARGET_CLOCK_MHZ=1830
+          TARGET_CLOCK_MHZ=1500
           RETRIES=5
           for i in $(seq 1 "${RETRIES}"); do
             gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
@@ -334,6 +338,75 @@ jobs:
         shell: bash
 
   # =========================================================================
+  # Phase 3b — Publish benchmark data to the nightly-bench orphan branch
+  # Consumed by tile-ai/TileOPs.github.io to render the docs Benchmarks page.
+  # Runs on a github-hosted runner (no GPU needed) and uses the default token
+  # to force-push the day's XML snapshot, mirroring the manifest-stats pattern.
+  # =========================================================================
+  publish-bench-data:
+    if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+    needs: [op_test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download benchmark artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tileops_benchmark_${{ github.run_id }}
+          path: _bench
+        continue-on-error: true
+
+      - name: Download op test artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tileops_op_test_${{ github.run_id }}
+          path: _optest
+        continue-on-error: true
+
+      - name: Assemble publish payload
+        id: assemble
+        run: |
+          set -euo pipefail
+          mkdir -p _publish
+          ok=1
+          if [ -f _bench/bench_results.xml ]; then
+            cp _bench/bench_results.xml _publish/bench_results.xml
+          else
+            echo "::warning::bench_results.xml missing; skipping nightly-bench publish"
+            ok=0
+          fi
+          if [ -f _optest/test_results.xml ]; then
+            cp _optest/test_results.xml _publish/test_results.xml
+          else
+            echo "::warning::test_results.xml missing; page will render without test status"
+          fi
+          if [ "$ok" -eq 1 ]; then
+            run_date="$(date -u +%Y-%m-%d)"
+            printf '{\n  "commit": "%s",\n  "date": "%s",\n  "gpu": "NVIDIA H200",\n  "run_id": "%s"\n}\n' \
+              "${GITHUB_SHA}" "${run_date}" "${GITHUB_RUN_ID}" > _publish/meta.json
+          fi
+          echo "ok=${ok}" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Publish to nightly-bench branch
+        if: ${{ steps.assemble.outputs.ok == '1' }}
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: nightly-bench
+          publish_dir: _publish
+          force_orphan: true
+          commit_message: "chore(bench): nightly benchmark data from ${{ github.sha }}"
+          user_name: "github-actions[bot]"
+          user_email: "41898282+github-actions[bot]@users.noreply.github.com"
+
+  # =========================================================================
   # Phase 4 — Packaging and smoke test
   # =========================================================================
   packaging:
@@ -362,7 +435,7 @@ jobs:
           source "${VENV_PATH}/bin/activate"
 
           # Validate GPU frequency
-          TARGET_CLOCK_MHZ=1830
+          TARGET_CLOCK_MHZ=1500
           RETRIES=5
           for i in $(seq 1 "${RETRIES}"); do
             gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)

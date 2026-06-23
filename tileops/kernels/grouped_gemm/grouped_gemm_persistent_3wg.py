@@ -16,9 +16,13 @@ Uses a *static-wave scheduler* (no atomic counter): each CTA enumerates
 its tile IDs as ``flat_id_0 = 2*(sm_count*w + pid)`` and
 ``flat_id_1 = flat_id_0 + 1`` for wave ``w ∈ [0, _max_waves)``.  Tiles past
 ``s_total`` are skipped via a valid mask.  This removes scheduler latency
-and produces a deterministic tile-to-CTA map (group-size=8 threadblock
-swizzle is deferred: the M axis is partitioned by expert via prefix-sum/
-binary-search, so naive swizzle across expert boundaries is unsafe).
+and produces a deterministic tile-to-CTA map.  The cooperative template
+applies a *threadblock swizzle* (``group_size_m``) on top: grouping
+consecutive m-tiles so concurrent CTAs in a wave reuse the same ``B[e]``
+columns in L2.  The M axis is partitioned by expert via prefix-sum/
+binary-search, but each tile resolves its own expert independently, so a
+group straddling an expert boundary stays correct (only L2 reuse is lost
+there); ``group_size_m=1`` recovers the plain row-major map exactly.
 
 A per-WG ring buffer with ``num_stages`` slots overlaps TMA loads with
 WGMMA.  Default ``num_stages=4`` (autotuned over {2..6} with H100 SMEM
@@ -31,8 +35,8 @@ import os
 import tilelang
 import tilelang.language as T
 import torch
-import torch.nn.functional as F
 
+from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
 
 _ANCHOR_HELPER_PATH = os.path.abspath(
@@ -47,7 +51,10 @@ _DEFAULT_CONFIG = {
     "block_k": 64,
     "num_stages": 3,
     "threads": 384,
-    "group_size_m": 1,
+    # Threadblock swizzle: group this many consecutive m-tiles so concurrent
+    # CTAs in a wave share B[e] columns in L2. 8 is the robust Triton-standard
+    # default (~5% over 1 on compute-bound MoE shapes); autotune sweeps it.
+    "group_size_m": 8,
 }
 
 
@@ -162,15 +169,33 @@ class GroupedGemmPersistent3WGKernel(Kernel):
                         smem_c = 2 * half_m * block_n * bytes_per_elem
                         if smem_main + smem_c > SMEM_LIMIT:
                             continue
-                        configs.append({
-                            "block_m": block_m, "block_n": block_n,
-                            "block_k": block_k, "num_stages": num_stages,
-                            "threads": 384, "group_size_m": 1,
-                        })
+                        # Threadblock swizzle width: larger groups give more L2
+                        # B-column reuse but saturate near num_pid_m per expert.
+                        for group_size_m in (1, 4, 8, 16):
+                            configs.append({
+                                "block_m": block_m, "block_n": block_n,
+                                "block_k": block_k, "num_stages": num_stages,
+                                "threads": 384, "group_size_m": group_size_m,
+                            })
         return configs
 
-    def forward(self, A, B, true_sizes, true_offsets):
-        C = torch.zeros(self.numel, self.N, dtype=self.dtype, device=A.device)
+    def forward(self, A, B, true_sizes, true_offsets, out=None):
+        """Run the grouped GEMM ``C[e] = A[e] @ B[e]^T`` for every expert.
+
+        Args:
+            A: ``[numel, K]`` tokens, grouped by expert (tight, no padding).
+            B: ``[num_experts, N, K]`` expert weights (NT layout).
+            true_sizes: ``[num_experts]`` int32 row count per expert.
+            true_offsets: ``[num_experts]`` int32 start offset per expert in A.
+            out: optional ``[numel, N]`` output buffer to write into and reuse
+                across calls. Allocated internally with ``torch.empty`` if omitted.
+                Must be contiguous and must not overlap ``A`` or ``B`` in memory
+                (the kernel reads inputs and writes the output concurrently).
+                Disjoint slices of a shared workspace buffer are allowed.
+
+        Returns:
+            The ``[numel, N]`` output (``out`` if provided).
+        """
         block_m = self.config["block_m"]
         block_n = self.config["block_n"]
         block_k = self.config["block_k"]
@@ -178,9 +203,51 @@ class GroupedGemmPersistent3WGKernel(Kernel):
             raise ValueError(f"K-aligned only: K={self.K}, block_k={block_k}")
         if self.N % block_n != 0:
             raise ValueError(f"N-aligned only: N={self.N}, block_n={block_n}")
-        required_rows = self.numel + block_m
-        if A.shape[0] < required_rows:
-            A = F.pad(A, (0, 0, 0, required_rows - A.shape[0]))
+
+        # TileLang's call-time adapter already validates ndim / per-dim static
+        # shape / dtype / stride / contiguity for every tensor arg and raises a
+        # clear error, so we do not duplicate those checks here. Its one gap is
+        # the device *index*: the adapter passes when either side's index is None
+        # (kernel compiled for a generic "cuda" device), so a cuda:0 vs cuda:1
+        # mix can slip through and read the wrong device's memory. Guard that.
+        if not (B.device == true_sizes.device == true_offsets.device == A.device):
+            raise ValueError(
+                "A, B, true_sizes, true_offsets must be on the same device")
+
+        # Output buffer. Every row in [0, numel) belongs to some expert and is
+        # written by exactly one tile (full tiles via TMA-store, partial tiles
+        # via predicated STG), so an uninitialised buffer is correct — the prior
+        # ``torch.zeros`` memset was pure overhead. ``out`` lets the caller
+        # pre-allocate and reuse across calls (matches DeepGEMM's out-param),
+        # which is what fair benchmarking and steady-state serving both want.
+        if out is None:
+            C = torch.empty(self.numel, self.N, dtype=self.dtype, device=A.device)
+        else:
+            if tuple(out.shape) != (self.numel, self.N):
+                raise ValueError(
+                    f"out shape must be {(self.numel, self.N)}, got {tuple(out.shape)}")
+            if out.dtype != self.dtype:
+                raise ValueError(f"out dtype must be {self.dtype}, got {out.dtype}")
+            if out.device != A.device:
+                raise ValueError(f"out device must be {A.device}, got {out.device}")
+            # The kernel writes ``out`` as a compact (row-major contiguous) tensor;
+            # a non-contiguous view with the right logical shape would be written
+            # with the wrong strides. Reject it here rather than corrupt silently.
+            if not out.is_contiguous():
+                raise ValueError("out must be contiguous")
+            # ``out`` must not overlap ``A`` or ``B`` in memory: the kernel reads
+            # the inputs and writes the output concurrently, so overlapping byte
+            # ranges would race. Sharing one storage with disjoint intervals is
+            # allowed (the workspace-slicing pattern), so this checks real
+            # interval overlap, not storage identity.
+            if tensors_overlap(out, A) or tensors_overlap(out, B):
+                raise ValueError("out must not overlap A or B in memory")
+            C = out
+
+        # TMA OOB zero-fill (descriptor globalDim = numel) makes the last expert's
+        # partial-tile A over-read hardware-zero-filled; the partial-tile epilogue
+        # masks the store. No F.pad / guard rows / alignment detection needed —
+        # mirrors moe_grouped_gemm_persistent_3wg_fused_act.py.
         gemm_fn = _persistent_grouped_gemm_v2_kernel(
             self.numel, self.num_experts, self.N, self.K,
             self.dtype_str, self.sm_count, block_k,
@@ -220,7 +287,7 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
     # of 2 * sm_count.
     _max_waves = (_total_ctas_ub + 2 * sm_count - 1) // (2 * sm_count) + 1
     _k_iters = K // block_k
-    A_shape = (numel + block_m, K)
+    A_shape = (numel, K)  # TMA zero-fills OOB last-tile rows; epilogue masks them
 
     @T.prim_func
     def _gemm_main_v2(
@@ -472,6 +539,12 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # only WGs with a full tile reach the barrier.
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
+                            # Order the generic-proxy SMEM writes above before
+                            # the async-proxy TMA read below, and align all 128
+                            # WG0 threads so the TMA store never reads a
+                            # half-written C_shared (intra-wave write→read race).
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_shared_wg0,
                                    C[m_start_0, n_start_0])
                         else:
@@ -542,6 +615,10 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # WG1's own named barrier (id=5) guards C_shared reuse.
                             T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_local_cast_wg1, C_shared_wg1)
+                            # See the WG0 epilogue: fence + WG barrier order the
+                            # SMEM writes before the async TMA read.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_shared_wg1,
                                    C[m_start_1, n_start_1])
                         else:
@@ -601,7 +678,34 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
     # the case where _total_ctas_ub is not a multiple of sm_count.
     _max_waves = (_total_ctas_ub + sm_count - 1) // sm_count + 1
     _k_iters = K // block_k
-    A_shape = (numel + block_m, K)
+    A_shape = (numel, K)  # TMA zero-fills OOB last-tile rows; epilogue masks them
+
+    # Threadblock-swizzle tile decode, shared by the producer and both math WGs
+    # (identical in all three, so factored out to keep them in lock-step).
+    # Groups ``group_size_m`` consecutive m-tiles so the ``sm_count`` consecutive
+    # flat_ids of a wave share each n-tile -> concurrent CTAs reuse the same
+    # ``B[e]`` columns in L2. A bijection over ``[0, num_pid_m * _num_pid_n)``;
+    # ``group_size_m=1`` is the identity (plain row-major) map. Each tile still
+    # resolves its expert by binary search, so a group straddling an expert
+    # boundary stays correct (only the L2 reuse is lost there).
+    #
+    # Full (non-tail) group: the remaining m-tiles cover a whole group, so the
+    # in-group ``%``/``//`` use the compile-time constant ``group_size_m`` (the
+    # compiler lowers them to shifts); only the last partial group falls to the
+    # runtime-remainder branch. The result is staged in ``swz_m``/``swz_n``
+    # because TileLang forbids reading a Var defined inside an IfFrame outside it
+    # (Buffer loads are exempt).
+    @T.macro
+    def _swizzle_decode(flat_id, s_cum, swz_m, swz_n):
+        _gin = T.int32(group_size_m * _num_pid_n)
+        _fpm = (flat_id // _gin) * T.int32(group_size_m)
+        if s_cum[num_experts] - _fpm >= T.int32(group_size_m):
+            swz_m[0] = _fpm + (flat_id % _gin) % T.int32(group_size_m)
+            swz_n[0] = (flat_id % _gin) // T.int32(group_size_m)
+        else:
+            _gsm = s_cum[num_experts] - _fpm
+            swz_m[0] = _fpm + (flat_id % _gin) % _gsm
+            swz_n[0] = (flat_id % _gin) // _gsm
 
     @T.prim_func
     def _gemm_main_v2_coop(
@@ -636,6 +740,15 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
             ns_ = T.alloc_local((1,), "int32")
             ex = T.alloc_local((1,), "int32")
             v = T.alloc_local((1,), "int32")
+            # Previous ring slot per math WG, for 1-deep WGMMA software
+            # pipelining: ab_empty release of slot(k-1) is deferred until
+            # wait_wgmma(1) confirms WGMMA(k-1) drained, so WGMMA(k) overlaps
+            # the next slot's barrier_wait instead of serializing behind it.
+            ps0 = T.alloc_local((1,), "int32")
+            ps1 = T.alloc_local((1,), "int32")
+            # Swizzle decode output (staged; see _swizzle_decode).
+            swz_m = T.alloc_local((1,), "int32")
+            swz_n = T.alloc_local((1,), "int32")
 
             T.annotate_layout({
                 A_smem_top: tilelang.layout.make_swizzled_layout(A_smem_top),
@@ -676,8 +789,12 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                     flat_id = T.int32(sm_count) * w + pid
 
                     if flat_id < total:
-                        m_tile = flat_id // T.int32(_num_pid_n)
-                        n_tile = flat_id % T.int32(_num_pid_n)
+                        # Threadblock swizzle for L2 B-column reuse; staged in
+                        # swz_m/swz_n so the binary search below can read the
+                        # result outside the macro's tail-group IfFrame.
+                        _swizzle_decode(flat_id, s_cum, swz_m, swz_n)
+                        m_tile = swz_m[0]
+                        n_tile = swz_n[0]
 
                         lo[0] = T.int32(0)
                         hi[0] = T.int32(num_experts - 1)
@@ -740,8 +857,12 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                     flat_id = T.int32(sm_count) * w + pid
 
                     if flat_id < total:
-                        m_tile = flat_id // T.int32(_num_pid_n)
-                        n_tile = flat_id % T.int32(_num_pid_n)
+                        # Threadblock swizzle for L2 B-column reuse; staged in
+                        # swz_m/swz_n so the binary search below can read the
+                        # result outside the macro's tail-group IfFrame.
+                        _swizzle_decode(flat_id, s_cum, swz_m, swz_n)
+                        m_tile = swz_m[0]
+                        n_tile = swz_n[0]
 
                         lo[0] = T.int32(0)
                         hi[0] = T.int32(num_experts - 1)
@@ -773,10 +894,19 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                                 policy=T.GemmWarpPolicy.FullRow,
                                 clear_accum=(k == 0),
                             )
-                            T.wait_wgmma(0)
-                            T.warpgroup_fence_operand(C_local_wg0, num_regs=64)
-                            T.barrier_arrive(ab_empty[slot])
+                            # 1-deep pipeline: keep WGMMA(k) in flight; only
+                            # drain WGMMA(k-1) and release its slot now.
+                            if k > 0:
+                                T.wait_wgmma(1)
+                                T.barrier_arrive(ab_empty[ps0[0]])
+                            ps0[0] = slot
                             gi_cons_0 = gi_cons_0 + 1
+
+                        # Drain the last WGMMA, release its slot, then fence the
+                        # accumulator once before the epilogue reads it.
+                        T.wait_wgmma(0)
+                        T.barrier_arrive(ab_empty[ps0[0]])
+                        T.warpgroup_fence_operand(C_local_wg0, num_regs=64)
 
                         # ── Epilogue (top half) ──
                         T.copy(C_local_wg0, C_local_cast_wg0)
@@ -787,6 +917,12 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # rationale (and why a CTA-wide sync would deadlock).
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_local_cast_wg0, C_shared_wg0)
+                            # Order the generic-proxy SMEM writes above before
+                            # the async-proxy TMA read below, and align all 128
+                            # WG0 threads so the TMA store never reads a
+                            # half-written C_shared (intra-wave write→read race).
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(C_shared_wg0,
                                    C[m_start, n_start])
                         else:
@@ -807,8 +943,12 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                     flat_id = T.int32(sm_count) * w + pid
 
                     if flat_id < total:
-                        m_tile = flat_id // T.int32(_num_pid_n)
-                        n_tile = flat_id % T.int32(_num_pid_n)
+                        # Threadblock swizzle for L2 B-column reuse; staged in
+                        # swz_m/swz_n so the binary search below can read the
+                        # result outside the macro's tail-group IfFrame.
+                        _swizzle_decode(flat_id, s_cum, swz_m, swz_n)
+                        m_tile = swz_m[0]
+                        n_tile = swz_n[0]
 
                         lo[0] = T.int32(0)
                         hi[0] = T.int32(num_experts - 1)
@@ -841,10 +981,16 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                                 policy=T.GemmWarpPolicy.FullRow,
                                 clear_accum=(k == 0),
                             )
-                            T.wait_wgmma(0)
-                            T.warpgroup_fence_operand(C_local_wg1, num_regs=64)
-                            T.barrier_arrive(ab_empty[slot])
+                            # 1-deep pipeline (see WG0).
+                            if k > 0:
+                                T.wait_wgmma(1)
+                                T.barrier_arrive(ab_empty[ps1[0]])
+                            ps1[0] = slot
                             gi_cons_1 = gi_cons_1 + 1
+
+                        T.wait_wgmma(0)
+                        T.barrier_arrive(ab_empty[ps1[0]])
+                        T.warpgroup_fence_operand(C_local_wg1, num_regs=64)
 
                         # ── Epilogue (bottom half) ──
                         T.copy(C_local_wg1, C_local_cast_wg1)
@@ -854,6 +1000,10 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
                             # own named barrier (id=5).
                             T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_local_cast_wg1, C_shared_wg1)
+                            # See the top-half epilogue: fence + WG barrier order
+                            # the SMEM writes before the async TMA read.
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=5, arrive_count=128)
                             T.copy(C_shared_wg1,
                                    C[m_start + half_m, n_start])
                         elif arows1 > T.int32(0):

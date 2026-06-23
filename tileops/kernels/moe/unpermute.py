@@ -24,6 +24,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["MoeUnpermuteKernel"]
@@ -35,14 +36,23 @@ def _make_unpermute_kernel(
     hidden_size: int,
     padded_batch_sum: int,
     dtype: str,
+    scaling: float = 1.0,
 ):
-    """One block per token. Threads cooperate over H dimension.
+    """One block per token; threads cooperate over the H dimension.
 
-    Each thread handles VEC=8 elements (128-bit uint4 load/store).
-    Accumulation in float32, cast to dtype on store.
+    Threads are capped at 256 (see below), so each thread handles ceil(H /
+    threads) elements: a clean multiple of VEC=8 (128-bit uint4 load/store)
+    when H // threads is, otherwise partially vectorized (e.g. H=7168 -> 256
+    threads -> 28 elems/thread = 3.5x VEC). Accumulation is in float32, cast to
+    dtype on store.
     """
+    # Cap threads at 256 (the sweep optimum at H=7168: 512 is ~3% slower and
+    # 1024 spills the fp32 acc[H] accumulator to local memory) but scale with
+    # hidden_size // VEC and keep power-of-2 alignment, so small hidden sizes
+    # retain 128-bit (VEC=8) vectorized load/store instead of slow scalar 16-bit
+    # ops (e.g. H=512 -> 64 threads of 8 elems each, ~14% faster than 256).
     VEC = 8  # 8 x bf16/fp16 = 128 bits
-    threads = min(1024, hidden_size // VEC)
+    threads = min(256, hidden_size // VEC)
     if threads > 0:
         threads = 1 << (threads.bit_length() - 1)
     threads = max(threads, 1)
@@ -67,8 +77,12 @@ def _make_unpermute_kernel(
                 # zero accumulator
                 T.fill(acc, 0.0)
 
-                # accumulate K expert contributions
-                for k in T.serial(top_k):
+                # accumulate K expert contributions. Software-pipeline the
+                # gathers (num_stages=2) so each scattered row load overlaps the
+                # previous slot's accumulate — the K loads are latency-bound.
+                # Serial fallback when top_k < 2 (pipeline depth > trip count).
+                for k in (T.Pipelined(top_k, num_stages=2)
+                          if top_k >= 2 else T.serial(top_k)):
                     flat_idx = token_idx * T.int32(top_k) + k
                     raw_slot = fwd_idx[flat_idx]
                     # EP mode: fwd_idx == -1 marks non-local expert → zero contribution.
@@ -84,10 +98,14 @@ def _make_unpermute_kernel(
                     for j in T.Parallel(hidden_size):
                         acc[j] = acc[j] + T.Cast("float32", src[j]) * weight
 
-                # cast and store
+                # cast (and scale) then store
                 out_frag = T.alloc_fragment([hidden_size], dtype)
-                for j in T.Parallel(hidden_size):
-                    out_frag[j] = T.Cast(dtype, acc[j])
+                if scaling != 1.0:
+                    for j in T.Parallel(hidden_size):
+                        out_frag[j] = T.Cast(dtype, acc[j] * T.float32(scaling))
+                else:
+                    for j in T.Parallel(hidden_size):
+                        out_frag[j] = T.Cast(dtype, acc[j])
                 T.copy(out_frag, output[token_idx, 0:hidden_size])
 
         return _unpermute_main
@@ -108,6 +126,8 @@ class MoeUnpermuteKernel(Kernel):
         padded_batch_sum: Size of the padded mm2_pad buffer (≥ T*K).
         dtype: Data type of mm2_pad and output (bf16 or fp16).
         config: Optional config dict.
+        scaling: Scalar multiplied into the reduced output before the cast/store
+            (folds ``routed_scaling_factor``). Defaults to 1.0 (no scaling).
 
     Example:
         >>> kernel = MoeUnpermuteKernel(num_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
@@ -124,6 +144,7 @@ class MoeUnpermuteKernel(Kernel):
         padded_batch_sum: int,
         dtype: torch.dtype = torch.bfloat16,
         config: Optional[dict] = None,
+        scaling: float = 1.0,
     ):
         super().__init__()
         self.num_tokens = num_tokens
@@ -134,7 +155,7 @@ class MoeUnpermuteKernel(Kernel):
         self.numel = num_tokens * top_k
 
         self._unpermute_fn = _make_unpermute_kernel(
-            num_tokens, top_k, hidden_size, padded_batch_sum, self.dtype_str
+            num_tokens, top_k, hidden_size, padded_batch_sum, self.dtype_str, scaling
         )
 
         self.init_config(config, tune=False)
@@ -148,6 +169,7 @@ class MoeUnpermuteKernel(Kernel):
         mm2_pad: torch.Tensor,
         fwd_idx: torch.Tensor,
         topk_weights: torch.Tensor,
+        out: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run moe_unpermute.
 
@@ -155,16 +177,40 @@ class MoeUnpermuteKernel(Kernel):
             mm2_pad: [padded_batch_sum, H] bf16/fp16 down-proj output (padded layout).
             fwd_idx: [T*K] int32 forward mapping: flat_idx → padded slot.
             topk_weights: [T, K] float32 routing weights.
+            out: optional [T, H] output buffer to write into and reuse across
+                calls. Allocated internally with ``torch.empty`` if omitted.
 
         Returns:
-            output: [T, H] bf16/fp16
+            output: [T, H] bf16/fp16 (``out`` if provided).
         """
         assert fwd_idx.dtype == torch.int32
         assert topk_weights.dtype == torch.float32
         assert mm2_pad.is_cuda
 
         dev = mm2_pad.device
-        output = torch.empty((self.num_tokens, self.hidden_size), dtype=self.dtype, device=dev)
+        if out is None:
+            output = torch.empty(
+                (self.num_tokens, self.hidden_size), dtype=self.dtype, device=dev)
+        else:
+            if tuple(out.shape) != (self.num_tokens, self.hidden_size):
+                raise ValueError(
+                    f"out shape must be {(self.num_tokens, self.hidden_size)}, "
+                    f"got {tuple(out.shape)}")
+            if out.dtype != self.dtype:
+                raise ValueError(f"out dtype must be {self.dtype}, got {out.dtype}")
+            # The kernel writes ``out`` on mm2_pad's device as a row-major compact
+            # tensor; a cross-device or non-contiguous ``out`` would scatter the
+            # store to the wrong memory. Reject rather than corrupt silently.
+            if out.device != dev:
+                raise ValueError(f"out device must be {dev}, got {out.device}")
+            if not out.is_contiguous():
+                raise ValueError("out must be contiguous")
+            # The kernel reads ``mm2_pad`` (gathered per token) while writing
+            # ``out`` concurrently, so an ``out`` overlapping ``mm2_pad`` in
+            # memory races. Disjoint slices of one workspace buffer are allowed.
+            if tensors_overlap(out, mm2_pad):
+                raise ValueError("out must not overlap mm2_pad in memory")
+            output = out
 
         fn = self._unpermute_fn()
         fn(mm2_pad, fwd_idx, topk_weights, output)

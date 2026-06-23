@@ -41,8 +41,8 @@ ReluFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 GeluFwdOp:
   ref_api: "torch.nn.functional.gelu"
@@ -77,8 +77,8 @@ GeluFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 SiluFwdOp:
   ref_api: "torch.nn.functional.silu"
@@ -112,8 +112,8 @@ SiluFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 HardswishFwdOp:
   ref_api: "torch.nn.functional.hardswish"
@@ -147,8 +147,8 @@ HardswishFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 HardsigmoidFwdOp:
   ref_api: "torch.nn.functional.hardsigmoid"
@@ -182,8 +182,8 @@ HardsigmoidFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 MishFwdOp:
   ref_api: "torch.nn.functional.mish"
@@ -217,8 +217,8 @@ MishFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 SeluFwdOp:
   ref_api: "torch.nn.functional.selu"
@@ -252,8 +252,8 @@ SeluFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 LeakyReluFwdOp:
   ref_api: "torch.nn.functional.leaky_relu"
@@ -288,8 +288,8 @@ LeakyReluFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 EluFwdOp:
   ref_api: "torch.nn.functional.elu"
@@ -324,8 +324,8 @@ EluFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 HardtanhFwdOp:
   ref_api: "torch.nn.functional.hardtanh"
@@ -363,8 +363,8 @@ HardtanhFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 SoftplusFwdOp:
   ref_api: "torch.nn.functional.softplus"
@@ -399,8 +399,8 @@ SoftplusFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_activation.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 ClampFwdOp:
   ref_api: "torch.clamp"
@@ -483,8 +483,8 @@ ClampScalarFwdOp:
       clamp: ClampFwdKernel
     op: tileops/ops/elementwise/clamp.py
     test: tests/ops/test_special_elementwise.py
-    bench: benchmarks/ops/bench_independent_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 ClampMinFwdOp:
   ref_api: "torch.clamp_min"
@@ -588,5 +588,5 @@ NanToNumFwdOp:
     kernel: tileops/kernels/elementwise.py
     op: tileops/ops/elementwise/nan_to_num.py
     test: tests/ops/test_special_elementwise.py
-    bench: benchmarks/ops/bench_independent_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true

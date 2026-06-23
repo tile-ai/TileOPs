@@ -39,8 +39,8 @@ WhereFwdOp:
       where: WhereFwdKernel
     op: tileops/ops/elementwise/where.py
     test: tests/ops/test_special_elementwise.py
-    bench: benchmarks/ops/bench_independent_elementwise.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true
 
 LerpTensorFwdOp:
   ref_api: "torch.lerp"
@@ -76,5 +76,5 @@ LerpTensorFwdOp:
       lerp_tensor: LerpTensorFwdKernel
     op: tileops/ops/elementwise/arithmetic.py
     test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_binary_arith.py
-    bench_manifest_driven: false
+    bench: benchmarks/ops/bench_elementwise_manifest.py
+    bench_manifest_driven: true

@@ -7,7 +7,7 @@
 AvgPool1dFwdOp:
   ref_api: "torch.nn.functional.avg_pool1d"
   family: pool
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -51,12 +51,12 @@ AvgPool1dFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 AvgPool2dFwdOp:
   ref_api: "torch.nn.functional.avg_pool2d"
   family: pool
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -85,7 +85,10 @@ AvgPool2dFwdOp:
       - "W_out == max(((W_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
 
   workloads:
-    # Vision backbone pooling cases, expressed in PyTorch NCHW layout.
+    # Real-model sources: ResNet-style and ConvNeXt-style vision backbones use
+    # 2D average-pooling/downsampling over NCHW feature maps at early and middle
+    # feature stages. The asymmetric ceil/divisor case is a stress workload for
+    # PyTorch avg_pool2d semantics, not a separate model family.
     - {input_shape: [2, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "vision-3x3-s2"}
     - {input_shape: [2, 128, 56, 56], kernel_size: [5, 5], stride: [2, 2], padding: [2, 2], dtypes: [float16], label: "vision-5x5-s2"}
     - {input_shape: [3, 96, 55, 57], kernel_size: [3, 5], stride: [2, 2], padding: [1, 2], ceil_mode: true, count_include_pad: false, divisor_override: 7, dtypes: [bfloat16], label: "ceil-divisor-bf16"}
@@ -110,12 +113,12 @@ AvgPool2dFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 AvgPool3dFwdOp:
   ref_api: "torch.nn.functional.avg_pool3d"
   family: pool
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -148,7 +151,9 @@ AvgPool3dFwdOp:
       - "W_out == max(((W_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
 
   workloads:
-    # Video/spatiotemporal pooling cases, expressed in PyTorch NCDHW layout.
+    # Real-model sources: I3D/SlowFast-style video CNNs use 3D spatiotemporal
+    # pooling over NCDHW activations. The ceil and divisor workloads stress
+    # PyTorch avg_pool3d semantics on video-like feature volumes.
     - {input_shape: [1, 32, 16, 56, 56], kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "video-2x2x2"}
     - {input_shape: [2, 64, 8, 28, 28], kernel_size: [2, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, count_include_pad: false, dtypes: [float16], label: "ceil-video"}
     - {input_shape: [2, 24, 10, 20, 22], kernel_size: [2, 2, 3], stride: [2, 2, 2], padding: [0, 1, 1], divisor_override: 7, dtypes: [bfloat16], label: "divisor-bf16"}
@@ -177,4 +182,410 @@ AvgPool3dFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
+
+MaxPool1dFwdOp:
+  ref_api: "torch.nn.functional.max_pool1d"
+  # Equivalent to torch.nn.functional.max_pool1d (return_indices=False)
+  family: pool
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, L_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, L_out]"}
+    params:
+      kernel_size: {type: "int | tuple[int]"}
+      stride: {type: "int | tuple[int] | None", default: null}
+      padding: {type: "int | tuple[int]", default: 0}
+      dilation: {type: "int | tuple[int]", default: 1}
+      ceil_mode: {type: bool, default: false}
+    shape_rules:
+      - "_kW == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      - "_sW == (_kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      - "_pW == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_dW == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_kW > 0"
+      - "_sW > 0"
+      - "_dW > 0"
+      - "0 <= _pW <= _kW // 2"
+      - "_effW == _dW * (_kW - 1) + 1"
+      - "L_out == max(((L_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((L_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((L_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= L_in + _pW else 0), 0)"
+
+  workloads:
+    # Real-model sources: SincNet-style speaker CNNs use local MaxPool1d
+    # over waveform features; TextCNN-style classifiers use global temporal
+    # max pooling over token-convolution channels; ECG CNN classifiers use
+    # repeated 1D max-pooling downsampling on long signals.
+    - {input_shape: [32, 80, 4096], kernel_size: 3, stride: 3, padding: 0, dtypes: [float16], label: "sincnet-speaker-local"}
+    - {input_shape: [64, 256, 128], kernel_size: 128, stride: 1, padding: 0, dtypes: [float16], label: "textcnn-global"}
+    - {input_shape: [16, 128, 2048], kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtypes: [bfloat16], label: "ecg-cnn-dilated"}
+
+  roofline:
+    vars:
+      kW: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
+      sW: "kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      pW: "padding[0] if isinstance(padding, (tuple, list)) else padding"
+      dW: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
+      effW: "dW * (kW - 1) + 1"
+      out_W: "max(((L_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((L_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((L_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= L_in + pW else 0), 0)"
+    flops: "N * C * out_W * kW"
+    bytes: "(N * C * L_in + N * C * out_W) * elem_bytes"
+
+  source:
+    # Spec-only: MaxPool Op/Kernel classes are not implemented yet.
+    kernel: null
+    op: null
+    test: null
+    bench: null
+
+MaxPool1dIndicesFwdOp:
+  ref_api: "torch.nn.functional.max_pool1d"
+  # Equivalent to torch.nn.functional.max_pool1d (return_indices=True)
+  family: pool
+  status: spec-only
+  variant_of: MaxPool1dFwdOp
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, L_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, L_out]"}
+      indices: {dtype: "int64", shape: "[N, C, L_out]"}
+    params:
+      kernel_size: {type: "int | tuple[int]"}
+      stride: {type: "int | tuple[int] | None", default: null}
+      padding: {type: "int | tuple[int]", default: 0}
+      dilation: {type: "int | tuple[int]", default: 1}
+      ceil_mode: {type: bool, default: false}
+    shape_rules:
+      - "_kW == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      - "_sW == (_kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      - "_pW == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_dW == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_kW > 0"
+      - "_sW > 0"
+      - "_dW > 0"
+      - "0 <= _pW <= _kW // 2"
+      - "_effW == _dW * (_kW - 1) + 1"
+      - "L_out == max(((L_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((L_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((L_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= L_in + _pW else 0), 0)"
+
+  workloads:
+    # Same model sources as MaxPool1dFwdOp; indices output is consumed by
+    # unpooling or argmax-tracking paths rather than changing input shapes.
+    - {input_shape: [32, 80, 4096], kernel_size: 3, stride: 3, padding: 0, dtypes: [float16], label: "sincnet-speaker-local"}
+    - {input_shape: [64, 256, 128], kernel_size: 128, stride: 1, padding: 0, dtypes: [float16], label: "textcnn-global"}
+    - {input_shape: [16, 128, 2048], kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtypes: [bfloat16], label: "ecg-cnn-dilated"}
+
+  roofline:
+    vars:
+      kW: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
+      sW: "kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      pW: "padding[0] if isinstance(padding, (tuple, list)) else padding"
+      dW: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
+      effW: "dW * (kW - 1) + 1"
+      out_W: "max(((L_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((L_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((L_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= L_in + pW else 0), 0)"
+    flops: "N * C * out_W * kW"
+    bytes: "(N * C * L_in + N * C * out_W) * elem_bytes + N * C * out_W * 8"
+
+  source:
+    # Spec-only: shares the primary's future Op/Kernel source.
+    kernel: null
+    op: null
+    test: null
+    bench: null
+
+MaxPool2dFwdOp:
+  ref_api: "torch.nn.functional.max_pool2d"
+  # Equivalent to torch.nn.functional.max_pool2d (return_indices=False)
+  family: pool
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
+    params:
+      kernel_size: {type: "int | tuple[int, int]"}
+      stride: {type: "int | tuple[int, int] | None", default: null}
+      padding: {type: "int | tuple[int, int]", default: 0}
+      dilation: {type: "int | tuple[int, int]", default: 1}
+      ceil_mode: {type: bool, default: false}
+    shape_rules:
+      - "_kH == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      - "_kW == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
+      - "_sH == (_kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      - "_sW == (_kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
+      - "_pH == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_pW == (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
+      - "_dH == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_dW == (dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
+      - "_kH > 0 and _kW > 0"
+      - "_sH > 0 and _sW > 0"
+      - "_dH > 0 and _dW > 0"
+      - "0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
+      - "_effH == _dH * (_kH - 1) + 1"
+      - "_effW == _dW * (_kW - 1) + 1"
+      - "H_out == max(((H_in + 2 * _pH - _effH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
+      - "W_out == max(((W_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+
+  workloads:
+    # Real-model sources: ResNet stem uses 3x3 stride-2 max pooling on
+    # 64-channel 112x112 features; VGG blocks use 2x2 stride-2 max pooling;
+    # AlexNet-style CNNs use 3x3 stride-2 pooling on early 55x55 features.
+    - {input_shape: [32, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "resnet-stem"}
+    - {input_shape: [16, 128, 56, 56], kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtypes: [float16], label: "vgg-block"}
+    - {input_shape: [32, 64, 55, 55], kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtypes: [bfloat16], label: "alexnet-ceil"}
+
+  roofline:
+    vars:
+      kH: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
+      kW: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      sH: "kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      sW: "kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      pH: "padding[0] if isinstance(padding, (tuple, list)) else padding"
+      pW: "padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      dH: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
+      dW: "dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      effH: "dH * (kH - 1) + 1"
+      effW: "dW * (kW - 1) + 1"
+      out_H: "max(((H_in + 2 * pH - effH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - effH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - effH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
+      out_W: "max(((W_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
+    flops: "N * C * out_H * out_W * kH * kW"
+    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
+
+  source:
+    # Spec-only: MaxPool Op/Kernel classes are not implemented yet.
+    kernel: null
+    op: null
+    test: null
+    bench: null
+
+MaxPool2dIndicesFwdOp:
+  ref_api: "torch.nn.functional.max_pool2d"
+  # Equivalent to torch.nn.functional.max_pool2d (return_indices=True)
+  family: pool
+  status: spec-only
+  variant_of: MaxPool2dFwdOp
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
+      indices: {dtype: "int64", shape: "[N, C, H_out, W_out]"}
+    params:
+      kernel_size: {type: "int | tuple[int, int]"}
+      stride: {type: "int | tuple[int, int] | None", default: null}
+      padding: {type: "int | tuple[int, int]", default: 0}
+      dilation: {type: "int | tuple[int, int]", default: 1}
+      ceil_mode: {type: bool, default: false}
+    shape_rules:
+      - "_kH == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      - "_kW == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
+      - "_sH == (_kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      - "_sW == (_kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
+      - "_pH == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_pW == (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
+      - "_dH == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_dW == (dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
+      - "_kH > 0 and _kW > 0"
+      - "_sH > 0 and _sW > 0"
+      - "_dH > 0 and _dW > 0"
+      - "0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
+      - "_effH == _dH * (_kH - 1) + 1"
+      - "_effW == _dW * (_kW - 1) + 1"
+      - "H_out == max(((H_in + 2 * _pH - _effH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
+      - "W_out == max(((W_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+
+  workloads:
+    # Same model sources as MaxPool2dFwdOp; indices output is consumed by
+    # unpooling or argmax-tracking paths rather than changing input shapes.
+    - {input_shape: [32, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "resnet-stem"}
+    - {input_shape: [16, 128, 56, 56], kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtypes: [float16], label: "vgg-block"}
+    - {input_shape: [32, 64, 55, 55], kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtypes: [bfloat16], label: "alexnet-ceil"}
+
+  roofline:
+    vars:
+      kH: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
+      kW: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      sH: "kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      sW: "kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      pH: "padding[0] if isinstance(padding, (tuple, list)) else padding"
+      pW: "padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      dH: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
+      dW: "dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      effH: "dH * (kH - 1) + 1"
+      effW: "dW * (kW - 1) + 1"
+      out_H: "max(((H_in + 2 * pH - effH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - effH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - effH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
+      out_W: "max(((W_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
+    flops: "N * C * out_H * out_W * kH * kW"
+    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes + N * C * out_H * out_W * 8"
+
+  source:
+    # Spec-only: shares the primary's future Op/Kernel source.
+    kernel: null
+    op: null
+    test: null
+    bench: null
+
+MaxPool3dFwdOp:
+  ref_api: "torch.nn.functional.max_pool3d"
+  # Equivalent to torch.nn.functional.max_pool3d (return_indices=False)
+  family: pool
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, D_in, H_in, W_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, D_out, H_out, W_out]"}
+    params:
+      kernel_size: {type: "int | tuple[int, int, int]"}
+      stride: {type: "int | tuple[int, int, int] | None", default: null}
+      padding: {type: "int | tuple[int, int, int]", default: 0}
+      dilation: {type: "int | tuple[int, int, int]", default: 1}
+      ceil_mode: {type: bool, default: false}
+    shape_rules:
+      - "_kD == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      - "_kH == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
+      - "_kW == (kernel_size[2] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 2 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
+      - "_sD == (_kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      - "_sH == (_kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
+      - "_sW == (_kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) and len(stride) > 2 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
+      - "_pD == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_pH == (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
+      - "_pW == (padding[2] if isinstance(padding, (tuple, list)) and len(padding) > 2 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
+      - "_dD == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_dH == (dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
+      - "_dW == (dilation[2] if isinstance(dilation, (tuple, list)) and len(dilation) > 2 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
+      - "_kD > 0 and _kH > 0 and _kW > 0"
+      - "_sD > 0 and _sH > 0 and _sW > 0"
+      - "_dD > 0 and _dH > 0 and _dW > 0"
+      - "0 <= _pD <= _kD // 2 and 0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
+      - "_effD == _dD * (_kD - 1) + 1"
+      - "_effH == _dH * (_kH - 1) + 1"
+      - "_effW == _dW * (_kW - 1) + 1"
+      - "D_out == max(((D_in + 2 * _pD - _effD + (_sD - 1 if ceil_mode else 0)) // _sD + 1) - (1 if ceil_mode and ((D_in + 2 * _pD - _effD + _sD - 1) // _sD + 1) > 0 and (((D_in + 2 * _pD - _effD + _sD - 1) // _sD + 1) - 1) * _sD >= D_in + _pD else 0), 0)"
+      - "H_out == max(((H_in + 2 * _pH - _effH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
+      - "W_out == max(((W_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+
+  workloads:
+    # Real-model sources: C3D uses an initial 1x2x2 max pool over video
+    # features followed by 2x2x2 stages; 3D ResNet/MedicalNet-style
+    # volumetric backbones use 3x3x3 stride-2 max pooling after the stem.
+    - {input_shape: [8, 64, 16, 112, 112], kernel_size: [1, 2, 2], stride: [1, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "c3d-pool1"}
+    - {input_shape: [4, 128, 16, 56, 56], kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "c3d-pool2"}
+    - {input_shape: [2, 64, 32, 112, 112], kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtypes: [bfloat16], label: "medicalnet-stem"}
+
+  roofline:
+    vars:
+      kD: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
+      kH: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      kW: "kernel_size[2] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 2 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      sD: "kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      sH: "kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      sW: "kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) and len(stride) > 2 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      pD: "padding[0] if isinstance(padding, (tuple, list)) else padding"
+      pH: "padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      pW: "padding[2] if isinstance(padding, (tuple, list)) and len(padding) > 2 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      dD: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
+      dH: "dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      dW: "dilation[2] if isinstance(dilation, (tuple, list)) and len(dilation) > 2 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      effD: "dD * (kD - 1) + 1"
+      effH: "dH * (kH - 1) + 1"
+      effW: "dW * (kW - 1) + 1"
+      out_D: "max(((D_in + 2 * pD - effD + (sD - 1 if ceil_mode else 0)) // sD + 1) - (1 if ceil_mode and ((D_in + 2 * pD - effD + sD - 1) // sD + 1) > 0 and (((D_in + 2 * pD - effD + sD - 1) // sD + 1) - 1) * sD >= D_in + pD else 0), 0)"
+      out_H: "max(((H_in + 2 * pH - effH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - effH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - effH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
+      out_W: "max(((W_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
+    flops: "N * C * out_D * out_H * out_W * kD * kH * kW"
+    bytes: "(N * C * D_in * H_in * W_in + N * C * out_D * out_H * out_W) * elem_bytes"
+
+  source:
+    # Spec-only: MaxPool Op/Kernel classes are not implemented yet.
+    kernel: null
+    op: null
+    test: null
+    bench: null
+
+MaxPool3dIndicesFwdOp:
+  ref_api: "torch.nn.functional.max_pool3d"
+  # Equivalent to torch.nn.functional.max_pool3d (return_indices=True)
+  family: pool
+  status: spec-only
+  variant_of: MaxPool3dFwdOp
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, D_in, H_in, W_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, D_out, H_out, W_out]"}
+      indices: {dtype: "int64", shape: "[N, C, D_out, H_out, W_out]"}
+    params:
+      kernel_size: {type: "int | tuple[int, int, int]"}
+      stride: {type: "int | tuple[int, int, int] | None", default: null}
+      padding: {type: "int | tuple[int, int, int]", default: 0}
+      dilation: {type: "int | tuple[int, int, int]", default: 1}
+      ceil_mode: {type: bool, default: false}
+    shape_rules:
+      - "_kD == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      - "_kH == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
+      - "_kW == (kernel_size[2] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 2 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
+      - "_sD == (_kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      - "_sH == (_kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
+      - "_sW == (_kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) and len(stride) > 2 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
+      - "_pD == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      - "_pH == (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
+      - "_pW == (padding[2] if isinstance(padding, (tuple, list)) and len(padding) > 2 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
+      - "_dD == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      - "_dH == (dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
+      - "_dW == (dilation[2] if isinstance(dilation, (tuple, list)) and len(dilation) > 2 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
+      - "_kD > 0 and _kH > 0 and _kW > 0"
+      - "_sD > 0 and _sH > 0 and _sW > 0"
+      - "_dD > 0 and _dH > 0 and _dW > 0"
+      - "0 <= _pD <= _kD // 2 and 0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
+      - "_effD == _dD * (_kD - 1) + 1"
+      - "_effH == _dH * (_kH - 1) + 1"
+      - "_effW == _dW * (_kW - 1) + 1"
+      - "D_out == max(((D_in + 2 * _pD - _effD + (_sD - 1 if ceil_mode else 0)) // _sD + 1) - (1 if ceil_mode and ((D_in + 2 * _pD - _effD + _sD - 1) // _sD + 1) > 0 and (((D_in + 2 * _pD - _effD + _sD - 1) // _sD + 1) - 1) * _sD >= D_in + _pD else 0), 0)"
+      - "H_out == max(((H_in + 2 * _pH - _effH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
+      - "W_out == max(((W_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+
+  workloads:
+    # Same model sources as MaxPool3dFwdOp; indices output is consumed by
+    # unpooling or argmax-tracking paths rather than changing input shapes.
+    - {input_shape: [8, 64, 16, 112, 112], kernel_size: [1, 2, 2], stride: [1, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "c3d-pool1"}
+    - {input_shape: [4, 128, 16, 56, 56], kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "c3d-pool2"}
+    - {input_shape: [2, 64, 32, 112, 112], kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtypes: [bfloat16], label: "medicalnet-stem"}
+
+  roofline:
+    vars:
+      kD: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
+      kH: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      kW: "kernel_size[2] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 2 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
+      sD: "kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      sH: "kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      sW: "kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) and len(stride) > 2 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
+      pD: "padding[0] if isinstance(padding, (tuple, list)) else padding"
+      pH: "padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      pW: "padding[2] if isinstance(padding, (tuple, list)) and len(padding) > 2 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
+      dD: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
+      dH: "dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      dW: "dilation[2] if isinstance(dilation, (tuple, list)) and len(dilation) > 2 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      effD: "dD * (kD - 1) + 1"
+      effH: "dH * (kH - 1) + 1"
+      effW: "dW * (kW - 1) + 1"
+      out_D: "max(((D_in + 2 * pD - effD + (sD - 1 if ceil_mode else 0)) // sD + 1) - (1 if ceil_mode and ((D_in + 2 * pD - effD + sD - 1) // sD + 1) > 0 and (((D_in + 2 * pD - effD + sD - 1) // sD + 1) - 1) * sD >= D_in + pD else 0), 0)"
+      out_H: "max(((H_in + 2 * pH - effH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - effH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - effH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
+      out_W: "max(((W_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
+    flops: "N * C * out_D * out_H * out_W * kD * kH * kW"
+    bytes: "(N * C * D_in * H_in * W_in + N * C * out_D * out_H * out_W) * elem_bytes + N * C * out_D * out_H * out_W * 8"
+
+  source:
+    # Spec-only: shares the primary's future Op/Kernel source.
+    kernel: null
+    op: null
+    test: null
+    bench: null

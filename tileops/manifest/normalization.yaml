@@ -51,6 +51,7 @@ RMSNormFwdOp:
     op: tileops/ops/norm/rms_norm.py
     test: tests/ops/test_rms_norm.py
     bench: benchmarks/ops/bench_rms_norm.py
+    bench_manifest_driven: true
 
 LayerNormFwdOp:
   ref_api: "torch.nn.functional.layer_norm"
@@ -101,6 +102,7 @@ LayerNormFwdOp:
     op: tileops/ops/norm/layer_norm.py
     test: tests/ops/test_layer_norm.py
     bench: benchmarks/ops/bench_layer_norm.py
+    bench_manifest_driven: true
 
 AdaLayerNormFwdOp:
   ref_api: "none"
@@ -146,6 +148,7 @@ AdaLayerNormFwdOp:
     op: tileops/ops/norm/ada_layer_norm.py
     test: tests/ops/test_ada_layer_norm.py
     bench: benchmarks/ops/bench_ada_layer_norm.py
+    bench_manifest_driven: true
 
 AdaLayerNormZeroFwdOp:
   ref_api: "none"
@@ -193,6 +196,7 @@ AdaLayerNormZeroFwdOp:
     op: tileops/ops/norm/ada_layer_norm_zero.py
     test: tests/ops/test_ada_layer_norm_zero.py
     bench: benchmarks/ops/bench_ada_layer_norm.py
+    bench_manifest_driven: true
 
 FusedAddLayerNormFwdOp:
   ref_api: "none"
@@ -243,6 +247,7 @@ FusedAddLayerNormFwdOp:
     op: tileops/ops/norm/fused_add_layer_norm.py
     test: tests/ops/test_fused_add_layer_norm.py
     bench: benchmarks/ops/bench_fused_add_layer_norm.py
+    bench_manifest_driven: true
 
 FusedAddRMSNormFwdOp:
   ref_api: "none"
@@ -352,6 +357,7 @@ BatchNormFwdOp:
     op: tileops/ops/norm/batch_norm.py
     test: tests/ops/test_batch_norm.py
     bench: benchmarks/ops/bench_batch_norm.py
+    bench_manifest_driven: true
 
 BatchNormBwdOp:
   ref_api: "torch.nn.functional.batch_norm"
@@ -406,6 +412,7 @@ BatchNormBwdOp:
     op: tileops/ops/norm/batch_norm.py
     test: tests/ops/test_batch_norm.py
     bench: benchmarks/ops/bench_batch_norm.py
+    bench_manifest_driven: true
 
 GroupNormFwdOp:
   ref_api: "torch.nn.functional.group_norm"
@@ -453,6 +460,7 @@ GroupNormFwdOp:
     op: tileops/ops/norm/group_norm.py
     test: tests/ops/test_group_norm.py
     bench: benchmarks/ops/bench_group_norm.py
+    bench_manifest_driven: true
 
 GroupNormFwdOpNoAffine:
   ref_api: "torch.nn.functional.group_norm"
@@ -504,6 +512,7 @@ GroupNormFwdOpNoAffine:
     op: tileops/ops/norm/group_norm.py
     test: tests/ops/test_group_norm.py
     bench: benchmarks/ops/bench_group_norm.py
+    bench_manifest_driven: true
 
 InstanceNormFwdOp:
   ref_api: "torch.nn.functional.instance_norm"
@@ -551,6 +560,7 @@ InstanceNormFwdOp:
     op: tileops/ops/norm/instance_norm.py
     test: tests/ops/test_instance_norm.py
     bench: benchmarks/ops/bench_instance_norm.py
+    bench_manifest_driven: true
 
 InstanceNormFwdOpNoAffine:
   ref_api: "torch.nn.functional.instance_norm"
@@ -605,3 +615,4 @@ InstanceNormFwdOpNoAffine:
     op: tileops/ops/norm/instance_norm.py
     test: tests/ops/test_instance_norm.py
     bench: benchmarks/ops/bench_instance_norm.py
+    bench_manifest_driven: true

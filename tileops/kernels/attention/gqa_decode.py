@@ -331,6 +331,12 @@ class GQADecodeKernel(Kernel):
         self.seqlen_kv = seqlen_kv
         self.dim = dim
         self.dtype = dtype
+        if self.groups <= 0:
+            raise ValueError("groups must be positive")
+        if self.heads % self.groups != 0:
+            raise ValueError("heads must be divisible by groups")
+        if self.seqlen_kv <= 0:
+            raise ValueError("seqlen_kv must be positive")
 
         self.no_split_jit = _gqa_decode_no_split_kernel(
             self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.dtype_str)
@@ -373,13 +379,33 @@ class GQADecodeKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"block_H": 64, "block_N": 128, "num_split": 16, "num_stages": 2, "threads": 128}
+        return {
+            "block_H": 64,
+            "block_N": 128,
+            "num_split": self._default_num_split(),
+            "num_stages": 2,
+            "threads": 128,
+        }
+
+    def _default_num_split(self) -> int:
+        """Choose a conservative default split policy for GQA decode.
+
+        Single-request, high-ratio GQA decode with very few KV heads benefits
+        from more split parallelism. Keep the existing split=16 default for
+        other shapes to avoid changing batched Llama-like workloads.
+        """
+        kv_group_num = self.heads // self.groups
+        if self.batch == 1 and self.dim == 128 and self.groups <= 2 and kv_group_num >= 8:
+            candidate = 32
+        else:
+            candidate = 16
+        return min(candidate, self.seqlen_kv)
 
     @property
     def autotune_configs(self) -> list[dict]:
         block_N = [64, 128]
         block_H = [64]
-        num_split = [2, 4, 8]
+        num_split = [ns for ns in [2, 4, 8, 16, 32] if ns <= self.seqlen_kv] or [1]
         num_stages = [1, 2, 3]
         threads = [128]
         _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
