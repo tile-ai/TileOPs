@@ -1852,11 +1852,11 @@ class Conv2d3x3S1P1HighresKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_m": 64,
-            "block_n": 128,
+            "block_m": 128,
+            "block_n": 64,
             "block_k": 64,
-            "num_stages": 3,
-            "threads": 256,
+            "num_stages": 2,
+            "threads": 128,
             "enable_rasterization": True,
         }
 
