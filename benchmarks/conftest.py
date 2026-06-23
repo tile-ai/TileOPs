@@ -146,6 +146,20 @@ def pytest_runtest_call(item):
         bw = tileops_entry.get("bandwidth_tbs")
         if bw is not None:
             item.user_properties.append(("tileops_bandwidth_tbs", f"{bw:.2f}"))
+        # New diagnostics: timing backend, stdev, event breakdown
+        timing_backend = tileops_entry.get("timing_backend")
+        if timing_backend:
+            item.user_properties.append(("timing_backend", timing_backend))
+        stdev_ms = tileops_entry.get("stdev_ms")
+        if stdev_ms is not None:
+            item.user_properties.append(("stdev_ms", f"{stdev_ms:.4f}"))
+        event_breakdown_top10 = tileops_entry.get("event_breakdown_top10")
+        if event_breakdown_top10:
+            # Serialize as "kernel1:us1,kernel2:us2,..."
+            breakdown_str = ",".join(
+                f"{k}:{v:.1f}" for k, v in event_breakdown_top10.items()
+            )
+            item.user_properties.append(("event_breakdown_top10", breakdown_str))
 
     # Write all baselines into JUnit XML properties.
     # The first baseline uses the legacy unprefixed names (baseline_tag, etc.)

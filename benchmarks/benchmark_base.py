@@ -88,13 +88,18 @@ _bench_results = threading.local()
 # the dedicated _l2_flush_cache buffer).  Filtered out of CUPTI timing so flush
 # overhead is never counted as benchmark kernel time.
 #
-# Only match the specific fill-functor form used by torch.Tensor.zero_() /
-# at::fill_ on integer tensors.  Bare "Memset"/"memset"/"fill_kernel" are
-# intentionally excluded from the filter: they are too generic and would
-# silently drop real benchmark kernels that happen to call cuMemsetAsync or
-# an at::fill_ variant.  The vectorized_elementwise_kernel<...FillFunctor...>
-# pattern is specific enough to identify the flush without false positives.
-_FLUSH_PATTERNS: tuple[str, ...] = ("FillFunctor",)
+# The flush buffer is a large int32 tensor (sized to L2 cache) whose sole
+# purpose is L2 eviction via cache.zero_().  To avoid false-positive exclusion
+# of user kernels, we match BOTH the FillFunctor pattern (from Tensor.zero_())
+# AND the vectorized_elementwise pattern (specific to PyTorch's unary kernel
+# dispatch).  User code that calls fill_() or zero_() on regular tensors will
+# still trigger FillFunctor, but typically with different kernel signatures
+# (e.g., different element types or lack of vectorization for small tensors).
+#
+# If false positives persist, consider: (1) tracking the flush buffer's pointer
+# address via kineto correlation IDs, or (2) using a uniquely named flush kernel
+# via a custom CUDA extension instead of relying on Tensor.zero_().
+_FLUSH_PATTERNS: tuple[str, ...] = ("vectorized_elementwise", "FillFunctor")
 
 
 def _sum_kernel_time_us(kineto_results):
@@ -105,10 +110,13 @@ def _sum_kernel_time_us(kineto_results):
     Direct C++ iteration is ~16x faster for n_repeat=1280.
 
     L2 flush kernels (``cache.zero_()`` on the flush buffer) are excluded.
-    Only the ``FillFunctor`` pattern is filtered (matched by
-    ``vectorized_elementwise_kernel<...FillFunctor...>``).  Generic patterns
+    Flush events are identified by kernel names containing BOTH
+    ``vectorized_elementwise`` AND ``FillFunctor`` (the specific pattern
+    emitted by ``Tensor.zero_()`` on large int32 tensors).  Generic patterns
     like ``"Memset"``, ``"memset"``, and ``"fill_kernel"`` are intentionally
-    *not* filtered to avoid silently dropping real benchmark kernels.
+    *not* filtered to avoid silently dropping real benchmark kernels.  Matching
+    both substrings reduces false-positive exclusion of user code that calls
+    ``fill_()`` on small or non-vectorized tensors.
 
     Returns:
         tuple[float, dict[str, float]]: (total_us, per_kernel_us) where
@@ -125,7 +133,8 @@ def _sum_kernel_time_us(kineto_results):
         if evt.device_type() == DeviceType.CUDA:
             name = evt.name()
             dur = evt.duration_ns() / 1000.0
-            if any(p in name for p in _FLUSH_PATTERNS):
+            # Match flush events by requiring ALL patterns (AND logic)
+            if all(p in name for p in _FLUSH_PATTERNS):
                 excluded_kernel[name] = excluded_kernel.get(name, 0.0) + dur
                 continue
             total_us += dur
@@ -280,15 +289,15 @@ def bench_kernel(
                     profiler.step()
     except RuntimeError:
         cupti_ok = False
+    finally:
+        # Free the arg pool and release cached GPU memory to prevent
+        # accumulation across hundreds of benchmark calls.
+        if arg_pool is not None:
+            del arg_pool
+        torch.cuda.empty_cache()
 
     if not trial_means:
         cupti_ok = False
-
-    # Free the arg pool and release cached GPU memory to prevent
-    # accumulation across hundreds of benchmark calls.
-    if arg_pool is not None:
-        del arg_pool
-    torch.cuda.empty_cache()
 
     if cupti_ok:
         # Pick median trial
@@ -430,6 +439,7 @@ class BenchmarkBase(Generic[W], ABC):
         latency = bench_result["latency_ms"]
         result = {
             "latency_ms": latency,
+            "stdev_ms": bench_result.get("stdev_ms", 0.0),
             "timing_backend": bench_result.get("timing_backend", "unknown"),
             "event_breakdown": bench_result.get("event_breakdown", {}),
         }
@@ -683,7 +693,7 @@ class BenchmarkReport:
         lines.extend(_get_env_metadata())
         lines.append("")
 
-        result_keys = ["latency_ms", "tflops", "bandwidth_tbs"]
+        result_keys = ["latency_ms", "stdev_ms", "timing_backend", "tflops", "bandwidth_tbs"]
 
         for name, entries in BenchmarkReport._records.items():
             if not entries:
@@ -713,11 +723,29 @@ class BenchmarkReport:
                     row = [str(entry["params"].get(k, "")) for k in param_keys]
                     for rk in result_keys:
                         val = entry["result"].get(rk)
-                        row.append(f"{val:.4f}" if val is not None else "N/A")
+                        if rk == "timing_backend":
+                            row.append(str(val) if val else "N/A")
+                        elif isinstance(val, (int, float)):
+                            row.append(f"{val:.4f}")
+                        else:
+                            row.append("N/A")
                     if has_config:
                         cfg = entry.get("config")
                         row.append(str(cfg) if cfg else "")
                     lines.append("| " + " | ".join(row) + " |")
+
+                    # Append full event_breakdown for this entry (if present)
+                    breakdown = entry["result"].get("event_breakdown", {})
+                    if breakdown:
+                        lines.append("")
+                        lines.append(f"**Event breakdown** (params: {entry['params']}):")
+                        lines.append("")
+                        sorted_breakdown = sorted(breakdown.items(), key=lambda x: x[1], reverse=True)
+                        lines.append("| Kernel | Time (µs) |")
+                        lines.append("| --- | --- |")
+                        for kernel_name, time_us in sorted_breakdown:
+                            lines.append(f"| `{kernel_name}` | {time_us:.1f} |")
+                        lines.append("")
 
                 lines.append("")
 
