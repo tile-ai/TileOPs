@@ -9,6 +9,7 @@ from tileops.kernels.convolution import (
     Conv1dKernel,
     Conv1dPointwiseKernel,
     Conv2d1x1Kernel,
+    Conv2d3x3S1P1HighresKernel,
     Conv2dKernel,
     Conv3dKernel,
     GroupConv1dKernel,
@@ -595,6 +596,50 @@ def test_conv2d_dispatches_5x5_kernel() -> None:
         padding=2,
     )
     assert isinstance(op.kernel, Conv2dKernel)
+
+
+@pytest.mark.smoke
+def test_conv2d_dispatches_highres_3x3_s1_p1_fp16_kernel() -> None:
+    op = Conv2dBiasFwdOp(
+        n=1,
+        c_in=256,
+        h=112,
+        w=112,
+        c_out=512,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        dilation=1,
+        dtype=torch.float16,
+        tune=False,
+    )
+    assert isinstance(op.kernel, Conv2d3x3S1P1HighresKernel)
+
+
+@pytest.mark.smoke
+def test_conv2d_highres_3x3_s1_p1_fp16_matches_torch() -> None:
+    torch.manual_seed(0)
+    op = Conv2dBiasFwdOp(
+        n=1,
+        c_in=256,
+        h=112,
+        w=112,
+        c_out=512,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        dilation=1,
+        dtype=torch.float16,
+        tune=False,
+    )
+    x = torch.randn(1, 256, 112, 112, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(512, 256, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+    bias = torch.randn(512, device="cuda", dtype=torch.float16).contiguous()
+
+    out = op(x, weight, bias)
+    ref = F.conv2d(x, weight, bias=bias, stride=1, padding=1, dilation=1)
+    ref = ref.contiguous()
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
 class Conv3dFixture(FixtureBase):
