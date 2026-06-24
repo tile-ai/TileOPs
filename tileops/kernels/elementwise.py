@@ -984,7 +984,12 @@ class BinaryKernel(Kernel):
         try:
             super().autotune(warmup=warmup, rep=rep)
         except (AssertionError, Exception) as exc:
-            if "not serializable" in str(exc) or "pickle" in str(exc).lower():
+            message = str(exc)
+            if (
+                "not serializable" in message
+                or "pickle" in message.lower()
+                or "missing a required argument" in message
+            ):
                 warnings.warn(  # noqa: B028
                     f"{self.__class__.__name__} autotuning failed "
                     f"(op_func is not serializable); falling back to "
