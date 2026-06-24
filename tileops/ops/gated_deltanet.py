@@ -5,6 +5,7 @@ import torch
 from tileops.kernels.gated_deltanet import (
     GatedDeltaNetBwdKernel,
     GatedDeltaNetFwdKernel,
+    GatedDeltaNetPrefillFwdKernel,
 )
 from tileops.kernels.gated_deltanet_recurrence import (
     GatedDeltaNetDecodeFP32Kernel,
@@ -16,7 +17,13 @@ from tileops.utils import get_sm_version
 
 from .op_base import Op
 
-__all__ = ["GatedDeltaNetBwdOp", "GatedDeltaNetDecodeOp", "GatedDeltaNetFwdOp", "GatedDeltaNetOp"]
+__all__ = [
+    "GatedDeltaNetBwdOp",
+    "GatedDeltaNetDecodeOp",
+    "GatedDeltaNetFwdOp",
+    "GatedDeltaNetOp",
+    "GatedDeltaNetPrefillFwdOp",
+]
 
 
 class GatedDeltaNetFwdOp(Op):
@@ -119,6 +126,181 @@ class GatedDeltaNetFwdOp(Op):
         """
         o, S, Aw, Au = self.kernel(q, k, v, g, beta)
         return o, S, Aw, Au
+
+
+class GatedDeltaNetPrefillFwdOp(Op):
+    """Gated DeltaNet inference prefill operator.
+
+    This is the serving-oriented zero-state prefill interface:
+    ``(q, k, v, g, beta) -> (o, final_state)``. It intentionally does not
+    expose backward-only training artifacts such as ``Aw`` and ``Au``.
+    ``layout="bthd"`` follows the official FLA/Qwen convention
+    (``q/k/v/o [B, T, H, D]``, ``g/beta [B, T, H]``). ``layout="bhtd"``
+    selects the TileOps head-major convention (``q/k/v/o [B, H, T, D]``,
+    ``g/beta [B, H, T]``). ``layout="bhsd"`` is accepted as a backward-compatible
+    alias for ``"bhtd"``.
+    When ``chunk_size`` is not specified, the op uses a small-stream serving
+    default: 128 for ``batch * heads <= 8`` when the sequence length allows it,
+    otherwise 64.
+    """
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seq_len: int,
+        dim_k: int,
+        dim_v: int,
+        chunk_size: Optional[int] = None,
+        dtype: torch.dtype = torch.float32,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        layout: str = "bhtd",
+    ) -> None:
+        layout = self._normalize_layout(layout)
+        if chunk_size is None:
+            streams = batch * heads
+            chunk_size = 128 if streams <= 8 and seq_len % 128 == 0 else 64
+
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.chunk_size = chunk_size
+        self.dtype = dtype
+        self.layout = layout
+
+        if seq_len % chunk_size != 0:
+            raise ValueError(
+                f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})"
+            )
+
+        self.dispatch_kernel(kernel_map)
+
+        kernel_cls = self.kernel_map["GatedDeltaNetPrefillFwdKernel"]
+        kernel_dtype = Kernel.dtype_to_str(dtype)
+        self.kernel = kernel_cls(
+            batch,
+            heads,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype=kernel_dtype,
+            layout=layout,
+            tune=tune,
+        )
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {
+            "GatedDeltaNetPrefillFwdKernel": GatedDeltaNetPrefillFwdKernel,
+        }
+
+    @staticmethod
+    def _normalize_layout(layout: str) -> str:
+        layout = layout.lower()
+        if layout == "bhsd":
+            return "bhtd"
+        if layout in ("bhtd", "bthd"):
+            return layout
+        raise ValueError(f"Unsupported layout: {layout}")
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        g_shape: tuple[int, ...],
+        beta_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        del k_shape, g_shape, beta_shape
+        layout = self._normalize_layout(getattr(self, "layout", "bhtd"))
+        if layout == "bthd":
+            return {
+                "o": (q_shape[0], q_shape[1], q_shape[2], v_shape[-1]),
+                "final_state": (
+                    q_shape[0],
+                    q_shape[2],
+                    q_shape[-1],
+                    v_shape[-1],
+                ),
+            }
+        return {
+            "o": tuple(q_shape[:-1]) + (v_shape[-1],),
+            "final_state": (
+                q_shape[0],
+                q_shape[1],
+                q_shape[-1],
+                v_shape[-1],
+            ),
+        }
+
+    def _validate_dtypes(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> None:
+        if self.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            raise ValueError(f"Unsupported dtype: {self.dtype}")
+        for name, tensor in (("q", q), ("k", k), ("v", v), ("g", g), ("beta", beta)):
+            if tensor.dtype != self.dtype:
+                raise ValueError(f"{name}.dtype must be {self.dtype}, got {tensor.dtype}")
+
+    def _validate_shapes(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> None:
+        if self.layout == "bthd":
+            q_shape = (self.batch, self.seq_len, self.heads, self.dim_k)
+            v_shape = (self.batch, self.seq_len, self.heads, self.dim_v)
+            gate_shape = (self.batch, self.seq_len, self.heads)
+        else:
+            q_shape = (self.batch, self.heads, self.seq_len, self.dim_k)
+            v_shape = (self.batch, self.heads, self.seq_len, self.dim_v)
+            gate_shape = (self.batch, self.heads, self.seq_len)
+        if tuple(q.shape) != q_shape:
+            raise ValueError(f"q must have shape {q_shape}, got {tuple(q.shape)}")
+        if tuple(k.shape) != q_shape:
+            raise ValueError(f"k must have shape {q_shape}, got {tuple(k.shape)}")
+        if tuple(v.shape) != v_shape:
+            raise ValueError(f"v must have shape {v_shape}, got {tuple(v.shape)}")
+        if tuple(g.shape) != gate_shape:
+            raise ValueError(f"g must have shape {gate_shape}, got {tuple(g.shape)}")
+        if tuple(beta.shape) != gate_shape:
+            raise ValueError(f"beta must have shape {gate_shape}, got {tuple(beta.shape)}")
+        if not all(tensor.is_cuda for tensor in (q, k, v, g, beta)):
+            raise ValueError("q, k, v, g, and beta must be CUDA tensors")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        from tileops.perf.formulas import gated_deltanet_prefill_fwd_roofline
+
+        return gated_deltanet_prefill_fwd_roofline(self)
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        q = q.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
+        g = g.contiguous()
+        beta = beta.contiguous()
+        self._validate_dtypes(q, k, v, g, beta)
+        self._validate_shapes(q, k, v, g, beta)
+        return self.kernel(q, k, v, g, beta)
 
 
 class GatedDeltaNetBwdOp(Op):

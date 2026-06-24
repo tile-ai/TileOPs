@@ -59,7 +59,7 @@ def _h_recurrence_tl(
     @tilelang.jit(
         out_idx=[-2, -1],
         pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -81,7 +81,6 @@ def _h_recurrence_tl(
                 u_c = T.alloc_shared([block_C, BV], dtype)
                 h_c = T.alloc_shared([dim_k, BV], dtype)
                 v_new_c = T.alloc_shared([block_C, BV], dtype)
-                k_scaled_s = T.alloc_shared([block_C, dim_k], dtype)
 
                 ws_frag = T.alloc_fragment([block_C, BV], accum_dtype)
                 h_next_frag = T.alloc_fragment([dim_k, BV], accum_dtype)
@@ -121,12 +120,18 @@ def _h_recurrence_tl(
 
                     # h_tile_next = h_tile * exp(g_last) + k_scaled^T @ v_new_tile
                     g_last = g_c[block_C - 1]
-                    for n, kk in T.Parallel(block_C, dim_k):
-                        k_scaled_s[n, kk] = k_c[n, kk] * T.exp2(
+                    for n, j in T.Parallel(block_C, BV):
+                        v_new_c[n, j] = v_new_c[n, j] * T.exp2(
                             (g_last - g_c[n]) * _LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
                         h_next_frag[i, j] = h_c[i, j] * T.exp2(g_last * _LOG2E)
-                    T.gemm(k_scaled_s, v_new_c, h_next_frag, transpose_A=True)
+                    T.gemm(
+                        k_c,
+                        v_new_c,
+                        h_next_frag,
+                        transpose_A=True,
+                        policy=T.GemmWarpPolicy.FullRow,
+                    )
                     T.copy(h_next_frag, h_c)
                     for i, j in T.Parallel(dim_k, BV):
                         S[bid, hid, t + 1, i, v_offset + j] = h_c[i, j]
@@ -162,7 +167,7 @@ def _output_o_tl(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )

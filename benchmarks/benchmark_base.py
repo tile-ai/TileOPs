@@ -278,6 +278,31 @@ def _get_env_metadata() -> list[str]:
         driver = "N/A"
     lines.append(f"- **Driver version**: {driver}")
 
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=clocks.current.sm,clocks.current.memory,"
+                "clocks.applications.graphics,clocks.applications.memory",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            clock_values = [part.strip() for part in result.stdout.splitlines()[0].split(",")]
+            if len(clock_values) == 4:
+                sm_clock, mem_clock, app_sm_clock, app_mem_clock = clock_values
+                lines.append(
+                    "- **GPU clocks**: "
+                    f"SM current {sm_clock} MHz, memory current {mem_clock} MHz, "
+                    f"application SM {app_sm_clock} MHz, "
+                    f"application memory {app_mem_clock} MHz"
+                )
+    except (FileNotFoundError, IndexError, subprocess.TimeoutExpired):
+        pass
+
     return lines
 
 
@@ -569,7 +594,7 @@ class BenchmarkReport:
         lines.extend(_get_env_metadata())
         lines.append("")
 
-        result_keys = ["latency_ms", "tflops", "bandwidth_tbs"]
+        default_result_keys = ["latency_ms", "tflops", "bandwidth_tbs"]
 
         for name, entries in BenchmarkReport._records.items():
             if not entries:
@@ -582,6 +607,11 @@ class BenchmarkReport:
             tag_entries = {}
             for entry in entries:
                 tag_entries.setdefault(entry["tag"], []).append(entry)
+            result_keys = list(default_result_keys)
+            for entry in entries:
+                for key in entry["result"]:
+                    if key not in result_keys:
+                        result_keys.append(key)
 
             for tag, tag_group in tag_entries.items():
                 lines.append(f"### {tag}")
