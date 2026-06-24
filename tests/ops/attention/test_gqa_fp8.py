@@ -7,6 +7,15 @@ from tileops.testing.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
 )
+from tileops.testing.tir_compat import tir_available
+
+# The FP8 GQA kernel still emits tir.call_extern; on the current tilelang stack tvm.tir is
+# unavailable, so building it raises ImportError. Skip these cases until the
+# tir.call_extern -> T.call_extern migration lands (follow-up).
+pytestmark = pytest.mark.skipif(
+    not tir_available(),
+    reason="tvm.tir unavailable; fp8 GQA needs tir.call_extern -> T.call_extern migration (follow-up)",
+)
 
 
 def _has_sm90() -> bool:

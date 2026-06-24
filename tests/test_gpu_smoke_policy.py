@@ -3,8 +3,9 @@
 These tests do NOT spin up a self-hosted runner — they parse the workflow
 YAML and assert the contract:
 
-* The ``security-policy`` job downgrades ``is_fork`` to ``false`` for
-  OWNER/MEMBER/COLLABORATOR authors on head != base PRs.
+* The ``security-policy`` job derives ``is_fork`` from the PR author's
+  collaborator permission (write/maintain/admin -> trusted), failing closed
+  to the fork pool on any lookup failure.
 * The ``gpu-smoke`` job passes ``skip-atomic-age-trim: "true"`` when
   invoking the ``reclaim-runner-disk`` composite action.
 * The daily ``runner-maintenance.yml`` job does NOT pass
@@ -42,27 +43,40 @@ def _find_step(steps: list[dict], *, uses_contains: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_security_policy_handles_member_fork_as_trusted() -> None:
-    """PRs from OWNER/MEMBER/COLLABORATOR authors on a fork repo must be
-    treated as trusted (is_fork=false) by the security-policy step so the
-    gpu-smoke job uses the /home/ci-runner trusted runtime layout."""
+def test_security_policy_routes_trust_by_collaborator_permission() -> None:
+    """The security-policy step must derive is_fork from the PR author's collaborator
+    permission (write/maintain/admin -> trusted), NOT author_association, and fail closed
+    to the fork pool on any lookup failure. The same is_fork drives runs-on and the
+    trusted-action ref selection."""
     wf = _load(GPU_SMOKE)
     policy_job = wf["jobs"]["security-policy"]
     run_steps = [s for s in policy_job["steps"] if "run" in s and s.get("id") == "policy"]
     assert run_steps, "expected a 'policy' step in security-policy job"
-    script = run_steps[0]["run"]
+    step = run_steps[0]
+    script = step["run"]
+    env = step["env"]
 
-    # The promotion logic must name all three trusted author_association
-    # values, and must key off AUTHOR_ASSOC in the head != base branch.
-    assert "AUTHOR_ASSOC" in script, "AUTHOR_ASSOC env must be referenced"
-    for assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
-        assert assoc in script, f"author_association {assoc!r} must be handled"
-    # Must actually set is_fork=false in the trusted branch.
-    assert 'is_fork="false"' in script
-    # And AUTHOR_ASSOC must be sourced from github.event.pull_request.author_association.
-    env = run_steps[0]["env"]
-    assert "AUTHOR_ASSOC" in env, "AUTHOR_ASSOC must be plumbed via env:"
-    assert "author_association" in env["AUTHOR_ASSOC"]
+    # Trust is keyed off the collaborator-permission endpoint, not author_association.
+    assert "AUTHOR_ASSOC" not in env, "author_association must no longer drive trust"
+    assert "AUTHOR_ASSOC" not in script
+    assert "collaborators/${PR_AUTHOR}/permission" in script, (
+        "is_fork must be derived from the collaborator-permission endpoint"
+    )
+    # Only write/maintain/admin are trusted; the catch-all fails closed to the fork pool.
+    assert "admin|maintain|write" in script
+    assert 'is_fork="false"' in script  # trusted branch
+    assert 'is_fork="true"' in script  # fail-closed / external branch
+    # PR_AUTHOR must be plumbed from the PR author login.
+    assert "PR_AUTHOR" in env, "PR_AUTHOR must be plumbed via env:"
+    assert "pull_request.user.login" in env["PR_AUTHOR"]
+
+    # runs-on and the trusted-action ref must both consume the same is_fork output.
+    gpu_job = wf["jobs"]["gpu-smoke"]
+    assert "needs.security-policy.outputs.is_fork" in str(gpu_job["runs-on"])
+    ref_step = next(
+        s for s in gpu_job["steps"] if (s.get("name") or "").startswith("Checkout trusted actions")
+    )
+    assert "needs.security-policy.outputs.is_fork" in str(ref_step["with"]["ref"])
 
 
 # ---------------------------------------------------------------------------
