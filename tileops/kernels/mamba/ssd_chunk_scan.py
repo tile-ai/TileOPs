@@ -539,11 +539,11 @@ class SSDChunkScanFwdKernel(Kernel):
             for bn in [64, 128]
             if bn <= self.d_state
         ] + [
-            # Hybrid: reduce L/P but keep larger S for causal path
-            {"block_l": 32, "block_p": 32, "block_n": 64, "block_s": 64, "threads": 128}
-        ] + [
-            # Aggressive: minimal tiles for maximum occupancy
-            {"block_l": 32, "block_p": 32, "block_n": 64, "block_s": 32, "threads": 64}
+            # Hybrid / Aggressive: vary block_s and threads at block_l=32, block_p=32, block_n=64
+            # to explore the occupancy/efficiency trade-off without a full grid search.
+            {"block_l": 32, "block_p": 32, "block_n": 64, "block_s": bs, "threads": t}
+            for bs, t in [(64, 128), (32, 64)]
+            if self.d_state >= 64
         ]
 
     def forward(
