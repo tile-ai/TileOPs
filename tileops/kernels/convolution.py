@@ -1462,15 +1462,15 @@ def _conv2d_3x3_s1_p1_highres_kernel(dtype: str = "float16"):
     h = 112
     w = 112
     c_out = 512
+    kernel_h = 3
+    kernel_w = 3
     out_h = 112
     out_w = 112
     out_hw = out_h * out_w
-    kernel_h = 3
-    kernel_w = 3
     k_total = c_in * kernel_h * kernel_w
 
     @tilelang.jit(
-        out_idx=[2],
+        out_idx=[6],
         compile_flags=["-O3", "-DENABLE_BF16"],
         pass_configs={"tl.enable_async_copy": False},
     )
@@ -1482,69 +1482,116 @@ def _conv2d_3x3_s1_p1_highres_kernel(dtype: str = "float16"):
         threads: int,
         enable_rasterization: bool,
     ):
-        @T.prim_func
-        def _conv2d_3x3_s1_p1_highres_main(
-            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
-            weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),  # type: ignore
-            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
-            bias: T.Tensor((c_out,), dtype),  # type: ignore
+        @T.macro
+        def nchw_to_nhwc_input(
+            x: T.Tensor((n, c_in, h, w), dtype),
+            x_nhwc: T.Tensor((n, h, w, c_in), dtype),
         ):
             with T.Kernel(
-                T.ceildiv(out_hw, block_n),
-                T.ceildiv(c_out, block_m),
-                n,
+                T.ceildiv(n * h * w * c_in, 256),
+                threads=256,
+            ) as (bx):
+                for tx in T.Parallel(256):
+                    idx = bx * 256 + tx
+                    if idx < n * h * w * c_in:
+                        c = idx % c_in
+                        spatial = idx // c_in
+                        ow = spatial % w
+                        oh = (spatial // w) % h
+                        batch = spatial // (h * w)
+                        x_nhwc[batch, oh, ow, c] = x[batch, c, oh, ow]
+
+        @T.macro
+        def kcrs_to_krsc_weight(
+            weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),
+            weight_krsc: T.Tensor((c_out, kernel_h, kernel_w, c_in), dtype),
+        ):
+            with T.Kernel(
+                T.ceildiv(c_out * kernel_h * kernel_w * c_in, 256),
+                threads=256,
+            ) as (bx):
+                for tx in T.Parallel(256):
+                    idx = bx * 256 + tx
+                    if idx < c_out * kernel_h * kernel_w * c_in:
+                        ci = idx % c_in
+                        kernel_idx = idx // c_in
+                        kw = kernel_idx % kernel_w
+                        kh = (kernel_idx // kernel_w) % kernel_h
+                        oc = kernel_idx // (kernel_h * kernel_w)
+                        weight_krsc[oc, kh, kw, ci] = weight[oc, ci, kh, kw]
+
+        @T.macro
+        def conv_nhwc_implicit_gemm_bias(
+            x_nhwc: T.Tensor((n, h, w, c_in), dtype),
+            weight_krsc: T.Tensor((c_out, kernel_h, kernel_w, c_in), dtype),
+            bias: T.Tensor((c_out,), dtype),
+            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
+        ):
+            with T.Kernel(
+                T.ceildiv(c_out, block_n),
+                T.ceildiv(n * out_h * out_w, block_m),
                 threads=threads,
-            ) as (bx, by, bz):
-                weight_shared = T.alloc_shared((block_m, block_k), dtype)
-                data_shared = T.alloc_shared((block_k, block_n), dtype)
+            ) as (bx, by):
+                data_shared = T.alloc_shared((block_m, block_k), dtype)
+                weight_shared = T.alloc_shared((block_n, block_k), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
-                out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight_krsc.data)
+                out_flat = T.Tensor((n * out_h * out_w, c_out), dtype, out_nhwc.data)
 
                 T.use_swizzle(10, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
-                    for i, j in T.Parallel(block_k, block_n):
-                        k_idx = k_iter * block_k + i
-                        spatial_idx = bx * block_n + j
-                        ci = k_idx // 9
-                        kernel_idx = k_idx % 9
-                        kh = kernel_idx // 3
-                        kw = kernel_idx % 3
-                        oh = spatial_idx // out_w
-                        ow = spatial_idx % out_w
-                        ih = oh + kh - 1
-                        iw = ow + kw - 1
-                        in_bound = (
-                            (spatial_idx < out_hw)
-                            & (k_idx < k_total)
-                            & (ih >= 0)
-                            & (iw >= 0)
-                            & (ih < h)
-                            & (iw < w)
-                        )
-                        data_shared[i, j] = T.if_then_else(
-                            in_bound,
-                            x[bz, ci, ih, iw],
-                            T.cast(0.0, dtype),
-                        )
-
-                    T.copy(weight_flat[by * block_m, k_iter * block_k], weight_shared)
-                    T.gemm(weight_shared, data_shared, out_local)
+                    T.c2d_im2col(x_nhwc, data_shared, by, k_iter, kernel_h, 1, 1, 1)
+                    T.copy(weight_flat[bx * block_n, k_iter * block_k], weight_shared)
+                    T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
 
                 for i, j in T.Parallel(block_m, block_n):
-                    oc = by * block_m + i
-                    spatial_idx = bx * block_n + j
+                    spatial_idx = by * block_m + i
+                    oc = bx * block_n + j
                     out_shared[i, j] = T.if_then_else(
-                        (oc < c_out) & (spatial_idx < out_hw),
+                        (spatial_idx < out_hw) & (oc < c_out),
                         T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
                         T.cast(0.0, dtype),
                     )
 
-                T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
+                T.copy(out_shared, out_flat[by * block_m, bx * block_n])
+
+        @T.macro
+        def nhwc_to_nchw_output(
+            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),
+        ):
+            with T.Kernel(
+                T.ceildiv(n * out_h * out_w * c_out, 256),
+                threads=256,
+            ) as (bx):
+                for tx in T.Parallel(256):
+                    idx = bx * 256 + tx
+                    if idx < n * out_h * out_w * c_out:
+                        oc = idx % c_out
+                        spatial = idx // c_out
+                        ow = spatial % out_w
+                        oh = (spatial // out_w) % out_h
+                        batch = spatial // (out_h * out_w)
+                        out[batch, oc, oh, ow] = out_nhwc[batch, oh, ow, oc]
+
+        @T.prim_func
+        def _conv2d_3x3_s1_p1_highres_main(
+            x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype),  # type: ignore
+            x_nhwc: T.Tensor((n, h, w, c_in), dtype),  # type: ignore
+            weight_krsc: T.Tensor((c_out, kernel_h, kernel_w, c_in), dtype),  # type: ignore
+            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+        ):
+            nchw_to_nhwc_input(x, x_nhwc)
+            kcrs_to_krsc_weight(weight, weight_krsc)
+            conv_nhwc_implicit_gemm_bias(x_nhwc, weight_krsc, bias, out_nhwc)
+            nhwc_to_nchw_output(out_nhwc, out)
 
         return _conv2d_3x3_s1_p1_highres_main
 
@@ -1607,6 +1654,9 @@ def _conv2d_3x3_s1_p1_highres_wrapped_kernel(
     x: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor,
+    x_nhwc: torch.Tensor,
+    weight_krsc: torch.Tensor,
+    out_nhwc: torch.Tensor,
 ) -> torch.Tensor:
     return _conv2d_3x3_s1_p1_highres_kernel(dtype)(
         block_m,
@@ -1615,7 +1665,7 @@ def _conv2d_3x3_s1_p1_highres_wrapped_kernel(
         num_stages,
         threads,
         enable_rasterization,
-    )(x, weight, bias)
+    )(x, weight, bias, x_nhwc, weight_krsc, out_nhwc)
 
 
 @_conv2d_3x3_s1_p1_highres_wrapped_kernel.register_fake
@@ -1632,7 +1682,6 @@ def _(
     del dtype, block_m, block_n, block_k, num_stages, threads, enable_rasterization
     x = inputs[0]
     weight = inputs[1]
-    # For stride=1, padding=1, dilation=1, kernel=3x3, output spatial dims equal input spatial dims.
     return torch.empty(
         (x.shape[0], weight.shape[0], x.shape[2], x.shape[3]),
         dtype=x.dtype,
@@ -1853,8 +1902,8 @@ class Conv2d3x3S1P1HighresKernel(Kernel):
     def default_config(self) -> dict:
         return {
             "block_m": 128,
-            "block_n": 64,
-            "block_k": 64,
+            "block_n": 128,
+            "block_k": 32,
             "num_stages": 2,
             "threads": 128,
             "enable_rasterization": True,
@@ -1863,10 +1912,12 @@ class Conv2d3x3S1P1HighresKernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         shared_memory_limit_bytes = get_shared_memory_limit_bytes()
+        # T.c2d_im2col (TMA-based) requires smem_box_channel <= 64 for float16
+        # with the detected 128B swizzle layout.
         configs = itertools.product(
             [64, 128],
             [64, 128, 256],
-            [64, 128],
+            [16, 32, 64],
             [2, 3],
             [128, 256],
             [True],
@@ -1896,6 +1947,21 @@ class Conv2d3x3S1P1HighresKernel(Kernel):
     ) -> torch.Tensor:
         if bias is None:
             raise ValueError("Conv2d3x3S1P1HighresKernel requires bias.")
+        x_nhwc = torch.empty(
+            (self.n, self.h, self.w, self.c_in),
+            device=x.device,
+            dtype=x.dtype,
+        )
+        weight_krsc = torch.empty(
+            (self.c_out, self.kernel_h, self.kernel_w, self.c_in),
+            device=weight.device,
+            dtype=weight.dtype,
+        )
+        out_nhwc = torch.empty(
+            (self.n, self.out_h, self.out_w, self.c_out),
+            device=x.device,
+            dtype=x.dtype,
+        )
         return _conv2d_3x3_s1_p1_highres_wrapped_kernel(
             self.dtype_str,
             self.config["block_m"],
@@ -1907,6 +1973,9 @@ class Conv2d3x3S1P1HighresKernel(Kernel):
             x,
             weight,
             bias,
+            x_nhwc,
+            weight_krsc,
+            out_nhwc,
         )
 
 

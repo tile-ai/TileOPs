@@ -645,6 +645,36 @@ def test_conv2d_highres_3x3_s1_p1_fp16_matches_torch() -> None:
     torch.testing.assert_close(out, ref, atol=2e-3, rtol=2e-3)
 
 
+@pytest.mark.smoke
+def test_conv2d_highres_3x3_s1_p1_fp16_im2col_pipeline_shape() -> None:
+    op = Conv2dBiasFwdOp(
+        n=1,
+        c_in=256,
+        h=112,
+        w=112,
+        c_out=512,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        dilation=1,
+        dtype=torch.float16,
+        tune=False,
+    )
+    assert isinstance(op.kernel, Conv2d3x3S1P1HighresKernel)
+    assert op.kernel.config["block_m"] > 0
+    assert op.kernel.config["block_n"] > 0
+    assert op.kernel.config["block_k"] > 0
+
+    x = torch.randn(1, 256, 112, 112, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(512, 256, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+    bias = torch.randn(512, device="cuda", dtype=torch.float16).contiguous()
+
+    out = op(x, weight, bias)
+    assert out.shape == (1, 512, 112, 112)
+    assert out.dtype == torch.float16
+    assert out.is_contiguous()
+
+
 class Conv3dFixture(FixtureBase):
     PARAMS = [
         ("n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype, tune", [
