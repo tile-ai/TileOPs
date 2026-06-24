@@ -419,6 +419,15 @@ jobs:
           # PR would otherwise reuse.
           skip-atomic-age-trim: "true"
 
+      - name: Use run-local Triton cache
+        run: |
+          set -euo pipefail
+          run_triton_cache="/ci-cache/triton/gpu-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "${run_triton_cache}"
+          chmod u+rwx "${run_triton_cache}" || true
+          echo "TRITON_CACHE_DIR=${run_triton_cache}" >> "$GITHUB_ENV"
+          echo "Using TRITON_CACHE_DIR=${run_triton_cache}"
+
       - name: Validate GPU frequency
         run: |
           set -euo pipefail
