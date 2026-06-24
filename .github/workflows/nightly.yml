@@ -108,7 +108,8 @@ jobs:
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
           set -o pipefail
-          python3 -m pytest -q benchmarks/ops --junit-xml=bench_results.xml | tee tileops_benchmarks.log
+          python3 -m pip install -q pytest-timeout
+          python3 -m pytest -q benchmarks/ops --timeout=900 --timeout-method=thread --junit-xml=bench_results.xml | tee tileops_benchmarks.log
 
           if [ -f profile_run.log ]; then
             { echo; echo "===== profile_run.log summary ====="; cat profile_run.log; } >> tileops_benchmarks.log
@@ -168,7 +169,8 @@ jobs:
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
           set -o pipefail
-          python3 -m pytest tests/ -v --tb=short --junit-xml=test_results.xml | tee tileops_op_test.log
+          python3 -m pip install -q pytest-timeout
+          python3 -m pytest tests/ -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=test_results.xml | tee tileops_op_test.log
         shell: bash
 
       - name: Download benchmark artifacts
@@ -402,7 +404,7 @@ jobs:
             sleep 2
           done
 
-          python3 -m pip install build pytest
+          python3 -m pip install build pytest pytest-timeout
 
           echo "=== Build wheel package ==="
           python3 -m build --wheel
@@ -424,6 +426,7 @@ jobs:
 
           echo "=== Run pytest packaging ==="
           python3 -m pytest -q tests/ops -m "packaging" \
+            --timeout=900 --timeout-method=thread \
             --junit-xml="${GITHUB_WORKSPACE}/packaging_smoke.xml"
         shell: bash
 

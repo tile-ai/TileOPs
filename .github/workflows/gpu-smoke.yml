@@ -353,6 +353,9 @@ jobs:
     # runner mounts an overlay cache (read-only shared lower + throwaway upper) so their cache
     # writes never reach the shared cache. Trusted runs use the resident shared-cache pool.
     runs-on: ${{ needs.security-policy.outputs.is_fork == 'true' && fromJSON('["self-hosted", "tile-ops", "fork"]') || fromJSON('["self-hosted", "tile-ops", "nightly"]') }}
+    # Hard backstop so a wedged kernel can never hold the single runner indefinitely; the
+    # per-test --timeout below is the first line of defense, this is the ceiling.
+    timeout-minutes: 90
     steps:
       - name: Checkout code for fork PR
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
@@ -472,6 +475,10 @@ jobs:
           PYTEST_TARGETS: ${{ needs.security-policy.outputs.pytest_targets }}
         run: |
           set -euo pipefail
+          # Per-test hang guard: a stuck kernel (e.g. a cold-compile loop or a spinning CUDA
+          # call) fails as a timeout with a thread dump instead of wedging the job. --no-deps
+          # tileops install doesn't bring this, so ensure it here.
+          python3 -m pip install -q pytest-timeout
           current_dir="$(pwd)"
           export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
@@ -492,7 +499,9 @@ jobs:
           echo "Resolved pytest targets: ${PYTEST_TARGETS}"
           read -r -a TARGETS <<< "${PYTEST_TARGETS}"
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
-          python3 -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" --junit-xml=gpu_smoke_results.xml | tee gpu_smoke.log
+          python3 -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" \
+            --timeout=600 --timeout-method=thread \
+            --junit-xml=gpu_smoke_results.xml | tee gpu_smoke.log
 
       - name: Generate gpu-smoke report
         if: ${{ always() && hashFiles('gpu_smoke_results.xml') != '' }}
