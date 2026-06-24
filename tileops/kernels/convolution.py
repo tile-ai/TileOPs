@@ -1468,6 +1468,12 @@ def _conv2d_3x3_s1_p1_highres_kernel(dtype: str = "float16"):
     out_w = 112
     out_hw = out_h * out_w
     k_total = c_in * kernel_h * kernel_w
+    input_spatial_block = 32
+    input_channel_block = 32
+    input_channel_lanes = 8
+    input_values_per_thread = input_channel_block // input_channel_lanes
+    output_spatial_block = 128
+    output_channel_block = 2
 
     @tilelang.jit(
         out_idx=[6],
@@ -1488,18 +1494,21 @@ def _conv2d_3x3_s1_p1_highres_kernel(dtype: str = "float16"):
             x_nhwc: T.Tensor((n, h, w, c_in), dtype),
         ):
             with T.Kernel(
-                T.ceildiv(n * h * w * c_in, 256),
+                T.ceildiv(h * w, input_spatial_block),
+                T.ceildiv(c_in, input_channel_block),
                 threads=256,
-            ) as (bx):
-                for tx in T.Parallel(256):
-                    idx = bx * 256 + tx
-                    if idx < n * h * w * c_in:
-                        c = idx % c_in
-                        spatial = idx // c_in
-                        ow = spatial % w
-                        oh = (spatial // w) % h
-                        batch = spatial // (h * w)
-                        x_nhwc[batch, oh, ow, c] = x[batch, c, oh, ow]
+            ) as (bx, by):
+                for spatial_inner, channel_lane in T.Parallel(
+                    input_spatial_block, input_channel_lanes
+                ):
+                    spatial = bx * input_spatial_block + spatial_inner
+                    oh = spatial // w
+                    ow = spatial - oh * w
+                    channel_base = by * input_channel_block + channel_lane * input_values_per_thread
+                    for channel_offset in T.serial(input_values_per_thread):
+                        c = channel_base + channel_offset
+                        if (spatial < h * w) & (c < c_in):
+                            x_nhwc[0, oh, ow, c] = x[0, c, oh, ow]
 
         @T.macro
         def kcrs_to_krsc_weight(
@@ -1565,18 +1574,19 @@ def _conv2d_3x3_s1_p1_highres_kernel(dtype: str = "float16"):
             out: T.Tensor((n, c_out, out_h, out_w), dtype),
         ):
             with T.Kernel(
-                T.ceildiv(n * out_h * out_w * c_out, 256),
+                T.ceildiv(c_out, output_channel_block),
+                T.ceildiv(out_h * out_w, output_spatial_block),
                 threads=256,
-            ) as (bx):
-                for tx in T.Parallel(256):
-                    idx = bx * 256 + tx
-                    if idx < n * out_h * out_w * c_out:
-                        oc = idx % c_out
-                        spatial = idx // c_out
-                        ow = spatial % out_w
-                        oh = (spatial // out_w) % out_h
-                        batch = spatial // (out_h * out_w)
-                        out[batch, oc, oh, ow] = out_nhwc[batch, oh, ow, oc]
+            ) as (bx, by):
+                for channel_inner, spatial_inner in T.Parallel(
+                    output_channel_block, output_spatial_block
+                ):
+                    oc = bx * output_channel_block + channel_inner
+                    spatial = by * output_spatial_block + spatial_inner
+                    oh = spatial // out_w
+                    ow = spatial - oh * out_w
+                    if (oc < c_out) & (spatial < out_h * out_w):
+                        out[0, oc, oh, ow] = out_nhwc[0, oh, ow, oc]
 
         @T.prim_func
         def _conv2d_3x3_s1_p1_highres_main(
@@ -1901,11 +1911,11 @@ class Conv2d3x3S1P1HighresKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_m": 128,
-            "block_n": 128,
-            "block_k": 32,
-            "num_stages": 2,
-            "threads": 128,
+            "block_m": 64,
+            "block_n": 256,
+            "block_k": 64,
+            "num_stages": 3,
+            "threads": 256,
             "enable_rasterization": True,
         }
 

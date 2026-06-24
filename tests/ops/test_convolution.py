@@ -1,3 +1,4 @@
+import inspect
 from typing import Optional
 
 import pytest
@@ -15,6 +16,7 @@ from tileops.kernels.convolution import (
     GroupConv1dKernel,
     GroupConv2dKernel,
     GroupConv3dKernel,
+    _conv2d_3x3_s1_p1_highres_kernel,
 )
 from tileops.ops import (
     Conv1dBiasFwdOp,
@@ -614,6 +616,14 @@ def test_conv2d_dispatches_highres_3x3_s1_p1_fp16_kernel() -> None:
         tune=False,
     )
     assert isinstance(op.kernel, Conv2d3x3S1P1HighresKernel)
+    assert op.kernel.config == {
+        "block_m": 64,
+        "block_n": 256,
+        "block_k": 64,
+        "num_stages": 3,
+        "threads": 256,
+        "enable_rasterization": True,
+    }
 
 
 @pytest.mark.smoke
@@ -673,6 +683,26 @@ def test_conv2d_highres_3x3_s1_p1_fp16_im2col_pipeline_shape() -> None:
     assert out.shape == (1, 512, 112, 112)
     assert out.dtype == torch.float16
     assert out.is_contiguous()
+
+
+@pytest.mark.smoke
+def test_conv2d_highres_input_transform_uses_spatial_channel_grid() -> None:
+    source = inspect.getsource(_conv2d_3x3_s1_p1_highres_kernel)
+
+    assert "input_spatial_block = 32" in source
+    assert "input_channel_block = 32" in source
+    assert "T.ceildiv(h * w, input_spatial_block)" in source
+    assert "T.ceildiv(c_in, input_channel_block)" in source
+
+
+@pytest.mark.smoke
+def test_conv2d_highres_output_transform_uses_channel_spatial_grid() -> None:
+    source = inspect.getsource(_conv2d_3x3_s1_p1_highres_kernel)
+
+    assert "output_spatial_block = 128" in source
+    assert "output_channel_block = 2" in source
+    assert "T.ceildiv(c_out, output_channel_block)" in source
+    assert "T.ceildiv(out_h * out_w, output_spatial_block)" in source
 
 
 class Conv3dFixture(FixtureBase):
