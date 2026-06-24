@@ -8,6 +8,7 @@ not written to global memory.
 
 import functools
 import math
+import os
 from typing import Optional, Tuple
 
 import tilelang
@@ -33,6 +34,120 @@ def _normalize_prefill_layout(layout: str) -> str:
     if layout in ("bhtd", "bthd"):
         return layout
     raise ValueError(f"Unsupported layout: {layout}")
+
+
+@functools.lru_cache(maxsize=32)
+def _prefill_single_batch_cu_seqlens(
+    num_tokens: int,
+    device_idx: int,
+) -> torch.Tensor:
+    return torch.tensor([0, num_tokens], dtype=torch.int32, device=f"cuda:{device_idx}")
+
+
+def _prefill_auto_cp_local_chunks(num_chunks: int, num_heads: int) -> int:
+    env_max_local_chunks = os.environ.get(
+        "TILEOPS_GDN_PREFILL_MAX_LOCAL_CHUNKS",
+        os.environ.get("TILEOPS_GDN_PREFILL_CP_MAX_LOCAL_CHUNKS"),
+    )
+    if env_max_local_chunks:
+        max_local_chunks = int(env_max_local_chunks)
+    else:
+        sm_count = torch.cuda.get_device_properties().multi_processor_count
+        max_local_chunks = 2 ** round(
+            math.log2(math.sqrt(num_heads * num_chunks / sm_count) * 3)
+        )
+        if num_heads >= 64 and num_chunks >= 512:
+            max_local_chunks = max(max_local_chunks, 256)
+    return max(max_local_chunks, 4)
+
+
+def _prefill_partitioned_initial_state_bthd(
+    k: torch.Tensor,
+    v: torch.Tensor,
+    A: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    chunk_size: int,
+) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+    from tileops.kernels.gated_deltanet.gdn_prefill import (
+        correct_initial_states,
+        fused_gdr_h,
+        get_warmup_chunks,
+    )
+
+    batch, num_tokens, num_heads, _ = k.shape
+    assert batch == 1
+    raw_cu_seqlens = _prefill_single_batch_cu_seqlens(num_tokens, k.device.index)
+    num_chunks = tilelang.cdiv(num_tokens, chunk_size)
+    max_local_chunks = _prefill_auto_cp_local_chunks(num_chunks, num_heads)
+
+    has_partition = num_chunks > max_local_chunks
+    force_partition = (
+        os.environ.get(
+            "TILEOPS_GDN_PREFILL_FORCE_PARTITION",
+            os.environ.get("TILEOPS_GDN_PREFILL_CP_FORCE", "0"),
+        )
+        == "1"
+    )
+    use_partition = has_partition and (
+        force_partition or num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128)
+    )
+    if not use_partition:
+        return None, raw_cu_seqlens, None, None
+
+    cp_cu_seqlens = []
+    ht_mask = []
+    seq_map_c2r = []
+    seq_map_r2c = [0]
+    split_tokens = max_local_chunks * chunk_size
+    start = 0
+    while start < num_tokens:
+        cp_cu_seqlens.append(start)
+        ht_mask.append(False)
+        seq_map_c2r.append(0)
+        start += split_tokens
+    ht_mask[-1] = True
+    seq_map_r2c.append(len(cp_cu_seqlens))
+    cp_cu_seqlens.append(num_tokens)
+
+    cp_cu_seqlens_t = torch.tensor(
+        cp_cu_seqlens, dtype=torch.int32, device=k.device, requires_grad=False
+    )
+    seq_map_c2r_t = torch.tensor(seq_map_c2r, dtype=torch.int32, device=k.device)
+    seq_map_r2c_t = torch.tensor(
+        seq_map_r2c, dtype=torch.int32, device=k.device, requires_grad=False
+    )
+    ht_mask_t = torch.tensor(
+        ht_mask, dtype=torch.bool, device=k.device, requires_grad=False
+    )
+
+    num_warmup_chunks, fallback_mask = get_warmup_chunks(
+        g=g,
+        cu_seqlens=cp_cu_seqlens_t,
+        ht_mask=ht_mask_t,
+        chunk_size=chunk_size,
+        threshold=-10.0,
+    )
+    _, ht, mt = fused_gdr_h(
+        k=k,
+        v=v,
+        a=A,
+        g=g,
+        b=beta,
+        initial_state=None,
+        output_final_state=True,
+        output_h=False,
+        cu_seqlens=cp_cu_seqlens_t,
+        num_warmup_chunks=num_warmup_chunks,
+    )
+    cp_h0 = correct_initial_states(
+        raw_h0=None,
+        ht_buffer=ht,
+        mt_buffer=mt,
+        fallback_mask=fallback_mask,
+        seq_map_r2c=seq_map_r2c_t,
+    )
+    return cp_h0, cp_cu_seqlens_t, seq_map_c2r_t, raw_cu_seqlens
 
 
 @functools.lru_cache(maxsize=32)
@@ -1347,15 +1462,57 @@ def _gated_deltanet_prefill_wrapped_kernel(
         g_cum = _prefill_chunk_local_cumsum_bthd_tl(
             batch, head, seq_len, chunk_size, dtype
         )(g)
-        o_fn = _prefill_output_o_bthd_tl(
-            batch, head, seq_len, chunk_size, dim_k, dim_v, dtype
-        )(o_threads)
         use_blocksolve_prepare = (
             chunk_size == 64
             and dim_k == 128
             and dim_v == 128
             and dtype == "float16"
         )
+        use_partitioned_prefill = (
+            os.environ.get(
+                "TILEOPS_GDN_PREFILL_PARTITIONED",
+                os.environ.get("TILEOPS_GDN_PREFILL_CP_SPLIT", "1"),
+            )
+            != "0"
+            and batch == 1
+            and use_blocksolve_prepare
+        )
+        if use_partitioned_prefill:
+            from tileops.kernels.gated_deltanet.gdn_prefill import fused_gdr_fwd
+
+            g_zero = torch.zeros_like(g_cum)
+            A = _prefill_blocksolve_A_bthd(k, g_zero, beta, chunk_size)
+            initial_state, cu_seqlens, cp_seq_map, raw_cu_seqlens = (
+                _prefill_partitioned_initial_state_bthd(
+                    k=k,
+                    v=v,
+                    A=A,
+                    g=g_cum,
+                    beta=beta,
+                    chunk_size=chunk_size,
+                )
+            )
+            o, _h, final_state = fused_gdr_fwd(
+                q=q,
+                k=k,
+                v=v,
+                a=A,
+                g=g_cum,
+                b=beta,
+                scale=1.0,
+                initial_state=initial_state,
+                output_final_state=True,
+                output_h=False,
+                output_o=True,
+                cu_seqlens=cu_seqlens,
+                cp_seq_map=cp_seq_map,
+                raw_cu_seqlens=raw_cu_seqlens,
+            )
+            return o, final_state
+
+        o_fn = _prefill_output_o_bthd_tl(
+            batch, head, seq_len, chunk_size, dim_k, dim_v, dtype
+        )(o_threads)
         if use_blocksolve_prepare:
             A = _prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size)
             recompute_fn = _prefill_recompute_w_u_from_A_bthd_tl(

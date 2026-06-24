@@ -2,6 +2,9 @@
 
 When FLA is installed, record it as the independent baseline. Otherwise fall
 back to a pure-torch reference so every benchmark row has a non-TileOps entry.
+
+The benchmark measures the serving-oriented BTHD layout because that is the
+production fast path used by FLA/Qwen-style inference prefill.
 """
 
 import inspect
@@ -88,10 +91,12 @@ def _fla_prefill_fwd():
 
 
 def _gdn_prefill_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, int]:
-    batch, heads, seq_len, dim_k = workload["q_shape"]
-    _, _, v_seq_len, dim_v = workload["v_shape"]
+    batch, seq_len, heads, dim_k = workload["q_shape"]
+    _, v_seq_len, v_heads, dim_v = workload["v_shape"]
     if v_seq_len != seq_len:
         raise ValueError("GDN prefill q_shape and v_shape must share seq_len")
+    if v_heads != heads:
+        raise ValueError("GDN prefill q_shape and v_shape must share heads")
     return batch, heads, seq_len, dim_k, dim_v, workload.get("chunk_size", 64)
 
 
@@ -125,16 +130,17 @@ def test_gated_deltanet_prefill_fwd_bench(
         dim_v,
         chunk_size,
         dtype,
+        layout="bthd",
         tune=tune,
     )
     bm = ManifestBenchmark(_OP_NAME, op, test)
-    result = bm.profile(op, *inputs)
+    bthd_inputs = _to_fla_layout(*inputs)
+    result = bm.profile(op, *bthd_inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     fla_fn = _fla_prefill_fwd()
     if fla_fn is not None:
-        fla_inputs = _to_fla_layout(*inputs)
-        result_fla = bm.profile(fla_fn, *fla_inputs)
+        result_fla = bm.profile(fla_fn, *bthd_inputs)
         BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         result_ref = bm.profile(test.ref_program, *inputs)

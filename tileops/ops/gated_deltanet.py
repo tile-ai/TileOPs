@@ -155,7 +155,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
         dtype: torch.dtype = torch.float32,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
-        layout: str = "bhtd",
+        layout: str = "bthd",
     ) -> None:
         layout = self._normalize_layout(layout)
         if chunk_size is None:
@@ -216,7 +216,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
         beta_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
         del k_shape, g_shape, beta_shape
-        layout = self._normalize_layout(getattr(self, "layout", "bhtd"))
+        layout = self._normalize_layout(getattr(self, "layout", "bthd"))
         if layout == "bthd":
             return {
                 "o": (q_shape[0], q_shape[1], q_shape[2], v_shape[-1]),

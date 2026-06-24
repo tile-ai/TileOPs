@@ -310,7 +310,6 @@ def test_gated_deltanet_prefill_bthd_layout_matches_bhtd() -> None:
         BC,
         dtype,
         tune=False,
-        layout="bthd",
     )
 
     o_bhtd, state_bhtd = bhtd_op(q, k, v, g, beta)
