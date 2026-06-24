@@ -6,11 +6,11 @@ readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
     "torch>=2.1.0,<2.11.0",
-    "tilelang==0.1.9",
-    # FIXME(apache-tvm-ffi-pin): Remove once tilelang carries its own
-    # apache-tvm-ffi<0.1.10 pin (already on tilelang main, not yet released).
-    # Tracking: https://github.com/tile-ai/TileOPs/issues/969
-    "apache-tvm-ffi>=0.1.2,<0.1.10",
+    # tilelang as a compatibility range, not a source or exact pin: CI installs it from the
+    # runner image (--no-deps) and locks the exact build via constraints.txt; downstream
+    # `pip install tileops` resolves a compatible release. apache-tvm-ffi is pulled in (and
+    # ABI-version-locked by constraints.txt) transitively by tilelang — no manual cap here.
+    "tilelang>=0.1.9,<0.2.0",
     "einops",
     "pyyaml>=6.0",
 ]

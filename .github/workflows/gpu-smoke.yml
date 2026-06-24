@@ -345,7 +345,10 @@ jobs:
   gpu-smoke:
     needs: [ci-prereq, security-policy]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-prereq.outputs.skip != 'true' && needs.security-policy.outputs.skip_gpu_smoke != 'true' }}
-    runs-on: [self-hosted, tile-ops]
+    # Trust-level routing: untrusted (external) PRs go to the on-demand `fork` pool whose
+    # runner mounts an overlay cache (read-only shared lower + throwaway upper) so their cache
+    # writes never reach the shared cache. Trusted runs use the resident shared-cache pool.
+    runs-on: ${{ needs.security-policy.outputs.is_fork == 'true' && fromJSON('["self-hosted", "tile-ops", "fork"]') || fromJSON('["self-hosted", "tile-ops"]') }}
     steps:
       - name: Checkout code for fork PR
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
@@ -392,152 +395,26 @@ jobs:
           fetch-depth: 1
           sparse-checkout: |
             .github/actions
-            scripts/ci_venv_hash.py
-            pyproject.toml
 
       - name: Reclaim runner disk
         uses: ./.trusted/.github/actions/reclaim-runner-disk
         with:
           reclaim-below-gib: "10"
           cache-trim-cooldown-minutes: "120"
+          # Run-local venv retired: no tileops_ci_venv_* dirs to prune in the tool cache.
+          prune-tool-cache: "false"
           cache-dirs: |
-            /data7/shared/ci-cache/triton
-            /data7/shared/ci-cache/pip
-            /data7/shared/ci-cache/wheels
-            /data7/shared/ci-cache/tilelang/tmp
+            /ci-cache/triton
+            /ci-cache/pip
+            /ci-cache/tilelang/tmp
           atomic-cache-dirs: |
-            /data7/shared/ci-cache/tilelang/autotuner
-          df-paths: "/data7 /data7/shared/ci-cache"
+            /ci-cache/tilelang/autotuner
+          df-paths: "/ci-cache"
           # Daily runner-maintenance.yml owns the destructive autotuner
           # age-trim; per-PR runs only need sentinel-repair (still
           # unconditional) so they don't evict tuning artefacts the next
           # PR would otherwise reuse.
           skip-atomic-age-trim: "true"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Resolve runtime state
-        env:
-          IS_FORK: ${{ needs.security-policy.outputs.is_fork }}
-        run: |
-          set -euo pipefail
-
-          # Narrow the venv cache key to sections that actually drive the
-          # installed package set. Hashing the whole pyproject.toml means a
-          # tweak to [tool.pytest] or [tool.ruff] invalidates every warm
-          # fork-PR venv, defeating #996's fast path for no packaging
-          # reason. See scripts/ci_venv_hash.py for the parsed sections and
-          # the full-file fallback contract.
-          #
-          # Trust note: always run the hash script from `.trusted/` (the
-          # sparse-checked-out base/head ref selected above). This prevents
-          # external fork PRs from executing attacker-controlled Python on
-          # the self-hosted runner before the IS_FORK runtime isolation
-          # branches. We also hash the `.trusted/` pyproject.toml so the
-          # computed key identifies the trusted venv that was actually
-          # installed from that same pyproject, not the fork's edits.
-          PYPROJECT_HASH=$(python .trusted/scripts/ci_venv_hash.py .trusted/pyproject.toml)
-          HASH_INPUT="$(
-            {
-              echo "python=3.11"
-              echo "install=PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]'"
-              echo "pyproject=${PYPROJECT_HASH}"
-            } | sha256sum | cut -c1-16
-          )"
-          VENV_PREFIX="tileops_ci_venv"
-          VENV_DIR="${VENV_PREFIX}_${HASH_INPUT}"
-          TRUSTED_VENV_PATH="${{ runner.tool_cache }}/${VENV_DIR}"
-          TRUSTED_CACHE_ROOT="/data7/shared/ci-cache"
-          FORK_CAN_COPY_TRUSTED_VENV="false"
-
-          if [[ "$IS_FORK" == "true" ]]; then
-            RUNTIME_ROOT="${RUNNER_TEMP}/gpu-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
-            # Per-run isolated cache: rsync from trusted cache into temp dir.
-            # Fork PRs never write to any persistent shared state.
-            TILELANG_CACHE_DIR="${RUNTIME_ROOT}/tilelang/cache"
-            TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-            TRITON_CACHE_DIR="${RUNTIME_ROOT}/triton/cache"
-            PIP_CACHE_DIR="${RUNTIME_ROOT}/pip/cache"
-            WHEEL_DIR="${RUNTIME_ROOT}/wheels"
-            VENV_PATH="${RUNTIME_ROOT}/venv"
-            # Divergence guard: TRUSTED_VENV_PATH was derived from the trusted
-            # base-repo pyproject.toml hash. A fork PR may have edited its own
-            # workspace pyproject.toml (added/removed dependencies) without
-            # that touching the base-repo file. If we copy the trusted venv
-            # for such a fork, the installed package set silently disagrees
-            # with `.[dev]` in the fork's workspace. Re-run the (trusted) hash
-            # script against the fork's workspace pyproject.toml and only
-            # fast-path when both hashes match; otherwise fall through to a
-            # fresh isolated pip install below.
-            WORKSPACE_PYPROJECT_HASH=$(python .trusted/scripts/ci_venv_hash.py ./pyproject.toml)
-            echo "WORKSPACE_PYPROJECT_HASH=${WORKSPACE_PYPROJECT_HASH}"
-            echo "TRUSTED_PYPROJECT_HASH=${PYPROJECT_HASH}"
-            if [[ -x "${TRUSTED_VENV_PATH}/bin/python" && "${WORKSPACE_PYPROJECT_HASH}" == "${PYPROJECT_HASH}" ]]; then
-              FORK_CAN_COPY_TRUSTED_VENV="true"
-              VENV_REUSED="true"
-            else
-              if [[ -x "${TRUSTED_VENV_PATH}/bin/python" ]]; then
-                echo "Fork pyproject diverges from trusted base; forcing fresh isolated venv install"
-              fi
-              VENV_REUSED="false"
-            fi
-            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
-
-            # Copy trusted compile caches into the isolated per-run dir.
-            # rsync is fast for warm caches (<5s); fork state is fully disposable.
-            TRUSTED_WHEEL_DIR="${TRUSTED_CACHE_ROOT}/wheels"
-            copy_start=$SECONDS
-            if command -v rsync >/dev/null 2>&1; then
-              rsync -a "${TRUSTED_CACHE_ROOT}/tilelang/" "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
-              rsync -a "${TRUSTED_CACHE_ROOT}/triton/" "${TRITON_CACHE_DIR}/" 2>/dev/null || true
-              rsync -a "${TRUSTED_CACHE_ROOT}/pip/" "${PIP_CACHE_DIR}/" 2>/dev/null || true
-              if [[ -d "${TRUSTED_WHEEL_DIR}" ]]; then
-                rsync -a "${TRUSTED_WHEEL_DIR}/" "${WHEEL_DIR}/" 2>/dev/null || true
-              fi
-            else
-              cp -a "${TRUSTED_CACHE_ROOT}/tilelang/." "${TILELANG_CACHE_DIR}/" 2>/dev/null || true
-              cp -a "${TRUSTED_CACHE_ROOT}/triton/." "${TRITON_CACHE_DIR}/" 2>/dev/null || true
-              cp -a "${TRUSTED_CACHE_ROOT}/pip/." "${PIP_CACHE_DIR}/" 2>/dev/null || true
-              if [[ -d "${TRUSTED_WHEEL_DIR}" ]]; then
-                cp -a "${TRUSTED_WHEEL_DIR}/." "${WHEEL_DIR}/" 2>/dev/null || true
-              fi
-            fi
-            copy_elapsed=$(( SECONDS - copy_start ))
-            echo "Cache copy completed in ${copy_elapsed}s"
-          else
-            RUNTIME_ROOT="/home/ci-runner"
-            TILELANG_CACHE_DIR="${TRUSTED_CACHE_ROOT}/tilelang"
-            TILELANG_TMP_DIR="${TILELANG_CACHE_DIR}/tmp"
-            TRITON_CACHE_DIR="${TRUSTED_CACHE_ROOT}/triton"
-            PIP_CACHE_DIR="${TRUSTED_CACHE_ROOT}/pip"
-            WHEEL_DIR="${TRUSTED_CACHE_ROOT}/wheels"
-
-            mkdir -p "${TILELANG_CACHE_DIR}" "${TILELANG_TMP_DIR}" "${TRITON_CACHE_DIR}" "${PIP_CACHE_DIR}" "${WHEEL_DIR}"
-
-            VENV_PATH="${TRUSTED_VENV_PATH}"
-            if [[ -x "${VENV_PATH}/bin/python" ]]; then
-              VENV_REUSED="true"
-            else
-              VENV_REUSED="false"
-            fi
-          fi
-
-          {
-            echo "RUNTIME_ROOT=${RUNTIME_ROOT}"
-            echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR}"
-            echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR}"
-            echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
-            echo "PIP_CACHE_DIR=${PIP_CACHE_DIR}"
-            echo "WHEEL_DIR=${WHEEL_DIR}"
-            echo "VENV_PATH=${VENV_PATH}"
-            echo "TRUSTED_VENV_PATH=${TRUSTED_VENV_PATH}"
-            echo "TRUSTED_CACHE_ROOT=${TRUSTED_CACHE_ROOT}"
-            echo "FORK_CAN_COPY_TRUSTED_VENV=${FORK_CAN_COPY_TRUSTED_VENV}"
-            echo "VENV_REUSED=${VENV_REUSED}"
-          } >> "$GITHUB_ENV"
 
       - name: Validate GPU frequency
         run: |
@@ -582,75 +459,11 @@ jobs:
             attempt=$((attempt + 1))
           done
 
-      - name: Ensure venv and install dependencies
-        env:
-          IS_FORK: ${{ needs.security-policy.outputs.is_fork }}
-        run: |
-          set -euo pipefail
-
-          if [[ "$IS_FORK" == "true" && "$FORK_CAN_COPY_TRUSTED_VENV" == "true" ]]; then
-            echo "Copying trusted venv from ${TRUSTED_VENV_PATH} to ${VENV_PATH}"
-            rm -rf "${VENV_PATH}"
-            if command -v rsync >/dev/null 2>&1; then
-              rsync -a --delete "${TRUSTED_VENV_PATH}/" "${VENV_PATH}/"
-            else
-              mkdir -p "${VENV_PATH}"
-              cp -a "${TRUSTED_VENV_PATH}/." "${VENV_PATH}/"
-            fi
-            # Validate the copied venv before continuing. A byte-for-byte copy can
-            # still be sensitive to absolute paths embedded by venv tooling.
-            # shellcheck source=/dev/null
-            source "${VENV_PATH}/bin/activate"
-            python --version
-            python -m pip --version
-            python -c "import tileops, torch; print('Copied fork venv import check ok')"
-            exit 0
-          fi
-
-          if [[ "$VENV_REUSED" == "true" ]]; then
-            echo "Using cached venv at ${VENV_PATH}"
-            exit 0
-          fi
-
-          echo "Creating fresh venv at ${VENV_PATH}"
-          python -m venv "${VENV_PATH}"
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
-          python -m pip install --upgrade pip setuptools wheel --no-user
-          if [[ "$IS_FORK" == "true" ]]; then
-            FIND_LINKS_FLAG=""
-            if [[ -d "${WHEEL_DIR}" ]] && ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1; then
-              FIND_LINKS_FLAG="--find-links ${WHEEL_DIR}"
-            fi
-            # shellcheck disable=SC2086
-            PIP_NO_BUILD_ISOLATION=1 PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install -e '.[dev]' ${FIND_LINKS_FLAG}
-
-            # Sync libtilelang.so mtime with trusted venv so compile cache keys match.
-            # TileLang cache keys include the library's mtime (kernel_cache.py); a fresh
-            # pip install produces a new mtime, causing all rsync'd cache entries to miss.
-            # See: https://github.com/tile-ai/TileOPs/issues/594
-            #
-            # Use the hash-matched TRUSTED_VENV_PATH directly. A `find`-then-`sort`
-            # sweep over `runner.tool_cache` can select a stale `tileops_ci_venv_*`
-            # with a different libtilelang.so mtime, which would poison the rsync'd
-            # cache entries keyed off the correct trusted venv's mtime.
-            if [[ -d "${TRUSTED_VENV_PATH}" ]]; then
-              TRUSTED_LIB=$(find "${TRUSTED_VENV_PATH}" -name "libtilelang.so" -type f 2>/dev/null | head -1 || true)
-              FORK_LIB=$(find "${VENV_PATH}" -name "libtilelang.so" -type f 2>/dev/null | head -1 || true)
-              if [[ -n "$TRUSTED_LIB" && -n "$FORK_LIB" ]]; then
-                touch -r "$TRUSTED_LIB" "$FORK_LIB"
-                echo "Synced libtilelang.so mtime for cache key compatibility"
-              else
-                echo "Warning: could not locate libtilelang.so for mtime sync"
-              fi
-            else
-              echo "Warning: hash-matched trusted venv not found at ${TRUSTED_VENV_PATH}; skipping mtime sync"
-            fi
-          else
-            PIP_NO_BUILD_ISOLATION=1 PIP_NO_CACHE_DIR=1 pip install -e '.[dev]'
-            # Export wheels (including dependencies) so fork PRs can reuse them
-            pip wheel -e '.[dev]' -w "${WHEEL_DIR}" 2>/dev/null || true
-          fi
+      - name: Install TileOPs (image-baked stack, --no-deps)
+        # tilelang + the full runtime/dev stack are baked into the runner image; this installs
+        # only tileops itself (editable, --no-deps) against constraints.txt. Fork write
+        # isolation is provided by the `fork` runner pool's overlay cache, not the workflow.
+        run: bash scripts/ci/install_tileops.sh
 
       - name: Run tests
         env:
@@ -659,12 +472,10 @@ jobs:
           PYTEST_TARGETS: ${{ needs.security-policy.outputs.pytest_targets }}
         run: |
           set -euo pipefail
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
           current_dir="$(pwd)"
           export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
-          python - <<'PY'
+          python3 - <<'PY'
           import os
 
           print("Runtime cache env:")
@@ -681,7 +492,7 @@ jobs:
           echo "Resolved pytest targets: ${PYTEST_TARGETS}"
           read -r -a TARGETS <<< "${PYTEST_TARGETS}"
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
-          python -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" --junit-xml=gpu_smoke_results.xml | tee gpu_smoke.log
+          python3 -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" --junit-xml=gpu_smoke_results.xml | tee gpu_smoke.log
 
       - name: Generate gpu-smoke report
         if: ${{ always() && hashFiles('gpu_smoke_results.xml') != '' }}
@@ -689,15 +500,13 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
 
           REPORT_TARGET="smoke, full"
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             REPORT_TARGET="smoke"
           fi
 
-          python scripts/gpu_smoke_report.py \
+          python3 scripts/gpu_smoke_report.py \
             --test-xml gpu_smoke_results.xml \
             --target "${REPORT_TARGET}" \
             --output gpu_smoke_report.md \
@@ -714,14 +523,10 @@ jobs:
         run: |
           # Cache stats is informational only. Do NOT use `set -e`: a transient
           # failure in find/du/wc (e.g. a cache file vanishing mid-scan due to a
-          # concurrent cleanup) must not fail the gpu-smoke job, and must not
-          # skip the CACHE_SIGNAL logging below.
+          # concurrent cleanup) must not fail the gpu-smoke job.
           set -u
           echo "=== Cache stats (is_fork=${IS_FORK}) ==="
-          echo "VENV_REUSED=${VENV_REUSED:-unknown}"
-          echo "FORK_CAN_COPY_TRUSTED_VENV=${FORK_CAN_COPY_TRUSTED_VENV:-unknown}"
-          echo "TRUSTED_VENV_PATH=${TRUSTED_VENV_PATH:-unknown}"
-          for cache_dir in "${TILELANG_CACHE_DIR:-}" "${TRITON_CACHE_DIR:-}" "${WHEEL_DIR:-}"; do
+          for cache_dir in "${TILELANG_CACHE_DIR:-}" "${TRITON_CACHE_DIR:-}" "${PIP_CACHE_DIR:-}"; do
             if [[ -z "${cache_dir}" ]]; then
               continue
             fi
@@ -740,25 +545,6 @@ jobs:
             fi
           done
 
-          # Emit a concise cache hit/miss signal so future regressions surface
-          # in CI logs without needing to diff per-run durations manually.
-          # For fork PRs, "hit" means the trusted venv was copied (no cold pip
-          # install); for trusted runs, "hit" means the hash-matched venv was
-          # reused in place.
-          if [[ "${IS_FORK}" == "true" ]]; then
-            if [[ "${FORK_CAN_COPY_TRUSTED_VENV:-false}" == "true" ]]; then
-              echo "CACHE_SIGNAL: fork venv=hit"
-            else
-              echo "CACHE_SIGNAL: fork venv=miss (cold pip install path)"
-            fi
-          else
-            if [[ "${VENV_REUSED:-false}" == "true" ]]; then
-              echo "CACHE_SIGNAL: trusted venv=hit"
-            else
-              echo "CACHE_SIGNAL: trusted venv=miss (fresh venv created)"
-            fi
-          fi
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         if: always()
@@ -769,10 +555,3 @@ jobs:
             gpu_smoke_results.xml
             gpu_smoke_report.md
           retention-days: 7
-
-      - name: Cleanup isolated fork state
-        if: ${{ always() && needs.security-policy.outputs.is_fork == 'true' }}
-        run: |
-          if [[ -n "${RUNTIME_ROOT:-}" ]]; then
-            rm -rf "${RUNTIME_ROOT}"
-          fi

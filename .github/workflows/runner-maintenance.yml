@@ -7,8 +7,8 @@ name: Runner Maintenance
 # cooldown; this scheduled job forces the full cleanup pass on days with
 # little PR traffic.
 #
-# GPU smoke and nightly share the persistent cache tree under
-# `/data7/shared/ci-cache/*`.
+# GPU smoke and nightly share the persistent cache tree bind-mounted at
+# `/ci-cache/*` inside the runner container.
 
 on:
   schedule:
@@ -25,7 +25,9 @@ concurrency:
 jobs:
   reclaim-disk:
     if: ${{ github.repository == 'tile-ai/TileOPs' }}
-    runs-on: [self-hosted, tile-ops, venv]
+    # `nightly` (not `fork`) keeps maintenance on the resident shared-cache runners; the
+    # destructive autotuner age-trim must never run against a fork pool's overlay cache.
+    runs-on: [self-hosted, tile-ops, nightly]
     timeout-minutes: 60
     steps:
       # Invoke the action directly via owner/repo/path@ref so this workflow
