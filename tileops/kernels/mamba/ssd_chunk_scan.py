@@ -507,17 +507,17 @@ class SSDChunkScanFwdKernel(Kernel):
         # Focused search around the known-good default (block_l=64, block_p=64,
         # block_n=128, block_s=64, threads=128).
         #
-        # NCU evidence:
-        #   - block_l=64, block_p=64 anchors GEMM tile efficiency; smaller tiles
-        #     hurt more than they help (tested: shape-aware default was slower).
-        #   - block_n only affects the history-path loop count; vary minimally.
-        #   - block_s and threads are the primary levers: block_s controls causal
-        #     GEMM tile size and s-loop iteration count; threads controls warps/block
-        #     and latency-hiding capacity.
+        # NCU evidence (2026-06 GPU 1 profiling):
+        #   - Occupancy bottleneck: 24% (119 registers/thread, 34.82 KB smem/block)
+        #   - Register pressure limits to 4 blocks/SM (vs 16 theoretical max)
+        #   - DRAM throughput 53% (limited by low occupancy, not bandwidth)
+        #   - Smaller tiles trade GEMM efficiency for higher occupancy
         #
-        # 6–8 configs total (2 block_n entries dropped when d_state <= 32 or 64).
+        # Original assumption (block_l=64, block_p=64 anchors GEMM efficiency)
+        # needs revisiting: occupancy may matter more than per-tile efficiency.
         block_n = min(128, self.d_state)
         return [
+            # Original configs (baseline)
             {"block_l": 64, "block_p": 64, "block_n": block_n, "block_s": bs, "threads": t}
             for bs in [64, 128]
             for t  in [128, 256]
@@ -528,11 +528,22 @@ class SSDChunkScanFwdKernel(Kernel):
             if bn <= self.d_state
         ] + [
             # threads=64 (2 warps/block) — more blocks/SM at cost of less ILP
-            # Include block_n=64 to cover the optimal config found via AKO tuning
             {"block_l": 64, "block_p": 64, "block_n": bn, "block_s": bs, "threads": 64}
             for bs in [64, 128]
             for bn in [64, 128]
             if bn <= self.d_state
+        ] + [
+            # Lower register pressure: smaller tiles (32x32) for higher occupancy
+            # Target: 119 → ~60-70 registers/thread, 24% → 40-50% occupancy
+            {"block_l": 32, "block_p": 32, "block_n": bn, "block_s": 32, "threads": 128}
+            for bn in [64, 128]
+            if bn <= self.d_state
+        ] + [
+            # Hybrid: reduce L/P but keep larger S for causal path
+            {"block_l": 32, "block_p": 32, "block_n": 64, "block_s": 64, "threads": 128}
+        ] + [
+            # Aggressive: minimal tiles for maximum occupancy
+            {"block_l": 32, "block_p": 32, "block_n": 64, "block_s": 32, "threads": 64}
         ]
 
     def forward(
