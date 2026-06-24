@@ -7,15 +7,22 @@ import tilelang.language as T
 import torch
 
 try:
-    # The tilelang runner stack (apache-tvm-ffi) exposes no top-level `tvm` module. This kernel
-    # still calls tir.call_extern; migrating those to T.call_extern is tracked separately. Guard
-    # the import so this module — and everything that eager-imports it via tileops.kernels — stays
-    # importable; only actually building this fp8 kernel hits the gap until that migration lands.
+    # The tilelang runner stack (apache-tvm-ffi) exposes no usable top-level `tvm.tir`. This
+    # kernel still calls tir.call_extern; migrating those to T.call_extern is tracked separately.
+    # Guard the import so this module — and everything that eager-imports it via tileops.kernels —
+    # stays importable. Touching `tir.*` (i.e. building this fp8 kernel) raises a clear, targeted
+    # error until that migration lands, instead of a bare AttributeError on a None sentinel.
     from tvm import tir
-except ImportError:
-    # Either no top-level `tvm` (ModuleNotFoundError) or the bundled tvm exposes no `tir`
-    # (ImportError: cannot import name 'tir') on the new stack — both subclass ImportError.
-    tir = None
+except ImportError:  # no top-level `tvm`, or bundled tvm exposes no `tir`; both subclass ImportError
+
+    class _TirUnavailable:
+        def __getattr__(self, name):
+            raise ImportError(
+                "tvm.tir is unavailable on the current tilelang stack; gqa_fwd_fp8 must migrate "
+                f"tir.{name} -> tilelang.language (T.*) before this kernel can be built."
+            )
+
+    tir = _TirUnavailable()
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import (

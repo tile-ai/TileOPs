@@ -194,7 +194,9 @@ runs:
         AVAIL_KB=$(df -Pk "${RUNNER_TEMP}" | awk 'NR==2 {print $4}')
         MIN_KB=$(( MIN_AVAIL_GIB * 1024 * 1024 ))
         RECLAIM_BELOW_KB=$(( RECLAIM_BELOW_GIB * 1024 * 1024 ))
-        CACHE_TRIM_STAMP="/home/ci-runner/.ci-maintenance/reclaim-runner-disk-cache-trim.stamp"
+        # Stamp lives on the persistent bind-mounted cache (not the ephemeral container fs under
+        # /home/ci-runner), so the cache-trim cooldown survives across ephemeral runner jobs.
+        CACHE_TRIM_STAMP="/ci-cache/.ci-maintenance/reclaim-runner-disk-cache-trim.stamp"
         DID_RECLAIM="false"
         SHOULD_RECLAIM="false"
 

@@ -164,7 +164,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           BASE_REPO: ${{ github.repository }}
-          AUTHOR_ASSOC: ${{ github.event.pull_request.author_association || '' }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
         run: |
           set -euo pipefail
 
@@ -184,24 +184,28 @@ jobs:
           pytest_targets="tests"
           reason="GPU smoke will run."
 
-          # `is_fork` gates the downstream runtime isolation: when true, the
-          # gpu-smoke job refuses to write persistent state under
-          # /home/ci-runner and instead runs from a disposable per-run dir.
-          # A repo member opening a PR from their personal fork technically
-          # satisfies head != base, but they already have push access to the
-          # base repo — treating their PR as untrusted forces them to
-          # round-trip through a fresh venv rebuild every run, for no real
-          # security gain. Keep external contributors on the isolated path;
-          # promote OWNER/MEMBER/COLLABORATOR authors back onto the trusted
-          # runtime layout.
-          if [[ "$EVENT_NAME" == "pull_request" && "$HEAD_REPO" != "$BASE_REPO" ]]; then
-            case "$AUTHOR_ASSOC" in
-              OWNER|MEMBER|COLLABORATOR)
+          # `is_fork` is the trust boundary that routes runs-on (resident shared-cache pool vs
+          # overlay-isolated fork pool) and the trusted-action ref below. Derive it from the PR
+          # author's collaborator permission on the base repo, NOT author_association: private org
+          # membership can report a non-member association (would wrongly isolate trusted authors),
+          # and COLLABORATOR is not proof of write access (would wrongly trust read-only authors).
+          # Only write/maintain/admin are trusted; everyone else — and any lookup failure — fails
+          # closed to the fork pool.
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            is_fork="false"   # push / schedule / workflow_dispatch are trusted
+          elif [[ "$HEAD_REPO" == "$BASE_REPO" ]]; then
+            is_fork="false"   # same-repo branch PR: author already has base-repo write access
+          else
+            role=$(gh api "repos/${BASE_REPO}/collaborators/${PR_AUTHOR}/permission" \
+                     --jq '.role_name // .permission' 2>/dev/null || echo "")
+            case "$role" in
+              admin|maintain|write)
                 is_fork="false"
-                echo "Member-fork PR (author_association=${AUTHOR_ASSOC}); treating as trusted."
+                echo "Author ${PR_AUTHOR} has '${role}' on ${BASE_REPO}; routing to resident pool."
                 ;;
               *)
                 is_fork="true"
+                echo "Author ${PR_AUTHOR} permission='${role:-unknown}'; routing to fork pool (fail-closed)."
                 ;;
             esac
           fi
@@ -348,7 +352,7 @@ jobs:
     # Trust-level routing: untrusted (external) PRs go to the on-demand `fork` pool whose
     # runner mounts an overlay cache (read-only shared lower + throwaway upper) so their cache
     # writes never reach the shared cache. Trusted runs use the resident shared-cache pool.
-    runs-on: ${{ needs.security-policy.outputs.is_fork == 'true' && fromJSON('["self-hosted", "tile-ops", "fork"]') || fromJSON('["self-hosted", "tile-ops"]') }}
+    runs-on: ${{ needs.security-policy.outputs.is_fork == 'true' && fromJSON('["self-hosted", "tile-ops", "fork"]') || fromJSON('["self-hosted", "tile-ops", "nightly"]') }}
     steps:
       - name: Checkout code for fork PR
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
@@ -374,22 +378,18 @@ jobs:
       # `.trusted/` so that fork-controlled PR code cannot substitute the
       # composite action.
       #
-      # Ref selection by trust level. `is_fork` alone is too coarse: a repo
-      # member may open a PR from their personal fork, which still counts as
-      # a fork PR but the author already has push access to the base repo.
-      # Combine repo equality with `author_association` so repo-owned CI
-      # changes can self-validate on the PR that introduces them, while
-      # external contributors are kept on the trusted base ref.
+      # Ref selection reuses the single `is_fork` trust result computed in security-policy
+      # (collaborator-permission based), so it stays consistent with runs-on:
       #
-      #   - external fork PR (author not OWNER/MEMBER/COLLABORATOR)
-      #       → `base.sha` (authoritative; external author can't alter)
-      #   - same-repo PR, member-fork PR, or push
-      #       → head sha (author already has write access to base repo)
+      #   - untrusted (is_fork == true: external author or lookup failure)
+      #       → `base.sha` (authoritative; the untrusted author cannot alter it)
+      #   - trusted (same-repo PR, write+ member-fork PR, or push)
+      #       → head sha (author already has write access to the base repo)
       - name: Checkout trusted actions (base repo)
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}
-          ref: ${{ (needs.security-policy.outputs.is_fork == 'true' && !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)) && github.event.pull_request.base.sha || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ needs.security-policy.outputs.is_fork == 'true' && github.event.pull_request.base.sha || github.event.pull_request.head.sha || github.sha }}
           path: .trusted
           persist-credentials: false
           fetch-depth: 1
