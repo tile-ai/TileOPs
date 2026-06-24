@@ -196,6 +196,7 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
             with T.Kernel(scatter_blocks, threads=_SCATTER_THREADS) as (bid,):
                 tx = T.get_thread_binding()
                 gid = bid * _SCATTER_THREADS + tx
+                slot_buf = T.alloc_local([1], "int32")
                 for i in T.serial(T.ceildiv(numel, total_scatter_threads)):
                     idx = gid + i * total_scatter_threads
                     if idx < numel:
@@ -203,8 +204,13 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
                         # T.atomic_add(..., return_prev=True) does not support dynamic
                         # global-memory indices (TileLang codegen limitation).
                         # Use tl_atomic_add_offset() from _atomic_helper.h instead.
-                        slot = T.call_extern("int32", "tl_atomic_add_offset",
-                                             T.address_of(cumsum[0]), eid, T.int32(1))
+                        # Store the side-effecting result before indexing with it so
+                        # TileLang's bounds-check lowering does not duplicate the call.
+                        slot_buf[0] = T.call_extern(
+                            "int32", "tl_atomic_add_offset",
+                            T.address_of(cumsum[0]), eid, T.int32(1)
+                        )
+                        slot = slot_buf[0]
                         sorted_token_ids[slot] = idx
 
         return _scatter_main

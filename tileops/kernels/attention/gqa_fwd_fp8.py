@@ -6,24 +6,6 @@ import tilelang
 import tilelang.language as T
 import torch
 
-try:
-    # The tilelang runner stack (apache-tvm-ffi) exposes no usable top-level `tvm.tir`. This
-    # kernel still calls tir.call_extern; migrating those to T.call_extern is tracked separately.
-    # Guard the import so this module — and everything that eager-imports it via tileops.kernels —
-    # stays importable. Touching `tir.*` (i.e. building this fp8 kernel) raises a clear, targeted
-    # error until that migration lands, instead of a bare AttributeError on a None sentinel.
-    from tvm import tir
-except ImportError:  # no top-level `tvm`, or bundled tvm exposes no `tir`; both subclass ImportError
-
-    class _TirUnavailable:
-        def __getattr__(self, name):
-            raise ImportError(
-                "tvm.tir is unavailable on the current tilelang stack; gqa_fwd_fp8 must migrate "
-                f"tir.{name} -> tilelang.language (T.*) before this kernel can be built."
-            )
-
-    tir = _TirUnavailable()
-
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import (
     make_log2e_scale,
@@ -171,8 +153,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                     ):
                         head_kv = tile_hkv
                         loop_range = T.ceildiv(seq_len, 224)
-                        T.reads(v[tile_b, 0:seq_len, head_kv, :])
-                        T.writes(v_vt_smem_0[0:dim, 0:224], v_vt_smem_1[0:dim, 0:224])
                         for n_idx in T.Pipelined(loop_range, num_stages=0):
                             if n_idx > 0:
                                 if gi_vp >= 2:
@@ -208,7 +188,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                             TMA_L2_PROMOTION_128B,
                                             TMA_OOB_FILL_NONE,
                                         )
-                                        tir.call_extern(
+                                        T.call_extern(
                                             "handle",
                                             "tl::fp8_tma_load_4d_ptx",
                                             v_desc,
@@ -255,7 +235,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                             TMA_L2_PROMOTION_128B,
                                             TMA_OOB_FILL_NONE,
                                         )
-                                        tir.call_extern(
+                                        T.call_extern(
                                             "handle",
                                             "tl::fp8_tma_load_4d_ptx",
                                             v_desc,
@@ -324,7 +304,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     TMA_L2_PROMOTION_128B,
                                     TMA_OOB_FILL_NONE,
                                 )
-                                tir.call_extern(
+                                T.call_extern(
                                     "handle",
                                     "tl::fp8_tma_load_4d_ptx",
                                     v_desc_tail,
@@ -371,7 +351,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     TMA_L2_PROMOTION_128B,
                                     TMA_OOB_FILL_NONE,
                                 )
-                                tir.call_extern(
+                                T.call_extern(
                                     "handle",
                                     "tl::fp8_tma_load_4d_ptx",
                                     v_desc_tail,
