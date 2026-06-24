@@ -5,7 +5,17 @@ from typing import Callable, Tuple
 import tilelang
 import tilelang.language as T
 import torch
-from tvm import tir
+
+try:
+    # The tilelang runner stack (apache-tvm-ffi) exposes no top-level `tvm` module. This kernel
+    # still calls tir.call_extern; migrating those to T.call_extern is tracked separately. Guard
+    # the import so this module — and everything that eager-imports it via tileops.kernels — stays
+    # importable; only actually building this fp8 kernel hits the gap until that migration lands.
+    from tvm import tir
+except ImportError:
+    # Either no top-level `tvm` (ModuleNotFoundError) or the bundled tvm exposes no `tir`
+    # (ImportError: cannot import name 'tir') on the new stack — both subclass ImportError.
+    tir = None
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import (
