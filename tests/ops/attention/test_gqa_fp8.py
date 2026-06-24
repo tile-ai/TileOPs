@@ -7,16 +7,6 @@ from tileops.testing.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
 )
-from tileops.testing.tir_compat import tir_available
-
-# The FP8 GQA *kernel-building* cases emit tir.call_extern; on the current tilelang stack tvm.tir
-# is unavailable, so building raises ImportError. Apply this skip ONLY to those cases — the
-# unaligned-shape test below raises in the constructor before any build, so it must stay active.
-# Remove once the tir.call_extern -> T.call_extern migration lands (follow-up).
-_skip_no_tir = pytest.mark.skipif(
-    not tir_available(),
-    reason="tvm.tir unavailable; fp8 GQA kernel build needs tir.call_extern -> T.call_extern (follow-up)",
-)
 
 
 def _has_sm90() -> bool:
@@ -26,7 +16,6 @@ def _has_sm90() -> bool:
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
 @pytest.mark.skipif(not _has_sm90(), reason="requires Hopper FP8 WGMMA")
 @pytest.mark.smoke
-@_skip_no_tir
 def test_gqa_fp8_bn224_kernel_accepts_fa3_descale_contract() -> None:
     batch, seq_len, heads, heads_kv, dim = 1, 896, 8, 2, 128
     q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16) * 0.25
@@ -62,7 +51,6 @@ def test_gqa_fp8_bn224_kernel_accepts_fa3_descale_contract() -> None:
     ],
 )
 @pytest.mark.smoke
-@_skip_no_tir
 def test_gqa_prefill_fp8_tensor_core_op_accepts_fa3_descale_contract(
     seq_len: int,
     out_dtype: torch.dtype,
@@ -114,7 +102,6 @@ def test_gqa_prefill_fp8_tensor_core_rejects_unaligned_q_tiles(seq_len: int) -> 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
 @pytest.mark.skipif(not _has_sm90(), reason="requires Hopper FP8 WGMMA")
 @pytest.mark.smoke
-@_skip_no_tir
 def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
     batch, seq_len, heads, heads_kv, dim = 1, 896, 8, 2, 128
     group_size = heads // heads_kv
