@@ -108,7 +108,7 @@ jobs:
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
           set -o pipefail
-          python3 -m pip install -q pytest-timeout
+          python3 -m pip install -q -c constraints.txt pytest-timeout
           python3 -m pytest -q benchmarks/ops --timeout=900 --timeout-method=thread --junit-xml=bench_results.xml | tee tileops_benchmarks.log
 
           if [ -f profile_run.log ]; then
@@ -169,7 +169,7 @@ jobs:
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
           set -o pipefail
-          python3 -m pip install -q pytest-timeout
+          python3 -m pip install -q -c constraints.txt pytest-timeout
           python3 -m pytest tests/ -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=test_results.xml | tee tileops_op_test.log
         shell: bash
 
@@ -404,7 +404,7 @@ jobs:
             sleep 2
           done
 
-          python3 -m pip install build pytest pytest-timeout
+          python3 -m pip install -c constraints.txt build pytest pytest-timeout
 
           echo "=== Build wheel package ==="
           python3 -m build --wheel

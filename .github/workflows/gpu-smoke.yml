@@ -477,8 +477,9 @@ jobs:
           set -euo pipefail
           # Per-test hang guard: a stuck kernel (e.g. a cold-compile loop or a spinning CUDA
           # call) fails as a timeout with a thread dump instead of wedging the job. --no-deps
-          # tileops install doesn't bring this, so ensure it here.
-          python3 -m pip install -q pytest-timeout
+          # tileops install doesn't bring this; pin via constraints.txt so the install is
+          # deterministic (the runner image should bake it and drop this install — follow-up).
+          python3 -m pip install -q -c constraints.txt pytest-timeout
           current_dir="$(pwd)"
           export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
