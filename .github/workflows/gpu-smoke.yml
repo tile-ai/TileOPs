@@ -419,14 +419,17 @@ jobs:
           # PR would otherwise reuse.
           skip-atomic-age-trim: "true"
 
-      - name: Use run-local Triton cache
-        run: |
-          set -euo pipefail
-          run_triton_cache="/ci-cache/triton/gpu-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "${run_triton_cache}"
-          chmod u+rwx "${run_triton_cache}" || true
-          echo "TRITON_CACHE_DIR=${run_triton_cache}" >> "$GITHUB_ENV"
-          echo "Using TRITON_CACHE_DIR=${run_triton_cache}"
+      - name: Prepare CI cache directories
+        env:
+          TILELANG_CACHE_DIR: /ci-cache/tilelang
+          TILELANG_TMP_DIR: /ci-cache/tilelang/tmp
+          TRITON_CACHE_DIR: /ci-cache/triton
+          PIP_CACHE_DIR: /ci-cache/pip
+          TORCHINDUCTOR_CACHE_DIR: /ci-cache/torchinductor
+          CI_USE_RUN_LOCAL_TRITON_CACHE: "1"
+          CI_USE_RUN_LOCAL_TORCHINDUCTOR_CACHE: "1"
+          CI_CACHE_RUN_SCOPE: gpu-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+        run: scripts/ci/prepare_cache_dirs.sh
 
       - name: Validate GPU frequency
         run: |
@@ -496,7 +499,7 @@ jobs:
           import os
 
           print("Runtime cache env:")
-          for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR"):
+          for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR"):
               print(f"{key}={os.environ.get(key)}")
           PY
 
@@ -545,7 +548,7 @@ jobs:
           # concurrent cleanup) must not fail the gpu-smoke job.
           set -u
           echo "=== Cache stats (is_fork=${IS_FORK}) ==="
-          for cache_dir in "${TILELANG_CACHE_DIR:-}" "${TRITON_CACHE_DIR:-}" "${PIP_CACHE_DIR:-}"; do
+          for cache_dir in "${TILELANG_CACHE_DIR:-}" "${TRITON_CACHE_DIR:-}" "${TORCHINDUCTOR_CACHE_DIR:-}" "${PIP_CACHE_DIR:-}"; do
             if [[ -z "${cache_dir}" ]]; then
               continue
             fi

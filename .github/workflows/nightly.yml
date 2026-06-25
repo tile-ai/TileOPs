@@ -21,6 +21,7 @@ env:
   TILELANG_CACHE_DIR: /ci-cache/tilelang
   TILELANG_TMP_DIR: /ci-cache/tilelang/tmp
   TRITON_CACHE_DIR: /ci-cache/triton
+  TORCHINDUCTOR_CACHE_DIR: /ci-cache/torchinductor
   PIP_CACHE_DIR: /ci-cache/pip
   MAX_JOBS: "64"
 
@@ -37,6 +38,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Prepare CI cache directories
+        env:
+          CI_USE_RUN_LOCAL_TRITON_CACHE: "1"
+          CI_USE_RUN_LOCAL_TORCHINDUCTOR_CACHE: "1"
+          CI_CACHE_RUN_SCOPE: nightly
+        run: scripts/ci/prepare_cache_dirs.sh
+        shell: bash
 
       - name: Verify nightly runner environment
         run: scripts/ci/verify_nightly_runner.sh
@@ -73,6 +82,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Prepare CI cache directories
+        env:
+          CI_USE_RUN_LOCAL_TRITON_CACHE: "1"
+          CI_USE_RUN_LOCAL_TORCHINDUCTOR_CACHE: "1"
+          CI_CACHE_RUN_SCOPE: nightly
+        run: scripts/ci/prepare_cache_dirs.sh
+        shell: bash
+
       - name: Verify nightly runner environment
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
@@ -106,6 +123,7 @@ jobs:
           echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
           echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
+          echo "TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-}"
 
           set -o pipefail
           python3 -m pip install -q -c constraints.txt pytest-timeout
@@ -148,6 +166,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Prepare CI cache directories
+        env:
+          CI_USE_RUN_LOCAL_TRITON_CACHE: "1"
+          CI_USE_RUN_LOCAL_TORCHINDUCTOR_CACHE: "1"
+          CI_CACHE_RUN_SCOPE: nightly
+        run: scripts/ci/prepare_cache_dirs.sh
+        shell: bash
+
       - name: Verify nightly runner environment
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
@@ -167,6 +193,7 @@ jobs:
           echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
           echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
+          echo "TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-}"
 
           set -o pipefail
           python3 -m pip install -q -c constraints.txt pytest-timeout
@@ -377,6 +404,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Prepare CI cache directories
+        env:
+          CI_USE_RUN_LOCAL_TRITON_CACHE: "1"
+          CI_USE_RUN_LOCAL_TORCHINDUCTOR_CACHE: "1"
+          CI_CACHE_RUN_SCOPE: nightly
+        run: scripts/ci/prepare_cache_dirs.sh
+        shell: bash
+
       - name: Verify nightly runner environment
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
@@ -423,6 +458,7 @@ jobs:
           echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
           echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
+          echo "TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-}"
 
           echo "=== Run pytest packaging ==="
           python3 -m pytest -q tests/ops -m "packaging" \
