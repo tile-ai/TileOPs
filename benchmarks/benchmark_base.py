@@ -84,28 +84,52 @@ _logger = logging.getLogger("tileops.bench")
 _bench_results = threading.local()
 
 
-def _sum_kernel_time_us(kineto_results):
-    """Extract total CUDA kernel time and kernel count from C++ Kineto events.
+# Name of the ``record_function`` annotation wrapping the timed call. Kineto
+# projects this scope onto the device timeline, so kernels the call launches
+# fall inside its window while the L2-flush ``cache.zero_()`` (enqueued outside
+# the scope) does not.
+_KERNEL_REGION = "tileops_bench_kernel"
 
-    Bypasses ``profiler.key_averages()`` which triggers expensive Python
-    event parsing (~120ms) and tree building (~10ms) for large traces.
-    Direct C++ iteration is ~16x faster for n_repeat=1280.
+
+def _sum_kernel_time_us(kineto_results):
+    """Sum device time of the kernels the timed call launched.
+
+    Sums only kernels inside a :data:`_KERNEL_REGION` annotation window, so the
+    L2-flush fill is excluded and the kernel under test is counted regardless of
+    its name. A call launching several kernels contributes all of them.
+
+    Iterates the C++ Kineto events directly to bypass ``key_averages()``, which
+    is ~16x slower (~130ms of Python parsing/tree-building) for large traces.
 
     Returns:
-        ``(total_us, n_kernels)``: summed device kernel time in microseconds and
-        the number of device kernels counted (L2-flush fills are excluded from
-        both).
+        ``(total_us, n_regions)``: summed kernel time in microseconds and the
+        number of annotation windows. The caller checks ``n_regions ==
+        n_repeat`` to confirm the scope projected on every iteration.
     """
-    total_us = 0.0
-    n_kernels = 0
+    import bisect
+
+    windows: list[tuple[int, int]] = []
+    kernels: list[tuple[int, int]] = []  # (start_ns, duration_ns)
     for evt in kineto_results.events():
-        if evt.device_type() == DeviceType.CUDA:
-            name = evt.name()
-            if "vectorized_elementwise" in name and "FillFunctor" in name:
-                continue
-            total_us += evt.duration_ns() / 1000.0
-            n_kernels += 1
-    return total_us, n_kernels
+        if evt.device_type() != DeviceType.CUDA:
+            continue
+        if evt.is_user_annotation():
+            if evt.name() == _KERNEL_REGION:
+                windows.append((evt.start_ns(), evt.end_ns()))
+            continue
+        kernels.append((evt.start_ns(), evt.duration_ns()))
+
+    windows.sort()
+    starts = [w[0] for w in windows]
+    ends = [w[1] for w in windows]
+    total_us = 0.0
+    for start_ns, dur_ns in kernels:
+        # Count only kernels that fall inside a timed-call window; everything
+        # outside (notably the L2-flush fill) is excluded.
+        idx = bisect.bisect_right(starts, start_ns) - 1
+        if idx >= 0 and start_ns < ends[idx]:
+            total_us += dur_ns / 1000.0
+    return total_us, len(windows)
 
 
 # ---------------------------------------------------------------------------
@@ -212,40 +236,39 @@ def bench_kernel(
     # is for sampling a window out of a long step()-driven loop, and forcing
     # n_repeat calls into a single "step" let queued, un-synchronized launches
     # leak across the warmup/active boundary.  A plain per-trial context records
-    # exactly the calls we want — no schedule, no on_trace_ready callback.  The
-    # synchronize() before the context closes ensures every kernel in the window
-    # has finished and been recorded.  Per-trial profiler construction adds a few
-    # ms of wall time but stays outside the recorded region, so it does not
-    # affect the summed kernel time.
+    # exactly the calls we want — no schedule, no on_trace_ready callback.
+    #
+    # Only the timed call is wrapped in record_function(_KERNEL_REGION), so the
+    # L2-flush cache.zero_() enqueued just before it is attributed by scope (not
+    # kernel name) and excluded.  Flush and call share the stream, so the flush
+    # completes before the call begins (L2 cold) without a sync between them; we
+    # sync only after the call so its kernels are recorded before the next flush.
     trial_means: list[float] = []
-    trial_counts: list[int] = []
     try:
         with suppress_stdout_stderr():
             for _ in range(n_trials):
                 with torch.profiler.profile(
-                    activities=[torch.profiler.ProfilerActivity.CUDA],
+                    # CPU activity is required for Kineto to project the
+                    # annotation onto the device timeline (CUDA-only emits no
+                    # window); it adds only host-side overhead, not kernel time.
+                    activities=[
+                        torch.profiler.ProfilerActivity.CPU,
+                        torch.profiler.ProfilerActivity.CUDA,
+                    ],
                 ) as profiler:
                     for i in range(n_repeat):
                         cache.zero_()
-                        _run(i)
-                    torch.cuda.synchronize()
-                total_us, n_kernels = _sum_kernel_time_us(profiler.profiler.kineto_results)
+                        with torch.profiler.record_function(_KERNEL_REGION):
+                            _run(i)
+                        torch.cuda.synchronize()  # kernel recorded in isolation
+                total_us, n_regions = _sum_kernel_time_us(profiler.profiler.kineto_results)
+                # Scope failed to project on some iteration → trace untrustworthy,
+                # fall back to CUDA events.
+                if n_regions != n_repeat:
+                    raise RuntimeError
                 trial_means.append((total_us / n_repeat) * 1e-3)
-                trial_counts.append(n_kernels)
     except RuntimeError:
         trial_means = []
-        trial_counts = []
-
-    # Sanity check: every trial must record the same, whole-multiple-of-n_repeat
-    # number of kernels.  Inconsistent or non-multiple counts mean launches
-    # leaked into the timed window (e.g. un-synchronized warmup) and the per-call
-    # time divided by n_repeat is unreliable.
-    if trial_counts and (len(set(trial_counts)) > 1 or trial_counts[0] % n_repeat != 0):
-        _logger.warning(
-            "bench_kernel: per-trial kernel counts %s are not a consistent "
-            "multiple of n_repeat=%d; timed window may include leaked launches.",
-            trial_counts, n_repeat,
-        )
 
     # Fallback to CUDA events if CUPTI failed
     if not trial_means:
