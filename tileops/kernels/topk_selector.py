@@ -277,7 +277,6 @@ class TopkSelectorKernel(Kernel):
 
     def _make_supply_prog(self):
         import torch as _torch
-        import tvm.tir as _tir
         from tilelang.utils.device import get_current_device as _get_current_device
 
         batch = self.batch
@@ -285,13 +284,19 @@ class TopkSelectorKernel(Kernel):
 
         dim_map = {"batch": batch, "seq_len_kv": seq_len_kv}
 
+        def symbol_name(value):
+            name = getattr(value, "name", None)
+            if name is None:
+                name = getattr(value, "name_hint", None)
+            return name() if callable(name) else name
+
         def resolve_shape(shape):
             result = []
             for s in shape:
-                if isinstance(s, _tir.Var):
-                    result.append(dim_map.get(s.name, 1))
-                else:
+                try:
                     result.append(int(s))
+                except (TypeError, ValueError):
+                    result.append(dim_map.get(symbol_name(s), 1))
             return result
 
         def supply_prog(params):

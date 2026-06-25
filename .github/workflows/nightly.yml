@@ -18,11 +18,10 @@ concurrency:
 # ---------------------------------------------------------------------------
 
 env:
-  TILELANG_CACHE_DIR: /data7/shared/ci-cache/tilelang
-  TILELANG_TMP_DIR: /data7/shared/ci-cache/tilelang/tmp
-  TRITON_CACHE_DIR: /data7/shared/ci-cache/triton
-  PIP_CACHE_DIR: /data7/shared/ci-cache/pip
-  WHEEL_DIR: /data7/shared/ci-cache/wheels
+  TILELANG_CACHE_DIR: /ci-cache/tilelang
+  TILELANG_TMP_DIR: /ci-cache/tilelang/tmp
+  TRITON_CACHE_DIR: /ci-cache/triton
+  PIP_CACHE_DIR: /ci-cache/pip
   MAX_JOBS: "64"
 
 jobs:
@@ -43,31 +42,17 @@ jobs:
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
 
-      - name: Set up run-local venv
-        run: scripts/ci/setup_nightly_venv.sh
+      - name: Install TileOPs (image-baked stack, --no-deps)
+        run: bash scripts/ci/install_tileops.sh
         shell: bash
 
       - name: Warm kernel compilation cache
         continue-on-error: true
         run: |
           set -euo pipefail
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
-
-          PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
-
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
           echo "Starting kernel cache warmup..."
-          python scripts/warmup_kernel_cache.py --max-workers 64 -n 16
-        shell: bash
-
-      - name: Cleanup run-local venv
-        if: ${{ always() }}
-        run: |
-          set -euo pipefail
-          if [[ -n "${RUNTIME_ROOT:-}" && "${RUNTIME_ROOT}" == "${RUNNER_TEMP}/nightly-"* ]]; then
-            rm -rf "${RUNTIME_ROOT}"
-          fi
+          python3 scripts/warmup_kernel_cache.py --max-workers 64 -n 16
         shell: bash
 
   # =========================================================================
@@ -92,8 +77,8 @@ jobs:
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
 
-      - name: Set up run-local venv
-        run: scripts/ci/setup_nightly_venv.sh
+      - name: Install TileOPs (image-baked stack, --no-deps)
+        run: bash scripts/ci/install_tileops.sh
         shell: bash
 
       - name: Run benchmark ops
@@ -101,8 +86,6 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
 
           # Validate GPU frequency
           TARGET_CLOCK_MHZ=1500
@@ -118,8 +101,6 @@ jobs:
             sleep 2
           done
 
-          PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
-
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
           echo "Runtime cache env:"
           echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
@@ -127,7 +108,8 @@ jobs:
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
           set -o pipefail
-          python -m pytest -q benchmarks/ops --junit-xml=bench_results.xml | tee tileops_benchmarks.log
+          python3 -m pip install -q -c constraints.txt pytest-timeout
+          python3 -m pytest -q benchmarks/ops --timeout=900 --timeout-method=thread --junit-xml=bench_results.xml | tee tileops_benchmarks.log
 
           if [ -f profile_run.log ]; then
             { echo; echo "===== profile_run.log summary ====="; cat profile_run.log; } >> tileops_benchmarks.log
@@ -152,15 +134,6 @@ jobs:
         run: exit 1
         shell: bash
 
-      - name: Cleanup run-local venv
-        if: ${{ always() }}
-        run: |
-          set -euo pipefail
-          if [[ -n "${RUNTIME_ROOT:-}" && "${RUNTIME_ROOT}" == "${RUNNER_TEMP}/nightly-"* ]]; then
-            rm -rf "${RUNTIME_ROOT}"
-          fi
-        shell: bash
-
   # =========================================================================
   # Phase 3 — Op correctness tests (serial after benchmark for GPU exclusivity)
   # =========================================================================
@@ -179,8 +152,8 @@ jobs:
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
 
-      - name: Set up run-local venv
-        run: scripts/ci/setup_nightly_venv.sh
+      - name: Install TileOPs (image-baked stack, --no-deps)
+        run: bash scripts/ci/install_tileops.sh
         shell: bash
 
       - name: Run full op tests
@@ -188,10 +161,6 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
-
-          PIP_NO_BUILD_ISOLATION=1 pip install -e ".[dev]"
 
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
           echo "Runtime cache env:"
@@ -200,7 +169,8 @@ jobs:
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
           set -o pipefail
-          python -m pytest tests/ -v --tb=short --junit-xml=test_results.xml | tee tileops_op_test.log
+          python3 -m pip install -q -c constraints.txt pytest-timeout
+          python3 -m pytest tests/ -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=test_results.xml | tee tileops_op_test.log
         shell: bash
 
       - name: Download benchmark artifacts
@@ -277,10 +247,7 @@ jobs:
         if: ${{ always() }}
         run: |
           set -euo pipefail
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
 
-          pip install --no-deps -e . 2>/dev/null
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
 
           HISTORY_ARGS=()
@@ -288,7 +255,7 @@ jobs:
             HISTORY_ARGS=(--history .perf_history/perf_history.json)
           fi
 
-          python scripts/nightly_report.py \
+          python3 scripts/nightly_report.py \
             --test-xml test_results.xml \
             --bench-xml bench_results.xml \
             "${HISTORY_ARGS[@]}" \
@@ -326,15 +293,6 @@ jobs:
       - name: Fail op test job if pytest failed
         if: ${{ always() && steps.op_tests.outcome == 'failure' }}
         run: exit 1
-        shell: bash
-
-      - name: Cleanup run-local venv
-        if: ${{ always() }}
-        run: |
-          set -euo pipefail
-          if [[ -n "${RUNTIME_ROOT:-}" && "${RUNTIME_ROOT}" == "${RUNNER_TEMP}/nightly-"* ]]; then
-            rm -rf "${RUNTIME_ROOT}"
-          fi
         shell: bash
 
   # =========================================================================
@@ -423,16 +381,14 @@ jobs:
         run: scripts/ci/verify_nightly_runner.sh
         shell: bash
 
-      - name: Set up run-local venv
-        run: scripts/ci/setup_nightly_venv.sh
+      - name: Install TileOPs (image-baked stack, --no-deps)
+        run: bash scripts/ci/install_tileops.sh
         shell: bash
 
       - name: Build and test wheel package
         run: |
           set -euo pipefail
           exec > >(tee packaging.log) 2>&1
-          # shellcheck source=/dev/null
-          source "${VENV_PATH}/bin/activate"
 
           # Validate GPU frequency
           TARGET_CLOCK_MHZ=1500
@@ -448,17 +404,17 @@ jobs:
             sleep 2
           done
 
-          pip install build pytest
+          python3 -m pip install -c constraints.txt build pytest pytest-timeout
 
           echo "=== Build wheel package ==="
-          python -m build --wheel
+          python3 -m build --wheel
           echo "=== Build artifacts ==="
           ls -lh dist/*.whl
 
           echo "=== Install built wheel ==="
-          pip install dist/*.whl
+          python3 -m pip install dist/*.whl
 
-          TMP_TEST_DIR="$(mktemp -d "${RUNTIME_ROOT}/packaging-test.XXXXXX")"
+          TMP_TEST_DIR="$(mktemp -d "${RUNNER_TEMP}/packaging-test.XXXXXX")"
           cp -r tests "${TMP_TEST_DIR}/tests"
           cp pyproject.toml "${TMP_TEST_DIR}/"
           cd "${TMP_TEST_DIR}"
@@ -469,7 +425,8 @@ jobs:
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
           echo "=== Run pytest packaging ==="
-          python -m pytest -q tests/ops -m "packaging" \
+          python3 -m pytest -q tests/ops -m "packaging" \
+            --timeout=900 --timeout-method=thread \
             --junit-xml="${GITHUB_WORKSPACE}/packaging_smoke.xml"
         shell: bash
 
@@ -499,12 +456,3 @@ jobs:
         with:
           files: dist/*.whl
           fail_on_unmatched_files: true
-
-      - name: Cleanup run-local venv
-        if: ${{ always() }}
-        run: |
-          set -euo pipefail
-          if [[ -n "${RUNTIME_ROOT:-}" && "${RUNTIME_ROOT}" == "${RUNNER_TEMP}/nightly-"* ]]; then
-            rm -rf "${RUNTIME_ROOT}"
-          fi
-        shell: bash

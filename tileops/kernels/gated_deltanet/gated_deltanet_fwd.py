@@ -118,7 +118,7 @@ def _h_recurrence_tl(
                                  v_offset : v_offset + BV],
                            disable_tma=True)
 
-                    # h_tile_next = h_tile * exp(g_last) + k_scaled^T @ v_new_tile
+                    # h_tile_next = h_tile * exp(g_last) + k^T @ scaled_v_new_tile
                     g_last = g_c[block_C - 1]
                     for n, j in T.Parallel(block_C, BV):
                         v_new_c[n, j] = v_new_c[n, j] * T.exp2(

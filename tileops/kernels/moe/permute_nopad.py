@@ -61,6 +61,7 @@ def _make_scan_kernel_nopad(numel: int, num_experts: int, top_k: int):
 
                 s_counts = T.alloc_shared([num_experts], "int32")
                 s_offset = T.alloc_shared([num_experts + 1], "int64")
+                slot_buf = T.alloc_local([1], "int32")
 
                 # Step 1: zero counts
                 for i in T.serial(T.ceildiv(num_experts, threads)):
@@ -101,8 +102,14 @@ def _make_scan_kernel_nopad(numel: int, num_experts: int, top_k: int):
                     idx = i * threads + tx
                     if idx < numel:
                         eid = flat_ids[idx]
-                        slot = T.call_extern("int32", "tl_atomic_add_offset",
-                                             T.address_of(write_offsets[0]), eid, T.int32(1))
+                        # Keep the side-effecting extern result in a local buffer.  Newer
+                        # TileLang may otherwise duplicate the call while lowering bounds
+                        # checks for the following indexed stores.
+                        slot_buf[0] = T.call_extern(
+                            "int32", "tl_atomic_add_offset",
+                            T.address_of(write_offsets[0]), eid, T.int32(1)
+                        )
+                        slot = slot_buf[0]
                         permuted_idx[slot] = idx // T.int32(top_k)
                         # For no-pad: tight slot IS the fwd_idx (no padding offset)
                         fwd_idx[idx] = slot
@@ -144,6 +151,7 @@ def _make_scan_kernel_nopad_ep(
 
                 s_counts = T.alloc_shared([num_experts_local], "int32")
                 s_offset = T.alloc_shared([num_experts_local + 1], "int64")
+                slot_buf = T.alloc_local([1], "int32")
 
                 # Step 1: zero counts
                 for i in T.serial(T.ceildiv(num_experts_local, threads)):
@@ -191,9 +199,14 @@ def _make_scan_kernel_nopad_ep(
                         if local_eid < T.int32(0):
                             fwd_idx[idx] = T.int32(-1)
                         else:
-                            slot = T.call_extern("int32", "tl_atomic_add_offset",
-                                                 T.address_of(write_offsets[0]),
-                                                 local_eid, T.int32(1))
+                            # Keep the side-effecting extern result in a local buffer.  Newer
+                            # TileLang may otherwise duplicate the call while lowering bounds
+                            # checks for the following indexed stores.
+                            slot_buf[0] = T.call_extern(
+                                "int32", "tl_atomic_add_offset",
+                                T.address_of(write_offsets[0]), local_eid, T.int32(1)
+                            )
+                            slot = slot_buf[0]
                             permuted_idx[slot] = idx // T.int32(top_k)
                             fwd_idx[idx] = slot
 

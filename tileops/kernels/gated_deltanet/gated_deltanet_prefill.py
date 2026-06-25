@@ -1508,7 +1508,7 @@ def _gated_deltanet_prefill_wrapped_kernel(
                 cp_seq_map=cp_seq_map,
                 raw_cu_seqlens=raw_cu_seqlens,
             )
-            return o, final_state
+            return o, final_state.to(q.dtype)
 
         o_fn = _prefill_output_o_bthd_tl(
             batch, head, seq_len, chunk_size, dim_k, dim_v, dtype

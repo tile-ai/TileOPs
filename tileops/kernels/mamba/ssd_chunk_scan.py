@@ -492,12 +492,14 @@ class SSDChunkScanFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        # threads=64 (2 warps) balances parallelism with register pressure.
+        # block_n=64 keeps occupancy high for typical d_state sizes (64-128).
         return {
             "block_l": 64,
             "block_p": 64,
-            "block_n": min(128, self.d_state),
+            "block_n": min(64, self.d_state),
             "block_s": 64,
-            "threads": 128,
+            "threads": 64,
         }
 
     @property
@@ -526,8 +528,11 @@ class SSDChunkScanFwdKernel(Kernel):
             if bn <= self.d_state
         ] + [
             # threads=64 (2 warps/block) — more blocks/SM at cost of less ILP
-            {"block_l": 64, "block_p": 64, "block_n": block_n, "block_s": bs, "threads": 64}
+            # Include block_n=64 to cover the optimal config found via AKO tuning
+            {"block_l": 64, "block_p": 64, "block_n": bn, "block_s": bs, "threads": 64}
             for bs in [64, 128]
+            for bn in [64, 128]
+            if bn <= self.d_state
         ]
 
     def forward(

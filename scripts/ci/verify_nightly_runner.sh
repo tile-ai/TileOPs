@@ -6,7 +6,6 @@ required_vars=(
   TILELANG_TMP_DIR
   TRITON_CACHE_DIR
   PIP_CACHE_DIR
-  WHEEL_DIR
 )
 
 for var in "${required_vars[@]}"; do
