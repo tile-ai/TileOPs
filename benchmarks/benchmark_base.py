@@ -85,20 +85,27 @@ _bench_results = threading.local()
 
 
 def _sum_kernel_time_us(kineto_results):
-    """Extract total CUDA kernel time directly from C++ Kineto events.
+    """Extract total CUDA kernel time and kernel count from C++ Kineto events.
 
     Bypasses ``profiler.key_averages()`` which triggers expensive Python
     event parsing (~120ms) and tree building (~10ms) for large traces.
     Direct C++ iteration is ~16x faster for n_repeat=1280.
+
+    Returns:
+        ``(total_us, n_kernels)``: summed device kernel time in microseconds and
+        the number of device kernels counted (L2-flush fills are excluded from
+        both).
     """
     total_us = 0.0
+    n_kernels = 0
     for evt in kineto_results.events():
         if evt.device_type() == DeviceType.CUDA:
             name = evt.name()
             if "vectorized_elementwise" in name and "FillFunctor" in name:
                 continue
             total_us += evt.duration_ns() / 1000.0
-    return total_us
+            n_kernels += 1
+    return total_us, n_kernels
 
 
 # ---------------------------------------------------------------------------
@@ -198,38 +205,47 @@ def bench_kernel(
         _run(i % n_repeat)
     torch.cuda.synchronize()
 
-    # Timed trials with CUPTI (single profiler, n_trials cycles)
+    # Timed trials with CUPTI.  Each trial opens its own torch.profiler context
+    # around exactly n_repeat iterations and reads the trace after the context
+    # closes; summed device kernel time / n_repeat is the mean per-call kernel
+    # time.  We deliberately do NOT use torch.profiler.schedule: that mechanism
+    # is for sampling a window out of a long step()-driven loop, and forcing
+    # n_repeat calls into a single "step" let queued, un-synchronized launches
+    # leak across the warmup/active boundary.  A plain per-trial context records
+    # exactly the calls we want — no schedule, no on_trace_ready callback.  The
+    # synchronize() before the context closes ensures every kernel in the window
+    # has finished and been recorded.  Per-trial profiler construction adds a few
+    # ms of wall time but stays outside the recorded region, so it does not
+    # affect the summed kernel time.
     trial_means: list[float] = []
-
-    def _on_trace_ready(prof):
-        kr = prof.profiler.kineto_results
-        kernel_us = _sum_kernel_time_us(kr) / n_repeat
-        trial_means.append(kernel_us * 1e-3)
-
+    trial_counts: list[int] = []
     try:
         with suppress_stdout_stderr():
-            schedule = torch.profiler.schedule(
-                wait=0, warmup=1, active=1, repeat=n_trials,
-            )
-            profiler = torch.profiler.profile(
-                activities=[torch.profiler.ProfilerActivity.CUDA],
-                schedule=schedule,
-                on_trace_ready=_on_trace_ready,
-            )
-            with profiler:
-                for _ in range(n_trials):
-                    # Warmup step (discarded by schedule)
+            for _ in range(n_trials):
+                with torch.profiler.profile(
+                    activities=[torch.profiler.ProfilerActivity.CUDA],
+                ) as profiler:
                     for i in range(n_repeat):
                         cache.zero_()
                         _run(i)
-                    profiler.step()
-                    # Active step (measured → _on_trace_ready)
-                    for i in range(n_repeat):
-                        cache.zero_()
-                        _run(i)
-                    profiler.step()
+                    torch.cuda.synchronize()
+                total_us, n_kernels = _sum_kernel_time_us(profiler.profiler.kineto_results)
+                trial_means.append((total_us / n_repeat) * 1e-3)
+                trial_counts.append(n_kernels)
     except RuntimeError:
-        pass
+        trial_means = []
+        trial_counts = []
+
+    # Sanity check: every trial must record the same, whole-multiple-of-n_repeat
+    # number of kernels.  Inconsistent or non-multiple counts mean launches
+    # leaked into the timed window (e.g. un-synchronized warmup) and the per-call
+    # time divided by n_repeat is unreliable.
+    if trial_counts and (len(set(trial_counts)) > 1 or trial_counts[0] % n_repeat != 0):
+        _logger.warning(
+            "bench_kernel: per-trial kernel counts %s are not a consistent "
+            "multiple of n_repeat=%d; timed window may include leaked launches.",
+            trial_counts, n_repeat,
+        )
 
     # Fallback to CUDA events if CUPTI failed
     if not trial_means:
