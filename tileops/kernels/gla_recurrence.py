@@ -73,8 +73,9 @@ def _gla_decode_tl(
                 v_shared = T.alloc_shared([dim_v], accum_dtype)
                 sq_frag = T.alloc_fragment([dim_v], accum_dtype)
                 qk_dot = T.alloc_local([1], accum_dtype)
-                # Preload k, gk into shared memory to avoid global access
+                # Preload q, k, gk into shared memory to avoid global access
                 # in pipelined loop (fixes TileLang warp-specialization issue)
+                q_shared = T.alloc_shared([dim_k], accum_dtype)
                 k_shared = T.alloc_shared([dim_k], accum_dtype)
                 gk_shared = T.alloc_shared([dim_k], accum_dtype)
 
@@ -82,8 +83,9 @@ def _gla_decode_tl(
                 for j in T.Parallel(dim_v):
                     v_shared[j] = T.cast(v[bid, hid, j], accum_dtype)
 
-                # Preload k and gk into shared memory
+                # Preload q, k and gk into shared memory
                 for i in T.Parallel(dim_k):
+                    q_shared[i] = T.cast(q[bid, hid, i], accum_dtype)
                     k_shared[i] = T.cast(k[bid, hid, i], accum_dtype)
                     gk_shared[i] = T.cast(gk[bid, hid, i], accum_dtype)
 
