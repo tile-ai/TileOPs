@@ -12,6 +12,9 @@ from tileops.kernels.attention import (
     GQAFwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
+    GQAPrefillWithKVCacheFwdKernel,
+    GQAPrefillWithKVCacheRopeAppendKernel,
+    GQAPrefillWithKVCacheRopeFwdKernel,
 )
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
@@ -21,7 +24,10 @@ from tileops.ops import (
     GroupedQueryAttentionPrefillWithKVCacheFwdOp,
     RopeNeoxPositionIdsOp,
 )
-from tileops.ops.attention.gqa import _select_gqa_fwd_kernel_cls
+from tileops.ops.attention.gqa import (
+    _select_gqa_fwd_kernel_cls,
+    _select_gqa_prefill_with_kv_cache_kernel_keys,
+)
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdTest as _GroupedQueryAttentionBwdTestWorkload,
 )
@@ -851,6 +857,34 @@ def test_gqa_fwd_dispatch_falls_back_off_h200() -> None:
     non_hopper_cls = _select_gqa_fwd_kernel_cls(
         4, 64, 4, 512, 128, False, torch.float16, hopper=False, h200=False)
     assert non_hopper_cls is GQAFwdKernel
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_with_kv_cache_selector_uses_plain_kernel_without_rope() -> None:
+    append_key, fwd_key = _select_gqa_prefill_with_kv_cache_kernel_keys(fuse_rope=False)
+
+    assert append_key is None
+    assert fwd_key == "gqa_prefill_with_kv_cache_fwd_kernel"
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_with_kv_cache_selector_uses_rope_kernels_with_rope() -> None:
+    append_key, fwd_key = _select_gqa_prefill_with_kv_cache_kernel_keys(fuse_rope=True)
+
+    assert append_key == "gqa_prefill_with_kv_cache_rope_append_kernel"
+    assert fwd_key == "gqa_prefill_with_kv_cache_rope_fwd_kernel"
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_with_kv_cache_default_map_exposes_concrete_kernels() -> None:
+    op = object.__new__(GroupedQueryAttentionPrefillWithKVCacheFwdOp)
+
+    assert op.default_kernel_map == {
+        "gqa_prefill_with_kv_cache_fwd_kernel": GQAPrefillWithKVCacheFwdKernel,
+        "gqa_prefill_with_kv_cache_rope_append_kernel":
+            GQAPrefillWithKVCacheRopeAppendKernel,
+        "gqa_prefill_with_kv_cache_rope_fwd_kernel": GQAPrefillWithKVCacheRopeFwdKernel,
+    }
 
 
 if __name__ == "__main__":

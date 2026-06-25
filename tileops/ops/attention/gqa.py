@@ -53,6 +53,18 @@ __all__ = [
 
 _WS_BLOCK_M = 128
 _H200_SMS = 132
+_GQA_PREFILL_WITH_KV_CACHE_FWD_KEY = "gqa_prefill_with_kv_cache_fwd_kernel"
+_GQA_PREFILL_WITH_KV_CACHE_ROPE_APPEND_KEY = (
+    "gqa_prefill_with_kv_cache_rope_append_kernel"
+)
+_GQA_PREFILL_WITH_KV_CACHE_ROPE_FWD_KEY = "gqa_prefill_with_kv_cache_rope_fwd_kernel"
+_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_KEY = "gqa_prefill_paged_with_kv_cache_fwd_kernel"
+_GQA_PREFILL_PAGED_WITH_KV_CACHE_ROPE_APPEND_KEY = (
+    "gqa_prefill_paged_with_kv_cache_rope_append_kernel"
+)
+_GQA_PREFILL_PAGED_WITH_KV_CACHE_ROPE_FWD_KEY = (
+    "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel"
+)
 
 
 def _gqa_ws_noncausal_total_work_items(batch: int, heads: int, heads_kv: int, seq_len: int) -> int:
@@ -169,6 +181,30 @@ def _select_gqa_prefill_paged_with_kv_cache_rope_fwd_kernel_cls() -> Type[Kernel
 
 def _select_gqa_prefill_paged_with_kv_cache_rope_append_kernel_cls() -> Type[Kernel]:
     return GQAPrefillPagedWithKVCacheRopeAppendKernel
+
+
+def _select_gqa_prefill_with_kv_cache_kernel_keys(
+    *,
+    fuse_rope: bool,
+) -> tuple[Optional[str], str]:
+    if fuse_rope:
+        return (
+            _GQA_PREFILL_WITH_KV_CACHE_ROPE_APPEND_KEY,
+            _GQA_PREFILL_WITH_KV_CACHE_ROPE_FWD_KEY,
+        )
+    return None, _GQA_PREFILL_WITH_KV_CACHE_FWD_KEY
+
+
+def _select_gqa_prefill_paged_with_kv_cache_kernel_keys(
+    *,
+    fuse_rope: bool,
+) -> tuple[Optional[str], str]:
+    if fuse_rope:
+        return (
+            _GQA_PREFILL_PAGED_WITH_KV_CACHE_ROPE_APPEND_KEY,
+            _GQA_PREFILL_PAGED_WITH_KV_CACHE_ROPE_FWD_KEY,
+        )
+    return None, _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_KEY
 
 
 def _validate_gqa_dims(heads: int, heads_kv: int, dim: int) -> None:
@@ -682,32 +718,30 @@ class GroupedQueryAttentionPrefillWithKVCacheFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.append_kernel: Optional[Kernel] = None
-        if self.fuse_rope:
-            self.append_kernel = self.kernel_map[
-                "gqa_prefill_with_kv_cache_rope_append_kernel"](
-                    batch, heads_kv, seq_len_new, seqlen_kv, dim, self.max_position,
-                    self.rotary_dim, self.dtype, tune=tune)
-            self.kernel = self.kernel_map["gqa_prefill_with_kv_cache_rope_fwd_kernel"](
+        append_key, fwd_key = _select_gqa_prefill_with_kv_cache_kernel_keys(
+            fuse_rope=self.fuse_rope)
+        if append_key is not None:
+            self.append_kernel = self.kernel_map[append_key](
+                batch, heads_kv, seq_len_new, seqlen_kv, dim, self.max_position,
+                self.rotary_dim, self.dtype, tune=tune)
+            self.kernel = self.kernel_map[fwd_key](
                 batch, heads, heads_kv, seq_len_new, seqlen_kv, dim, self.max_position,
                 self.rotary_dim, is_causal, self.dtype, sm_scale=self.sm_scale,
                 softcap=self.softcap, tune=tune)
         else:
-            self.kernel = self.kernel_map["gqa_prefill_with_kv_cache_fwd_kernel"](
+            self.kernel = self.kernel_map[fwd_key](
                 batch, heads, heads_kv, seq_len_new, seqlen_kv, dim, is_causal, self.dtype,
                 sm_scale=self.sm_scale, softcap=self.softcap, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        if self.fuse_rope:
-            return {
-                "gqa_prefill_with_kv_cache_rope_append_kernel":
-                    _select_gqa_prefill_with_kv_cache_rope_append_kernel_cls(),
-                "gqa_prefill_with_kv_cache_rope_fwd_kernel":
-                    _select_gqa_prefill_with_kv_cache_rope_fwd_kernel_cls()
-            }
         return {
-            "gqa_prefill_with_kv_cache_fwd_kernel":
-                _select_gqa_prefill_with_kv_cache_fwd_kernel_cls()
+            _GQA_PREFILL_WITH_KV_CACHE_FWD_KEY:
+                _select_gqa_prefill_with_kv_cache_fwd_kernel_cls(),
+            _GQA_PREFILL_WITH_KV_CACHE_ROPE_APPEND_KEY:
+                _select_gqa_prefill_with_kv_cache_rope_append_kernel_cls(),
+            _GQA_PREFILL_WITH_KV_CACHE_ROPE_FWD_KEY:
+                _select_gqa_prefill_with_kv_cache_rope_fwd_kernel_cls(),
         }
 
     def _validate_forward_inputs(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
@@ -856,20 +890,21 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.append_kernel: Optional[Kernel] = None
-        if self.fuse_rope:
-            self.append_kernel = self.kernel_map[
-                "gqa_prefill_paged_with_kv_cache_rope_append_kernel"](
-                    batch=batch,
-                    heads_kv=heads_kv,
-                    max_pages_per_req=max_pages_per_req,
-                    page_size=page_size,
-                    dim=dim,
-                    max_position=self.max_position,
-                    rotary_dim=self.rotary_dim,
-                    dtype=dtype,
-                    tune=tune,
-                )
-            self.kernel = self.kernel_map["gqa_prefill_paged_with_kv_cache_rope_fwd_kernel"](
+        append_key, fwd_key = _select_gqa_prefill_paged_with_kv_cache_kernel_keys(
+            fuse_rope=self.fuse_rope)
+        if append_key is not None:
+            self.append_kernel = self.kernel_map[append_key](
+                batch=batch,
+                heads_kv=heads_kv,
+                max_pages_per_req=max_pages_per_req,
+                page_size=page_size,
+                dim=dim,
+                max_position=self.max_position,
+                rotary_dim=self.rotary_dim,
+                dtype=dtype,
+                tune=tune,
+            )
+            self.kernel = self.kernel_map[fwd_key](
                 batch=batch,
                 heads=heads,
                 heads_kv=heads_kv,
@@ -885,7 +920,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
                 tune=tune,
             )
         else:
-            self.kernel = self.kernel_map["gqa_prefill_paged_with_kv_cache_fwd_kernel"](
+            self.kernel = self.kernel_map[fwd_key](
                 batch=batch,
                 heads=heads,
                 heads_kv=heads_kv,
@@ -901,16 +936,13 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        if self.fuse_rope:
-            return {
-                "gqa_prefill_paged_with_kv_cache_rope_append_kernel":
-                    _select_gqa_prefill_paged_with_kv_cache_rope_append_kernel_cls(),
-                "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel":
-                    _select_gqa_prefill_paged_with_kv_cache_rope_fwd_kernel_cls()
-            }
         return {
-            "gqa_prefill_paged_with_kv_cache_fwd_kernel":
-                _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls()
+            _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_KEY:
+                _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls(),
+            _GQA_PREFILL_PAGED_WITH_KV_CACHE_ROPE_APPEND_KEY:
+                _select_gqa_prefill_paged_with_kv_cache_rope_append_kernel_cls(),
+            _GQA_PREFILL_PAGED_WITH_KV_CACHE_ROPE_FWD_KEY:
+                _select_gqa_prefill_paged_with_kv_cache_rope_fwd_kernel_cls(),
         }
 
     def _validate_forward_inputs(

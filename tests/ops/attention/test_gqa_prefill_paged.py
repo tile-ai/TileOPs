@@ -5,11 +5,17 @@ from itertools import accumulate
 import pytest
 import torch
 
+from tileops.kernels.attention import (
+    GQAPrefillPagedWithKVCacheFwdKernel,
+    GQAPrefillPagedWithKVCacheRopeAppendKernel,
+    GQAPrefillPagedWithKVCacheRopeFwdKernel,
+)
 from tileops.ops import (
     GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     RopeNeoxPositionIdsOp,
 )
+from tileops.ops.attention.gqa import _select_gqa_prefill_paged_with_kv_cache_kernel_keys
 
 _PREFILL_PAGED_TOLERANCE = {
     torch.float16: (5e-3, 1e-5),
@@ -564,3 +570,35 @@ def test_gqa_prefill_paged_with_kv_cache_page_sizes(page_size: int) -> None:
         q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table,
         max(q_lens))
     torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_paged_selector_uses_plain_kernel_without_rope() -> None:
+    append_key, fwd_key = _select_gqa_prefill_paged_with_kv_cache_kernel_keys(
+        fuse_rope=False)
+
+    assert append_key is None
+    assert fwd_key == "gqa_prefill_paged_with_kv_cache_fwd_kernel"
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_paged_selector_uses_rope_kernels_with_rope() -> None:
+    append_key, fwd_key = _select_gqa_prefill_paged_with_kv_cache_kernel_keys(
+        fuse_rope=True)
+
+    assert append_key == "gqa_prefill_paged_with_kv_cache_rope_append_kernel"
+    assert fwd_key == "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel"
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_paged_default_map_exposes_concrete_kernels() -> None:
+    op = object.__new__(GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp)
+
+    assert op.default_kernel_map == {
+        "gqa_prefill_paged_with_kv_cache_fwd_kernel":
+            GQAPrefillPagedWithKVCacheFwdKernel,
+        "gqa_prefill_paged_with_kv_cache_rope_append_kernel":
+            GQAPrefillPagedWithKVCacheRopeAppendKernel,
+        "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel":
+            GQAPrefillPagedWithKVCacheRopeFwdKernel,
+    }
