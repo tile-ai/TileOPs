@@ -17,6 +17,7 @@ from tileops.kernels.attention import (
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
     GQAPrefillFwdKernel,
+    GQAPrefillFwdWsPersistentCausalKernel,
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeAppendKernel,
@@ -134,7 +135,20 @@ def _select_gqa_fwd_kernel_cls(
     return GQAFwdWgmmaPipelinedKernel
 
 
-def _select_gqa_prefill_fwd_kernel_cls() -> Type[Kernel]:
+def _select_gqa_prefill_fwd_kernel_cls(
+    dim: int,
+    is_causal: bool,
+    dtype: torch.dtype,
+    sm_scale: float,
+    softcap: float,
+    *,
+    hopper: bool,
+) -> Type[Kernel]:
+    # Faithful FA3 warp-specialized kernel covers only fp16 / causal / dim==128 / Hopper
+    # with default scale and no softcap; everything else falls back.
+    if (hopper and is_causal and dim == 128 and dtype == torch.float16
+            and softcap == 0.0 and abs(sm_scale - dim ** -0.5) < 1e-9):
+        return GQAPrefillFwdWsPersistentCausalKernel
     return GQAPrefillFwdKernel
 
 
@@ -297,7 +311,11 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_prefill_fwd_kernel": _select_gqa_prefill_fwd_kernel_cls()}
+        kernel_cls = _select_gqa_prefill_fwd_kernel_cls(
+            self.dim, self.is_causal, self.dtype, self.sm_scale, self.softcap,
+            hopper=is_hopper(),
+        )
+        return {"gqa_prefill_fwd_kernel": kernel_cls}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return _attention_output(self.kernel(q, k, v))

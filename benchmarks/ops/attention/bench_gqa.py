@@ -100,22 +100,25 @@ def _fa3_gqa_bwd(test: GroupedQueryAttentionBwdTest):
     return baseline_fn
 
 
-def _flashinfer_gqa_fwd(test: GroupedQueryAttentionFwdTest, q, k, v):
-    """Set up FlashInfer batched prefill wrapper. Returns callable or None."""
+def _flashinfer_gqa_fwd(test, q, k, v):
+    """FlashInfer ragged-prefill baseline. Handles seq_len_q != seq_len_kv (square is
+    the seq_len_q == seq_len_kv case). Returns callable or None."""
     try:
         from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
     except ImportError:
         return None
 
-    B, S, H, D = q.shape
+    B, Sq, H, D = q.shape
+    Skv = k.shape[1]
     Hkv = k.shape[2]
-    cu_seqlens = torch.arange(0, B + 1, dtype=torch.int32, device=q.device) * S
+    qo_indptr = torch.arange(0, B + 1, dtype=torch.int32, device=q.device) * Sq
+    kv_indptr = torch.arange(0, B + 1, dtype=torch.int32, device=q.device) * Skv
 
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
     wrapper = BatchPrefillWithRaggedKVCacheWrapper(workspace, kv_layout="NHD")
     wrapper.plan(
-        qo_indptr=cu_seqlens,
-        kv_indptr=cu_seqlens,
+        qo_indptr=qo_indptr,
+        kv_indptr=kv_indptr,
         num_qo_heads=H,
         num_kv_heads=Hkv,
         head_dim_qk=D,
@@ -128,7 +131,7 @@ def _flashinfer_gqa_fwd(test: GroupedQueryAttentionFwdTest, q, k, v):
             q.reshape(-1, H, D),
             k.reshape(-1, Hkv, D),
             v.reshape(-1, Hkv, D),
-        ).reshape(B, S, H, D)
+        ).reshape(B, Sq, H, D)
 
     return run_fn
 
@@ -392,6 +395,11 @@ def test_gqa_prefill_fwd_bench(
 
     result_bl = bm.profile(_torch_gqa_prefill_ref(test), *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+    fi_fn = _flashinfer_gqa_fwd(test, *inputs)
+    if fi_fn is not None:
+        result_fi = bm.profile(fi_fn, *inputs)
+        BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
 
 _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = [
