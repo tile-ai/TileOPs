@@ -2,7 +2,10 @@ import pytest
 import torch
 
 from tileops.kernels.attention import GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
-from tileops.ops import GroupedQueryAttentionPrefillFP8TensorCoreFwdOp
+from tileops.ops import (
+    GroupedQueryAttentionPrefillFP8TensorCoreFwdOp,
+    GroupedQueryAttentionPrefillFwdOp,
+)
 from tileops.testing.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
@@ -78,6 +81,46 @@ def test_gqa_prefill_fp8_tensor_core_op_accepts_fa3_descale_contract(
 
     assert out.shape == (batch, seq_len, heads, dim)
     assert out.dtype == out_dtype
+    assert torch.isfinite(out.float()).all()
+
+
+@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
+@pytest.mark.skipif(not _has_sm90(), reason="requires Hopper FP8 WGMMA")
+@pytest.mark.smoke
+def test_gqa_prefill_canonical_op_dispatches_fp8_tensor_core_path() -> None:
+    batch, seq_len, heads, heads_kv, dim = 1, 896, 8, 2, 128
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16) * 0.25
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.25
+    v = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.25
+
+    q_fp8, q_scale = quantize_q_fa3_gqa_descale(q, heads_kv)
+    k_fp8, k_scale = quantize_kv_fa3_descale(k)
+    v_fp8, v_scale = quantize_kv_fa3_descale(v)
+    cu = torch.tensor([0, seq_len], device="cuda", dtype=torch.int32)
+
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len,
+        max_seqlen_kv=seq_len,
+        dtype=torch.float16,
+        is_causal=False,
+    )
+    out = op(
+        q_fp8.reshape(batch * seq_len, heads, dim).contiguous(),
+        k_fp8.reshape(batch * seq_len, heads_kv, dim).contiguous(),
+        v_fp8.reshape(batch * seq_len, heads_kv, dim).contiguous(),
+        cu,
+        cu,
+        q_scale,
+        k_scale,
+        v_scale,
+    )
+
+    assert out.shape == (batch * seq_len, heads, dim)
+    assert out.dtype == torch.float16
     assert torch.isfinite(out.float()).all()
 
 

@@ -17,13 +17,14 @@ from tileops.kernels.attention import (
     GQAFwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
+    GQAPrefillFwdKernel,
+    GQAPrefillFwdWsPersistentCausalKernel,
 )
 from tileops.manifest import load_workloads
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionFwdOp,
     GroupedQueryAttentionPrefillFwdOp,
-    GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
     GroupedQueryAttentionPrefillWithKVCacheFwdOp,
@@ -44,7 +45,6 @@ _GQA_BWD_OP = "GroupedQueryAttentionBwdOp"
 _GQA_PREFILL_FWD_OP = "GroupedQueryAttentionPrefillFwdOp"
 _GQA_PREFILL_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillWithKVCacheFwdOp"
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
-_GQA_PREFILL_PAGED_WITH_FP8_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp"
 
 
 class GQAPrefillVarlenFwdBenchmark(BenchmarkBase[GQAPrefillVarlenFwdTest]):
@@ -98,6 +98,29 @@ def _fa3_gqa_bwd(test: GroupedQueryAttentionBwdTest):
         return q.grad, k.grad, v.grad
 
     return baseline_fn
+
+
+def _uniform_packed_prefill_inputs(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+           torch.Tensor, torch.Tensor]:
+    batch, seq_len_q, _, _ = q.shape
+    _, seq_len_kv, heads_kv, _ = k.shape
+    cu_q = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_q
+    cu_kv = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_kv
+    q_scale = torch.ones((batch, heads_kv), device=q.device, dtype=torch.float32)
+    return (
+        q.reshape(batch * seq_len_q, q.shape[2], q.shape[3]).contiguous(),
+        k.reshape(batch * seq_len_kv, heads_kv, k.shape[3]).contiguous(),
+        v.reshape(batch * seq_len_kv, heads_kv, v.shape[3]).contiguous(),
+        cu_q,
+        cu_kv,
+        q_scale,
+        torch.ones_like(q_scale),
+        torch.ones_like(q_scale),
+    )
 
 
 def _flashinfer_gqa_fwd(test, q, k, v):
@@ -257,6 +280,10 @@ def _torch_gqa_prefill_with_kv_cache_ref(test: GQAPrefillWithKVCacheFwdTest):
 
 def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp) -> str:
     kernel = op.kernel
+    if isinstance(kernel, GQAPrefillFwdWsPersistentCausalKernel):
+        return "prefill_ws_causal"
+    if isinstance(kernel, GQAPrefillFwdKernel):
+        return "prefill"
     if isinstance(kernel, GQAFwdWsPersistentCausalKernel):
         return "ws_causal"
     if isinstance(kernel, GQAFwdWsPersistentKernel):
@@ -385,12 +412,21 @@ def test_gqa_prefill_fwd_bench(
 ) -> None:
     test = GQAPrefillFwdTest(batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, causal, dtype)
     inputs = test.gen_inputs()
+    packed_inputs = _uniform_packed_prefill_inputs(*inputs)
 
     op = GroupedQueryAttentionPrefillFwdOp(
-        batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, causal, dtype, tune=tune
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len_q,
+        max_seqlen_kv=seq_len_kv,
+        is_causal=causal,
+        dtype=dtype,
+        tune=tune,
     )
     bm = ManifestBenchmark(_GQA_PREFILL_FWD_OP, op, test)
-    result = bm.profile(op, *inputs)
+    result = bm.profile(op, *packed_inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(_torch_gqa_prefill_ref(test), *inputs)
@@ -545,7 +581,7 @@ _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_BENCH_PARAMS = manifest_params(
 
 @pytest.mark.parametrize(
     "batch, q_lens, cache_lens, heads, heads_kv, page_size, dim, causal, fuse_rope, "
-    "rotary_dim, softcap, dtype, tune",
+    "rotary_dim, softcap, cache_dtype, dtype, tune",
     _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_BENCH_PARAMS,
 )
 def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
@@ -560,9 +596,16 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     fuse_rope: bool,
     rotary_dim: Optional[int],
     softcap: Optional[float],
+    cache_dtype: Optional[torch.dtype],
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
+    fp8_dtype = getattr(torch, "float8_e4m3fn", None)
+    if cache_dtype == fp8_dtype and fp8_dtype is not None:
+        if fuse_rope or rotary_dim is not None:
+            pytest.skip("FP8 paged KV cache benchmark does not support fused RoPE")
+    elif cache_dtype is not None and fp8_dtype is None:
+        pytest.skip("torch fp8 is unavailable")
     test = GQAPrefillPagedWithKVCacheFwdTest(
         batch,
         heads,
@@ -577,7 +620,27 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
         rotary_dim=rotary_dim,
         softcap=softcap,
     )
-    inputs = test.gen_inputs()
+    if cache_dtype == fp8_dtype and fp8_dtype is not None:
+        inputs = _fp8_paged_cache_inputs(test)
+    else:
+        q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q = (
+            test.gen_inputs()
+        )
+        k_scale = torch.ones((1,), dtype=torch.float32, device=q.device)
+        v_scale = torch.ones((1,), dtype=torch.float32, device=q.device)
+        inputs = (
+            q,
+            k_new,
+            v_new,
+            k_pages,
+            v_pages,
+            k_scale,
+            v_scale,
+            cu_seqlens_q,
+            cache_seqlens,
+            block_table,
+            max_seqlen_q,
+        )
 
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         batch=batch,
@@ -588,6 +651,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
         dim=dim,
         is_causal=causal,
         dtype=dtype,
+        cache_dtype=cache_dtype,
         softcap=softcap,
         tune=tune,
         fuse_rope=fuse_rope,
@@ -601,13 +665,6 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     bm = ManifestBenchmark(_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-
-_GQA_PREFILL_PAGED_WITH_FP8_KV_CACHE_FWD_BENCH_PARAMS = manifest_params(
-    load_workloads(_GQA_PREFILL_PAGED_WITH_FP8_KV_CACHE_FWD_OP),
-    gqa_prefill_paged_args,
-    tune=False,
-)
 
 
 def _fp8_paged_cache_inputs(
@@ -634,67 +691,6 @@ def _fp8_paged_cache_inputs(
         block_table,
         max_seqlen_q,
     )
-
-
-@pytest.mark.parametrize(
-    "batch, q_lens, cache_lens, heads, heads_kv, page_size, dim, causal, fuse_rope, "
-    "rotary_dim, softcap, dtype, tune",
-    _GQA_PREFILL_PAGED_WITH_FP8_KV_CACHE_FWD_BENCH_PARAMS,
-)
-def test_gqa_prefill_paged_with_fp8_kv_cache_fwd_bench(
-    batch: int,
-    q_lens: list[int],
-    cache_lens: list[int],
-    heads: int,
-    heads_kv: int,
-    page_size: int,
-    dim: int,
-    causal: bool,
-    fuse_rope: bool,
-    rotary_dim: Optional[int],
-    softcap: Optional[float],
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    if fuse_rope or rotary_dim is not None:
-        pytest.skip("FP8 paged KV cache benchmark does not support fused RoPE")
-    if not hasattr(torch, "float8_e4m3fn"):
-        pytest.skip("torch fp8 is unavailable")
-
-    test = GQAPrefillPagedWithKVCacheFwdTest(
-        batch,
-        heads,
-        heads_kv,
-        q_lens,
-        cache_lens,
-        page_size,
-        dim,
-        causal,
-        dtype,
-        softcap=softcap,
-    )
-    inputs = _fp8_paged_cache_inputs(test)
-
-    op = GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        max_pages_per_req=test.max_pages_per_req,
-        page_size=page_size,
-        dim=dim,
-        is_causal=causal,
-        dtype=dtype,
-        cache_dtype=torch.float8_e4m3fn,
-        softcap=softcap,
-        tune=tune,
-    )
-    op.total_q = test.total_q
-    op.q_lens = q_lens
-    op.cache_lens = cache_lens
-    op.max_seqlen_q = test.max_seqlen_q
-    bm = ManifestBenchmark(_GQA_PREFILL_PAGED_WITH_FP8_KV_CACHE_FWD_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
 
 if __name__ == "__main__":

@@ -6,8 +6,16 @@ from workloads.workload_base import WorkloadBase
 
 class GroupedQueryAttentionDecodePagedTest(WorkloadBase):
 
-    def __init__(self, batch: int, heads: int, heads_kv: int, seqlen_kv: int, dim: int,
-                 page_size: int, dtype: torch.dtype) -> None:
+    def __init__(self,
+                 batch: int,
+                 heads: int,
+                 heads_kv: int,
+                 seqlen_kv: int,
+                 dim: int,
+                 page_size: int,
+                 dtype: torch.dtype,
+                 sm_scale: float | None = None,
+                 softcap: float | None = None) -> None:
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -15,6 +23,8 @@ class GroupedQueryAttentionDecodePagedTest(WorkloadBase):
         self.dim = dim
         self.page_size = page_size
         self.dtype = dtype
+        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
+        self.softcap = 0.0 if softcap is None else softcap
 
     def gen_inputs(
             self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:

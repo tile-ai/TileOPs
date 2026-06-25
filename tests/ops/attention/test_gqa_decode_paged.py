@@ -6,7 +6,6 @@ import math
 import pytest
 import torch
 import torch.nn.functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
@@ -54,8 +53,12 @@ class GroupedQueryAttentionDecodePagedTest(_GroupedQueryAttentionDecodePagedTest
             k_bhsd = k_logical[:, group_id, :].unsqueeze(0).transpose(1, 2)
             v_bhsd = v_logical[:, group_id, :].unsqueeze(0).transpose(1, 2)
             q_bhsd = q_b.unsqueeze(2)
-            with sdpa_kernel(backends=[SDPBackend.MATH]):
-                out_b = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd)
+            scores = torch.matmul(q_bhsd.float(), k_bhsd.float().transpose(-2, -1))
+            scores = scores * self.sm_scale
+            if self.softcap > 0:
+                scores = self.softcap * torch.tanh(scores / self.softcap)
+            probs = torch.softmax(scores, dim=-1)
+            out_b = torch.matmul(probs, v_bhsd.float()).to(q.dtype)
             out_b = out_b.squeeze(2)
             out_list.append(out_b)
         return torch.cat(out_list, dim=0)
@@ -96,6 +99,42 @@ def test_gqa_decode_paged_op(
         page_size=page_size,
         dtype=dtype,
         tune=tune,
+    )
+    test.check(op, *test.gen_inputs(), compare=test._maxdiff_cosine_compare)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("sm_scale, softcap", [
+    pytest.param(0.25, None, id="custom-sm-scale"),
+    pytest.param(None, 2.0, id="softcap"),
+])
+def test_gqa_decode_paged_op_softmax_controls(
+    sm_scale: float | None,
+    softcap: float | None,
+) -> None:
+    batch, heads, heads_kv, seqlen_kv, dim, page_size = 1, 16, 8, 512, 128, 128
+    dtype = torch.float16
+    test = GroupedQueryAttentionDecodePagedTest(
+        batch,
+        heads,
+        heads_kv,
+        seqlen_kv,
+        dim,
+        page_size,
+        dtype,
+        sm_scale=sm_scale,
+        softcap=softcap,
+    )
+    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        seqlen_kv=seqlen_kv,
+        dim=dim,
+        page_size=page_size,
+        dtype=dtype,
+        sm_scale=sm_scale,
+        softcap=softcap,
     )
     test.check(op, *test.gen_inputs(), compare=test._maxdiff_cosine_compare)
 

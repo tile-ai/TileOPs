@@ -136,17 +136,21 @@ _GQA_DECODE_PAGED_BENCH_PARAMS = manifest_params(
 
 
 @pytest.mark.parametrize(
-    "batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune",
+    "batch, heads, heads_kv, seqlen_kv, dim, page_size, sm_scale, softcap, dtype, tune",
     _GQA_DECODE_PAGED_BENCH_PARAMS,
 )
 def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv: int, dim: int,
-                                page_size: int, dtype: torch.dtype, tune: bool) -> None:
-    test = _GroupedQueryAttentionDecodePagedTestBaseline(batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype)
+                                page_size: int, sm_scale: float | None,
+                                softcap: float | None, dtype: torch.dtype, tune: bool) -> None:
+    test = _GroupedQueryAttentionDecodePagedTestBaseline(
+        batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype,
+        sm_scale=sm_scale, softcap=softcap)
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-        batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, tune=tune)
+        batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype,
+        sm_scale=sm_scale, softcap=softcap, tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

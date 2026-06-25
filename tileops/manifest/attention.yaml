@@ -131,7 +131,7 @@ GroupedQueryAttentionFwdOp:
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
     kernel_map:
-      gqa_fwd_kernel: GQAFwdKernel
+      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
@@ -144,37 +144,59 @@ GroupedQueryAttentionPrefillFwdOp:
 
   signature:
     inputs:
-      q: {dtype: "float16 | bfloat16"}
+      q: {dtype: "float16 | bfloat16 | float8_e4m3fn"}
       k: {dtype: "same_as(q)"}
       v: {dtype: "same_as(q)"}
+      cu_seqlens_q: {dtype: "int32"}
+      cu_seqlens_kv: {dtype: "int32"}
+      q_scale: {dtype: "float32"}
+      k_scale: {dtype: "float32"}
+      v_scale: {dtype: "float32"}
     outputs:
-      o: {dtype: "same_as(q)"}
+      o: {dtype: "float16 | bfloat16"}
     params:
+      max_seqlen_q: {type: int}
+      max_seqlen_kv: {type: int}
       is_causal: {type: bool, default: true}
       sm_scale: {type: float, default: null}
       softcap: {type: float, default: null}
+      window_size_left: {type: int, default: -1}
+      window_size_right: {type: int, default: -1}
+      backend: {type: str, default: "auto"}
+    dtype_combos:
+      - {q: float16, k: float16, v: float16, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: float16}
+      - {q: bfloat16, k: bfloat16, v: bfloat16, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: bfloat16}
+      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: float16}
+      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: bfloat16}
     shape_rules:
-      - "q.shape == (B, S_q, H, D)"
-      - "k.shape == (B, S_kv, H_kv, D)"
-      - "v.shape == (B, S_kv, H_kv, D)"
-      - "o.shape == (B, S_q, H, D)"
+      - "q.shape == (total_q, H, D)"
+      - "k.shape == (total_kv, H_kv, D)"
+      - "v.shape == (total_kv, H_kv, D)"
+      - "cu_seqlens_q.shape == (B + 1,)"
+      - "cu_seqlens_kv.shape == (B + 1,)"
+      - "q_scale.shape == (B, H_kv)"
+      - "k_scale.shape == (B, H_kv)"
+      - "v_scale.shape == (B, H_kv)"
+      - "o.shape == (total_q, H, D)"
       - "H % H_kv == 0"
-      - "not is_causal or S_q <= S_kv"
 
   workloads:
     # Llama-3.1-8B (H=32, H_kv=8, D=128)
-    - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense"}
-    - {q_shape: [2, 512, 32, 128], kv_shape: [2, 4096, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense-q-lt-kv"}
+    - {total_q: 2048, total_kv: 2048, batch: 4, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense"}
+    - {total_q: 1024, total_kv: 8192, batch: 2, q_lens: [512, 512], kv_lens: [4096, 4096], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense-q-lt-kv"}
     # Llama-3.1-70B (H=64, H_kv=8, D=128)
-    - {q_shape: [1, 512, 64, 128], kv_shape: [1, 4096, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-dense-q-lt-kv"}
+    - {total_q: 512, total_kv: 4096, batch: 1, q_lens: [512], kv_lens: [4096], heads: 64, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-dense-q-lt-kv"}
 
   roofline:
-    func: "tileops.perf.formulas.gqa_prefill_fwd_roofline"
+    func: "tileops.perf.formulas.gqa_prefill_varlen_fwd_roofline"
 
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
     kernel_map:
       gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
+      gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
+      gqa_sliding_window_varlen_fwd: GQASlidingWindowVarlenFwdKernel
+      gqa_prefill_fp8_tensor_core_fwd_kernel: GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
@@ -301,74 +323,8 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
       q: {dtype: "float16 | bfloat16"}
       k_new: {dtype: "same_as(q)"}
       v_new: {dtype: "same_as(q)"}
-      k_pages: {dtype: "same_as(q)"}
-      v_pages: {dtype: "same_as(q)"}
-      cu_seqlens_q: {dtype: "int32"}
-      cache_seqlens: {dtype: "int32"}
-      block_table: {dtype: "int32"}
-    outputs:
-      o: {dtype: "same_as(q)"}
-    params:
-      max_pages_per_req: {type: int}
-      page_size: {type: int}
-      max_seqlen_q: {type: int}
-      is_causal: {type: bool, default: true}
-      sm_scale: {type: float, default: null}
-      softcap: {type: float, default: null}
-      fuse_rope: {type: bool, default: false}
-      rope_base: {type: float, default: 10000.0}
-      max_position: {type: "int | None", default: null}
-      rotary_dim: {type: "int | None", default: null}
-    shape_rules:
-      - "q.shape == (total_q, H, D)"
-      - "k_new.shape == (total_q, H_kv, D)"
-      - "v_new.shape == (total_q, H_kv, D)"
-      - "k_pages.shape == (physical_tokens, H_kv, D)"
-      - "v_pages.shape == (physical_tokens, H_kv, D)"
-      - "cu_seqlens_q.shape == (B + 1,)"
-      - "cache_seqlens.shape == (B,)"
-      - "block_table.shape == (B, max_pages_per_req)"
-      - "o.shape == (total_q, H, D)"
-      - "H % H_kv == 0"
-      - "page_size > 0"
-      - "max_pages_per_req > 0"
-      - "max_seqlen_q > 0"
-      - "physical_tokens % page_size == 0"
-      - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
-      - "max_position is None or max_position > 0"
-
-  workloads:
-    - {total_q: 8192, batch: 8, q_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], cache_lens: [32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768], heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-paged-fullattn-b8-prefix32k-chunk1k-p64-partial-rope64-fp16"}
-    - {total_q: 4608, batch: 8, q_lens: [256, 512, 768, 1024, 384, 640, 896, 128], cache_lens: [4096, 8192, 16384, 32768, 12288, 24576, 30720, 2048], heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-paged-fullattn-mixed-b8-p64-partial-rope64-fp16"}
-    - {total_q: 4096, batch: 8, q_lens: [512, 512, 512, 512, 512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], heads: 32, heads_kv: 8, dim: 128, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 36864, is_causal: true, fuse_rope: true, max_position: 4608, rotary_dim: null, dtypes: [float16], label: "llama31-8b-prefill-paged-b8-prefix4k-chunk512-p64-full-rope-fp16"}
-    - {total_q: 2048, batch: 4, q_lens: [512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096], heads: 8, heads_kv: 2, dim: 64, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 18432, is_causal: true, softcap: 50.0, dtypes: [float16], label: "gqa-prefill-paged-softcap50-b4-prefix4k-chunk512-p64-fp16"}
-
-  roofline:
-    func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/gqa_fwd.py
-    kernel_map:
-      gqa_prefill_paged_with_kv_cache_fwd_kernel: GQAPrefillPagedWithKVCacheFwdKernel
-      gqa_prefill_paged_with_kv_cache_rope_append_kernel: GQAPrefillPagedWithKVCacheRopeAppendKernel
-      gqa_prefill_paged_with_kv_cache_rope_fwd_kernel: GQAPrefillPagedWithKVCacheRopeFwdKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa_prefill_paged.py
-    bench: benchmarks/ops/attention/bench_gqa.py
-    bench_manifest_driven: true
-
-GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp:
-  ref_api: "none"
-  family: attention
-  status: implemented
-
-  signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k_new: {dtype: "same_as(q)"}
-      v_new: {dtype: "same_as(q)"}
-      k_pages: {dtype: "float8_e4m3fn"}
-      v_pages: {dtype: "float8_e4m3fn"}
+      k_pages: {dtype: "float16 | bfloat16 | float8_e4m3fn"}
+      v_pages: {dtype: "same_as(k_pages)"}
       k_scale: {dtype: "float32"}
       v_scale: {dtype: "float32"}
       cu_seqlens_q: {dtype: "int32"}
@@ -376,14 +332,23 @@ GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp:
       block_table: {dtype: "int32"}
     outputs:
       o: {dtype: "same_as(q)"}
+    dtype_combos:
+      - {q: float16, k_new: float16, v_new: float16, k_pages: float16, v_pages: float16, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
+      - {q: bfloat16, k_new: bfloat16, v_new: bfloat16, k_pages: bfloat16, v_pages: bfloat16, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
+      - {q: float16, k_new: float16, v_new: float16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
+      - {q: bfloat16, k_new: bfloat16, v_new: bfloat16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
     params:
       max_pages_per_req: {type: int}
       page_size: {type: int}
       max_seqlen_q: {type: int}
+      cache_dtype: {type: "dtype | None", default: null}
       is_causal: {type: bool, default: true}
       sm_scale: {type: float, default: null}
       softcap: {type: float, default: null}
-      cache_dtype: {type: dtype, default: float8_e4m3fn}
+      fuse_rope: {type: bool, default: false}
+      rope_base: {type: float, default: 10000.0}
+      max_position: {type: "int | None", default: null}
+      rotary_dim: {type: "int | None", default: null}
     shape_rules:
       - "q.shape == (total_q, H, D)"
       - "k_new.shape == (total_q, H_kv, D)"
@@ -401,23 +366,30 @@ GroupedQueryAttentionPrefillPagedWithFP8KVCacheFwdOp:
       - "max_pages_per_req > 0"
       - "max_seqlen_q > 0"
       - "physical_tokens % page_size == 0"
+      - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
+      - "max_position is None or max_position > 0"
 
   workloads:
-    # Storage-only FP8: the current chunk participates in attention as same_as(q);
-    # old cache pages are dequantized online with scalar k_scale/v_scale. RoPE is
-    # external in this entry; fused RoPE + FP8 append is a follow-up kernel variant.
+    - {total_q: 8192, batch: 8, q_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], cache_lens: [32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768], heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-paged-fullattn-b8-prefix32k-chunk1k-p64-partial-rope64-fp16"}
+    - {total_q: 4608, batch: 8, q_lens: [256, 512, 768, 1024, 384, 640, 896, 128], cache_lens: [4096, 8192, 16384, 32768, 12288, 24576, 30720, 2048], heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-paged-fullattn-mixed-b8-p64-partial-rope64-fp16"}
+    - {total_q: 4096, batch: 8, q_lens: [512, 512, 512, 512, 512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], heads: 32, heads_kv: 8, dim: 128, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 36864, is_causal: true, fuse_rope: true, max_position: 4608, rotary_dim: null, dtypes: [float16], label: "llama31-8b-prefill-paged-b8-prefix4k-chunk512-p64-full-rope-fp16"}
+    - {total_q: 2048, batch: 4, q_lens: [512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096], heads: 8, heads_kv: 2, dim: 64, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 18432, is_causal: true, softcap: 50.0, dtypes: [float16], label: "gqa-prefill-paged-softcap50-b4-prefix4k-chunk512-p64-fp16"}
+    # Storage-only FP8 cache variants: q/k_new/v_new participate in attention
+    # as same_as(q); old cache pages are dequantized online with scalar
+    # k_scale/v_scale. Fused RoPE + FP8 append remains a follow-up kernel variant.
     - {total_q: 8192, batch: 8, heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, dtypes: [float16], cache_dtype: float8_e4m3fn, label: "qwen35-9b-prefill-paged-fp8-cache-b8-prefix32k-chunk1k-p64-fp16"}
     - {total_q: 4096, batch: 8, heads: 32, heads_kv: 8, dim: 128, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 36864, is_causal: true, dtypes: [float16], cache_dtype: float8_e4m3fn, label: "llama31-8b-prefill-paged-fp8-cache-b8-prefix4k-chunk512-p64-fp16"}
     - {total_q: 2048, batch: 4, heads: 8, heads_kv: 2, dim: 64, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 18432, is_causal: true, softcap: 50.0, dtypes: [float16], cache_dtype: float8_e4m3fn, label: "gqa-prefill-paged-fp8-cache-softcap50-b4-prefix4k-chunk512-p64-fp16"}
 
   roofline:
-    # Approximate: reuses the non-FP8 paged prefill estimate and does not model
-    # online old-cache dequantization cost separately.
     func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
 
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
     kernel_map:
+      gqa_prefill_paged_with_kv_cache_fwd_kernel: GQAPrefillPagedWithKVCacheFwdKernel
+      gqa_prefill_paged_with_kv_cache_rope_append_kernel: GQAPrefillPagedWithKVCacheRopeAppendKernel
+      gqa_prefill_paged_with_kv_cache_rope_fwd_kernel: GQAPrefillPagedWithKVCacheRopeFwdKernel
       gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel: GQAPrefillPagedWithFP8KVCacheFwdKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_prefill_paged.py
@@ -493,7 +465,6 @@ MultiHeadAttentionDecodeWithKVCacheFwdOp:
       v: {dtype: "same_as(q)"}
     outputs:
       o: {dtype: "same_as(q)"}
-    params: {}
     shape_rules:
       - "q.shape == (B, S_q, H, D)"
       - "k.shape == (B, N_kv, H, D)"
@@ -594,6 +565,7 @@ GroupedQueryAttentionDecodeWithKVCacheFwdOp:
     - {q_shape: [16, 64, 128], kv_shape: [16, 4096, 8, 128], dtypes: [float16, bfloat16], label: "llama-3.1-70b-4k"}
     # Llama-3.1-70B, long KV
     - {q_shape: [4, 64, 128], kv_shape: [4, 32768, 8, 128], dtypes: [float16, bfloat16], label: "llama-3.1-70b-32k"}
+    - {q_shape: [32, 32, 128], kv_shape: [32, 4096, 8, 128], softcap: 50.0, dtypes: [float16], label: "llama-3.1-8b-4k-softcap50"}
 
   roofline:
     func: "tileops.perf.formulas.gqa_decode_roofline"
@@ -623,6 +595,8 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
       o: {dtype: "same_as(q)"}
     params:
       page_size: {type: int}
+      sm_scale: {type: float, default: null}
+      softcap: {type: float, default: null}
     shape_rules:
       - "q.shape == (B, H, D)"
       - "k.shape == (N_kv, H_kv, D)"
@@ -640,6 +614,7 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
     - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 256, dtypes: [float16], label: "serving-8b-p256"}
     - {q_shape: [8, 64, 128], kv_shape: [4096, 8, 128], page_size: 256, dtypes: [float16], label: "serving-70b-p256"}
     - {q_shape: [4, 128, 128], kv_shape: [4096, 8, 128], page_size: 256, dtypes: [float16], label: "serving-405b-p256"}
+    - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 64, softcap: 50.0, dtypes: [float16], label: "serving-8b-p64-softcap50"}
     - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "serving-8b-p16"}
     - {q_shape: [64, 32, 128], kv_shape: [2048, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "throughput-8b-p16"}
     - {q_shape: [8, 64, 128], kv_shape: [4096, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "serving-70b-p16"}

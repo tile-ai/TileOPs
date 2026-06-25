@@ -21,7 +21,12 @@ from tileops.ops import (
     GroupedQueryAttentionPrefillWithKVCacheFwdOp,
     RopeNeoxPositionIdsOp,
 )
-from tileops.ops.attention.gqa import _select_gqa_fwd_kernel_cls
+from tileops.ops.attention.gqa import (
+    _select_gqa_fwd_kernel_cls,
+    _select_gqa_paged_prefill_kernel_keys,
+    _select_gqa_prefill_fwd_kernel_cls,
+    _select_gqa_prefill_kernel_key,
+)
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdTest as _GroupedQueryAttentionBwdTestWorkload,
 )
@@ -95,6 +100,41 @@ def _gqa_prefill_ref(
     output = torch.matmul(probs, v_bhsd)
     assert output.shape == (batch, heads, seq_len_q, dim)
     return output.transpose(1, 2).to(q.dtype).contiguous()
+
+
+def _uniform_packed_prefill_inputs(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+           torch.Tensor, torch.Tensor]:
+    batch, seq_len_q, _, _ = q.shape
+    _, seq_len_kv, heads_kv, _ = k.shape
+    cu_q = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_q
+    cu_kv = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_kv
+    q_scale = torch.ones((batch, heads_kv), device=q.device, dtype=torch.float32)
+    k_scale = torch.ones_like(q_scale)
+    v_scale = torch.ones_like(q_scale)
+    return (
+        q.reshape(batch * seq_len_q, q.shape[2], q.shape[3]).contiguous(),
+        k.reshape(batch * seq_len_kv, heads_kv, k.shape[3]).contiguous(),
+        v.reshape(batch * seq_len_kv, heads_kv, v.shape[3]).contiguous(),
+        cu_q,
+        cu_kv,
+        q_scale,
+        k_scale,
+        v_scale,
+    )
+
+
+def _ones_prefill_scales(
+    batch: int,
+    heads_kv: int,
+    *,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    q_scale = torch.ones((batch, heads_kv), device=device, dtype=torch.float32)
+    return q_scale, torch.ones_like(q_scale), torch.ones_like(q_scale)
 
 
 def _gqa_prefill_with_kv_cache_ref(
@@ -249,9 +289,18 @@ def test_gqa_prefill_fwd(batch: int, seq_len_q: int, seq_len_kv: int, heads: int
     v = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
     ref = _gqa_prefill_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=causal)
 
+    packed_inputs = _uniform_packed_prefill_inputs(q, k, v)
     op = GroupedQueryAttentionPrefillFwdOp(
-        batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, causal, dtype)
-    output = op(q, k, v)
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len_q,
+        max_seqlen_kv=seq_len_kv,
+        is_causal=causal,
+        dtype=dtype,
+    )
+    output = op(*packed_inputs).view(batch, seq_len_q, heads, dim)
 
     atol, rtol = _PREFILL_TOLERANCE[dtype]
     torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
@@ -268,9 +317,19 @@ def test_gqa_prefill_fwd_uses_bottom_right_causal_mask() -> None:
     v[:, :128, :, 0] = 1
     v[:, 128:, :, 0] = 100
 
+    packed_inputs = _uniform_packed_prefill_inputs(q.contiguous(), k.contiguous(),
+                                                   v.contiguous())
     op = GroupedQueryAttentionPrefillFwdOp(
-        batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, True, torch.float16)
-    output = op(q.contiguous(), k.contiguous(), v.contiguous())
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len_q,
+        max_seqlen_kv=seq_len_kv,
+        is_causal=True,
+        dtype=torch.float16,
+    )
+    output = op(*packed_inputs).view(batch, seq_len_q, heads, dim)
 
     assert output[0, 0, 0, 0] < 2
     assert output[0, -1, 0, 0] > 40
@@ -289,10 +348,19 @@ def test_gqa_prefill_fwd_respects_sm_scale() -> None:
     ref = _gqa_prefill_ref(
         q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True, sm_scale=sm_scale)
 
+    packed_inputs = _uniform_packed_prefill_inputs(q, k, v)
     op = GroupedQueryAttentionPrefillFwdOp(
-        batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, True, torch.float16,
-        sm_scale=sm_scale)
-    output = op(q, k, v)
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len_q,
+        max_seqlen_kv=seq_len_kv,
+        is_causal=True,
+        dtype=torch.float16,
+        sm_scale=sm_scale,
+    )
+    output = op(*packed_inputs).view(batch, seq_len_q, heads, dim)
 
     torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
 
@@ -310,12 +378,71 @@ def test_gqa_prefill_fwd_respects_softcap() -> None:
     ref = _gqa_prefill_ref(
         q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True, softcap=softcap)
 
+    packed_inputs = _uniform_packed_prefill_inputs(q, k, v)
     op = GroupedQueryAttentionPrefillFwdOp(
-        batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, True, torch.float16,
-        softcap=softcap)
-    output = op(q, k, v)
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len_q,
+        max_seqlen_kv=seq_len_kv,
+        is_causal=True,
+        dtype=torch.float16,
+        softcap=softcap,
+    )
+    output = op(*packed_inputs).view(batch, seq_len_q, heads, dim)
 
     torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype, sm_scale, softcap, atol, rtol", [
+    pytest.param(torch.bfloat16, None, None, 8e-2, 1e-2, id="bf16-default-scale"),
+    pytest.param(torch.float16, 0.125, None, 5e-3, 1e-5, id="fp16-custom-scale"),
+    pytest.param(torch.float16, None, 2.0, 5e-3, 1e-5, id="fp16-softcap"),
+])
+def test_gqa_prefill_fwd_ws_path_matches_reference(
+    dtype: torch.dtype,
+    sm_scale: Optional[float],
+    softcap: Optional[float],
+    atol: float,
+    rtol: float,
+) -> None:
+    if torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("warp-specialized prefill path requires Hopper")
+
+    batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 128, 256, 8, 2, 128
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=dtype).contiguous()
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    ref = _gqa_prefill_ref(
+        q,
+        k,
+        v,
+        heads=heads,
+        heads_kv=heads_kv,
+        is_causal=True,
+        sm_scale=sm_scale,
+        softcap=softcap,
+    )
+
+    packed_inputs = _uniform_packed_prefill_inputs(q, k, v)
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len_q,
+        max_seqlen_kv=seq_len_kv,
+        is_causal=True,
+        dtype=dtype,
+        sm_scale=sm_scale,
+        softcap=softcap,
+    )
+    assert op._get_dense_kernel().__class__.__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
+    output = op(*packed_inputs).view(batch, seq_len_q, heads, dim)
+
+    torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize("q_lens, kv_lens, heads, heads_kv, dim, causal, dtype", [
@@ -351,17 +478,18 @@ def test_gqa_prefill_varlen_fwd(q_lens: list[int], kv_lens: list[int], heads: in
         q, k, v, cu_q, cu_kv, batch=batch, heads=heads, heads_kv=heads_kv,
         is_causal=causal)
 
-    op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        batch,
-        heads,
-        heads_kv,
-        dim,
-        max(q_lens),
-        max(kv_lens),
-        causal,
-        dtype,
+    q_scale, k_scale, v_scale = _ones_prefill_scales(batch, heads_kv, device=q.device)
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=max(q_lens),
+        max_seqlen_kv=max(kv_lens),
+        is_causal=causal,
+        dtype=dtype,
     )
-    output = op(q, k, v, cu_q, cu_kv)
+    output = op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
 
     atol, rtol = _PREFILL_TOLERANCE[dtype]
     torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
@@ -384,10 +512,19 @@ def test_gqa_prefill_varlen_respects_sm_scale() -> None:
         q, k, v, cu_q, cu_kv, batch=batch, heads=heads, heads_kv=heads_kv,
         is_causal=True, sm_scale=sm_scale)
 
-    op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True, torch.float16,
-        sm_scale=sm_scale)
-    output = op(q, k, v, cu_q, cu_kv)
+    q_scale, k_scale, v_scale = _ones_prefill_scales(batch, heads_kv, device=q.device)
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=max(q_lens),
+        max_seqlen_kv=max(kv_lens),
+        is_causal=True,
+        dtype=torch.float16,
+        sm_scale=sm_scale,
+    )
+    output = op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
 
     torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
 
@@ -409,10 +546,19 @@ def test_gqa_prefill_varlen_respects_softcap() -> None:
         q, k, v, cu_q, cu_kv, batch=batch, heads=heads, heads_kv=heads_kv,
         is_causal=True, softcap=softcap)
 
-    op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True, torch.float16,
-        softcap=softcap)
-    output = op(q, k, v, cu_q, cu_kv)
+    q_scale, k_scale, v_scale = _ones_prefill_scales(batch, heads_kv, device=q.device)
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=max(q_lens),
+        max_seqlen_kv=max(kv_lens),
+        is_causal=True,
+        dtype=torch.float16,
+        softcap=softcap,
+    )
+    output = op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
 
     torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
 
@@ -851,6 +997,83 @@ def test_gqa_fwd_dispatch_falls_back_off_h200() -> None:
     non_hopper_cls = _select_gqa_fwd_kernel_cls(
         4, 64, 4, 512, 128, False, torch.float16, hopper=False, h200=False)
     assert non_hopper_cls is GQAFwdKernel
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("backend,is_fp8,uses_window,is_uniform,expected", [
+    ("auto", False, False, True, "gqa_prefill_fwd_kernel"),
+    ("auto", False, False, False, "gqa_prefill_varlen_fwd_kernel"),
+    ("varlen", False, False, True, "gqa_prefill_varlen_fwd_kernel"),
+    ("auto", False, True, True, "gqa_sliding_window_varlen_fwd"),
+    ("auto", True, False, True, "gqa_prefill_fp8_tensor_core_fwd_kernel"),
+])
+def test_gqa_prefill_dispatch_key_selector(
+    backend: str,
+    is_fp8: bool,
+    uses_window: bool,
+    is_uniform: bool,
+    expected: str,
+) -> None:
+    assert _select_gqa_prefill_kernel_key(
+        backend=backend,
+        is_fp8=is_fp8,
+        uses_sliding_window=uses_window,
+        is_uniform=is_uniform,
+    ) == expected
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dispatch_key_selector_rejects_forced_dense_ragged() -> None:
+    with pytest.raises(ValueError, match="backend='dense' requires uniform"):
+        _select_gqa_prefill_kernel_key(
+            backend="dense",
+            is_fp8=False,
+            uses_sliding_window=False,
+            is_uniform=False,
+        )
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_dense_selector_widens_ws_capability() -> None:
+    assert _select_gqa_prefill_fwd_kernel_cls(
+        128,
+        True,
+        torch.float16,
+        sm_scale=0.25,
+        softcap=2.0,
+        hopper=True,
+    ).__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
+    assert _select_gqa_prefill_fwd_kernel_cls(
+        128,
+        True,
+        torch.bfloat16,
+        sm_scale=128**-0.5,
+        softcap=0.0,
+        hopper=True,
+    ).__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
+
+
+@pytest.mark.smoke
+def test_gqa_paged_prefill_selector_keys() -> None:
+    assert _select_gqa_paged_prefill_kernel_keys(
+        cache_dtype=torch.float16,
+        attention_dtype=torch.float16,
+        fuse_rope=False,
+    ) == ("gqa_prefill_paged_with_kv_cache_fwd_kernel",)
+    assert _select_gqa_paged_prefill_kernel_keys(
+        cache_dtype=torch.float16,
+        attention_dtype=torch.float16,
+        fuse_rope=True,
+    ) == (
+        "gqa_prefill_paged_with_kv_cache_rope_append_kernel",
+        "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel",
+    )
+    if hasattr(torch, "float8_e4m3fn"):
+        assert _select_gqa_paged_prefill_kernel_keys(
+            cache_dtype=torch.float8_e4m3fn,
+            attention_dtype=torch.float16,
+            fuse_rope=False,
+        ) == ("gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel",)
 
 
 if __name__ == "__main__":
