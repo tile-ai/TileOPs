@@ -105,12 +105,11 @@ def _h_recurrence_tl(
                              v_offset : v_offset + BV], u_c, disable_tma=True)
 
                     # v_new_tile = u_tile - (w @ h_tile) * exp(g + g_last)
-                    g_last_val = g_c[block_C - 1]
                     T.clear(ws_frag)
                     T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
-                            (g_c[i] + g_last_val) * _LOG2E)
+                            (g_c[i] + g_c[block_C - 1]) * _LOG2E)
 
                     # Store v_new tile
                     T.copy(v_new_c,
@@ -119,12 +118,12 @@ def _h_recurrence_tl(
                            disable_tma=True)
 
                     # h_tile_next = h_tile * exp(g_last) + k^T @ scaled_v_new_tile
-                    g_last = g_c[block_C - 1]
                     for n, j in T.Parallel(block_C, BV):
                         v_new_c[n, j] = v_new_c[n, j] * T.exp2(
-                            (g_last - g_c[n]) * _LOG2E)
+                            (g_c[block_C - 1] - g_c[n]) * _LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_last * _LOG2E)
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(
+                            g_c[block_C - 1] * _LOG2E)
                     T.gemm(
                         k_c,
                         v_new_c,

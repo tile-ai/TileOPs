@@ -1041,24 +1041,24 @@ def _prefill_h_recurrence_bthd_tl(
                     for i, d in T.Parallel(block_C, BV):
                         u_c[i, d] = u[bid, base + i, hid, v_offset + d]
 
-                    g_last_val = g_c[block_C - 1]
                     T.clear(ws_frag)
                     T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
-                            (g_c[i] + g_last_val) * _LOG2E
+                            (g_c[i] + g_c[block_C - 1]) * _LOG2E
                         )
 
                     for i, j in T.Parallel(block_C, BV):
                         v_new[bid, base + i, hid, v_offset + j] = v_new_c[i, j]
 
-                    g_last = g_c[block_C - 1]
                     for n, j in T.Parallel(block_C, BV):
                         v_new_c[n, j] = v_new_c[n, j] * T.exp2(
-                            (g_last - g_c[n]) * _LOG2E
+                            (g_c[block_C - 1] - g_c[n]) * _LOG2E
                         )
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_last * _LOG2E)
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(
+                            g_c[block_C - 1] * _LOG2E
+                        )
                     T.gemm(
                         k_c,
                         v_new_c,
@@ -1232,21 +1232,21 @@ def _prefill_group_transition_summary_bthd_tl(
                         else:
                             u_c[i, j] = 0.0
 
-                    g_last_val = g_c[block_C - 1]
                     T.clear(ws_frag)
                     T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
-                            (g_c[i] + g_last_val) * _LOG2E
+                            (g_c[i] + g_c[block_C - 1]) * _LOG2E
                         )
 
-                    g_last = g_c[block_C - 1]
                     for n, j in T.Parallel(block_C, BV):
                         v_new_c[n, j] = v_new_c[n, j] * T.exp2(
-                            (g_last - g_c[n]) * _LOG2E
+                            (g_c[block_C - 1] - g_c[n]) * _LOG2E
                         )
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_last * _LOG2E)
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(
+                            g_c[block_C - 1] * _LOG2E
+                        )
                     T.gemm(
                         k_c,
                         v_new_c,
@@ -1401,24 +1401,24 @@ def _prefill_grouped_replay_bthd_tl(
                     for i, d in T.Parallel(block_C, BV):
                         u_c[i, d] = u[bid, base + i, hid, v_offset + d]
 
-                    g_last_val = g_c[block_C - 1]
                     T.clear(ws_frag)
                     T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
-                            (g_c[i] + g_last_val) * _LOG2E
+                            (g_c[i] + g_c[block_C - 1]) * _LOG2E
                         )
 
                     for i, j in T.Parallel(block_C, BV):
                         v_new[bid, base + i, hid, v_offset + j] = v_new_c[i, j]
 
-                    g_last = g_c[block_C - 1]
                     for n, j in T.Parallel(block_C, BV):
                         v_new_c[n, j] = v_new_c[n, j] * T.exp2(
-                            (g_last - g_c[n]) * _LOG2E
+                            (g_c[block_C - 1] - g_c[n]) * _LOG2E
                         )
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_last * _LOG2E)
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(
+                            g_c[block_C - 1] * _LOG2E
+                        )
                     T.gemm(
                         k_c,
                         v_new_c,
