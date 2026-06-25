@@ -3,12 +3,11 @@
 
 import os
 
-import torch
 import tilelang
 import tilelang.language as T
+import torch
 
 from .utils import prepare_chunk_offsets
-
 
 MULTI_PROCESSOR_COUNT = torch.cuda.get_device_properties().multi_processor_count
 TARGET_NUM_CTAS = int(MULTI_PROCESSOR_COUNT * 0.7)
@@ -529,7 +528,7 @@ def tilelang_fused_chunk_gdr_fwd(
                     T.barrier_wait(bar_o, 0)
                     if store_o:
                         for j_s, j_v in T.Parallel(block_S, block_DV):
-                            with T.If(seq_split_idx + j_s < seq_end_idx):
+                            with T.If(seq_split_idx + j_s < seq_end_idx):  # noqa: SIM117
                                 with T.Then():
                                     o[
                                         batch_idx,

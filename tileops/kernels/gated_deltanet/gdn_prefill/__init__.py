@@ -5,14 +5,13 @@ from .tilelang_compat import install_gemm_v1_compat
 
 install_gemm_v1_compat()
 
-from .fused_fwd import fused_gdr_fwd
-from .prepare_h import fused_gdr_h
-from .cp_fwd import get_warmup_chunks, correct_initial_states
-
+from .cp_fwd import correct_initial_states, get_warmup_chunks  # noqa: E402
+from .fused_fwd import fused_gdr_fwd  # noqa: E402
+from .prepare_h import fused_gdr_h  # noqa: E402
 
 __all__ = [
+    "correct_initial_states",
     "fused_gdr_fwd",
     "fused_gdr_h",
     "get_warmup_chunks",
-    "correct_initial_states",
 ]
