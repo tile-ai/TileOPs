@@ -1,3 +1,4 @@
+import inspect
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Optional
 
@@ -11,6 +12,7 @@ class Kernel(ABC):
     autotune_configs: Optional[list[dict]] = None
     supported_archs: Optional[list[int]] = None
     kernel: Callable[[dict], Callable]
+    # JIT parameter names that differ from their autotune config key.
     _AUTOTUNE_PARAM_ALIASES = {
         "threads_arg": "threads",
         "npt_arg": "num_per_thread",
@@ -79,37 +81,48 @@ class Kernel(ABC):
         """
         return None
 
-    def _autotune_initial_kwargs(
-        self,
-        kernel: Optional[Callable] = None,
-        config: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """Return initial JIT kwargs for TileLang autotuner binding.
+    @staticmethod
+    def _seed_autotune_binder(kernel: Optional[Callable], source: Optional[Dict[str, Any]]) -> None:
+        """Make a kernel's tunable JIT params bindable from ``source`` defaults.
 
-        TileLang 0.1.11 validates/binds the JIT signature before candidate
-        configs are applied. Passing the kernel's default config keeps required
-        tunable parameters bindable while the autotuner still overrides them
-        with each candidate config during benchmarking.
+        TileLang 0.1.11 binds the JIT signature before autotuning, so a tunable
+        parameter with no default and no supplied value raises at bind time;
+        but supplying the value on the call makes the autotuner skip tuning
+        entirely (returning ``config=None``). To get neither, seed the JIT
+        argument binder's per-parameter defaults from a single source of truth
+        (the kernel's ``default_config``, or the per-sub-kernel config a custom
+        autotune override passes), so binding succeeds with no args while the
+        autotuner still overrides every tunable parameter per candidate.
+
+        ``source`` values are bind-time placeholders only; they are never the
+        executed config (the search overrides them, and ``forward`` always
+        passes the chosen config explicitly).
         """
-        source = self.default_config if config is None else config
         if not source:
-            return {}
-
-        jit_kernel = getattr(self, "kernel", None) if kernel is None else kernel
-        signature = getattr(jit_kernel, "signature", None)
-        parameters = getattr(signature, "parameters", None)
-        if parameters is None:
-            return dict(source)
-
-        kwargs = {}
-        for name in parameters:
-            if name in source:
-                kwargs[name] = source[name]
+            return
+        binder = getattr(getattr(kernel, "func", None), "_argument_binder", None)
+        if binder is None:
+            return
+        names = getattr(binder, "param_names", None)
+        if not names:
+            return
+        sig = getattr(kernel, "signature", None)
+        params = sig.parameters if sig is not None else {}
+        defaults: list[Any] = []
+        required: list[int] = []
+        for i, name in enumerate(names):
+            key = name if name in source else Kernel._AUTOTUNE_PARAM_ALIASES.get(name)
+            if key in source:
+                defaults.append(source[key])
                 continue
-            alias = self._AUTOTUNE_PARAM_ALIASES.get(name)
-            if alias is not None and alias in source:
-                kwargs[name] = source[alias]
-        return kwargs
+            existing = params.get(name)
+            if existing is not None and existing.default is not inspect.Parameter.empty:
+                defaults.append(existing.default)  # keep a pre-existing signature default
+            else:
+                defaults.append(None)  # genuinely required (not a tunable config key)
+                required.append(i)
+        binder.defaults = tuple(defaults)
+        binder.required_indices = tuple(required)
 
     def _call_autotuned_kernel(
         self,
@@ -117,9 +130,16 @@ class Kernel(ABC):
         kernel: Optional[Callable] = None,
         config: Optional[Dict[str, Any]] = None,
     ) -> Any:
-        return autotuned_kernel_fn(
-            **self._autotune_initial_kwargs(kernel=kernel, config=config)
-        )
+        """Run the TileLang autotuner search and return its tuned kernel.
+
+        The autotuned wrapper is invoked with no tunable arguments (supplying
+        them makes TileLang 0.1.11 skip tuning and return ``config=None``).
+        Binding without args is made possible by seeding the JIT binder defaults
+        from the kernel's ``default_config`` (or the ``config`` a custom override
+        passes) -- see ``_seed_autotune_binder``.
+        """
+        self._seed_autotune_binder(kernel, config if config is not None else self.default_config)
+        return autotuned_kernel_fn()
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         if self.autotune_configs is None:
@@ -137,9 +157,9 @@ class Kernel(ABC):
             autotune_kwargs["supply_prog"] = self.autotune_supply_prog
         autotuned_kernel_fn = autotune(**autotune_kwargs)(self.kernel)
 
-        # Seed required tunable JIT parameters for TileLang's pre-autotune
-        # validation/binding step. Candidate configs still override these
-        # initial values during the actual autotune run.
+        # Run the autotuner search (no tunable args passed; see
+        # _call_autotuned_kernel). Tunable JIT parameters are bindable via
+        # defaults on the kernel @tilelang.jit signatures.
         tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
 
         # Extract and store the best config
