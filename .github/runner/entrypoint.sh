@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Group-writable (0775 dirs / 0664 files) so compiled kernels in the shared /ci-cache are
+# reusable across runner UIDs that share the ci-runner group.
+umask 002
+
 # Ad-hoc command passthrough: `docker run <image> python ...` / `bash -c ...` runs the
 # given command directly (image verification, smoke tests; see README). With no args the
 # container registers an ephemeral self-hosted runner (below).

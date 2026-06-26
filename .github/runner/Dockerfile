@@ -151,7 +151,9 @@ ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     PIP_NO_CACHE_DIR=0
 ARG RUNNER_VERSION=2.334.0
 # useradd before WORKDIR: home stays ci-runner-owned, and WORKDIR precedes the relative-path RUN (hadolint).
-RUN useradd -m -s /bin/bash ci-runner
+# Pin UID/GID 1000 so the account deterministically owns the shared /ci-cache bind-mount across
+# hosts (it matches the majority of existing warm-cache entries; host normalization preserves them).
+RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner
 WORKDIR /home/ci-runner/runner
 RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && curl -fsSL -o runner.tar.gz \
@@ -160,7 +162,7 @@ RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && ./bin/installdependencies.sh \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /ci-cache/pip /ci-cache/tilelang/tmp /ci-cache/triton \
-    && chown -R ci-runner:ci-runner /home/ci-runner /ci-cache
+    && chown -R ci-runner:ci-runner /home/ci-runner
 # chmod as root before the USER drop.
 COPY --chown=ci-runner:ci-runner .github/runner/entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
