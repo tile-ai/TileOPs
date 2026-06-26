@@ -27,8 +27,7 @@ def gla_decode_torch(
 
     alpha = torch.exp(gk)
     new_state = alpha.unsqueeze(-1) * state + k.unsqueeze(-1) * v.unsqueeze(-2)
-    # Replace torch.einsum with explicit matmul to avoid CUBLAS bug
-    o = scale * torch.matmul(q.unsqueeze(-2), new_state).squeeze(-2)
+    o = scale * torch.einsum("bhk,bhkv->bhv", q, new_state)
 
     return o, new_state
 
