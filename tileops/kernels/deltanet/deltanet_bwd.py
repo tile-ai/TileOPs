@@ -410,7 +410,11 @@ class DeltaNetBwdKernel(Kernel):
         parallel_configs = [{"threads": t} for t in [128, 256]]
         print(f"Autotuning bwd_parallel ({len(parallel_configs)} configs)...")
         parallel_jit = _bwd_parallel_tl(B, H, S, BC, DK, DV, dt)
-        tuned_parallel = tl_autotune(configs=parallel_configs, warmup=warmup, rep=rep)(parallel_jit)()
+        tuned_parallel = self._call_autotuned_kernel(
+            tl_autotune(configs=parallel_configs, warmup=warmup, rep=rep)(parallel_jit),
+            parallel_jit,
+            parallel_configs[0],
+        )
         parallel_best = tuned_parallel.config
         print(f"  Best: {parallel_best}")
 
@@ -421,7 +425,11 @@ class DeltaNetBwdKernel(Kernel):
         ]
         print(f"Autotuning dh_recurrence_bwd ({len(recurrence_configs)} configs)...")
         recurrence_jit = _dh_recurrence_bwd_tl(B, H, S, BC, DK, DV, dt)
-        tuned_recurrence = tl_autotune(configs=recurrence_configs, warmup=warmup, rep=rep)(recurrence_jit)()
+        tuned_recurrence = self._call_autotuned_kernel(
+            tl_autotune(configs=recurrence_configs, warmup=warmup, rep=rep)(recurrence_jit),
+            recurrence_jit,
+            recurrence_configs[0],
+        )
         recurrence_best = tuned_recurrence.config
         print(f"  Best: {recurrence_best}")
 
@@ -432,7 +440,11 @@ class DeltaNetBwdKernel(Kernel):
         ]
         print(f"Autotuning compute_w_u_bwd ({len(wu_bwd_configs)} configs)...")
         wu_bwd_jit = compute_w_u_bwd_tl(B, H, S, BC, DK, DV, dt)
-        tuned_wu_bwd = tl_autotune(configs=wu_bwd_configs, warmup=warmup, rep=rep)(wu_bwd_jit)()
+        tuned_wu_bwd = self._call_autotuned_kernel(
+            tl_autotune(configs=wu_bwd_configs, warmup=warmup, rep=rep)(wu_bwd_jit),
+            wu_bwd_jit,
+            wu_bwd_configs[0],
+        )
         wu_bwd_best = tuned_wu_bwd.config
         print(f"  Best: {wu_bwd_best}")
 

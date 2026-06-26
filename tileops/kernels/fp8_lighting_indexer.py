@@ -306,8 +306,9 @@ class FP8LightingIndexerKernel(Kernel):
             configs=self.autotune_configs, warmup=warmup, rep=rep, supply_prog=self.supply_prog)(
                 self.kernel)
 
-        # Call without config parameters to trigger autotuning, returns the tuned kernel
-        tuned_kernel = autotuned_kernel_fn()
+        # Seed required tunable JIT parameters for TileLang's pre-autotune
+        # validation/binding step.
+        tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
 
         # Extract and store the best config
         self.config = tuned_kernel.config
