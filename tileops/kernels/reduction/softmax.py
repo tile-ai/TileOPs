@@ -795,9 +795,12 @@ class SoftmaxKernel(Kernel):
             kernel = _softmax_kernel(
                 self.M, self.N, self.op_kind, self.dtype_str, tile_n,
             )
+            tunable_params = list(self._autotune_initial_kwargs(kernel, group_cfgs[0]).keys())
             autotune_kwargs: dict = dict(
                 configs=group_cfgs, warmup=warmup, rep=rep,
             )
+            if tunable_params:
+                autotune_kwargs["do_not_specialize"] = tunable_params
             if self.autotune_supply_prog is not None:
                 autotune_kwargs["supply_prog"] = self.autotune_supply_prog
             autotuned = tl_autotune(**autotune_kwargs)(kernel)

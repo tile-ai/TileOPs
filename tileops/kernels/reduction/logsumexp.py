@@ -525,6 +525,9 @@ class LogSumExpKernel(Kernel):
             autotune_kwargs: dict = dict(
                 configs=group_cfgs, warmup=warmup, rep=rep,
             )
+            tunable_params = list(self._autotune_initial_kwargs(kernel, group_cfgs[0]).keys())
+            if tunable_params:
+                autotune_kwargs["do_not_specialize"] = tunable_params
             if self.autotune_supply_prog is not None:
                 autotune_kwargs["supply_prog"] = self.autotune_supply_prog
             autotuned = tl_autotune(**autotune_kwargs)(kernel)

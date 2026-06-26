@@ -130,9 +130,17 @@ class Kernel(ABC):
                 "Set 'self.kernel' in __init__ before calling init_config with tune=True.")
         print(f'Start autotuning {self.__class__.__name__}...')
 
-        # Apply autotune decorator to the kernel function
+        # Apply autotune decorator to the kernel function.
+        # Pass do_not_specialize so TileLang 0.1.11 excludes the seeded JIT
+        # parameters from the cache key; without this, providing the default
+        # config values below would cause the autotuner to treat them as
+        # "already tuned" and skip the benchmarking sweep entirely
+        # (returning config=None).
+        tunable_params = list(self._autotune_initial_kwargs(self.kernel).keys())
         autotune_kwargs: Dict[str, Any] = dict(
             configs=self.autotune_configs, warmup=warmup, rep=rep)
+        if tunable_params:
+            autotune_kwargs["do_not_specialize"] = tunable_params
         if self.autotune_supply_prog is not None:
             autotune_kwargs["supply_prog"] = self.autotune_supply_prog
         autotuned_kernel_fn = autotune(**autotune_kwargs)(self.kernel)
