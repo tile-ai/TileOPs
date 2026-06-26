@@ -73,10 +73,21 @@ def _gla_decode_tl(
                 v_shared = T.alloc_shared([dim_v], accum_dtype)
                 sq_frag = T.alloc_fragment([dim_v], accum_dtype)
                 qk_dot = T.alloc_local([1], accum_dtype)
+                # Preload q, k, gk into shared memory to avoid global access
+                # in pipelined loop (fixes TileLang warp-specialization issue)
+                q_shared = T.alloc_shared([dim_k], accum_dtype)
+                k_shared = T.alloc_shared([dim_k], accum_dtype)
+                gk_shared = T.alloc_shared([dim_k], accum_dtype)
 
                 # Preload v into shared (for reuse in output and state update)
                 for j in T.Parallel(dim_v):
                     v_shared[j] = T.cast(v[bid, hid, j], accum_dtype)
+
+                # Preload q, k and gk into shared memory
+                for i in T.Parallel(dim_k):
+                    q_shared[i] = T.cast(q[bid, hid, i], accum_dtype)
+                    k_shared[i] = T.cast(k[bid, hid, i], accum_dtype)
+                    gk_shared[i] = T.cast(gk[bid, hid, i], accum_dtype)
 
                 # Full-fp32 matvec.  TileLang 0.1.9 cannot reliably lower the
                 # old tensor-core fragment copy here for fp16/bf16, and TF32
@@ -85,9 +96,9 @@ def _gla_decode_tl(
                 # lower reliably without sacrificing recurrent decode numerics.
                 T.fill(sq_frag, 0.0)
                 for kk in T.Serial(dim_k):
-                    gk_val = T.cast(gk[bid, hid, kk], accum_dtype)
+                    gk_val = gk_shared[kk]
                     alpha_i = T.exp2(gk_val * _LOG2E)
-                    q_gated = T.cast(q[bid, hid, kk], accum_dtype) * alpha_i
+                    q_gated = q_shared[kk] * alpha_i
                     for j in T.Parallel(dim_v):
                         sq_frag[j] = (
                             sq_frag[j]
@@ -98,10 +109,7 @@ def _gla_decode_tl(
                 # dim_v-parallel inner loop.
                 qk_dot[0] = T.float32(0.0)
                 for kk in T.Serial(dim_k):
-                    qk_dot[0] += (
-                        T.cast(q[bid, hid, kk], accum_dtype)
-                        * T.cast(k[bid, hid, kk], accum_dtype)
-                    )
+                    qk_dot[0] += q_shared[kk] * k_shared[kk]
 
                 # o = scale * (S @ q_gated) + scale * (q . k) * v
                 for j in T.Parallel(dim_v):
@@ -112,15 +120,13 @@ def _gla_decode_tl(
 
                 # === Pass 2: State update with async prefetch ===
                 # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
+                # NOTE: No intermediate variables inside T.Parallel to avoid BindNode issue
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
                     T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
                     for kk, j in T.Parallel(k_tile, dim_v):
-                        gk_val = T.cast(gk[bid, hid, kt * k_tile + kk], accum_dtype)
-                        alpha_i = T.exp2(gk_val * _LOG2E)
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
-                            alpha_i * T.cast(h_tile[kk, j], accum_dtype)
-                            + T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype)
-                            * v_shared[j],
+                            T.exp2(gk_shared[kt * k_tile + kk] * _LOG2E) * T.cast(h_tile[kk, j], accum_dtype)
+                            + k_shared[kt * k_tile + kk] * v_shared[j],
                             dtype,
                         )
 
@@ -326,6 +332,20 @@ def _gla_decode_fp32_tl(
                 # Fragment accumulator for S @ q_gated (full fp32, no TF32)
                 sq_frag = T.alloc_fragment([dim_v], accum_dtype)
                 qk_dot = T.alloc_local([1], accum_dtype)
+                # Preload q, k, v, gk into shared memory to avoid global access
+                # in pipelined loop (fixes TileLang warp-specialization issue)
+                q_shared = T.alloc_shared([dim_k], dtype)
+                k_shared = T.alloc_shared([dim_k], dtype)
+                v_shared = T.alloc_shared([dim_v], dtype)
+                gk_shared = T.alloc_shared([dim_k], dtype)
+
+                # Preload tensors into shared memory
+                for i in T.Parallel(dim_k):
+                    q_shared[i] = q[bid, hid, i]
+                    k_shared[i] = k[bid, hid, i]
+                    gk_shared[i] = gk[bid, hid, i]
+                for i in T.Parallel(dim_v):
+                    v_shared[i] = v[bid, hid, i]
 
                 # Zero-init fragment accumulator
                 T.fill(sq_frag, 0.0)
@@ -333,34 +353,33 @@ def _gla_decode_fp32_tl(
                 # === Pass 1: Element-wise matvec (full fp32 precision) ===
                 # S @ q_gated where q_gated = q * exp(gk)
                 for kk in T.Serial(dim_k):
-                    gk_val = gk[bid, hid, kk]
+                    gk_val = gk_shared[kk]
                     alpha_i = T.exp2(gk_val * _LOG2E)
-                    q_gated = q[bid, hid, kk] * alpha_i
+                    q_gated = q_shared[kk] * alpha_i
                     for j in T.Parallel(dim_v):
                         sq_frag[j] = sq_frag[j] + q_gated * state[bid, hid, kk, j]
 
                 # q . k dot product
                 qk_dot[0] = 0.0
                 for kk in T.Serial(dim_k):
-                    qk_dot[0] += q[bid, hid, kk] * k[bid, hid, kk]
+                    qk_dot[0] += q_shared[kk] * k_shared[kk]
 
                 # o = scale * (S @ q_gated) + scale * (q . k) * v
                 for j in T.Parallel(dim_v):
                     o[bid, hid, j] = (
                         scale * sq_frag[j]
-                        + scale * qk_dot[0] * v[bid, hid, j]
+                        + scale * qk_dot[0] * v_shared[j]
                     )
 
                 # === Pass 2: State update with async prefetch ===
                 # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
+                # NOTE: No intermediate variables inside T.Parallel to avoid BindNode issue
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
                     T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
                     for kk, j in T.Parallel(k_tile, dim_v):
-                        gk_val = gk[bid, hid, kt * k_tile + kk]
-                        alpha_i = T.exp2(gk_val * _LOG2E)
                         new_state[bid, hid, kt * k_tile + kk, j] = (
-                            alpha_i * h_tile[kk, j]
-                            + k[bid, hid, kt * k_tile + kk] * v[bid, hid, j]
+                            T.exp2(gk_shared[kt * k_tile + kk] * _LOG2E) * h_tile[kk, j]
+                            + k_shared[kt * k_tile + kk] * v_shared[j]
                         )
 
         return gla_decode_fp32
