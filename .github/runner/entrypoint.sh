@@ -41,4 +41,12 @@ trap cleanup EXIT INT TERM
     --disableupdate
 
 # ── Run one job, then exit ───────────────────────────────────────────────────
-./run.sh
+# Make container stop signals reach the runner so an idle ephemeral runner shuts down promptly
+# instead of waiting out docker stop's grace:
+#   - RUNNER_MANUALLY_TRAP_SIG=1 makes run.sh trap SIGTERM/SIGINT and forward SIGINT to the
+#     listener process group (its default mode does not trap, so the signal is otherwise lost).
+#   - exec makes run.sh PID 1 so docker stop's SIGTERM is delivered to it; a bash wrapper as
+#     PID 1 would ignore an untrapped SIGTERM and stall until SIGKILL.
+# Trade-off: a stop signal cancels an in-progress job rather than draining it.
+export RUNNER_MANUALLY_TRAP_SIG=1
+exec ./run.sh
