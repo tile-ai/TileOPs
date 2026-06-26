@@ -340,8 +340,8 @@ class GroupedQueryAttentionFwdOp(Op):
                                         float("-inf"))
         return torch.logsumexp(scores, dim=-1) * math.log2(math.e)
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor,
-                v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward_with_lse(self, q: torch.Tensor, k: torch.Tensor,
+                         v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         cu_cache_key = (q.device, torch.int32)
         cu_seqlens = self._cu_seqlens_cache.get(cu_cache_key)
         if cu_seqlens is None:
@@ -364,6 +364,10 @@ class GroupedQueryAttentionFwdOp(Op):
         )
         lse = self._compute_square_lse(q, k)
         return output.reshape(self.batch, self.seq_len, self.heads, self.dim), lse
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor,
+                v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.forward_with_lse(q, k, v)
 
 
 class GroupedQueryAttentionPrefillFwdOp(Op):

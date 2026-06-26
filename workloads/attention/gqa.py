@@ -49,7 +49,7 @@ class GroupedQueryAttentionBwdTest(WorkloadBase):
         fwd_op = GroupedQueryAttentionFwdOp(self.batch, self.heads, self.heads_kv, self.seq_len,
                                             self.dim, self.is_causal, self.dtype)
         with torch.no_grad():
-            o, lse = fwd_op(q, k, v)
+            o, lse = fwd_op.forward_with_lse(q, k, v)
 
         return q, k, v, o, grad_output, lse
 
