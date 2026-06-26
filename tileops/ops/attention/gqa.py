@@ -307,6 +307,8 @@ class GroupedQueryAttentionFwdOp(Op):
             kernel_map=self.kernel_map,
             tune=tune,
         )
+        self._cu_seqlens_cache: dict[tuple[torch.device, torch.dtype], torch.Tensor] = {}
+        self._scale_cache: dict[torch.device, torch.Tensor] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -324,11 +326,32 @@ class GroupedQueryAttentionFwdOp(Op):
     def kernel(self) -> Kernel:
         return self._prefill_op._get_dense_kernel()
 
+    def _compute_square_lse(self, q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+        groups = self.heads // self.heads_kv
+        q_bhsd = q.transpose(1, 2).float()
+        k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
+        scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * self.sm_scale
+        if self.softcap > 0:
+            scores = self.softcap * torch.tanh(scores / self.softcap)
+        if self.is_causal:
+            pos = torch.arange(self.seq_len, device=q.device)
+            mask = pos[None, :] <= pos[:, None]
+            scores = scores.masked_fill(~mask.view(1, 1, self.seq_len, self.seq_len),
+                                        float("-inf"))
+        return torch.logsumexp(scores, dim=-1) * math.log2(math.e)
+
     def forward(self, q: torch.Tensor, k: torch.Tensor,
-                v: torch.Tensor) -> tuple[torch.Tensor, None]:
-        cu_seqlens = torch.arange(
-            self.batch + 1, device=q.device, dtype=torch.int32) * self.seq_len
-        scale = torch.ones((self.batch, self.heads_kv), device=q.device, dtype=torch.float32)
+                v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        cu_cache_key = (q.device, torch.int32)
+        cu_seqlens = self._cu_seqlens_cache.get(cu_cache_key)
+        if cu_seqlens is None:
+            cu_seqlens = torch.arange(
+                self.batch + 1, device=q.device, dtype=torch.int32) * self.seq_len
+            self._cu_seqlens_cache[cu_cache_key] = cu_seqlens
+        scale = self._scale_cache.get(q.device)
+        if scale is None:
+            scale = torch.ones((self.batch, self.heads_kv), device=q.device, dtype=torch.float32)
+            self._scale_cache[q.device] = scale
         output = self._prefill_op(
             q.reshape(self.batch * self.seq_len, self.heads, self.dim).contiguous(),
             k.reshape(self.batch * self.seq_len, self.heads_kv, self.dim).contiguous(),
@@ -339,7 +362,8 @@ class GroupedQueryAttentionFwdOp(Op):
             scale,
             scale,
         )
-        return output.reshape(self.batch, self.seq_len, self.heads, self.dim), None
+        lse = self._compute_square_lse(q, k)
+        return output.reshape(self.batch, self.seq_len, self.heads, self.dim), lse
 
 
 class GroupedQueryAttentionPrefillFwdOp(Op):
@@ -408,6 +432,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         self._sliding_window_varlen_kernel = None
         self._fp8_kernel = None
         self._roofline_kwargs = None
+        self._uniform_cu_cache: dict[tuple[int, torch.device, torch.dtype], torch.Tensor] = {}
 
         self.dispatch_kernel(kernel_map)
 
@@ -524,11 +549,15 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
                 )
 
     def _uniform_cu_seqlens(self, cu_seqlens: torch.Tensor, seq_len: int) -> bool:
-        expected = torch.arange(
-            self.batch + 1,
-            device=cu_seqlens.device,
-            dtype=cu_seqlens.dtype,
-        ) * seq_len
+        cache_key = (seq_len, cu_seqlens.device, cu_seqlens.dtype)
+        expected = self._uniform_cu_cache.get(cache_key)
+        if expected is None:
+            expected = torch.arange(
+                self.batch + 1,
+                device=cu_seqlens.device,
+                dtype=cu_seqlens.dtype,
+            ) * seq_len
+            self._uniform_cu_cache[cache_key] = expected
         return bool(torch.equal(cu_seqlens, expected))
 
     def _uses_sliding_window(self) -> bool:
@@ -1230,7 +1259,11 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             cache_dtype = dtype
         elif isinstance(cache_dtype, str):
             if cache_dtype == "float8_e4m3fn":
-                cache_dtype = torch.float8_e4m3fn
+                fp8_dtype = getattr(torch, "float8_e4m3fn", None)
+                if fp8_dtype is None:
+                    raise ValueError(
+                        "torch.float8_e4m3fn is not supported on this PyTorch version")
+                cache_dtype = fp8_dtype
             else:
                 candidate = getattr(torch, cache_dtype, None)
                 if not isinstance(candidate, torch.dtype):
