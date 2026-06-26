@@ -25,8 +25,8 @@ def _gemm_kernel(m: int,
     accum_dtype = "float"
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
-    def _gemm_func(block_m: int, block_n: int, block_k: int, threads: int, num_stages: int,
-                   enable_rasterization: bool) -> Callable:
+    def _gemm_func(block_m: int = 128, block_n: int = 256, block_k: int = 64, threads: int = 256,
+                   num_stages: int = 3, enable_rasterization: bool = True) -> Callable:
 
         a_shape = (k, m) if trans_a else (m, k)
         b_shape = (n, k) if trans_b else (k, n)
@@ -201,9 +201,9 @@ def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _gemv_func(
-        block_n: int,
-        reduce_threads: int,
-        num_stages: int,
+        block_n: int = 8,
+        reduce_threads: int = 32,
+        num_stages: int = 2,
     ) -> Callable:
 
         max_transaction_size_in_bits = 128
