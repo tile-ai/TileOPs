@@ -64,7 +64,7 @@ def _fp8_lighting_indexer_kernel(batch,
                 index_k_scale_fragment = T.alloc_fragment([block_N, kv_group], accum_dtype)
                 s = T.alloc_fragment([block_N, block_Q * heads], accum_dtype)  #
                 s_reshaped = T.reshape(s, (block_N, block_Q, heads_per_group, kv_group))
-                s_tmp = T.alloc_fragment([block_N, heads_per_group], accum_dtype)
+                s_tmp = T.alloc_fragment([block_N, block_Q * heads_per_group], accum_dtype)
                 logits = T.alloc_fragment([block_N, block_Q, kv_group], accum_dtype)
                 weights = T.alloc_fragment([block_Q, heads], accum_dtype)
 
@@ -105,8 +105,9 @@ def _fp8_lighting_indexer_kernel(batch,
                             clear_accum=True,
                             policy=T.GemmWarpPolicy.FullCol,
                         )
-                        for bn_i, h_i in T.Parallel(block_N, heads_per_group):
-                            s[bn_i, g * heads_per_group + h_i] = s_tmp[bn_i, h_i]
+                        for bn_i, bq_i, h_i in T.Parallel(block_N, block_Q, heads_per_group):
+                            s_reshaped[bn_i, bq_i, h_i, g] = (
+                                s_tmp[bn_i, bq_i * heads_per_group + h_i])
 
                     for bn_i, bq_i, h_i, g in T.Parallel(block_N, block_Q, heads_per_group,
                                                          kv_group):
@@ -232,7 +233,7 @@ class FP8LightingIndexerKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"block_N": 64, "num_stages": 2, "threads": 128, "block_Q": 1}
+        return {"block_N": 64, "num_stages": 2, "threads": 128, "block_Q": 4}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -305,8 +306,9 @@ class FP8LightingIndexerKernel(Kernel):
             configs=self.autotune_configs, warmup=warmup, rep=rep, supply_prog=self.supply_prog)(
                 self.kernel)
 
-        # Call without config parameters to trigger autotuning, returns the tuned kernel
-        tuned_kernel = autotuned_kernel_fn()
+        # Seed required tunable JIT parameters for TileLang's pre-autotune
+        # validation/binding step.
+        tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
 
         # Extract and store the best config
         self.config = tuned_kernel.config

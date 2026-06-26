@@ -199,6 +199,9 @@ class TestSourcePaths:
 
     def test_all_source_paths_exist(self, all_ops):
         for op_name, entry in all_ops.items():
+            # Skip spec-only ops — source paths are placeholders until implementation
+            if entry.get("status") == "spec-only":
+                continue
             source = entry["source"]
             for key, rel_path in source.items():
                 if not isinstance(rel_path, str):

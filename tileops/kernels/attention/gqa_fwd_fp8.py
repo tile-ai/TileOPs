@@ -5,7 +5,6 @@ from typing import Callable, Tuple
 import tilelang
 import tilelang.language as T
 import torch
-from tvm import tir
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import (
@@ -154,8 +153,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                     ):
                         head_kv = tile_hkv
                         loop_range = T.ceildiv(seq_len, 224)
-                        T.reads(v[tile_b, 0:seq_len, head_kv, :])
-                        T.writes(v_vt_smem_0[0:dim, 0:224], v_vt_smem_1[0:dim, 0:224])
                         for n_idx in T.Pipelined(loop_range, num_stages=0):
                             if n_idx > 0:
                                 if gi_vp >= 2:
@@ -191,7 +188,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                             TMA_L2_PROMOTION_128B,
                                             TMA_OOB_FILL_NONE,
                                         )
-                                        tir.call_extern(
+                                        T.call_extern(
                                             "handle",
                                             "tl::fp8_tma_load_4d_ptx",
                                             v_desc,
@@ -238,7 +235,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                             TMA_L2_PROMOTION_128B,
                                             TMA_OOB_FILL_NONE,
                                         )
-                                        tir.call_extern(
+                                        T.call_extern(
                                             "handle",
                                             "tl::fp8_tma_load_4d_ptx",
                                             v_desc,
@@ -307,7 +304,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     TMA_L2_PROMOTION_128B,
                                     TMA_OOB_FILL_NONE,
                                 )
-                                tir.call_extern(
+                                T.call_extern(
                                     "handle",
                                     "tl::fp8_tma_load_4d_ptx",
                                     v_desc_tail,
@@ -354,7 +351,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     TMA_L2_PROMOTION_128B,
                                     TMA_OOB_FILL_NONE,
                                 )
-                                tir.call_extern(
+                                T.call_extern(
                                     "handle",
                                     "tl::fp8_tma_load_4d_ptx",
                                     v_desc_tail,

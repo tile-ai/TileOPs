@@ -801,7 +801,7 @@ class SoftmaxKernel(Kernel):
             if self.autotune_supply_prog is not None:
                 autotune_kwargs["supply_prog"] = self.autotune_supply_prog
             autotuned = tl_autotune(**autotune_kwargs)(kernel)
-            tuned = autotuned()
+            tuned = self._call_autotuned_kernel(autotuned, kernel, group_cfgs[0])
             latency = tuned.latency
             if latency < best_time:
                 best_time = latency

@@ -106,12 +106,11 @@ def _h_recurrence_tl(
                              v_offset : v_offset + BV], u_c, disable_tma=True)
 
                     # v_new_tile = u_tile - (w @ h_tile) * exp(g + g_last)
-                    g_last_val = g_c[block_C - 1]
                     T.clear(ws_frag)
                     T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
-                            (g_c[i] + g_last_val) * _LOG2E)
+                            (g_c[i] + g_c[block_C - 1]) * _LOG2E)
 
                     # Store v_new tile
                     T.copy(v_new_c,
@@ -120,12 +119,11 @@ def _h_recurrence_tl(
                            disable_tma=True)
 
                     # h_tile_next = h_tile * exp(g_last) + k_scaled^T @ v_new_tile
-                    g_last = g_c[block_C - 1]
                     for n, kk in T.Parallel(block_C, dim_k):
                         k_scaled_s[n, kk] = k_c[n, kk] * T.exp2(
-                            (g_last - g_c[n]) * _LOG2E)
+                            (g_c[block_C - 1] - g_c[n]) * _LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
-                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_last * _LOG2E)
+                        h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * _LOG2E)
                     T.gemm(k_scaled_s, v_new_c, h_next_frag, transpose_A=True)
                     T.copy(h_next_frag, h_c)
                     for i, j in T.Parallel(dim_k, BV):
@@ -328,7 +326,11 @@ class GatedDeltaNetFwdKernel(Kernel):
         ]
         print(f"Autotuning fused_prepare_compute_w_u ({len(fused_configs)} configs)...")
         fused_jit = fused_prepare_compute_w_u_tl(B, H, S, BC, DK, DV, dt)
-        tuned_fused = tl_autotune(configs=fused_configs, warmup=warmup, rep=rep)(fused_jit)()
+        tuned_fused = self._call_autotuned_kernel(
+            tl_autotune(configs=fused_configs, warmup=warmup, rep=rep)(fused_jit),
+            fused_jit,
+            fused_configs[0],
+        )
         fused_best = tuned_fused.config
         print(f"  Best: {fused_best}")
 
@@ -344,7 +346,11 @@ class GatedDeltaNetFwdKernel(Kernel):
             label = f"block_v={bv}" if bv else "block_v=0 (no tile)"
             print(f"Autotuning h_recurrence {label} ({len(h_configs)} configs)...")
             h_jit = _h_recurrence_tl(B, H, S, BC, DK, DV, dt, block_v=bv)
-            tuned_h = tl_autotune(configs=h_configs, warmup=warmup, rep=rep)(h_jit)()
+            tuned_h = self._call_autotuned_kernel(
+                tl_autotune(configs=h_configs, warmup=warmup, rep=rep)(h_jit),
+                h_jit,
+                h_configs[0],
+            )
             if tuned_h.config is not None:
                 lat = _do_bench(tuned_h, warmup=warmup, rep=rep)
                 print(f"  Best: {tuned_h.config}, latency={lat:.4f} ms")
@@ -358,7 +364,11 @@ class GatedDeltaNetFwdKernel(Kernel):
         o_configs = [{"threads": t} for t in [64, 128, 256]]
         print(f"Autotuning output_o ({len(o_configs)} configs)...")
         o_jit = _output_o_tl(B, H, S, BC, DK, DV, dt)
-        tuned_o = tl_autotune(configs=o_configs, warmup=warmup, rep=rep)(o_jit)()
+        tuned_o = self._call_autotuned_kernel(
+            tl_autotune(configs=o_configs, warmup=warmup, rep=rep)(o_jit),
+            o_jit,
+            o_configs[0],
+        )
         o_best = tuned_o.config
         print(f"  Best: {o_best}")
 

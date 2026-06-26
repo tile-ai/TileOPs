@@ -112,14 +112,13 @@ def _conv1d_kernel(
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
                     T.copy(weight_flat[by * block_m, k_iter * block_k], weight_shared)
 
-                    tile_full = tile_spatial_full & ((k_iter + 1) * block_k <= k_total)
                     for i, j in T.Parallel(block_k, block_n):
                         k_idx = k_iter * block_k + i
                         ol = bx * block_n + j
                         kw = k_idx // c_in
                         ci = k_idx % c_in
                         il = ol * stride_l + kw * dilation_l - pad_left
-                        if tile_full:
+                        if tile_spatial_full & ((k_iter + 1) * block_k <= k_total):
                             data_shared[i, j] = x[bz, ci, il]
                         else:
                             in_bound = (
@@ -397,8 +396,7 @@ def _conv1d_pointwise_kernel(
                 for k_iter in T.Pipelined(T.ceildiv(c_in, block_k), num_stages=num_stages):
                     T.copy(weight[by * block_m, k_iter * block_k], weight_shared)
 
-                    tile_full = tile_spatial_full & ((k_iter + 1) * block_k <= c_in)
-                    if tile_full:
+                    if tile_spatial_full & ((k_iter + 1) * block_k <= c_in):
                         T.copy(x[bz, k_iter * block_k, bx * block_n], data_shared)
                     else:
                         for i, j in T.Parallel(block_k, block_n):

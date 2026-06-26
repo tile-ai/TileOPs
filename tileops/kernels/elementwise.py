@@ -973,22 +973,27 @@ class BinaryKernel(Kernel):
         ]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Override to handle serialization failures in the TileLang autotuner.
+        """Override to handle known TileLang autotuner fallback failures.
 
         BinaryKernel JIT functions capture op_func closures that the autotuner
-        subprocess cannot serialize.  Catch the error and fall back to the
-        default config so that ``tune=True`` never crashes.
+        subprocess cannot serialize.  Newer TileLang binders can also reject
+        the autotune wrapper signature.  Catch these errors and fall back to
+        the default config so that ``tune=True`` never crashes.
         """
         import warnings
 
         try:
             super().autotune(warmup=warmup, rep=rep)
         except (AssertionError, Exception) as exc:
-            if "not serializable" in str(exc) or "pickle" in str(exc).lower():
+            message = str(exc)
+            if (
+                "not serializable" in message
+                or "pickle" in message.lower()
+                or "missing a required argument" in message
+            ):
                 warnings.warn(  # noqa: B028
                     f"{self.__class__.__name__} autotuning failed "
-                    f"(op_func is not serializable); falling back to "
-                    f"default_config.")
+                    f"({message}); falling back to default_config.")
                 self.config = dict(self.default_config)
             else:
                 raise

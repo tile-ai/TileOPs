@@ -118,13 +118,13 @@ def _bwd_parallel_tl(
                 T.copy(S[bid, hid, tid, :, :], h_c, disable_tma=True)
 
                 # Recompute forward: v_new_c, o_part, attn
-                g_last = g_c[block_C - 1]
                 T.clear(ws_frag)
                 T.gemm(w_c, h_c, ws_frag)
                 for i in T.Parallel(block_C):
                     exp_g[i] = T.exp2(g_c[i] * _LOG2E)
                 for i, j in T.Parallel(block_C, dim_v):
-                    v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2((g_c[i] + g_last) * _LOG2E)
+                    v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
+                        (g_c[i] + g_c[block_C - 1]) * _LOG2E)
 
                 # Store v_new for recurrence kernel
                 T.copy(v_new_c, v_new_out[bid, hid, tid * block_C : (tid + 1) * block_C, :], disable_tma=True)
@@ -192,7 +192,8 @@ def _bwd_parallel_tl(
 
                 # Step 5: dh from w/v_new, dw, dg from P
                 for i, j in T.Parallel(block_C, dim_k):
-                    P[i, j] = w_c[i, j] * T.exp2((g_c[i] + g_last) * _LOG2E)
+                    P[i, j] = w_c[i, j] * T.exp2(
+                        (g_c[i] + g_c[block_C - 1]) * _LOG2E)
                 T.clear(dP_frag)
                 T.gemm(d_v_new_c, h_c, dP_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, dim_k):
@@ -204,7 +205,8 @@ def _bwd_parallel_tl(
                     dh_frag[i, j] -= dh_sub_frag[i, j]
                 # dw
                 for i, j in T.Parallel(block_C, dim_k):
-                    d_w_c[i, j] = dP[i, j] * T.exp2((g_c[i] + g_last) * _LOG2E)
+                    d_w_c[i, j] = dP[i, j] * T.exp2(
+                        (g_c[i] + g_c[block_C - 1]) * _LOG2E)
                 # dg from P*dP
                 for i, j in T.Parallel(block_C, dim_k):
                     P[i, j] = P[i, j] * dP[i, j]
@@ -308,16 +310,15 @@ def _dh_recurrence_bwd_tl(
                     T.copy(S[bid, hid, t_bwd, :, :], h_c, disable_tma=True)
                     T.copy(dh_local[bid, hid, t_bwd, :, :], dh_loc, disable_tma=True)
 
-                    g_last = g_c[block_C - 1]
-                    exp_g_last = T.exp2(g_last * _LOG2E)
-
                     # k_scaled = k * exp(g_last - g)
                     for pn, sk in T.Parallel(block_C, dim_k):
-                        k_scaled[pn, sk] = k_c[pn, sk] * T.exp2((g_last - g_c[pn]) * _LOG2E)
+                        k_scaled[pn, sk] = k_c[pn, sk] * T.exp2(
+                            (g_c[block_C - 1] - g_c[pn]) * _LOG2E)
 
                     # dh = dh_local + dh_buf * exp(g_last)
                     for i, j in T.Parallel(dim_k, dim_v):
-                        dh_frag[i, j] = dh_loc[i, j] + dh_buf[i, j] * exp_g_last
+                        dh_frag[i, j] = dh_loc[i, j] + dh_buf[i, j] * T.exp2(
+                            g_c[block_C - 1] * _LOG2E)
 
                     # du_correction = k_scaled @ dh_buf
                     T.clear(du_corr_frag)
@@ -329,7 +330,8 @@ def _dh_recurrence_bwd_tl(
                     T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
                     T.copy(dP_frag, dP)
                     for n, kk in T.Parallel(block_C, dim_k):
-                        dk_corr[bid, hid, t_bwd * block_C + n, kk] = dP[n, kk] * T.exp2((g_last - g_c[n]) * _LOG2E)
+                        dk_corr[bid, hid, t_bwd * block_C + n, kk] = dP[n, kk] * T.exp2(
+                            (g_c[block_C - 1] - g_c[n]) * _LOG2E)
 
                     # dg_correction: per-position and g_last terms
                     # Per-position: -sum_k(dP * k_scaled) per row n
@@ -351,7 +353,8 @@ def _dh_recurrence_bwd_tl(
                     # g_last term 2: sum_n(d_g_pos)
                     d_g_last_scalar2 = T.alloc_shared([1], accum_dtype)
                     T.reduce_sum(d_g_pos, d_g_last_scalar2, dim=0)
-                    dg_c[block_C - 1] = dg_c[block_C - 1] + d_g_last_scalar1[0] * exp_g_last + d_g_last_scalar2[0]
+                    dg_c[block_C - 1] = dg_c[block_C - 1] + d_g_last_scalar1[0] * T.exp2(
+                        g_c[block_C - 1] * _LOG2E) + d_g_last_scalar2[0]
 
                     # Write dg_correction
                     for i in T.Parallel(block_C):
