@@ -603,13 +603,16 @@ class SparseMlaKernel(Kernel):
             return  # kernel doesn't support autotuning
         print(f'Start autotuning {self.__class__.__name__}...')
 
-        # Apply autotune decorator to the kernel function
-        autotuned_kernel_fn = autotune(
-            configs=self.autotune_configs, warmup=warmup, rep=rep, supply_prog=self.supply_prog)(
-                self.kernel)
+        tunable_params = list(self._autotune_initial_kwargs(self.kernel).keys())
+        # TileLang invokes supply_prog with the candidate JIT params; SparseMlaKernel.supply_prog
+        # generates inputs from instance shape attributes and takes none, so discard them.
+        autotune_kwargs = dict(
+            configs=self.autotune_configs, warmup=warmup, rep=rep,
+            supply_prog=lambda *args, **kwargs: self.supply_prog())
+        if tunable_params:
+            autotune_kwargs["do_not_specialize"] = tunable_params
+        autotuned_kernel_fn = autotune(**autotune_kwargs)(self.kernel)
 
-        # Seed required tunable JIT parameters for TileLang's pre-autotune
-        # validation/binding step.
         tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
 
         # Extract and store the best config
