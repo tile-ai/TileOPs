@@ -1,0 +1,41 @@
+# Dense GEMM family.
+#
+# GemmOp is input-inferred: m/n/k and the dtype are derived from the forward
+# inputs, so nothing is committed at construction. Roofline binds m/n/k and
+# dtype during forward() and therefore uses func mode (the callable reads
+# op.m/op.n/op.k/op.dtype), which stays correct across all trans_a/trans_b
+# layouts where a single static `vars` expression could not.
+GemmOp:
+  ref_api: "torch.matmul"
+  family: gemm
+  status: implemented
+
+  signature:
+    inputs:
+      a: {dtype: "float16 | bfloat16"}
+      b: {dtype: "same_as(a)"}
+    outputs:
+      d: {dtype: "same_as(a)"}
+    params:
+      trans_a: {type: bool, default: false}
+      trans_b: {type: bool, default: true}
+
+  workloads:
+  # m/n/k are the logical GEMM dims (trans-independent); trans_a/trans_b pick
+  # the storage layout the kernel compiles for.
+  - {m: 1024, n: 1024, k: 1024, trans_a: false, trans_b: false, dtypes: [float16, bfloat16], label: "square-1k-nn"}
+  - {m: 4096, n: 4096, k: 4096, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "square-4k-nt"}
+  - {m: 4096, n: 7168, k: 4096, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "mlp-like-nt"}
+
+  roofline:
+    func: "tileops.ops.gemm._gemm_roofline"
+
+  source:
+    kernel: tileops/kernels/gemm.py
+    op: tileops/ops/gemm.py
+    test: tests/ops/test_gemm.py
+    bench: benchmarks/ops/bench_gemm.py
+    bench_manifest_driven: true
+    kernel_map:
+      gemm_kernel: GemmKernel
+      gemv_kernel: GemvKernel
