@@ -98,7 +98,7 @@ def _gla_decode_tl(
                 for kk in T.Serial(dim_k):
                     gk_val = gk_shared[kk]
                     alpha_i = T.exp2(gk_val * _LOG2E)
-                    q_gated = T.cast(q[bid, hid, kk], accum_dtype) * alpha_i
+                    q_gated = q_shared[kk] * alpha_i
                     for j in T.Parallel(dim_v):
                         sq_frag[j] = (
                             sq_frag[j]
@@ -109,10 +109,7 @@ def _gla_decode_tl(
                 # dim_v-parallel inner loop.
                 qk_dot[0] = T.float32(0.0)
                 for kk in T.Serial(dim_k):
-                    qk_dot[0] += (
-                        T.cast(q[bid, hid, kk], accum_dtype)
-                        * k_shared[kk]
-                    )
+                    qk_dot[0] += q_shared[kk] * k_shared[kk]
 
                 # o = scale * (S @ q_gated) + scale * (q . k) * v
                 for j in T.Parallel(dim_v):
@@ -358,14 +355,14 @@ def _gla_decode_fp32_tl(
                 for kk in T.Serial(dim_k):
                     gk_val = gk_shared[kk]
                     alpha_i = T.exp2(gk_val * _LOG2E)
-                    q_gated = q[bid, hid, kk] * alpha_i
+                    q_gated = q_shared[kk] * alpha_i
                     for j in T.Parallel(dim_v):
                         sq_frag[j] = sq_frag[j] + q_gated * state[bid, hid, kk, j]
 
                 # q . k dot product
                 qk_dot[0] = 0.0
                 for kk in T.Serial(dim_k):
-                    qk_dot[0] += q[bid, hid, kk] * k_shared[kk]
+                    qk_dot[0] += q_shared[kk] * k_shared[kk]
 
                 # o = scale * (S @ q_gated) + scale * (q . k) * v
                 for j in T.Parallel(dim_v):
