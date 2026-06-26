@@ -19,6 +19,10 @@ GemmOp:
     params:
       trans_a: {type: bool, default: false}
       trans_b: {type: bool, default: true}
+    shape_rules:
+    # d is logical [M, N] for all four layouts: M is a's non-K axis (axis 1 if
+    # a is stored [K, M] under trans_a, else axis 0); N is b's non-K axis.
+    - "d.shape == ((a.shape[1] if trans_a else a.shape[0]), (b.shape[0] if trans_b else b.shape[1]))"
 
   workloads:
   # m/n/k are the logical GEMM dims (trans-independent); trans_a/trans_b pick
