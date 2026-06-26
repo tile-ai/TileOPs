@@ -1,7 +1,30 @@
+import math
+
 import torch
 
 from tileops.ops import GroupedQueryAttentionFwdOp
 from workloads.workload_base import WorkloadBase
+
+
+def _compute_gqa_square_lse(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    *,
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    is_causal: bool,
+) -> torch.Tensor:
+    groups = heads // heads_kv
+    seq_len = q.shape[1]
+    q_bhsd = q.transpose(1, 2).float()
+    k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
+    scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * (dim**-0.5)
+    if is_causal:
+        pos = torch.arange(seq_len, device=q.device)
+        mask = pos[None, :] <= pos[:, None]
+        scores = scores.masked_fill(~mask.view(1, 1, seq_len, seq_len), float("-inf"))
+    return torch.logsumexp(scores, dim=-1) * math.log2(math.e)
 
 
 class GroupedQueryAttentionBwdTest(WorkloadBase):
@@ -49,9 +72,18 @@ class GroupedQueryAttentionBwdTest(WorkloadBase):
         fwd_op = GroupedQueryAttentionFwdOp(self.batch, self.heads, self.heads_kv, self.seq_len,
                                             self.dim, self.is_causal, self.dtype)
         with torch.no_grad():
-            o, lse = fwd_op.forward_with_lse(q, k, v)
+            o = fwd_op(q, k, v)
+            lse = _compute_gqa_square_lse(
+                q,
+                k,
+                heads=self.heads,
+                heads_kv=self.heads_kv,
+                dim=self.dim,
+                is_causal=self.is_causal,
+            )
 
         return q, k, v, o, grad_output, lse
+
 
 class GroupedQueryAttentionFwdTest(WorkloadBase):
 

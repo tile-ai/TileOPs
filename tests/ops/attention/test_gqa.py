@@ -58,15 +58,14 @@ class GroupedQueryAttentionBwdTest(_GroupedQueryAttentionBwdTestWorkload, TestBa
 
 class GroupedQueryAttentionFwdTest(_GroupedQueryAttentionFwdTestWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor,
-                    v: torch.Tensor) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+                    v: torch.Tensor) -> torch.Tensor:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal, enable_gqa=True)
-        output = output_bhsd.transpose(1, 2).contiguous()
-        return output, None  # do not check lse
+        return output_bhsd.transpose(1, 2).contiguous()
 
 
 def _gqa_prefill_ref(

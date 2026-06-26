@@ -326,22 +326,7 @@ class GroupedQueryAttentionFwdOp(Op):
     def kernel(self) -> Kernel:
         return self._prefill_op._get_dense_kernel()
 
-    def _compute_square_lse(self, q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-        groups = self.heads // self.heads_kv
-        q_bhsd = q.transpose(1, 2).float()
-        k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
-        scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * self.sm_scale
-        if self.softcap > 0:
-            scores = self.softcap * torch.tanh(scores / self.softcap)
-        if self.is_causal:
-            pos = torch.arange(self.seq_len, device=q.device)
-            mask = pos[None, :] <= pos[:, None]
-            scores = scores.masked_fill(~mask.view(1, 1, self.seq_len, self.seq_len),
-                                        float("-inf"))
-        return torch.logsumexp(scores, dim=-1) * math.log2(math.e)
-
-    def forward_with_lse(self, q: torch.Tensor, k: torch.Tensor,
-                         v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         cu_cache_key = (q.device, torch.int32)
         cu_seqlens = self._cu_seqlens_cache.get(cu_cache_key)
         if cu_seqlens is None:
@@ -362,12 +347,7 @@ class GroupedQueryAttentionFwdOp(Op):
             scale,
             scale,
         )
-        lse = self._compute_square_lse(q, k)
-        return output.reshape(self.batch, self.seq_len, self.heads, self.dim), lse
-
-    def forward(self, q: torch.Tensor, k: torch.Tensor,
-                v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.forward_with_lse(q, k, v)
+        return output.reshape(self.batch, self.seq_len, self.heads, self.dim)
 
 
 class GroupedQueryAttentionPrefillFwdOp(Op):
