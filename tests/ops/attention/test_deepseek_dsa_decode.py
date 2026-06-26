@@ -62,6 +62,10 @@ class DsaDecodeFixture(FixtureBase):
                  1, 128, 1024, 2048, 512, 64, 2048, 1, 1, 1024, None, torch.float16, False,
                  marks=pytest.mark.smoke,
              ),
+             pytest.param(
+                 1, 128, 1024, 2048, 512, 64, 2048, 1, 1, 1024, None, torch.float16, True,
+                 marks=pytest.mark.full, id="full-fp16-tuned",
+             ),
          ]),
     ]
 
