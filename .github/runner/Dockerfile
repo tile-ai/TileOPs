@@ -150,6 +150,10 @@ ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     PIP_CACHE_DIR=/ci-cache/pip \
     PIP_NO_CACHE_DIR=0
 ARG RUNNER_VERSION=2.334.0
+# The /ci-cache chown below serves only the unmounted image-verification path
+# (`docker run <image> python ...`, see README): ci-runner writes the root-created cache dirs
+# directly. In the mounted CI path the host bind-mount shadows these dirs, so the chown is a
+# no-op and host ownership wins.
 # useradd before WORKDIR: home stays ci-runner-owned, and WORKDIR precedes the relative-path RUN (hadolint).
 # Pin UID/GID 1000 so the account deterministically owns the shared /ci-cache bind-mount across
 # hosts (it matches the majority of existing warm-cache entries; host normalization preserves them).
@@ -162,7 +166,7 @@ RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && ./bin/installdependencies.sh \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /ci-cache/pip /ci-cache/tilelang/tmp /ci-cache/triton \
-    && chown -R ci-runner:ci-runner /home/ci-runner
+    && chown -R ci-runner:ci-runner /home/ci-runner /ci-cache
 # chmod as root before the USER drop.
 COPY --chown=ci-runner:ci-runner .github/runner/entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
