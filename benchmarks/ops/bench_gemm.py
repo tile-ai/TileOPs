@@ -1,11 +1,3 @@
-"""Benchmark for dense GemmOp.
-
-Workload shapes come from the manifest entry's `workloads` (via
-`load_workloads`); the benchmark reports TileOPs latency alongside the
-manifest-derived roofline (`op.eval_roofline()`), with a cuBLAS
-(`torch.matmul`) baseline.
-"""
-
 from typing import Optional
 
 import pytest
