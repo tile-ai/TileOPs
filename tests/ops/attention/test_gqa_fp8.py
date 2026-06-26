@@ -2,10 +2,7 @@ import pytest
 import torch
 
 from tileops.kernels.attention import GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
-from tileops.ops import (
-    GroupedQueryAttentionPrefillFP8TensorCoreFwdOp,
-    GroupedQueryAttentionPrefillFwdOp,
-)
+from tileops.ops import GroupedQueryAttentionPrefillFwdOp
 from tileops.testing.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
@@ -14,6 +11,45 @@ from tileops.testing.gqa_fp8_utils import (
 
 def _has_sm90() -> bool:
     return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9
+
+
+def _run_canonical_fp8_prefill(
+    *,
+    batch: int,
+    seq_len: int,
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    out_dtype: torch.dtype,
+    q_fp8: torch.Tensor,
+    k_fp8: torch.Tensor,
+    v_fp8: torch.Tensor,
+    q_scale: torch.Tensor,
+    k_scale: torch.Tensor,
+    v_scale: torch.Tensor,
+) -> torch.Tensor:
+    cu = torch.tensor([0, seq_len], device=q_fp8.device, dtype=torch.int32)
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len,
+        max_seqlen_kv=seq_len,
+        dtype=out_dtype,
+        is_causal=False,
+        backend="fp8",
+    )
+    return op(
+        q_fp8.reshape(batch * seq_len, heads, dim).contiguous(),
+        k_fp8.reshape(batch * seq_len, heads_kv, dim).contiguous(),
+        v_fp8.reshape(batch * seq_len, heads_kv, dim).contiguous(),
+        cu,
+        cu,
+        q_scale,
+        k_scale,
+        v_scale,
+    )
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
@@ -54,7 +90,7 @@ def test_gqa_fp8_bn224_kernel_accepts_fa3_descale_contract() -> None:
     ],
 )
 @pytest.mark.smoke
-def test_gqa_prefill_fp8_tensor_core_op_accepts_fa3_descale_contract(
+def test_gqa_prefill_canonical_fp8_accepts_fa3_descale_contract(
     seq_len: int,
     out_dtype: torch.dtype,
     input_scale: float,
@@ -68,18 +104,22 @@ def test_gqa_prefill_fp8_tensor_core_op_accepts_fa3_descale_contract(
     k_fp8, k_descale = quantize_kv_fa3_descale(k)
     v_fp8, v_descale = quantize_kv_fa3_descale(v)
 
-    op = GroupedQueryAttentionPrefillFP8TensorCoreFwdOp(
+    out = _run_canonical_fp8_prefill(
         batch=batch,
+        seq_len=seq_len,
         heads=heads,
         heads_kv=heads_kv,
-        seq_len=seq_len,
         dim=dim,
-        is_causal=False,
-        dtype=out_dtype,
+        out_dtype=out_dtype,
+        q_fp8=q_fp8,
+        k_fp8=k_fp8,
+        v_fp8=v_fp8,
+        q_scale=q_descale,
+        k_scale=k_descale,
+        v_scale=v_descale,
     )
-    out = op(q_fp8, k_fp8, v_fp8, q_descale, k_descale, v_descale)
 
-    assert out.shape == (batch, seq_len, heads, dim)
+    assert out.shape == (batch * seq_len, heads, dim)
     assert out.dtype == out_dtype
     assert torch.isfinite(out.float()).all()
 
@@ -128,17 +168,6 @@ def test_gqa_prefill_canonical_op_dispatches_fp8_tensor_core_path() -> None:
 @pytest.mark.smoke
 def test_gqa_prefill_fp8_tensor_core_rejects_unaligned_q_tiles(seq_len: int) -> None:
     with pytest.raises(ValueError, match="seq_len % 128 == 0"):
-        GroupedQueryAttentionPrefillFP8TensorCoreFwdOp(
-            batch=1,
-            heads=8,
-            heads_kv=2,
-            seq_len=seq_len,
-            dim=128,
-            is_causal=False,
-            dtype=torch.float16,
-        )
-
-    with pytest.raises(ValueError, match="seq_len % 128 == 0"):
         GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(1, 8, 2, seq_len, 128, torch.float16)
 
 
@@ -157,16 +186,20 @@ def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
     k_fp8, k_descale = quantize_kv_fa3_descale(k)
     v_fp8, v_descale = quantize_kv_fa3_descale(v)
 
-    op = GroupedQueryAttentionPrefillFP8TensorCoreFwdOp(
+    out = _run_canonical_fp8_prefill(
         batch=batch,
+        seq_len=seq_len,
         heads=heads,
         heads_kv=heads_kv,
-        seq_len=seq_len,
         dim=dim,
-        is_causal=False,
-        dtype=torch.float16,
+        out_dtype=torch.float16,
+        q_fp8=q_fp8,
+        k_fp8=k_fp8,
+        v_fp8=v_fp8,
+        q_scale=q_descale,
+        k_scale=k_descale,
+        v_scale=v_descale,
     )
-    out = op(q_fp8, k_fp8, v_fp8, q_descale, k_descale, v_descale)
 
     q_deq = q_fp8.float().reshape(batch, seq_len, heads_kv, group_size, dim)
     q_deq = (q_deq * q_descale[:, None, :, None, None]).reshape(batch, seq_len, heads, dim)
@@ -188,4 +221,5 @@ def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
         ref_heads.append(torch.matmul(probs, v_deq[0, :, head_kv, :]))
     ref = torch.stack(ref_heads, dim=1).unsqueeze(0)
 
-    torch.testing.assert_close(out.float(), ref, atol=5e-2, rtol=5e-2)
+    torch.testing.assert_close(
+        out.reshape(batch, seq_len, heads, dim).float(), ref, atol=5e-2, rtol=5e-2)

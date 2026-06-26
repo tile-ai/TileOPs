@@ -186,6 +186,11 @@ GroupedQueryAttentionPrefillFwdOp:
     - {total_q: 1024, total_kv: 8192, batch: 2, q_lens: [512, 512], kv_lens: [4096, 4096], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense-q-lt-kv"}
     # Llama-3.1-70B (H=64, H_kv=8, D=128)
     - {total_q: 512, total_kv: 4096, batch: 1, q_lens: [512], kv_lens: [4096], heads: 64, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-dense-q-lt-kv"}
+    # FP8 Tensor Core prefill through the canonical packed prefill surface.
+    - {total_q: 896, total_kv: 896, batch: 1, q_lens: [896], kv_lens: [896], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 896, max_seqlen_kv: 896, is_causal: false, backend: "fp8", dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-fp8tc-bn224-s896"}
+    - {total_q: 1792, total_kv: 1792, batch: 1, q_lens: [1792], kv_lens: [1792], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 1792, max_seqlen_kv: 1792, is_causal: false, backend: "fp8", dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-fp8tc-bn224-s1792"}
+    - {total_q: 3584, total_kv: 3584, batch: 1, q_lens: [3584], kv_lens: [3584], heads: 64, heads_kv: 8, dim: 128, max_seqlen_q: 3584, max_seqlen_kv: 3584, is_causal: false, backend: "fp8", dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-fp8tc-bn224-s3584"}
+    - {total_q: 7168, total_kv: 7168, batch: 1, q_lens: [7168], kv_lens: [7168], heads: 64, heads_kv: 8, dim: 128, max_seqlen_q: 7168, max_seqlen_kv: 7168, is_causal: false, backend: "fp8", dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-fp8tc-bn224-s7168"}
 
   roofline:
     func: "tileops.perf.formulas.gqa_prefill_varlen_fwd_roofline"
@@ -197,117 +202,6 @@ GroupedQueryAttentionPrefillFwdOp:
       gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
       gqa_sliding_window_varlen_fwd: GQASlidingWindowVarlenFwdKernel
       gqa_prefill_fp8_tensor_core_fwd_kernel: GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa.py
-    bench: benchmarks/ops/attention/bench_gqa.py
-    bench_manifest_driven: true
-
-GroupedQueryAttentionPrefillFP8TensorCoreFwdOp:
-  ref_api: "flash_attn_interface.flash_attn_func"
-  family: attention
-  status: implemented
-
-  signature:
-    inputs:
-      q: {dtype: "float8_e4m3fn"}
-      k: {dtype: "float8_e4m3fn"}
-      v: {dtype: "float8_e4m3fn"}
-      q_descale: {dtype: "float32"}
-      k_descale: {dtype: "float32"}
-      v_descale: {dtype: "float32"}
-    outputs:
-      o: {dtype: "float16 | bfloat16"}
-    params:
-      is_causal: {type: bool, default: false}
-    dtype_combos:
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, q_descale: float32, k_descale: float32, v_descale: float32, o: float16}
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, q_descale: float32, k_descale: float32, v_descale: float32, o: bfloat16}
-    shape_rules:
-      - "q.shape == (B, S, H, D)"
-      - "k.shape == (B, S, H_kv, D)"
-      - "v.shape == (B, S, H_kv, D)"
-      - "q_descale.shape == (B, H_kv)"
-      - "k_descale.shape == (B, H_kv)"
-      - "v_descale.shape == (B, H_kv)"
-      - "o.shape == (B, S, H, D)"
-      - "H % H_kv == 0"
-      - "D == 128"
-      - "S % 224 == 0"
-      - "S % 128 == 0"
-      - "is_causal == False"
-
-  workloads:
-    - {q_shape: [1, 896, 32, 128], kv_shape: [1, 896, 8, 128], q_descale_shape: [1, 8], k_descale_shape: [1, 8], v_descale_shape: [1, 8], is_causal: false, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-fp8tc-bn224-s896"}
-    - {q_shape: [1, 1792, 32, 128], kv_shape: [1, 1792, 8, 128], q_descale_shape: [1, 8], k_descale_shape: [1, 8], v_descale_shape: [1, 8], is_causal: false, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-fp8tc-bn224-s1792"}
-    - {q_shape: [1, 3584, 64, 128], kv_shape: [1, 3584, 8, 128], q_descale_shape: [1, 8], k_descale_shape: [1, 8], v_descale_shape: [1, 8], is_causal: false, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-fp8tc-bn224-s3584"}
-    - {q_shape: [1, 7168, 64, 128], kv_shape: [1, 7168, 8, 128], q_descale_shape: [1, 8], k_descale_shape: [1, 8], v_descale_shape: [1, 8], is_causal: false, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-fp8tc-bn224-s7168"}
-
-  roofline:
-    func: "tileops.perf.formulas.gqa_prefill_fp8_tensor_core_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/gqa_fwd_fp8.py
-    kernel_map:
-      gqa_prefill_fp8_tensor_core_fwd_kernel: GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa_fp8.py
-    bench: benchmarks/ops/attention/bench_gqa_fp8.py
-    bench_manifest_driven: true
-
-GroupedQueryAttentionPrefillWithKVCacheFwdOp:
-  ref_api: "none"
-  family: attention
-  status: implemented
-
-  signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k_new: {dtype: "same_as(q)"}
-      v_new: {dtype: "same_as(q)"}
-      k_cache: {dtype: "same_as(q)"}
-      v_cache: {dtype: "same_as(q)"}
-      cache_seqlens: {dtype: "int32"}
-    outputs:
-      o: {dtype: "same_as(q)"}
-    params:
-      is_causal: {type: bool, default: true}
-      sm_scale: {type: float, default: null}
-      softcap: {type: float, default: null}
-      fuse_rope: {type: bool, default: false}
-      rope_base: {type: float, default: 10000.0}
-      max_position: {type: "int | None", default: null}
-      rotary_dim: {type: "int | None", default: null}
-    shape_rules:
-      - "q.shape == (B, S_new, H, D)"
-      - "k_new.shape == (B, S_new, H_kv, D)"
-      - "v_new.shape == (B, S_new, H_kv, D)"
-      - "k_cache.shape == (B, S_kv_cap, H_kv, D)"
-      - "v_cache.shape == (B, S_kv_cap, H_kv, D)"
-      - "cache_seqlens.shape == (B,)"
-      - "o.shape == (B, S_new, H, D)"
-      - "H % H_kv == 0"
-      - "S_new <= S_kv_cap"
-      - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
-      - "max_position is None or max_position > 0"
-
-  workloads:
-    # Llama-3.1-8B (H=32, H_kv=8, D=128)
-    - {q_shape: [1, 512, 32, 128], k_new_shape: [1, 512, 8, 128], v_new_shape: [1, 512, 8, 128], k_cache_shape: [1, 4608, 8, 128], v_cache_shape: [1, 4608, 8, 128], cache_seqlens_shape: [1], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-contig-4k-old-512-new"}
-    - {q_shape: [2, 256, 32, 128], k_new_shape: [2, 256, 8, 128], v_new_shape: [2, 256, 8, 128], k_cache_shape: [2, 2304, 8, 128], v_cache_shape: [2, 2304, 8, 128], cache_seqlens_shape: [2], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-contig-batch2"}
-    # Llama-3.1-70B (H=64, H_kv=8, D=128)
-    - {q_shape: [1, 512, 64, 128], k_new_shape: [1, 512, 8, 128], v_new_shape: [1, 512, 8, 128], k_cache_shape: [1, 4608, 8, 128], v_cache_shape: [1, 4608, 8, 128], cache_seqlens_shape: [1], is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-contig-4k-old-512-new"}
-    # Qwen3.5 full-attention layer style partial RoPE.
-    - {q_shape: [1, 1024, 32, 256], k_new_shape: [1, 1024, 8, 256], v_new_shape: [1, 1024, 8, 256], k_cache_shape: [1, 33792, 8, 256], v_cache_shape: [1, 33792, 8, 256], cache_seqlens_shape: [1], is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-contig-fullattn-prefix32k-chunk1k-partial-rope64-fp16"}
-
-  roofline:
-    func: "tileops.perf.formulas.gqa_prefill_with_kv_cache_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/gqa_fwd.py
-    kernel_map:
-      gqa_prefill_with_kv_cache_fwd_kernel: GQAPrefillWithKVCacheFwdKernel
-      gqa_prefill_with_kv_cache_rope_append_kernel: GQAPrefillWithKVCacheRopeAppendKernel
-      gqa_prefill_with_kv_cache_rope_fwd_kernel: GQAPrefillWithKVCacheRopeFwdKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py

@@ -8,7 +8,6 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBe
 from benchmarks.ops.attention.manifest_params import (
     gqa_prefill_args,
     gqa_prefill_paged_args,
-    gqa_prefill_with_kv_cache_args,
     gqa_qkv_args,
     manifest_params,
 )
@@ -27,7 +26,6 @@ from tileops.ops import (
     GroupedQueryAttentionPrefillFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
-    GroupedQueryAttentionPrefillWithKVCacheFwdOp,
 )
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdTest,
@@ -37,13 +35,11 @@ from workloads.attention.gqa_prefill import (
     GQAPrefillFwdTest,
     GQAPrefillPagedWithKVCacheFwdTest,
     GQAPrefillVarlenFwdTest,
-    GQAPrefillWithKVCacheFwdTest,
 )
 
 _GQA_FWD_OP = "GroupedQueryAttentionFwdOp"
 _GQA_BWD_OP = "GroupedQueryAttentionBwdOp"
 _GQA_PREFILL_FWD_OP = "GroupedQueryAttentionPrefillFwdOp"
-_GQA_PREFILL_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillWithKVCacheFwdOp"
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
 
 
@@ -249,35 +245,6 @@ def _torch_gqa_prefill_varlen_ref(test: GQAPrefillVarlenFwdTest):
     return fn
 
 
-def _torch_gqa_prefill_with_kv_cache_ref(test: GQAPrefillWithKVCacheFwdTest):
-    """Materialized torch reference for contiguous-cache prefill."""
-
-    def fn(q, k_new, v_new, k_cache, v_cache, cache_seqlens):
-        groups = test.heads // test.heads_kv
-        outputs = []
-        for b in range(test.batch):
-            old_len = int(cache_seqlens[b].item())
-            k_all = torch.cat([k_cache[b, :old_len], k_new[b]], dim=0)
-            v_all = torch.cat([v_cache[b, :old_len], v_new[b]], dim=0)
-            q_bhsd = q[b].transpose(0, 1).float()
-            k_bhsd = k_all.repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
-            v_bhsd = v_all.repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
-            total_len = old_len + test.seq_len_new
-            scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * (test.dim**-0.5)
-            if test.is_causal:
-                q_pos = torch.arange(test.seq_len_new, device=q.device)[:, None] + old_len
-                k_pos = torch.arange(total_len, device=q.device)[None, :]
-                mask = k_pos <= q_pos
-                scores = scores.masked_fill(
-                    ~mask.view(1, test.seq_len_new, total_len), float("-inf")
-                )
-            probs = torch.softmax(scores, dim=-1)
-            outputs.append(torch.matmul(probs, v_bhsd).transpose(0, 1).to(q.dtype).contiguous())
-        return torch.stack(outputs, dim=0)
-
-    return fn
-
-
 def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp) -> str:
     kernel = op.kernel
     if isinstance(kernel, GQAPrefillFwdWsPersistentCausalKernel):
@@ -389,7 +356,7 @@ def test_gqa_bwd_bench(
 
 
 _GQA_PREFILL_FWD_BENCH_PARAMS = manifest_params(
-    load_workloads(_GQA_PREFILL_FWD_OP),
+    [workload for workload in load_workloads(_GQA_PREFILL_FWD_OP) if workload.get("backend") != "fp8"],
     gqa_prefill_args,
     tune=False,
 )
@@ -507,69 +474,31 @@ def test_gqa_prefill_varlen_fwd_bench(
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
-_GQA_PREFILL_WITH_KV_CACHE_FWD_BENCH_PARAMS = manifest_params(
-    load_workloads(_GQA_PREFILL_WITH_KV_CACHE_FWD_OP),
-    gqa_prefill_with_kv_cache_args,
-    tune=False,
-)
 
-
-@pytest.mark.parametrize(
-    "batch, seq_len_new, seq_len_cap, heads, heads_kv, dim, causal, fuse_rope, rotary_dim, "
-    "softcap, dtype, tune",
-    _GQA_PREFILL_WITH_KV_CACHE_FWD_BENCH_PARAMS,
-)
-def test_gqa_prefill_with_kv_cache_fwd_bench(
-    batch: int,
-    seq_len_new: int,
-    seq_len_cap: int,
-    heads: int,
-    heads_kv: int,
-    dim: int,
-    causal: bool,
-    fuse_rope: bool,
-    rotary_dim: Optional[int],
-    softcap: Optional[float],
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    test = GQAPrefillWithKVCacheFwdTest(
-        batch,
-        heads,
-        heads_kv,
-        seq_len_new,
-        seq_len_cap,
-        dim,
-        causal,
-        dtype,
-        fuse_rope=fuse_rope,
-        rotary_dim=rotary_dim,
-        softcap=softcap,
+def _fp8_paged_cache_inputs(
+    test: GQAPrefillPagedWithKVCacheFwdTest,
+) -> tuple[torch.Tensor, ...]:
+    q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q = (
+        test.gen_inputs()
     )
-    inputs = test.gen_inputs()
-
-    op = GroupedQueryAttentionPrefillWithKVCacheFwdOp(
-        batch,
-        heads,
-        heads_kv,
-        seq_len_new,
-        seq_len_cap,
-        dim,
-        causal,
-        dtype,
-        softcap=softcap,
-        tune=tune,
-        fuse_rope=fuse_rope,
-        max_position=seq_len_cap if fuse_rope else None,
-        rotary_dim=rotary_dim,
+    k_scale = torch.full((1,), 0.01, dtype=torch.float32, device=q.device)
+    v_scale = torch.full((1,), 0.01, dtype=torch.float32, device=q.device)
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
+    k_pages = (k_pages / k_scale).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn).contiguous()
+    v_pages = (v_pages / v_scale).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn).contiguous()
+    return (
+        q,
+        k_new,
+        v_new,
+        k_pages,
+        v_pages,
+        k_scale,
+        v_scale,
+        cu_seqlens_q,
+        cache_seqlens,
+        block_table,
+        max_seqlen_q,
     )
-    bm = ManifestBenchmark(_GQA_PREFILL_WITH_KV_CACHE_FWD_OP, op, test)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    if not fuse_rope and softcap is None:
-        result_bl = bm.profile(_torch_gqa_prefill_with_kv_cache_ref(test), *inputs)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_BENCH_PARAMS = manifest_params(
@@ -665,32 +594,6 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     bm = ManifestBenchmark(_GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-
-def _fp8_paged_cache_inputs(
-    test: GQAPrefillPagedWithKVCacheFwdTest,
-) -> tuple[torch.Tensor, ...]:
-    q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q = (
-        test.gen_inputs()
-    )
-    k_scale = torch.full((1,), 0.01, dtype=torch.float32, device=q.device)
-    v_scale = torch.full((1,), 0.01, dtype=torch.float32, device=q.device)
-    fp8_max = torch.finfo(torch.float8_e4m3fn).max
-    k_pages = (k_pages / k_scale).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn).contiguous()
-    v_pages = (v_pages / v_scale).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn).contiguous()
-    return (
-        q,
-        k_new,
-        v_new,
-        k_pages,
-        v_pages,
-        k_scale,
-        v_scale,
-        cu_seqlens_q,
-        cache_seqlens,
-        block_table,
-        max_seqlen_q,
-    )
 
 
 if __name__ == "__main__":

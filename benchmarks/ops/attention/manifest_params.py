@@ -67,25 +67,6 @@ def gqa_prefill_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int,
     return batch, seq_len_q, seq_len_kv, heads, heads_kv, dim, workload.get("is_causal", True)
 
 
-def gqa_prefill_with_kv_cache_args(
-    workload: dict[str, Any],
-) -> tuple[int, int, int, int, int, int, bool, bool, int | None, float | None]:
-    batch, seq_len_new, heads, dim = workload["q_shape"]
-    _, seq_len_cap, heads_kv, _ = workload["k_cache_shape"]
-    return (
-        batch,
-        seq_len_new,
-        seq_len_cap,
-        heads,
-        heads_kv,
-        dim,
-        workload.get("is_causal", True),
-        workload.get("fuse_rope", False),
-        workload.get("rotary_dim"),
-        workload.get("softcap"),
-    )
-
-
 def gqa_prefill_paged_args(
     workload: dict[str, Any],
 ) -> tuple[
