@@ -112,7 +112,7 @@ class GemvBoundaryFixture(FixtureBase):
 def test_gemm(m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b: bool,
               tune: bool) -> None:
     test = GemmTest(m, n, k, dtype, trans_a, trans_b)
-    op = GemmOp(m, n, k, trans_a=trans_a, trans_b=trans_b, dtype=dtype, tune=tune)
+    op = GemmOp(trans_a=trans_a, trans_b=trans_b, tune=tune)
     if dtype == torch.float16:
         tolerances = {"atol": 1e-3, "rtol": 1e-3}
     else:
@@ -124,7 +124,7 @@ def test_gemm(m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b
 def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
     """GEMV lhs_row path (m=1, trans_b=True) with non-aligned n or k."""
     test = GemmTest(1, n, k, dtype, trans_a=False, trans_b=True)
-    op = GemmOp(1, n, k, trans_a=False, trans_b=True, dtype=dtype, tune=tune)
+    op = GemmOp(trans_a=False, trans_b=True, tune=tune)
     tolerances = {"atol": 1e-2, "rtol": 1e-2}
     test.check(op, *test.gen_inputs(), **tolerances)
 
@@ -134,7 +134,7 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     """GEMV rhs_col path (n=1, no transpose) with non-aligned m or k."""
     m = n  # reuse fixture's n as the non-aligned m dimension
     test = GemmTest(m, 1, k, dtype, trans_a=False, trans_b=False)
-    op = GemmOp(m, 1, k, trans_a=False, trans_b=False, dtype=dtype, tune=tune)
+    op = GemmOp(trans_a=False, trans_b=False, tune=tune)
     tolerances = {"atol": 1e-2, "rtol": 1e-2}
     test.check(op, *test.gen_inputs(), **tolerances)
 
