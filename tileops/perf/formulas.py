@@ -33,6 +33,7 @@ __all__ = [
     "floor_divide_fwd_roofline",
     "fused_moe_fwd_bytes",
     "ge_fwd_roofline",
+    "gemm_fwd_roofline",
     "gqa_bwd_roofline",
     "gqa_decode_paged_roofline",
     "gqa_decode_roofline",
@@ -984,3 +985,26 @@ def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
     gating_bytes = num_tokens * num_experts * 4  # float32 logits
     bias_bytes = num_experts * 4 if getattr(op, "with_correction_bias", False) else 0
     return flops, weight_bytes + token_bytes + gating_bytes + bias_bytes
+
+
+def gemm_fwd_roofline(op: "Op") -> tuple[int, int]:
+    """Roofline for dense ``GemmOp`` (``d = a @ b``, fp16/bf16).
+
+    ``GemmOp`` is input-inferred, so the logical dims ``m/n/k`` and the dtype
+    are bound on the op during ``forward()``; this reads them directly, which
+    stays correct across all ``trans_a``/``trans_b`` layouts (the logical dims
+    are transpose-independent). Valid only after the first ``forward()``.
+
+    Raises:
+        RuntimeError: If called before ``forward()`` has bound the dims.
+    """
+    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
+        raise RuntimeError(
+            "GemmOp.eval_roofline() is valid only after the first forward(); "
+            "m/n/k and dtype are inferred from the inputs."
+        )
+    m, n, k = op.m, op.n, op.k
+    elem_bytes = op.dtype.itemsize
+    flops = 2 * m * n * k
+    nbytes = (m * k + n * k + m * n) * elem_bytes
+    return int(flops), int(nbytes)

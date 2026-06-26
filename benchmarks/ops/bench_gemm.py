@@ -87,15 +87,10 @@ def test_gemm_bench(
     op = GemmOp(trans_a=trans_a, trans_b=trans_b)
     bm = GemmBenchmark(test, op)
 
-    # Warmup: trigger JIT compilation (and bind roofline dims) before timing.
-    op(a, b)
-    torch.cuda.synchronize()
-
+    # The benchmark framework warms up internally; eval_roofline() is read
+    # lazily after profiling, by which point forward() has bound the dims.
     result = bm.profile(op, a, b)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    test.ref_program(a, b)  # warmup
-    torch.cuda.synchronize()
 
     result_bl = bm.profile(test.ref_program, a, b)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-cublas")

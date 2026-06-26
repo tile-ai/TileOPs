@@ -11,29 +11,6 @@ from .op_base import Op
 __all__ = ["GemmOp"]
 
 
-def _gemm_roofline(op: "GemmOp") -> Tuple[int, int]:
-    """Return ``(flops, bytes)`` for a ``GemmOp`` instance.
-
-    Bound in func mode from the manifest. Reads the logical ``m/n/k`` and
-    ``dtype`` that ``forward()`` derives from the inputs, so it stays correct
-    for every ``trans_a``/``trans_b`` layout (the logical dims are
-    transpose-independent). Valid only after the first ``forward()`` call.
-
-    Raises:
-        RuntimeError: If called before ``forward()`` has bound the dims.
-    """
-    if op.m is None or op.dtype is None:
-        raise RuntimeError(
-            "GemmOp.eval_roofline() is valid only after the first forward(); "
-            "m/n/k and dtype are inferred from the inputs."
-        )
-    m, n, k = op.m, op.n, op.k
-    elem_bytes = op.dtype.itemsize
-    flops = 2 * m * n * k
-    nbytes = (m * k + n * k + m * n) * elem_bytes
-    return int(flops), int(nbytes)
-
-
 class GemmOp(Op):
     """Dense GEMM, input-inferred and aligned to DeepGEMM's call-time JIT.
 
@@ -73,6 +50,10 @@ class GemmOp(Op):
         self.dispatch_kernel(kernel_map)
         # (m, n, k, dtype) -> Kernel instance; built lazily on first use.
         self._kernel_cache: Dict[Hashable, Kernel] = {}
+        # Fast path: skip re-inference when the input signature is unchanged.
+        # _active_sig = (a.shape, b.shape, dtype); _active = (mode, kernel, n, m).
+        self._active_sig: Optional[tuple] = None
+        self._active: Optional[tuple] = None
         # Roofline / dtype bindings, populated on the first forward().
         self.m: Optional[int] = None
         self.n: Optional[int] = None
@@ -132,19 +113,38 @@ class GemmOp(Op):
         return "gemm", kernel
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        self._validate_dtypes(a, b)
-        m, n, k = self._infer_mnk(a, b)
-        # Bind dims/dtype/shapes for roofline (func mode reads these post-forward).
-        self.m, self.n, self.k = m, n, k
-        self.dtype = a.dtype
-        self.a_shape = tuple(a.shape)
-        self.b_shape = tuple(b.shape)
+        # Fast path: same input signature as the last call → reuse the already
+        # built/JIT'd kernel directly, skipping dtype validation, shape
+        # inference, and the cache lookup (this is the steady state in
+        # benchmarking / serving, where per-call Python overhead matters).
+        sig = (a.shape, b.shape, a.dtype)
+        if sig != self._active_sig:
+            self._validate_dtypes(a, b)
+            m, n, k = self._infer_mnk(a, b)
+            # Bind dims/dtype for the manifest func-mode roofline (read post-forward).
+            self.m, self.n, self.k = m, n, k
+            self.dtype = a.dtype
+            self.a_shape = tuple(a.shape)
+            self.b_shape = tuple(b.shape)
+            mode, kernel = self._get_kernel(m, n, k, a.dtype)
+            # Expose the active kernel so autotune()/introspection can find it.
+            self.kernel = kernel
+            self._active = (mode, kernel, n, m)
+            self._active_sig = sig
 
-        mode, kernel = self._get_kernel(m, n, k, a.dtype)
-        # Expose the active kernel so Op.autotune() can discover it.
-        self.kernel = kernel
+        mode, kernel, n, m = self._active
         if mode == "lhs_row":
             return kernel(a.reshape(-1), b).reshape(1, n)
         if mode == "rhs_col":
             return kernel(b.reshape(-1), a).reshape(m, 1)
         return kernel(a, b)
+
+    def autotune(self) -> None:
+        """Autotune every kernel built so far.
+
+        ``GemmOp`` caches kernels lazily in ``self._kernel_cache`` rather than as
+        direct attributes, so the base ``Op.autotune`` (which scans ``dir(self)``)
+        would miss them. Tune each cached kernel instead.
+        """
+        for kernel in self._kernel_cache.values():
+            kernel.autotune()
