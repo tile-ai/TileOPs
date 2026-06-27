@@ -309,10 +309,10 @@ def _mha_fwd_wgmma_pipelined_kernel(batch: int,
                     mma1(v, v_shared, acc_s_cast, acc_o, k_idx, by, bz)
                 for i, j in T.Parallel(block_m, dim):
                     acc_o[i, j] /= logsum[i]
-                # Barriers guard the swizzled o_shared round-trip: without them
-                # warps read o_shared before peer warps finish writing it, a
-                # shared-memory race that can corrupt the output under WGMMA
-                # pipelining (num_stages >= 2).
+                # Guard the swizzled o_shared round-trip against a shared-memory
+                # race under WGMMA pipelining. Any non-zero barrier slot works;
+                # a bare T.sync_threads() aliases the implicit barrier-0 and is
+                # elided.
                 T.sync_threads(3, threads)
                 T.copy(acc_o, o_shared)
                 T.sync_threads(3, threads)
@@ -693,10 +693,10 @@ def _gqa_fwd_wgmma_pipelined_kernel(batch: int,
                     mma1(v, v_shared, acc_s_cast, acc_o, k_idx, by, bz)
                 for i, j in T.Parallel(block_m, dim):
                     acc_o[i, j] /= logsum[i]
-                # Barriers guard the swizzled o_shared round-trip: without them
-                # warps read o_shared before peer warps finish writing it, a
-                # shared-memory race that can corrupt the output under WGMMA
-                # pipelining (num_stages >= 2).
+                # Guard the swizzled o_shared round-trip against a shared-memory
+                # race under WGMMA pipelining. Any non-zero barrier slot works;
+                # a bare T.sync_threads() aliases the implicit barrier-0 and is
+                # elided.
                 T.sync_threads(3, threads)
                 T.copy(acc_o, o_shared)
                 T.sync_threads(3, threads)
