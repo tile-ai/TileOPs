@@ -5,7 +5,6 @@ from typing import Optional
 import tilelang
 import torch
 from tilelang import language as T
-from tilelang.autotuner import autotune
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -292,26 +291,17 @@ class FP8LightingIndexerKernel(Kernel):
         Weights = torch.randn(seq_len, heads, device='cuda', dtype=accum_dtype)
         CuSeqLenKS = torch.zeros(seq_len, device='cuda', dtype=index_dtype)
         CuSeqLenKE = torch.full((seq_len,),
-                                fill_value=seq_len_kv - 1,
+                                fill_value=seq_len_kv,
                                 device='cuda',
                                 dtype=index_dtype)
 
         return IndexQ, IndexK, IndexKScale, Logits, Weights, CuSeqLenKS, CuSeqLenKE
 
+    @property
+    def autotune_supply_prog(self):
+        # The kernel has scalar (int32) params; the default tensor-only input
+        # generation cannot build them, so supply benchmark inputs explicitly.
+        return self.supply_prog
+
     def autotune(self, warmup=10, rep=10):
-        if self.autotune_configs is None:
-            return  # kernel doesn't support autotuning
-        print(f'Start autotuning {self.__class__.__name__}...')
-
-        tunable_params = list(self._autotune_initial_kwargs(self.kernel).keys())
-        autotune_kwargs = dict(
-            configs=self.autotune_configs, warmup=warmup, rep=rep, supply_prog=self.supply_prog)
-        if tunable_params:
-            autotune_kwargs["do_not_specialize"] = tunable_params
-        autotuned_kernel_fn = autotune(**autotune_kwargs)(self.kernel)
-
-        tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
-
-        # Extract and store the best config
-        self.config = tuned_kernel.config
-        print(f'Best config: {self.config}')
+        super().autotune(warmup=warmup, rep=rep)
