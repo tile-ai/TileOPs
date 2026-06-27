@@ -413,7 +413,13 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
 
                 for i, j in T.Parallel(block_m, dim):
                     acc_o[i, j] /= logsum[i]
+                # Barriers guard the swizzled o_shared round-trip: without them
+                # warps read o_shared before peer warps finish writing it, a
+                # shared-memory race that corrupts the output under WGMMA
+                # pipelining (num_stages >= 2).
+                T.sync_threads(3, threads)
                 T.copy(acc_o, o_shared)
+                T.sync_threads(3, threads)
                 T.copy(o_shared, output[bz, bx * block_m:(bx + 1) * block_m, by, :])
                 for i in T.Parallel(block_m):
                     logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
