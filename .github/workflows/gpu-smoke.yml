@@ -404,8 +404,6 @@ jobs:
         with:
           reclaim-below-gib: "10"
           cache-trim-cooldown-minutes: "120"
-          # Run-local venv retired: no tileops_ci_venv_* dirs to prune in the tool cache.
-          prune-tool-cache: "false"
           cache-dirs: |
             /ci-cache/triton
             /ci-cache/pip
