@@ -26,41 +26,15 @@ env:
 
 jobs:
   # =========================================================================
-  # Phase 1 — Warm the kernel compilation cache
-  # =========================================================================
-  cache-warmup:
-    if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    timeout-minutes: 60
-    runs-on: [self-hosted, tile-ops, nightly]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Verify nightly runner environment
-        run: scripts/ci/verify_nightly_runner.sh
-        shell: bash
-
-      - name: Install TileOPs (image-baked stack, --no-deps)
-        run: bash scripts/ci/install_tileops.sh
-        shell: bash
-
-      - name: Warm kernel compilation cache
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
-          echo "Starting kernel cache warmup..."
-          python3 scripts/warmup_kernel_cache.py --max-workers 64 -n 16
-        shell: bash
-
-  # =========================================================================
-  # Phase 2 — Benchmark (exclusive GPU access for accurate profiling)
+  # Phase 1 — Benchmark (exclusive GPU access for accurate profiling)
+  #
+  # The persistent /ci-cache (TILELANG_CACHE_DIR) carries compiled kernels and
+  # autotuner results across runs; benchmark setup repopulates it on a cold key
+  # (e.g. after a tilelang bump). No separate warmup phase. For a one-off cold
+  # cache, run scripts/warmup_kernel_cache.py manually.
   # =========================================================================
   benchmark:
-    if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    needs: [cache-warmup]
+    if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     timeout-minutes: 120
     runs-on: [self-hosted, tile-ops, nightly]
     env:
@@ -135,7 +109,7 @@ jobs:
         shell: bash
 
   # =========================================================================
-  # Phase 3 — Op correctness tests (serial after benchmark for GPU exclusivity)
+  # Phase 2 — Op correctness tests (serial after benchmark for GPU exclusivity)
   # =========================================================================
   op_test:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
@@ -296,7 +270,7 @@ jobs:
         shell: bash
 
   # =========================================================================
-  # Phase 3b — Publish benchmark data to the nightly-bench orphan branch
+  # Phase 2b — Publish benchmark data to the nightly-bench orphan branch
   # Consumed by tile-ai/TileOPs.github.io to render the docs Benchmarks page.
   # Runs on a github-hosted runner (no GPU needed) and uses the default token
   # to force-push the day's XML snapshot, mirroring the manifest-stats pattern.
@@ -365,7 +339,7 @@ jobs:
           user_email: "41898282+github-actions[bot]@users.noreply.github.com"
 
   # =========================================================================
-  # Phase 4 — Packaging and smoke test
+  # Phase 3 — Packaging and smoke test
   # =========================================================================
   packaging:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
