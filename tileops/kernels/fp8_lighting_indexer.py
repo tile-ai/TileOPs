@@ -10,6 +10,10 @@ from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["FP8LightingIndexerKernel"]
 
+# block_Q == 1 deadlocks the software pipeline (some warps never reach the
+# pipeline barrier); such tiles must run unpipelined. block_Q >= 2 is safe.
+_MIN_PIPELINED_BLOCK_Q = 2
+
 
 @functools.lru_cache(maxsize=32)
 def _fp8_lighting_indexer_kernel(batch,
@@ -31,7 +35,10 @@ def _fp8_lighting_indexer_kernel(batch,
         block_Q=None,
     ):
         if block_Q is None:
-            block_Q = 128 // heads
+            block_Q = max(1, 128 // heads)
+        # Guards every entry point, incl. the default block_Q == 1 for heads >= 65.
+        if block_Q < _MIN_PIPELINED_BLOCK_Q:
+            num_stages = 0
         dtype = T.float8_e4m3fn
         accum_dtype = T.float32
         index_dtype = T.int32
@@ -239,7 +246,8 @@ class FP8LightingIndexerKernel(Kernel):
         block_N = [32, 64, 128]
         num_stages = [0, 1, 2]
         threads = [128, 256]
-        block_Q = [1, 2, 4]
+        # Omit block_Q == 1: unsafe to pipeline (above) and never wins.
+        block_Q = [bq for bq in (1, 2, 4) if bq >= _MIN_PIPELINED_BLOCK_Q]
         _configs = list(itertools.product(block_N, num_stages, threads, block_Q))
 
         configs = [{
