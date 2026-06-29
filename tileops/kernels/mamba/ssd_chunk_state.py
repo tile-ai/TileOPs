@@ -379,22 +379,18 @@ class SSDChunkStateFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Optimized tile sizes based on autotuning results across production workloads.
-        # Larger tiles (block_n=128, block_p=64) improve tensor-core utilization and
-        # achieve 2-3x better performance than the previous small-tile default.
-        # block_l=64-128 balances GEMM arithmetic intensity with shared memory pressure.
-        if self.has_seq_idx:
-            return {
-                "block_n": 128,
-                "block_p": 64,
-                "block_l": 128,
-                "threads": 128,
-            }
+        # Tuned on GPU1 (2026-06-29) across shapes B={1,4}, C={1,16}, L=256, H=64, P=64, N={64,128}, G=8.
+        # Key findings:
+        #   threads=128 (4 warps) wins consistently over 256 — reduces register pressure and improves occupancy.
+        #   block_n scales with d_state: 128 when N=128, 64 otherwise.
+        #   block_l=32 wins at C>=16 (many blocks compete for SMs); 128 wins at C=1 (single block, long K).
+        #   block_p=64 works well across shapes.
+        block_n = min(128, self.d_state)
         return {
-            "block_n": 128,
+            "block_n": block_n,
             "block_p": 64,
-            "block_l": 64,
-            "threads": 256,
+            "block_l": 32,
+            "threads": 128,
         }
 
     @property

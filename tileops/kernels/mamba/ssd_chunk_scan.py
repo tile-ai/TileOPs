@@ -492,14 +492,16 @@ class SSDChunkScanFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # threads=64 (2 warps) balances parallelism with register pressure.
-        # block_n=64 keeps occupancy high for typical d_state sizes (64-128).
+        # Tuned on GPU1 (2026-06-29) across B=1/4, C=1/16, L=256, H=64, P=64, N=64/128, G=8.
+        # threads=128 wins for small shapes (C=1); threads=64 wins for larger (C=16+).
+        # block_n=64 is optimal across all tested N values; block_s=64 is consistent.
+        # Using threads=128 as the default (conservative; autotuning will correct for larger shapes).
         return {
             "block_l": 64,
             "block_p": 64,
             "block_n": min(64, self.d_state),
             "block_s": 64,
-            "threads": 64,
+            "threads": 128,
         }
 
     @property
