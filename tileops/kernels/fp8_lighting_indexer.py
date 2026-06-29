@@ -5,7 +5,6 @@ from typing import Optional
 import tilelang
 import torch
 from tilelang import language as T
-from tilelang.autotuner import autotune
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -270,46 +269,39 @@ class FP8LightingIndexerKernel(Kernel):
             Weights, CuSeqLenKS, CuSeqLenKE)
 
     def supply_prog(
-        self,
-        q: torch.Tensor,
-        kv: torch.Tensor,
-        dtype=torch.float8_e4m3fn,
-        accum_dtype=torch.float32,
-        index_dtype=torch.int32,
-        params=None
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        self.q = q
-        self.kv = kv
-        batch, seq_len, heads, index_dim = q.shape
-        seq_len_kv = kv.shape[1]
+        self, *args, **kwargs
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+               torch.Tensor]:
+        # TileLang invokes supply_prog with the candidate JIT params during autotuning;
+        # ignore them and build benchmark inputs from the kernel's shape attributes.
+        batch, seq_len, heads, index_dim = self.batch, self.seq_len, self.heads, self.index_dim
+        seq_len_kv = self.seq_len_kv
+        accum_dtype = torch.float32
+        index_dtype = torch.int32
+        fp8_dtype = torch.float8_e4m3fn  # IndexQ/IndexK are fp8 in the kernel signature
+        # torch.randn does not support fp8 dtypes, so generate in fp16 then cast.
         IndexQ = torch.randn(
-            batch, seq_len * heads, index_dim, device='cuda', dtype=torch.float8_e4m3fn)
+            batch, seq_len * heads, index_dim, device='cuda', dtype=torch.float16).to(fp8_dtype)
         IndexK = torch.randn(
-            batch, seq_len_kv, self.kv_group, index_dim, device='cuda', dtype=self.dtype)
+            batch, seq_len_kv, self.kv_group, index_dim, device='cuda', dtype=torch.float16).to(
+                fp8_dtype)
         IndexKScale = torch.randn(batch, seq_len_kv, self.kv_group, device='cuda', dtype=accum_dtype)
+        Logits = torch.empty(
+            batch, seq_len, seq_len_kv, self.kv_group, device='cuda', dtype=accum_dtype)
         Weights = torch.randn(seq_len, heads, device='cuda', dtype=accum_dtype)
         CuSeqLenKS = torch.zeros(seq_len, device='cuda', dtype=index_dtype)
         CuSeqLenKE = torch.full((seq_len,),
-                                fill_value=seq_len_kv - 1,
+                                fill_value=seq_len_kv,
                                 device='cuda',
                                 dtype=index_dtype)
 
-        return IndexQ, IndexK, IndexKScale, Weights, CuSeqLenKS, CuSeqLenKE
+        return IndexQ, IndexK, IndexKScale, Logits, Weights, CuSeqLenKS, CuSeqLenKE
 
-    def autotune(self, warmup=10, rep=10):  # Removed supply_prog parameter
-        if self.autotune_configs is None:
-            return  # kernel doesn't support autotuning
-        print(f'Start autotuning {self.__class__.__name__}...')
+    @property
+    def autotune_supply_prog(self):
+        # The kernel has scalar (int32) params; the default tensor-only input
+        # generation cannot build them, so supply benchmark inputs explicitly.
+        return self.supply_prog
 
-        # Apply autotune decorator to the kernel function
-        autotuned_kernel_fn = autotune(
-            configs=self.autotune_configs, warmup=warmup, rep=rep, supply_prog=self.supply_prog)(
-                self.kernel)
-
-        # Seed required tunable JIT parameters for TileLang's pre-autotune
-        # validation/binding step.
-        tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
-
-        # Extract and store the best config
-        self.config = tuned_kernel.config
-        print(f'Best config: {self.config}')
+    def autotune(self, warmup=10, rep=10):
+        super().autotune(warmup=warmup, rep=rep)
