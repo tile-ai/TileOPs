@@ -1,4 +1,3 @@
-
 import pytest
 import torch
 
@@ -33,6 +32,11 @@ class GemmFixture(FixtureBase):
                 1, 1024, 1024, torch.float16, False, True, False,
                 marks=pytest.mark.full,
                 id="full-fp16-trans-b-small-m",
+            ),
+            pytest.param(
+                128, 2112, 4096, torch.float16, False, True, False,
+                marks=pytest.mark.full,
+                id="full-fp16-nt-dense-ws",
             ),
             pytest.param(
                 1, 7168, 16384, torch.float16, False, True, True,

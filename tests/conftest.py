@@ -11,6 +11,35 @@ def _under_repo_tests(item: pytest.Item) -> bool:
     return "tests/" in path and "benchmarks/tests/" not in path
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register the opt-in in-kernel timeline-trace flag.
+
+    Off by default: when ``--trace-kernel`` is absent the process-local trace
+    switch stays off, so trace-dump tests no-op and normal runs are zero cost.
+    (``--trace`` itself is reserved by pytest for its pdb tracer.)
+    """
+    parser.addoption(
+        "--trace-kernel",
+        action="store_true",
+        default=False,
+        help="Build instrumented kernels with in-kernel tracing and dump their "
+             "timeline (HTML + Chrome JSON) for the trace-dump tests.",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Flip the in-process trace switch on when ``--trace-kernel`` is passed.
+
+    Runs once at startup, before any kernel is built, so the traced build is the
+    one that gets cached. No environment variable is involved — the switch lives
+    in this pytest process only.
+    """
+    if config.getoption("--trace-kernel"):
+        from tileops.trace import trace
+
+        trace.enable()  # dumps to debug/ (gitignored)
+
+
 @pytest.fixture(autouse=True)
 def setup() -> None:
     torch.manual_seed(1235)
