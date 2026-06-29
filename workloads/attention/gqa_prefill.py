@@ -82,47 +82,6 @@ class GQAPrefillVarlenFwdTest(WorkloadBase):
         return q, k, v, cu_seqlens_q, cu_seqlens_kv
 
 
-class GQAPrefillWithKVCacheFwdTest(WorkloadBase):
-
-    def __init__(self, batch: int, heads: int, heads_kv: int, seq_len_new: int,
-                 seq_len_cap: int, dim: int, is_causal: bool, dtype: torch.dtype,
-                 fuse_rope: bool = False, rotary_dim: int | None = None,
-                 softcap: float | None = None) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len_new = seq_len_new
-        self.seq_len_cap = seq_len_cap
-        self.dim = dim
-        self.is_causal = is_causal
-        self.dtype = dtype
-        self.fuse_rope = fuse_rope
-        self.rotary_dim = rotary_dim
-        self.softcap = softcap
-
-    def gen_inputs(
-        self
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        q = torch.randn(
-            self.batch, self.seq_len_new, self.heads, self.dim, device='cuda',
-            dtype=self.dtype).contiguous()
-        k_new = torch.randn(
-            self.batch, self.seq_len_new, self.heads_kv, self.dim, device='cuda',
-            dtype=self.dtype).contiguous()
-        v_new = torch.randn(
-            self.batch, self.seq_len_new, self.heads_kv, self.dim, device='cuda',
-            dtype=self.dtype).contiguous()
-        k_cache = torch.randn(
-            self.batch, self.seq_len_cap, self.heads_kv, self.dim, device='cuda',
-            dtype=self.dtype).contiguous()
-        v_cache = torch.randn(
-            self.batch, self.seq_len_cap, self.heads_kv, self.dim, device='cuda',
-            dtype=self.dtype).contiguous()
-        old_len = self.seq_len_cap - self.seq_len_new
-        cache_seqlens = torch.full(
-            (self.batch,), old_len, dtype=torch.int32, device='cuda')
-        return q, k_new, v_new, k_cache, v_cache, cache_seqlens
-
 
 class GQAPrefillPagedWithKVCacheFwdTest(WorkloadBase):
 

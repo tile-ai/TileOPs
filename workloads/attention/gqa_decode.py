@@ -5,14 +5,23 @@ from workloads.workload_base import WorkloadBase
 
 class GroupedQueryAttentionDecodeTest(WorkloadBase):
 
-    def __init__(self, batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
-                 dtype: torch.dtype) -> None:
+    def __init__(self,
+                 batch: int,
+                 heads: int,
+                 heads_kv: int,
+                 seq_len_kv: int,
+                 dim: int,
+                 dtype: torch.dtype,
+                 sm_scale: float | None = None,
+                 softcap: float | None = None) -> None:
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
         self.seq_len_kv = seq_len_kv
         self.dim = dim
         self.dtype = dtype
+        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
+        self.softcap = 0.0 if softcap is None else softcap
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(self.batch, self.heads, self.dim, device='cuda', dtype=self.dtype)
