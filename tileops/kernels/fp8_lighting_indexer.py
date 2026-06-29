@@ -239,7 +239,12 @@ class FP8LightingIndexerKernel(Kernel):
         block_N = [32, 64, 128]
         num_stages = [0, 1, 2]
         threads = [128, 256]
-        block_Q = [1, 2, 4]
+        # Why: block_Q=1 deadlocks the pipelined copy/gemm whenever num_stages>=1
+        # (a single query row leaves threads that never arrive at the pipeline
+        # barrier), and a hung launch keeps spinning on the GPU long after the
+        # autotuner abandons it, wedging every later candidate. block_Q=1 is also
+        # the lowest-intensity tile and never wins; exclude it from the sweep.
+        block_Q = [2, 4]
         _configs = list(itertools.product(block_N, num_stages, threads, block_Q))
 
         configs = [{
