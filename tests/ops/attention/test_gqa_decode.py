@@ -1,8 +1,6 @@
 
 import pytest
 import torch
-import torch.nn.functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention.gqa_decode import GQADecodeKernel
@@ -15,12 +13,15 @@ from workloads.attention.gqa_decode import (
 class GroupedQueryAttentionDecodeTest(_GroupedQueryAttentionDecodeTestWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         q_bhsd = q.unsqueeze(1).transpose(1, 2)  # [B, H, 1, D]
-        k_bhsd = k.transpose(1, 2)  # [B, H, S_kv, D]
-        v_bhsd = v.transpose(1, 2)  # [B, H, S_kv, D]
-        with sdpa_kernel(backends=[SDPBackend.MATH]):
-            output_bhsd = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd, enable_gqa=True)
-        output = output_bhsd.transpose(1, 2).squeeze(1).contiguous()
-        return output
+        groups = self.heads // self.heads_kv
+        k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
+        v_bhsd = v.repeat_interleave(groups, dim=2).transpose(1, 2).float()
+        scores = torch.matmul(q_bhsd.float(), k_bhsd.transpose(-2, -1)) * self.sm_scale
+        if self.softcap > 0:
+            scores = self.softcap * torch.tanh(scores / self.softcap)
+        probs = torch.softmax(scores, dim=-1)
+        output_bhsd = torch.matmul(probs, v_bhsd)
+        return output_bhsd.transpose(1, 2).squeeze(1).to(q.dtype).contiguous()
 
 
 class GroupedQueryAttentionDecodeFixture(FixtureBase):
@@ -39,6 +40,37 @@ def test_gqa_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim:
                     dtype: torch.dtype, tune: bool) -> None:
     test = GroupedQueryAttentionDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dtype)
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(batch, heads, heads_kv, seq_len_kv, dim, dtype, tune=tune)
+    test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("sm_scale, softcap", [
+    pytest.param(0.25, None, id="custom-sm-scale"),
+    pytest.param(None, 2.0, id="softcap"),
+])
+def test_gqa_decode_softmax_controls(sm_scale: float | None, softcap: float | None) -> None:
+    batch, heads, heads_kv, seq_len_kv, dim = 1, 16, 4, 1024, 64
+    dtype = torch.float16
+    test = GroupedQueryAttentionDecodeTest(
+        batch,
+        heads,
+        heads_kv,
+        seq_len_kv,
+        dim,
+        dtype,
+        sm_scale=sm_scale,
+        softcap=softcap,
+    )
+    op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(
+        batch,
+        heads,
+        heads_kv,
+        seq_len_kv,
+        dim,
+        dtype,
+        sm_scale=sm_scale,
+        softcap=softcap,
+    )
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
 
 

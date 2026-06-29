@@ -125,7 +125,7 @@ Conv2dFwdOp:
   ref_api: "torch.nn.functional.conv2d"
   # Equivalent to torch.nn.functional.conv2d (bias=None)
   family: convolution
-  status: spec-only  # TODO: impl lacks groups
+  status: implemented
 
   signature:
     inputs:
@@ -137,7 +137,7 @@ Conv2dFwdOp:
       stride: {type: "int | tuple[int, int]", default: 1}
       padding: {type: "int | tuple[int, int] | str", default: 0}
       dilation: {type: "int | tuple[int, int]", default: 1}
-      groups: {type: int, default: 1}  # TODO: not supported by kernel
+      groups: {type: int, default: 1}
     shape_rules:
       - "C_in % groups == 0"
       - "C_out % groups == 0"
@@ -171,14 +171,15 @@ Conv2dFwdOp:
     - {input_shape: [2, 64, 56, 56], C_out: 256, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [bfloat16], label: "resnet-1x1-bf16"}
 
   roofline:
-    flops: "2 * N * C_out * out_H * out_W * C_in * kH * kW"
-    bytes: "(N * C_in * H * W + C_out * C_in * kH * kW + N * C_out * out_H * out_W) * elem_bytes"
+    flops: "2 * N * C_out * out_H * out_W * C_in_g * kH * kW"
+    bytes: "(N * C_in * H * W + C_out * C_in_g * kH * kW + N * C_out * out_H * out_W) * elem_bytes"
 
   source:
     kernel: tileops/kernels/convolution.py
     kernel_map:
       conv2d_kernel: Conv2dKernel
       conv2d_1x1_kernel: Conv2d1x1Kernel
+      group_conv2d_kernel: GroupConv2dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
@@ -188,7 +189,7 @@ Conv2dBiasFwdOp:
   ref_api: "torch.nn.functional.conv2d"
   # Equivalent to torch.nn.functional.conv2d (bias≠None)
   family: convolution
-  status: spec-only  # TODO: impl lacks groups
+  status: implemented
   variant_of: Conv2dFwdOp
 
   signature:
@@ -202,7 +203,7 @@ Conv2dBiasFwdOp:
       stride: {type: "int | tuple[int, int]", default: 1}
       padding: {type: "int | tuple[int, int] | str", default: 0}
       dilation: {type: "int | tuple[int, int]", default: 1}
-      groups: {type: int, default: 1}  # TODO: not supported by kernel
+      groups: {type: int, default: 1}
     shape_rules:
       - "C_in % groups == 0"
       - "C_out % groups == 0"
@@ -237,14 +238,15 @@ Conv2dBiasFwdOp:
 
   roofline:
     # bias adds one addition per output element
-    flops: "2 * N * C_out * out_H * out_W * C_in * kH * kW + N * C_out * out_H * out_W"
-    bytes: "(N * C_in * H * W + C_out * C_in * kH * kW + C_out + N * C_out * out_H * out_W) * elem_bytes"
+    flops: "2 * N * C_out * out_H * out_W * C_in_g * kH * kW + N * C_out * out_H * out_W"
+    bytes: "(N * C_in * H * W + C_out * C_in_g * kH * kW + C_out + N * C_out * out_H * out_W) * elem_bytes"
 
   source:
     kernel: tileops/kernels/convolution.py
     kernel_map:
       conv2d_kernel: Conv2dKernel
       conv2d_1x1_kernel: Conv2d1x1Kernel
+      group_conv2d_kernel: GroupConv2dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
@@ -254,7 +256,7 @@ Conv3dFwdOp:
   ref_api: "torch.nn.functional.conv3d"
   # Equivalent to torch.nn.functional.conv3d (bias=None)
   family: convolution
-  status: spec-only  # TODO: impl lacks groups
+  status: implemented
 
   signature:
     inputs:
@@ -266,7 +268,7 @@ Conv3dFwdOp:
       stride: {type: "int | tuple[int, int, int]", default: 1}
       padding: {type: "int | tuple[int, int, int] | str", default: 0}
       dilation: {type: "int | tuple[int, int, int]", default: 1}
-      groups: {type: int, default: 1}  # TODO: not supported by kernel
+      groups: {type: int, default: 1}
     shape_rules:
       - "C_in % groups == 0"
       - "C_out % groups == 0"
@@ -296,13 +298,14 @@ Conv3dFwdOp:
     - {input_shape: [1, 32, 32, 64, 64], C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], dtypes: [bfloat16], label: "unet-encoder-k3-s1-bf16"}
 
   roofline:
-    flops: "2 * N * C_out * out_D * out_H * out_W * C_in * kD * kH * kW"
-    bytes: "(N * C_in * D * H * W + C_out * C_in * kD * kH * kW + N * C_out * out_D * out_H * out_W) * elem_bytes"
+    flops: "2 * N * C_out * out_D * out_H * out_W * C_in_g * kD * kH * kW"
+    bytes: "(N * C_in * D * H * W + C_out * C_in_g * kD * kH * kW + N * C_out * out_D * out_H * out_W) * elem_bytes"
 
   source:
     kernel: tileops/kernels/convolution.py
     kernel_map:
       conv3d_kernel: Conv3dKernel
+      group_conv3d_kernel: GroupConv3dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
@@ -312,7 +315,7 @@ Conv3dBiasFwdOp:
   ref_api: "torch.nn.functional.conv3d"
   # Equivalent to torch.nn.functional.conv3d (bias≠None)
   family: convolution
-  status: spec-only  # TODO: impl lacks groups
+  status: implemented
   variant_of: Conv3dFwdOp
 
   signature:
@@ -326,7 +329,7 @@ Conv3dBiasFwdOp:
       stride: {type: "int | tuple[int, int, int]", default: 1}
       padding: {type: "int | tuple[int, int, int] | str", default: 0}
       dilation: {type: "int | tuple[int, int, int]", default: 1}
-      groups: {type: int, default: 1}  # TODO: not supported by kernel
+      groups: {type: int, default: 1}
     shape_rules:
       - "C_in % groups == 0"
       - "C_out % groups == 0"
@@ -357,13 +360,14 @@ Conv3dBiasFwdOp:
 
   roofline:
     # bias adds one addition per output element
-    flops: "2 * N * C_out * out_D * out_H * out_W * C_in * kD * kH * kW + N * C_out * out_D * out_H * out_W"
-    bytes: "(N * C_in * D * H * W + C_out * C_in * kD * kH * kW + C_out + N * C_out * out_D * out_H * out_W) * elem_bytes"
+    flops: "2 * N * C_out * out_D * out_H * out_W * C_in_g * kD * kH * kW + N * C_out * out_D * out_H * out_W"
+    bytes: "(N * C_in * D * H * W + C_out * C_in_g * kD * kH * kW + C_out + N * C_out * out_D * out_H * out_W) * elem_bytes"
 
   source:
     kernel: tileops/kernels/convolution.py
     kernel_map:
       conv3d_kernel: Conv3dKernel
+      group_conv3d_kernel: GroupConv3dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py

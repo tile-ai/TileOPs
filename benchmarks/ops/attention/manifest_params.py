@@ -49,28 +49,22 @@ def gqa_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, boo
 
 
 def gqa_prefill_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, int, bool]:
-    batch, seq_len_q, heads, dim = workload["q_shape"]
-    _, seq_len_kv, heads_kv, _ = workload["kv_shape"]
+    if "q_shape" in workload:
+        batch, seq_len_q, heads, dim = workload["q_shape"]
+        _, seq_len_kv, heads_kv, _ = workload["kv_shape"]
+        return batch, seq_len_q, seq_len_kv, heads, heads_kv, dim, workload.get("is_causal", True)
+
+    batch = workload["batch"]
+    q_lens = list(workload.get("q_lens") or [workload["total_q"] // batch] * batch)
+    kv_lens = list(workload.get("kv_lens") or [workload["total_kv"] // batch] * batch)
+    if len(set(q_lens)) != 1 or len(set(kv_lens)) != 1:
+        raise ValueError("gqa_prefill_args currently expects uniform prefill workloads")
+    seq_len_q = q_lens[0]
+    seq_len_kv = kv_lens[0]
+    heads = workload["heads"]
+    heads_kv = workload["heads_kv"]
+    dim = workload["dim"]
     return batch, seq_len_q, seq_len_kv, heads, heads_kv, dim, workload.get("is_causal", True)
-
-
-def gqa_prefill_with_kv_cache_args(
-    workload: dict[str, Any],
-) -> tuple[int, int, int, int, int, int, bool, bool, int | None, float | None]:
-    batch, seq_len_new, heads, dim = workload["q_shape"]
-    _, seq_len_cap, heads_kv, _ = workload["k_cache_shape"]
-    return (
-        batch,
-        seq_len_new,
-        seq_len_cap,
-        heads,
-        heads_kv,
-        dim,
-        workload.get("is_causal", True),
-        workload.get("fuse_rope", False),
-        workload.get("rotary_dim"),
-        workload.get("softcap"),
-    )
 
 
 def gqa_prefill_paged_args(
@@ -87,6 +81,7 @@ def gqa_prefill_paged_args(
     bool,
     int | None,
     float | None,
+    torch.dtype | None,
 ]:
     batch = workload["batch"]
     q_lens = list(workload.get("q_lens") or [workload["total_q"] // batch] * batch)
@@ -106,6 +101,7 @@ def gqa_prefill_paged_args(
         workload.get("fuse_rope", False),
         workload.get("rotary_dim"),
         workload.get("softcap"),
+        torch_dtype(workload["cache_dtype"]) if workload.get("cache_dtype") else None,
     )
 
 
@@ -129,16 +125,37 @@ def mha_decode_paged_args(workload: dict[str, Any]) -> tuple[int, int, int, int,
     )
 
 
-def gqa_decode_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int]:
+def gqa_decode_args(
+    workload: dict[str, Any],
+) -> tuple[int, int, int, int, int, float | None, float | None]:
     batch, heads, dim = workload["q_shape"]
     _, seq_len_kv, heads_kv, _ = workload["kv_shape"]
-    return batch, heads, heads_kv, seq_len_kv, dim
+    return (
+        batch,
+        heads,
+        heads_kv,
+        seq_len_kv,
+        dim,
+        workload.get("sm_scale"),
+        workload.get("softcap"),
+    )
 
 
-def gqa_decode_paged_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, int]:
+def gqa_decode_paged_args(
+    workload: dict[str, Any],
+) -> tuple[int, int, int, int, int, int, float | None, float | None]:
     batch, heads, dim = workload["q_shape"]
     seq_len_kv, heads_kv, _ = workload["kv_shape"]
-    return batch, heads, heads_kv, seq_len_kv, dim, workload["page_size"]
+    return (
+        batch,
+        heads,
+        heads_kv,
+        seq_len_kv,
+        dim,
+        workload["page_size"],
+        workload.get("sm_scale"),
+        workload.get("softcap"),
+    )
 
 
 def gqa_sliding_window_args(

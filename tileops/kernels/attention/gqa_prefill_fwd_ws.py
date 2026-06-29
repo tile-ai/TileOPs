@@ -49,15 +49,25 @@ _cf = [
 
 @functools.lru_cache(maxsize=32)
 @tilelang.jit(out_idx=[3], pass_configs=_pc, compile_flags=_cf)
-def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, dtype,
+def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, sm_scale, softcap, dtype,
                                 block_M=BLOCK_M, block_N=BLOCK_N, nsK=NSK, nsV=NSV,
                                 threads=THREADS):
-    scale = (1.0 / D) ** 0.5 * 1.44269504
+    score_scale = (1.0 / D) ** 0.5 if sm_scale is None else sm_scale
+    use_softcap = softcap > 0.0
+    scale = 1.44269504 if use_softcap else score_scale * 1.44269504
     groups = H // Hkv
     co = Skv - Sq
     accum = "float"
     half = block_M // 2
     Pol = T.GemmWarpPolicy.FullRow
+
+    @T.macro
+    def apply_softcap(acc_s, rows, cols):
+        for i, j in T.Parallel(rows, cols):
+            capped = T.cast(softcap, accum) * T.tanh(
+                acc_s[i, j] * T.cast(score_scale / softcap, accum))
+            acc_s[i, j] = T.if_then_else(
+                acc_s[i, j] == -T.infinity(accum), -T.infinity(accum), capped)
 
     @T.prim_func
     def main(
@@ -130,6 +140,11 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, dtype,
                     T.named_barrier_arrive(nxt_bar, NMMA)
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(kfree[0])
+                    for i, j in T.Parallel(half, block_N):
+                        acc_s[i, j] = T.if_then_else(
+                            q0 + r0 + i + co >= j, acc_s[i, j], -T.infinity(accum))
+                    if use_softcap:
+                        apply_softcap(acc_s, half, block_N)
                     T.reduce_max(acc_s, sm, dim=1, clear=False)
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
@@ -152,6 +167,12 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, dtype,
                         T.named_barrier_arrive(nxt_bar, NMMA)
                         T.wait_wgmma(1)
                         T.mbarrier_arrive(kfree[sk])
+                        for i, j in T.Parallel(half, block_N):
+                            acc_s[i, j] = T.if_then_else(
+                                q0 + r0 + i + co >= k * block_N + j, acc_s[i, j],
+                                -T.infinity(accum))
+                        if use_softcap:
+                            apply_softcap(acc_s, half, block_N)
                         T.copy(sm, smp)
                         T.reduce_max(acc_s, sm, dim=1, clear=False)
                         for i in T.Parallel(half):
@@ -180,6 +201,8 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, dtype,
                         for i, j in T.Parallel(half, block_N):
                             acc_s[i, j] = T.if_then_else(
                                 q0 + r0 + i + co >= k * block_N + j, acc_s[i, j], -T.infinity(accum))
+                        if use_softcap:
+                            apply_softcap(acc_s, half, block_N)
                         T.copy(sm, smp)
                         T.reduce_max(acc_s, sm, dim=1, clear=False)
                         for i in T.Parallel(half):
@@ -233,6 +256,11 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, dtype,
                     T.named_barrier_arrive(nxt_bar, NMMA)
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(kfree[0])
+                    for i, j in T.Parallel(half, block_N):
+                        acc_s[i, j] = T.if_then_else(
+                            q0 + r0 + i + co >= j, acc_s[i, j], -T.infinity(accum))
+                    if use_softcap:
+                        apply_softcap(acc_s, half, block_N)
                     T.reduce_max(acc_s, sm, dim=1, clear=False)
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
@@ -255,6 +283,12 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, dtype,
                         T.named_barrier_arrive(nxt_bar, NMMA)
                         T.wait_wgmma(1)
                         T.mbarrier_arrive(kfree[sk])
+                        for i, j in T.Parallel(half, block_N):
+                            acc_s[i, j] = T.if_then_else(
+                                q0 + r0 + i + co >= k * block_N + j, acc_s[i, j],
+                                -T.infinity(accum))
+                        if use_softcap:
+                            apply_softcap(acc_s, half, block_N)
                         T.copy(sm, smp)
                         T.reduce_max(acc_s, sm, dim=1, clear=False)
                         for i in T.Parallel(half):
@@ -283,6 +317,8 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, dtype,
                         for i, j in T.Parallel(half, block_N):
                             acc_s[i, j] = T.if_then_else(
                                 q0 + r0 + i + co >= k * block_N + j, acc_s[i, j], -T.infinity(accum))
+                        if use_softcap:
+                            apply_softcap(acc_s, half, block_N)
                         T.copy(sm, smp)
                         T.reduce_max(acc_s, sm, dim=1, clear=False)
                         for i in T.Parallel(half):
@@ -312,11 +348,11 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, dtype,
 
 
 class GQAPrefillFwdWsPersistentCausalKernel(Kernel):
-    """Faithful FlashInfer FA3 GQA-prefill kernel (causal, fp16, dim==128, sm90).
+    """Faithful FlashInfer FA3 GQA-prefill kernel (causal, dim==128, sm90).
 
     Warp-specialized 2-warpgroup ping-pong port matching FlashInfer's
-    ``single_prefill_sm90``. Selected by the prefill op on Hopper for the fp16
-    causal dim-128 path; other cases fall back to ``GQAPrefillFwdKernel``. Causal
+    ``single_prefill_sm90``. Selected by the prefill op on Hopper for the
+    fp16/bf16 causal dim-128 path; other cases fall back to ``GQAPrefillFwdKernel``. Causal
     uses bottom-right alignment (``co = seq_len_kv - seq_len_q``).
 
     Note: like FlashInfer's forward kernel, this does not emit log-sum-exp; the
@@ -344,8 +380,10 @@ class GQAPrefillFwdWsPersistentCausalKernel(Kernel):
             raise ValueError("GQAPrefillFwdWsPersistentCausalKernel only supports causal prefill.")
         if dim != 128:
             raise ValueError("GQAPrefillFwdWsPersistentCausalKernel currently requires dim == 128.")
-        if dtype != torch.float16:
-            raise ValueError("GQAPrefillFwdWsPersistentCausalKernel currently supports float16 only.")
+        if dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                "GQAPrefillFwdWsPersistentCausalKernel currently supports float16 and bfloat16 only."
+            )
         if heads % heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
         self.batch = batch
@@ -356,8 +394,11 @@ class GQAPrefillFwdWsPersistentCausalKernel(Kernel):
         self.dim = dim
         self.is_causal = is_causal
         self.dtype = dtype
+        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
+        self.softcap = softcap
         self.kernel = _gqa_prefill_fwd_fa3_kernel(batch, heads, heads_kv, seq_len_q,
-                                                  seq_len_kv, dim, self.dtype_str)
+                                                  seq_len_kv, dim, self.sm_scale, self.softcap,
+                                                  self.dtype_str)
         self.init_config(config, tune)
 
     @property

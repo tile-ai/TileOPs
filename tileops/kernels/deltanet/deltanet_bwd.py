@@ -410,8 +410,12 @@ class DeltaNetBwdKernel(Kernel):
         parallel_configs = [{"threads": t} for t in [128, 256]]
         print(f"Autotuning bwd_parallel ({len(parallel_configs)} configs)...")
         parallel_jit = _bwd_parallel_tl(B, H, S, BC, DK, DV, dt)
+        _parallel_at = dict(configs=parallel_configs, warmup=warmup, rep=rep)
+        _parallel_dns = list(self._autotune_initial_kwargs(parallel_jit, parallel_configs[0]).keys())
+        if _parallel_dns:
+            _parallel_at["do_not_specialize"] = _parallel_dns
         tuned_parallel = self._call_autotuned_kernel(
-            tl_autotune(configs=parallel_configs, warmup=warmup, rep=rep)(parallel_jit),
+            tl_autotune(**_parallel_at)(parallel_jit),
             parallel_jit,
             parallel_configs[0],
         )
@@ -425,8 +429,12 @@ class DeltaNetBwdKernel(Kernel):
         ]
         print(f"Autotuning dh_recurrence_bwd ({len(recurrence_configs)} configs)...")
         recurrence_jit = _dh_recurrence_bwd_tl(B, H, S, BC, DK, DV, dt)
+        _recurrence_at = dict(configs=recurrence_configs, warmup=warmup, rep=rep)
+        _recurrence_dns = list(self._autotune_initial_kwargs(recurrence_jit, recurrence_configs[0]).keys())
+        if _recurrence_dns:
+            _recurrence_at["do_not_specialize"] = _recurrence_dns
         tuned_recurrence = self._call_autotuned_kernel(
-            tl_autotune(configs=recurrence_configs, warmup=warmup, rep=rep)(recurrence_jit),
+            tl_autotune(**_recurrence_at)(recurrence_jit),
             recurrence_jit,
             recurrence_configs[0],
         )
@@ -440,8 +448,12 @@ class DeltaNetBwdKernel(Kernel):
         ]
         print(f"Autotuning compute_w_u_bwd ({len(wu_bwd_configs)} configs)...")
         wu_bwd_jit = compute_w_u_bwd_tl(B, H, S, BC, DK, DV, dt)
+        _wu_bwd_at = dict(configs=wu_bwd_configs, warmup=warmup, rep=rep)
+        _wu_bwd_dns = list(self._autotune_initial_kwargs(wu_bwd_jit, wu_bwd_configs[0]).keys())
+        if _wu_bwd_dns:
+            _wu_bwd_at["do_not_specialize"] = _wu_bwd_dns
         tuned_wu_bwd = self._call_autotuned_kernel(
-            tl_autotune(configs=wu_bwd_configs, warmup=warmup, rep=rep)(wu_bwd_jit),
+            tl_autotune(**_wu_bwd_at)(wu_bwd_jit),
             wu_bwd_jit,
             wu_bwd_configs[0],
         )

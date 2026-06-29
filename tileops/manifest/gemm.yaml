@@ -1,0 +1,52 @@
+# Dense GEMM family.
+#
+# GemmOp is input-inferred: m/n/k and the dtype are derived from the forward
+# inputs, so nothing is committed at construction. Roofline binds m/n/k and
+# dtype during forward() and therefore uses func mode (the callable reads
+# op.m/op.n/op.k/op.dtype), which stays correct across all trans_a/trans_b
+# layouts where a single static `vars` expression could not.
+GemmOp:
+  ref_api: "torch.matmul"
+  family: gemm
+  status: implemented
+
+  signature:
+    inputs:
+      a: {dtype: "float16 | bfloat16"}
+      b: {dtype: "same_as(a)"}
+    outputs:
+      d: {dtype: "same_as(a)"}
+    params:
+      trans_a: {type: bool, default: false}
+      trans_b: {type: bool, default: true}
+    shape_rules:
+    # d is logical [M, N] for all four layouts: M is a's non-K axis (axis 1 if
+    # a is stored [K, M] under trans_a, else axis 0); N is b's non-K axis.
+    - "d.shape == ((a.shape[1] if trans_a else a.shape[0]), (b.shape[0] if trans_b else b.shape[1]))"
+
+  workloads:
+  # m/n/k are the logical GEMM dims (trans-independent); trans_a/trans_b pick
+  # the storage layout the kernel compiles for. The NT (n, k) shapes mirror
+  # DeepGEMM's normal-GEMM test set (DeepSeek-V3 MLP/attention projections),
+  # swept over decode (m=128) and prefill (m=4096) token counts.
+  - {m: 1024, n: 1024, k: 1024, trans_a: false, trans_b: false, dtypes: [float16, bfloat16], label: "square-1k-nn"}
+  - {m: 128, n: 2112, k: 7168, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "ds-v3-decode-gate-up"}
+  - {m: 128, n: 7168, k: 2048, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "ds-v3-decode-down"}
+  - {m: 4096, n: 2112, k: 7168, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "ds-v3-prefill-gate-up"}
+  - {m: 4096, n: 7168, k: 2048, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "ds-v3-prefill-down"}
+  - {m: 4096, n: 4096, k: 7168, trans_a: false, trans_b: true, dtypes: [float16, bfloat16], label: "ds-v3-prefill-attn-proj"}
+  - {m: 4096, n: 7168, k: 16384, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "k-dominant-7168x16384"}
+  - {m: 4096, n: 24576, k: 1536, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "wide-n-24576"}
+
+  roofline:
+    func: "tileops.perf.formulas.gemm_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/gemm.py
+    op: tileops/ops/gemm.py
+    test: tests/ops/test_gemm.py
+    bench: benchmarks/ops/bench_gemm.py
+    bench_manifest_driven: true
+    kernel_map:
+      gemm_kernel: GemmKernel
+      gemv_kernel: GemvKernel

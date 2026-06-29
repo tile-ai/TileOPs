@@ -150,8 +150,14 @@ ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     PIP_CACHE_DIR=/ci-cache/pip \
     PIP_NO_CACHE_DIR=0
 ARG RUNNER_VERSION=2.334.0
+# The /ci-cache chown below serves only the unmounted image-verification path
+# (`docker run <image> python ...`, see README): ci-runner writes the root-created cache dirs
+# directly. In the mounted CI path the host bind-mount shadows these dirs, so the chown is a
+# no-op and host ownership wins.
 # useradd before WORKDIR: home stays ci-runner-owned, and WORKDIR precedes the relative-path RUN (hadolint).
-RUN useradd -m -s /bin/bash ci-runner
+# Pin UID/GID 1000 so the account deterministically owns the shared /ci-cache bind-mount across
+# hosts (it matches the majority of existing warm-cache entries; host normalization preserves them).
+RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner
 WORKDIR /home/ci-runner/runner
 RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && curl -fsSL -o runner.tar.gz \

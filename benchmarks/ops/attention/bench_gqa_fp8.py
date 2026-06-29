@@ -5,13 +5,13 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, bench_kernel
 from tileops.manifest import load_workloads
-from tileops.ops import GroupedQueryAttentionPrefillFP8TensorCoreFwdOp
+from tileops.ops import GroupedQueryAttentionPrefillFwdOp
 from tileops.testing.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
 )
 
-_OP_NAME = "GroupedQueryAttentionPrefillFP8TensorCoreFwdOp"
+_OP_NAME = "GroupedQueryAttentionPrefillFwdOp"
 
 
 @dataclass(frozen=True)
@@ -28,8 +28,13 @@ class GQAFp8TensorCoreBenchCase:
 def _manifest_cases() -> list[GQAFp8TensorCoreBenchCase]:
     cases: list[GQAFp8TensorCoreBenchCase] = []
     for workload in load_workloads(_OP_NAME):
-        batch, seq_len, heads, dim = workload["q_shape"]
-        _, _, heads_kv, _ = workload["kv_shape"]
+        if workload.get("backend") != "fp8":
+            continue
+        batch = workload["batch"]
+        seq_len = workload["max_seqlen_q"]
+        heads = workload["heads"]
+        heads_kv = workload["heads_kv"]
+        dim = workload["dim"]
         for dtype_name in workload["dtypes"]:
             out_dtype = getattr(torch, dtype_name)
             cases.append(
@@ -69,20 +74,31 @@ def _make_inputs(case: GQAFp8TensorCoreBenchCase) -> tuple[torch.Tensor, ...]:
     q_fp8, q_descale = quantize_q_fa3_gqa_descale(q, case.heads_kv)
     k_fp8, k_descale = quantize_kv_fa3_descale(k)
     v_fp8, v_descale = quantize_kv_fa3_descale(v)
-    return q_fp8, k_fp8, v_fp8, q_descale, k_descale, v_descale
+    cu = torch.tensor([0, case.seq_len], device="cuda", dtype=torch.int32)
+    return (
+        q_fp8.reshape(case.batch * case.seq_len, case.heads, case.dim).contiguous(),
+        k_fp8.reshape(case.batch * case.seq_len, case.heads_kv, case.dim).contiguous(),
+        v_fp8.reshape(case.batch * case.seq_len, case.heads_kv, case.dim).contiguous(),
+        cu,
+        cu,
+        q_descale,
+        k_descale,
+        v_descale,
+    )
 
 
-def _fa3_gqa_fp8_fwd():
+def _fa3_gqa_fp8_fwd(case: GQAFp8TensorCoreBenchCase):
     try:
         from flash_attn_interface import flash_attn_func  # noqa: PLC0415
     except Exception:
         return None
 
-    def _run(q, k, v, q_descale, k_descale, v_descale):
+    def _run(q, k, v, cu_q, cu_kv, q_descale, k_descale, v_descale):
+        del cu_q, cu_kv
         return flash_attn_func(
-            q,
-            k,
-            v,
+            q.reshape(case.batch, case.seq_len, case.heads, case.dim),
+            k.reshape(case.batch, case.seq_len, case.heads_kv, case.dim),
+            v.reshape(case.batch, case.seq_len, case.heads_kv, case.dim),
             causal=False,
             q_descale=q_descale,
             k_descale=k_descale,
@@ -99,14 +115,16 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("requires Hopper FP8 WGMMA")
 
-    op = GroupedQueryAttentionPrefillFP8TensorCoreFwdOp(
+    op = GroupedQueryAttentionPrefillFwdOp(
         batch=case.batch,
         heads=case.heads,
         heads_kv=case.heads_kv,
-        seq_len=case.seq_len,
         dim=case.dim,
+        max_seqlen_q=case.seq_len,
+        max_seqlen_kv=case.seq_len,
         is_causal=False,
         dtype=case.out_dtype,
+        backend="fp8",
     )
     inputs = _make_inputs(case)
     op(*inputs)
@@ -122,7 +140,7 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
     }
     BenchmarkReport.record(op, {"case": case.label}, result, tag="tileops")
 
-    fa3_fn = _fa3_gqa_fp8_fwd()
+    fa3_fn = _fa3_gqa_fp8_fwd(case)
     if fa3_fn is not None:
         fa3_latency_ms = bench_kernel(fa3_fn, args=inputs, n_warmup=1, n_repeat=3, n_trials=1)
         fa3_result = {
