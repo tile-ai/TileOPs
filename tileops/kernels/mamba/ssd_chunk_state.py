@@ -379,12 +379,9 @@ class SSDChunkStateFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Tuned on GPU1 (2026-06-29) across shapes B={1,4}, C={1,16}, L=256, H=64, P=64, N={64,128}, G=8.
-        # Key findings:
-        #   threads=128 (4 warps) wins consistently over 256 — reduces register pressure and improves occupancy.
-        #   block_n scales with d_state: 128 when N=128, 64 otherwise.
-        #   block_l=32 wins at C>=16 (many blocks compete for SMs); 128 wins at C=1 (single block, long K).
-        #   block_p=64 works well across shapes.
+        # threads=128 (4 warps) reduces register pressure and improves occupancy over 256.
+        # block_n scales with d_state to cover the full state dimension in one tile where possible.
+        # block_l=32 keeps shared-memory pressure low across multi-chunk workloads.
         block_n = min(128, self.d_state)
         return {
             "block_n": block_n,
