@@ -12,6 +12,8 @@ from tileops.kernels.convolution import (
     Conv2dKernel,
     Conv3dKernel,
     GroupConv1dKernel,
+    GroupConv2dKernel,
+    GroupConv3dKernel,
 )
 from tileops.ops import (
     Conv1dBiasFwdOp,
@@ -324,66 +326,78 @@ def test_conv1d_dispatches_kernel(
 
 class Conv2dFixture(FixtureBase):
     PARAMS = [
-        ("n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, dtype, tune", [
+        ("n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype, tune", [
             pytest.param(
-                2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), (1, 1), torch.float16, False,
+                2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), (1, 1), 1, torch.float16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-fp16-3x3",
             ),
             pytest.param(
-                2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), (1, 1), torch.bfloat16, False,
+                2, 32, 32, 32, 64, (3, 3), (1, 1), (1, 1), (1, 1), 1, torch.bfloat16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-bf16-3x3",
             ),
+            # MobileNetV2 depthwise 3x3 block, reduced spatial size for smoke cost.
             pytest.param(
-                1, 3, 112, 112, 64, (3, 3), (2, 2), (1, 1), (1, 1), torch.float16, False,
+                1, 16, 16, 16, 16, (3, 3), (1, 1), (1, 1), (1, 1), 16, torch.float16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-mobilenetv2-depthwise-small-fp16",
+            ),
+            pytest.param(
+                1, 3, 112, 112, 64, (3, 3), (2, 2), (1, 1), (1, 1), 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-stem-3x3-s2-fp16",
             ),
             pytest.param(
-                1, 64, 56, 56, 64, (3, 3), (1, 1), (1, 1), (1, 1), torch.float16, False,
+                1, 64, 56, 56, 64, (3, 3), (1, 1), (1, 1), (1, 1), 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-resblock-3x3-s1-fp16",
             ),
             pytest.param(
-                1, 128, 56, 56, 256, (3, 3), (2, 2), (1, 1), (1, 1), torch.float16, False,
+                1, 128, 56, 56, 256, (3, 3), (2, 2), (1, 1), (1, 1), 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-stage-transition-3x3-s2-fp16",
             ),
             pytest.param(
-                1, 32, 28, 28, 64, (5, 5), (1, 1), (2, 2), (1, 1), torch.float16, False,
+                1, 32, 28, 28, 64, (5, 5), (1, 1), (2, 2), (1, 1), 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-small-5x5-s1-fp16",
             ),
             pytest.param(
-                1, 64, 28, 28, 128, (5, 5), (2, 2), (2, 2), (1, 1), torch.float16, False,
+                1, 64, 28, 28, 128, (5, 5), (2, 2), (2, 2), (1, 1), 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-small-5x5-s2-fp16",
             ),
             pytest.param(
-                2, 32, 32, 32, 64, (1, 1), (1, 1), (0, 0), (1, 1), torch.float16, True,
+                2, 32, 32, 32, 64, (1, 1), (1, 1), (0, 0), (1, 1), 1, torch.float16, True,
                 marks=pytest.mark.full,
                 id="full-fp16-1x1-tuned",
             ),
             pytest.param(
-                1, 64, 28, 28, 128, (3, 3), (2, 2), (1, 1), (1, 1), torch.float16, False,
+                1, 64, 28, 28, 128, (3, 3), (2, 2), (1, 1), (1, 1), 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-fp16-stride2",
             ),
             pytest.param(
-                1, 64, 56, 56, 128, (3, 3), (2, 2), (1, 1), (1, 1), torch.bfloat16, False,
+                1, 64, 56, 56, 128, (3, 3), (2, 2), (1, 1), (1, 1), 1, torch.bfloat16, False,
                 marks=pytest.mark.full,
                 id="full-bf16-3x3-s2",
             ),
             pytest.param(
-                1, 64, 28, 28, 64, (1, 1), (1, 1), (0, 0), (1, 1), torch.bfloat16, False,
+                1, 64, 28, 28, 64, (1, 1), (1, 1), (0, 0), (1, 1), 1, torch.bfloat16, False,
                 marks=pytest.mark.full,
                 id="full-bf16-1x1",
             ),
             pytest.param(
-                1, 64, 32, 32, 128, (3, 3), (1, 1), (2, 2), (2, 2), torch.float16, False,
+                1, 64, 32, 32, 128, (3, 3), (1, 1), (2, 2), (2, 2), 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-deeplab-aspp-3x3-d2-fp16",
+            ),
+            # ResNeXt bottleneck grouped 3x3 convolution.
+            pytest.param(
+                1, 128, 28, 28, 256, (3, 3), (1, 1), (1, 1), (1, 1), 32, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-resnext-grouped-3x3-fp16",
             ),
         ]),
     ]
@@ -402,6 +416,7 @@ class Conv2dTest(TestBase):
         stride: tuple[int, int],
         padding: tuple[int, int],
         dilation: tuple[int, int],
+        groups: int,
         dtype: torch.dtype,
     ) -> None:
         self.n = n
@@ -413,12 +428,13 @@ class Conv2dTest(TestBase):
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
+        self.groups = groups
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         x = torch.randn(self.n, self.c_in, self.h, self.w, device="cuda", dtype=self.dtype).contiguous()
         weight = torch.randn(
-            self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1],
+            self.c_out, self.c_in // self.groups, self.kernel_size[0], self.kernel_size[1],
             device="cuda", dtype=self.dtype,
         ).contiguous()
         bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
@@ -437,7 +453,7 @@ class Conv2dTest(TestBase):
             stride=self.stride,
             padding=self.padding,
             dilation=self.dilation,
-            groups=1,
+            groups=self.groups,
         )
         return out.contiguous()
 
@@ -453,10 +469,11 @@ def test_conv2d(
     stride: tuple[int, int],
     padding: tuple[int, int],
     dilation: tuple[int, int],
+    groups: int,
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = Conv2dTest(n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, dtype)
+    test = Conv2dTest(n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype)
     op = Conv2dBiasFwdOp(
         n=n,
         c_in=c_in,
@@ -467,9 +484,12 @@ def test_conv2d(
         stride=stride,
         padding=padding,
         dilation=dilation,
+        groups=groups,
         dtype=dtype,
         tune=tune,
     )
+    if groups > 1:
+        assert isinstance(op.kernel, GroupConv2dKernel)
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -499,6 +519,26 @@ def test_conv2d_no_bias_matches_torch() -> None:
         dilation=2,
     )
     ref = ref.contiguous()
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_conv2d_no_bias_grouped_matches_torch() -> None:
+    groups = 8
+    op = Conv2dFwdOp(
+        n=1,
+        c_in=16,
+        h=16,
+        w=16,
+        c_out=32,
+        kernel_size=3,
+        padding=1,
+        groups=groups,
+    )
+    x = torch.randn(1, 16, 16, 16, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(32, 2, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+    out = op(x, weight)
+    ref = F.conv2d(x, weight, bias=None, padding=1, groups=groups).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
@@ -559,36 +599,48 @@ def test_conv2d_dispatches_5x5_kernel() -> None:
 
 class Conv3dFixture(FixtureBase):
     PARAMS = [
-        ("n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, dtype, tune", [
+        ("n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype, tune", [
             pytest.param(
-                1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), torch.float16, False,
+                1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), 1, torch.float16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-3d-unet-k3-s1-fp16",
             ),
             pytest.param(
-                1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), torch.bfloat16, False,
+                1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), 1, torch.bfloat16, False,
                 marks=pytest.mark.smoke,
                 id="smoke-3d-unet-k3-s1-bf16",
             ),
+            # Video depthwise 3D block, reduced size for smoke cost.
             pytest.param(
-                1, 3, 16, 112, 112, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), torch.float16, False,
+                1, 8, 4, 12, 12, 8, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), 8, torch.float16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-video-depthwise3d-small-fp16",
+            ),
+            pytest.param(
+                1, 3, 16, 112, 112, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-r3d-stem-k3-s1-fp16",
             ),
             pytest.param(
-                1, 64, 8, 56, 56, 128, (3, 3, 3), (2, 2, 2), (1, 1, 1), (1, 1, 1), torch.float16, False,
+                1, 64, 8, 56, 56, 128, (3, 3, 3), (2, 2, 2), (1, 1, 1), (1, 1, 1), 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-video-stage-downsample-k3-s2-fp16",
             ),
             pytest.param(
-                1, 32, 32, 64, 64, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), torch.bfloat16, False,
+                1, 32, 32, 64, 64, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), 1, torch.bfloat16, False,
                 marks=pytest.mark.full,
                 id="full-unet-encoder-k3-s1-bf16",
             ),
             pytest.param(
-                1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (2, 2, 2), (2, 2, 2), torch.float16, False,
+                1, 16, 8, 32, 32, 32, (3, 3, 3), (1, 1, 1), (2, 2, 2), (2, 2, 2), 1, torch.float16, False,
                 marks=pytest.mark.full,
                 id="full-3d-aspp-3x3x3-d2-fp16",
+            ),
+            # 3D-ResNeXt/video backbone grouped 3x3x3 convolution.
+            pytest.param(
+                1, 64, 8, 28, 28, 128, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), 32, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-3d-resnext-grouped-k3-fp16",
             ),
         ]),
     ]
@@ -608,6 +660,7 @@ class Conv3dTest(TestBase):
         stride: tuple[int, int, int],
         padding: tuple[int, int, int],
         dilation: tuple[int, int, int],
+        groups: int,
         dtype: torch.dtype,
     ) -> None:
         self.n = n
@@ -620,6 +673,7 @@ class Conv3dTest(TestBase):
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
+        self.groups = groups
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
@@ -628,7 +682,11 @@ class Conv3dTest(TestBase):
             device="cuda", dtype=self.dtype,
         ).contiguous()
         weight = torch.randn(
-            self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1], self.kernel_size[2],
+            self.c_out,
+            self.c_in // self.groups,
+            self.kernel_size[0],
+            self.kernel_size[1],
+            self.kernel_size[2],
             device="cuda", dtype=self.dtype,
         ).contiguous()
         bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
@@ -647,7 +705,7 @@ class Conv3dTest(TestBase):
             stride=self.stride,
             padding=self.padding,
             dilation=self.dilation,
-            groups=1,
+            groups=self.groups,
         )
         return out.contiguous()
 
@@ -664,10 +722,11 @@ def test_conv3d(
     stride: tuple[int, int, int],
     padding: tuple[int, int, int],
     dilation: tuple[int, int, int],
+    groups: int,
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = Conv3dTest(n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, dtype)
+    test = Conv3dTest(n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype)
     op = Conv3dBiasFwdOp(
         n=n,
         c_in=c_in,
@@ -679,9 +738,12 @@ def test_conv3d(
         stride=stride,
         padding=padding,
         dilation=dilation,
+        groups=groups,
         dtype=dtype,
         tune=tune,
     )
+    if groups > 1:
+        assert isinstance(op.kernel, GroupConv3dKernel)
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -712,6 +774,27 @@ def test_conv3d_no_bias_matches_torch() -> None:
         dilation=2,
     )
     ref = ref.contiguous()
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_conv3d_no_bias_grouped_matches_torch() -> None:
+    groups = 4
+    op = Conv3dFwdOp(
+        n=1,
+        c_in=8,
+        d=4,
+        h=12,
+        w=12,
+        c_out=16,
+        kernel_size=3,
+        padding=1,
+        groups=groups,
+    )
+    x = torch.randn(1, 8, 4, 12, 12, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(16, 2, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+    out = op(x, weight)
+    ref = F.conv3d(x, weight, bias=None, padding=1, groups=groups).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
