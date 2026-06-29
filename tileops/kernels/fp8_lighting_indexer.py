@@ -10,6 +10,13 @@ from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["FP8LightingIndexerKernel"]
 
+# Minimum block_Q (query rows per block) for the software-pipelined copy/gemm.
+# With block_Q == 1 the pipeline deadlocks: some warps never arrive at the
+# pipeline barrier and the launch spins on the GPU forever. block_Q == 1 tiles
+# run unpipelined instead. Verified on sm90 across heads in {32, 64, 128}:
+# block_Q == 1 + num_stages >= 1 hangs; block_Q >= 2 runs (any tile width).
+_MIN_PIPELINED_BLOCK_Q = 2
+
 
 @functools.lru_cache(maxsize=32)
 def _fp8_lighting_indexer_kernel(batch,
@@ -31,7 +38,12 @@ def _fp8_lighting_indexer_kernel(batch,
         block_Q=None,
     ):
         if block_Q is None:
-            block_Q = 128 // heads
+            block_Q = max(1, 128 // heads)
+        # block_Q == 1 deadlocks the pipeline barrier; run such tiles unpipelined.
+        # Guards every entry point (autotune, manual config, the default above):
+        # heads >= 65 makes the default block_Q == 1, which would otherwise hang.
+        if block_Q < _MIN_PIPELINED_BLOCK_Q:
+            num_stages = 0
         dtype = T.float8_e4m3fn
         accum_dtype = T.float32
         index_dtype = T.int32
@@ -239,12 +251,9 @@ class FP8LightingIndexerKernel(Kernel):
         block_N = [32, 64, 128]
         num_stages = [0, 1, 2]
         threads = [128, 256]
-        # Why: block_Q=1 deadlocks the pipelined copy/gemm whenever num_stages>=1
-        # (a single query row leaves threads that never arrive at the pipeline
-        # barrier), and a hung launch keeps spinning on the GPU long after the
-        # autotuner abandons it, wedging every later candidate. block_Q=1 is also
-        # the lowest-intensity tile and never wins; exclude it from the sweep.
-        block_Q = [2, 4]
+        # block_Q == 1 deadlocks the pipeline (see _MIN_PIPELINED_BLOCK_Q) and is
+        # also the lowest-arithmetic-intensity tile that never wins; omit it.
+        block_Q = [bq for bq in (1, 2, 4) if bq >= _MIN_PIPELINED_BLOCK_Q]
         _configs = list(itertools.product(block_N, num_stages, threads, block_Q))
 
         configs = [{
