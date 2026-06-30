@@ -15,6 +15,7 @@ __all__ = [
     "Conv2d1x1Kernel",
     "Conv2d3x3S1P1HighresKernel",
     "Conv2dKernel",
+    "Conv2dSymmetricKernel",
     "Conv3dKernel",
     "GroupConv1dKernel",
     "GroupConv2dKernel",
@@ -2197,6 +2198,146 @@ class Conv2d3x3S1P1HighresKernel(Kernel):
             dtype=x.dtype,
         )
         return _conv2d_3x3_s1_p1_highres_wrapped_kernel(
+            self.dtype_str,
+            self.config["block_m"],
+            self.config["block_n"],
+            self.config["block_k"],
+            self.config["num_stages"],
+            self.config["threads"],
+            self.config["enable_rasterization"],
+            x,
+            weight,
+            bias,
+            x_nhwc,
+            weight_krsc,
+            out_nhwc,
+        )
+
+
+class Conv2dSymmetricKernel(Kernel):
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        h: int,
+        w: int,
+        c_out: int,
+        kernel_size: int,
+        stride: int,
+        pad: int,
+        dilation: int,
+        dtype: torch.dtype,
+        has_bias: bool = False,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        self.n = n
+        self.c_in = c_in
+        self.h = h
+        self.w = w
+        self.c_out = c_out
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.pad = pad
+        self.dilation = dilation
+        self.dtype = dtype
+        self.has_bias = has_bias
+        self.out_h = (h + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
+        self.out_w = (w + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
+        self.m = n * self.out_h * self.out_w
+        self.k_total = c_in * kernel_size * kernel_size
+
+        self.kernel = _conv2d_symmetric_kernel(
+            n,
+            c_in,
+            h,
+            w,
+            c_out,
+            kernel_size,
+            stride,
+            pad,
+            dilation,
+            has_bias,
+            self.dtype_str,
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 64,
+            "block_n": 256,
+            "block_k": 64,
+            "num_stages": 3,
+            "threads": 256,
+            "enable_rasterization": True,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
+        configs = itertools.product(
+            [64, 128],
+            [64, 128, 256],
+            [16, 32, 64],
+            [2, 3],
+            [128, 256],
+            [True],
+        )
+        valid_configs = []
+        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
+            shared_memory_bytes = conv_shared_memory_bytes(
+                block_m, block_n, block_k, num_stages, self.dtype
+            )
+            if shared_memory_bytes > shared_memory_limit_bytes:
+                continue
+            valid_configs.append({
+                "block_m": block_m,
+                "block_n": block_n,
+                "block_k": block_k,
+                "num_stages": num_stages,
+                "threads": threads,
+                "enable_rasterization": enable_rasterization,
+            })
+        return valid_configs
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if bias is None:
+            bias = torch.zeros(self.c_out, device=x.device, dtype=x.dtype)
+        x_nhwc = torch.empty(
+            (self.n, self.h, self.w, self.c_in),
+            device=x.device,
+            dtype=x.dtype,
+        )
+        weight_krsc = torch.empty(
+            (self.c_out, self.kernel_size, self.kernel_size, self.c_in),
+            device=weight.device,
+            dtype=weight.dtype,
+        )
+        out_nhwc = torch.empty(
+            (self.n, self.out_h, self.out_w, self.c_out),
+            device=x.device,
+            dtype=x.dtype,
+        )
+        return _conv2d_symmetric_wrapped_kernel(
+            self.n,
+            self.c_in,
+            self.h,
+            self.w,
+            self.c_out,
+            self.kernel_size,
+            self.stride,
+            self.pad,
+            self.dilation,
+            self.has_bias,
             self.dtype_str,
             self.config["block_m"],
             self.config["block_n"],
