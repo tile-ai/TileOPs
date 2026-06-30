@@ -1608,6 +1608,168 @@ def _conv2d_3x3_s1_p1_highres_kernel(dtype: str = "float16"):
     return _conv2d_3x3_s1_p1_highres_func
 
 
+@functools.lru_cache(maxsize=8)
+def _conv2d_symmetric_kernel(
+    n: int,
+    c_in: int,
+    h: int,
+    w: int,
+    c_out: int,
+    kernel_size: int,
+    stride: int,
+    pad: int,
+    dilation: int,
+    has_bias: bool,
+    dtype: str = "float16",
+):
+    accum_dtype = "float"
+    out_h = (h + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
+    out_w = (w + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
+    out_hw = out_h * out_w
+    k_total = c_in * kernel_size * kernel_size
+
+    input_spatial_block = 32
+    input_channel_block = 32
+    input_channel_lanes = 8
+    input_values_per_thread = input_channel_block // input_channel_lanes
+    output_spatial_block = 128
+    output_channel_block = 2
+
+    @tilelang.jit(
+        out_idx=[6],
+        compile_flags=["-O3", "-DENABLE_BF16"],
+        pass_configs={"tl.enable_async_copy": False},
+    )
+    def _conv2d_symmetric_func(
+        block_m: int,
+        block_n: int,
+        block_k: int,
+        num_stages: int,
+        threads: int,
+        enable_rasterization: bool,
+    ):
+        @T.macro
+        def nchw_to_nhwc_input(
+            x: T.Tensor((n, c_in, h, w), dtype),
+            x_nhwc: T.Tensor((n, h, w, c_in), dtype),
+        ):
+            with T.Kernel(
+                T.ceildiv(h * w, input_spatial_block),
+                T.ceildiv(c_in, input_channel_block),
+                n,
+                threads=256,
+            ) as (bx, by, bz):
+                for spatial_inner, channel_lane in T.Parallel(
+                    input_spatial_block, input_channel_lanes
+                ):
+                    spatial = bx * input_spatial_block + spatial_inner
+                    oh = spatial // w
+                    ow = spatial - oh * w
+                    channel_base = by * input_channel_block + channel_lane * input_values_per_thread
+                    for channel_offset in T.serial(input_values_per_thread):
+                        c = channel_base + channel_offset
+                        if (spatial < h * w) & (c < c_in):
+                            x_nhwc[bz, oh, ow, c] = x[bz, c, oh, ow]
+
+        @T.macro
+        def kcrs_to_krsc_weight(
+            weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
+            weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
+        ):
+            with T.Kernel(
+                T.ceildiv(c_out * kernel_size * kernel_size * c_in, 256),
+                threads=256,
+            ) as (bx):
+                for tx in T.Parallel(256):
+                    idx = bx * 256 + tx
+                    if idx < c_out * kernel_size * kernel_size * c_in:
+                        ci = idx % c_in
+                        kernel_idx = idx // c_in
+                        kw = kernel_idx % kernel_size
+                        kh = (kernel_idx // kernel_size) % kernel_size
+                        oc = kernel_idx // (kernel_size * kernel_size)
+                        weight_krsc[oc, kh, kw, ci] = weight[oc, ci, kh, kw]
+
+        @T.macro
+        def conv_nhwc_implicit_gemm_bias(
+            x_nhwc: T.Tensor((n, h, w, c_in), dtype),
+            weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
+            bias: T.Tensor((c_out,), dtype),
+            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
+        ):
+            with T.Kernel(
+                T.ceildiv(c_out, block_n),
+                T.ceildiv(n * out_h * out_w, block_m),
+                threads=threads,
+            ) as (bx, by):
+                data_shared = T.alloc_shared((block_m, block_k), dtype)
+                weight_shared = T.alloc_shared((block_n, block_k), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight_krsc.data)
+                out_flat = T.Tensor((n * out_h * out_w, c_out), dtype, out_nhwc.data)
+
+                T.use_swizzle(10, enable=enable_rasterization)
+                T.clear(out_local)
+
+                for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
+                    T.im2col(x_nhwc, data_shared, by, k_iter, kernel_size, stride, dilation, pad)
+                    T.copy(weight_flat[bx * block_n, k_iter * block_k], weight_shared)
+                    T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    spatial_idx = by * block_m + i
+                    oc = bx * block_n + j
+                    out_shared[i, j] = T.if_then_else(
+                        (spatial_idx < n * out_hw) & (oc < c_out),
+                        T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                        T.cast(0.0, dtype),
+                    )
+
+                T.copy(out_shared, out_flat[by * block_m, bx * block_n])
+
+        @T.macro
+        def nhwc_to_nchw_output(
+            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),
+        ):
+            with T.Kernel(
+                T.ceildiv(c_out, output_channel_block),
+                T.ceildiv(out_h * out_w, output_spatial_block),
+                n,
+                threads=256,
+            ) as (bx, by, bz):
+                for channel_inner, spatial_inner in T.Parallel(
+                    output_channel_block, output_spatial_block
+                ):
+                    oc = bx * output_channel_block + channel_inner
+                    spatial = by * output_spatial_block + spatial_inner
+                    oh = spatial // out_w
+                    ow = spatial - oh * out_w
+                    if (oc < c_out) & (spatial < out_h * out_w):
+                        out[bz, oc, oh, ow] = out_nhwc[bz, oh, ow, oc]
+
+        @T.prim_func
+        def _conv2d_symmetric_main(
+            x: T.Tensor((n, c_in, h, w), dtype),
+            weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
+            bias: T.Tensor((c_out,), dtype),
+            x_nhwc: T.Tensor((n, h, w, c_in), dtype),
+            weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
+            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
+            out: T.Tensor((n, c_out, out_h, out_w), dtype),
+        ):
+            nchw_to_nhwc_input(x, x_nhwc)
+            kcrs_to_krsc_weight(weight, weight_krsc)
+            conv_nhwc_implicit_gemm_bias(x_nhwc, weight_krsc, bias, out_nhwc)
+            nhwc_to_nchw_output(out_nhwc, out)
+
+        return _conv2d_symmetric_main
+
+    return _conv2d_symmetric_func
+
+
 @torch.library.custom_op("top::conv2d_1x1_wrapped_kernel", mutates_args=())
 def _conv2d_1x1_wrapped_kernel(
     n: int,
