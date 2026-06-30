@@ -1861,6 +1861,68 @@ def _(
     )
 
 
+@torch.library.custom_op("top::conv2d_symmetric_wrapped_kernel", mutates_args=())
+def _conv2d_symmetric_wrapped_kernel(
+    n: int,
+    c_in: int,
+    h: int,
+    w: int,
+    c_out: int,
+    kernel_size: int,
+    stride: int,
+    pad: int,
+    dilation: int,
+    has_bias: bool,
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasterization: bool,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    x_nhwc: torch.Tensor,
+    weight_krsc: torch.Tensor,
+    out_nhwc: torch.Tensor,
+) -> torch.Tensor:
+    return _conv2d_symmetric_kernel(
+        n, c_in, h, w, c_out, kernel_size, stride, pad, dilation, has_bias, dtype
+    )(
+        block_m, block_n, block_k, num_stages, threads, enable_rasterization
+    )(
+        x, weight, bias, x_nhwc, weight_krsc, out_nhwc
+    )
+
+
+@_conv2d_symmetric_wrapped_kernel.register_fake
+def _(
+    n: int,
+    c_in: int,
+    h: int,
+    w: int,
+    c_out: int,
+    kernel_size: int,
+    stride: int,
+    pad: int,
+    dilation: int,
+    has_bias: bool,
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    enable_rasterization: bool,
+    *inputs: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
+    x = inputs[0]
+    out_h = (h + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
+    out_w = (w + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
+    return torch.empty((n, c_out, out_h, out_w), dtype=x.dtype, device=x.device)
+
+
 @torch.library.custom_op("top::conv2d_wrapped_kernel", mutates_args=())
 def _conv2d_wrapped_kernel(
     n: int,
