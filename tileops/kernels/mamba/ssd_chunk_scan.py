@@ -492,32 +492,24 @@ class SSDChunkScanFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # threads=64 (2 warps) balances parallelism with register pressure.
+        # threads=128 (4 warps) consistently outperforms threads=64 across all production shapes.
         # block_n=64 keeps occupancy high for typical d_state sizes (64-128).
         return {
             "block_l": 64,
             "block_p": 64,
             "block_n": min(64, self.d_state),
             "block_s": 64,
-            "threads": 64,
+            "threads": 128,
         }
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # Focused search around the known-good default (block_l=64, block_p=64,
-        # block_n=128, block_s=64, threads=128).
-        #
-        # NCU evidence:
-        #   - block_l=64, block_p=64 anchors GEMM tile efficiency; smaller tiles
-        #     hurt more than they help (tested: shape-aware default was slower).
-        #   - block_n only affects the history-path loop count; vary minimally.
-        #   - block_s and threads are the primary levers: block_s controls causal
-        #     GEMM tile size and s-loop iteration count; threads controls warps/block
-        #     and latency-hiding capacity.
-        #
-        # 6–8 configs total (2 block_n entries dropped when d_state <= 32 or 64).
+        # Search space covers block_s in {32,64,128}, threads in {64,128,256},
+        # and block_n scaled to d_state. Smaller tiles (32x32) are included to
+        # allow autotuning to trade GEMM tile efficiency for higher SM occupancy.
         block_n = min(128, self.d_state)
         return [
+            # Original configs (baseline)
             {"block_l": 64, "block_p": 64, "block_n": block_n, "block_s": bs, "threads": t}
             for bs in [64, 128]
             for t  in [128, 256]
@@ -528,11 +520,22 @@ class SSDChunkScanFwdKernel(Kernel):
             if bn <= self.d_state
         ] + [
             # threads=64 (2 warps/block) — more blocks/SM at cost of less ILP
-            # Include block_n=64 to cover the optimal config found via AKO tuning
             {"block_l": 64, "block_p": 64, "block_n": bn, "block_s": bs, "threads": 64}
             for bs in [64, 128]
             for bn in [64, 128]
             if bn <= self.d_state
+        ] + [
+            # Lower register pressure: smaller tiles (32x32) for higher occupancy
+            # Target: 119 → ~60-70 registers/thread, 24% → 40-50% occupancy
+            {"block_l": 32, "block_p": 32, "block_n": bn, "block_s": 32, "threads": 128}
+            for bn in [64, 128]
+            if bn <= self.d_state
+        ] + [
+            # Hybrid / Aggressive: vary block_s and threads at block_l=32, block_p=32, block_n=64
+            # to explore the occupancy/efficiency trade-off without a full grid search.
+            {"block_l": 32, "block_p": 32, "block_n": 64, "block_s": bs, "threads": t}
+            for bs, t in [(64, 128), (32, 64)]
+            if self.d_state >= 64
         ]
 
     def forward(

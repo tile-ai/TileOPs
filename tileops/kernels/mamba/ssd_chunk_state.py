@@ -379,21 +379,15 @@ class SSDChunkStateFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Smaller tile sizes (block_n=64, block_p=32) reduce register pressure
-        # and improve occupancy. threads=128 for has_seq_idx path prevents
-        # excessive per-block register allocation.
-        if self.has_seq_idx:
-            return {
-                "block_n": 128,
-                "block_p": 64,
-                "block_l": 128,
-                "threads": 128,
-            }
+        # threads=128 (4 warps) reduces register pressure and improves occupancy over 256.
+        # block_n scales with d_state to cover the full state dimension in one tile where possible.
+        # block_l=32 keeps shared-memory pressure low across multi-chunk workloads.
+        block_n = min(128, self.d_state)
         return {
-            "block_n": 64,
-            "block_p": 32,
-            "block_l": 128,
-            "threads": 256,
+            "block_n": block_n,
+            "block_p": 64,
+            "block_l": 32,
+            "threads": 128,
         }
 
     @property
