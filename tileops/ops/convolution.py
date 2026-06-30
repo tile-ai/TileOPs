@@ -8,6 +8,7 @@ from tileops.kernels.convolution import (
     Conv2d1x1Kernel,
     Conv2d3x3S1P1HighresKernel,
     Conv2dKernel,
+    Conv2dSymmetricKernel,
     Conv3dKernel,
     GroupConv1dKernel,
     GroupConv2dKernel,
@@ -561,6 +562,12 @@ class Conv2dFwdOp(Op):
             has_bias=_has_bias,
             tune=tune,
         )
+        is_symmetric = (
+            self.kernel_size[0] == self.kernel_size[1]
+            and self.stride[0] == self.stride[1]
+            and self.padding[0] == self.padding[1]
+            and self.dilation[0] == self.dilation[1]
+        )
         if (
             self.groups == 1
             and self.kernel_size == (1, 1)
@@ -585,6 +592,25 @@ class Conv2dFwdOp(Op):
             and "conv2d_3x3_s1_p1_highres_kernel" in self.kernel_map
         ):
             self.kernel = self.kernel_map["conv2d_3x3_s1_p1_highres_kernel"](**kernel_kwargs)
+        elif (
+            self.groups == 1
+            and is_symmetric
+            and "conv2d_symmetric_kernel" in self.kernel_map
+        ):
+            self.kernel = self.kernel_map["conv2d_symmetric_kernel"](
+                n=n,
+                c_in=c_in,
+                h=h,
+                w=w,
+                c_out=c_out,
+                kernel_size=self.kernel_size[0],
+                stride=self.stride[0],
+                pad=self.padding[0],
+                dilation=self.dilation[0],
+                dtype=dtype,
+                has_bias=_has_bias,
+                tune=tune,
+            )
         elif self.groups == 1 and "conv2d_kernel" in self.kernel_map:
             self.kernel = self.kernel_map["conv2d_kernel"](
                 **kernel_kwargs,
@@ -615,6 +641,7 @@ class Conv2dFwdOp(Op):
         return {
             "conv2d_1x1_kernel": Conv2d1x1Kernel,
             "conv2d_3x3_s1_p1_highres_kernel": Conv2d3x3S1P1HighresKernel,
+            "conv2d_symmetric_kernel": Conv2dSymmetricKernel,
             "conv2d_kernel": Conv2dKernel,
             "group_conv2d_kernel": GroupConv2dKernel,
         }
