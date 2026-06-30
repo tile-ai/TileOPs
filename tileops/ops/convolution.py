@@ -6,7 +6,6 @@ from tileops.kernels.convolution import (
     Conv1dKernel,
     Conv1dPointwiseKernel,
     Conv2d1x1Kernel,
-    Conv2d3x3S1P1HighresKernel,
     Conv2dKernel,
     Conv2dSymmetricKernel,
     Conv3dKernel,
@@ -580,21 +579,6 @@ class Conv2dFwdOp(Op):
         ):
             self.kernel = self.kernel_map["conv2d_1x1_kernel"](**kernel_kwargs)
         elif (
-            self.kernel_size == (3, 3)
-            and self.stride == (1, 1)
-            and self.padding == (1, 1)
-            and self.dilation == (1, 1)
-            and self.has_bias
-            and self.n == 1
-            and self.c_in == 256
-            and self.h == 112
-            and self.w == 112
-            and self.c_out == 512
-            and self.dtype == torch.float16
-            and "conv2d_3x3_s1_p1_highres_kernel" in self.kernel_map
-        ):
-            self.kernel = self.kernel_map["conv2d_3x3_s1_p1_highres_kernel"](**kernel_kwargs)
-        elif (
             self.groups == 1
             and can_use_symmetric_kernel
             and "conv2d_symmetric_kernel" in self.kernel_map
@@ -642,7 +626,6 @@ class Conv2dFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "conv2d_1x1_kernel": Conv2d1x1Kernel,
-            "conv2d_3x3_s1_p1_highres_kernel": Conv2d3x3S1P1HighresKernel,
             "conv2d_symmetric_kernel": Conv2dSymmetricKernel,
             "conv2d_kernel": Conv2dKernel,
             "group_conv2d_kernel": GroupConv2dKernel,
