@@ -2,7 +2,7 @@
 
 After readback the device emits one ``slots`` int64 tensor of shape
 ``(num_cta, num_groups, (max_events + 1) * 2)`` (the layout
-:func:`tileops.trace.passes.lower` writes). Each ``(cta, gid)`` slot row
+``tileops.trace.passes.lower`` writes). Each ``(cta, gid)`` slot row
 is a flat run of int64 words:
 
 * ``word[0]`` = event count (header), saturated at ``max_events``.
@@ -15,15 +15,15 @@ is a flat run of int64 words:
 This module turns those raw words into render-ready objects: per ``(cta, gid)``
 slot it reads the header count, unpacks each ``w1`` word, zeroes timestamps per
 **CTA**, and stack-matches RANGE_BEGIN/RANGE_END pairs per ``(cta, gid, lane)``
-track into :class:`Slice` objects. INSTANT records become :class:`Instant`
+track into ``Slice`` objects. INSTANT records become ``Instant``
 objects. The ``lane`` in each track is the interned lane id; exporters resolve it
 to a name via the ``lane_id_to_name`` map.
 
 Flow arrows are NOT decoded from records: ``trace.dag`` is a build-time
-declaration, so no flow record exists on the device. Instead :func:`compute_flows`
-takes the decoded :class:`Slice` list plus the declared ``(src_name, dst_name)``
+declaration, so no flow record exists on the device. Instead ``compute_flows``
+takes the decoded ``Slice`` list plus the declared ``(src_name, dst_name)``
 pairs and, per CTA, pairs the i-th ``src_name`` slice with the i-th ``dst_name``
-slice (both in timestamp order) into :class:`FlowEdge` objects.
+slice (both in timestamp order) into ``FlowEdge`` objects.
 
 Per-CTA timestamp zeroing:
     ``clock64`` is a per-SM counter, so timestamps are only comparable within a
@@ -80,7 +80,7 @@ class Instant:
 class FlowEdge:
     """One resolved flow arrow connecting a source slice to a destination slice.
 
-    Built by :func:`compute_flows` from a declared ``(src_name, dst_name)`` flow:
+    Built by ``compute_flows`` from a declared ``(src_name, dst_name)`` flow:
     per CTA, the i-th ``src_name`` slice (by start timestamp) pairs with the i-th
     ``dst_name`` slice. The arrow runs from the source slice's END to the
     destination slice's START.
@@ -137,7 +137,7 @@ def decode(slots, *, id_to_name: dict[int, str], group_id_to_name: dict[int, str
     Walks every ``(cta, gid)`` slot, reads the header count, unpacks each event's
     ``w1`` word, zeroes timestamps against the owning **CTA**'s minimum, and
     stack-matches range pairs per ``(cta, gid, lane)`` track in stored program
-    order. Flow arrows are not decoded here; :func:`compute_flows` derives them
+    order. Flow arrows are not decoded here; ``compute_flows`` derives them
     from the returned slices and the declared flow pairs.
 
     Tracks are always the full 3-tuple ``(cta, gid, lane)`` with ``lane`` the
@@ -243,23 +243,23 @@ def decode(slots, *, id_to_name: dict[int, str], group_id_to_name: dict[int, str
 
 
 def compute_flows(events: list, flows: list) -> list:
-    """Resolve declared flow pairs into per-CTA :class:`FlowEdge` arrows.
+    """Resolve declared flow pairs into per-CTA ``FlowEdge`` arrows.
 
     For each declared ``(src_name, dst_name)`` flow and each CTA, collects that
-    CTA's :class:`Slice` objects named ``src_name`` and named ``dst_name`` (each
+    CTA's ``Slice`` objects named ``src_name`` and named ``dst_name`` (each
     sorted by start timestamp), then pairs the i-th source with the i-th
     destination for ``i`` in ``[0, min(len_src, len_dst))``. Each pair becomes one
-    :class:`FlowEdge` whose arrow runs from the source slice END to the
+    ``FlowEdge`` whose arrow runs from the source slice END to the
     destination slice START. Distinct occurrences therefore yield distinct edges
     with distinct endpoints — never collapsing onto a single anchor.
 
     Args:
-        events: Flat event list from :func:`decode` (only :class:`Slice` objects
+        events: Flat event list from ``decode`` (only ``Slice`` objects
             participate; other kinds are ignored).
         flows: Declared ``(src_name, dst_name)`` pairs (``host_maps["flows"]``).
 
     Returns:
-        A flat list of :class:`FlowEdge` objects across all flows and CTAs.
+        A flat list of ``FlowEdge`` objects across all flows and CTAs.
     """
     slices = [e for e in events if isinstance(e, Slice)]
     ctas = sorted({s.track[0] for s in slices})

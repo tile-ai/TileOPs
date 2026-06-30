@@ -1,7 +1,7 @@
 """Self-contained Plotly HTML timeline viewer for decoded trace events.
 
 Turns the flat ``Slice`` / ``Instant`` list from
-:func:`tileops.trace.decode.decode` into a single, self-contained ``.html`` file
+``tileops.trace.decode.decode`` into a single, self-contained ``.html`` file
 that renders one horizontal-bar Gantt timeline per CTA. The viewer matches the
 look of the reference GPU-pipeline timeline in ``docs/plans/reference_fa3_pipeline.html``:
 warm ``#f3ede1`` paper, monospace fonts, overlaid bars with light separator lines,
@@ -25,8 +25,8 @@ Layout per CTA (``_figure_for_cta``):
       sorted name, so a name keeps its color across CTAs. ``Instant`` markers are
       grouped likewise into thin (1% of span) bar traces.
     * **Flows** (declared ``(src_name, dst_name)`` pairs resolved per CTA by
-      :func:`tileops.trace.decode.compute_flows`) become one ``annotations`` arrow
-      per :class:`~tileops.trace.decode.FlowEdge`, from the source slice's end lane
+      ``tileops.trace.decode.compute_flows``) become one ``annotations`` arrow
+      per ``FlowEdge``, from the source slice's end lane
       to the destination slice's start lane.
 
 Interaction is horizontal-only zoom + pan: ``dragmode:"pan"`` with
@@ -189,7 +189,7 @@ def _figure_for_cta(cta, events, group_id_to_name, lane_id_to_name, flows, color
         group_id_to_name: ``gid -> name`` map for lane labels.
         lane_id_to_name: ``lane_id -> name`` map for lane labels.
         flows: Declared ``(src_name, dst_name)`` pairs, resolved to per-edge arrows
-            for this CTA via :func:`tileops.trace.decode.compute_flows`.
+            for this CTA via ``tileops.trace.decode.compute_flows``.
         color_map: Global ``name -> color`` assignment (stable across CTAs).
         title: Base figure title; the CTA index is appended.
         sm_clock_ghz: Locked SM clock in GHz.
@@ -290,7 +290,7 @@ def _figure_for_cta(cta, events, group_id_to_name, lane_id_to_name, flows, color
         "font": {"family": _FONT_FAMILY, "color": _INK, "size": 13},
         "dragmode": "pan",
         "xaxis": {
-            "title": "SM cycles (clock64)",
+            "title": {"text": "SM cycles (clock64)", "standoff": 10},
             "gridcolor": _GRID_COLOR,
             "zeroline": False,
             "range": [0, span * 1.02],
@@ -307,8 +307,9 @@ def _figure_for_cta(cta, events, group_id_to_name, lane_id_to_name, flows, color
             "tickfont": {"size": 13, "family": _FONT_FAMILY},
             "automargin": True,
         },
-        "legend": {"orientation": "h", "y": -0.16, "x": 0, "font": {"size": 12}},
-        "margin": {"l": 200, "r": 30, "t": 80, "b": 120},
+        "legend": {"orientation": "h", "y": -0.30, "yanchor": "top", "x": 0,
+                   "font": {"size": 12}},
+        "margin": {"l": 200, "r": 30, "t": 80, "b": 170},
         "hoverlabel": {"font": {"family": _FONT_FAMILY, "size": 12}},
         "annotations": annotations,
     }
@@ -379,7 +380,7 @@ def export_timeline_html(events: list, path: str, *, group_id_to_name: dict,
 
     Args:
         events: Flat list of ``Slice`` / ``Instant`` objects from
-            :func:`tileops.trace.decode.decode`.
+            ``tileops.trace.decode.decode``.
         path: Destination ``.html`` path.
         group_id_to_name: ``gid -> name`` map (resolved from the compiled kernel),
             used to label each lane.
