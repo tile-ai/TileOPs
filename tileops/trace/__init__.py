@@ -1,6 +1,6 @@
 """In-kernel timeline trace tool: annotate, build, run, and export a timeline.
 
-The whole surface is the :data:`trace` namespace (see :mod:`tileops.trace.api`
+The whole surface is the ``trace`` namespace (see ``tileops.trace.api``
 for the full, example-driven reference). In short: ``trace.enable()`` turns
 tracing on, ``with trace.range(...)`` / ``trace.group(...)`` mark up a kernel
 body, ``trace.out_idx`` + ``trace.finalize`` wire it into a vanilla

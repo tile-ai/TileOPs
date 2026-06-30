@@ -2,17 +2,17 @@
 
 The trace tool splits responsibilities:
 
-* The module-level :data:`tileops.trace.api.trace` namespace emits lightweight
+* The module-level ``tileops.trace.api.trace`` namespace emits lightweight
   *placeholders* (``tl_trace_marker`` ``call_extern`` nodes) into the kernel body
   and interns the human-readable names referenced by those placeholders into id
   tables.
-* The :func:`tileops.trace.passes.lower` transform reads those same intern tables
+* The ``tileops.trace.passes.lower`` transform reads those same intern tables
   back out (to build the host-side decode maps) after the kernel is built.
 
 The two halves never call each other directly; they communicate through the
 build registry installed here. The ``trace.*`` markers populate a fresh
-:class:`TraceState` per build epoch (:func:`build_state`); ``trace.lower`` reads
-it, then retires the epoch (:func:`begin_build_epoch`) so the next build starts
+``TraceState`` per build epoch (``build_state``); ``trace.lower`` reads
+it, then retires the epoch (``begin_build_epoch``) so the next build starts
 clean.
 
 This is process-global, single-threaded build state: TileLang kernels are built
@@ -42,7 +42,7 @@ _DEFAULT_LANE = "main"
 class TraceState:
     """Build-global intern tables + the active group stack for one build.
 
-    A fresh instance backs each build epoch (see :func:`build_state`). The
+    A fresh instance backs each build epoch (see ``build_state``). The
     annotation API mutates it as it emits placeholders; the transform reads the
     reverse maps to label the host-side decode.
 
@@ -99,11 +99,11 @@ class TraceState:
         return self._group_stack[-1][1]
 
     def push_group(self, name: str, lead: int) -> None:
-        """Make ``(name, lead)`` the live group until the matching :meth:`pop_group`."""
+        """Make ``(name, lead)`` the live group until the matching ``pop_group``."""
         self._group_stack.append((name, lead))
 
     def pop_group(self) -> None:
-        """Restore the previously live group (undo one :meth:`push_group`)."""
+        """Restore the previously live group (undo one ``push_group``)."""
         self._group_stack.pop()
 
     # -- intern tables ----------------------------------------------------
@@ -175,7 +175,7 @@ class TraceState:
 
         The declaration emits no runtime record; the host renders it by pairing
         each CTA's ``src_name`` slices with its ``dst_name`` slices in timestamp
-        order (see :func:`tileops.trace.decode.compute_flows`).
+        order (see ``tileops.trace.decode.compute_flows``).
 
         Args:
             src_name: Source (producer) range name.
@@ -200,9 +200,9 @@ _BUILD_STATE: TraceState | None = None
 def begin_build_epoch() -> None:
     """Retire the current build registry so the next marker starts a fresh one.
 
-    Called by :func:`tileops.trace.passes.lower` after it has consumed a build's
-    interned maps. The next :func:`build_state` lookup installs a new empty
-    :class:`TraceState`.
+    Called by ``tileops.trace.passes.lower`` after it has consumed a build's
+    interned maps. The next ``build_state`` lookup installs a new empty
+    ``TraceState``.
     """
     global _BUILD_STATE
     _BUILD_STATE = None
@@ -215,7 +215,7 @@ def build_state() -> TraceState:
     which emits no markers never allocates one.
 
     Returns:
-        The current build epoch's :class:`TraceState`.
+        The current build epoch's ``TraceState``.
     """
     global _BUILD_STATE
     if _BUILD_STATE is None:

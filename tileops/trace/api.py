@@ -57,10 +57,10 @@ __all__ = ["trace"]
 
 
 class _Trace:
-    """The ``trace`` namespace (use the singleton :data:`trace`, do not instantiate).
+    """The ``trace`` namespace (use the singleton ``trace``, do not instantiate).
 
-    Stateless except for the process-local run switch (:attr:`enabled` /
-    :attr:`output`); all annotation state lives in the per-build registry.
+    Stateless except for the process-local run switch (``enabled`` /
+    ``output``); all annotation state lives in the per-build registry.
     """
 
     def __init__(self) -> None:
@@ -93,10 +93,10 @@ class _Trace:
         """Turn tracing on for this process and set the output directory.
 
         Call once at startup, before any traced kernel is built — a builder reads
-        :attr:`enabled` at build time and is typically cached.
+        ``enabled`` at build time and is typically cached.
 
         Args:
-            output: Directory for dumped artifacts (created on first :meth:`dump`).
+            output: Directory for dumped artifacts (created on first ``dump``).
                 Defaults to ``"debug"`` (gitignored).
 
         Example:
@@ -160,7 +160,7 @@ class _Trace:
             lane: Render sub-lane, interned dynamically (default ``"main"``).
 
         Returns:
-            A token to pass to :meth:`range_end`.
+            A token to pass to ``range_end``.
 
         Example:
             >>> tok = trace.range_start("phase")
@@ -173,7 +173,7 @@ class _Trace:
         """Close the range opened for ``tok`` (``None`` no-ops).
 
         Args:
-            tok: The token returned by :meth:`range_start`.
+            tok: The token returned by ``range_start``.
 
         Example:
             >>> trace.range_end(tok)
@@ -215,13 +215,13 @@ class _Trace:
     def out_idx(self, n_outputs: int, traced: bool | None = None) -> list[int]:
         """Return the ``out_idx`` for a kernel with ``n_outputs`` real outputs.
 
-        Grows by one (for the trailing ``slots`` output that :meth:`finalize`
+        Grows by one (for the trailing ``slots`` output that ``finalize``
         appends) when traced, so the same builder works either way.
 
         Args:
             n_outputs: Number of real (non-``slots``) outputs.
             traced: Whether this build is traced. ``None`` (default) reads the
-                process switch :attr:`enabled`. **A cached builder must pass an
+                process switch ``enabled``. **A cached builder must pass an
                 explicit value** and include it in its cache key — otherwise the
                 ``out_idx`` baked into the cached kernel ignores later switch flips.
 
@@ -243,13 +243,13 @@ class _Trace:
         """Lower the markers when traced, else strip them — return either.
 
         The one line a builder returns instead of branching. Pairs with
-        :meth:`out_idx`; pass the same ``traced`` to both.
+        ``out_idx``; pass the same ``traced`` to both.
 
         Args:
             primfunc: The built kernel; its body carries ``trace.*`` markers.
             traced: Whether this build is traced. ``None`` (default) reads the
-                process switch :attr:`enabled`. A cached builder must pass an
-                explicit value (see :meth:`out_idx`).
+                process switch ``enabled``. A cached builder must pass an
+                explicit value (see ``out_idx``).
             max_events: Per-slot event capacity when lowering.
 
         Returns:
@@ -268,7 +268,7 @@ class _Trace:
     def lower(self, primfunc, max_events: int = MAX_EVENTS_DEFAULT):
         """Primitive: materialize the markers and append the ``slots`` output.
 
-        Prefer :meth:`finalize` unless you need to lower unconditionally.
+        Prefer ``finalize`` unless you need to lower unconditionally.
 
         Args:
             primfunc: The built kernel; its body carries ``trace.*`` markers.
@@ -285,7 +285,7 @@ class _Trace:
     def strip(self, primfunc):
         """Primitive: no-op every marker so the kernel compiles without tracing.
 
-        Prefer :meth:`finalize` unless you need to strip unconditionally. The
+        Prefer ``finalize`` unless you need to strip unconditionally. The
         generated CUDA is identical to an un-instrumented build.
 
         Args:
@@ -308,15 +308,15 @@ class _Trace:
         so the caller does not. With tracing **off** it just returns the kernel's
         outputs unchanged. With tracing **on** the kernel is the traced build
         (returns ``(*real_outputs, slots)``): this splits the trailing ``slots``
-        tensor off, decodes it, writes the timeline via :meth:`dump` (a fresh file
+        tensor off, decodes it, writes the timeline via ``dump`` (a fresh file
         each call), and returns the real outputs only.
 
         Args:
             compiled: A compiled kernel. Build it with ``traced=trace.enabled``
-                (via :meth:`out_idx` / :meth:`finalize`) so its outputs match the
+                (via ``out_idx`` / ``finalize``) so its outputs match the
                 switch.
             inputs: Tuple of positional tensors to pass to ``compiled``.
-            stem: Descriptive file stem (op name + shape); see :meth:`dump`.
+            stem: Descriptive file stem (op name + shape); see ``dump``.
 
         Returns:
             The kernel's real outputs: a single tensor, or a tuple in order.
@@ -357,13 +357,13 @@ class _Trace:
                        max_events=maps["max_events"], num_groups=maps["num_groups"])
 
     def dump(self, events: list, compiled, *, stem: str) -> str:
-        """Write events as an HTML timeline under :attr:`output`, never overwriting.
+        """Write events as an HTML timeline under ``output``, never overwriting.
 
         Picks a collision-free base name: ``{output}/{stem}`` when free, else
         ``{output}/{stem}_1``, ``_2``, ... so repeated dumps accumulate.
 
         Args:
-            events: Event list from :meth:`decode`.
+            events: Event list from ``decode``.
             compiled: The compiled traced kernel (carries the host maps).
             stem: File stem (no directory, no extension), e.g. op name + shape.
 
@@ -390,7 +390,7 @@ class _Trace:
         """Write events as a self-contained Plotly HTML timeline.
 
         Args:
-            events: Event list from :meth:`decode`.
+            events: Event list from ``decode``.
             path: Destination ``.html`` path.
             compiled: The compiled traced kernel (carries the host maps).
             title: Base figure title; the CTA index is appended per tab.

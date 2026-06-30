@@ -60,7 +60,7 @@ def pack_w1(event_id: int, kind: int, lane: int, payload: int) -> int:
 
     Args:
         event_id: Interned event id, must fit 24 bits (0..2**24-1).
-        kind: Event kind, must fit 4 bits (an :class:`EventKind` or its int).
+        kind: Event kind, must fit 4 bits (an ``EventKind`` or its int).
         lane: Interned lane id, must fit 4 bits.
         payload: Raw unsigned 32-bit bit-pattern of an i32/f32 payload. Must fit
             32 bits; no silent truncation.
@@ -88,7 +88,7 @@ def pack_w1(event_id: int, kind: int, lane: int, payload: int) -> int:
 def unpack_w1(w1: int) -> tuple[int, int, int, int]:
     """Unpack a ``w1`` word into ``(event_id, kind, lane, payload)``.
 
-    Inverse of :func:`pack_w1` over the full field ranges.
+    Inverse of ``pack_w1`` over the full field ranges.
 
     Args:
         w1: A packed 64-bit word.
@@ -114,7 +114,7 @@ def pack_w1_tir(event_id: int, kind: int, lane: int, payload_expr: PrimExpr) -> 
 
     Args:
         event_id: Interned event id, must fit 24 bits.
-        kind: Event kind, must fit 4 bits (an :class:`EventKind` or its int).
+        kind: Event kind, must fit 4 bits (an ``EventKind`` or its int).
         lane: Interned lane id, must fit 4 bits.
         payload_expr: TIR i32 PrimExpr carrying the raw payload bits.
 

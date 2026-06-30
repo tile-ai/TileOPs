@@ -1,14 +1,14 @@
 """Frontend ``trace.lower`` transform: materialize trace placeholders.
 
 This is the build-time half of the trace tool. It pairs with the module-level
-:data:`tileops.trace.api.trace` annotation API: that API emits zero-cost
+``tileops.trace.api.trace`` annotation API: that API emits zero-cost
 ``tl_trace_marker`` placeholders into a kernel body as it is built; ``trace.lower``
 then rewrites every placeholder into real emit code and appends a ``slots`` output
 param, returning a plain ``PrimFunc`` that a *vanilla* ``@tilelang.jit`` compiles.
 
 There is no monkeypatch of ``tilelang``: importing this module leaves
 ``tilelang.compile`` / ``tilelang.jit.compile`` untouched. The whole surface is
-the explicit :func:`lower` transform.
+the explicit ``lower`` transform.
 
 Module name note:
     ``pass`` is a Python keyword, so the file is named ``passes.py`` to stay a
@@ -42,9 +42,9 @@ kernel prologue before any marker fires.
 Host-map registry
 ------------------
 ``trace.lower`` stashes the host-side decode maps in the module-level
-:data:`_META_REGISTRY` dict, keyed by an integer meta id stamped onto the
+``_META_REGISTRY`` dict, keyed by an integer meta id stamped onto the
 returned ``PrimFunc`` as the ``tl.trace_meta_id`` attr. The attr rides through
-``tilelang.jit`` onto ``kernel.prim_func``, so :func:`lookup_meta` resolves a
+``tilelang.jit`` onto ``kernel.prim_func``, so ``lookup_meta`` resolves a
 compiled kernel back to its maps without relying on object identity.
 """
 
@@ -215,7 +215,7 @@ def _strip_markers(primfunc):
 
     The always-emit markers are no-opped before codegen so the generated CUDA is
     byte-identical to an un-instrumented build (no ``slots`` param, no
-    ``__tl_now``). Backs the public :func:`strip` escape hatch.
+    ``__tl_now``). Backs the public ``strip`` escape hatch.
 
     Args:
         primfunc: A built kernel whose body may contain marker placeholders.
@@ -248,21 +248,21 @@ def lower(primfunc, max_events: int = MAX_EVENTS_DEFAULT):
     ``out_idx`` already accounts for the trailing ``slots`` param (e.g.
     ``out_idx=[-2, -1]`` when the kernel has one own output ``C`` and ``slots``).
 
-    Reads the per-build trace registry (:func:`tileops.trace.state.build_state`),
+    Reads the per-build trace registry (``tileops.trace.state.build_state``),
     derives ``num_groups`` from the distinct interned groups, runs
-    :func:`_transform` to rewrite each marker into writer-gated clamped emit code
+    ``_transform`` to rewrite each marker into writer-gated clamped emit code
     (deriving ``num_cta`` from the launch grid), then stashes the host decode maps
-    in :data:`_META_REGISTRY` under a fresh integer meta id and stamps that id
+    in ``_META_REGISTRY`` under a fresh integer meta id and stamps that id
     onto the returned func as the ``tl.trace_meta_id`` attr. The attr rides
-    through ``tilelang.jit`` onto ``kernel.prim_func`` so :func:`lookup_meta`
+    through ``tilelang.jit`` onto ``kernel.prim_func`` so ``lookup_meta``
     resolves the compiled kernel back to its maps. It then retires the build epoch
-    (:func:`tileops.trace.state.begin_build_epoch`) so the next build starts
+    (``tileops.trace.state.begin_build_epoch``) so the next build starts
     fresh.
 
     Args:
         primfunc: The built kernel; its body carries ``tl_trace_marker`` markers.
         max_events: Per-slot event capacity (compile-time cursor bound). Defaults
-            to :data:`tileops.trace.record.MAX_EVENTS_DEFAULT`.
+            to ``tileops.trace.record.MAX_EVENTS_DEFAULT``.
 
     Returns:
         The lowered ``PrimFunc`` with the trailing ``slots`` int64 output param
@@ -303,7 +303,7 @@ def strip(primfunc):
     """No-op the always-emit markers so ``primfunc`` compiles WITHOUT tracing.
 
     The escape hatch: a kernel written with ``trace.*`` markers can be compiled
-    zero-cost by passing it through ``strip`` instead of :func:`lower`. The
+    zero-cost by passing it through ``strip`` instead of ``lower``. The
     returned func has no ``slots`` param and emits no ``__tl_now``, so the
     generated CUDA is byte-identical to an un-instrumented build.
 
@@ -319,13 +319,13 @@ def strip(primfunc):
 def lookup_meta(kernel) -> dict:
     """Resolve a compiled kernel back to its host decode maps.
 
-    Reads the ``tl.trace_meta_id`` attr that :func:`lower` stamped onto the
+    Reads the ``tl.trace_meta_id`` attr that ``lower`` stamped onto the
     transformed ``PrimFunc`` (exposed as ``kernel.prim_func``) and looks the maps
-    up in :data:`_META_REGISTRY`.
+    up in ``_META_REGISTRY``.
 
     Args:
         kernel: A compiled kernel from a vanilla ``@tilelang.jit`` over a builder
-            that returned :func:`lower`'s result.
+            that returned ``lower``'s result.
 
     Returns:
         The host-map dict (``id_to_name`` / ``group_id_to_name`` /
@@ -334,7 +334,7 @@ def lookup_meta(kernel) -> dict:
 
     Raises:
         ValueError: If the kernel's ``prim_func`` carries no ``tl.trace_meta_id``
-            attr (it was not produced by :func:`lower`), or the id is unknown.
+            attr (it was not produced by ``lower``), or the id is unknown.
     """
     prim_func = getattr(kernel, "prim_func", None)
     attrs = getattr(prim_func, "attrs", None)

@@ -22,3 +22,9 @@ All conclusions are scoped to this configuration. Re-validate when any component
 | Category    | Checklist                        | Evidence                                           |
 | ----------- | -------------------------------- | -------------------------------------------------- |
 | Elementwise | [elementwise.md](elementwise.md) | [elementwise-evidence.md](elementwise-evidence.md) |
+
+## Tools & Guides
+
+| Guide                                  | What it covers                                            |
+| -------------------------------------- | --------------------------------------------------------- |
+| [trace-timeline.md](trace-timeline.md) | In-kernel timeline tracer: annotate, build, run, and read |

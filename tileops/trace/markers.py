@@ -2,7 +2,7 @@
 
 Holds the device-side ``tl_trace_marker`` emitter plus the scope / token types
 that ``trace.group`` and ``trace.range`` return. Not part of the public API —
-import :data:`tileops.trace.trace`, never this module.
+import ``tileops.trace.trace``, never this module.
 """
 
 import tilelang.language as T
