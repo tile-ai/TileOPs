@@ -89,7 +89,8 @@ class GemmOp(Op):
         """Return ``(mode, kernel)`` for the given dims, building/caching lazily.
 
         ``mode`` is ``"lhs_row"``/``"rhs_col"`` for the GEMV fast path, else
-        ``"gemm"``.
+        ``"gemm"`` — the hand-written warp-specialized ``GemmKernel`` (SM90),
+        covering all four ``(trans_a, trans_b)`` layouts.
         """
         gemv_lhs_row = (m == 1 and not self.trans_a and self.trans_b)
         gemv_rhs_col = (n == 1 and not self.trans_a and not self.trans_b)
