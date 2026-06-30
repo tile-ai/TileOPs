@@ -25,6 +25,7 @@ from tileops.ops.attention.gqa import (
     _select_gqa_prefill_fwd_kernel_cls,
     _select_gqa_prefill_kernel_key,
 )
+from tileops.utils import is_h200
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdTest as _GroupedQueryAttentionBwdTestWorkload,
 )
@@ -275,6 +276,114 @@ def test_gqa_prefill_fwd_uses_bottom_right_causal_mask() -> None:
 
     assert output[0, 0, 0, 0] < 2
     assert output[0, -1, 0, 0] > 40
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.smoke
+def test_gqa_prefill_fwd_square_uses_square_fast_path(dtype: torch.dtype) -> None:
+    if not is_h200():
+        pytest.skip("square fast path requires H200")
+
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=4,
+        heads=32,
+        heads_kv=8,
+        dim=128,
+        max_seqlen_q=512,
+        max_seqlen_kv=512,
+        is_causal=True,
+        dtype=dtype,
+        backend="dense",
+    )
+
+    assert op._uses_square_dense_fast_path()
+    assert op._get_square_dense_kernel().__class__.__name__ == "GQAFwdWsPersistentCausalKernel"
+
+
+@pytest.mark.parametrize("sm_scale, softcap", [
+    pytest.param(0.125, None, id="custom-scale"),
+    pytest.param(None, 2.0, id="softcap"),
+])
+@pytest.mark.smoke
+def test_gqa_prefill_fwd_square_feature_variants_use_square_fast_path(
+    sm_scale: Optional[float],
+    softcap: Optional[float],
+) -> None:
+    if not is_h200():
+        pytest.skip("square fast path requires H200")
+
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=4,
+        heads=32,
+        heads_kv=8,
+        dim=128,
+        max_seqlen_q=512,
+        max_seqlen_kv=512,
+        is_causal=True,
+        dtype=torch.float16,
+        sm_scale=sm_scale,
+        softcap=softcap,
+        backend="dense",
+    )
+
+    assert op._uses_square_dense_fast_path()
+    assert op._get_square_dense_kernel().__class__.__name__ == "GQAFwdWsPersistentCausalKernel"
+
+
+@pytest.mark.parametrize("seq_len_q, seq_len_kv, sm_scale, softcap", [
+    pytest.param(512, 4096, None, None, id="q-lt-kv"),
+])
+@pytest.mark.smoke
+def test_gqa_prefill_fwd_q_lt_kv_uses_prefill_ws_kernel(
+    seq_len_q: int,
+    seq_len_kv: int,
+    sm_scale: Optional[float],
+    softcap: Optional[float],
+) -> None:
+    if not is_h200():
+        pytest.skip("warp-specialized dense prefill dispatch is validated on H200")
+
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=2,
+        heads=32,
+        heads_kv=8,
+        dim=128,
+        max_seqlen_q=seq_len_q,
+        max_seqlen_kv=seq_len_kv,
+        is_causal=True,
+        dtype=torch.float16,
+        sm_scale=sm_scale,
+        softcap=softcap,
+        backend="dense",
+    )
+
+    assert not op._uses_square_dense_fast_path()
+    assert op._get_dense_kernel().__class__.__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_fwd_dense_backend_rejects_ragged_packed_inputs() -> None:
+    batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 2, 64, 128, 8, 2, 64
+    q = torch.randn(batch * seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
+    k = torch.randn(batch * seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    cu_q = torch.tensor([0, seq_len_q // 2, batch * seq_len_q], device="cuda", dtype=torch.int32)
+    cu_kv = torch.arange(batch + 1, device="cuda", dtype=torch.int32) * seq_len_kv
+    q_scale, k_scale, v_scale = _ones_prefill_scales(batch, heads_kv, device=q.device)
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len_q,
+        max_seqlen_kv=seq_len_kv,
+        is_causal=True,
+        dtype=torch.float16,
+        backend="dense",
+    )
+
+    with pytest.raises(ValueError, match="backend='dense' requires uniform"):
+        op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
 
 
 @pytest.mark.smoke

@@ -31,6 +31,30 @@ __all__ = [
     'MHAFwdWgmmaPipelinedKernel'
 ]
 
+_FAST_COMPILE_FLAGS = [
+    "-O3",
+    "--use_fast_math",
+    "-Wno-deprecated-declarations",
+    "-U__CUDA_NO_HALF_OPERATORS__",
+    "-U__CUDA_NO_HALF_CONVERSIONS__",
+    "-U__CUDA_NO_HALF2_OPERATORS__",
+    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+    "--expt-relaxed-constexpr",
+    "--expt-extended-lambda",
+    "-DENABLE_BF16",
+]
+
+
+def _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, block_rows, block_cols):
+    @T.macro
+    def apply_softcap(acc_s):
+        for i, j in T.Parallel(block_rows, block_cols):
+            acc_s[i, j] = T.cast(softcap, accum_dtype) * T.tanh(
+                acc_s[i, j] * T.cast(score_scale / softcap, accum_dtype))
+
+    return apply_softcap
+
+
 # MHA
 
 
@@ -1404,7 +1428,7 @@ def _gqa_prefill_with_kv_cache_rope_append_kernel(batch: int,
         raise ValueError("rotary_dim must be positive, even, and <= dim")
     half = rotary_dim // 2
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[], compile_flags=_FAST_COMPILE_FLAGS)
     def _gqa_prefill_with_kv_cache_rope_append_func(block_m: int, threads: int) -> Callable:
 
         kv_new_shape = (batch, seq_len_new, heads_kv, dim)
@@ -1518,7 +1542,7 @@ def _gqa_prefill_with_kv_cache_rope_fwd_kernel(batch: int,
             tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+        compile_flags=_FAST_COMPILE_FLAGS)
     def _gqa_prefill_with_kv_cache_rope_fwd_func(block_m: int, block_n: int, num_stages: int,
                                                  threads: int) -> Callable:
 
@@ -1802,13 +1826,13 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(batch: int,
     accum_dtype = "float"
 
     @tilelang.jit(
-        out_idx=[8, 9],
+        out_idx=[8],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+        compile_flags=_FAST_COMPILE_FLAGS)
     def _gqa_prefill_paged_with_kv_cache_fwd_func(
             block_m: int, block_n: int, num_stages: int, threads: int) -> Callable:
 
@@ -1819,7 +1843,7 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(batch: int,
         o_shape = (total_q, heads, dim)
         online_softmax = make_online_softmax_with_mask_guard(
             scale, accum_dtype, block_m, block_n)
-        apply_softcap = make_apply_softcap(
+        apply_softcap = _make_apply_softcap_no_mask_guard(
             score_scale, softcap, accum_dtype, block_m, block_n) if use_softcap else None
         rescale = make_rescale(block_m, dim)
         page_size_log2 = page_size.bit_length() - 1
@@ -1835,7 +1859,6 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(batch: int,
                 cache_seqlens: T.Tensor([batch], T.int32),  # type: ignore
                 block_table: T.Tensor(block_table_shape, T.int32),  # type: ignore
                 output: T.Tensor(o_shape, dtype),  # type: ignore
-                lse: T.Tensor([heads, total_q], accum_dtype),  # type: ignore
                 max_seqlen_q: T.int32,  # type: ignore
         ) -> None:
             with T.Kernel(
@@ -1852,6 +1875,7 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(batch: int,
                 scores_scale = T.alloc_fragment([block_m], accum_dtype)
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
                 logsum = T.alloc_fragment([block_m], accum_dtype)
+                inv_logsum = T.alloc_fragment([block_m], accum_dtype)
 
                 q_start = cu_seqlens_q[bz]
                 q_len = cu_seqlens_q[bz + 1] - q_start
@@ -1967,7 +1991,9 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(batch: int,
                             else:
                                 k_shared[j, d] = T.cast(0, dtype)
                                 v_shared[j, d] = T.cast(0, dtype)
-                    if is_causal:
+                    if use_softcap:
+                        T.clear(acc_s)
+                    elif is_causal:
                         for i, j in T.Parallel(block_m, block_n):
                             kv_pos = k_idx * block_n + j
                             q_abs_pos = old_len + bx * block_m + i
@@ -1987,18 +2013,31 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(batch: int,
                         policy=T.GemmWarpPolicy.FullRow)
                     if use_softcap:
                         apply_softcap(acc_s)
+                        if is_causal:
+                            for i, j in T.Parallel(block_m, block_n):
+                                kv_pos = k_idx * block_n + j
+                                q_abs_pos = old_len + bx * block_m + i
+                                valid = (bx * block_m + i < q_len) & (kv_pos < total_len) & (
+                                    kv_pos <= q_abs_pos)
+                                acc_s[i, j] = T.if_then_else(
+                                    valid, acc_s[i, j], -T.infinity(acc_s.dtype))
+                        else:
+                            for i, j in T.Parallel(block_m, block_n):
+                                kv_pos = k_idx * block_n + j
+                                valid = (bx * block_m + i < q_len) & (kv_pos < total_len)
+                                acc_s[i, j] = T.if_then_else(
+                                    valid, acc_s[i, j], -T.infinity(acc_s.dtype))
                     online_softmax(acc_s, scores_max, scores_max_prev, scores_scale,
                                    scores_sum, logsum)
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
                     T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-                for i, j in T.Parallel(block_m, dim):
-                    if bx * block_m + i < q_len:
-                        output[q_start + bx * block_m + i, by, j] = acc_o[i, j] / logsum[i]
                 for i in T.Parallel(block_m):
                     if bx * block_m + i < q_len:
-                        logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
-                        lse[by, q_start + bx * block_m + i] = logsum[i]
+                        inv_logsum[i] = T.cast(1, accum_dtype) / logsum[i]
+                for i, j in T.Parallel(block_m, dim):
+                    if bx * block_m + i < q_len:
+                        output[q_start + bx * block_m + i, by, j] = acc_o[i, j] * inv_logsum[i]
 
         return _gqa_prefill_paged_with_kv_cache_fwd_main
 
@@ -2035,7 +2074,7 @@ def _gqa_prefill_paged_with_kv_cache_fwd_wrapped_kernel(
     cu_seqlens_q: torch.Tensor,
     cache_seqlens: torch.Tensor,
     block_table: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     return _gqa_prefill_paged_with_kv_cache_fwd_kernel(
         batch, heads, heads_kv, total_q, physical_tokens, max_pages_per_req, page_size, dim,
         is_causal, sm_scale, softcap, dtype)(block_m, block_n, num_stages, threads)(
@@ -2048,10 +2087,9 @@ def _(batch: int, heads: int, heads_kv: int, total_q: int, physical_tokens: int,
       max_pages_per_req: int, page_size: int, dim: int, is_causal: bool, sm_scale: float,
       softcap: float, dtype: str, block_m: int, block_n: int, num_stages: int, threads: int,
       max_seqlen_q: int,
-      *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
+      *inputs: Tuple[torch.Tensor, ...]) -> torch.Tensor:
     fake_o = torch.empty_like(inputs[0])
-    fake_lse = fake_o.new_empty([heads, total_q])
-    return fake_o, fake_lse
+    return fake_o
 
 
 class GQAPrefillPagedWithKVCacheFwdKernel(Kernel):
@@ -2113,7 +2151,7 @@ class GQAPrefillPagedWithKVCacheFwdKernel(Kernel):
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
                 k_pages: torch.Tensor, v_pages: torch.Tensor, cu_seqlens_q: torch.Tensor,
                 cache_seqlens: torch.Tensor, block_table: torch.Tensor,
-                max_seqlen_q: int) -> Tuple[torch.Tensor, torch.Tensor]:
+                max_seqlen_q: int) -> torch.Tensor:
         return _gqa_prefill_paged_with_kv_cache_fwd_wrapped_kernel(
             self.batch, self.heads, self.heads_kv, q.shape[0], k_pages.shape[0],
             self.max_pages_per_req, self.page_size, self.dim, self.is_causal, self.sm_scale,
@@ -2147,13 +2185,13 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
     cache_dtype = T.float8_e4m3fn
 
     @tilelang.jit(
-        out_idx=[10, 11],
+        out_idx=[10],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+        compile_flags=_FAST_COMPILE_FLAGS)
     def _gqa_prefill_paged_with_fp8_kv_cache_fwd_func(
             block_m: int, block_n: int, num_stages: int, threads: int) -> Callable:
 
@@ -2164,7 +2202,7 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
         o_shape = (total_q, heads, dim)
         online_softmax = make_online_softmax_with_mask_guard(
             scale, accum_dtype, block_m, block_n)
-        apply_softcap = make_apply_softcap(
+        apply_softcap = _make_apply_softcap_no_mask_guard(
             score_scale, softcap, accum_dtype, block_m, block_n) if use_softcap else None
         rescale = make_rescale(block_m, dim)
         page_size_log2 = page_size.bit_length() - 1
@@ -2192,7 +2230,6 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                 cache_seqlens: T.Tensor([batch], T.int32),  # type: ignore
                 block_table: T.Tensor(block_table_shape, T.int32),  # type: ignore
                 output: T.Tensor(o_shape, dtype),  # type: ignore
-                lse: T.Tensor([heads, total_q], accum_dtype),  # type: ignore
                 max_seqlen_q: T.int32,  # type: ignore
         ) -> None:
             with T.Kernel(
@@ -2209,6 +2246,7 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                 scores_scale = T.alloc_fragment([block_m], accum_dtype)
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
                 logsum = T.alloc_fragment([block_m], accum_dtype)
+                inv_logsum = T.alloc_fragment([block_m], accum_dtype)
 
                 q_start = cu_seqlens_q[bz]
                 q_len = cu_seqlens_q[bz + 1] - q_start
@@ -2340,7 +2378,9 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                             else:
                                 k_shared[j, d] = T.cast(0, dtype)
                                 v_shared[j, d] = T.cast(0, dtype)
-                    if is_causal:
+                    if use_softcap:
+                        T.clear(acc_s)
+                    elif is_causal:
                         for i, j in T.Parallel(block_m, block_n):
                             kv_pos = k_idx * block_n + j
                             q_abs_pos = old_len + bx * block_m + i
@@ -2360,18 +2400,31 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(batch: int,
                         policy=T.GemmWarpPolicy.FullRow)
                     if use_softcap:
                         apply_softcap(acc_s)
+                        if is_causal:
+                            for i, j in T.Parallel(block_m, block_n):
+                                kv_pos = k_idx * block_n + j
+                                q_abs_pos = old_len + bx * block_m + i
+                                valid = (bx * block_m + i < q_len) & (kv_pos < total_len) & (
+                                    kv_pos <= q_abs_pos)
+                                acc_s[i, j] = T.if_then_else(
+                                    valid, acc_s[i, j], -T.infinity(acc_s.dtype))
+                        else:
+                            for i, j in T.Parallel(block_m, block_n):
+                                kv_pos = k_idx * block_n + j
+                                valid = (bx * block_m + i < q_len) & (kv_pos < total_len)
+                                acc_s[i, j] = T.if_then_else(
+                                    valid, acc_s[i, j], -T.infinity(acc_s.dtype))
                     online_softmax(acc_s, scores_max, scores_max_prev, scores_scale,
                                    scores_sum, logsum)
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
                     T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-                for i, j in T.Parallel(block_m, dim):
-                    if bx * block_m + i < q_len:
-                        output[q_start + bx * block_m + i, by, j] = acc_o[i, j] / logsum[i]
                 for i in T.Parallel(block_m):
                     if bx * block_m + i < q_len:
-                        logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
-                        lse[by, q_start + bx * block_m + i] = logsum[i]
+                        inv_logsum[i] = T.cast(1, accum_dtype) / logsum[i]
+                for i, j in T.Parallel(block_m, dim):
+                    if bx * block_m + i < q_len:
+                        output[q_start + bx * block_m + i, by, j] = acc_o[i, j] * inv_logsum[i]
 
         return _gqa_prefill_paged_with_fp8_kv_cache_fwd_main
 
@@ -2410,7 +2463,7 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_wrapped_kernel(
     cu_seqlens_q: torch.Tensor,
     cache_seqlens: torch.Tensor,
     block_table: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     return _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
         batch, heads, heads_kv, total_q, physical_tokens, max_pages_per_req, page_size, dim,
         is_causal, sm_scale, softcap, dtype)(block_m, block_n, num_stages, threads)(
@@ -2423,10 +2476,9 @@ def _(batch: int, heads: int, heads_kv: int, total_q: int, physical_tokens: int,
       max_pages_per_req: int, page_size: int, dim: int, is_causal: bool, sm_scale: float,
       softcap: float, dtype: str, block_m: int, block_n: int, num_stages: int, threads: int,
       max_seqlen_q: int,
-      *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
+      *inputs: Tuple[torch.Tensor, ...]) -> torch.Tensor:
     fake_o = torch.empty_like(inputs[0])
-    fake_lse = fake_o.new_empty([heads, total_q])
-    return fake_o, fake_lse
+    return fake_o
 
 
 class GQAPrefillPagedWithFP8KVCacheFwdKernel(Kernel):
@@ -2488,8 +2540,7 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(Kernel):
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
                 k_pages: torch.Tensor, v_pages: torch.Tensor, k_scale: torch.Tensor,
                 v_scale: torch.Tensor, cu_seqlens_q: torch.Tensor, cache_seqlens: torch.Tensor,
-                block_table: torch.Tensor, max_seqlen_q: int) -> Tuple[torch.Tensor,
-                                                                       torch.Tensor]:
+                block_table: torch.Tensor, max_seqlen_q: int) -> torch.Tensor:
         return _gqa_prefill_paged_with_fp8_kv_cache_fwd_wrapped_kernel(
             self.batch, self.heads, self.heads_kv, q.shape[0], k_pages.shape[0],
             self.max_pages_per_req, self.page_size, self.dim, self.is_causal, self.sm_scale,
@@ -2689,13 +2740,13 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(batch: int,
     accum_dtype = "float"
 
     @tilelang.jit(
-        out_idx=[10, 11],
+        out_idx=[10],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"])
+        compile_flags=_FAST_COMPILE_FLAGS)
     def _gqa_prefill_paged_with_kv_cache_rope_fwd_func(
             block_m: int, block_n: int, num_stages: int, threads: int) -> Callable:
 
@@ -2707,7 +2758,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(batch: int,
         o_shape = (total_q, heads, dim)
         online_softmax = make_online_softmax_with_mask_guard(
             scale, accum_dtype, block_m, block_n)
-        apply_softcap = make_apply_softcap(
+        apply_softcap = _make_apply_softcap_no_mask_guard(
             score_scale, softcap, accum_dtype, block_m, block_n) if use_softcap else None
         rescale = make_rescale(block_m, dim)
         page_size_log2 = page_size.bit_length() - 1
@@ -2725,7 +2776,6 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(batch: int,
                 cos_table: T.Tensor(rope_shape, dtype),  # type: ignore
                 sin_table: T.Tensor(rope_shape, dtype),  # type: ignore
                 output: T.Tensor(o_shape, dtype),  # type: ignore
-                lse: T.Tensor([heads, total_q], accum_dtype),  # type: ignore
                 max_seqlen_q: T.int32,  # type: ignore
         ) -> None:
             with T.Kernel(
@@ -2742,6 +2792,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(batch: int,
                 scores_scale = T.alloc_fragment([block_m], accum_dtype)
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
                 logsum = T.alloc_fragment([block_m], accum_dtype)
+                inv_logsum = T.alloc_fragment([block_m], accum_dtype)
 
                 q_start = cu_seqlens_q[bz]
                 q_len = cu_seqlens_q[bz + 1] - q_start
@@ -2846,7 +2897,9 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(batch: int,
                             else:
                                 k_shared[j, d] = T.cast(0, dtype)
                                 v_shared[j, d] = T.cast(0, dtype)
-                    if is_causal:
+                    if use_softcap:
+                        T.clear(acc_s)
+                    elif is_causal:
                         for i, j in T.Parallel(block_m, block_n):
                             kv_pos = k_idx * block_n + j
                             q_abs_pos = old_len + bx * block_m + i
@@ -2866,18 +2919,31 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(batch: int,
                         policy=T.GemmWarpPolicy.FullRow)
                     if use_softcap:
                         apply_softcap(acc_s)
+                        if is_causal:
+                            for i, j in T.Parallel(block_m, block_n):
+                                kv_pos = k_idx * block_n + j
+                                q_abs_pos = old_len + bx * block_m + i
+                                valid = (bx * block_m + i < q_len) & (kv_pos < total_len) & (
+                                    kv_pos <= q_abs_pos)
+                                acc_s[i, j] = T.if_then_else(
+                                    valid, acc_s[i, j], -T.infinity(acc_s.dtype))
+                        else:
+                            for i, j in T.Parallel(block_m, block_n):
+                                kv_pos = k_idx * block_n + j
+                                valid = (bx * block_m + i < q_len) & (kv_pos < total_len)
+                                acc_s[i, j] = T.if_then_else(
+                                    valid, acc_s[i, j], -T.infinity(acc_s.dtype))
                     online_softmax(acc_s, scores_max, scores_max_prev, scores_scale,
                                    scores_sum, logsum)
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
                     T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-                for i, j in T.Parallel(block_m, dim):
-                    if bx * block_m + i < q_len:
-                        output[q_start + bx * block_m + i, by, j] = acc_o[i, j] / logsum[i]
                 for i in T.Parallel(block_m):
                     if bx * block_m + i < q_len:
-                        logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
-                        lse[by, q_start + bx * block_m + i] = logsum[i]
+                        inv_logsum[i] = T.cast(1, accum_dtype) / logsum[i]
+                for i, j in T.Parallel(block_m, dim):
+                    if bx * block_m + i < q_len:
+                        output[q_start + bx * block_m + i, by, j] = acc_o[i, j] * inv_logsum[i]
 
         return _gqa_prefill_paged_with_kv_cache_rope_fwd_main
 
@@ -2918,7 +2984,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_wrapped_kernel(
     block_table: torch.Tensor,
     cos_table: torch.Tensor,
     sin_table: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     return _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
         batch, heads, heads_kv, total_q, physical_tokens, max_pages_per_req, page_size, dim,
         max_position, rotary_dim, is_causal, sm_scale, softcap, dtype)(
@@ -2932,10 +2998,9 @@ def _(batch: int, heads: int, heads_kv: int, total_q: int, physical_tokens: int,
       max_pages_per_req: int, page_size: int, dim: int, max_position: int,
       rotary_dim: int, is_causal: bool, sm_scale: float, softcap: float, dtype: str,
       block_m: int, block_n: int, num_stages: int, threads: int, max_seqlen_q: int,
-      *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
+      *inputs: Tuple[torch.Tensor, ...]) -> torch.Tensor:
     fake_o = torch.empty_like(inputs[0])
-    fake_lse = fake_o.new_empty([heads, total_q])
-    return fake_o, fake_lse
+    return fake_o
 
 
 class GQAPrefillPagedWithKVCacheRopeFwdKernel(Kernel):
@@ -3003,8 +3068,7 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(Kernel):
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
                 k_pages: torch.Tensor, v_pages: torch.Tensor, cu_seqlens_q: torch.Tensor,
                 cache_seqlens: torch.Tensor, block_table: torch.Tensor, max_seqlen_q: int,
-                cos_table: torch.Tensor, sin_table: torch.Tensor) -> Tuple[torch.Tensor,
-                                                                           torch.Tensor]:
+                cos_table: torch.Tensor, sin_table: torch.Tensor) -> torch.Tensor:
         return _gqa_prefill_paged_with_kv_cache_rope_fwd_wrapped_kernel(
             self.batch, self.heads, self.heads_kv, q.shape[0], k_pages.shape[0],
             self.max_pages_per_req, self.page_size, self.dim, self.max_position,

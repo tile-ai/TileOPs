@@ -29,7 +29,7 @@ from tileops.kernels.attention import (
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import is_hopper
+from tileops.utils import is_h200, is_hopper
 
 from ..op_base import Op
 from ..rope import _base_freqs
@@ -244,7 +244,9 @@ def _rope_rotary_dim(dim: int, rotary_dim: Optional[int]) -> int:
     return rotary_dim
 
 
-def _attention_output(result: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+def _attention_output(result: torch.Tensor | tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+    if isinstance(result, torch.Tensor):
+        return result
     output, _ = result
     return output
 
@@ -394,6 +396,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         self.backend = backend
         self.tune = tune
         self._dense_kernel = None
+        self._square_dense_kernel = None
         self._varlen_kernel = None
         self._sliding_window_varlen_kernel = None
         self._fp8_kernel = None
@@ -419,6 +422,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         )
         return {
             "gqa_prefill_fwd_kernel": dense_kernel_cls,
+            "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
             "gqa_prefill_varlen_fwd_kernel": _select_gqa_prefill_varlen_fwd_kernel_cls(),
             "gqa_sliding_window_varlen_fwd": sliding_kernel_cls,
             "gqa_prefill_fp8_tensor_core_fwd_kernel":
@@ -550,6 +554,40 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             )
         return self._dense_kernel
 
+    def _uses_square_dense_fast_path(self) -> bool:
+        if self.dtype not in (torch.float16, torch.bfloat16):
+            return False
+        if not is_h200() or self.dim != 128:
+            return False
+        if self.heads % self.heads_kv != 0 or self.max_seqlen_q % _WS_BLOCK_M != 0:
+            return False
+        m_blocks = math.ceil(self.max_seqlen_q / _WS_BLOCK_M)
+        if m_blocks % 2 != 0:
+            return False
+        return (
+            self.is_causal
+            and self.max_seqlen_q == self.max_seqlen_kv
+            and _gqa_ws_causal_total_work_items(
+                self.batch, self.heads, self.heads_kv, self.max_seqlen_q
+            ) >= _H200_SMS
+        )
+
+    def _get_square_dense_kernel(self) -> Kernel:
+        if self._square_dense_kernel is None:
+            self._square_dense_kernel = self.kernel_map["gqa_prefill_square_fwd_kernel"](
+                self.batch,
+                self.heads,
+                self.heads_kv,
+                self.max_seqlen_q,
+                self.dim,
+                self.is_causal,
+                self.dtype,
+                sm_scale=self.sm_scale,
+                softcap=self.softcap,
+                tune=self.tune,
+            )
+        return self._square_dense_kernel
+
     def _get_varlen_kernel(self) -> Kernel:
         if self._varlen_kernel is None:
             self._varlen_kernel = self.kernel_map["gqa_prefill_varlen_fwd_kernel"](
@@ -666,7 +704,12 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             q_bshd = q.view(self.batch, self.max_seqlen_q, self.heads, self.dim)
             k_bshd = k.view(self.batch, self.max_seqlen_kv, self.heads_kv, self.dim)
             v_bshd = v.view(self.batch, self.max_seqlen_kv, self.heads_kv, self.dim)
-            out = _attention_output(self._get_dense_kernel()(q_bshd, k_bshd, v_bshd))
+            kernel = (
+                self._get_square_dense_kernel()
+                if self._uses_square_dense_fast_path()
+                else self._get_dense_kernel()
+            )
+            out = _attention_output(kernel(q_bshd, k_bshd, v_bshd))
             self._record_roofline(q, k, cu_seqlens_q, cu_seqlens_kv)
             return out.reshape(q.shape)
 
