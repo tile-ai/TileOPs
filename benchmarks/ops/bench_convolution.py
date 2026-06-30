@@ -218,9 +218,9 @@ _CONV2D_BENCH_PARAMS = [
     # DeepLabV3/DeepLabV3+ ASPP branch: 3x3 atrous conv on stride-16 encoder features.
     pytest.param(1, 2048, 32, 32, 256, (3, 3), (1, 1), (12, 12), (12, 12), 1, torch.float16, True, id="deeplabv3-aspp-3x3-rate12-fp16"),
     # MobileNetV2 inverted residual depthwise 3x3 convolution.
-    pytest.param(1, 32, 56, 56, 32, (3, 3), (1, 1), (1, 1), (1, 1), 32, torch.float16, False, id="mobilenetv2-depthwise-fp16"),
+    pytest.param(1, 32, 56, 56, 32, (3, 3), (1, 1), (1, 1), (1, 1), 32, torch.float16, True, id="mobilenetv2-depthwise-fp16"),
     # ResNeXt bottleneck grouped 3x3 convolution.
-    pytest.param(1, 128, 28, 28, 256, (3, 3), (1, 1), (1, 1), (1, 1), 32, torch.float16, False, id="resnext-grouped-3x3-fp16"),
+    pytest.param(1, 128, 28, 28, 256, (3, 3), (1, 1), (1, 1), (1, 1), 32, torch.float16, True, id="resnext-grouped-3x3-fp16"),
 ]
 
 
