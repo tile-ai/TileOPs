@@ -568,6 +568,8 @@ class Conv2dFwdOp(Op):
             and self.padding[0] == self.padding[1]
             and self.dilation[0] == self.dilation[1]
         )
+        # T.im2col requires c_in to be divisible by the K-block size.
+        can_use_symmetric_kernel = is_symmetric and self.c_in % 32 == 0
         if (
             self.groups == 1
             and self.kernel_size == (1, 1)
@@ -594,7 +596,7 @@ class Conv2dFwdOp(Op):
             self.kernel = self.kernel_map["conv2d_3x3_s1_p1_highres_kernel"](**kernel_kwargs)
         elif (
             self.groups == 1
-            and is_symmetric
+            and can_use_symmetric_kernel
             and "conv2d_symmetric_kernel" in self.kernel_map
         ):
             self.kernel = self.kernel_map["conv2d_symmetric_kernel"](

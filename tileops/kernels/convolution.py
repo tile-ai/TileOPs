@@ -2270,7 +2270,7 @@ class Conv2dSymmetricKernel(Kernel):
         return {
             "block_m": 64,
             "block_n": 256,
-            "block_k": 64,
+            "block_k": 32,
             "num_stages": 3,
             "threads": 256,
             "enable_rasterization": True,
