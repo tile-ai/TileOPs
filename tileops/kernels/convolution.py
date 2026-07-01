@@ -1524,29 +1524,29 @@ def _conv2d_symmetric_kernel(
                         spatial_block, channel_lanes
                     ):
                         spatial = bx * spatial_block + spatial_inner
-                        h = spatial // width
-                        w = spatial - h * width
-                        channel_base = by * channel_block + channel_lane * values_per_thread
+                        h_idx = spatial // width
+                        w_idx = spatial - h_idx * width
+                        channel_base = by * channel_block
                         for channel_offset in T.serial(values_per_thread):
-                            c = channel_base + channel_offset
+                            c = channel_base + channel_offset * channel_lanes + channel_lane
                             if (spatial < spatial_size) & (c < channel_size):
                                 if is_nchw_to_nhwc:
-                                    dst[bz, h, w, c] = src[bz, c, h, w]
+                                    dst[bz, h_idx, w_idx, c] = src[bz, c, h_idx, w_idx]
                                 else:
-                                    dst[bz, c, h, w] = src[bz, h, w, c]
+                                    dst[bz, c, h_idx, w_idx] = src[bz, h_idx, w_idx, c]
                 else:
                     for channel_inner, spatial_inner in T.Parallel(
                         channel_block, spatial_block
                     ):
                         spatial = bx * spatial_block + spatial_inner
-                        h = spatial // width
-                        w = spatial - h * width
+                        h_idx = spatial // width
+                        w_idx = spatial - h_idx * width
                         c = by * channel_block + channel_inner
                         if (spatial < spatial_size) & (c < channel_size):
                             if is_nchw_to_nhwc:
-                                dst[bz, h, w, c] = src[bz, c, h, w]
+                                dst[bz, h_idx, w_idx, c] = src[bz, c, h_idx, w_idx]
                             else:
-                                dst[bz, c, h, w] = src[bz, h, w, c]
+                                dst[bz, c, h_idx, w_idx] = src[bz, h_idx, w_idx, c]
 
         @T.macro
         def conv_nhwc_implicit_gemm_bias(
@@ -1554,6 +1554,7 @@ def _conv2d_symmetric_kernel(
             weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
             bias: T.Tensor((c_out,), dtype),
             out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
+            has_bias: bool,
         ):
             with T.Kernel(
                 T.ceildiv(c_out, block_n),
@@ -1579,11 +1580,18 @@ def _conv2d_symmetric_kernel(
                 for i, j in T.Parallel(block_m, block_n):
                     spatial_idx = by * block_m + i
                     oc = bx * block_n + j
-                    out_shared[i, j] = T.if_then_else(
-                        (spatial_idx < n * out_hw) & (oc < c_out),
-                        T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
-                        T.cast(0.0, dtype),
-                    )
+                    if has_bias:
+                        out_shared[i, j] = T.if_then_else(
+                            (spatial_idx < n * out_hw) & (oc < c_out),
+                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                            T.cast(0.0, dtype),
+                        )
+                    else:
+                        out_shared[i, j] = T.if_then_else(
+                            (spatial_idx < n * out_hw) & (oc < c_out),
+                            T.cast(out_local[i, j], dtype),
+                            T.cast(0.0, dtype),
+                        )
 
                 T.copy(out_shared, out_flat[by * block_m, bx * block_n])
 
@@ -1623,7 +1631,7 @@ def _conv2d_symmetric_kernel(
                 channel_fastest=True,
                 is_nchw_to_nhwc=True,
             )
-            conv_nhwc_implicit_gemm_bias(x_nhwc, weight_krsc, bias, out_nhwc)
+            conv_nhwc_implicit_gemm_bias(x_nhwc, weight_krsc, bias, out_nhwc, has_bias)
             transpose_spatial_channel(
                 out_nhwc,
                 out,
@@ -1972,6 +1980,8 @@ class Conv2dSymmetricKernel(Kernel):
         )
         valid_configs = []
         for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
+            if self.c_in % block_k != 0:
+                continue
             shared_memory_bytes = conv_shared_memory_bytes(
                 block_m, block_n, block_k, num_stages, self.dtype
             )
