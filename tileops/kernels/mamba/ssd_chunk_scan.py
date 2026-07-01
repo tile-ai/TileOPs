@@ -94,6 +94,7 @@ def _ssd_chunk_scan_fwd_kernel(
         block_n: int,
         block_s: int,
         threads: int,
+        num_stages: int,
     ):
         # Official layouts
         x_shape          = (B, S, H, P)        # [B, S, H, P]
@@ -114,20 +115,21 @@ def _ssd_chunk_scan_fwd_kernel(
             dt:          T.Tensor(dt_shape, dtype),           # type: ignore
             out:         T.Tensor(out_shape, accum_dtype),   # type: ignore
         ):
-            # Grid: fuse (B, H, C) into axis-0; tile L and P
+            # Grid redesign: separate H dimension for better load balancing
+            # New layout: (L_tiles × P_tiles, B × C, H)
             with T.Kernel(
-                B * H * C,
-                T.ceildiv(Q, block_l),
-                T.ceildiv(P, block_p),
+                T.ceildiv(Q, block_l) * T.ceildiv(P, block_p),
+                B * C,
+                H,
                 threads=threads,
-            ) as (bhc, bl, bp):
+            ) as (blp, bc, bh):
+                bl = blp // T.ceildiv(P, block_p)
+                bp = blp % T.ceildiv(P, block_p)
+                bz = bc // C
+                bc_idx = bc % C
 
-                bz = bhc // (H * C)
-                bh = (bhc % (H * C)) // C
-                bc = bhc % C
-
-                bg = bh // HEADS_PER_GROUP   # head -> group
-                chunk_start = bc * Q         # first token index of this chunk
+                bg = bh // HEADS_PER_GROUP
+                chunk_start = bc_idx * Q
 
                 l0 = bl * block_l
                 p0 = bp * block_p
@@ -152,7 +154,7 @@ def _ssd_chunk_scan_fwd_kernel(
                     state_tile: tilelang.layout.make_swizzled_layout(state_tile),
                 })
 
-                for n_blk in T.serial(T.ceildiv(N, block_n)):
+                for n_blk in T.Pipelined(T.ceildiv(N, block_n), num_stages=num_stages):
                     n0 = n_blk * block_n
 
                     # C_mat[b, chunk_start+l, g, n]  layout: [B, S, G, N]
@@ -177,7 +179,7 @@ def _ssd_chunk_scan_fwd_kernel(
                         safe_p = T.min(p_abs, P - 1)
                         state_tile[nn, pp] = T.if_then_else(
                             (n_abs < N) and (p_abs < P),
-                            T.cast(prev_states[bz, bc, bh, safe_p, safe_n], dtype),
+                            T.cast(prev_states[bz, bc_idx, bh, safe_p, safe_n], dtype),
                             T.cast(T.float32(0.0), dtype),
                         )
 
@@ -193,8 +195,8 @@ def _ssd_chunk_scan_fwd_kernel(
                 dA_smem = T.alloc_shared((Q,), accum_dtype)
                 dt_smem  = T.alloc_shared((Q,), accum_dtype)
                 for q in T.Parallel(Q):
-                    dA_smem[q] = dA_cumsum[bz, bh, bc, q]
-                    dt_smem[q]  = T.cast(dt[bz, bh, bc, q], accum_dtype)
+                    dA_smem[q] = dA_cumsum[bz, bh, bc_idx, q]
+                    dt_smem[q]  = T.cast(dt[bz, bh, bc_idx, q], accum_dtype)
                 T.sync_threads()
 
                 # Precompute exp(dA_l[ll]) once per l-tile for history path scaling.
@@ -224,7 +226,7 @@ def _ssd_chunk_scan_fwd_kernel(
                 #
                 # L-side anchor factored form (full-lower blocks only):
                 #   exp(dA_l - dA_s) = exp(dA_l - anchor) * exp(anchor - dA_s)
-                # where anchor = dA_cumsum[bz, bh, bc, l0] (the largest value in the
+                # where anchor = dA_cumsum[bz, bh, bc_idx, l0] (the largest value in the
                 # l-tile, since dA_cumsum is non-increasing).
                 #
                 # Both arguments are non-positive for all valid causal pairs:
@@ -281,7 +283,7 @@ def _ssd_chunk_scan_fwd_kernel(
                 T.sync_threads()
 
                 # Only iterate over s-blocks that have at least one s <= l_max.
-                for s_blk in T.serial(T.ceildiv(l0 + block_l, block_s)):
+                for s_blk in T.Pipelined(T.ceildiv(l0 + block_l, block_s), num_stages=num_stages):
                     s0 = s_blk * block_s
 
                     # cb[b, c, g, l, s]  layout: [B, C, G, L, L]
@@ -292,7 +294,7 @@ def _ssd_chunk_scan_fwd_kernel(
                         safe_s_cb = T.min(s_abs, Q - 1)
                         cb_tile[ll, ss] = T.if_then_else(
                             (l_abs < Q) and (s_abs < Q),
-                            cb[bz, bc, bg, safe_l_cb, safe_s_cb],
+                            cb[bz, bc_idx, bg, safe_l_cb, safe_s_cb],
                             T.cast(T.float32(0.0), dtype),
                         )
 
@@ -403,6 +405,7 @@ def _ssd_chunk_scan_fwd_wrapped(
     block_n: int,
     block_s: int,
     threads: int,
+    num_stages: int,
     x: torch.Tensor,
     cb: torch.Tensor,
     dA_cumsum: torch.Tensor,
@@ -412,7 +415,7 @@ def _ssd_chunk_scan_fwd_wrapped(
 ) -> torch.Tensor:
     return _ssd_chunk_scan_fwd_kernel(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype)(
-        block_l, block_p, block_n, block_s, threads,
+        block_l, block_p, block_n, block_s, threads, num_stages,
     )(x, cb, dA_cumsum, C, prev_states, dt)
 
 
@@ -431,6 +434,7 @@ def _(
     block_n: int,
     block_s: int,
     threads: int,
+    num_stages: int,
     x: torch.Tensor,
     cb: torch.Tensor,
     dA_cumsum: torch.Tensor,
@@ -492,20 +496,22 @@ class SSDChunkScanFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # threads=64 (2 warps) balances parallelism with register pressure.
+        # threads=128 (4 warps) balances parallelism with register pressure.
         # block_n=64 keeps occupancy high for typical d_state sizes (64-128).
+        # num_stages=3 optimal based on full-kernel benchmarking.
         return {
             "block_l": 64,
             "block_p": 64,
             "block_n": min(64, self.d_state),
             "block_s": 64,
-            "threads": 64,
+            "threads": 128,
+            "num_stages": 3,
         }
 
     @property
     def autotune_configs(self) -> list[dict]:
         # Focused search around the known-good default (block_l=64, block_p=64,
-        # block_n=128, block_s=64, threads=128).
+        # block_n=128, block_s=64, threads=128, num_stages=3).
         #
         # NCU evidence:
         #   - block_l=64, block_p=64 anchors GEMM tile efficiency; smaller tiles
@@ -514,22 +520,23 @@ class SSDChunkScanFwdKernel(Kernel):
         #   - block_s and threads are the primary levers: block_s controls causal
         #     GEMM tile size and s-loop iteration count; threads controls warps/block
         #     and latency-hiding capacity.
+        #   - num_stages=3 is optimal (tested: stages=5 is 13% slower)
         #
         # 6–8 configs total (2 block_n entries dropped when d_state <= 32 or 64).
         block_n = min(128, self.d_state)
         return [
-            {"block_l": 64, "block_p": 64, "block_n": block_n, "block_s": bs, "threads": t}
+            {"block_l": 64, "block_p": 64, "block_n": block_n, "block_s": bs, "threads": t, "num_stages": 3}
             for bs in [64, 128]
             for t  in [128, 256]
         ] + [
             # block_n sweep at fixed block_s=64, threads=128
-            {"block_l": 64, "block_p": 64, "block_n": bn, "block_s": 64, "threads": 128}
+            {"block_l": 64, "block_p": 64, "block_n": bn, "block_s": 64, "threads": 128, "num_stages": 3}
             for bn in [32, 64]
             if bn <= self.d_state
         ] + [
             # threads=64 (2 warps/block) — more blocks/SM at cost of less ILP
             # Include block_n=64 to cover the optimal config found via AKO tuning
-            {"block_l": 64, "block_p": 64, "block_n": bn, "block_s": bs, "threads": 64}
+            {"block_l": 64, "block_p": 64, "block_n": bn, "block_s": bs, "threads": 64, "num_stages": 3}
             for bs in [64, 128]
             for bn in [64, 128]
             if bn <= self.d_state
@@ -560,7 +567,7 @@ class SSDChunkScanFwdKernel(Kernel):
             self.batch, self.num_chunks, self.chunk_len, self.n_heads,
             self.d_head, self.d_state, self.n_groups, self.dtype_str,
             self.config["block_l"], self.config["block_p"], self.config["block_n"],
-            self.config["block_s"], self.config["threads"],
+            self.config["block_s"], self.config["threads"], self.config["num_stages"],
             x.contiguous(), cb.contiguous(), dA_cumsum.contiguous(),
             C.contiguous(), prev_states.contiguous(), dt.contiguous(),
         )
