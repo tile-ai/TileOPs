@@ -1474,13 +1474,6 @@ def _conv2d_symmetric_kernel(
     out_hw = out_h * out_w
     k_total = c_in * kernel_size * kernel_size
 
-    input_spatial_block = 32
-    input_channel_block = 32
-    input_channel_lanes = 8
-    input_values_per_thread = input_channel_block // input_channel_lanes
-    output_spatial_block = 128
-    output_channel_block = 2
-
     @tilelang.jit(
         out_idx=[6],
         compile_flags=["-O3", "-DENABLE_BF16"],
@@ -1495,46 +1488,65 @@ def _conv2d_symmetric_kernel(
         enable_rasterization: bool,
     ):
         @T.macro
-        def nchw_to_nhwc_input(
-            x: T.Tensor((n, c_in, h, w), dtype),
-            x_nhwc: T.Tensor((n, h, w, c_in), dtype),
+        def transpose_spatial_channel(
+            src: T.Tensor,
+            dst: T.Tensor,
+            batch_size: int,
+            spatial_size: int,
+            channel_size: int,
+            width: int,
+            spatial_block: int,
+            channel_block: int,
+            channel_lanes: int,
+            channel_fastest: bool,
+            is_nchw_to_nhwc: bool,
         ):
+            assert spatial_block * channel_lanes == 256, (
+                "spatial_block * channel_lanes must equal 256"
+            )
+            assert channel_block % channel_lanes == 0, (
+                "channel_lanes must divide channel_block"
+            )
+            if not channel_fastest:
+                assert channel_block * spatial_block == 256, (
+                    "channel_block * spatial_block must equal 256 when channel_fastest=False"
+                )
+
             with T.Kernel(
-                T.ceildiv(h * w, input_spatial_block),
-                T.ceildiv(c_in, input_channel_block),
-                n,
+                T.ceildiv(spatial_size, spatial_block),
+                T.ceildiv(channel_size, channel_block),
+                batch_size,
                 threads=256,
             ) as (bx, by, bz):
-                for spatial_inner, channel_lane in T.Parallel(
-                    input_spatial_block, input_channel_lanes
-                ):
-                    spatial = bx * input_spatial_block + spatial_inner
-                    oh = spatial // w
-                    ow = spatial - oh * w
-                    channel_base = by * input_channel_block + channel_lane * input_values_per_thread
-                    for channel_offset in T.serial(input_values_per_thread):
-                        c = channel_base + channel_offset
-                        if (spatial < h * w) & (c < c_in):
-                            x_nhwc[bz, oh, ow, c] = x[bz, c, oh, ow]
-
-        @T.macro
-        def kcrs_to_krsc_weight(
-            weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
-            weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
-        ):
-            with T.Kernel(
-                T.ceildiv(c_out * kernel_size * kernel_size * c_in, 256),
-                threads=256,
-            ) as (bx):
-                for tx in T.Parallel(256):
-                    idx = bx * 256 + tx
-                    if idx < c_out * kernel_size * kernel_size * c_in:
-                        ci = idx % c_in
-                        kernel_idx = idx // c_in
-                        kw = kernel_idx % kernel_size
-                        kh = (kernel_idx // kernel_size) % kernel_size
-                        oc = kernel_idx // (kernel_size * kernel_size)
-                        weight_krsc[oc, kh, kw, ci] = weight[oc, ci, kh, kw]
+                if channel_fastest:
+                    values_per_thread = channel_block // channel_lanes
+                    for spatial_inner, channel_lane in T.Parallel(
+                        spatial_block, channel_lanes
+                    ):
+                        spatial = bx * spatial_block + spatial_inner
+                        h = spatial // width
+                        w = spatial - h * width
+                        channel_base = by * channel_block + channel_lane * values_per_thread
+                        for channel_offset in T.serial(values_per_thread):
+                            c = channel_base + channel_offset
+                            if (spatial < spatial_size) & (c < channel_size):
+                                if is_nchw_to_nhwc:
+                                    dst[bz, h, w, c] = src[bz, c, h, w]
+                                else:
+                                    dst[bz, c, h, w] = src[bz, h, w, c]
+                else:
+                    for channel_inner, spatial_inner in T.Parallel(
+                        channel_block, spatial_block
+                    ):
+                        spatial = bx * spatial_block + spatial_inner
+                        h = spatial // width
+                        w = spatial - h * width
+                        c = by * channel_block + channel_inner
+                        if (spatial < spatial_size) & (c < channel_size):
+                            if is_nchw_to_nhwc:
+                                dst[bz, h, w, c] = src[bz, c, h, w]
+                            else:
+                                dst[bz, c, h, w] = src[bz, h, w, c]
 
         @T.macro
         def conv_nhwc_implicit_gemm_bias(
@@ -1575,27 +1587,6 @@ def _conv2d_symmetric_kernel(
 
                 T.copy(out_shared, out_flat[by * block_m, bx * block_n])
 
-        @T.macro
-        def nhwc_to_nchw_output(
-            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
-            out: T.Tensor((n, c_out, out_h, out_w), dtype),
-        ):
-            with T.Kernel(
-                T.ceildiv(c_out, output_channel_block),
-                T.ceildiv(out_h * out_w, output_spatial_block),
-                n,
-                threads=256,
-            ) as (bx, by, bz):
-                for channel_inner, spatial_inner in T.Parallel(
-                    output_channel_block, output_spatial_block
-                ):
-                    oc = bx * output_channel_block + channel_inner
-                    spatial = by * output_spatial_block + spatial_inner
-                    oh = spatial // out_w
-                    ow = spatial - oh * out_w
-                    if (oc < c_out) & (spatial < out_h * out_w):
-                        out[bz, oc, oh, ow] = out_nhwc[bz, oh, ow, oc]
-
         @T.prim_func
         def _conv2d_symmetric_main(
             x: T.Tensor((n, c_in, h, w), dtype),
@@ -1606,10 +1597,46 @@ def _conv2d_symmetric_kernel(
             out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
             out: T.Tensor((n, c_out, out_h, out_w), dtype),
         ):
-            nchw_to_nhwc_input(x, x_nhwc)
-            kcrs_to_krsc_weight(weight, weight_krsc)
+            transpose_spatial_channel(
+                x,
+                x_nhwc,
+                batch_size=n,
+                spatial_size=h * w,
+                channel_size=c_in,
+                width=w,
+                spatial_block=32,
+                channel_block=32,
+                channel_lanes=8,
+                channel_fastest=True,
+                is_nchw_to_nhwc=True,
+            )
+            transpose_spatial_channel(
+                weight,
+                weight_krsc,
+                batch_size=c_out,
+                spatial_size=kernel_size * kernel_size,
+                channel_size=c_in,
+                width=kernel_size,
+                spatial_block=16,
+                channel_block=32,
+                channel_lanes=16,
+                channel_fastest=True,
+                is_nchw_to_nhwc=True,
+            )
             conv_nhwc_implicit_gemm_bias(x_nhwc, weight_krsc, bias, out_nhwc)
-            nhwc_to_nchw_output(out_nhwc, out)
+            transpose_spatial_channel(
+                out_nhwc,
+                out,
+                batch_size=n,
+                spatial_size=out_h * out_w,
+                channel_size=c_out,
+                width=out_w,
+                spatial_block=128,
+                channel_block=2,
+                channel_lanes=2,
+                channel_fastest=False,
+                is_nchw_to_nhwc=False,
+            )
 
         return _conv2d_symmetric_main
 
