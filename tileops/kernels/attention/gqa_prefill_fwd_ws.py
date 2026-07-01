@@ -140,9 +140,11 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, sm_scale, softcap, dtype,
                     T.named_barrier_arrive(nxt_bar, NMMA)
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(kfree[0])
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.if_then_else(
-                            q0 + r0 + i + co >= j, acc_s[i, j], -T.infinity(accum))
+                    if q0 + r0 + co < block_N - 1:
+                        mask_limit = q0 + r0 + co
+                        for i, j in T.Parallel(half, block_N):
+                            acc_s[i, j] = T.if_then_else(
+                                mask_limit + i >= j, acc_s[i, j], -T.infinity(accum))
                     if use_softcap:
                         apply_softcap(acc_s, half, block_N)
                     T.reduce_max(acc_s, sm, dim=1, clear=False)
@@ -167,10 +169,6 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, sm_scale, softcap, dtype,
                         T.named_barrier_arrive(nxt_bar, NMMA)
                         T.wait_wgmma(1)
                         T.mbarrier_arrive(kfree[sk])
-                        for i, j in T.Parallel(half, block_N):
-                            acc_s[i, j] = T.if_then_else(
-                                q0 + r0 + i + co >= k * block_N + j, acc_s[i, j],
-                                -T.infinity(accum))
                         if use_softcap:
                             apply_softcap(acc_s, half, block_N)
                         T.copy(sm, smp)
@@ -198,9 +196,10 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, sm_scale, softcap, dtype,
                         T.named_barrier_arrive(nxt_bar, NMMA)
                         T.wait_wgmma(1)
                         T.mbarrier_arrive(kfree[sk])
+                        mask_limit_tail = q0 + r0 + co - k * block_N
                         for i, j in T.Parallel(half, block_N):
                             acc_s[i, j] = T.if_then_else(
-                                q0 + r0 + i + co >= k * block_N + j, acc_s[i, j], -T.infinity(accum))
+                                mask_limit_tail + i >= j, acc_s[i, j], -T.infinity(accum))
                         if use_softcap:
                             apply_softcap(acc_s, half, block_N)
                         T.copy(sm, smp)
@@ -223,8 +222,10 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, sm_scale, softcap, dtype,
                     T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(vfree[svp])
+                    for i in T.Parallel(half):
+                        alpha[i] = 1.0 / logsum[i]
                     for i, j in T.Parallel(half, D):
-                        acc_o[i, j] /= logsum[i]
+                        acc_o[i, j] *= alpha[i]
                     T.copy(acc_o, Os[0, :, :])                                  # registers -> smem
                     T.copy(Os[0, :, :], O[bz, q0 + r0:q0 + r0 + half, by, :])  # smem -> global (coalesced)
 
@@ -256,9 +257,11 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, sm_scale, softcap, dtype,
                     T.named_barrier_arrive(nxt_bar, NMMA)
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(kfree[0])
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.if_then_else(
-                            q0 + r0 + i + co >= j, acc_s[i, j], -T.infinity(accum))
+                    if q0 + r0 + co < block_N - 1:
+                        mask_limit_wg1 = q0 + r0 + co
+                        for i, j in T.Parallel(half, block_N):
+                            acc_s[i, j] = T.if_then_else(
+                                mask_limit_wg1 + i >= j, acc_s[i, j], -T.infinity(accum))
                     if use_softcap:
                         apply_softcap(acc_s, half, block_N)
                     T.reduce_max(acc_s, sm, dim=1, clear=False)
@@ -269,24 +272,20 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, sm_scale, softcap, dtype,
                         logsum[i] = ss[i]
                     T.copy(acc_s, pcast)
 
-                    nu = T.max(1, T.min(eff, T.floordiv(q0 + r0 + co + 1, block_N)))
-                    for k in T.serial(1, nu):
+                    nu_wg1 = T.max(1, T.min(eff, T.floordiv(q0 + r0 + co + 1, block_N)))
+                    for k in T.serial(1, nu_wg1):
                         sk = k % nsK
-                        svp = (k - 1) % nsV
+                        svp_wg1 = (k - 1) % nsV
                         T.sync_threads(my_bar, NMMA)
                         T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
                         T.wgmma_gemm(Qs[1, :, :], Ks[sk, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True)
                         for i, j in T.Parallel(half, D):  # pipelined rescale (prev alpha) covers QK latency
                             acc_o[i, j] *= alpha[i]
-                        T.mbarrier_wait_parity(vready[svp], ((k - 1) // nsV) % 2)
-                        T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
+                        T.mbarrier_wait_parity(vready[svp_wg1], ((k - 1) // nsV) % 2)
+                        T.wgmma_gemm(pcast, Vs[svp_wg1, :, :], acc_o, policy=Pol, clear_accum=False)
                         T.named_barrier_arrive(nxt_bar, NMMA)
                         T.wait_wgmma(1)
                         T.mbarrier_arrive(kfree[sk])
-                        for i, j in T.Parallel(half, block_N):
-                            acc_s[i, j] = T.if_then_else(
-                                q0 + r0 + i + co >= k * block_N + j, acc_s[i, j],
-                                -T.infinity(accum))
                         if use_softcap:
                             apply_softcap(acc_s, half, block_N)
                         T.copy(sm, smp)
@@ -297,26 +296,27 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, sm_scale, softcap, dtype,
                             acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
                         T.reduce_sum(acc_s, ss, dim=1)
                         T.wait_wgmma(0)
-                        T.mbarrier_arrive(vfree[svp])
+                        T.mbarrier_arrive(vfree[svp_wg1])
                         for i in T.Parallel(half):
                             logsum[i] = logsum[i] * alpha[i] + ss[i]
                         T.copy(acc_s, pcast)
-                    for k in T.serial(nu, eff):
+                    for k in T.serial(nu_wg1, eff):
                         sk = k % nsK
-                        svp = (k - 1) % nsV
+                        svp_wg1_tail = (k - 1) % nsV
                         T.sync_threads(my_bar, NMMA)
                         T.mbarrier_wait_parity(kready[sk], (k // nsK) % 2)
                         T.wgmma_gemm(Qs[1, :, :], Ks[sk, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True)
                         for i, j in T.Parallel(half, D):  # pipelined rescale (prev alpha)
                             acc_o[i, j] *= alpha[i]
-                        T.mbarrier_wait_parity(vready[svp], ((k - 1) // nsV) % 2)
-                        T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
+                        T.mbarrier_wait_parity(vready[svp_wg1_tail], ((k - 1) // nsV) % 2)
+                        T.wgmma_gemm(pcast, Vs[svp_wg1_tail, :, :], acc_o, policy=Pol, clear_accum=False)
                         T.named_barrier_arrive(nxt_bar, NMMA)
                         T.wait_wgmma(1)
                         T.mbarrier_arrive(kfree[sk])
+                        mask_limit_wg1_tail = q0 + r0 + co - k * block_N
                         for i, j in T.Parallel(half, block_N):
                             acc_s[i, j] = T.if_then_else(
-                                q0 + r0 + i + co >= k * block_N + j, acc_s[i, j], -T.infinity(accum))
+                                mask_limit_wg1_tail + i >= j, acc_s[i, j], -T.infinity(accum))
                         if use_softcap:
                             apply_softcap(acc_s, half, block_N)
                         T.copy(sm, smp)
@@ -327,20 +327,22 @@ def _gqa_prefill_fwd_fa3_kernel(B, H, Hkv, Sq, Skv, D, sm_scale, softcap, dtype,
                             acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
                         T.reduce_sum(acc_s, ss, dim=1)
                         T.wait_wgmma(0)
-                        T.mbarrier_arrive(vfree[svp])
+                        T.mbarrier_arrive(vfree[svp_wg1_tail])
                         for i in T.Parallel(half):
                             logsum[i] = logsum[i] * alpha[i] + ss[i]
                         T.copy(acc_s, pcast)
 
-                    svp = (eff - 1) % nsV
+                    svp_wg1_final = (eff - 1) % nsV
                     for i, j in T.Parallel(half, D):  # pipelined rescale: final alpha before last PV
                         acc_o[i, j] *= alpha[i]
-                    T.mbarrier_wait_parity(vready[svp], ((eff - 1) // nsV) % 2)
-                    T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
+                    T.mbarrier_wait_parity(vready[svp_wg1_final], ((eff - 1) // nsV) % 2)
+                    T.wgmma_gemm(pcast, Vs[svp_wg1_final, :, :], acc_o, policy=Pol, clear_accum=False)
                     T.wait_wgmma(0)
-                    T.mbarrier_arrive(vfree[svp])
+                    T.mbarrier_arrive(vfree[svp_wg1_final])
+                    for i in T.Parallel(half):
+                        alpha[i] = 1.0 / logsum[i]
                     for i, j in T.Parallel(half, D):
-                        acc_o[i, j] /= logsum[i]
+                        acc_o[i, j] *= alpha[i]
                     T.copy(acc_o, Os[1, :, :])                                  # registers -> smem
                     T.copy(Os[1, :, :], O[bz, q0 + r0:q0 + r0 + half, by, :])  # smem -> global (coalesced)
 
@@ -355,9 +357,8 @@ class GQAPrefillFwdWsPersistentCausalKernel(Kernel):
     fp16/bf16 causal dim-128 path; other cases fall back to ``GQAPrefillFwdKernel``. Causal
     uses bottom-right alignment (``co = seq_len_kv - seq_len_q``).
 
-    Note: like FlashInfer's forward kernel, this does not emit log-sum-exp; the
-    op's ``(output, lse)`` contract is satisfied with ``lse=None``. A backward
-    pass that needs lse must compute it separately.
+    Note: like FlashInfer's forward inference kernel, this emits output only. A
+    backward pass that needs log-sum-exp must compute it separately.
     """
 
     supported_archs: list[int] = [90]

@@ -200,7 +200,8 @@ GroupedQueryAttentionPrefillFwdOp:
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
     kernel_map:
-      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
+      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel | GQAPrefillFwdWsPersistentCausalKernel
+      gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
       gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
       gqa_sliding_window_varlen_fwd: GQASlidingWindowVarlenFwdKernel
       gqa_prefill_fp8_tensor_core_fwd_kernel: GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
