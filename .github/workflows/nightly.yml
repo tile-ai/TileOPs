@@ -110,6 +110,12 @@ jobs:
 
   # =========================================================================
   # Phase 2 — Op correctness tests (serial after benchmark for GPU exclusivity)
+  #
+  # Runs the `full` and `nightly` tiers. The `smoke` tier is the PR critical
+  # path and is already validated by every PR and every push-to-main gpu-smoke
+  # (-m "smoke or full"), so re-running it here is pure duplication. `nightly`
+  # is the heavy tier that runs nowhere else; `full` stays as a scheduled
+  # regression / environment-drift net.
   # =========================================================================
   op_test:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
@@ -144,7 +150,7 @@ jobs:
 
           set -o pipefail
           python3 -m pip install -q -c constraints.txt pytest-timeout
-          python3 -m pytest tests/ -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=test_results.xml | tee tileops_op_test.log
+          python3 -m pytest tests/ -m "full or nightly" -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=test_results.xml | tee tileops_op_test.log
         shell: bash
 
       - name: Download benchmark artifacts

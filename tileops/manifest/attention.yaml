@@ -182,10 +182,12 @@ GroupedQueryAttentionPrefillFwdOp:
 
   workloads:
     # Llama-3.1-8B (H=32, H_kv=8, D=128)
-    - {total_q: 2048, total_kv: 2048, batch: 4, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense"}
-    - {total_q: 1024, total_kv: 8192, batch: 2, q_lens: [512, 512], kv_lens: [4096, 4096], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense-q-lt-kv"}
+    - {total_q: 2048, total_kv: 2048, batch: 4, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, backend: "dense", dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense"}
+    - {total_q: 2048, total_kv: 2048, batch: 4, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, backend: "dense", sm_scale: 0.125, dtypes: [float16], label: "llama-3.1-8b-prefill-dense-sm-scale-0.125"}
+    - {total_q: 2048, total_kv: 2048, batch: 4, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, backend: "dense", softcap: 50.0, dtypes: [float16], label: "llama-3.1-8b-prefill-dense-softcap50"}
+    - {total_q: 1024, total_kv: 8192, batch: 2, q_lens: [512, 512], kv_lens: [4096, 4096], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, backend: "dense", dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-dense-q-lt-kv"}
     # Llama-3.1-70B (H=64, H_kv=8, D=128)
-    - {total_q: 512, total_kv: 4096, batch: 1, q_lens: [512], kv_lens: [4096], heads: 64, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-dense-q-lt-kv"}
+    - {total_q: 512, total_kv: 4096, batch: 1, q_lens: [512], kv_lens: [4096], heads: 64, heads_kv: 8, dim: 128, max_seqlen_q: 512, max_seqlen_kv: 4096, is_causal: true, backend: "dense", dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill-dense-q-lt-kv"}
     # FP8 Tensor Core prefill through the canonical packed prefill surface.
     - {total_q: 896, total_kv: 896, batch: 1, q_lens: [896], kv_lens: [896], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 896, max_seqlen_kv: 896, is_causal: false, backend: "fp8", dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-fp8tc-bn224-s896"}
     - {total_q: 1792, total_kv: 1792, batch: 1, q_lens: [1792], kv_lens: [1792], heads: 32, heads_kv: 8, dim: 128, max_seqlen_q: 1792, max_seqlen_kv: 1792, is_causal: false, backend: "fp8", dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill-fp8tc-bn224-s1792"}
@@ -198,7 +200,8 @@ GroupedQueryAttentionPrefillFwdOp:
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
     kernel_map:
-      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
+      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel | GQAPrefillFwdWsPersistentCausalKernel
+      gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
       gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
       gqa_sliding_window_varlen_fwd: GQASlidingWindowVarlenFwdKernel
       gqa_prefill_fp8_tensor_core_fwd_kernel: GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel

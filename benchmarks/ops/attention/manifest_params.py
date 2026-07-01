@@ -48,11 +48,24 @@ def gqa_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, boo
     return batch, seq_len, heads, heads_kv, dim, workload.get("is_causal", True)
 
 
-def gqa_prefill_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, int, bool]:
+def gqa_prefill_args(
+    workload: dict[str, Any],
+) -> tuple[int, int, int, int, int, int, bool, str, float | None, float | None]:
     if "q_shape" in workload:
         batch, seq_len_q, heads, dim = workload["q_shape"]
         _, seq_len_kv, heads_kv, _ = workload["kv_shape"]
-        return batch, seq_len_q, seq_len_kv, heads, heads_kv, dim, workload.get("is_causal", True)
+        return (
+            batch,
+            seq_len_q,
+            seq_len_kv,
+            heads,
+            heads_kv,
+            dim,
+            workload.get("is_causal", True),
+            workload.get("backend", "auto"),
+            workload.get("sm_scale"),
+            workload.get("softcap"),
+        )
 
     batch = workload["batch"]
     q_lens = list(workload.get("q_lens") or [workload["total_q"] // batch] * batch)
@@ -64,7 +77,18 @@ def gqa_prefill_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int,
     heads = workload["heads"]
     heads_kv = workload["heads_kv"]
     dim = workload["dim"]
-    return batch, seq_len_q, seq_len_kv, heads, heads_kv, dim, workload.get("is_causal", True)
+    return (
+        batch,
+        seq_len_q,
+        seq_len_kv,
+        heads,
+        heads_kv,
+        dim,
+        workload.get("is_causal", True),
+        workload.get("backend", "auto"),
+        workload.get("sm_scale"),
+        workload.get("softcap"),
+    )
 
 
 def gqa_prefill_paged_args(

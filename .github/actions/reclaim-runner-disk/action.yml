@@ -1,24 +1,13 @@
 name: Reclaim runner disk
 description: >
-  Reclaim disk on self-hosted CI runners before heavy steps run. Prunes
-  stale trusted venvs, orphan per-run temp dirs, and aged compile/wheel/pip
-  caches under /home/ci-runner. Fails fast if the volume is still near full
-  after reclaim, so downstream steps report disk pressure clearly instead of
-  a cryptic mkdir error.
+  Trim the persistent bind-mounted /ci-cache (compiled-kernel / triton / pip
+  caches and the tilelang autotuner cache) on self-hosted CI runners. Fails
+  fast if the cache volume is still near full after reclaim, so downstream
+  steps report disk pressure clearly instead of a cryptic mkdir error.
 
 inputs:
-  venv-keep:
-    description: Number of most-recent tileops_ci_venv_* directories to retain.
-    required: false
-    default: "2"
-  temp-orphan-minutes:
-    description: >
-      Age threshold (minutes) for purging orphan gpu-smoke-*/nightly-* temp
-      dirs in RUNNER_TEMP that do not belong to the current run.
-    required: false
-    default: "120"
   cache-age-days:
-    description: Age threshold (days) for trimming compile/wheel/pip cache files.
+    description: Age threshold (days) for trimming cache files.
     required: false
     default: "7"
   min-avail-gib:
@@ -39,12 +28,6 @@ inputs:
       same runner. Cheap disk checks still run on every invocation.
     required: false
     default: "0"
-  current-run-dir:
-    description: >
-      Name of the per-run temp directory that must NOT be pruned. Leave blank
-      if the caller does not create one.
-    required: false
-    default: ""
   cache-dirs:
     description: >
       Newline-separated list of cache directory roots whose files older than
@@ -75,13 +58,6 @@ inputs:
     required: false
     default: |
       /ci-cache/tilelang/autotuner
-  prune-tool-cache:
-    description: >
-      Whether to prune old tileops_ci_venv_* directories under runner.tool_cache.
-      Disable on runners that do not use the per-hash trusted-venv scheme
-      (e.g. nightly's docker-based jobs).
-    required: false
-    default: "true"
   df-paths:
     description: Space-separated paths to pass to `df -h` for before/after logging.
     required: false
@@ -109,20 +85,15 @@ runs:
     - name: Reclaim runner disk
       shell: bash
       env:
-        VENV_KEEP: ${{ inputs.venv-keep }}
-        TEMP_ORPHAN_MINUTES: ${{ inputs.temp-orphan-minutes }}
         CACHE_AGE_DAYS: ${{ inputs.cache-age-days }}
         MIN_AVAIL_GIB: ${{ inputs.min-avail-gib }}
         RECLAIM_BELOW_GIB: ${{ inputs.reclaim-below-gib }}
         CACHE_TRIM_COOLDOWN_MINUTES: ${{ inputs.cache-trim-cooldown-minutes }}
-        CURRENT_RUN_DIR: ${{ inputs.current-run-dir }}
         CACHE_DIRS: ${{ inputs.cache-dirs }}
         ATOMIC_CACHE_DIRS: ${{ inputs.atomic-cache-dirs }}
-        PRUNE_TOOL_CACHE: ${{ inputs.prune-tool-cache }}
         DF_PATHS: ${{ inputs.df-paths }}
         FORCE_RECLAIM: ${{ inputs.force-reclaim }}
         SKIP_ATOMIC_AGE_TRIM: ${{ inputs.skip-atomic-age-trim }}
-        TOOL_CACHE: ${{ runner.tool_cache }}
       run: |
         set -uo pipefail
 
@@ -166,7 +137,7 @@ runs:
 
         # Validate numeric inputs up-front so typos fail with a clear error
         # instead of a cryptic bash arithmetic/find error deeper in the script.
-        for var in VENV_KEEP TEMP_ORPHAN_MINUTES CACHE_AGE_DAYS MIN_AVAIL_GIB RECLAIM_BELOW_GIB CACHE_TRIM_COOLDOWN_MINUTES; do
+        for var in CACHE_AGE_DAYS MIN_AVAIL_GIB RECLAIM_BELOW_GIB CACHE_TRIM_COOLDOWN_MINUTES; do
           val="${!var}"
           if [[ ! "${val}" =~ ^[0-9]+$ ]]; then
             echo "::error::reclaim-runner-disk: input ${var}='${val}' is not a non-negative integer"
@@ -178,7 +149,7 @@ runs:
           read -r -a DF_TARGETS <<< "${DF_PATHS}"
         else
           DF_TARGETS=()
-          for path in "${RUNNER_TEMP:-}" "${TOOL_CACHE:-}" /home/ci-runner; do
+          for path in "${RUNNER_TEMP:-}" /ci-cache; do
             [[ -n "${path}" ]] && DF_TARGETS+=( "${path}" )
           done
         fi
@@ -224,46 +195,7 @@ runs:
           echo "Free space is healthy; skipping reclaim pass"
         fi
 
-        # 1) Prune old trusted venvs: keep N most recent by mtime.
-        if [[ "${SHOULD_RECLAIM}" == "true" && "${PRUNE_TOOL_CACHE}" == "true" && -d "${TOOL_CACHE}" ]]; then
-          DID_RECLAIM="true"
-          mapfile -t venvs < <(find "${TOOL_CACHE}" -maxdepth 1 -type d -name "tileops_ci_venv_*" -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
-          if [[ ${#venvs[@]} -gt ${VENV_KEEP} ]]; then
-            for stale in "${venvs[@]:${VENV_KEEP}}"; do
-              echo "Removing stale venv: ${stale}"
-              rm -rf "${stale}" || true
-            done
-          fi
-        fi
-
-        # 2) Purge orphan per-run dirs in RUNNER_TEMP whose newest activity in
-        #    the subtree is older than N minutes, excluding the current run's
-        #    directory if provided. Directory mtime alone is unreliable — it
-        #    only updates when entries are added/removed, so an active
-        #    long-running job whose files are being written (but not the dir
-        #    itself) would be wrongly eligible. Use the newest file mtime
-        #    anywhere in the subtree instead.
-        if [[ "${SHOULD_RECLAIM}" == "true" && -d "${RUNNER_TEMP}" ]]; then
-          DID_RECLAIM="true"
-          now_epoch=$(date +%s)
-          stale_seconds=$(( TEMP_ORPHAN_MINUTES * 60 ))
-          for pattern in 'gpu-smoke-*' 'nightly-*'; do
-            while IFS= read -r candidate; do
-              [[ -n "${candidate}" ]] || continue
-              if [[ -n "${CURRENT_RUN_DIR}" && "$(basename "${candidate}")" == "${CURRENT_RUN_DIR}" ]]; then
-                continue
-              fi
-              newest_mtime=$(find "${candidate}" -printf '%T@\n' 2>/dev/null | awk 'NR == 1 || $1 > max { max = $1 } END { if (NR > 0) print max }')
-              [[ -n "${newest_mtime}" ]] || newest_mtime=$(stat -c %Y "${candidate}" 2>/dev/null || echo 0)
-              if awk "BEGIN { exit !(${now_epoch} - ${newest_mtime} >= ${stale_seconds}) }"; then
-                echo "Removing orphan runtime: ${candidate}"
-                rm -rf "${candidate}" 2>/dev/null || true
-              fi
-            done < <(find "${RUNNER_TEMP}" -mindepth 1 -maxdepth 1 -type d -name "${pattern}" 2>/dev/null)
-          done
-        fi
-
-        # 3) Age-based trim of trusted compile/wheel/pip caches, plus
+        # 1) Age-based trim of the file-granularity cache roots, plus
         #    atomic-granularity trim of atomic cache roots.
         SHOULD_TRIM_CACHE="false"
         if [[ "${SHOULD_RECLAIM}" == "true" && ( -n "${CACHE_DIRS}" || -n "${ATOMIC_CACHE_DIRS}" ) ]]; then

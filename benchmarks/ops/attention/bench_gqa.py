@@ -142,6 +142,8 @@ def _flashinfer_gqa_fwd(test, q, k, v):
         num_kv_heads=Hkv,
         head_dim_qk=D,
         causal=test.is_causal,
+        logits_soft_cap=getattr(test, "softcap", None) or 0.0,
+        sm_scale=getattr(test, "sm_scale", None),
         q_data_type=q.dtype,
     )
 
@@ -200,7 +202,13 @@ def _torch_gqa_prefill_ref(test: GQAPrefillFwdTest):
         q_bhsd = q.transpose(1, 2).float()
         k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
         v_bhsd = v.repeat_interleave(groups, dim=2).transpose(1, 2).float()
-        scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * (test.dim**-0.5)
+        sm_scale = getattr(test, "sm_scale", None)
+        softcap = getattr(test, "softcap", None)
+        scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * (
+            test.dim**-0.5 if sm_scale is None else sm_scale
+        )
+        if softcap is not None and softcap > 0:
+            scores = softcap * torch.tanh(scores / softcap)
         if test.is_causal:
             offset = test.seq_len_kv - test.seq_len_q
             q_pos = torch.arange(test.seq_len_q, device=q.device)[:, None] + offset
@@ -363,7 +371,8 @@ _GQA_PREFILL_FWD_BENCH_PARAMS = manifest_params(
 
 
 @pytest.mark.parametrize(
-    "batch, seq_len_q, seq_len_kv, heads, heads_kv, dim, causal, dtype, tune",
+    "batch, seq_len_q, seq_len_kv, heads, heads_kv, dim, causal, backend, sm_scale, softcap, "
+    "dtype, tune",
     _GQA_PREFILL_FWD_BENCH_PARAMS,
 )
 def test_gqa_prefill_fwd_bench(
@@ -374,10 +383,15 @@ def test_gqa_prefill_fwd_bench(
     heads_kv: int,
     dim: int,
     causal: bool,
+    backend: str,
+    sm_scale: Optional[float],
+    softcap: Optional[float],
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
     test = GQAPrefillFwdTest(batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, causal, dtype)
+    test.sm_scale = sm_scale
+    test.softcap = softcap
     inputs = test.gen_inputs()
     packed_inputs = _uniform_packed_prefill_inputs(*inputs)
 
@@ -391,6 +405,9 @@ def test_gqa_prefill_fwd_bench(
         is_causal=causal,
         dtype=dtype,
         tune=tune,
+        backend=backend,
+        sm_scale=sm_scale,
+        softcap=softcap,
     )
     bm = ManifestBenchmark(_GQA_PREFILL_FWD_OP, op, test)
     result = bm.profile(op, *packed_inputs)

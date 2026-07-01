@@ -8,6 +8,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import (
+    LOG2E,
     make_log2e_scale,
     make_online_softmax_with_mask_guard,
     make_rescale,
@@ -21,6 +22,36 @@ __all__ = [
 NUM_SMS = int(os.environ.get("V2P_NUM_SMS", "132"))
 _ANCHOR_HELPER_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "_anchor_helper.h"))
+_MATH_HELPER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "_math_helper.h"))
+
+
+def _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, block_rows, block_cols):
+    @T.macro
+    def apply_softcap(acc_s):
+        for i, j in T.Parallel(block_rows, block_cols):
+            acc_s[i, j] = T.cast(softcap, accum_dtype) * T.call_extern(
+                accum_dtype,
+                "tl::tileops_tanh_approx_f32",
+                acc_s[i, j] * T.cast(score_scale / softcap, accum_dtype),
+            )
+
+    return apply_softcap
+
+
+def _make_apply_softcap_causal_mask(score_scale, softcap, accum_dtype, block_rows, block_cols):
+    @T.macro
+    def apply_softcap(acc_s, row_base, col_base):
+        for i, j in T.Parallel(block_rows, block_cols):
+            if row_base + i >= col_base + j:
+                acc_s[i, j] = T.cast(softcap, accum_dtype) * T.call_extern(
+                    accum_dtype,
+                    "tl::tileops_tanh_approx_f32",
+                    acc_s[i, j] * T.cast(score_scale / softcap, accum_dtype),
+                )
+            else:
+                acc_s[i, j] = -T.infinity(accum_dtype)
+
+    return apply_softcap
 
 
 @functools.lru_cache(maxsize=32)
@@ -45,7 +76,22 @@ def _gqa_fwd_ws_persistent_kernel(
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16", "-include", _ANCHOR_HELPER_PATH],
+        compile_flags=[
+            "-O3",
+            "--use_fast_math",
+            "-Wno-deprecated-declarations",
+            "-U__CUDA_NO_HALF_OPERATORS__",
+            "-U__CUDA_NO_HALF_CONVERSIONS__",
+            "-U__CUDA_NO_HALF2_OPERATORS__",
+            "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+            "--expt-relaxed-constexpr",
+            "--expt-extended-lambda",
+            "-DENABLE_BF16",
+            "-include",
+            _MATH_HELPER_PATH,
+            "-include",
+            _ANCHOR_HELPER_PATH,
+        ],
     )
     def func(block_m: int, block_n: int):
         q_shape = (batch, seq_len, heads, dim)
@@ -350,6 +396,8 @@ def _gqa_fwd_ws_persistent_causal_kernel(
     heads_kv: int,
     seq_len: int,
     dim: int,
+    sm_scale: Optional[float] = None,
+    softcap: float = 0.0,
     dtype: str = "float16",
 ) -> Callable:
     assert heads % heads_kv == 0 and dim == 128
@@ -357,7 +405,9 @@ def _gqa_fwd_ws_persistent_causal_kernel(
     half_m = block_m // 2
     groups = heads // heads_kv
     hkv_sections = heads_kv
-    scale = make_log2e_scale(dim)
+    score_scale = dim**-0.5 if sm_scale is None else sm_scale
+    use_softcap = softcap > 0.0
+    scale = LOG2E if use_softcap else score_scale * LOG2E
     accum_dtype = "float"
     m_blocks = (seq_len + block_m - 1) // block_m
     if m_blocks % 2 != 0:
@@ -365,12 +415,27 @@ def _gqa_fwd_ws_persistent_causal_kernel(
     half_m_blocks = m_blocks // 2
 
     @tilelang.jit(
-        out_idx=[3, 4],
+        out_idx=[3],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16", "-include", _ANCHOR_HELPER_PATH],
+        compile_flags=[
+            "-O3",
+            "--use_fast_math",
+            "-Wno-deprecated-declarations",
+            "-U__CUDA_NO_HALF_OPERATORS__",
+            "-U__CUDA_NO_HALF_CONVERSIONS__",
+            "-U__CUDA_NO_HALF2_OPERATORS__",
+            "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+            "--expt-relaxed-constexpr",
+            "--expt-extended-lambda",
+            "-DENABLE_BF16",
+            "-include",
+            _MATH_HELPER_PATH,
+            "-include",
+            _ANCHOR_HELPER_PATH,
+        ],
     )
     def func(block_m: int, block_n: int):
         q_shape = (batch, seq_len, heads, dim)
@@ -378,6 +443,12 @@ def _gqa_fwd_ws_persistent_causal_kernel(
 
         softmax_1 = make_online_softmax_with_mask_guard(scale, accum_dtype, half_m, block_n)
         softmax_2 = make_online_softmax_with_mask_guard(scale, accum_dtype, half_m, block_n)
+        apply_softcap_1 = _make_apply_softcap_no_mask_guard(
+            score_scale, softcap, accum_dtype, half_m, block_n) if use_softcap else None
+        apply_softcap_2 = _make_apply_softcap_no_mask_guard(
+            score_scale, softcap, accum_dtype, half_m, block_n) if use_softcap else None
+        apply_softcap_causal_mask = _make_apply_softcap_causal_mask(
+            score_scale, softcap, accum_dtype, half_m, block_n) if use_softcap else None
         rescale_1 = make_rescale(half_m, dim)
         rescale_2 = make_rescale(half_m, dim)
 
@@ -387,7 +458,6 @@ def _gqa_fwd_ws_persistent_causal_kernel(
             k: T.Tensor(kv_shape, dtype),
             v: T.Tensor(kv_shape, dtype),
             output: T.Tensor(q_shape, dtype),
-            lse: T.Tensor([batch, heads, seq_len], accum_dtype),
         ) -> None:
             with T.Kernel(NUM_SMS, 1, 1, threads=384) as (bx, _by, _bz):
                 q_shared_1 = T.alloc_shared([half_m, dim], dtype)
@@ -539,7 +609,12 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                     T.wait_wgmma(0)
                                     T.warpgroup_fence_operand(acc_s_1, num_regs=64)
                                     T.barrier_arrive(k_empty)
-                                    if n_idx == loop_range - 1:
+                                    if use_softcap and n_idx == loop_range - 1:
+                                        apply_softcap_causal_mask(
+                                            acc_s_1, row_base, n_idx * block_n)
+                                    elif use_softcap:
+                                        apply_softcap_1(acc_s_1)
+                                    elif n_idx == loop_range - 1:
                                         for i, j in T.Parallel(half_m, block_n):
                                             acc_s_1[i, j] = T.if_then_else(
                                                 row_base + i >= n_idx * block_n + j,
@@ -562,7 +637,12 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                     T.call_extern("handle", "tl::wait_wgmma_anchor<1>", T.address_of(anchor_sink[0]), gi_kc1)
                                     T.warpgroup_fence_operand(acc_s_1, num_regs=64)
                                     T.barrier_arrive(k_empty)
-                                    if n_idx == loop_range - 1:
+                                    if use_softcap and n_idx == loop_range - 1:
+                                        apply_softcap_causal_mask(
+                                            acc_s_1, row_base, n_idx * block_n)
+                                    elif use_softcap:
+                                        apply_softcap_1(acc_s_1)
+                                    elif n_idx == loop_range - 1:
                                         for i, j in T.Parallel(half_m, block_n):
                                             acc_s_1[i, j] = T.if_then_else(
                                                 row_base + i >= n_idx * block_n + j,
@@ -593,9 +673,6 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                             T.fence_proxy_async()
                             T.sync_threads(barrier_id=3, arrive_count=128)
                             T.copy(q_shared_1, output[tile_b, row_base:row_base + half_m, tile_h, :])
-                            for i in T.Parallel(half_m):
-                                ls_1[i] = T.log2(ls_1[i]) + sm_1[i] * scale
-                            T.copy(ls_1, lse[tile_b, tile_h, row_base:row_base + half_m])
 
                 else:
                     T.inc_max_nreg(240)
@@ -637,7 +714,12 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                     T.wait_wgmma(0)
                                     T.warpgroup_fence_operand(acc_s_2, num_regs=64)
                                     T.barrier_arrive(k_empty)
-                                    if n_idx == loop_range - 1:
+                                    if use_softcap and n_idx == loop_range - 1:
+                                        apply_softcap_causal_mask(
+                                            acc_s_2, row_base + half_m, n_idx * block_n)
+                                    elif use_softcap:
+                                        apply_softcap_2(acc_s_2)
+                                    elif n_idx == loop_range - 1:
                                         for i, j in T.Parallel(half_m, block_n):
                                             acc_s_2[i, j] = T.if_then_else(
                                                 row_base + half_m + i >= n_idx * block_n + j,
@@ -660,7 +742,12 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                                     T.call_extern("handle", "tl::wait_wgmma_anchor<1>", T.address_of(anchor_sink[1]), gi_kc2)
                                     T.warpgroup_fence_operand(acc_s_2, num_regs=64)
                                     T.barrier_arrive(k_empty)
-                                    if n_idx == loop_range - 1:
+                                    if use_softcap and n_idx == loop_range - 1:
+                                        apply_softcap_causal_mask(
+                                            acc_s_2, row_base + half_m, n_idx * block_n)
+                                    elif use_softcap:
+                                        apply_softcap_2(acc_s_2)
+                                    elif n_idx == loop_range - 1:
                                         for i, j in T.Parallel(half_m, block_n):
                                             acc_s_2[i, j] = T.if_then_else(
                                                 row_base + half_m + i >= n_idx * block_n + j,
@@ -691,9 +778,6 @@ def _gqa_fwd_ws_persistent_causal_kernel(
                             T.fence_proxy_async()
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             T.copy(q_shared_2, output[tile_b, row_base + half_m:row_base + block_m, tile_h, :])
-                            for i in T.Parallel(half_m):
-                                ls_2[i] = T.log2(ls_2[i]) + sm_2[i] * scale
-                            T.copy(ls_2, lse[tile_b, tile_h, row_base + half_m:row_base + block_m])
 
         return main
 
@@ -750,14 +834,16 @@ class GQAFwdWsPersistentCausalKernel(Kernel):
         dim: int,
         is_causal: bool,
         dtype: torch.dtype,
+        sm_scale: Optional[float] = None,
+        softcap: float = 0.0,
         config: Optional[dict] = None,
         tune: bool = False,
     ) -> None:
         super().__init__()
         if not is_causal:
             raise ValueError("GQAFwdWsPersistentCausalKernel only supports causal forward.")
-        if dtype != torch.float16:
-            raise ValueError("GQAFwdWsPersistentCausalKernel currently supports float16 only.")
+        if dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError("GQAFwdWsPersistentCausalKernel currently supports float16/bfloat16 only.")
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -765,12 +851,15 @@ class GQAFwdWsPersistentCausalKernel(Kernel):
         self.dim = dim
         self.is_causal = is_causal
         self.dtype = dtype
-        self.kernel = _gqa_fwd_ws_persistent_causal_kernel(batch, heads, heads_kv, seq_len, dim, self.dtype_str)
+        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
+        self.softcap = softcap
+        self.kernel = _gqa_fwd_ws_persistent_causal_kernel(
+            batch, heads, heads_kv, seq_len, dim, self.sm_scale, self.softcap, self.dtype_str)
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
         return {"block_m": 128, "block_n": 128}
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         return self.kernel(self.config["block_m"], self.config["block_n"])(q, k, v)
