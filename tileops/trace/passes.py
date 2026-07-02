@@ -113,7 +113,20 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
             bind[n.thread_binding.thread_tag] = n
 
     post_order_visit(primfunc.body, collect)
-    tx_ = bind["threadIdx.x"].loop_var
+
+    # Support kernels with implicit thread blocks (T.Kernel(..., threads=N))
+    # When threadIdx.x is not explicitly bound, we need to synthesize it.
+    # Strategy: use the __tl_thread_idx_x() helper (injected by inject_helper)
+    if "threadIdx.x" not in bind:
+        import sys
+        print("[Trace] Warning: No explicit threadIdx.x binding found. "
+              "Using __tl_thread_idx_x() helper for implicit thread block.",
+              file=sys.stderr)
+        # Create a call to our injected helper that wraps threadIdx.x
+        # T.call_extern returns a TIR expression that we can use directly
+        tx_ = T.call_extern("int32", "__tl_thread_idx_x")
+    else:
+        tx_ = bind["threadIdx.x"].loop_var
 
     # Flatten the full grid: read each present blockIdx axis's var + extent and
     # build cta_flat = bx + by*gx + bz*gx*gy (only the axes that exist), with
