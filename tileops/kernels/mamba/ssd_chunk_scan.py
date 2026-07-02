@@ -74,6 +74,7 @@ def _ssd_chunk_scan_fwd_kernel(
     d_state: int,
     n_groups: int,
     dtype: str = "float16",
+    diagonal_microtile_size: int = 0,  # 0=off, 32=M32 (only for block_l=block_s=64)
 ) -> Callable:
     accum_dtype = "float"
 
@@ -142,7 +143,6 @@ def _ssd_chunk_scan_fwd_kernel(
                 # PART 1: history path
                 #   acc[l,p] += exp(dA_l[l]) * sum_n C[l,g,n] * prev_states[h,p,n]
                 # =====================================================
-                T.start_profile_intrinsic("part1_history")
 
                 hist_acc = T.alloc_fragment((block_l, block_p), accum_dtype)
                 T.clear(hist_acc)
@@ -158,11 +158,9 @@ def _ssd_chunk_scan_fwd_kernel(
 
                 #trace c_tile loading
                 for n_blk in T.Pipelined(T.ceildiv(N, block_n), num_stages=num_stages):
-                    T.start_profile_intrinsic("part1_n_iter")
                     n0 = n_blk * block_n
 
                     # C_mat[b, chunk_start+l, g, n]  layout: [B, S, G, N]
-                    T.start_profile_intrinsic("part1_load_c")
                     for ll, nn in T.Parallel(block_l, block_n):
                         l_abs = l0 + ll
                         n_abs = n0 + nn
@@ -173,10 +171,8 @@ def _ssd_chunk_scan_fwd_kernel(
                             C_mat[bz, chunk_start + safe_l, bg, safe_n_c],
                             T.cast(T.float32(0.0), dtype),
                         )
-                    T.end_profile_intrinsic("part1_load_c")
 
                     #trace state_tile loading
-                    T.start_profile_intrinsic("part1_load_state")
                     # prev_states[b, c, h, p, n]  layout: [B, C, H, P, N]  float32
                     # Iterate (block_p, block_n) so consecutive threads vary nn (the contiguous N
                     # dim), giving coalesced 128-byte loads instead of strided-by-N accesses.
@@ -190,23 +186,12 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(prev_states[bz, bc_idx, bh, safe_p, safe_n], dtype),
                             T.cast(T.float32(0.0), dtype),
                         )
-                    T.end_profile_intrinsic("part1_load_state")
 
                     # trace gemm
-                    T.start_profile_intrinsic("part1_gemm")
                     # hist_acc += c_tile @ state_tile
                     T.gemm(c_tile, state_tile, hist_acc)
-                    T.end_profile_intrinsic("part1_gemm")
 
-                    T.end_profile_intrinsic("part1_n_iter")
 
-                # Scale history contribution by exp(dA_l) and add to acc
-                T.start_profile_intrinsic("part1_scale_add")
-                for ll, pp in T.Parallel(block_l, block_p):
-                    acc[ll, pp] += hist_acc[ll, pp]
-                T.end_profile_intrinsic("part1_scale_add")
-
-                T.end_profile_intrinsic("part1_history")
 
                 # =====================================================
                 # Cache dA_cumsum and dt for this chunk in shared memory.
@@ -214,19 +199,16 @@ def _ssd_chunk_scan_fwd_kernel(
                 # diagonal-path loops.  Q fp32 scalars = Q*4 bytes (e.g. 1 KB
                 # for Q=256).  Loaded once, reused by every s-block.
                 # =====================================================
-                T.start_profile_intrinsic("cache_dA_dt")
                 dA_smem = T.alloc_shared((Q,), accum_dtype)
                 dt_smem  = T.alloc_shared((Q,), accum_dtype)
                 for q in T.Parallel(Q):
                     dA_smem[q] = dA_cumsum[bz, bh, bc_idx, q]
                     dt_smem[q]  = T.cast(dt[bz, bh, bc_idx, q], accum_dtype)
                 T.sync_threads()
-                T.end_profile_intrinsic("cache_dA_dt")
                 # why sync_threads here？
 
                 # Precompute exp(dA_l[ll]) once per l-tile for history path scaling.
                 # Now reads from dA_smem (smem hit) instead of global.
-                T.start_profile_intrinsic("precompute_exp_dA_l")
                 exp_dA_l = T.alloc_shared((block_l,), accum_dtype)
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
@@ -237,7 +219,6 @@ def _ssd_chunk_scan_fwd_kernel(
                         T.float32(1.0),
                     )
                 T.sync_threads()
-                T.end_profile_intrinsic("precompute_exp_dA_l")
 
                 # scale by exp(dA_l[l]) and accumulate into acc
                 for ll, pp in T.Parallel(block_l, block_p):
@@ -250,7 +231,6 @@ def _ssd_chunk_scan_fwd_kernel(
                 # PART 2: intra-chunk causal path
                 #   acc[l,p] += sum_{s<=l} cb[c,g,l,s]
                 #               * exp(dA_l[l] - dA_s[s]) * dt[h,c,s] * x[s,h,p]
-                T.start_profile_intrinsic("part2_causal")
                 #
                 # L-side anchor factored form (full-lower blocks only):
                 #   exp(dA_l - dA_s) = exp(dA_l - anchor) * exp(anchor - dA_s)
@@ -298,7 +278,6 @@ def _ssd_chunk_scan_fwd_kernel(
 
                 # Precompute exp_l once before the s-loop; reused by every
                 # full-lower s-block without re-fetching dA_cumsum from global.
-                T.start_profile_intrinsic("part2_precompute_exp_l")
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
                     safe_l_exp = T.min(l_abs, Q - 1)
@@ -310,15 +289,12 @@ def _ssd_chunk_scan_fwd_kernel(
                     # dA_l_val - anchor <= 0 always, so exp <= 1 (no overflow).
                     exp_l[ll] = T.exp(dA_l_val - anchor)
                 T.sync_threads()
-                T.end_profile_intrinsic("part2_precompute_exp_l")
 
                 # Only iterate over s-blocks that have at least one s <= l_max.
                 for s_blk in T.Pipelined(T.ceildiv(l0 + block_l, block_s), num_stages=num_stages):
-                    T.start_profile_intrinsic("part2_s_iter")
                     s0 = s_blk * block_s
 
                     # cb[b, c, g, l, s]  layout: [B, C, G, L, L]
-                    T.start_profile_intrinsic("part2_load_cb")
                     for ll, ss in T.Parallel(block_l, block_s):
                         l_abs = l0 + ll
                         s_abs = s0 + ss
@@ -329,10 +305,8 @@ def _ssd_chunk_scan_fwd_kernel(
                             cb[bz, bc_idx, bg, safe_l_cb, safe_s_cb],
                             T.cast(T.float32(0.0), dtype),
                         )
-                    T.end_profile_intrinsic("part2_load_cb")
 
                     # x[b, chunk_start+s, h, p]  layout: [B, S, H, P]
-                    T.start_profile_intrinsic("part2_load_x")
                     for ss, pp in T.Parallel(block_s, block_p):
                         s_abs = s0 + ss
                         p_abs = p0 + pp
@@ -343,13 +317,11 @@ def _ssd_chunk_scan_fwd_kernel(
                             x[bz, chunk_start + safe_s_x, bh, safe_p_x],
                             T.cast(T.float32(0.0), dtype),
                         )
-                    T.end_profile_intrinsic("part2_load_x")
 
                     # full-lower path: s0 + block_s <= l0 means every (ll,ss) has
                     # s_abs < l0 <= l_abs, so s_abs < l_abs (causal mask always true)
                     # and anchor <= dA_s[ss] (anchor - dA_s[ss] <= 0, no overflow).
                     if s0 + block_s <= l0:
-                        T.start_profile_intrinsic("part2_full_lower")
                         for ss in T.Parallel(block_s):
                             s_abs = s0 + ss
                             safe_s_full = T.min(s_abs, Q - 1)
@@ -363,7 +335,6 @@ def _ssd_chunk_scan_fwd_kernel(
                                 dt_smem[safe_s_full],
                                 T.float32(0.0),
                             )
-                            # anchor - dA_s_val <= 0, so exp <= 1 (no overflow).
                             exp_s[ss] = T.exp(anchor - dA_s_val) * dt_val
                         T.sync_threads()
 
@@ -375,63 +346,117 @@ def _ssd_chunk_scan_fwd_kernel(
                                 * exp_s[ss],
                                 dtype,
                             )
-                        T.end_profile_intrinsic("part2_full_lower")
                     else:
-                        T.start_profile_intrinsic("part2_diagonal")
                         T.sync_threads()
                         # Diagonal path: s is within block_s steps of l, so
                         # dA_l - dA_s is bounded and safe to compute directly.
                         # Reads from dA_smem/dt_smem (smem) instead of global.
-                        for ll, ss in T.Parallel(block_l, block_s):
-                            l_abs = l0 + ll
-                            s_abs = s0 + ss
-                            valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
-                            safe_l_diag = T.min(l_abs, Q - 1)
-                            safe_s_diag = T.min(s_abs, Q - 1)
-                            dA_l_val = T.if_then_else(
-                                l_abs < Q,
-                                dA_smem[safe_l_diag],
-                                T.float32(0.0),
-                            )
-                            dA_s_val = T.if_then_else(
-                                s_abs < Q,
-                                dA_smem[safe_s_diag],
-                                T.float32(0.0),
-                            )
-                            dt_val = T.if_then_else(
-                                s_abs < Q,
-                                dt_smem[safe_s_diag],
-                                T.float32(0.0),
-                            )
-                            lcb_cast[ll, ss] = T.if_then_else(
-                                valid,
-                                T.cast(
-                                    T.cast(cb_tile[ll, ss], accum_dtype)
-                                    * T.exp(dA_l_val - dA_s_val)
-                                    * dt_val,
-                                    dtype,
-                                ),
-                                T.cast(T.float32(0.0), dtype),
-                            )
-                        T.end_profile_intrinsic("part2_diagonal")
+
+                        # Micro-block factorization: only for block_l=block_s=64, M=32
+                        if diagonal_microtile_size == 32 and block_l == 64 and block_s == 64:
+                            # Python static unrolling for 2×2 micro-blocks
+                            M = 32
+                            R = 2  # block_l // M
+
+                            # Allocate shared memory for factorized exp
+                            exp_l_micro = T.alloc_shared((block_l,), accum_dtype)
+                            exp_s_micro = T.alloc_shared((R, block_s), accum_dtype)
+
+                            # Precompute exp_l_micro[ll] = exp(dA[ll] - anchor[r])
+                            for ll in T.Parallel(block_l):
+                                r = ll // M
+                                safe_l = T.min(l0 + ll, Q - 1)
+                                anchor_idx = T.min(l0 + r * M, Q - 1)
+                                exp_l_micro[ll] = T.exp(dA_smem[safe_l] - dA_smem[anchor_idx])
+
+                            # Precompute exp_s_micro[r, ss] = exp(anchor[r] - dA[ss]) * dt[ss]
+                            for r, ss in T.Parallel(R, block_s):
+                                safe_s = T.min(s0 + ss, Q - 1)
+                                anchor_idx = T.min(l0 + r * M, Q - 1)
+                                exp_s_micro[r, ss] = T.exp(dA_smem[anchor_idx] - dA_smem[safe_s]) * dt_smem[safe_s]
+
+                            T.sync_threads()
+
+                            # Python static unrolling: 4 micro-blocks
+                            # mr=0, mc=0: diagonal block
+                            for ll, ss in T.Parallel(M, M):
+                                l_abs = l0 + ll
+                                s_abs = s0 + ss
+                                valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
+                                safe_l = T.min(l_abs, Q - 1)
+                                safe_s = T.min(s_abs, Q - 1)
+                                exp_factor = T.exp(dA_smem[safe_l] - dA_smem[safe_s])
+                                value = T.cast(cb_tile[ll, ss], accum_dtype) * exp_factor * dt_smem[safe_s]
+                                lcb_cast[ll, ss] = T.if_then_else(valid, T.cast(value, dtype), T.cast(T.float32(0.0), dtype))
+
+                            # mr=0, mc=1: upper block (all zeros)
+                            for ll, ss in T.Parallel(M, M):
+                                lcb_cast[ll, M + ss] = T.cast(T.float32(0.0), dtype)
+
+                            # mr=1, mc=0: lower block (factorization, NO direct exp)
+                            for ll, ss in T.Parallel(M, M):
+                                l_abs = l0 + M + ll
+                                s_abs = s0 + ss
+                                valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
+                                # r=1 for second micro-row, inline directly
+                                value = T.cast(cb_tile[M + ll, ss], accum_dtype) * exp_l_micro[M + ll] * exp_s_micro[1, ss]
+                                lcb_cast[M + ll, ss] = T.if_then_else(valid, T.cast(value, dtype), T.cast(T.float32(0.0), dtype))
+
+                            # mr=1, mc=1: diagonal block
+                            for ll, ss in T.Parallel(M, M):
+                                l_abs = l0 + M + ll
+                                s_abs = s0 + M + ss
+                                valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
+                                safe_l = T.min(l_abs, Q - 1)
+                                safe_s = T.min(s_abs, Q - 1)
+                                exp_factor = T.exp(dA_smem[safe_l] - dA_smem[safe_s])
+                                value = T.cast(cb_tile[M + ll, M + ss], accum_dtype) * exp_factor * dt_smem[safe_s]
+                                lcb_cast[M + ll, M + ss] = T.if_then_else(valid, T.cast(value, dtype), T.cast(T.float32(0.0), dtype))
+                        else:
+                            # Original diagonal path (fallback)
+                            for ll, ss in T.Parallel(block_l, block_s):
+                                l_abs = l0 + ll
+                                s_abs = s0 + ss
+                                valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
+                                safe_l_diag = T.min(l_abs, Q - 1)
+                                safe_s_diag = T.min(s_abs, Q - 1)
+                                dA_l_val = T.if_then_else(
+                                    l_abs < Q,
+                                    dA_smem[safe_l_diag],
+                                    T.float32(0.0),
+                                )
+                                dA_s_val = T.if_then_else(
+                                    s_abs < Q,
+                                    dA_smem[safe_s_diag],
+                                    T.float32(0.0),
+                                )
+                                dt_val = T.if_then_else(
+                                    s_abs < Q,
+                                    dt_smem[safe_s_diag],
+                                    T.float32(0.0),
+                                )
+                                lcb_cast[ll, ss] = T.if_then_else(
+                                    valid,
+                                    T.cast(
+                                        T.cast(cb_tile[ll, ss], accum_dtype)
+                                        * T.exp(dA_l_val - dA_s_val)
+                                        * dt_val,
+                                        dtype,
+                                    ),
+                                    T.cast(T.float32(0.0), dtype),
+                                )
 
                     # acc += lcb_cast @ x_tile
-                    T.start_profile_intrinsic("part2_gemm")
                     T.gemm(lcb_cast, x_tile, acc)
-                    T.end_profile_intrinsic("part2_gemm")
 
-                    T.end_profile_intrinsic("part2_s_iter")
 
-                T.end_profile_intrinsic("part2_causal")
 
                 # write back: out[b, chunk_start+l, h, p]  layout: [B, S, H, P]
-                T.start_profile_intrinsic("writeback")
                 for ll, pp in T.Parallel(block_l, block_p):
                     l_abs = l0 + ll
                     p_abs = p0 + pp
                     if (l_abs < Q) and (p_abs < P):
                         out[bz, chunk_start + l_abs, bh, p_abs] = acc[ll, pp]
-                T.end_profile_intrinsic("writeback")
 
         return main
 
