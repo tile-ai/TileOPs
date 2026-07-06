@@ -74,7 +74,7 @@ def _ssd_chunk_scan_fwd_kernel(
     d_state: int,
     n_groups: int,
     dtype: str = "float16",
-    diagonal_microtile_size: int = 0,  # 0=off, 32=M32 (only for block_l=block_s=64)
+    diagonal_microtile_size: int = 32,  # 32=M32 (only for block_l=block_s=64)
 ) -> Callable:
     accum_dtype = "float"
 
@@ -205,7 +205,7 @@ def _ssd_chunk_scan_fwd_kernel(
                     dA_smem[q] = dA_cumsum[bz, bh, bc_idx, q]
                     dt_smem[q]  = T.cast(dt[bz, bh, bc_idx, q], accum_dtype)
                 T.sync_threads()
-                # why sync_threads here？
+                # Ensure all threads have finished loading dA_cumsum and dt into shared memory
 
                 # Precompute exp(dA_l[ll]) once per l-tile for history path scaling.
                 # Now reads from dA_smem (smem hit) instead of global.
@@ -358,9 +358,7 @@ def _ssd_chunk_scan_fwd_kernel(
                             M = 32
                             R = 2  # block_l // M
 
-                            # Allocate shared memory for factorized exp
-                            exp_l_micro = T.alloc_shared((block_l,), accum_dtype)
-                            exp_s_micro = T.alloc_shared((R, block_s), accum_dtype)
+                            # exp_l_micro and exp_s_micro should be allocated at the top level of the kernel
 
                             # Precompute exp_l_micro[ll] = exp(dA[ll] - anchor[r])
                             for ll in T.Parallel(block_l):
