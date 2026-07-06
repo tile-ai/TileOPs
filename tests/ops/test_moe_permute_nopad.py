@@ -114,13 +114,49 @@ class MoePermuteNopadFixture(FixtureBase):
 @MoePermuteNopadFixture
 def test_moe_permute_nopad_op(total_tokens, top_k, num_experts, hidden_size, dtype):
     test = MoePermuteNopadTest(total_tokens, top_k, num_experts, hidden_size, dtype)
-    op = MoePermuteNopadFwdOp(total_tokens, top_k, num_experts, hidden_size, dtype)
+    op = MoePermuteNopadFwdOp(num_experts=num_experts, dtype=dtype)
     hidden_states, topk_ids = test.gen_inputs()
 
     outputs = op(hidden_states, topk_ids)
     outputs_ref = test.ref_program(hidden_states, topk_ids)
 
     _compare(hidden_states, topk_ids, outputs, outputs_ref, num_experts)
+    flops, nbytes = op.eval_roofline()
+    assert flops == 0
+    assert nbytes > 0
+
+
+@pytest.mark.smoke
+def test_moe_permute_nopad_explicit_shape_mismatch_raises() -> None:
+    hidden_states = torch.randn(4, 16, dtype=torch.float16, device="cuda")
+    topk_ids = torch.randint(0, 4, (4, 2), dtype=torch.int32, device="cuda")
+    op = MoePermuteNopadFwdOp(
+        total_tokens=5,
+        top_k=2,
+        num_experts=4,
+        hidden_size=16,
+        dtype=torch.float16,
+    )
+    with pytest.raises(ValueError, match="Expected total_tokens"):
+        op(hidden_states, topk_ids)
+
+
+@pytest.mark.smoke
+def test_moe_permute_nopad_cpu_input_raises() -> None:
+    hidden_states = torch.randn(4, 16, dtype=torch.float16)
+    topk_ids = torch.randint(0, 4, (4, 2), dtype=torch.int32)
+    op = MoePermuteNopadFwdOp(num_experts=4)
+    with pytest.raises(ValueError, match="hidden_states must be a CUDA tensor"):
+        op(hidden_states, topk_ids)
+
+
+@pytest.mark.smoke
+def test_moe_permute_nopad_invalid_dtype_raises() -> None:
+    hidden_states = torch.randn(4, 16, dtype=torch.float32, device="cuda")
+    topk_ids = torch.randint(0, 4, (4, 2), dtype=torch.int32, device="cuda")
+    op = MoePermuteNopadFwdOp(num_experts=4)
+    with pytest.raises(ValueError, match="Expected hidden_states.dtype"):
+        op(hidden_states, topk_ids)
 
 
 if __name__ == "__main__":

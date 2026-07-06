@@ -118,8 +118,6 @@ AdaLayerNormFwdOp:
       output: {dtype: "same_as(x)"}
     params:
       eps: {type: float, default: 1.0e-5}
-    static_dims:
-      N: "x.shape[-1]"
     shape_rules:
       - "scale.shape == x.shape"
       - "shift.shape == x.shape"
@@ -165,8 +163,6 @@ AdaLayerNormZeroFwdOp:
       output: {dtype: "same_as(x)"}
     params:
       eps: {type: float, default: 1.0e-5}
-    static_dims:
-      N: "x.shape[-1]"
     shape_rules:
       - "scale.shape == x.shape"
       - "shift.shape == x.shape"
@@ -214,8 +210,6 @@ FusedAddLayerNormFwdOp:
       residual_out: {dtype: "same_as(x)"}
     params:
       eps: {type: float, default: 1.0e-5}
-    static_dims:
-      N: "x.shape[-1]"
     shape_rules:
       - "residual.shape == x.shape"
       - "weight.shape == (x.shape[-1],)"
@@ -264,8 +258,6 @@ FusedAddRMSNormFwdOp:
       residual_out: {dtype: "same_as(x)"}
     params:
       eps: {type: float, default: 1.0e-6}
-    static_dims:
-      N: "x.shape[-1]"
     shape_rules:
       - "residual.shape == x.shape"
       - "weight.shape == (x.shape[-1],)"

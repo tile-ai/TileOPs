@@ -146,7 +146,7 @@ def test_cumsum_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     test = CumulativeTest(m, n, dtype, "cumsum")
-    op = CumsumFwdOp(N=n, dtype=dtype)
+    op = CumsumFwdOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -156,7 +156,7 @@ def test_cumsum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = CumsumFwdOp(N=n, dtype=dtype)
+    op = CumsumFwdOp(dtype=dtype)
     ref = x.contiguous().float().cumsum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -168,7 +168,7 @@ def test_cumsum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = CumsumFwdOp(N=hidden, dtype=dtype)
+    op = CumsumFwdOp(dtype=dtype)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -180,7 +180,7 @@ def test_cumsum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    op = CumsumFwdOp(N=n, dtype=dtype)
+    op = CumsumFwdOp(dtype=dtype)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -192,11 +192,37 @@ def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = CumsumFwdOp(N=n, dtype=dtype)
+    op = CumsumFwdOp(dtype=dtype)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
     assert torch.allclose(y, ref, **tol), f"1D cumsum max err: {(y - ref).abs().max()}"
+
+
+@pytest.mark.smoke
+def test_cumsum_explicit_n_mismatch_raises() -> None:
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
+
+    x = torch.randn(4, 8, dtype=torch.float16, device="cuda")
+    op = CumsumFwdOp(N=9, dtype=torch.float16)
+    with pytest.raises(ValueError, match="Expected x.shape"):
+        op(x)
+
+
+@pytest.mark.smoke
+def test_cumsum_dynamic_shape_kernel_cache() -> None:
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
+
+    op = CumsumFwdOp()
+    x1 = torch.randn(4, 8, dtype=torch.float16, device="cuda")
+    x2 = torch.randn(5, 8, dtype=torch.float16, device="cuda")
+
+    op(x1)
+    assert len(op._kernel_cache) == 1
+    op(x1)
+    assert len(op._kernel_cache) == 1
+    op(x2)
+    assert len(op._kernel_cache) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +235,7 @@ def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumprod import CumprodFwdOp
 
     test = CumulativeTest(m, n, dtype, "cumprod", use_small_range=True)
-    op = CumprodFwdOp(N=n, dtype=dtype)
+    op = CumprodFwdOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_cumprod_tol(dtype))
 
 
@@ -219,7 +245,7 @@ def test_cumprod_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.rand(m, n * 2, dtype=dtype, device="cuda") * 0.01 + 0.99
     x = x_full[:, :n]
-    op = CumprodFwdOp(N=n, dtype=dtype)
+    op = CumprodFwdOp(dtype=dtype)
     ref = x.contiguous().float().cumprod(dim=-1).to(dtype)
     y = op(x)
     tol = _cumprod_tol(dtype)
@@ -231,7 +257,7 @@ def test_cumprod_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> No
     from tileops.ops.reduction.cumprod import CumprodFwdOp
 
     x = torch.rand(batch, seq, hidden, dtype=dtype, device="cuda") * 0.01 + 0.99
-    op = CumprodFwdOp(N=hidden, dtype=dtype)
+    op = CumprodFwdOp(dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
     tol = _cumprod_tol(dtype)
@@ -243,7 +269,7 @@ def test_cumprod_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> No
     from tileops.ops.reduction.cumprod import CumprodFwdOp
 
     x = torch.rand(b0, b1, b2, n, dtype=dtype, device="cuda") * 0.01 + 0.99
-    op = CumprodFwdOp(N=n, dtype=dtype)
+    op = CumprodFwdOp(dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
     tol = _cumprod_tol(dtype)
@@ -255,7 +281,7 @@ def test_cumprod_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumprod import CumprodFwdOp
 
     x = torch.rand(n, dtype=dtype, device="cuda") * 0.01 + 0.99
-    op = CumprodFwdOp(N=n, dtype=dtype)
+    op = CumprodFwdOp(dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
     tol = _cumprod_tol(dtype)
@@ -279,7 +305,7 @@ def test_cumsum_dim_axis1(
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     x = torch.randn(batch, hidden, seq, dtype=dtype, device="cuda")
-    op = CumsumFwdOp(N=hidden, dtype=dtype, dim=1)
+    op = CumsumFwdOp(dtype=dtype, dim=1)
     ref = x.float().cumsum(dim=1).to(dtype)
     y = op(x)
     atol = 1e-2 if dtype == torch.float16 else 1.6e-2
@@ -296,7 +322,7 @@ def test_cumprod_dim_axis1(
 
     # Values close to 1 to avoid over/underflow in cumprod over hidden dim.
     x = torch.rand(batch, hidden, seq, dtype=dtype, device="cuda") * 0.01 + 0.99
-    op = CumprodFwdOp(N=hidden, dtype=dtype, dim=1)
+    op = CumprodFwdOp(dtype=dtype, dim=1)
     ref = x.float().cumprod(dim=1).to(dtype)
     y = op(x)
     tol = _cumprod_tol(dtype)

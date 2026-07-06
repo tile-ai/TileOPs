@@ -37,8 +37,10 @@ class AdaLayerNormZeroFwdOp(Op):
         by padding to 256-element alignment.
 
     Args:
-        M: Number of rows (product of all dims except the last).
-        N: Hidden dimension (last dim).
+        M: Optional committed row count for strict compatibility. Preferred
+            API infers it from ``x.shape[:-1]``.
+        N: Optional committed hidden dimension. Preferred API infers it from
+            ``x.shape[-1]``.
         dtype: Data type (``torch.float32``, ``torch.float16``, or
             ``torch.bfloat16``).
         eps: Epsilon for numerical stability.
@@ -48,9 +50,9 @@ class AdaLayerNormZeroFwdOp(Op):
 
     def __init__(
         self,
-        M: int,
-        N: int,
-        dtype: torch.dtype,
+        M: Optional[int] = None,
+        N: Optional[int] = None,
+        dtype: Optional[torch.dtype] = None,
         eps: float = 1e-5,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -58,20 +60,38 @@ class AdaLayerNormZeroFwdOp(Op):
         self.M = M
         self.N = N
         self.dtype = dtype
+        self._committed_M = M
+        self._committed_N = N
+        self._committed_dtype = dtype
         self.eps = eps
-        self.N_padded = align_up(N, ALIGNMENT)
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["ada_layer_norm"](
-            M, N, eps, dtype, has_gate=True, tune=tune,
-        )
+        self._kernel_cache: Dict[tuple[int, int, torch.dtype, int | None], Kernel] = {}
+        self._last_roofline_mn: Optional[tuple[int, int]] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"ada_layer_norm": AdaLayerNormKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
+        if self._last_roofline_mn is None or self.dtype is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.eval_roofline() requires a prior "
+                "forward() call to bind input shape and dtype"
+            )
+        M, N = self._last_roofline_mn
         elem_bytes = self.dtype.itemsize
-        return 6 * self.M * self.N, 5 * self.M * self.N * elem_bytes
+        return 6 * M * N, 5 * M * N * elem_bytes
+
+    def _get_kernel(
+        self, M: int, N: int, dtype: torch.dtype, device_index: int | None,
+    ) -> Kernel:
+        key = (M, N, dtype, device_index)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["ada_layer_norm"](
+                M, N, self.eps, dtype, has_gate=True, tune=self.tune,
+            )
+        return self._kernel_cache[key]
 
     def forward(
         self,
@@ -103,49 +123,67 @@ class AdaLayerNormZeroFwdOp(Op):
             raise ValueError("shift must be a CUDA tensor")
         if not gate.is_cuda:
             raise ValueError("gate must be a CUDA tensor")
-        if x.dtype != self.dtype:
+        expected_dtype = self._committed_dtype
+        if expected_dtype is not None and x.dtype != expected_dtype:
             raise ValueError(
-                f"Expected x.dtype {self.dtype}, got {x.dtype}"
+                f"Expected x.dtype {expected_dtype}, got {x.dtype}"
             )
-        if scale.dtype != self.dtype:
+        if expected_dtype is None:
+            expected_dtype = x.dtype
+        if scale.dtype != expected_dtype:
             raise ValueError(
-                f"Expected scale.dtype {self.dtype}, got {scale.dtype}"
+                f"Expected scale.dtype {expected_dtype}, got {scale.dtype}"
             )
-        if shift.dtype != self.dtype:
+        if shift.dtype != expected_dtype:
             raise ValueError(
-                f"Expected shift.dtype {self.dtype}, got {shift.dtype}"
+                f"Expected shift.dtype {expected_dtype}, got {shift.dtype}"
             )
-        if gate.dtype != self.dtype:
+        if gate.dtype != expected_dtype:
             raise ValueError(
-                f"Expected gate.dtype {self.dtype}, got {gate.dtype}"
+                f"Expected gate.dtype {expected_dtype}, got {gate.dtype}"
             )
-        if x.shape[-1] != self.N:
+        if scale.shape != x.shape:
+            raise ValueError(f"Expected scale shape {x.shape}, got {scale.shape}")
+        if shift.shape != x.shape:
+            raise ValueError(f"Expected shift shape {x.shape}, got {shift.shape}")
+        if gate.shape != x.shape:
+            raise ValueError(f"Expected gate shape {x.shape}, got {gate.shape}")
+        N = x.shape[-1]
+        if self._committed_N is not None and self._committed_N != N:
             raise ValueError(
-                f"Expected hidden dim {self.N}, got {x.shape[-1]}"
+                f"Expected hidden dim {self._committed_N}, got {N}"
             )
 
         orig_shape = x.shape
-        x = x.contiguous().reshape(-1, self.N)
-        scale = scale.contiguous().reshape(-1, self.N)
-        shift = shift.contiguous().reshape(-1, self.N)
-        gate = gate.contiguous().reshape(-1, self.N)
+        x = x.contiguous().reshape(-1, N)
+        scale = scale.contiguous().reshape(-1, N)
+        shift = shift.contiguous().reshape(-1, N)
+        gate = gate.contiguous().reshape(-1, N)
         M_actual = x.shape[0]
-        if M_actual != self.M:
+        if self._committed_M is not None and M_actual != self._committed_M:
             raise ValueError(
-                f"Expected M={self.M} (product of leading dims), got {M_actual}"
+                f"Expected M={self._committed_M} (product of leading dims), got {M_actual}"
             )
+        self.M = M_actual
+        self.N = N
+        dtype = expected_dtype
+        assert dtype is not None
+        self.dtype = dtype
+        N_padded = align_up(N, ALIGNMENT)
 
         # Pad hidden dim to 256-element alignment if needed
-        if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N))
-            scale = F.pad(scale, (0, self.N_padded - self.N))
-            shift = F.pad(shift, (0, self.N_padded - self.N))
-            gate = F.pad(gate, (0, self.N_padded - self.N))
+        if N_padded != N:
+            x = F.pad(x, (0, N_padded - N))
+            scale = F.pad(scale, (0, N_padded - N))
+            shift = F.pad(shift, (0, N_padded - N))
+            gate = F.pad(gate, (0, N_padded - N))
 
-        y = self.kernel(x, scale, shift, gate)
+        kernel = self._get_kernel(M_actual, N, dtype, x.device.index)
+        y = kernel(x, scale, shift, gate)
+        self._last_roofline_mn = (M_actual, N)
 
         # Trim padding
-        if self.N_padded != self.N:
-            y = y[:, :self.N]
+        if N_padded != N:
+            y = y[:, :N]
 
         return y.reshape(orig_shape)

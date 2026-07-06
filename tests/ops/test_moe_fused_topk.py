@@ -83,8 +83,6 @@ class FusedTopKFixture(FixtureBase):
 def _check(test: FusedTopKTest) -> None:
     (gating,) = test.gen_inputs()
     op = FusedTopKOp(
-        num_tokens=test.num_tokens,
-        num_experts=test.num_experts,
         top_k=test.top_k,
         scoring_func=test.scoring_func,
         renormalize=test.renormalize,
@@ -140,3 +138,57 @@ def test_fused_topk(
 ) -> None:
     test = FusedTopKTest(num_tokens, num_experts, top_k, scoring_func, renormalize, dtype)
     _check(test)
+
+
+@pytest.mark.smoke
+def test_fused_topk_explicit_shape_mismatch_raises() -> None:
+    gating = torch.randn(4, 8, dtype=torch.float16, device="cuda")
+    op = FusedTopKOp(num_tokens=5, num_experts=8, top_k=2)
+    with pytest.raises(ValueError, match="Expected num_tokens"):
+        op(gating)
+
+
+@pytest.mark.smoke
+def test_fused_topk_cpu_input_raises() -> None:
+    gating = torch.randn(4, 8, dtype=torch.float16)
+    op = FusedTopKOp(top_k=2)
+    with pytest.raises(ValueError, match="gating_output must be a CUDA tensor"):
+        op(gating)
+
+
+@pytest.mark.smoke
+def test_fused_topk_invalid_dtype_raises() -> None:
+    gating = torch.randint(0, 8, (4, 8), dtype=torch.int32, device="cuda")
+    op = FusedTopKOp(top_k=2)
+    with pytest.raises(ValueError, match="Expected gating_output.dtype"):
+        op(gating)
+
+
+@pytest.mark.smoke
+def test_fused_topk_correction_bias_requires_sigmoid() -> None:
+    with pytest.raises(ValueError, match="requires scoring_func='sigmoid'"):
+        FusedTopKOp(top_k=2, scoring_func="softmax", with_correction_bias=True)
+
+
+@pytest.mark.smoke
+def test_fused_topk_correction_bias_device_check() -> None:
+    gating = torch.randn(4, 8, dtype=torch.float32, device="cuda")
+    correction_bias = torch.randn(8, dtype=torch.float32)
+    op = FusedTopKOp(top_k=2, scoring_func="sigmoid", with_correction_bias=True)
+    with pytest.raises(ValueError, match="correction_bias must be a CUDA tensor"):
+        op(gating, correction_bias)
+
+
+@pytest.mark.smoke
+def test_fused_topk_dynamic_shape_kernel_cache() -> None:
+    op = FusedTopKOp(top_k=2)
+    gating1 = torch.randn(4, 8, dtype=torch.float16, device="cuda")
+    gating2 = torch.randn(5, 8, dtype=torch.float16, device="cuda")
+
+    op(gating1)
+    assert op.dtype == torch.float16
+    assert len(op._kernel_cache) == 1
+    op(gating1)
+    assert len(op._kernel_cache) == 1
+    op(gating2)
+    assert len(op._kernel_cache) == 2

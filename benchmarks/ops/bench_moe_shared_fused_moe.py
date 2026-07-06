@@ -253,7 +253,7 @@ def test_shared_fused_moe_bench(
     else:
         # torch-ref: per-expert GEMM loop + manual shared MLP
         fk = FusedTopKOp(
-            num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
+            top_k=top_k,
             scoring_func=scoring_func, renormalize=renormalize,
             with_correction_bias=with_correction_bias,
         )

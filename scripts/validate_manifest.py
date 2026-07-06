@@ -3304,10 +3304,16 @@ def check_c3_ctor_signature_parity(
         # Default-value parity: when the manifest declares a default the
         # ctor default must match it value-for-value. Manifest sentinel
         # ``REQUIRED`` (or absent ``default``) means the param has no
-        # default; the ctor must omit one too.
+        # manifest default. A narrow ``compat_default`` escape hatch lets
+        # legacy ctor signatures keep a Python default without advertising
+        # that value to manifest-driven callers.
         manifest_default = pattrs.get("default", _MISSING)
         manifest_has_default = (
             manifest_default is not _MISSING and manifest_default != "REQUIRED"
+        )
+        compat_default = pattrs.get("compat_default", _MISSING)
+        manifest_has_compat_default = (
+            compat_default is not _MISSING and not manifest_has_default
         )
         code_has_default = code_p.default is not inspect.Parameter.empty
         if manifest_has_default and not code_has_default:
@@ -3316,10 +3322,14 @@ def check_c3_ctor_signature_parity(
                 f"{manifest_default!r} but no default on __init__"
             )
         elif (not manifest_has_default) and code_has_default:
-            errors.append(
-                f"[ctor] {op_name}: param {pname!r} has __init__ default "
-                f"{code_p.default!r} but no manifest default"
-            )
+            if (
+                not manifest_has_compat_default
+                or code_p.default != compat_default
+            ):
+                errors.append(
+                    f"[ctor] {op_name}: param {pname!r} has __init__ default "
+                    f"{code_p.default!r} but no manifest default"
+                )
         elif (
             manifest_has_default
             and code_has_default

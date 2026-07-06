@@ -89,9 +89,12 @@ def _manifest_params():
     params = []
     for w in load_workloads(_OP_NAME):
         label = w.get("label", "unlabeled")
+        total_tokens, hidden_size = w["hidden_states_shape"]
+        topk_tokens, top_k = w["topk_ids_shape"]
+        assert topk_tokens == total_tokens
         for dtype_str in w["dtypes"]:
             params.append(pytest.param(
-                w["total_tokens"], w["top_k"], w["num_experts"], w["hidden_size"],
+                total_tokens, top_k, w["num_experts"], hidden_size,
                 id=f"{label}-{dtype_str}",
             ))
     return params
@@ -114,7 +117,7 @@ def test_moe_permute_nopad_bench(
     hidden_states, topk_ids = test.gen_inputs()
 
     # TileOPs
-    op = MoePermuteNopadFwdOp(total_tokens, top_k, num_experts, hidden_size, dtype)
+    op = MoePermuteNopadFwdOp(num_experts=num_experts, dtype=dtype)
     bm = MoePermuteNopadBenchmark(test, op)
     op(hidden_states, topk_ids)  # warmup / JIT compile
     torch.cuda.synchronize()

@@ -182,8 +182,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
                 self.use_fused_activation = False
 
         self._permute = MoePermuteNopadFwdOp(
-            total_tokens=num_tokens, top_k=top_k, num_experts=num_experts,
-            hidden_size=hidden_size, dtype=dtype, expert_map=expert_map,
+            num_experts=num_experts, dtype=dtype, expert_map=expert_map,
             kernel_map=kernel_map,
         )
         self.activation = activation

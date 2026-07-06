@@ -16,8 +16,6 @@ CumsumFwdOp:
       y: {dtype: "same_as(x)"}
     params:
       dim: {type: int, default: -1}
-    static_dims:
-      N: "x.shape[dim]"
     shape_rules:
       - "-x.ndim <= dim < x.ndim"
       - "y.shape == x.shape"
@@ -58,8 +56,6 @@ CumprodFwdOp:
       y: {dtype: "same_as(x)"}
     params:
       dim: {type: int, default: -1}
-    static_dims:
-      N: "x.shape[dim]"
     shape_rules:
       - "-x.ndim <= dim < x.ndim"
       - "y.shape == x.shape"

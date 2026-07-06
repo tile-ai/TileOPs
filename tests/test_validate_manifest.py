@@ -4503,6 +4503,43 @@ class TestStrictParityC3Ctor:
         errs = validator.check_c3_ctor_signature_parity("Op2", entry, Op2)
         assert any("no default on __init__" in e for e in errs), errs
 
+    def test_compat_default_allows_required_manifest_param(self, validator):
+        from tileops.ops.op_base import Op
+
+        class OpCompat(Op):
+            def __init__(self, num_experts=None, kernel_map=None): pass
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        entry = {"signature": {
+            "params": {
+                "num_experts": {"type": "int", "compat_default": None},
+            },
+        }}
+        assert validator.check_c3_ctor_signature_parity(
+            "OpCompat", entry, OpCompat
+        ) == []
+
+    def test_compat_default_mismatch_fails(self, validator):
+        from tileops.ops.op_base import Op
+
+        class OpCompatMismatch(Op):
+            def __init__(self, num_experts=0, kernel_map=None): pass
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        entry = {"signature": {
+            "params": {
+                "num_experts": {"type": "int", "compat_default": None},
+            },
+        }}
+        errs = validator.check_c3_ctor_signature_parity(
+            "OpCompatMismatch", entry, OpCompatMismatch
+        )
+        assert any("no manifest default" in e for e in errs), errs
+
     def test_kw_only_mismatch_fails(self, validator):
         from tileops.ops.op_base import Op
 
