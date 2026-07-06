@@ -291,8 +291,6 @@ class GroupedQueryAttentionFwdOp(Op):
             kernel_map=self.kernel_map,
             tune=tune,
         )
-        self._cu_seqlens_cache: dict[tuple[torch.device, torch.dtype], torch.Tensor] = {}
-        self._scale_cache: dict[torch.device, torch.Tensor] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -311,27 +309,26 @@ class GroupedQueryAttentionFwdOp(Op):
         return self._prefill_op._get_dense_kernel()
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        cu_cache_key = (q.device, torch.int32)
-        cu_seqlens = self._cu_seqlens_cache.get(cu_cache_key)
-        if cu_seqlens is None:
-            cu_seqlens = torch.arange(
-                self.batch + 1, device=q.device, dtype=torch.int32) * self.seq_len
-            self._cu_seqlens_cache[cu_cache_key] = cu_seqlens
-        scale = self._scale_cache.get(q.device)
-        if scale is None:
-            scale = torch.ones((self.batch, self.heads_kv), device=q.device, dtype=torch.float32)
-            self._scale_cache[q.device] = scale
-        output = self._prefill_op(
-            q.reshape(self.batch * self.seq_len, self.heads, self.dim).contiguous(),
-            k.reshape(self.batch * self.seq_len, self.heads_kv, self.dim).contiguous(),
-            v.reshape(self.batch * self.seq_len, self.heads_kv, self.dim).contiguous(),
-            cu_seqlens,
-            cu_seqlens,
-            scale,
-            scale,
-            scale,
+        expected_q = (self.batch, self.seq_len, self.heads, self.dim)
+        expected_kv = (self.batch, self.seq_len, self.heads_kv, self.dim)
+        if tuple(q.shape) != expected_q:
+            raise ValueError(f"q must have shape {expected_q}, got {tuple(q.shape)}")
+        if tuple(k.shape) != expected_kv:
+            raise ValueError(f"k must have shape {expected_kv}, got {tuple(k.shape)}")
+        if tuple(v.shape) != expected_kv:
+            raise ValueError(f"v must have shape {expected_kv}, got {tuple(v.shape)}")
+        if q.dtype != self.dtype or k.dtype != self.dtype or v.dtype != self.dtype:
+            raise ValueError(f"q/k/v dtype must match op dtype {self.dtype}.")
+
+        q = q.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
+        kernel = (
+            self._prefill_op._get_square_dense_kernel()
+            if self._prefill_op._uses_square_dense_fast_path()
+            else self._prefill_op._get_dense_kernel()
         )
-        return output.reshape(self.batch, self.seq_len, self.heads, self.dim)
+        return _attention_output(kernel(q, k, v))
 
 
 class GroupedQueryAttentionPrefillFwdOp(Op):
@@ -357,6 +354,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         window_size_left: int = -1,
         window_size_right: int = -1,
         backend: str = "auto",
+        validate_uniform_cu_seqlens: bool = True,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -379,6 +377,8 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             raise ValueError(
                 "backend must be one of 'auto', 'dense', 'varlen', 'fp8', or 'sliding_window'"
             )
+        if backend == "auto" and not validate_uniform_cu_seqlens:
+            raise ValueError("backend='auto' requires validate_uniform_cu_seqlens=True.")
         _validate_attention_dtype(dtype)
 
         self.batch = batch
@@ -394,6 +394,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
         self.backend = backend
+        self.validate_uniform_cu_seqlens = validate_uniform_cu_seqlens
         self.tune = tune
         self._dense_kernel = None
         self._square_dense_kernel = None
@@ -666,9 +667,14 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
         self._validate_dtypes(q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale)
         self._validate_common_shapes(q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale,
                                      v_scale)
-        q_uniform = self._uniform_cu_seqlens(cu_seqlens_q, self.max_seqlen_q)
-        kv_uniform = self._uniform_cu_seqlens(cu_seqlens_kv, self.max_seqlen_kv)
-        is_uniform = q_uniform and kv_uniform
+        if self.backend == "auto" or (
+            self.backend in ("dense", "fp8") and self.validate_uniform_cu_seqlens
+        ):
+            q_uniform = self._uniform_cu_seqlens(cu_seqlens_q, self.max_seqlen_q)
+            kv_uniform = self._uniform_cu_seqlens(cu_seqlens_kv, self.max_seqlen_kv)
+            is_uniform = q_uniform and kv_uniform
+        else:
+            is_uniform = True
 
         kernel_key = _select_gqa_prefill_kernel_key(
             backend=self.backend,

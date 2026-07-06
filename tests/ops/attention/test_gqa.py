@@ -250,6 +250,34 @@ def test_gqa_prefill_fwd(batch: int, seq_len_q: int, seq_len_kv: int, heads: int
 
 
 @pytest.mark.smoke
+def test_gqa_prefill_fwd_dense_backend_matches_reference() -> None:
+    batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 128, 256, 8, 2, 64
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda",
+                    dtype=torch.float16).contiguous()
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda",
+                    dtype=torch.float16).contiguous()
+    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda",
+                    dtype=torch.float16).contiguous()
+    ref = _gqa_prefill_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True)
+
+    packed_inputs = _uniform_packed_prefill_inputs(q, k, v)
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len_q,
+        max_seqlen_kv=seq_len_kv,
+        is_causal=True,
+        dtype=torch.float16,
+        backend="dense",
+    )
+    output = op(*packed_inputs).view(batch, seq_len_q, heads, dim)
+
+    torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
 def test_gqa_prefill_fwd_uses_bottom_right_causal_mask() -> None:
     batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 128, 256, 4, 2, 64
     q = torch.zeros(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
@@ -362,28 +390,216 @@ def test_gqa_prefill_fwd_q_lt_kv_uses_prefill_ws_kernel(
 
 
 @pytest.mark.smoke
-def test_gqa_prefill_fwd_dense_backend_rejects_ragged_packed_inputs() -> None:
-    batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 2, 64, 128, 8, 2, 64
-    q = torch.randn(batch * seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
-    k = torch.randn(batch * seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
-    v = torch.randn_like(k)
-    cu_q = torch.tensor([0, seq_len_q // 2, batch * seq_len_q], device="cuda", dtype=torch.int32)
-    cu_kv = torch.arange(batch + 1, device="cuda", dtype=torch.int32) * seq_len_kv
+@pytest.mark.parametrize("backend", ["varlen", "sliding_window"])
+def test_gqa_prefill_fwd_explicit_varlen_backends_skip_uniform_cu_seqlens_check(
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+) -> None:
+    batch, seq_len, heads, heads_kv, dim = 2, 64, 8, 2, 64
+    q = torch.empty(batch * seq_len, heads, dim, dtype=torch.float16)
+    k = torch.empty(batch * seq_len, heads_kv, dim, dtype=torch.float16)
+    v = torch.empty_like(k)
+    cu_q = torch.tensor([0, seq_len // 2, batch * seq_len], dtype=torch.int32)
+    cu_kv = torch.arange(batch + 1, dtype=torch.int32) * seq_len
     q_scale, k_scale, v_scale = _ones_prefill_scales(batch, heads_kv, device=q.device)
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=batch,
         heads=heads,
         heads_kv=heads_kv,
         dim=dim,
-        max_seqlen_q=seq_len_q,
-        max_seqlen_kv=seq_len_kv,
+        max_seqlen_q=seq_len,
+        max_seqlen_kv=seq_len,
+        is_causal=backend != "fp8",
+        dtype=torch.float16,
+        backend=backend,
+        window_size_left=16 if backend == "sliding_window" else -1,
+    )
+
+    def fail_uniform_check(*args: object, **kwargs: object) -> bool:
+        pytest.fail("_uniform_cu_seqlens should not run for explicit varlen backends")
+
+    def fake_varlen_kernel(*args: torch.Tensor) -> tuple[torch.Tensor, None]:
+        return torch.empty_like(q), None
+
+    monkeypatch.setattr(op, "_validate_dtypes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(op, "_validate_common_shapes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(op, "_uniform_cu_seqlens", fail_uniform_check)
+    monkeypatch.setattr(op, "_get_varlen_kernel", lambda: fake_varlen_kernel)
+    monkeypatch.setattr(op, "_get_sliding_window_varlen_kernel", lambda: fake_varlen_kernel)
+
+    out = op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
+    assert out.shape == q.shape
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("backend", ["dense", "fp8"])
+def test_gqa_prefill_fwd_explicit_dense_backends_validate_uniform_cu_seqlens(
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+) -> None:
+    batch, seq_len, heads, heads_kv, dim = 2, 64, 8, 2, 64
+    q = torch.empty(batch * seq_len, heads, dim, dtype=torch.float16)
+    k = torch.empty(batch * seq_len, heads_kv, dim, dtype=torch.float16)
+    v = torch.empty_like(k)
+    cu_q = torch.tensor([0, seq_len // 2, batch * seq_len], dtype=torch.int32)
+    cu_kv = torch.arange(batch + 1, dtype=torch.int32) * seq_len
+    q_scale, k_scale, v_scale = _ones_prefill_scales(batch, heads_kv, device=q.device)
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len,
+        max_seqlen_kv=seq_len,
+        is_causal=backend != "fp8",
+        dtype=torch.float16,
+        backend=backend,
+    )
+
+    uniform_checks = 0
+
+    def ragged_uniform_check(cu_seqlens: torch.Tensor, seq: int) -> bool:
+        nonlocal uniform_checks
+        uniform_checks += 1
+        return torch.equal(cu_seqlens, cu_kv)
+
+    monkeypatch.setattr(op, "_validate_dtypes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(op, "_validate_common_shapes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(op, "_uniform_cu_seqlens", ragged_uniform_check)
+    if backend == "fp8":
+        monkeypatch.setattr(op, "_is_fp8_tensor", lambda tensor: True)
+
+    expected_error = (
+        "FP8 Tensor Core prefill requires uniform packed cu_seqlens"
+        if backend == "fp8"
+        else "backend='dense' requires uniform"
+    )
+    with pytest.raises(ValueError, match=expected_error):
+        op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
+    assert uniform_checks == 2
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_fwd_explicit_dense_can_skip_uniform_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch, seq_len, heads, heads_kv, dim = 2, 64, 8, 2, 64
+    q = torch.empty(batch * seq_len, heads, dim, dtype=torch.float16)
+    k = torch.empty(batch * seq_len, heads_kv, dim, dtype=torch.float16)
+    v = torch.empty_like(k)
+    cu = torch.arange(batch + 1, dtype=torch.int32) * seq_len
+    q_scale, k_scale, v_scale = _ones_prefill_scales(batch, heads_kv, device=q.device)
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len,
+        max_seqlen_kv=seq_len,
         is_causal=True,
         dtype=torch.float16,
         backend="dense",
+        validate_uniform_cu_seqlens=False,
     )
 
-    with pytest.raises(ValueError, match="backend='dense' requires uniform"):
-        op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
+    def fail_uniform_check(*args: object, **kwargs: object) -> bool:
+        pytest.fail("validate_uniform_cu_seqlens=False should skip value checks")
+
+    def fake_dense_kernel(*args: torch.Tensor) -> torch.Tensor:
+        return torch.empty_like(args[0])
+
+    monkeypatch.setattr(op, "_validate_dtypes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(op, "_validate_common_shapes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(op, "_uniform_cu_seqlens", fail_uniform_check)
+    monkeypatch.setattr(op, "_uses_square_dense_fast_path", lambda: False)
+    monkeypatch.setattr(op, "_get_dense_kernel", lambda: fake_dense_kernel)
+
+    out = op(q, k, v, cu, cu, q_scale, k_scale, v_scale)
+    assert out.shape == q.shape
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_fwd_auto_backend_requires_uniform_validation() -> None:
+    with pytest.raises(ValueError, match="backend='auto' requires validate_uniform_cu_seqlens=True"):
+        GroupedQueryAttentionPrefillFwdOp(
+            batch=2,
+            heads=8,
+            heads_kv=2,
+            dim=64,
+            max_seqlen_q=64,
+            max_seqlen_kv=64,
+            dtype=torch.float16,
+            backend="auto",
+            validate_uniform_cu_seqlens=False,
+        )
+
+
+@pytest.mark.smoke
+def test_gqa_fwd_bshd_wrapper_uses_dense_kernel_without_uniform_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch, seq_len, heads, heads_kv, dim = 2, 64, 8, 2, 64
+    q = torch.empty(batch, seq_len, heads, dim, dtype=torch.float16)
+    k = torch.empty(batch, seq_len, heads_kv, dim, dtype=torch.float16)
+    v = torch.empty_like(k)
+    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, True, torch.float16)
+
+    def fail_uniform_check(*args: object, **kwargs: object) -> bool:
+        pytest.fail("BSHD wrapper should not inspect packed cu_seqlens")
+
+    def fake_dense_kernel(*args: torch.Tensor) -> torch.Tensor:
+        return torch.empty_like(args[0])
+
+    monkeypatch.setattr(op._prefill_op, "_uniform_cu_seqlens", fail_uniform_check)
+    monkeypatch.setattr(op._prefill_op, "_uses_square_dense_fast_path", lambda: False)
+    monkeypatch.setattr(op._prefill_op, "_get_dense_kernel", lambda: fake_dense_kernel)
+
+    out = op(q, k, v)
+    assert out.shape == q.shape
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_fwd_auto_backend_checks_uniform_cu_seqlens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch, seq_len, heads, heads_kv, dim = 2, 64, 8, 2, 64
+    q = torch.empty(batch * seq_len, heads, dim, dtype=torch.float16)
+    k = torch.empty(batch * seq_len, heads_kv, dim, dtype=torch.float16)
+    v = torch.empty_like(k)
+    cu_q = torch.arange(batch + 1, dtype=torch.int32) * seq_len
+    cu_kv = torch.arange(batch + 1, dtype=torch.int32) * seq_len
+    q_scale, k_scale, v_scale = _ones_prefill_scales(batch, heads_kv, device=q.device)
+    op = GroupedQueryAttentionPrefillFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_len,
+        max_seqlen_kv=seq_len,
+        is_causal=True,
+        dtype=torch.float16,
+        backend="auto",
+    )
+
+    uniform_checks = 0
+
+    def count_uniform_check(*args: object, **kwargs: object) -> bool:
+        nonlocal uniform_checks
+        uniform_checks += 1
+        return True
+
+    def fake_dense_kernel(*args: torch.Tensor) -> torch.Tensor:
+        return torch.empty_like(args[0])
+
+    monkeypatch.setattr(op, "_validate_dtypes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(op, "_validate_common_shapes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(op, "_uniform_cu_seqlens", count_uniform_check)
+    monkeypatch.setattr(op, "_uses_square_dense_fast_path", lambda: False)
+    monkeypatch.setattr(op, "_get_dense_kernel", lambda: fake_dense_kernel)
+
+    out = op(q, k, v, cu_q, cu_kv, q_scale, k_scale, v_scale)
+    assert out.shape == q.shape
+    assert uniform_checks == 2
 
 
 @pytest.mark.smoke

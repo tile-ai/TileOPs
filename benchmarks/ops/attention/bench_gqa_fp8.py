@@ -21,6 +21,7 @@ class GQAFp8TensorCoreBenchCase:
     heads: int
     heads_kv: int
     dim: int
+    validate_uniform_cu_seqlens: bool
     out_dtype: torch.dtype
     label: str
 
@@ -44,6 +45,9 @@ def _manifest_cases() -> list[GQAFp8TensorCoreBenchCase]:
                     heads=heads,
                     heads_kv=heads_kv,
                     dim=dim,
+                    validate_uniform_cu_seqlens=workload.get(
+                        "validate_uniform_cu_seqlens", True
+                    ),
                     out_dtype=out_dtype,
                     label=f"{workload['label']}-{dtype_name}",
                 )
@@ -125,6 +129,7 @@ def test_gqa_prefill_fp8_tensor_core_bench(case: GQAFp8TensorCoreBenchCase) -> N
         is_causal=False,
         dtype=case.out_dtype,
         backend="fp8",
+        validate_uniform_cu_seqlens=case.validate_uniform_cu_seqlens,
     )
     inputs = _make_inputs(case)
     op(*inputs)

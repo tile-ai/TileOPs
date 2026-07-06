@@ -371,8 +371,8 @@ _GQA_PREFILL_FWD_BENCH_PARAMS = manifest_params(
 
 
 @pytest.mark.parametrize(
-    "batch, seq_len_q, seq_len_kv, heads, heads_kv, dim, causal, backend, sm_scale, softcap, "
-    "dtype, tune",
+    "batch, seq_len_q, seq_len_kv, heads, heads_kv, dim, causal, backend, "
+    "validate_uniform_cu_seqlens, sm_scale, softcap, dtype, tune",
     _GQA_PREFILL_FWD_BENCH_PARAMS,
 )
 def test_gqa_prefill_fwd_bench(
@@ -384,6 +384,7 @@ def test_gqa_prefill_fwd_bench(
     dim: int,
     causal: bool,
     backend: str,
+    validate_uniform_cu_seqlens: bool,
     sm_scale: Optional[float],
     softcap: Optional[float],
     dtype: torch.dtype,
@@ -406,6 +407,7 @@ def test_gqa_prefill_fwd_bench(
         dtype=dtype,
         tune=tune,
         backend=backend,
+        validate_uniform_cu_seqlens=validate_uniform_cu_seqlens,
         sm_scale=sm_scale,
         softcap=softcap,
     )
