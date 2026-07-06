@@ -49,17 +49,16 @@ def _fa3_gqa_decode_fwd(test):
 
 
 def _flashinfer_gqa_decode_fwd(test, q, k, v):
-    """Set up FlashInfer batched paged decode for non-paged KV cache.
+    """Set up FlashInfer decode for a non-paged KV cache.
 
-    Reshapes the contiguous (B, S_kv, H_kv, D) KV into paged format with
-    page_size=256, then uses the specialized decode kernel.
-    FlashInfer decode kernel supports group_size (Q/KV head ratio) up to 8.
+    For a single request (B == 1) the KV cache is contiguous, so the
+    ``single_decode_with_kv_cache`` kernel is the apples-to-apples baseline
+    (no paging overhead). For B > 1 the contiguous (B, S_kv, H_kv, D) KV is
+    reshaped into paged format with page_size=256 and the batched paged
+    decode kernel is used.
+    FlashInfer decode kernels support group_size (Q/KV head ratio) up to 8.
     """
     if test.sm_scale != test.dim**-0.5 or test.softcap != 0.0:
-        return None
-    try:
-        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper  # noqa: PLC0415
-    except ImportError:
         return None
 
     # Q is (B, H, D) — single token per request
@@ -68,6 +67,29 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
     Hkv = k.shape[2]
     if H // Hkv > 8:
         return None  # FlashInfer decode kernel does not support group_size > 8
+
+    if B == 1:
+        try:
+            from flashinfer.decode import single_decode_with_kv_cache  # noqa: PLC0415
+        except ImportError:
+            return None
+
+        # single_decode expects q (H, D) and k/v (S_kv, H_kv, D) for one request.
+        q_s = q.reshape(H, D)
+        k_s = k.reshape(k.shape[1], Hkv, D)
+        v_s = v.reshape(v.shape[1], Hkv, D)
+
+        def run_fn(q, k, v):
+            return single_decode_with_kv_cache(
+                q_s, k_s, v_s, kv_layout="NHD", use_tensor_cores=True,
+            )
+
+        return run_fn
+
+    try:
+        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper  # noqa: PLC0415
+    except ImportError:
+        return None
     Skv = k.shape[1]
     page_size = 256
     pages_per_seq = (Skv + page_size - 1) // page_size
