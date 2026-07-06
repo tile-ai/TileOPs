@@ -282,6 +282,10 @@ signature:
 | `layout`      | no       | Memory format when non-default (R19).                                                                                                    |
 
 **Param fields:** `type` (string: `int`, `float`, `bool`, `"list[int]"`) + optional `default`.
+`compat_default` is reserved for legacy Python constructor compatibility:
+it may match an `__init__` default without making the parameter optional in
+the manifest contract. Manifest-driven callers must still provide params that
+omit `default`.
 
 #### Shape Decision Tree
 

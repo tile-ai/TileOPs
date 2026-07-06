@@ -51,7 +51,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @FusedAddRMSNormFixture
 def test_fused_add_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = FusedAddRMSNormTest(m, n, dtype)
-    op = FusedAddRMSNormFwdOp(M=m, N=n, dtype=dtype)
+    op = FusedAddRMSNormFwdOp(dtype=dtype, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -105,7 +105,7 @@ def test_fused_add_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.d
     weight = torch.randn(hidden, dtype=dtype, device="cuda")
 
     M = batch * seq
-    op = FusedAddRMSNormFwdOp(M=M, N=hidden, dtype=dtype)
+    op = FusedAddRMSNormFwdOp(dtype=dtype)
 
     test = FusedAddRMSNormTest(M, hidden, dtype)
     y_ref, add_ref = test.ref_program(x, residual, weight)

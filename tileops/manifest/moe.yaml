@@ -66,40 +66,48 @@ MoePermuteNopadFwdOp:
       expert_first_token_offset: {dtype: "int64"}
       fwd_idx: {dtype: "int32"}
     params:
-      total_tokens: {type: int}
-      top_k: {type: int}
-      num_experts: {type: int}
-      hidden_size: {type: int}
+      num_experts: {type: int, compat_default: null}
     shape_rules:
-    - "hidden_states.shape == (total_tokens, hidden_size)"
+    - "hidden_states.ndim == 2"
+    - "topk_ids.ndim == 2"
+    - "topk_ids.shape[0] == hidden_states.shape[0]"
+    - "perm_h.shape == (hidden_states.shape[0] * topk_ids.shape[1], hidden_states.shape[1])"
+    - "true_offsets.shape == (num_experts,)"
+    - "true_sizes.shape == (num_experts,)"
+    - "expert_first_token_offset.shape == (num_experts + 1,)"
+    - "fwd_idx.shape == (hidden_states.shape[0] * topk_ids.shape[1],)"
 
   workloads:
     # Kimi K2: H=7168, E=384, K=8
-  - {total_tokens: 1, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-decode"}
-  - {total_tokens: 32, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-small"}
-  - {total_tokens: 512, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-medium"}
-  - {total_tokens: 4096, top_k: 8, num_experts: 384, hidden_size: 7168, dtypes: [bfloat16], label: "kimi-k2-prefill"}
+  - {hidden_states_shape: [1, 7168], topk_ids_shape: [1, 8], num_experts: 384, dtypes: [bfloat16], label: "kimi-k2-decode"}
+  - {hidden_states_shape: [32, 7168], topk_ids_shape: [32, 8], num_experts: 384, dtypes: [bfloat16], label: "kimi-k2-small"}
+  - {hidden_states_shape: [512, 7168], topk_ids_shape: [512, 8], num_experts: 384, dtypes: [bfloat16], label: "kimi-k2-medium"}
+  - {hidden_states_shape: [4096, 7168], topk_ids_shape: [4096, 8], num_experts: 384, dtypes: [bfloat16], label: "kimi-k2-prefill"}
     # DeepSeek-V3: H=7168, E=256, K=8
-  - {total_tokens: 1, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-decode"}
-  - {total_tokens: 32, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-small"}
-  - {total_tokens: 512, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-medium"}
-  - {total_tokens: 4096, top_k: 8, num_experts: 256, hidden_size: 7168, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
+  - {hidden_states_shape: [1, 7168], topk_ids_shape: [1, 8], num_experts: 256, dtypes: [bfloat16], label: "deepseek-v3-decode"}
+  - {hidden_states_shape: [32, 7168], topk_ids_shape: [32, 8], num_experts: 256, dtypes: [bfloat16], label: "deepseek-v3-small"}
+  - {hidden_states_shape: [512, 7168], topk_ids_shape: [512, 8], num_experts: 256, dtypes: [bfloat16], label: "deepseek-v3-medium"}
+  - {hidden_states_shape: [4096, 7168], topk_ids_shape: [4096, 8], num_experts: 256, dtypes: [bfloat16], label: "deepseek-v3-prefill"}
     # Qwen3-235B-A22B: H=7168, E=128, K=8
-  - {total_tokens: 1, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-decode"}
-  - {total_tokens: 32, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-small"}
-  - {total_tokens: 512, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-medium"}
-  - {total_tokens: 4096, top_k: 8, num_experts: 128, hidden_size: 7168, dtypes: [bfloat16], label: "qwen3-235b-prefill"}
+  - {hidden_states_shape: [1, 7168], topk_ids_shape: [1, 8], num_experts: 128, dtypes: [bfloat16], label: "qwen3-235b-decode"}
+  - {hidden_states_shape: [32, 7168], topk_ids_shape: [32, 8], num_experts: 128, dtypes: [bfloat16], label: "qwen3-235b-small"}
+  - {hidden_states_shape: [512, 7168], topk_ids_shape: [512, 8], num_experts: 128, dtypes: [bfloat16], label: "qwen3-235b-medium"}
+  - {hidden_states_shape: [4096, 7168], topk_ids_shape: [4096, 8], num_experts: 128, dtypes: [bfloat16], label: "qwen3-235b-prefill"}
     # Qwen3-30B-A3B: H=3072, E=128, K=8
-  - {total_tokens: 1, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-decode"}
-  - {total_tokens: 32, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-small"}
-  - {total_tokens: 512, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-medium"}
-  - {total_tokens: 4096, top_k: 8, num_experts: 128, hidden_size: 3072, dtypes: [bfloat16], label: "qwen3-30b-prefill"}
+  - {hidden_states_shape: [1, 3072], topk_ids_shape: [1, 8], num_experts: 128, dtypes: [bfloat16], label: "qwen3-30b-decode"}
+  - {hidden_states_shape: [32, 3072], topk_ids_shape: [32, 8], num_experts: 128, dtypes: [bfloat16], label: "qwen3-30b-small"}
+  - {hidden_states_shape: [512, 3072], topk_ids_shape: [512, 8], num_experts: 128, dtypes: [bfloat16], label: "qwen3-30b-medium"}
+  - {hidden_states_shape: [4096, 3072], topk_ids_shape: [4096, 8], num_experts: 128, dtypes: [bfloat16], label: "qwen3-30b-prefill"}
 
   roofline:
+    vars:
+      T: "hidden_states_shape[0]"
+      K: "topk_ids_shape[1]"
+      H: "hidden_states_shape[1]"
     # Permute is memory-bound; flops = 0
     flops: "0"
     # hidden_states read [T, H] + perm_h write [T*K, H] + metadata
-    bytes: "(total_tokens * hidden_size + total_tokens * top_k * hidden_size) * elem_bytes + (num_experts + 1) * 8 + 2 * total_tokens * top_k * 4 + num_experts * 8"
+    bytes: "(T * H + T * K * H) * elem_bytes + (num_experts + 1) * 8 + 2 * T * K * 4 + num_experts * 8"
 
   source:
     kernel: tileops/kernels/moe/permute_nopad.py

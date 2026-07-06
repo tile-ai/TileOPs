@@ -102,7 +102,11 @@ def test_fused_topk_bench(
     (gating_output,) = test.gen_inputs()
 
     # TileOPs
-    op = FusedTopKOp(num_tokens, num_experts, top_k, scoring_func, renormalize)
+    op = FusedTopKOp(
+        top_k=top_k,
+        scoring_func=scoring_func,
+        renormalize=renormalize,
+    )
     op(gating_output)  # warmup / JIT compile
     torch.cuda.synchronize()
 

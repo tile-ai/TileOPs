@@ -90,8 +90,10 @@ def profile_nopad(T, E, K, H, F, scoring_func, renormalize):
     hidden, gating, w_gu, w_down = gen_inputs(T, E, K, H, F)
 
     # Build ops
-    topk_op    = FusedTopKOp(T, E, K, scoring_func, renormalize)
-    permute_op = MoePermuteNopadFwdOp(T, K, E, H, DTYPE)
+    topk_op    = FusedTopKOp(
+        top_k=K, scoring_func=scoring_func, renormalize=renormalize,
+    )
+    permute_op = MoePermuteNopadFwdOp(num_experts=E, dtype=DTYPE)
     unp_op     = MoeUnpermuteFwdOp(T, K, H, DTYPE, padded_batch_sum=numel)
     silu_op    = SiluAndMulFwdOp(M=numel, N=F, dtype=DTYPE)
 
@@ -153,7 +155,9 @@ def profile_nopad(T, E, K, H, F, scoring_func, renormalize):
 def profile_vllm(T, E, K, H, F, scoring_func, renormalize, iters=5):
     """Run vLLM fused_experts under torch.profiler; return sorted CUDA kernel table."""
     hidden, gating, w_gu, w_down = gen_inputs(T, E, K, H, F)
-    topk_op = FusedTopKOp(T, E, K, scoring_func, renormalize)
+    topk_op = FusedTopKOp(
+        top_k=K, scoring_func=scoring_func, renormalize=renormalize,
+    )
     tw, tids = topk_op(gating)
     # vLLM expects int64 topk_ids
     tids_i64 = tids.to(torch.int64)

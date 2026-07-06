@@ -92,8 +92,6 @@ class FusedMoe(Op):
         self.dispatch_kernel(kernel_map)
 
         self._fused_topk = FusedTopKOp(
-            num_tokens=num_tokens,
-            num_experts=num_experts,
             top_k=top_k,
             scoring_func=scoring_func,
             renormalize=renormalize,

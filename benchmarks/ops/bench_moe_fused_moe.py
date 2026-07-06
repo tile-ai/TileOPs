@@ -221,7 +221,7 @@ def _run_bench(
     else:
         # torch-ref baseline: memory-efficient per-expert GEMM loop.
         fk = FusedTopKOp(
-            num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
+            top_k=top_k,
             scoring_func=scoring_func, renormalize=renormalize,
             with_correction_bias=with_correction_bias,
         )
