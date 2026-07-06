@@ -222,9 +222,22 @@ def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) ->
     """
     data = _shape_or_attrs(op, kwargs)
     if "q_shape" in data:
-        batch, heads, seq_len, dim_k = data["q_shape"]
-        _, _, _, dim_v = data["v_shape"]
-        chunk_size = data.get("chunk_size", 64)
+        layout = str(data.get("layout", "bthd")).lower()
+        q_shape = data["q_shape"]
+        v_shape = data["v_shape"]
+        if layout == "bthd":
+            batch, seq_len, heads, dim_k = q_shape
+            _, v_seq_len, v_heads, dim_v = v_shape
+        elif layout in ("bhtd", "bhsd"):
+            batch, heads, seq_len, dim_k = q_shape
+            _, v_heads, v_seq_len, dim_v = v_shape
+        else:
+            raise ValueError(f"Unsupported GDN prefill layout: {layout}")
+        if v_seq_len != seq_len or v_heads != heads:
+            raise ValueError(
+                "GDN prefill q_shape and v_shape must share seq_len and heads"
+            )
+        chunk_size = data.get("chunk_size", 64) or 64
     else:
         batch, heads, seq_len, dim_k, dim_v, chunk_size = (
             data["batch"],
@@ -232,7 +245,7 @@ def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) ->
             data["seq_len"],
             data["dim_k"],
             data["dim_v"],
-            data["chunk_size"],
+            data["chunk_size"] or 64,
         )
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
