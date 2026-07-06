@@ -9,7 +9,7 @@ from tileops.kernels.convolution import (
     Conv1dKernel,
     Conv1dPointwiseKernel,
     Conv2d1x1Kernel,
-    Conv2dKernel,
+    Conv2dSymmetricKernel,
     Conv3dKernel,
     GroupConv1dKernel,
     GroupConv2dKernel,
@@ -566,7 +566,8 @@ def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
         kernel_size=1,
         padding=1,
     )
-    assert isinstance(op.kernel, Conv2dKernel)
+    assert isinstance(op.kernel, Conv2dSymmetricKernel)
+    assert not isinstance(op.kernel, Conv2d1x1Kernel)
 
 
 @pytest.mark.smoke
@@ -580,7 +581,7 @@ def test_conv2d_dispatches_3x3_kernel() -> None:
         kernel_size=3,
         padding=1,
     )
-    assert isinstance(op.kernel, Conv2dKernel)
+    assert isinstance(op.kernel, Conv2dSymmetricKernel)
 
 
 @pytest.mark.smoke
@@ -594,7 +595,10 @@ def test_conv2d_dispatches_5x5_kernel() -> None:
         kernel_size=5,
         padding=2,
     )
-    assert isinstance(op.kernel, Conv2dKernel)
+    assert isinstance(op.kernel, Conv2dSymmetricKernel)
+
+
+
 
 
 class Conv3dFixture(FixtureBase):
