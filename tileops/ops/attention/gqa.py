@@ -9,6 +9,7 @@ from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdKernel,
     GQABwdWgmmaPipelinedKernel,
+    GQADecodeBs1Kernel,
     GQADecodeKernel,
     GQADecodePagedKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
@@ -1383,7 +1384,7 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
         self.softcap = _score_softcap(softcap)
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_decode_kernel"](
+        self.kernel = self.kernel_map[self._select_decode_kernel_key()](
             batch,
             heads,
             heads_kv,
@@ -1397,7 +1398,32 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_decode_kernel": GQADecodeKernel}
+        # The batch=1 warp-specialized decode kernel is Hopper-only; only expose it on
+        # Hopper so the op stays constructible (falling back to the architecture-agnostic
+        # GQADecodeKernel) on sm80/sm89.
+        kernel_map: Dict[str, Kernel] = {"gqa_decode_kernel": GQADecodeKernel}
+        if is_hopper():
+            kernel_map["gqa_decode_bs1_kernel"] = GQADecodeBs1Kernel
+        return kernel_map
+
+    def _uses_bs1_fast_path(self) -> bool:
+        """Ctor-time gate for the batch=1 warp-specialized decode kernel.
+
+        Any batch=1 fp16 Hopper request with dim 128 and a query-per-KV-head group that fits
+        one wgmma tile routes to GQADecodeBs1Kernel, which then switches on the runtime KV
+        length in forward().
+        """
+        if not (self.batch == 1 and is_hopper() and self.dtype == torch.float16
+                and self.dim == 128 and self.softcap == 0.0):
+            return False
+        if self.heads % self.heads_kv != 0:
+            return False
+        return 1 <= self.heads // self.heads_kv <= 64
+
+    def _select_decode_kernel_key(self) -> str:
+        if self._uses_bs1_fast_path():
+            return "gqa_decode_bs1_kernel"
+        return "gqa_decode_kernel"
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         real_seqlen_kv = k.shape[1]
