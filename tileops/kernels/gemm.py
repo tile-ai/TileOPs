@@ -154,6 +154,11 @@ def _gemm_fp8_kernel(
         num_stages: int = 3,
         threads: int = 256,
     ) -> Callable:
+        if block_scaled:
+            if block_k > 128:
+                raise ValueError(f"block_k must be <= 128 for block128 scaling, got {block_k}")
+            if 128 % block_k != 0:
+                raise ValueError(f"128 must be divisible by block_k, got {block_k}")
         scale_k = (k + 127) // 128 if block_scaled else 1
         scale_a_shape = (m, scale_k) if block_scaled else (1, 1)
         scale_b_shape = (n, scale_k) if block_scaled else (1, 1)
@@ -170,8 +175,9 @@ def _gemm_fp8_kernel(
                     T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (bx, by):
                 a_shared = T.alloc_shared((block_m, block_k), dtype)
                 b_shared = T.alloc_shared((block_n, block_k), dtype)
-                partial = T.alloc_fragment((block_m, block_n), accum_dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                if block_scaled:
+                    partial = T.alloc_fragment((block_m, block_n), accum_dtype)
 
                 T.annotate_layout({
                     a_shared: tilelang.layout.make_swizzled_layout(a_shared),
@@ -196,23 +202,30 @@ def _gemm_fp8_kernel(
                             b[n_start + i, k_start + j],
                             T.cast(0, dtype),
                         )
-                    T.clear(partial)
-                    T.gemm(a_shared, b_shared, partial, transpose_B=True,
-                           policy=T.GemmWarpPolicy.FullRow)
-                    for i, j in T.Parallel(block_m, block_n):
-                        if m_start + i < m and n_start + j < n:
-                            if block_scaled:
+                    if block_scaled:
+                        scale_idx = kk * block_k // 128
+                        T.clear(partial)
+                        T.gemm(a_shared, b_shared, partial, transpose_B=True,
+                               policy=T.GemmWarpPolicy.FullRow)
+                        for i, j in T.Parallel(block_m, block_n):
+                            if m_start + i < m and n_start + j < n:
                                 c_local[i, j] += (
                                     partial[i, j]
-                                    * scale_a[m_start + i, kk]
-                                    * scale_b[n_start + j, kk]
+                                    * scale_a[m_start + i, scale_idx]
+                                    * scale_b[n_start + j, scale_idx]
                                 )
-                            else:
-                                c_local[i, j] += partial[i, j] * scale_a[0, 0] * scale_b[0, 0]
+                    else:
+                        T.gemm(a_shared, b_shared, c_local, transpose_B=True,
+                               policy=T.GemmWarpPolicy.FullRow)
 
                 for i, j in T.Parallel(block_m, block_n):
                     if m_start + i < m and n_start + j < n:
-                        c[m_start + i, n_start + j] = c_local[i, j]
+                        if block_scaled:
+                            c[m_start + i, n_start + j] = c_local[i, j]
+                        else:
+                            c[m_start + i, n_start + j] = (
+                                c_local[i, j] * scale_a[0, 0] * scale_b[0, 0]
+                            )
 
         @T.prim_func
         def _gemm_fp8_bias_main(
@@ -227,8 +240,9 @@ def _gemm_fp8_kernel(
                     T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (bx, by):
                 a_shared = T.alloc_shared((block_m, block_k), dtype)
                 b_shared = T.alloc_shared((block_n, block_k), dtype)
-                partial = T.alloc_fragment((block_m, block_n), accum_dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                if block_scaled:
+                    partial = T.alloc_fragment((block_m, block_n), accum_dtype)
 
                 T.annotate_layout({
                     a_shared: tilelang.layout.make_swizzled_layout(a_shared),
@@ -253,23 +267,31 @@ def _gemm_fp8_kernel(
                             b[n_start + i, k_start + j],
                             T.cast(0, dtype),
                         )
-                    T.clear(partial)
-                    T.gemm(a_shared, b_shared, partial, transpose_B=True,
-                           policy=T.GemmWarpPolicy.FullRow)
-                    for i, j in T.Parallel(block_m, block_n):
-                        if m_start + i < m and n_start + j < n:
-                            if block_scaled:
+                    if block_scaled:
+                        scale_idx = kk * block_k // 128
+                        T.clear(partial)
+                        T.gemm(a_shared, b_shared, partial, transpose_B=True,
+                               policy=T.GemmWarpPolicy.FullRow)
+                        for i, j in T.Parallel(block_m, block_n):
+                            if m_start + i < m and n_start + j < n:
                                 c_local[i, j] += (
                                     partial[i, j]
-                                    * scale_a[m_start + i, kk]
-                                    * scale_b[n_start + j, kk]
+                                    * scale_a[m_start + i, scale_idx]
+                                    * scale_b[n_start + j, scale_idx]
                                 )
-                            else:
-                                c_local[i, j] += partial[i, j] * scale_a[0, 0] * scale_b[0, 0]
+                    else:
+                        T.gemm(a_shared, b_shared, c_local, transpose_B=True,
+                               policy=T.GemmWarpPolicy.FullRow)
 
                 for i, j in T.Parallel(block_m, block_n):
                     if m_start + i < m and n_start + j < n:
-                        c[m_start + i, n_start + j] = c_local[i, j] + bias[n_start + j]
+                        if block_scaled:
+                            c[m_start + i, n_start + j] = c_local[i, j] + bias[n_start + j]
+                        else:
+                            c[m_start + i, n_start + j] = (
+                                c_local[i, j] * scale_a[0, 0] * scale_b[0, 0]
+                                + bias[n_start + j]
+                            )
 
         return _gemm_fp8_bias_main if has_bias else _gemm_fp8_main
 

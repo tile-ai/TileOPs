@@ -3,7 +3,6 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GemmFp8Op, GemmOp
-from tileops.utils import expand_fp8_scale
 from workloads.gemm import GemmFp8Workload, GemmWorkload
 
 
@@ -18,7 +17,13 @@ class GemmTest(GemmWorkload, TestBase):
 
 class GemmFp8Test(GemmFp8Workload, TestBase):
     def _expand_scale(self, scale: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
-        return expand_fp8_scale(scale, rows, cols)
+        if tuple(scale.shape) == (1, 1):
+            return scale.expand(rows, cols)
+        scale_cols = (cols + 127) // 128
+        if tuple(scale.shape) != (rows, scale_cols):
+            raise ValueError(
+                f"unsupported FP8 scale shape {tuple(scale.shape)} for {(rows, cols)}")
+        return scale.repeat_interleave(128, dim=1)[:, :cols]
 
     def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
         a, b, scale_a, scale_b = inputs[:4]
@@ -194,6 +199,63 @@ def test_gemm_fp8(
             op(*inputs)
         return
     test.check(op, *inputs, atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.smoke
+def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
+    test = GemmFp8Test(128, 256, 128, torch.float8_e4m3fn, "block128")
+    op = GemmFp8Op()
+    test.check(op, *test.gen_inputs(), atol=2e-2, rtol=2e-2)
+    assert op.kernel.__class__.__name__ == "GemmFp8BlockScaledKernel"
+
+
+@pytest.mark.smoke
+def test_gemm_fp8_rejects_unsupported_scale_grids() -> None:
+    m, n, k = 128, 256, 256
+    test = GemmFp8Test(m, n, k, torch.float8_e4m3fn, "per_tensor")
+    a, b, _, _ = test.gen_inputs()
+    op = GemmFp8Op()
+
+    with pytest.raises(ValueError, match="supports scale shapes"):
+        op(
+            a,
+            b,
+            torch.ones((1, k // 128), device="cuda", dtype=torch.float32),
+            torch.ones((1, k // 128), device="cuda", dtype=torch.float32),
+        )
+
+    with pytest.raises(ValueError, match="supports scale shapes"):
+        op(
+            a,
+            b,
+            torch.ones((m, 1), device="cuda", dtype=torch.float32),
+            torch.ones((n, 1), device="cuda", dtype=torch.float32),
+        )
+
+
+@pytest.mark.smoke
+def test_gemm_fp8_revalidates_cached_signature_dtypes() -> None:
+    test = GemmFp8Test(
+        128,
+        128,
+        128,
+        torch.float8_e4m3fn,
+        "per_tensor",
+        out_dtype=torch.bfloat16,
+        bias=True,
+    )
+    a, b, scale_a, scale_b, bias = test.gen_inputs()
+    op = GemmFp8Op(out_dtype=torch.bfloat16)
+    op(a, b, scale_a, scale_b, bias)
+
+    with pytest.raises(ValueError, match="expects b dtype"):
+        op(a, b.to(torch.float8_e5m2), scale_a, scale_b, bias)
+
+    with pytest.raises(ValueError, match="scale_a and scale_b"):
+        op(a, b, scale_a.to(torch.float16), scale_b, bias)
+
+    with pytest.raises(ValueError, match="expects bias dtype"):
+        op(a, b, scale_a, scale_b, bias.to(torch.float16))
 
 
 @GemvBoundaryFixture

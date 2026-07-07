@@ -1,5 +1,3 @@
-import subprocess
-import sys
 from typing import Optional
 
 import pytest
@@ -90,37 +88,6 @@ def _prepare_flashinfer_fp8_per_tensor(
     return prepared_b, alpha
 
 
-def _flashinfer_fp8_per_tensor_probe(test: GemmFp8Test) -> Optional[str]:
-    script = f"""
-import sys
-import torch
-import flashinfer
-
-try:
-    a = torch.empty(({test.m}, {test.k}), device="cuda", dtype=torch.float8_e4m3fn)
-    b = torch.empty(({test.n}, {test.k}), device="cuda", dtype=torch.float8_e4m3fn)
-    prepared_b = flashinfer.prepare_low_latency_gemm_weights(b, {{}})
-    alpha = torch.ones((), device="cuda", dtype=torch.float32)
-    flashinfer.mm_fp8(a, prepared_b, alpha, out_dtype=torch.bfloat16)
-    torch.cuda.synchronize()
-except Exception as exc:
-    print(type(exc).__name__ + ": " + str(exc).splitlines()[0])
-    sys.exit(2)
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if result.returncode == 0:
-        return None
-    reason = (result.stdout or result.stderr).strip().splitlines()
-    if reason:
-        return reason[-1]
-    return f"probe exited with status {result.returncode}"
-
-
 class GemmFp8Benchmark(BenchmarkBase[GemmFp8Test]):
     _roofline_cache: Optional[tuple[float, float]] = None
 
@@ -208,10 +175,6 @@ def test_gemm_fp8_bench(
 
     flashinfer = pytest.importorskip("flashinfer")
     if scale_mode == "per_tensor":
-        reason = _flashinfer_fp8_per_tensor_probe(test)
-        if reason is not None:
-            print(f"  [skip] flashinfer-mm-fp8: {reason}")
-            return
         prepared_b, alpha = _prepare_flashinfer_fp8_per_tensor(test, *inputs)
         try:
             result_flashinfer = bm.profile(

@@ -160,9 +160,8 @@ class GemmFp8Op(Op):
     """Dense FP8 NT GEMM, input-inferred.
 
     Public layout is ``a=[M, K]`` and ``b=[N, K]``. ``scale_a`` and
-    ``scale_b`` are 2D scale grids whose shapes encode the scaling
-    granularity. Scales with a singleton K axis use the epilogue path;
-    scales that vary along K use the block-scaled path.
+    ``scale_b`` must be either per-tensor ``(1, 1)`` scales or block128
+    scales with shapes ``(M, ceil(K / 128))`` and ``(N, ceil(K / 128))``.
     """
 
     def __init__(
@@ -181,11 +180,12 @@ class GemmFp8Op(Op):
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[Hashable, Kernel] = {}
         self._active_sig: Optional[tuple] = None
-        self._active: Optional[tuple] = None
+        self._active: Optional[Kernel] = None
         self.m: Optional[int] = None
         self.n: Optional[int] = None
         self.k: Optional[int] = None
         self.dtype: Optional[torch.dtype] = None
+        self.has_bias = False
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -202,8 +202,6 @@ class GemmFp8Op(Op):
         scale_b: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> None:
-        if a.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2):
-            raise ValueError(f"GemmFp8Op expects FP8 a, got {a.dtype}")
         if a.dtype != torch.float8_e4m3fn:
             raise ValueError(
                 f"GemmFp8Op only supports torch.float8_e4m3fn, got {a.dtype}")
@@ -253,31 +251,44 @@ class GemmFp8Op(Op):
                 f"GemmFp8Op expects 2D scales, got {tuple(scale_a.shape)} and "
                 f"{tuple(scale_b.shape)}"
             )
-        if a.shape[0] % scale_a.shape[0] != 0 or a.shape[1] % scale_a.shape[1] != 0:
+        per_tensor = (tuple(scale_a.shape), tuple(scale_b.shape)) == ((1, 1), (1, 1))
+        scale_k = (k + 127) // 128
+        block128 = (
+            tuple(scale_a.shape) == (m, scale_k)
+            and tuple(scale_b.shape) == (n, scale_k)
+        )
+        if not per_tensor and not block128:
             raise ValueError(
-                f"scale_a shape {tuple(scale_a.shape)} does not tile a shape {tuple(a.shape)}"
-            )
-        if b.shape[0] % scale_b.shape[0] != 0 or b.shape[1] % scale_b.shape[1] != 0:
-            raise ValueError(
-                f"scale_b shape {tuple(scale_b.shape)} does not tile b shape {tuple(b.shape)}"
-            )
-        if scale_a.shape[1] != scale_b.shape[1]:
-            raise ValueError(
-                "GemmFp8Op expects scale_a and scale_b to have the same K-block count, "
-                f"got {scale_a.shape[1]} and {scale_b.shape[1]}"
+                "GemmFp8Op supports scale shapes (1, 1)/(1, 1) or "
+                f"{(m, scale_k)}/{(n, scale_k)}, got "
+                f"{tuple(scale_a.shape)}/{tuple(scale_b.shape)}"
             )
         if bias is not None and tuple(bias.shape) != (n,):
             raise ValueError(f"GemmFp8Op bias must have shape {(n,)}, got {tuple(bias.shape)}")
         return m, n, k
 
-    def _select_mode(self, m: int, n: int, scale_a: torch.Tensor) -> str:
-        if scale_a.shape[1] > 1:
-            return "gemm_fp8_block_scaled"
-        return "gemm_fp8"
+    def _select_kernel_name(
+        self,
+        scale_a: torch.Tensor,
+        scale_b: torch.Tensor,
+        m: int,
+        n: int,
+        k: int,
+    ) -> str:
+        if (tuple(scale_a.shape), tuple(scale_b.shape)) == ((1, 1), (1, 1)):
+            return "gemm_fp8_epilogue_kernel"
+        scale_k = (k + 127) // 128
+        if tuple(scale_a.shape) == (m, scale_k) and tuple(scale_b.shape) == (n, scale_k):
+            return "gemm_fp8_block_scaled_kernel"
+        raise ValueError(
+            "GemmFp8Op supports scale shapes (1, 1)/(1, 1) or "
+            f"{(m, scale_k)}/{(n, scale_k)}, got "
+            f"{tuple(scale_a.shape)}/{tuple(scale_b.shape)}"
+        )
 
     def _get_kernel(
         self,
-        mode: str,
+        kernel_name: str,
         m: int,
         n: int,
         k: int,
@@ -285,12 +296,7 @@ class GemmFp8Op(Op):
         scale_a_shape: Tuple[int, ...],
         scale_b_shape: Tuple[int, ...],
     ) -> Kernel:
-        kernel_name = (
-            "gemm_fp8_block_scaled_kernel"
-            if mode == "gemm_fp8_block_scaled"
-            else "gemm_fp8_epilogue_kernel"
-        )
-        key = (mode, m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype)
+        key = (kernel_name, m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype)
         kernel = self._kernel_cache.get(key)
         if kernel is None:
             kernel = self.kernel_map[kernel_name](
@@ -307,8 +313,16 @@ class GemmFp8Op(Op):
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         sig = (
-            a.shape, b.shape, scale_a.shape, scale_b.shape, a.dtype, self.out_dtype,
-            bias.shape if bias is not None else None,
+            a.shape,
+            b.shape,
+            scale_a.shape,
+            scale_b.shape,
+            a.dtype,
+            b.dtype,
+            scale_a.dtype,
+            scale_b.dtype,
+            self.out_dtype,
+            (bias.shape, bias.dtype) if bias is not None else None,
         )
         if sig != self._active_sig:
             self._validate_dtypes(a, b, scale_a, scale_b, bias)
@@ -317,15 +331,15 @@ class GemmFp8Op(Op):
             self.dtype = a.dtype
             self.scale_a_shape = tuple(scale_a.shape)
             self.scale_b_shape = tuple(scale_b.shape)
-            mode = self._select_mode(m, n, scale_a)
+            self.has_bias = bias is not None
+            kernel_name = self._select_kernel_name(scale_a, scale_b, m, n, k)
             kernel = self._get_kernel(
-                mode, m, n, k, a.dtype, tuple(scale_a.shape), tuple(scale_b.shape))
+                kernel_name, m, n, k, a.dtype, tuple(scale_a.shape), tuple(scale_b.shape))
             self.kernel = kernel
-            self._active = (mode, kernel)
+            self._active = kernel
             self._active_sig = sig
 
-        _mode, kernel = self._active
-        return kernel(a, b, scale_a, scale_b, bias)
+        return self._active(a, b, scale_a, scale_b, bias)
 
     def autotune(self) -> None:
         for kernel in self._kernel_cache.values():

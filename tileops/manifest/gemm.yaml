@@ -70,11 +70,7 @@ GemmFp8Op:
     shape_rules:
     - "a.shape[1] == b.shape[1]"
     - "d.shape == (a.shape[0], b.shape[0])"
-    - "a.shape[0] % scale_a.shape[0] == 0"
-    - "a.shape[1] % scale_a.shape[1] == 0"
-    - "b.shape[0] % scale_b.shape[0] == 0"
-    - "b.shape[1] % scale_b.shape[1] == 0"
-    - "scale_a.shape[1] == scale_b.shape[1]"
+    - "(scale_a.shape == (1, 1) and scale_b.shape == (1, 1)) or (scale_a.shape == (a.shape[0], (a.shape[1] + 127) // 128) and scale_b.shape == (b.shape[0], (a.shape[1] + 127) // 128))"
     - "bias.shape == (b.shape[0],)"
 
   workloads:
