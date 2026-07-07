@@ -54,7 +54,7 @@ def open_range(name: str, lane: str, payload=None) -> AnnoToken:
     state = build_state()
     event_id = state.intern_event(name)
     lane_id = state.intern_lane(lane)
-    _emit(event_id, EventKind.RANGE_BEGIN, lane_id, payload if payload is not None else 0)
+    _emit(event_id, EventKind.RANGE_BEGIN, lane_id, payload)
     return AnnoToken(name, event_id, lane_id, payload)
 
 
@@ -62,7 +62,7 @@ def close_range(tok: AnnoToken | None) -> None:
     """Emit the RANGE_END matching ``tok`` (``None`` no-ops)."""
     if tok is None:
         return
-    _emit(tok.event_id, EventKind.RANGE_END, tok.lane, tok.payload if tok.payload is not None else 0)
+    _emit(tok.event_id, EventKind.RANGE_END, tok.lane, tok.payload)
 
 
 def emit_instant(name: str, payload, lane: str) -> None:
