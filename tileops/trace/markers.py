@@ -40,28 +40,29 @@ class AnnoToken:
     no device state.
     """
 
-    __slots__ = ("name", "event_id", "lane")
+    __slots__ = ("name", "event_id", "lane", "payload")
 
-    def __init__(self, name: str, event_id: int, lane: int):
+    def __init__(self, name: str, event_id: int, lane: int, payload=None):
         self.name = name
         self.event_id = event_id
         self.lane = lane
+        self.payload = payload
 
 
-def open_range(name: str, lane: str) -> AnnoToken:
+def open_range(name: str, lane: str, payload=None) -> AnnoToken:
     """Intern ``name`` / ``lane``, emit a RANGE_BEGIN, and return its token."""
     state = build_state()
     event_id = state.intern_event(name)
     lane_id = state.intern_lane(lane)
-    _emit(event_id, EventKind.RANGE_BEGIN, lane_id, 0)
-    return AnnoToken(name, event_id, lane_id)
+    _emit(event_id, EventKind.RANGE_BEGIN, lane_id, payload if payload is not None else 0)
+    return AnnoToken(name, event_id, lane_id, payload)
 
 
 def close_range(tok: AnnoToken | None) -> None:
     """Emit the RANGE_END matching ``tok`` (``None`` no-ops)."""
     if tok is None:
         return
-    _emit(tok.event_id, EventKind.RANGE_END, tok.lane, 0)
+    _emit(tok.event_id, EventKind.RANGE_END, tok.lane, tok.payload if tok.payload is not None else 0)
 
 
 def emit_instant(name: str, payload, lane: str) -> None:
@@ -96,15 +97,17 @@ class GroupScope:
 class RangeScope:
     """Context manager emitting RANGE_BEGIN on enter, RANGE_END on exit."""
 
-    def __init__(self, name: str, lane: str):
+    def __init__(self, name: str, lane: str, payload=None):
         self._name = name
         self._lane = lane
+        self._payload = payload
         self._tok: AnnoToken | None = None
 
     def __enter__(self) -> AnnoToken | None:
-        self._tok = open_range(self._name, self._lane)
+        self._tok = open_range(self._name, self._lane, self._payload)
         return self._tok
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         close_range(self._tok)
+        return False
         return False
