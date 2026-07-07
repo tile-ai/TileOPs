@@ -354,31 +354,32 @@ def _ssd_chunk_scan_fwd_kernel(
 
                         # Micro-block factorization: only for block_l=block_s=64, M=32
                         if diagonal_microtile_size == 32 and block_l == 64 and block_s == 64:
-                            # Python static unrolling for 2×2 micro-blocks
+                            # Optimized 2×2 micro-block factorization
+                            # Only compute factors for the strict-lower block (1,0)
                             M = 32
-                            R = 2  # block_l // M
 
-                            # Allocate shared memory for factorized exponentials
-                            exp_l_micro = T.alloc_shared((block_l,), accum_dtype)
-                            exp_s_micro = T.alloc_shared((R, block_s), accum_dtype)
+                            # Allocate minimal shared memory: only M elements each
+                            row_factor = T.alloc_shared((M,), accum_dtype)
+                            col_factor = T.alloc_shared((M,), accum_dtype)
 
-                            # Precompute exp_l_micro[ll] = exp(dA[ll] - anchor[r])
-                            for ll in T.Parallel(block_l):
-                                r = ll // M
-                                safe_l = T.min(l0 + ll, Q - 1)
-                                anchor_idx = T.min(l0 + r * M, Q - 1)
-                                exp_l_micro[ll] = T.exp(dA_smem[safe_l] - dA_smem[anchor_idx])
+                            # Anchor point: dA[l0 + M] (start of second micro-row)
+                            anchor_idx = T.min(l0 + M, Q - 1)
+                            anchor = dA_smem[anchor_idx]
 
-                            # Precompute exp_s_micro[r, ss] = exp(anchor[r] - dA[ss]) * dt[ss]
-                            for r, ss in T.Parallel(R, block_s):
-                                safe_s = T.min(s0 + ss, Q - 1)
-                                anchor_idx = T.min(l0 + r * M, Q - 1)
-                                exp_s_micro[r, ss] = T.exp(dA_smem[anchor_idx] - dA_smem[safe_s]) * dt_smem[safe_s]
+                            # Precompute factors only for lower block (1,0)
+                            for i in T.Parallel(M):
+                                # Row factor: for l = M..M+31 (second micro-row)
+                                safe_l = T.min(l0 + M + i, Q - 1)
+                                row_factor[i] = T.exp(dA_smem[safe_l] - anchor)
+
+                                # Column factor: for s = 0..31 (first micro-column)
+                                safe_s = T.min(s0 + i, Q - 1)
+                                col_factor[i] = T.exp(anchor - dA_smem[safe_s]) * dt_smem[safe_s]
 
                             T.sync_threads()
 
                             # Python static unrolling: 4 micro-blocks
-                            # mr=0, mc=0: diagonal block
+                            # mr=0, mc=0: diagonal block (direct exp)
                             for ll, ss in T.Parallel(M, M):
                                 l_abs = l0 + ll
                                 s_abs = s0 + ss
@@ -389,20 +390,19 @@ def _ssd_chunk_scan_fwd_kernel(
                                 value = T.cast(cb_tile[ll, ss], accum_dtype) * exp_factor * dt_smem[safe_s]
                                 lcb_cast[ll, ss] = T.if_then_else(valid, T.cast(value, dtype), T.cast(T.float32(0.0), dtype))
 
-                            # mr=0, mc=1: upper block (all zeros)
+                            # mr=0, mc=1: upper block (all zeros due to causality)
                             for ll, ss in T.Parallel(M, M):
                                 lcb_cast[ll, M + ss] = T.cast(T.float32(0.0), dtype)
 
-                            # mr=1, mc=0: lower block (factorization, NO direct exp)
+                            # mr=1, mc=0: lower block (factorized - NO direct exp!)
                             for ll, ss in T.Parallel(M, M):
                                 l_abs = l0 + M + ll
                                 s_abs = s0 + ss
                                 valid = (l_abs < Q) and (s_abs < Q) and (s_abs <= l_abs)
-                                # r=1 for second micro-row, inline directly
-                                value = T.cast(cb_tile[M + ll, ss], accum_dtype) * exp_l_micro[M + ll] * exp_s_micro[1, ss]
+                                value = T.cast(cb_tile[M + ll, ss], accum_dtype) * row_factor[ll] * col_factor[ss]
                                 lcb_cast[M + ll, ss] = T.if_then_else(valid, T.cast(value, dtype), T.cast(T.float32(0.0), dtype))
 
-                            # mr=1, mc=1: diagonal block
+                            # mr=1, mc=1: diagonal block (direct exp)
                             for ll, ss in T.Parallel(M, M):
                                 l_abs = l0 + M + ll
                                 s_abs = s0 + M + ss
