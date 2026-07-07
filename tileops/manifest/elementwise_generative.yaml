@@ -5,7 +5,7 @@ AlibiFwdOp:
   # construction-time integer parameters.
   ref_api: "none"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs: {}
@@ -14,15 +14,17 @@ AlibiFwdOp:
     params:
       seq_len: {type: int}
       num_heads: {type: int}
-      dtype: {type: torch.dtype, default: float16}
+      dtype: {type: torch.dtype}
     shape_rules:
     - "seq_len > 0"
     - "num_heads > 0"
 
   workloads:
     # Llama-style attention bias dimensions
-  - {seq_len: 2048, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-2k"}
-  - {seq_len: 4096, num_heads: 32, dtypes: [float16, bfloat16], label: "llama-prefill-4k"}
+  - {seq_len: 2048, num_heads: 32, dtype: float16, dtypes: [float16], label: "llama-prefill-2k-fp16"}
+  - {seq_len: 2048, num_heads: 32, dtype: bfloat16, dtypes: [bfloat16], label: "llama-prefill-2k-bf16"}
+  - {seq_len: 4096, num_heads: 32, dtype: float16, dtypes: [float16], label: "llama-prefill-4k-fp16"}
+  - {seq_len: 4096, num_heads: 32, dtype: bfloat16, dtypes: [bfloat16], label: "llama-prefill-4k-bf16"}
 
   roofline:
     vars:
@@ -52,7 +54,7 @@ SinusoidalFwdOp:
   # from the construction-time integer parameters. d_model must be even.
   ref_api: "none"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs: {}
@@ -61,7 +63,7 @@ SinusoidalFwdOp:
     params:
       seq_len: {type: int}
       d_model: {type: int}
-      dtype: {type: torch.dtype, default: float16}
+      dtype: {type: torch.dtype}
     shape_rules:
     - "seq_len > 0"
     - "d_model > 0"
@@ -69,8 +71,10 @@ SinusoidalFwdOp:
 
   workloads:
     # Transformer-style positional encodings
-  - {seq_len: 2048, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-2k-4k"}
-  - {seq_len: 4096, d_model: 4096, dtypes: [float16, bfloat16], label: "transformer-4k-4k"}
+  - {seq_len: 2048, d_model: 4096, dtype: float16, dtypes: [float16], label: "transformer-2k-4k-fp16"}
+  - {seq_len: 2048, d_model: 4096, dtype: bfloat16, dtypes: [bfloat16], label: "transformer-2k-4k-bf16"}
+  - {seq_len: 4096, d_model: 4096, dtype: float16, dtypes: [float16], label: "transformer-4k-4k-fp16"}
+  - {seq_len: 4096, d_model: 4096, dtype: bfloat16, dtypes: [bfloat16], label: "transformer-4k-4k-bf16"}
 
   roofline:
     vars:

@@ -51,6 +51,20 @@ class SinusoidalFwdOp(Op):
     def default_kernel_map(self):
         return {"sinusoidal": SinusoidalFwdKernel}
 
+    def _infer_output_shapes(self) -> dict[str, tuple[int, ...]]:
+        return {"output": (self.seq_len, self.d_model)}
+
+    def _validate_dtypes(self) -> None:
+        return None
+
+    @property
+    def total_memory(self) -> int:
+        return self.seq_len * self.d_model * self.dtype.itemsize
+
+    def eval_roofline(self) -> tuple[int, int]:
+        n_elem = self.seq_len * self.d_model
+        return 6 * n_elem, self.total_memory
+
     def forward(self) -> torch.Tensor:
         out = self.kernel()
         result = out.reshape(self.seq_len, self.d_model)
