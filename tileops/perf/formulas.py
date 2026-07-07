@@ -175,6 +175,10 @@ def _dtype_itemsize(dtype: Any) -> int:
     if hasattr(dtype, "itemsize"):
         return int(dtype.itemsize)
     dtype_name = str(dtype)
+    if "complex128" in dtype_name:
+        return 16
+    if "complex64" in dtype_name:
+        return 8
     if "float32" in dtype_name or "int32" in dtype_name:
         return 4
     if "float64" in dtype_name or "int64" in dtype_name:
@@ -1104,8 +1108,13 @@ def fp8_lighting_indexer_roofline(op: "Op") -> tuple[int, int]:
     q_elems = batch * seq_len * heads * index_dim
     k_elems = batch * seq_len_kv * kv_group * index_dim
     weights = seq_len * heads
+    # The public forward accepts either bf16 tensors that are quantized inside
+    # the op or pre-quantized fp8 tensors. The op does not currently retain
+    # the observed input dtype, so default to bf16 for conservative bandwidth.
+    index_elem = _dtype_itemsize(getattr(op, "dtype", "bfloat16"))
     flops = 2 * scores * index_dim
-    nbytes = q_elems + k_elems + batch * seq_len_kv * kv_group * 4 + weights * 4
+    nbytes = (q_elems + k_elems) * index_elem + batch * seq_len_kv * kv_group * 4
+    nbytes += weights * 4
     nbytes += 2 * seq_len * 4 + scores * 4
     return int(flops), int(nbytes)
 
@@ -1188,14 +1197,20 @@ def mhc_pre_roofline(op: "Op") -> tuple[int, int]:
     batch = int(op.batch)
     n_expand = int(op.n_expand)
     c_x = int(op.c_x)
-    flops = 2 * batch * (
-        (n_expand * n_expand * c_x * c_x)
-        * (n_expand * n_expand + 2 * n_expand)
-        + n_expand * c_x
-    )
-    nbytes = (n_expand * 3 + 1) * c_x + (n_expand * c_x) * (
-        n_expand * n_expand + 2 * n_expand
-    )
+    x_dim = n_expand * c_x
+    phi_dim = n_expand * n_expand + 2 * n_expand
+    x_elem = _dtype_itemsize(getattr(op, "dtype", "bfloat16"))
+
+    x_phi_flops = 2 * batch * x_dim * phi_dim
+    x_layer_flops = 2 * batch * c_x * n_expand
+    x_res_flops = 2 * batch * n_expand * c_x * n_expand
+    flops = x_phi_flops + x_layer_flops + x_res_flops
+
+    phi_bytes = x_dim * phi_dim * 4
+    b_bytes = phi_dim * 4
+    x_bytes = batch * x_dim * x_elem
+    output_bytes = batch * (x_dim + c_x) * x_elem
+    nbytes = phi_bytes + b_bytes + x_bytes + output_bytes
     return int(flops), int(nbytes)
 
 
@@ -1203,6 +1218,11 @@ def mhc_post_roofline(op: "Op") -> tuple[int, int]:
     batch = int(op.batch)
     n_expand = int(op.n_expand)
     c_x = int(op.c_x)
-    flops = 2 * batch * (n_expand * n_expand * c_x * c_x + n_expand * c_x)
-    nbytes = (n_expand * 2 + 1) * c_x
+    x_elem = _dtype_itemsize(getattr(op, "dtype", "bfloat16"))
+    flops = 2 * batch * n_expand * c_x
+    x_layer_out_bytes = batch * c_x * x_elem
+    h_post_bytes = batch * n_expand * 4
+    x_res_bytes = batch * n_expand * c_x * x_elem
+    x_out_bytes = batch * n_expand * c_x * x_elem
+    nbytes = x_layer_out_bytes + h_post_bytes + x_res_bytes + x_out_bytes
     return int(flops), int(nbytes)
