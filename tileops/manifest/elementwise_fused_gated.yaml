@@ -14,7 +14,7 @@ SiluAndMulFwdOp:
   # the last dim, x.shape == (M, 2*N). No single torch.* symbol.
   ref_api: "none"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -56,7 +56,7 @@ GeluAndMulFwdOp:
   # (erf-based). No single torch.* symbol.
   ref_api: "none"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -96,7 +96,7 @@ GeluTanhAndMulFwdOp:
   # GELU approximation. No single torch.* symbol.
   ref_api: "none"
   family: elementwise
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:

@@ -28,3 +28,4 @@ class GeluTanhAndMulFwdOp(FusedGatedOp):
 
     _op_name = "gelu_tanh_and_mul"
     kernel_cls = GeluTanhAndMulFwdKernel
+    FLOPS_PER_ELEM = 10

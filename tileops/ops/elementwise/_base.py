@@ -869,9 +869,10 @@ class FusedGatedOp(Op):
     to enable torch.compile support.
 
     Args:
-        M: Number of rows.
-        N: Half column dim (output width).
-        dtype: Torch dtype.
+        M: Optional number of rows. Inferred from ``x`` when omitted.
+        N: Optional half column dim (output width). Inferred from ``x`` when
+            omitted.
+        dtype: Optional torch dtype. Inferred from ``x`` when omitted.
         strategy: Kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
@@ -880,31 +881,33 @@ class FusedGatedOp(Op):
     kernel_cls: type
     _op_name: str
     _wrapped = None  # Set by _register_fused_gated_custom_op at class definition
+    FLOPS_PER_ELEM: int = 6
 
     def __init__(
         self,
-        M: int,
-        N: int,
-        dtype: torch.dtype,
+        M: Optional[int] = None,
+        N: Optional[int] = None,
+        dtype: Optional[torch.dtype] = None,
         strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        supported = self.kernel_cls.SUPPORTED_DTYPES
-        if supported is not None and dtype not in supported:
-            names = ", ".join(str(dt) for dt in supported)
-            raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. "
-                f"Supported: [{names}]"
-            )
+        if (M is None) != (N is None):
+            raise ValueError("M and N must be provided together")
+        if dtype is not None:
+            self._validate_dtype(dtype)
+        self._explicit_shape = M is not None and N is not None
+        self._explicit_dtype = dtype is not None
         self.M = M
         self.N = N
         self.dtype = dtype
         self.strategy = strategy
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            M, N, dtype, strategy=strategy, tune=tune,
-        )
+        self.kernel = None
+        self._kernel_key = None
+        if M is not None and N is not None and dtype is not None:
+            self._ensure_kernel(M, N, dtype)
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -916,26 +919,77 @@ class FusedGatedOp(Op):
     @property
     def total_memory(self) -> float:
         """Read x (M*2N) + write y (M*N)."""
+        if self.M is None or self.N is None or self.dtype is None:
+            raise RuntimeError(
+                "Fused gated dimensions are available after first forward"
+            )
         in_elem = self.dtype.itemsize
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
+        fp8_out = (
+            getattr(self.kernel, "_fp8_output_dtype", None)
+            if self.kernel is not None
+            else None
+        )
         out_elem = fp8_out.itemsize if fp8_out is not None else in_elem
         return self.M * 2 * self.N * in_elem + self.M * self.N * out_elem
 
+    def eval_roofline(self) -> tuple[int, int]:
+        if self.M is None or self.N is None or self.dtype is None:
+            raise RuntimeError(
+                "Fused gated roofline is available after first forward"
+            )
+        flops = self.FLOPS_PER_ELEM * self.M * self.N
+        return flops, int(self.total_memory)
+
+    def _validate_dtype(self, dtype: torch.dtype) -> None:
+        supported = self.kernel_cls.SUPPORTED_DTYPES
+        if supported is not None and dtype not in supported:
+            names = ", ".join(str(dt) for dt in supported)
+            raise ValueError(
+                f"{self._op_name} does not support dtype {dtype}. "
+                f"Supported: [{names}]"
+            )
+
+    def _ensure_kernel(self, M: int, N: int, dtype: torch.dtype) -> None:
+        self._validate_dtype(dtype)
+        key = (M, N, dtype)
+        if self._kernel_key == key and self.kernel is not None:
+            return
+        self.M = M
+        self.N = N
+        self.dtype = dtype
+        self.kernel = self.kernel_map[self._op_name](
+            M, N, dtype, strategy=self.strategy, tune=self.tune,
+        )
+        self._kernel_key = key
+
+    def _validate_runtime_input(self, x: torch.Tensor) -> tuple[int, int]:
+        if not x.is_cuda:
+            raise ValueError("Input must be a CUDA tensor")
+        if x.ndim != 2:
+            raise ValueError(f"Expected x to be 2D, got {x.ndim}D")
+        if x.shape[1] % 2 != 0:
+            raise ValueError(f"Expected x.shape[1] to be even, got {x.shape[1]}")
+        M = x.shape[0]
+        N = x.shape[1] // 2
+        if self._explicit_shape and (M, N) != (self.M, self.N):
+            raise ValueError(
+                f"Expected shape ({self.M}, {2 * self.N}), got {tuple(x.shape)}"
+            )
+        if self._explicit_dtype and x.dtype != self.dtype:
+            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        return M, N
+
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
+        M, N = self._validate_runtime_input(x)
+        self._ensure_kernel(M, N, x.dtype)
         x = x.contiguous()
         result = self.kernel(x)
         return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if x.shape != (self.M, 2 * self.N):
-            raise ValueError(
-                f"Expected shape ({self.M}, {2 * self.N}), got {tuple(x.shape)}"
-            )
+        M, N = self._validate_runtime_input(x)
+        self._ensure_kernel(M, N, x.dtype)
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, self.M, self.N, self._instance_key)

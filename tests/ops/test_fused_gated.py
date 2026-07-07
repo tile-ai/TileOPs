@@ -66,6 +66,28 @@ def test_silu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
+@pytest.mark.smoke
+def test_silu_and_mul_infers_manifest_shape_contract() -> None:
+    """Manifest path binds shape and dtype from x instead of ctor args."""
+    m, n, dtype = 64, 128, torch.float16
+    test = SiluAndMulTest(m, n, dtype)
+    op = SiluAndMulFwdOp()
+    atol, rtol = _get_tolerances(dtype)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    assert (op.M, op.N, op.dtype) == (m, n, dtype)
+
+
+@pytest.mark.smoke
+def test_silu_and_mul_lazy_op_rebinds_shape() -> None:
+    """Lazy construction should not lock the op to the first runtime shape."""
+    op = SiluAndMulFwdOp()
+    for m, n in [(32, 64), (16, 128)]:
+        test = SiluAndMulTest(m, n, torch.float16)
+        atol, rtol = _get_tolerances(torch.float16)
+        test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+        assert (op.M, op.N, op.dtype) == (m, n, torch.float16)
+
+
 # ---------------------------------------------------------------------------
 # GeluAndMul
 # ---------------------------------------------------------------------------

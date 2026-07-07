@@ -51,6 +51,20 @@ class AlibiFwdOp(Op):
     def default_kernel_map(self):
         return {"alibi": AlibiFwdKernel}
 
+    def _infer_output_shapes(self) -> dict[str, tuple[int, ...]]:
+        return {"output": (self.num_heads, self.seq_len, self.seq_len)}
+
+    def _validate_dtypes(self) -> None:
+        return None
+
+    @property
+    def total_memory(self) -> int:
+        return self.num_heads * self.seq_len * self.seq_len * self.dtype.itemsize
+
+    def eval_roofline(self) -> tuple[int, int]:
+        n_elem = self.num_heads * self.seq_len * self.seq_len
+        return 3 * n_elem, self.total_memory
+
     def forward(self) -> torch.Tensor:
         out = self.kernel()
         result = out.reshape(self.num_heads, self.seq_len, self.seq_len)
