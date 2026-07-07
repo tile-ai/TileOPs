@@ -7,8 +7,10 @@ the relevant source files.
 
 ## Qwen FlashQLA
 
-Files under `tileops/kernels/gated_deltanet/gdn_prefill/` that implement the
-CP-split Gated DeltaNet prefill schedule are adapted from Qwen FlashQLA:
+Files under `tileops/kernels/gated_deltanet/gdn_prefill/` implement a TileOps
+version of the CP-split Gated DeltaNet prefill schedule. The schedule-level
+reference for the h-state / corrected-segment-start part of this implementation
+comes from Qwen FlashQLA:
 
 - `__init__.py`
 - `cp_fwd.py`
@@ -23,8 +25,10 @@ Copyright (c) 2026 The Qwen team, Alibaba Group.
 Licensed under the MIT License.
 ```
 
-The TileOps versions are modified for the TileOps operator API, BTHD dispatch,
-TileLang compatibility, benchmarking, and integration tests.
+The TileOps versions are not direct wrappers around the FlashQLA kernels. They
+adapt the CP-split scheduling idea into the TileOps operator API, BTHD dispatch,
+TileLang compatibility layer, benchmarking, tests, and local replay/output
+implementation.
 
 ## Flash Linear Attention
 
