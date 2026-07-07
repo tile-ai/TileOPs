@@ -17,6 +17,7 @@ comes from Qwen FlashQLA:
 - `fused_fwd.py`
 - `prepare_h.py`
 - `tilelang_compat.py`
+- `utils.py`
 
 Original notice:
 
@@ -28,18 +29,5 @@ Licensed under the MIT License.
 The TileOps versions are not direct wrappers around the FlashQLA kernels. They
 adapt the CP-split scheduling idea into the TileOps operator API, BTHD dispatch,
 TileLang compatibility layer, benchmarking, tests, and local replay/output
-implementation.
-
-## Flash Linear Attention
-
-`tileops/kernels/gated_deltanet/gdn_prefill/utils.py` adapts utility helpers
-from Flash Linear Attention.
-
-Original notice:
-
-```text
-Copyright (c) 2023-2026, Songlin Yang, Yu Zhang, Zhiyuan Li
-Licensed under the MIT License.
-```
-
-The TileOps version is modified for the local Gated DeltaNet prefill integration.
+implementation. The utility file keeps the upstream copyright notice present in
+the FlashQLA utility source.
