@@ -1,0 +1,41 @@
+# GPU Profile: NVIDIA H20-3e (SXM, 141GB HBM3e)
+
+# NOTE on calibration values (why they differ significantly from h200.yaml):
+# The H20 is an export-compliance SKU whose *theoretical* peaks are
+# artificially capped by NVIDIA (compute throttled to ~15% of H100, HBM
+# bandwidth reduced), while the underlying silicon is essentially the same
+# as H100/H200. As a result, measured performance divided by the
+# (already-reduced) theoretical peak yields calibration ratios that are
+# structurally higher than H200's:
+#   - tensor_core ~0.95 (vs. H200 ~0.75): compute cap is the binding limit,
+#     so real kernels saturate the throttled peak almost entirely.
+#   - hbm ~0.81      (vs. H200 ~0.85): HBM3e stack is physically identical
+#     to H200's; the small gap reflects the lower advertised peak, not a
+#     memory subsystem difference.
+# In short: H20's "theoretical" is a policy number, not a hardware ceiling,
+# so calibration here measures how close we get to the *cap*, not the silicon.
+
+# Only store theoretical + calibration here.
+# effective = theoretical × calibration is computed by load_profile().
+
+gpu: NVIDIA H20-3e
+compute_capability: 9.0
+
+hbm:
+  theoretical: 4800e9        # bytes/s, HBM3e 141GB stack (same silicon as H200)
+  calibration: 0.8083
+
+tensor_core:
+  fp16:
+    theoretical: 148.0e12    # FLOPS, dense (leaked H20 spec; ~15% of H100)
+    calibration: 0.9500
+  bf16:
+    theoretical: 148.0e12
+    calibration: 0.9500
+
+  tf32:
+    theoretical: 74.0e12
+    calibration: 0.75        # placeholder — not measured (see header note)
+  fp8:
+    theoretical: 296.0e12
+    calibration: 0.9500
