@@ -69,6 +69,18 @@ def ensure_contiguous(func: callable) -> callable:
     return wrapper
 
 
+def expand_fp8_scale(scale: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
+    if scale.ndim != 2:
+        raise ValueError(f"FP8 scales must be 2D, got shape {tuple(scale.shape)}")
+    scale_rows, scale_cols = scale.shape
+    if rows % scale_rows != 0 or cols % scale_cols != 0:
+        raise ValueError(
+            f"FP8 scale shape {tuple(scale.shape)} does not tile matrix shape {(rows, cols)}"
+        )
+    return scale.repeat_interleave(rows // scale_rows, dim=0).repeat_interleave(
+        cols // scale_cols, dim=1)
+
+
 def is_hopper():
     return torch.cuda.get_device_capability() == (9, 0)
 

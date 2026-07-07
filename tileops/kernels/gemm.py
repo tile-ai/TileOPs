@@ -10,9 +10,270 @@ from tileops.trace import trace
 from tileops.utils import get_sm_version, str2dtype
 
 __all__ = [
+    'GemmFp8BlockScaledKernel',
+    'GemmFp8EpilogueKernel',
     'GemmKernel',
     'GemvKernel',
 ]
+
+class GemmFp8EpilogueKernel(Kernel):
+    """Simple TileLang FP8 GEMM for per-tensor scales."""
+
+    def __init__(
+        self,
+        m: int,
+        n: int,
+        k: int,
+        dtype: torch.dtype,
+        out_dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        self.m = m
+        self.n = n
+        self.k = k
+        self.dtype = dtype
+        self.out_dtype = out_dtype
+        self.kernel = _gemm_fp8_kernel(
+            m, n, k, self.dtype_str, self.out_dtype_str, block_scaled=False)
+        self.init_config(config, tune)
+
+    @property
+    def out_dtype_str(self) -> str:
+        return self.dtype_to_str(self.out_dtype)
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 128,
+            "block_n": 128,
+            "block_k": 128,
+            "num_stages": 3,
+            "threads": 256,
+        }
+
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        scale_a: torch.Tensor,
+        scale_b: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.dtype != torch.float8_e4m3fn:
+            raise NotImplementedError(
+                f"GemmFp8EpilogueKernel only supports torch.float8_e4m3fn, got {self.dtype}")
+        compiled = _gemm_fp8_kernel(
+            self.m, self.n, self.k, self.dtype_str, self.out_dtype_str,
+            block_scaled=False, has_bias=bias is not None)(**self.config)
+        if bias is not None:
+            return compiled(a, b, scale_a, scale_b, bias)
+        return compiled(a, b, scale_a, scale_b)
+
+
+class GemmFp8BlockScaledKernel(Kernel):
+    """Simple TileLang FP8 GEMM for K-block scales."""
+
+    def __init__(
+        self,
+        m: int,
+        n: int,
+        k: int,
+        dtype: torch.dtype,
+        out_dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        self.m = m
+        self.n = n
+        self.k = k
+        self.dtype = dtype
+        self.out_dtype = out_dtype
+        self.kernel = _gemm_fp8_kernel(
+            m, n, k, self.dtype_str, self.out_dtype_str, block_scaled=True)
+        self.init_config(config, tune)
+
+    @property
+    def out_dtype_str(self) -> str:
+        return self.dtype_to_str(self.out_dtype)
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 128,
+            "block_n": 128,
+            "block_k": 128,
+            "num_stages": 3,
+            "threads": 256,
+        }
+
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        scale_a: torch.Tensor,
+        scale_b: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.dtype != torch.float8_e4m3fn:
+            raise NotImplementedError(
+                f"GemmFp8BlockScaledKernel only supports torch.float8_e4m3fn, got {self.dtype}")
+        compiled = _gemm_fp8_kernel(
+            self.m, self.n, self.k, self.dtype_str, self.out_dtype_str,
+            block_scaled=True, has_bias=bias is not None)(**self.config)
+        if bias is not None:
+            return compiled(a, b, scale_a, scale_b, bias)
+        return compiled(a, b, scale_a, scale_b)
+
+
+@functools.lru_cache(maxsize=32)
+def _gemm_fp8_kernel(
+    m: int,
+    n: int,
+    k: int,
+    dtype: str,
+    out_dtype: str,
+    block_scaled: bool,
+    has_bias: bool = False,
+) -> Callable:
+    accum_dtype = "float"
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        },
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _gemm_fp8_func(
+        block_m: int = 128,
+        block_n: int = 128,
+        block_k: int = 128,
+        num_stages: int = 3,
+        threads: int = 256,
+    ) -> Callable:
+        scale_k = (k + 127) // 128 if block_scaled else 1
+        scale_a_shape = (m, scale_k) if block_scaled else (1, 1)
+        scale_b_shape = (n, scale_k) if block_scaled else (1, 1)
+
+        @T.prim_func
+        def _gemm_fp8_main(
+            a: T.Tensor((m, k), dtype),  # type: ignore
+            b: T.Tensor((n, k), dtype),  # type: ignore
+            scale_a: T.Tensor(scale_a_shape, "float32"),  # type: ignore
+            scale_b: T.Tensor(scale_b_shape, "float32"),  # type: ignore
+            c: T.Tensor((m, n), out_dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(
+                    T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (bx, by):
+                a_shared = T.alloc_shared((block_m, block_k), dtype)
+                b_shared = T.alloc_shared((block_n, block_k), dtype)
+                partial = T.alloc_fragment((block_m, block_n), accum_dtype)
+                c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+
+                T.annotate_layout({
+                    a_shared: tilelang.layout.make_swizzled_layout(a_shared),
+                    b_shared: tilelang.layout.make_swizzled_layout(b_shared),
+                })
+
+                m_start = by * block_m
+                n_start = bx * block_n
+                T.clear(c_local)
+
+                for kk in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+                    k_start = kk * block_k
+                    for i, j in T.Parallel(block_m, block_k):
+                        a_shared[i, j] = T.if_then_else(
+                            (m_start + i < m) & (k_start + j < k),
+                            a[m_start + i, k_start + j],
+                            T.cast(0, dtype),
+                        )
+                    for i, j in T.Parallel(block_n, block_k):
+                        b_shared[i, j] = T.if_then_else(
+                            (n_start + i < n) & (k_start + j < k),
+                            b[n_start + i, k_start + j],
+                            T.cast(0, dtype),
+                        )
+                    T.clear(partial)
+                    T.gemm(a_shared, b_shared, partial, transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullRow)
+                    for i, j in T.Parallel(block_m, block_n):
+                        if m_start + i < m and n_start + j < n:
+                            if block_scaled:
+                                c_local[i, j] += (
+                                    partial[i, j]
+                                    * scale_a[m_start + i, kk]
+                                    * scale_b[n_start + j, kk]
+                                )
+                            else:
+                                c_local[i, j] += partial[i, j] * scale_a[0, 0] * scale_b[0, 0]
+
+                for i, j in T.Parallel(block_m, block_n):
+                    if m_start + i < m and n_start + j < n:
+                        c[m_start + i, n_start + j] = c_local[i, j]
+
+        @T.prim_func
+        def _gemm_fp8_bias_main(
+            a: T.Tensor((m, k), dtype),  # type: ignore
+            b: T.Tensor((n, k), dtype),  # type: ignore
+            scale_a: T.Tensor(scale_a_shape, "float32"),  # type: ignore
+            scale_b: T.Tensor(scale_b_shape, "float32"),  # type: ignore
+            bias: T.Tensor((n,), out_dtype),  # type: ignore
+            c: T.Tensor((m, n), out_dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(
+                    T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (bx, by):
+                a_shared = T.alloc_shared((block_m, block_k), dtype)
+                b_shared = T.alloc_shared((block_n, block_k), dtype)
+                partial = T.alloc_fragment((block_m, block_n), accum_dtype)
+                c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+
+                T.annotate_layout({
+                    a_shared: tilelang.layout.make_swizzled_layout(a_shared),
+                    b_shared: tilelang.layout.make_swizzled_layout(b_shared),
+                })
+
+                m_start = by * block_m
+                n_start = bx * block_n
+                T.clear(c_local)
+
+                for kk in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+                    k_start = kk * block_k
+                    for i, j in T.Parallel(block_m, block_k):
+                        a_shared[i, j] = T.if_then_else(
+                            (m_start + i < m) & (k_start + j < k),
+                            a[m_start + i, k_start + j],
+                            T.cast(0, dtype),
+                        )
+                    for i, j in T.Parallel(block_n, block_k):
+                        b_shared[i, j] = T.if_then_else(
+                            (n_start + i < n) & (k_start + j < k),
+                            b[n_start + i, k_start + j],
+                            T.cast(0, dtype),
+                        )
+                    T.clear(partial)
+                    T.gemm(a_shared, b_shared, partial, transpose_B=True,
+                           policy=T.GemmWarpPolicy.FullRow)
+                    for i, j in T.Parallel(block_m, block_n):
+                        if m_start + i < m and n_start + j < n:
+                            if block_scaled:
+                                c_local[i, j] += (
+                                    partial[i, j]
+                                    * scale_a[m_start + i, kk]
+                                    * scale_b[n_start + j, kk]
+                                )
+                            else:
+                                c_local[i, j] += partial[i, j] * scale_a[0, 0] * scale_b[0, 0]
+
+                for i, j in T.Parallel(block_m, block_n):
+                    if m_start + i < m and n_start + j < n:
+                        c[m_start + i, n_start + j] = c_local[i, j] + bias[n_start + j]
+
+        return _gemm_fp8_bias_main if has_bias else _gemm_fp8_main
+
+    return _gemm_fp8_func
 
 
 @functools.lru_cache(maxsize=32)

@@ -2,17 +2,33 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import GemmOp
-from workloads.gemm import GemmTest as _GemmTestWorkload
+from tileops.ops import GemmFp8Op, GemmOp
+from tileops.utils import expand_fp8_scale
+from workloads.gemm import GemmFp8Workload, GemmWorkload
 
 
-class GemmTest(_GemmTestWorkload, TestBase):
+class GemmTest(GemmWorkload, TestBase):
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if self.trans_a:
             a = a.T
         if self.trans_b:
             b = b.T
         return torch.matmul(a, b)
+
+
+class GemmFp8Test(GemmFp8Workload, TestBase):
+    def _expand_scale(self, scale: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
+        return expand_fp8_scale(scale, rows, cols)
+
+    def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
+        a, b, scale_a, scale_b = inputs[:4]
+        bias = inputs[4] if len(inputs) == 5 else None
+        a_f = a.float() * self._expand_scale(scale_a, self.m, self.k)
+        b_f = b.float() * self._expand_scale(scale_b, self.n, self.k)
+        out = torch.matmul(a_f, b_f.T)
+        if bias is not None:
+            out = out + bias.float()
+        return out.to(self.out_dtype)
 
 
 class GemmFixture(FixtureBase):
@@ -112,6 +128,43 @@ class GemvBoundaryFixture(FixtureBase):
     ]
 
 
+class GemmFp8Fixture(FixtureBase):
+    PARAMS = [
+        ("m, n, k, dtype, scale_mode, out_dtype, bias", [
+            pytest.param(
+                128, 128, 128, torch.float8_e4m3fn, "per_tensor", torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-fp8-e4m3-per-tensor",
+            ),
+            pytest.param(
+                128, 256, 256, torch.float8_e4m3fn, "block128", torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-fp8-e4m3-block128",
+            ),
+            pytest.param(
+                128, 128, 128, torch.float8_e5m2, "per_tensor", torch.bfloat16, False,
+                marks=pytest.mark.smoke,
+                id="smoke-fp8-e5m2-per-tensor",
+            ),
+            pytest.param(
+                4096, 256, 256, torch.float8_e4m3fn, "block128", torch.bfloat16, False,
+                marks=pytest.mark.full,
+                id="full-fp8-e4m3-block128-large-m",
+            ),
+            pytest.param(
+                8, 256, 128, torch.float8_e4m3fn, "per_tensor", torch.float16, True,
+                marks=pytest.mark.full,
+                id="full-fp8-e4m3-per-tensor-small-m-bias",
+            ),
+            pytest.param(
+                1, 256, 128, torch.float8_e4m3fn, "per_tensor", torch.bfloat16, False,
+                marks=pytest.mark.full,
+                id="full-fp8-e4m3-per-tensor-gemv",
+            ),
+        ]),
+    ]
+
+
 @GemmFixture
 def test_gemm(m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b: bool,
               tune: bool) -> None:
@@ -122,6 +175,25 @@ def test_gemm(m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b
     else:
         tolerances = {"atol": 1.6e-2, "rtol": 1.6e-2}
     test.check(op, *test.gen_inputs(), **tolerances)
+
+@GemmFp8Fixture
+def test_gemm_fp8(
+    m: int,
+    n: int,
+    k: int,
+    dtype: torch.dtype,
+    scale_mode: str,
+    out_dtype: torch.dtype,
+    bias: bool,
+) -> None:
+    test = GemmFp8Test(m, n, k, dtype, scale_mode, out_dtype=out_dtype, bias=bias)
+    op = GemmFp8Op(out_dtype=out_dtype)
+    inputs = test.gen_inputs()
+    if dtype != torch.float8_e4m3fn:
+        with pytest.raises(ValueError, match="only supports torch.float8_e4m3fn"):
+            op(*inputs)
+        return
+    test.check(op, *inputs, atol=2e-2, rtol=2e-2)
 
 
 @GemvBoundaryFixture

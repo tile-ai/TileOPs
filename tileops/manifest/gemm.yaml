@@ -51,6 +51,60 @@ GemmOp:
       gemm_kernel: GemmKernel
       gemv_kernel: GemvKernel
 
+GemmFp8Op:
+  ref_api: "torch._scaled_mm"
+  family: gemm
+  status: implemented
+
+  signature:
+    inputs:
+      a: {dtype: "float8_e4m3fn", shape: "[M, K]"}
+      b: {dtype: "same_as(a)", shape: "[N, K]"}
+      scale_a: {dtype: "float32"}
+      scale_b: {dtype: "float32"}
+      bias: {dtype: "bfloat16", shape: "[N]", optional: true}
+    outputs:
+      d: {dtype: "bfloat16 | float16", shape: "[M, N]"}
+    params:
+      out_dtype: {type: dtype, default: bfloat16}
+    shape_rules:
+    - "a.shape[1] == b.shape[1]"
+    - "d.shape == (a.shape[0], b.shape[0])"
+    - "a.shape[0] % scale_a.shape[0] == 0"
+    - "a.shape[1] % scale_a.shape[1] == 0"
+    - "b.shape[0] % scale_b.shape[0] == 0"
+    - "b.shape[1] % scale_b.shape[1] == 0"
+    - "scale_a.shape[1] == scale_b.shape[1]"
+    - "bias.shape == (b.shape[0],)"
+
+  workloads:
+  - {m: 128, n: 2112, k: 7168, scale_mode: per_tensor, dtypes: [float8_e4m3fn], label: "ds-v3-decode-gate-up-per-tensor"}
+  - {m: 128, n: 7168, k: 2048, scale_mode: per_tensor, dtypes: [float8_e4m3fn], label: "ds-v3-decode-down-per-tensor"}
+  - {m: 4096, n: 2112, k: 7168, scale_mode: per_tensor, dtypes: [float8_e4m3fn], label: "ds-v3-prefill-gate-up-per-tensor"}
+  - {m: 4096, n: 7168, k: 2048, scale_mode: per_tensor, dtypes: [float8_e4m3fn], label: "ds-v3-prefill-down-per-tensor"}
+  - {m: 128, n: 2112, k: 7168, scale_mode: block128, dtypes: [float8_e4m3fn], label: "ds-v3-decode-gate-up-block128"}
+  - {m: 128, n: 7168, k: 2048, scale_mode: block128, dtypes: [float8_e4m3fn], label: "ds-v3-decode-down-block128"}
+  - {m: 4096, n: 2112, k: 7168, scale_mode: block128, dtypes: [float8_e4m3fn], label: "ds-v3-prefill-gate-up-block128"}
+  - {m: 4096, n: 7168, k: 2048, scale_mode: block128, dtypes: [float8_e4m3fn], label: "ds-v3-prefill-down-block128"}
+  - {m: 4096, n: 4096, k: 7168, scale_mode: block128, dtypes: [float8_e4m3fn], label: "ds-v3-prefill-attn-proj-block128"}
+  - {m: 4096, n: 7168, k: 16384, scale_mode: block128, dtypes: [float8_e4m3fn], label: "k-dominant-7168x16384-block128"}
+  - {m: 4096, n: 24576, k: 1536, scale_mode: block128, dtypes: [float8_e4m3fn], label: "wide-n-24576-block128"}
+  - {m: 8, n: 7168, k: 2048, scale_mode: per_tensor, dtypes: [float8_e4m3fn], label: "small-batch-down-m8-per-tensor"}
+  - {m: 1, n: 7168, k: 2048, scale_mode: per_tensor, dtypes: [float8_e4m3fn], label: "gemv-down-m1-per-tensor"}
+  - {m: 1, n: 7168, k: 2048, scale_mode: block128, dtypes: [float8_e4m3fn], label: "gemv-down-m1-block128"}
+  roofline:
+    func: "tileops.perf.formulas.gemm_fp8_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/gemm.py
+    op: tileops/ops/gemm.py
+    test: tests/ops/test_gemm.py
+    bench: benchmarks/ops/bench_gemm.py
+    bench_manifest_driven: true
+    kernel_map:
+      gemm_fp8_epilogue_kernel: GemmFp8EpilogueKernel
+      gemm_fp8_block_scaled_kernel: GemmFp8BlockScaledKernel
+
 GroupedGemmOp:
   ref_api: "none"
   family: gemm
