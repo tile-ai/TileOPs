@@ -358,7 +358,9 @@ def _ssd_chunk_scan_fwd_kernel(
                             M = 32
                             R = 2  # block_l // M
 
-                            # exp_l_micro and exp_s_micro should be allocated at the top level of the kernel
+                            # Allocate shared memory for factorized exponentials
+                            exp_l_micro = T.alloc_shared((block_l,), accum_dtype)
+                            exp_s_micro = T.alloc_shared((R, block_s), accum_dtype)
 
                             # Precompute exp_l_micro[ll] = exp(dA[ll] - anchor[r])
                             for ll in T.Parallel(block_l):
