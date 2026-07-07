@@ -1,4 +1,8 @@
-# Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
+# Copyright (c) 2023-2026, Songlin Yang, Yu Zhang, Zhiyuan Li
+#
+# This source code is licensed under the MIT license found in the original
+# Flash Linear Attention source tree.
+# Adapted and modified for TileOps GatedDeltaNet prefill integration.
 
 import functools
 from collections import OrderedDict

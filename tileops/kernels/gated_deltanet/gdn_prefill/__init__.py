@@ -1,5 +1,6 @@
 # Copyright (c) 2026 The Qwen team, Alibaba Group.
-# Licensed under The MIT License [see LICENSE for details]
+# Licensed under the MIT License; see THIRD_PARTY_NOTICES.md for details.
+# Adapted and modified for TileOps GatedDeltaNet prefill integration.
 
 from .tilelang_compat import install_gemm_v1_compat
 
