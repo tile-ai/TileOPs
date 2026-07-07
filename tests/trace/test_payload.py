@@ -42,11 +42,12 @@ def test_payload_in_loop():
 
                 # Simple sequential loop (not T.Pipelined)
                 for i in range(4):
-                    # Each iteration should be traceable with different payload
+                    # Each iteration traced with different payload
                     # Note: Due to compiler optimizations, this may still only
                     # record once, but the API should work
-                    if tx == 0:  # Only thread 0 to keep it simple
-                        out[i] = T.float32(i)
+                    with trace.range("loop_iter", payload=i):
+                        if tx == 0:  # Only thread 0 to keep it simple
+                            out[i] = T.float32(i)
 
         return trace.finalize(kernel)
 

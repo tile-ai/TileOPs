@@ -110,4 +110,3 @@ class RangeScope:
     def __exit__(self, exc_type, exc, tb) -> bool:
         close_range(self._tok)
         return False
-        return False
