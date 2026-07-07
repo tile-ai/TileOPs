@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool import AvgPool2dKernel, AvgPool3dKernel
+from tileops.kernels.pool import AvgPool2dSpatialKernel, AvgPool3dKernel
 from tileops.ops import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp
 
 
@@ -186,6 +186,31 @@ class AvgPool2dFixture(FixtureBase):
                 marks=pytest.mark.full,
                 id="full-divisor-override-bf16",
             ),
+            pytest.param(
+                1, 7, 9, 10, (3, 3), (2, 2), (1, 1), False, False, None, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-no-ceil-no-pad-count-fp16",
+            ),
+            pytest.param(
+                1, 5, 10, 11, (3, 3), (2, 2), (1, 1), True, True, None, torch.float32, False,
+                marks=pytest.mark.full,
+                id="full-ceil-pad-count-fp32",
+            ),
+            pytest.param(
+                2, 6, 9, 13, (2, 3), (2, 2), (0, 1), True, True, 7, torch.bfloat16, False,
+                marks=pytest.mark.full,
+                id="full-ceil-pad-count-divisor-bf16",
+            ),
+            pytest.param(
+                1, 9, 11, 12, (3, 5), (2, 3), (1, 2), True, False, 7, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-ceil-no-pad-count-divisor-fp16",
+            ),
+            pytest.param(
+                1, 8, 9, 9, (3, 3), (2, 2), (1, 1), False, False, 7, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-no-ceil-no-pad-count-divisor-fp16",
+            ),
         ]),
     ]
 
@@ -279,7 +304,23 @@ def test_avg_pool2d_dispatches_kernel() -> None:
         stride=(2, 2),
         padding=(1, 1),
     )
-    assert isinstance(op.kernel, AvgPool2dKernel)
+    assert isinstance(op.kernel, AvgPool2dSpatialKernel)
+
+
+@pytest.mark.smoke
+def test_avg_pool2d_rejects_non_positive_output_size() -> None:
+    with pytest.raises(ValueError, match="output size must be greater than zero"):
+        AvgPool2dFwdOp(
+            n=1,
+            c_in=1,
+            h_in=2,
+            w_in=2,
+            kernel_size=(5, 5),
+            stride=(1, 1),
+            padding=(0, 0),
+            ceil_mode=False,
+            count_include_pad=True,
+        )
 
 
 @pytest.mark.smoke
