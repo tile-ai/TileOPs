@@ -136,12 +136,17 @@ class _Trace:
         """
         return GroupScope(name, lead)
 
-    def range(self, name: str, lane: str = DEFAULT_LANE) -> RangeScope:
+    def range(self, name: str, lane: str = DEFAULT_LANE, payload=None) -> RangeScope:
         """Time a span: RANGE_BEGIN on enter, RANGE_END on exit.
 
         Args:
             name: Range name, interned to a stable event id.
             lane: Render sub-lane, interned dynamically (default ``"main"``).
+            payload: Optional 32-bit i32 payload — a Python ``int`` or a runtime
+                PrimExpr (e.g. a loop index). Records in both BEGIN and END events.
+                Useful for explicitly tagging iterations in a loop. ``None`` defaults
+                to 0, representing "no label". The payload is a user-provided tag,
+                NOT an implicit value derived from thread/block indices.
 
         Returns:
             A ``with`` context manager.
@@ -149,15 +154,23 @@ class _Trace:
         Example:
             >>> with trace.range("mma", lane="wgmma"):
             ...     T.wgmma_gemm(...)
+            >>> # Explicitly tag each iteration with its index:
+            >>> for i in range(N):
+            ...     with trace.range("iteration", payload=i):
+            ...         work()
         """
-        return RangeScope(name, lane)
+        return RangeScope(name, lane, payload)
 
-    def range_start(self, name: str, lane: str = DEFAULT_LANE) -> "AnnoToken":
+    def range_start(self, name: str, lane: str = DEFAULT_LANE, payload=None) -> "AnnoToken":
         """Open a range explicitly (use when ``with`` does not fit the control flow).
 
         Args:
             name: Range name, interned to a stable event id.
             lane: Render sub-lane, interned dynamically (default ``"main"``).
+            payload: Optional 32-bit i32 payload — a Python ``int`` or a runtime
+                PrimExpr (e.g. a loop index). ``None`` defaults to 0, representing
+                "no label". The payload is a user-provided tag, NOT an implicit
+                value derived from thread/block indices.
 
         Returns:
             A token to pass to ``range_end``.
@@ -166,8 +179,12 @@ class _Trace:
             >>> tok = trace.range_start("phase")
             >>> ...  # work
             >>> trace.range_end(tok)
+            >>> # Explicitly tag with payload:
+            >>> tok = trace.range_start("iteration", payload=i)
+            >>> ...
+            >>> trace.range_end(tok)
         """
-        return open_range(name, lane)
+        return open_range(name, lane, payload)
 
     def range_end(self, tok: "AnnoToken | None") -> None:
         """Close the range opened for ``tok`` (``None`` no-ops).
