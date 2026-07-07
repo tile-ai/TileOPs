@@ -114,12 +114,14 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
 
     post_order_visit(primfunc.body, collect)
 
-    # Support kernels with implicit thread blocks (T.Kernel(..., threads=N))
-    # When threadIdx.x is not explicitly bound, we need to synthesize it.
+    # Writer-election fallback for kernels with implicit thread blocks (T.Kernel(..., threads=N))
+    # When threadIdx.x is not explicitly bound, we need to synthesize it for writer election
+    # (determining which thread writes markers). This does NOT affect payload semantics:
+    # payloads remain explicit user-provided values or None (defaults to 0).
     # Strategy: use the __tl_thread_idx_x() helper (injected by inject_helper)
     if "threadIdx.x" not in bind:
         # Create a call to our injected helper that wraps threadIdx.x
-        # T.call_extern returns a TIR expression that we can use directly
+        # T.call_extern returns a TIR expression for writer-election logic
         tx_ = T.call_extern("int32", "__tl_thread_idx_x")
     else:
         tx_ = bind["threadIdx.x"].loop_var

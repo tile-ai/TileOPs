@@ -144,7 +144,9 @@ class _Trace:
             lane: Render sub-lane, interned dynamically (default ``"main"``).
             payload: Optional 32-bit i32 payload — a Python ``int`` or a runtime
                 PrimExpr (e.g. a loop index). Records in both BEGIN and END events.
-                Useful for tagging iterations in a loop. ``None`` records 0.
+                Useful for explicitly tagging iterations in a loop. ``None`` defaults
+                to 0, representing "no label". The payload is a user-provided tag,
+                NOT an implicit value derived from thread/block indices.
 
         Returns:
             A ``with`` context manager.
@@ -152,7 +154,7 @@ class _Trace:
         Example:
             >>> with trace.range("mma", lane="wgmma"):
             ...     T.wgmma_gemm(...)
-            >>> # Tag each iteration with its index:
+            >>> # Explicitly tag each iteration with its index:
             >>> for i in range(N):
             ...     with trace.range("iteration", payload=i):
             ...         work()
@@ -166,7 +168,9 @@ class _Trace:
             name: Range name, interned to a stable event id.
             lane: Render sub-lane, interned dynamically (default ``"main"``).
             payload: Optional 32-bit i32 payload — a Python ``int`` or a runtime
-                PrimExpr (e.g. a loop index). ``None`` records 0.
+                PrimExpr (e.g. a loop index). ``None`` defaults to 0, representing
+                "no label". The payload is a user-provided tag, NOT an implicit
+                value derived from thread/block indices.
 
         Returns:
             A token to pass to ``range_end``.
@@ -175,7 +179,7 @@ class _Trace:
             >>> tok = trace.range_start("phase")
             >>> ...  # work
             >>> trace.range_end(tok)
-            >>> # With payload:
+            >>> # Explicitly tag with payload:
             >>> tok = trace.range_start("iteration", payload=i)
             >>> ...
             >>> trace.range_end(tok)

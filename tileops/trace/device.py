@@ -5,7 +5,9 @@ wrapped in a ``__device__`` helper that the emit path calls via
 ``T.call_extern("uint64", "__tl_now")``. The helper is injected with
 ``T.import_source``, which must run inside a ``with T.Kernel(...)`` scope.
 
-Also provides ``__tl_thread_idx_x()`` helper for implicit thread blocks.
+Also provides ``__tl_thread_idx_x()`` helper for writer-election fallback when
+threadIdx.x is not explicitly bound. This helper is used by the trace lowering
+pass to determine which thread writes markers, NOT as a payload source.
 """
 
 import tilelang.language as T
@@ -20,7 +22,7 @@ __device__ __forceinline__ unsigned long long __tl_now() {
 }
 
 __device__ __forceinline__ int __tl_thread_idx_x() {
-    return threadIdx.x;  // CUDA builtin thread index
+    return threadIdx.x;  // Writer-election fallback for implicit thread blocks
 }
 """
 
@@ -31,6 +33,10 @@ def inject_helper() -> None:
     Emits the ``clock64()`` wrapper and threadIdx.x accessor via ``T.import_source`` so that
     ``T.call_extern("uint64", "__tl_now")`` and ``T.call_extern("int32", "__tl_thread_idx_x")``
     resolve at codegen.
+
+    The ``__tl_thread_idx_x()`` helper is used by the trace lowering pass for writer-election
+    when threadIdx.x is not explicitly bound. It determines which thread writes trace markers,
+    and is NOT used as a payload source. Payloads remain explicit user-provided values or None (→ 0).
 
     Note:
         MUST be called inside a ``with T.Kernel(...)`` scope. Calling it before

@@ -105,13 +105,17 @@ def test_payload_backward_compatibility(preserve_trace_state):
 
 
 def test_implicit_thread_blocks_with_payload_e2e(preserve_trace_state, tmp_path):
-    """End-to-end test: implicit thread blocks + constant payload.
+    """End-to-end test: writer-election fallback + constant payload.
 
     This test verifies:
     1. trace.range(..., payload=...) actually lowers to CUDA markers
     2. Payload is written to slots and can be decoded
-    3. Implicit thread block fallback (__tl_thread_idx_x) compiles and runs
+    3. Writer-election fallback (__tl_thread_idx_x) works when threadIdx.x is not bound
     4. Range begin/end pairs correctly into a slice
+
+    Note: __tl_thread_idx_x() is used for writer-election (determining which thread
+    writes markers), NOT as a payload source. The payload=42 is an explicit user-provided
+    constant, unrelated to thread indices.
     """
     trace.enable(output=str(tmp_path))
 
@@ -120,9 +124,10 @@ def test_implicit_thread_blocks_with_payload_e2e(preserve_trace_state, tmp_path)
         @T.prim_func
         def kernel(out: T.Buffer((16,), "float32")):
             # Use simple T.Kernel(..., threads=16) - no explicit threadIdx.x binding
-            # This triggers the __tl_thread_idx_x() fallback
+            # This triggers the __tl_thread_idx_x() writer-election fallback
             with T.Kernel(1, threads=16):
                 tx = T.get_thread_binding()
+                # Explicit payload=42 (user-provided constant)
                 with trace.range("test_range", payload=42):
                     out[tx] = T.float32(tx)
 
@@ -145,16 +150,21 @@ def test_implicit_thread_blocks_with_payload_e2e(preserve_trace_state, tmp_path)
     events = trace.decode(kernel, slots)
     slices = [e for e in events if e.name == "test_range"]
 
-    # Should have exactly one slice with payload 42
+    # Should have exactly one slice with payload 42 (the explicit user-provided value)
     assert len(slices) == 1, f"Expected exactly one test_range slice, got {len(slices)}"
     assert slices[0].payload == 42, f"Expected payload 42, got {slices[0].payload}"
 
 
 def test_dynamic_payload_runtime_expr(preserve_trace_state, tmp_path):
-    """End-to-end test: dynamic payload with runtime PrimExpr (loop index).
+    """End-to-end test: dynamic payload with explicit runtime PrimExpr (loop index).
 
     This test verifies that payload supports runtime expressions, not just constants.
-    Uses a simple non-pipelined loop and verifies payload values [0, 1, 2, 3].
+    Uses a simple non-pipelined loop where the user explicitly provides the loop index
+    as payload. This demonstrates that payloads are user-provided tags, not implicit
+    values derived from thread/block indices.
+
+    The payload values [0, 1, 2, 3] come from the explicit loop index 'i', NOT from
+    any implicit thread ID recovery.
     """
     trace.enable(output=str(tmp_path))
 
@@ -165,7 +175,7 @@ def test_dynamic_payload_runtime_expr(preserve_trace_state, tmp_path):
             # Use simple T.Kernel with threads=4
             with T.Kernel(1, threads=4):
                 tx = T.get_thread_binding()
-                # Use loop index as payload - this is a runtime PrimExpr
+                # Explicitly use loop index as payload - this is a user-provided runtime PrimExpr
                 for i in range(4):
                     with trace.range("loop_iter", payload=i):
                         if tx == 0:  # Only thread 0 writes
@@ -187,7 +197,7 @@ def test_dynamic_payload_runtime_expr(preserve_trace_state, tmp_path):
     events = trace.decode(kernel, slots)
     loop_slices = [e for e in events if e.name == "loop_iter"]
 
-    # Should have 4 slices with payloads [0, 1, 2, 3]
+    # Should have 4 slices with explicit user-provided payloads [0, 1, 2, 3]
     assert len(loop_slices) >= 4, f"Expected at least 4 loop_iter slices, got {len(loop_slices)}"
 
     payloads = sorted([s.payload for s in loop_slices[:4]])
