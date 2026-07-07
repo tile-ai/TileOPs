@@ -1,0 +1,40 @@
+# Regularization operators.
+
+DropoutOp:
+  ref_api: "torch.nn.functional.dropout"
+  family: regularization
+  status: implemented
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32"}
+    outputs:
+      output: {dtype: "same_as(x)"}
+    params:
+      N_total: {type: int}
+      dtype: {type: torch.dtype}
+      p: {type: float, default: 0.5}
+      seed: {type: int, default: 0}
+      training: {type: bool, default: true}
+    shape_rules:
+    - "N_total > 0"
+    - "0.0 <= p <= 1.0"
+
+  workloads:
+  # Normal kernel path. p=0, p=1, and training=false are short-circuit paths
+  # and should be tested separately from release-facing roofline workloads.
+  - {N_total: 4194304, dtype: float16, p: 0.5, training: true, dtypes: [float16], label: "tokens-1k-hidden-4k-fp16"}
+  - {N_total: 10485760, dtype: bfloat16, p: 0.5, training: true, dtypes: [bfloat16], label: "tokens-1k-hidden-10k-bf16"}
+  - {N_total: 4194304, dtype: float32, p: 0.1, training: true, dtypes: [float32], label: "tokens-1k-hidden-4k-fp32-p01"}
+
+  roofline:
+    func: "tileops.perf.formulas.dropout_roofline"
+
+  source:
+    kernel: tileops/kernels/dropout.py
+    kernel_map:
+      dropout: DropoutKernel
+    op: tileops/ops/dropout.py
+    test: tests/ops/test_dropout.py
+    bench: benchmarks/ops/bench_dropout.py
+    bench_manifest_driven: false

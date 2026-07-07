@@ -29,8 +29,15 @@ __all__ = [
     "deepseek_dsa_decode_roofline",
     "deepseek_mla_decode_roofline",
     "div_fwd_roofline",
+    "dropout_roofline",
+    "engram_decode_roofline",
+    "engram_gate_conv_bwd_roofline",
+    "engram_gate_conv_fwd_roofline",
     "eq_fwd_roofline",
+    "fft_c2c_roofline",
     "floor_divide_fwd_roofline",
+    "fp8_lighting_indexer_roofline",
+    "fp8_quant_roofline",
     "fused_moe_fwd_bytes",
     "ge_fwd_roofline",
     "gemm_fwd_roofline",
@@ -45,6 +52,7 @@ __all__ = [
     "gqa_prefill_with_kv_cache_fwd_roofline",
     "gqa_sliding_window_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
+    "grouped_gemm_roofline",
     "gt_fwd_roofline",
     "le_fwd_roofline",
     "lerp_fwd_roofline",
@@ -58,12 +66,17 @@ __all__ = [
     "mha_decode_paged_roofline",
     "mha_decode_roofline",
     "mha_fwd_roofline",
+    "mhc_post_roofline",
+    "mhc_pre_roofline",
     "minimum_fwd_roofline",
     "mul_fwd_roofline",
     "ne_fwd_roofline",
     "pow_fwd_roofline",
     "remainder_fwd_roofline",
+    "rope_position_ids_roofline",
+    "rope_roofline",
     "sub_fwd_roofline",
+    "topk_selector_roofline",
     "where_fwd_roofline",
 ]
 
@@ -1007,4 +1020,189 @@ def gemm_fwd_roofline(op: "Op") -> tuple[int, int]:
     elem_bytes = op.dtype.itemsize
     flops = 2 * m * n * k
     nbytes = (m * k + n * k + m * n) * elem_bytes
+    return int(flops), int(nbytes)
+
+
+def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
+    batch_sum = int(op.batch_sum)
+    batch_count = int(op.batch_count)
+    n = int(getattr(op, "N", getattr(op, "n", 0)))
+    k = int(getattr(op, "K", getattr(op, "k", 0)))
+    elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
+
+    flops = 2 * batch_sum * n * k
+    if not bool(op.transpose_a):
+        memory_a = batch_sum * k
+        memory_c = batch_sum * n
+        memory_b = batch_count * n * k
+    else:
+        memory_a = batch_sum * n
+        memory_c = batch_count * n * k
+        memory_b = k * batch_sum if bool(op.transpose_b) else batch_sum * k
+    return int(flops), int((memory_a + memory_b + memory_c) * elem)
+
+
+def rope_roofline(op: "Op") -> tuple[int, int]:
+    seq_len = int(op.seq_len)
+    head_dim = int(op.head_dim)
+    batch = int(getattr(op, "batch", 1))
+    num_heads = int(getattr(op, "num_heads", 1))
+    layout = getattr(op, "layout", "1d")
+    elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
+    outer = batch * num_heads if layout == "2d" else 1
+    x_elems = outer * seq_len * head_dim
+    cos_sin_elems = seq_len * (head_dim // 2) * 2
+    flops = 4 * x_elems
+    nbytes = (2 * x_elems + cos_sin_elems) * elem
+    return int(flops), int(nbytes)
+
+
+def rope_position_ids_roofline(op: "Op") -> tuple[int, int]:
+    num_tokens = int(op.num_tokens)
+    num_heads = int(op.num_heads)
+    head_dim = int(op.head_dim)
+    rotary_dim = int(getattr(op, "rotary_dim", head_dim) or head_dim)
+    max_position = int(op.max_position)
+    elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
+    x_elems = num_tokens * num_heads * head_dim
+    cos_sin_elems = max_position * (rotary_dim // 2) * 2
+    pos_elems = num_tokens
+    return int(4 * x_elems), int((2 * x_elems + cos_sin_elems) * elem + pos_elems * 4)
+
+
+def dropout_roofline(op: "Op") -> tuple[int, int]:
+    n_total = int(op.N_total)
+    elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
+    if not bool(getattr(op, "training", True)) or float(getattr(op, "p", 0.5)) == 0.0:
+        return 0, int(2 * n_total * elem)
+    if float(getattr(op, "p", 0.5)) == 1.0:
+        return 0, int(n_total * elem)
+    return int(n_total), int(2 * n_total * elem)
+
+
+def fp8_quant_roofline(op: "Op") -> tuple[int, int]:
+    batch = int(op.batch)
+    seq_len_kv = int(op.seq_len_kv)
+    kv_group = int(op.kv_group)
+    index_dim = int(op.index_dim)
+    in_elem = _dtype_itemsize(getattr(op, "in_dtype", "float16"))
+    groups = batch * seq_len_kv * kv_group
+    elems = groups * index_dim
+    flops = 6 * elems + groups
+    nbytes = elems * in_elem + elems * 1 + groups * 4
+    return int(flops), int(nbytes)
+
+
+def fp8_lighting_indexer_roofline(op: "Op") -> tuple[int, int]:
+    batch = int(op.batch)
+    seq_len = int(op.seq_len)
+    heads = int(op.heads)
+    index_dim = int(op.index_dim)
+    seq_len_kv = int(op.seq_len_kv)
+    kv_group = int(op.kv_group)
+    scores = batch * seq_len * seq_len_kv * kv_group
+    q_elems = batch * seq_len * heads * index_dim
+    k_elems = batch * seq_len_kv * kv_group * index_dim
+    weights = seq_len * heads
+    flops = 2 * scores * index_dim
+    nbytes = q_elems + k_elems + batch * seq_len_kv * kv_group * 4 + weights * 4
+    nbytes += 2 * seq_len * 4 + scores * 4
+    return int(flops), int(nbytes)
+
+
+def topk_selector_roofline(op: "Op") -> tuple[int, int]:
+    batch = int(op.batch)
+    seq_len = int(op.seq_len)
+    seq_len_kv = int(op.seq_len_kv)
+    kv_group = int(op.kv_group)
+    topk = int(op.topk)
+    in_elem = _dtype_itemsize(getattr(op, "in_dtype", "float32"))
+    out_elem = _dtype_itemsize(getattr(op, "out_dtype", "int32"))
+    comparisons = batch * seq_len * kv_group * seq_len_kv
+    nbytes = comparisons * in_elem + batch * seq_len * 2 * out_elem
+    nbytes += batch * seq_len * kv_group * topk * out_elem
+    return int(comparisons), int(nbytes)
+
+
+def _engram_elem_bytes(op: "Op") -> int:
+    return _dtype_itemsize(getattr(op, "dtype", "float16"))
+
+
+def engram_gate_conv_fwd_roofline(op: "Op") -> tuple[int, int]:
+    m = int(op.M)
+    seq_len = int(op.seq_len)
+    d = int(getattr(op, "d_padded", op.d))
+    elem = _engram_elem_bytes(op)
+    flops = m * seq_len * (24 * d) + 20 * m * seq_len
+    nbytes = (5 * m * seq_len * d) * elem + 4 * m * seq_len * 4 + 6 * d * elem
+    return int(flops), int(nbytes)
+
+
+def engram_gate_conv_bwd_roofline(op: "Op") -> tuple[int, int]:
+    m = int(op.M)
+    seq_len = int(op.seq_len)
+    d = int(getattr(op, "d_padded", op.d))
+    elem = _engram_elem_bytes(op)
+    fwd_flops = m * seq_len * (24 * d) + 20 * m * seq_len
+    read_bytes = 5 * m * seq_len * d * elem + 6 * d * elem + 4 * m * seq_len * 4
+    write_bytes = 3 * m * seq_len * d * elem + 10 * d * 4 + m * seq_len * d * 4
+    return int(fwd_flops * 2.5), int(read_bytes + write_bytes)
+
+
+def engram_decode_roofline(op: "Op") -> tuple[int, int]:
+    batch = int(op.batch)
+    d_mem = int(op.d_mem)
+    d = int(getattr(op, "d_padded", op.d))
+    max_conv_len = int(op.max_conv_len)
+    conv_kernel_size = int(op.conv_kernel_size)
+    elem = _engram_elem_bytes(op)
+    flops = (
+        4 * batch * d_mem * d
+        + batch * (16 * d + conv_kernel_size * 2 * d)
+        + 20 * batch
+    )
+    nbytes = (
+        batch * d_mem
+        + batch * d
+        + 2 * batch * max_conv_len * d
+        + 2 * d_mem * d
+        + 2 * d
+        + conv_kernel_size * d
+        + batch * d
+    ) * elem
+    return int(flops), int(nbytes)
+
+
+def fft_c2c_roofline(op: "Op") -> tuple[int, int]:
+    import math
+
+    n = int(op.n)
+    elem = _dtype_itemsize(getattr(op, "dtype", "complex64"))
+    # Runtime batch is inferred from the input and kernel cache. Before a
+    # forward call, the constructed default kernel represents batch=1.
+    batch = int(getattr(getattr(op, "kernel", None), "batch_size", 1) or 1)
+    return int(batch * 5 * n * math.log2(n)), int(batch * 2 * n * elem)
+
+
+def mhc_pre_roofline(op: "Op") -> tuple[int, int]:
+    batch = int(op.batch)
+    n_expand = int(op.n_expand)
+    c_x = int(op.c_x)
+    flops = 2 * batch * (
+        (n_expand * n_expand * c_x * c_x)
+        * (n_expand * n_expand + 2 * n_expand)
+        + n_expand * c_x
+    )
+    nbytes = (n_expand * 3 + 1) * c_x + (n_expand * c_x) * (
+        n_expand * n_expand + 2 * n_expand
+    )
+    return int(flops), int(nbytes)
+
+
+def mhc_post_roofline(op: "Op") -> tuple[int, int]:
+    batch = int(op.batch)
+    n_expand = int(op.n_expand)
+    c_x = int(op.c_x)
+    flops = 2 * batch * (n_expand * n_expand * c_x * c_x + n_expand * c_x)
+    nbytes = (n_expand * 2 + 1) * c_x
     return int(flops), int(nbytes)
