@@ -186,6 +186,31 @@ class AvgPool2dFixture(FixtureBase):
                 marks=pytest.mark.full,
                 id="full-divisor-override-bf16",
             ),
+            pytest.param(
+                1, 7, 9, 10, (3, 3), (2, 2), (1, 1), False, False, None, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-no-ceil-no-pad-count-fp16",
+            ),
+            pytest.param(
+                1, 5, 10, 11, (3, 3), (2, 2), (1, 1), True, True, None, torch.float32, False,
+                marks=pytest.mark.full,
+                id="full-ceil-pad-count-fp32",
+            ),
+            pytest.param(
+                2, 6, 9, 13, (2, 3), (2, 2), (0, 1), True, True, 7, torch.bfloat16, False,
+                marks=pytest.mark.full,
+                id="full-ceil-pad-count-divisor-bf16",
+            ),
+            pytest.param(
+                1, 9, 11, 12, (3, 5), (2, 3), (1, 2), True, False, 7, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-ceil-no-pad-count-divisor-fp16",
+            ),
+            pytest.param(
+                1, 8, 9, 9, (3, 3), (2, 2), (1, 1), False, False, 7, torch.float16, False,
+                marks=pytest.mark.full,
+                id="full-no-ceil-no-pad-count-divisor-fp16",
+            ),
         ]),
     ]
 
