@@ -118,10 +118,6 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
     # When threadIdx.x is not explicitly bound, we need to synthesize it.
     # Strategy: use the __tl_thread_idx_x() helper (injected by inject_helper)
     if "threadIdx.x" not in bind:
-        import sys
-        print("[Trace] Warning: No explicit threadIdx.x binding found. "
-              "Using __tl_thread_idx_x() helper for implicit thread block.",
-              file=sys.stderr)
         # Create a call to our injected helper that wraps threadIdx.x
         # T.call_extern returns a TIR expression that we can use directly
         tx_ = T.call_extern("int32", "__tl_thread_idx_x")
