@@ -30,7 +30,11 @@ def test_payload_api_signature():
 
 
 def test_payload_in_loop():
-    """Test payload in a simple loop (non-pipelined)."""
+    """Test payload in a simple loop (non-pipelined).
+
+    Note: This test verifies compilation and execution correctness.
+    It does not decode trace slots or assert payload values.
+    """
     trace.enable(output="debug")
 
     @tilelang.jit(out_idx=trace.out_idx(1))
@@ -43,8 +47,8 @@ def test_payload_in_loop():
                 # Simple sequential loop (not T.Pipelined)
                 for i in range(4):
                     # Each iteration traced with different payload
-                    # Note: Due to compiler optimizations, this may still only
-                    # record once, but the API should work
+                    # Note: Due to compiler optimizations, actual captured
+                    # payload values are not validated in this test
                     with trace.range("loop_iter", payload=i):
                         if tx == 0:  # Only thread 0 to keep it simple
                             out[i] = T.float32(i)
@@ -53,11 +57,19 @@ def test_payload_in_loop():
 
     kernel = build()
     output = torch.zeros(4, dtype=torch.float32, device="cuda")
+
+    # When tracing is enabled, kernel returns (output, slots)
     result = kernel(output)
+    if isinstance(result, tuple):
+        output_tensor, slots = result
+    else:
+        output_tensor = result
 
     # Verify kernel ran correctly
     expected = torch.tensor([0., 1., 2., 3.], dtype=torch.float32, device="cuda")
-    assert torch.allclose(result, expected)
+    assert torch.allclose(output_tensor, expected)
+
+    trace.disable()
 
 
 def test_payload_with_range_start_end():
@@ -102,6 +114,38 @@ def test_payload_backward_compatibility():
 
     kernel = build()
     assert kernel is not None
+
+
+def test_payload_with_trace_run():
+    """Test payload using trace.run and verify slots are returned.
+
+    This test validates the documented behavior: when tracing is enabled,
+    compiled kernels return (*real_outputs, slots).
+    """
+    trace.enable(output="debug")
+
+    @tilelang.jit(out_idx=trace.out_idx(1))
+    def build():
+        @T.prim_func
+        def kernel(out: T.Buffer((16,), "float32")):
+            with T.Kernel(1, threads=16):
+                tx = T.get_thread_binding()
+                with trace.range("test_range", payload=42):
+                    out[tx] = T.float32(tx)
+
+        return trace.finalize(kernel)
+
+    kernel = build()
+    output = torch.zeros(16, dtype=torch.float32, device="cuda")
+
+    # Use trace.run which handles (output, slots) unpacking
+    result = trace.run(kernel, (output,), stem="test_payload_run")
+
+    # Verify kernel output
+    expected = torch.arange(16, dtype=torch.float32, device="cuda")
+    assert torch.allclose(result, expected)
+
+    trace.disable()
 
 
 if __name__ == "__main__":
