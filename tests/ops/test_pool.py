@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool import AvgPool2dKernel, AvgPool3dKernel
+from tileops.kernels.pool import AvgPool2dKernel, AvgPool2dSpatialKernel, AvgPool3dKernel
 from tileops.ops import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp
 
 
@@ -279,7 +279,7 @@ def test_avg_pool2d_dispatches_kernel() -> None:
         stride=(2, 2),
         padding=(1, 1),
     )
-    assert isinstance(op.kernel, AvgPool2dKernel)
+    assert isinstance(op.kernel, AvgPool2dSpatialKernel)
 
 
 @pytest.mark.smoke

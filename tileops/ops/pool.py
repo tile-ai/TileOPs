@@ -3,7 +3,12 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool import AvgPool1dKernel, AvgPool2dKernel, AvgPool3dKernel
+from tileops.kernels.pool import (
+    AvgPool1dKernel,
+    AvgPool2dKernel,
+    AvgPool2dSpatialKernel,
+    AvgPool3dKernel,
+)
 from tileops.kernels.pool.common import (
     _normalize_pool_dims,
     pool_output_dim,
@@ -191,9 +196,13 @@ class AvgPool2dFwdOp(Op):
         )
 
         self.dispatch_kernel(kernel_map)
-        if "avg_pool2d_kernel" not in self.kernel_map:
+        if (
+            "avg_pool2d_kernel" not in self.kernel_map
+            and "avg_pool2d_spatial_kernel" not in self.kernel_map
+        ):
             raise NotImplementedError(
-                "AvgPool2dFwdOp requires 'avg_pool2d_kernel' in kernel_map"
+                "AvgPool2dFwdOp requires 'avg_pool2d_kernel' or "
+                "'avg_pool2d_spatial_kernel' in kernel_map"
             )
         self.out_h = pool_output_dim(
             self.h_in, self.kernel_size[0], self.stride[0], self.padding[0], self.ceil_mode
@@ -201,7 +210,8 @@ class AvgPool2dFwdOp(Op):
         self.out_w = pool_output_dim(
             self.w_in, self.kernel_size[1], self.stride[1], self.padding[1], self.ceil_mode
         )
-        self.kernel = self.kernel_map["avg_pool2d_kernel"](
+
+        kernel_kwargs = dict(
             n=n,
             c_in=c_in,
             h_in=h_in,
@@ -212,16 +222,36 @@ class AvgPool2dFwdOp(Op):
             stride_w=self.stride[1],
             pad_h=self.padding[0],
             pad_w=self.padding[1],
-            ceil_mode=ceil_mode,
-            count_include_pad=count_include_pad,
-            divisor_override=divisor_override,
             dtype=dtype,
             tune=tune,
         )
+        use_spatial_fast_path = (
+            not ceil_mode
+            and count_include_pad
+            and divisor_override is None
+            and "avg_pool2d_spatial_kernel" in self.kernel_map
+        )
+        if use_spatial_fast_path:
+            self.kernel = self.kernel_map["avg_pool2d_spatial_kernel"](**kernel_kwargs)
+        elif "avg_pool2d_kernel" in self.kernel_map:
+            self.kernel = self.kernel_map["avg_pool2d_kernel"](
+                **kernel_kwargs,
+                ceil_mode=ceil_mode,
+                count_include_pad=count_include_pad,
+                divisor_override=divisor_override,
+            )
+        else:
+            raise NotImplementedError(
+                "AvgPool2dFwdOp requires 'avg_pool2d_kernel' or "
+                "'avg_pool2d_spatial_kernel' in kernel_map"
+            )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"avg_pool2d_kernel": AvgPool2dKernel}
+        return {
+            "avg_pool2d_kernel": AvgPool2dKernel,
+            "avg_pool2d_spatial_kernel": AvgPool2dSpatialKernel,
+        }
 
     def _infer_output_shapes(
         self, input_shape: tuple[int, ...]

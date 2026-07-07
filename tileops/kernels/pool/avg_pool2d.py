@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool.common import pool_output_dim
 
-__all__ = ["AvgPool2dKernel"]
+__all__ = ["AvgPool2dKernel", "AvgPool2dSpatialKernel"]
 
 
 @functools.lru_cache(maxsize=64)
@@ -135,6 +135,123 @@ def _avg_pool2d_kernel(
     return _avg_pool2d_func
 
 
+@functools.lru_cache(maxsize=64)
+def _avg_pool2d_spatial_kernel(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_h: int,
+    stride_w: int,
+    pad_h: int,
+    pad_w: int,
+    dtype: str = "float16",
+):
+    accum_dtype = "float"
+    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, False)
+    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, False)
+    total_output = n * c_in * out_h * out_w
+
+    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _avg_pool2d_spatial_func(block_m: int, threads: int):
+        @T.prim_func
+        def _avg_pool2d_spatial_main(
+            x: T.Tensor((n, c_in, h_in, w_in), dtype),  # type: ignore
+            out: T.Tensor((n, c_in, out_h, out_w), dtype),  # type: ignore
+        ):
+            with T.Kernel(T.ceildiv(total_output, block_m), threads=threads) as bx:
+                for i in T.Parallel(block_m):
+                    out_idx = bx * block_m + i
+                    if out_idx < total_output:
+                        ow = out_idx % out_w
+                        spatial_idx = out_idx // out_w
+                        oh = spatial_idx % out_h
+                        channel_batch_idx = spatial_idx // out_h
+                        c_idx = channel_batch_idx % c_in
+                        batch = channel_batch_idx // c_in
+
+                        sum_val = T.alloc_var(T.float32)
+                        sum_val = T.cast(0.0, accum_dtype)
+                        for kh in T.serial(kernel_h):
+                            for kw in T.serial(kernel_w):
+                                ih = oh * stride_h + kh - pad_h
+                                iw = ow * stride_w + kw - pad_w
+                                if ih >= 0 and ih < h_in and iw >= 0 and iw < w_in:
+                                    sum_val += T.cast(
+                                        x[batch, c_idx, ih, iw], accum_dtype
+                                    )
+
+                        out[batch, c_idx, oh, ow] = T.cast(
+                            sum_val / T.cast(kernel_h * kernel_w, accum_dtype),
+                            dtype,
+                        )
+
+        return _avg_pool2d_spatial_main
+
+    return _avg_pool2d_spatial_func
+
+
+@torch.library.custom_op("top::avg_pool2d_spatial_wrapped_kernel", mutates_args=())
+def _avg_pool2d_spatial_wrapped_kernel(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_h: int,
+    stride_w: int,
+    pad_h: int,
+    pad_w: int,
+    dtype: str,
+    block_m: int,
+    threads: int,
+    x: torch.Tensor,
+) -> torch.Tensor:
+    return _avg_pool2d_spatial_kernel(
+        n,
+        c_in,
+        h_in,
+        w_in,
+        kernel_h,
+        kernel_w,
+        stride_h,
+        stride_w,
+        pad_h,
+        pad_w,
+        dtype,
+    )(block_m, threads)(x)
+
+
+@_avg_pool2d_spatial_wrapped_kernel.register_fake
+def _(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_h: int,
+    stride_w: int,
+    pad_h: int,
+    pad_w: int,
+    dtype: str,
+    block_m: int,
+    threads: int,
+    x: torch.Tensor,
+) -> torch.Tensor:
+    _ = (
+        dtype,
+        block_m,
+        threads,
+    )
+    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, False)
+    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, False)
+    return torch.empty((n, c_in, out_h, out_w), dtype=x.dtype, device=x.device)
+
+
 @torch.library.custom_op("top::avg_pool2d_wrapped_kernel", mutates_args=())
 def _avg_pool2d_wrapped_kernel(
     n: int,
@@ -210,6 +327,89 @@ def _(
     out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode)
     out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode)
     return torch.empty((n, c_in, out_h, out_w), dtype=x.dtype, device=x.device)
+
+
+class AvgPool2dSpatialKernel(Kernel):
+    """Fast path for common NCHW avg_pool2d workloads."""
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        h_in: int,
+        w_in: int,
+        kernel_h: int,
+        kernel_w: int,
+        stride_h: int,
+        stride_w: int,
+        pad_h: int,
+        pad_w: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        self.n = n
+        self.c_in = c_in
+        self.h_in = h_in
+        self.w_in = w_in
+        self.kernel_h = kernel_h
+        self.kernel_w = kernel_w
+        self.stride_h = stride_h
+        self.stride_w = stride_w
+        self.pad_h = pad_h
+        self.pad_w = pad_w
+        self.dtype = dtype
+        self.out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, False)
+        self.out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, False)
+        self.kernel = _avg_pool2d_spatial_kernel(
+            n,
+            c_in,
+            h_in,
+            w_in,
+            kernel_h,
+            kernel_w,
+            stride_h,
+            stride_w,
+            pad_h,
+            pad_w,
+            self.dtype_str,
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 256,
+            "threads": 256,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [
+            {"block_m": block_m, "threads": threads}
+            for block_m, threads in itertools.product([128, 256, 512], [256, 512])
+        ]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return _avg_pool2d_spatial_wrapped_kernel(
+            self.n,
+            self.c_in,
+            self.h_in,
+            self.w_in,
+            self.kernel_h,
+            self.kernel_w,
+            self.stride_h,
+            self.stride_w,
+            self.pad_h,
+            self.pad_w,
+            self.dtype_str,
+            self.config["block_m"],
+            self.config["threads"],
+            x,
+        )
 
 
 class AvgPool2dKernel(Kernel):
