@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool import AvgPool2dKernel, AvgPool2dSpatialKernel, AvgPool3dKernel
+from tileops.kernels.pool import AvgPool2dSpatialKernel, AvgPool3dKernel
 from tileops.ops import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp
 
 
@@ -305,6 +305,22 @@ def test_avg_pool2d_dispatches_kernel() -> None:
         padding=(1, 1),
     )
     assert isinstance(op.kernel, AvgPool2dSpatialKernel)
+
+
+@pytest.mark.smoke
+def test_avg_pool2d_rejects_non_positive_output_size() -> None:
+    with pytest.raises(ValueError, match="output size must be greater than zero"):
+        AvgPool2dFwdOp(
+            n=1,
+            c_in=1,
+            h_in=2,
+            w_in=2,
+            kernel_size=(5, 5),
+            stride=(1, 1),
+            padding=(0, 0),
+            ceil_mode=False,
+            count_include_pad=True,
+        )
 
 
 @pytest.mark.smoke

@@ -210,6 +210,11 @@ class AvgPool2dFwdOp(Op):
         self.out_w = pool_output_dim(
             self.w_in, self.kernel_size[1], self.stride[1], self.padding[1], self.ceil_mode
         )
+        if self.out_h <= 0 or self.out_w <= 0:
+            raise ValueError(
+                "AvgPool2dFwdOp calculated output size must be greater than zero, "
+                f"got ({self.out_h}, {self.out_w})"
+            )
 
         kernel_kwargs = dict(
             n=n,
