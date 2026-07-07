@@ -92,7 +92,7 @@ GroupedGemmOp:
     func: "tileops.perf.formulas.grouped_gemm_roofline"
 
   source:
-    kernel: tileops/kernels/grouped_gemm.py
+    kernel: tileops/kernels/grouped_gemm/grouped_gemm.py
     kernel_map:
       grouped_gemm_kernel: GroupedGemmKernel
     op: tileops/ops/grouped_gemm.py

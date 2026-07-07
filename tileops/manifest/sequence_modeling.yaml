@@ -45,7 +45,7 @@ EngramGateConvFwdOp:
     func: "tileops.perf.formulas.engram_gate_conv_fwd_roofline"
 
   source:
-    kernel: tileops/kernels/engram.py
+    kernel: tileops/kernels/engram/engram_fwd.py
     kernel_map:
       engram_gate_conv_fwd: EngramGateConvFwdKernel
     op: tileops/ops/engram.py
@@ -106,7 +106,7 @@ EngramGateConvBwdOp:
     func: "tileops.perf.formulas.engram_gate_conv_bwd_roofline"
 
   source:
-    kernel: tileops/kernels/engram.py
+    kernel: tileops/kernels/engram/engram_bwd.py
     kernel_map:
       engram_gate_conv_bwd: EngramGateConvBwdKernel
     op: tileops/ops/engram.py
@@ -159,7 +159,7 @@ EngramDecodeOp:
     func: "tileops.perf.formulas.engram_decode_roofline"
 
   source:
-    kernel: tileops/kernels/engram.py
+    kernel: tileops/kernels/engram/engram_decode.py
     kernel_map:
       engram_decode: EngramDecodeKernel
     op: tileops/ops/engram_decode.py
@@ -229,15 +229,15 @@ MHCPreOp:
     - "b.shape == (n_expand * n_expand + 2 * n_expand,)"
 
   workloads:
-  - {batch: 1, n_expand: 4, c_x: 1280, dtype: bfloat16, dtypes: [bfloat16], label: "pre-small"}
-  - {batch: 2, n_expand: 4, c_x: 1920, dtype: bfloat16, dtypes: [bfloat16], label: "pre-medium"}
-  - {batch: 4, n_expand: 4, c_x: 2560, dtype: bfloat16, dtypes: [bfloat16], label: "pre-large"}
+  - {batch: 1, n_expand: 4, c_x: 1280, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, dtype: bfloat16, dtypes: [bfloat16], label: "pre-small"}
+  - {batch: 2, n_expand: 4, c_x: 1920, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, dtype: bfloat16, dtypes: [bfloat16], label: "pre-medium"}
+  - {batch: 4, n_expand: 4, c_x: 2560, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, dtype: bfloat16, dtypes: [bfloat16], label: "pre-large"}
 
   roofline:
     func: "tileops.perf.formulas.mhc_pre_roofline"
 
   source:
-    kernel: tileops/kernels/mhc.py
+    kernel: tileops/kernels/mhc/mhc_pre.py
     kernel_map:
       mhc_pre_kernel: MHCPreKernel
     op: tileops/ops/mhc.py
@@ -275,7 +275,7 @@ MHCPostOp:
     func: "tileops.perf.formulas.mhc_post_roofline"
 
   source:
-    kernel: tileops/kernels/mhc.py
+    kernel: tileops/kernels/mhc/mhc_post.py
     kernel_map:
       mhc_post_kernel: MHCPostKernel
     op: tileops/ops/mhc.py
