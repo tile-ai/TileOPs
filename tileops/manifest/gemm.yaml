@@ -50,3 +50,52 @@ GemmOp:
     kernel_map:
       gemm_kernel: GemmKernel
       gemv_kernel: GemvKernel
+
+GroupedGemmOp:
+  ref_api: "none"
+  family: gemm
+  status: implemented
+
+  signature:
+    inputs:
+      a: {dtype: "float16 | bfloat16", shape: "[batch_sum, K] | [batch_sum, N]"}
+      b: {dtype: "same_as(a)", shape: "[batch_count, N, K] | [batch_count, K, N] | [K, batch_sum] | [batch_sum, K]"}
+      batch_sizes: {dtype: "int32", shape: "[batch_count]"}
+      batch_offsets: {dtype: "int32", shape: "[batch_count]"}
+      batch_padded_offsets: {dtype: "int32", shape: "[batch_count]"}
+    outputs:
+      output: {dtype: "same_as(a)", shape: "[batch_sum, N] | [batch_count, N, K]"}
+    params:
+      batch_sum: {type: int}
+      batch_count: {type: int}
+      n: {type: int}
+      k: {type: int}
+      transpose_a: {type: bool, default: false}
+      transpose_b: {type: bool, default: true}
+    shape_rules:
+    - "batch_sizes.shape == (batch_count,)"
+    - "batch_offsets.shape == (batch_count,)"
+    - "batch_padded_offsets.shape == (batch_count,)"
+    - "a.shape == (batch_sum, k) if not transpose_a else a.shape == (batch_sum, n)"
+    - "b.shape == (batch_count, n, k) if (not transpose_a and transpose_b) else True"
+    - "b.shape == (batch_count, k, n) if (not transpose_a and not transpose_b) else True"
+    - "b.shape == (k, batch_sum) if (transpose_a and transpose_b) else True"
+    - "b.shape == (batch_sum, k) if (transpose_a and not transpose_b) else True"
+
+  workloads:
+  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: true, dtypes: [float16], label: "nt-batch16-m4096-n4096-k4096-fp16"}
+  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: bfloat16, transpose_a: false, transpose_b: true, dtypes: [bfloat16], label: "nt-batch16-m4096-n4096-k4096-bf16"}
+  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: false, dtypes: [float16], label: "nn-batch16-m4096-n4096-k4096-fp16"}
+  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: true, transpose_b: false, dtypes: [float16], label: "tn-batch16-m4096-n4096-k4096-fp16"}
+
+  roofline:
+    func: "tileops.perf.formulas.grouped_gemm_roofline"
+
+  source:
+    kernel: tileops/kernels/grouped_gemm/grouped_gemm.py
+    kernel_map:
+      grouped_gemm_kernel: GroupedGemmKernel
+    op: tileops/ops/grouped_gemm.py
+    test: tests/ops/test_grouped_gemm.py
+    bench: benchmarks/ops/bench_grouped_gemm.py
+    bench_manifest_driven: false

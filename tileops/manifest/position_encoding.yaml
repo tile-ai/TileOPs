@@ -1,0 +1,253 @@
+# Position-encoding operators.
+#
+# These ops already exist in tileops/ops/rope.py. The manifest keeps the
+# current runtime surface as source of truth: construction binds the static
+# sequence/head dimensions and forward applies the rotation to input tensors.
+
+RopeNeoxOp:
+  ref_api: "none"
+  family: position_encoding
+  status: implemented
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+    outputs:
+      output: {dtype: "same_as(x)", shape: "same_as(x)"}
+    params:
+      seq_len: {type: int}
+      head_dim: {type: int}
+      dtype: {type: torch.dtype}
+      layout: {type: str, default: "1d"}
+      batch: {type: int, default: 1}
+      num_heads: {type: int, default: 1}
+      base: {type: float, default: 10000.0}
+    shape_rules:
+    - "x.shape == (seq_len, head_dim) or x.shape == (batch, seq_len, num_heads, head_dim)"
+    - "head_dim % 2 == 0"
+
+  workloads:
+  - {seq_len: 2048, head_dim: 64, dtype: float16, layout: "1d", dtypes: [float16], label: "neox-1d-2k-d64-fp16"}
+  - {seq_len: 4096, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "neox-1d-4k-d128-bf16"}
+  - {batch: 2, seq_len: 2048, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "neox-2d-b2-s2k-h32-d128-fp16"}
+
+  roofline:
+    func: "tileops.perf.formulas.rope_roofline"
+
+  source:
+    kernel: tileops/kernels/rope.py
+    kernel_map:
+      rope_neox: RopeNeoxKernel
+    op: tileops/ops/rope.py
+    test: tests/ops/test_rope.py
+    bench: benchmarks/ops/bench_rope.py
+    bench_manifest_driven: false
+
+RopeNonNeoxOp:
+  ref_api: "none"
+  family: position_encoding
+  status: implemented
+  variant_of: RopeNeoxOp
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+    outputs:
+      output: {dtype: "same_as(x)", shape: "same_as(x)"}
+    params:
+      seq_len: {type: int}
+      head_dim: {type: int}
+      dtype: {type: torch.dtype}
+      layout: {type: str, default: "1d"}
+      batch: {type: int, default: 1}
+      num_heads: {type: int, default: 1}
+      base: {type: float, default: 10000.0}
+    shape_rules:
+    - "x.shape == (seq_len, head_dim) or x.shape == (batch, seq_len, num_heads, head_dim)"
+    - "head_dim % 2 == 0"
+
+  workloads:
+  - {seq_len: 2048, head_dim: 64, dtype: float16, layout: "1d", dtypes: [float16], label: "non-neox-1d-2k-d64-fp16"}
+  - {batch: 2, seq_len: 2048, num_heads: 32, head_dim: 128, dtype: bfloat16, layout: "2d", dtypes: [bfloat16], label: "non-neox-2d-b2-s2k-h32-d128-bf16"}
+
+  roofline:
+    func: "tileops.perf.formulas.rope_roofline"
+
+  source:
+    kernel: tileops/kernels/rope.py
+    kernel_map:
+      rope_non_neox: RopeNonNeoxKernel
+    op: tileops/ops/rope.py
+    test: tests/ops/test_rope.py
+    bench: benchmarks/ops/bench_rope.py
+    bench_manifest_driven: false
+
+RopeLlama31Op:
+  ref_api: "none"
+  family: position_encoding
+  status: implemented
+  variant_of: RopeNeoxOp
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+    outputs:
+      output: {dtype: "same_as(x)", shape: "same_as(x)"}
+    params:
+      seq_len: {type: int}
+      head_dim: {type: int}
+      dtype: {type: torch.dtype}
+      layout: {type: str, default: "1d"}
+      batch: {type: int, default: 1}
+      num_heads: {type: int, default: 1}
+      base: {type: float, default: 10000.0}
+      scale_factor: {type: float, default: 8.0}
+      low_freq_factor: {type: float, default: 1.0}
+      high_freq_factor: {type: float, default: 4.0}
+      original_max_position: {type: int, default: 8192}
+    shape_rules:
+    - "x.shape == (seq_len, head_dim) or x.shape == (batch, seq_len, num_heads, head_dim)"
+    - "head_dim % 2 == 0"
+
+  workloads:
+  - {seq_len: 8192, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "llama31-1d-8k-d128-bf16"}
+  - {batch: 1, seq_len: 8192, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "llama31-2d-b1-s8k-h32-d128-fp16"}
+
+  roofline:
+    func: "tileops.perf.formulas.rope_roofline"
+
+  source:
+    kernel: tileops/kernels/rope.py
+    kernel_map:
+      rope_llama31: RopeLlama31Kernel
+    op: tileops/ops/rope.py
+    test: tests/ops/test_rope.py
+    bench: benchmarks/ops/bench_rope.py
+    bench_manifest_driven: false
+
+RopeYarnOp:
+  ref_api: "none"
+  family: position_encoding
+  status: implemented
+  variant_of: RopeNeoxOp
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+    outputs:
+      output: {dtype: "same_as(x)", shape: "same_as(x)"}
+    params:
+      seq_len: {type: int}
+      head_dim: {type: int}
+      dtype: {type: torch.dtype}
+      layout: {type: str, default: "1d"}
+      batch: {type: int, default: 1}
+      num_heads: {type: int, default: 1}
+      base: {type: float, default: 10000.0}
+      scale: {type: float, default: 16.0}
+      original_max_position: {type: int, default: 4096}
+      beta_fast: {type: float, default: 32.0}
+      beta_slow: {type: float, default: 1.0}
+      attn_factor: {type: float, default: 1.0}
+    shape_rules:
+    - "x.shape == (seq_len, head_dim) or x.shape == (batch, seq_len, num_heads, head_dim)"
+    - "head_dim % 2 == 0"
+
+  workloads:
+  - {seq_len: 8192, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "yarn-1d-8k-d128-bf16"}
+  - {batch: 1, seq_len: 8192, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "yarn-2d-b1-s8k-h32-d128-fp16"}
+
+  roofline:
+    func: "tileops.perf.formulas.rope_roofline"
+
+  source:
+    kernel: tileops/kernels/rope.py
+    kernel_map:
+      rope_yarn: RopeYarnKernel
+    op: tileops/ops/rope.py
+    test: tests/ops/test_rope.py
+    bench: benchmarks/ops/bench_rope.py
+    bench_manifest_driven: false
+
+RopeLongRopeOp:
+  ref_api: "none"
+  family: position_encoding
+  status: implemented
+  variant_of: RopeNeoxOp
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[seq_len, head_dim] | [batch, seq_len, num_heads, head_dim]"}
+    outputs:
+      output: {dtype: "same_as(x)", shape: "same_as(x)"}
+    params:
+      seq_len: {type: int}
+      head_dim: {type: int}
+      dtype: {type: torch.dtype}
+      layout: {type: str, default: "1d"}
+      batch: {type: int, default: 1}
+      num_heads: {type: int, default: 1}
+      base: {type: float, default: 10000.0}
+      rescale_factors: {type: "torch.Tensor | None", default: null}
+      max_position_embeddings: {type: int, default: 4096}
+      original_max_position_embeddings: {type: int, default: 4096}
+    shape_rules:
+    - "x.shape == (seq_len, head_dim) or x.shape == (batch, seq_len, num_heads, head_dim)"
+    - "head_dim % 2 == 0"
+
+  workloads:
+  - {seq_len: 8192, head_dim: 128, dtype: bfloat16, layout: "1d", dtypes: [bfloat16], label: "longrope-1d-8k-d128-bf16"}
+  - {batch: 1, seq_len: 8192, num_heads: 32, head_dim: 128, dtype: float16, layout: "2d", dtypes: [float16], label: "longrope-2d-b1-s8k-h32-d128-fp16"}
+
+  roofline:
+    func: "tileops.perf.formulas.rope_roofline"
+
+  source:
+    kernel: tileops/kernels/rope.py
+    kernel_map:
+      rope_longrope: RopeLongRopeKernel
+    op: tileops/ops/rope.py
+    test: tests/ops/test_rope.py
+    bench: benchmarks/ops/bench_rope.py
+    bench_manifest_driven: false
+
+RopeNeoxPositionIdsOp:
+  ref_api: "none"
+  family: position_encoding
+  status: implemented
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16 | float32", shape: "[num_tokens, num_heads, head_dim]"}
+      position_ids: {dtype: "int32 | int64", shape: "[num_tokens]"}
+    outputs:
+      output: {dtype: "same_as(x)", shape: "[num_tokens, num_heads, head_dim]"}
+    params:
+      num_tokens: {type: int}
+      num_heads: {type: int}
+      head_dim: {type: int}
+      max_position: {type: int}
+      dtype: {type: torch.dtype}
+      base: {type: float, default: 10000.0}
+      rotary_dim: {type: "int | None", default: null}
+    shape_rules:
+    - "x.shape == (num_tokens, num_heads, head_dim)"
+    - "position_ids.shape == (num_tokens,)"
+    - "head_dim % 2 == 0"
+    - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= head_dim)"
+
+  workloads:
+  - {num_tokens: 2048, num_heads: 32, head_dim: 128, max_position: 4096, dtype: float16, dtypes: [float16], label: "position-ids-s2k-h32-d128-fp16"}
+  - {num_tokens: 4096, num_heads: 32, head_dim: 128, max_position: 8192, dtype: bfloat16, dtypes: [bfloat16], label: "position-ids-s4k-h32-d128-bf16"}
+
+  roofline:
+    func: "tileops.perf.formulas.rope_position_ids_roofline"
+
+  source:
+    kernel: tileops/kernels/rope.py
+    kernel_map:
+      rope_neox_position_ids: RopeNeoxPositionIdsKernel
+    op: tileops/ops/rope.py
+    test: tests/ops/test_rope.py
+    bench: benchmarks/ops/bench_rope.py
+    bench_manifest_driven: false

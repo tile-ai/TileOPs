@@ -1,0 +1,94 @@
+# Attention indexing and sparse selection operators.
+
+FP8LightingIndexerOp:
+  ref_api: "none"
+  family: attention_indexing
+  status: implemented
+
+  signature:
+    inputs:
+      index_q: {dtype: "bfloat16 | float8_e4m3fn", shape: "[batch, seq_len, heads, index_dim]"}
+      index_k: {dtype: "bfloat16 | float8_e4m3fn", shape: "[batch, seq_len_kv, kv_group, index_dim]"}
+      weights: {dtype: "float32", shape: "[seq_len, heads]"}
+      cu_seqlen_ks: {dtype: "int32", shape: "[seq_len]"}
+      cu_seqlen_ke: {dtype: "int32", shape: "[seq_len]"}
+      index_k_scale: {dtype: "float32", shape: "[batch, seq_len_kv, kv_group]"}
+    outputs:
+      logits: {dtype: "float32", shape: "[batch, seq_len, seq_len_kv, kv_group]"}
+    params:
+      batch: {type: int}
+      seq_len: {type: int}
+      heads: {type: int}
+      index_dim: {type: int}
+      seq_len_kv: {type: int}
+      kv_group: {type: int}
+      clean_logits: {type: bool, default: true}
+      config: {type: "dict | None", default: null}
+    dtype_combos:
+    - {index_q: bfloat16, index_k: bfloat16, weights: float32, cu_seqlen_ks: int32, cu_seqlen_ke: int32, index_k_scale: float32}
+    - {index_q: float8_e4m3fn, index_k: float8_e4m3fn, weights: float32, cu_seqlen_ks: int32, cu_seqlen_ke: int32, index_k_scale: float32}
+    shape_rules:
+    - "index_q.shape == (batch, seq_len, heads, index_dim)"
+    - "index_k.shape == (batch, seq_len_kv, kv_group, index_dim)"
+    - "weights.shape == (seq_len, heads)"
+    - "cu_seqlen_ks.shape == (seq_len,)"
+    - "cu_seqlen_ke.shape == (seq_len,)"
+    - "index_k_scale.shape == (batch, seq_len_kv, kv_group)"
+
+  workloads:
+  - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [bfloat16], label: "lighting-indexer-bf16-s8k-h32-d64"}
+  - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [float8_e4m3fn], label: "lighting-indexer-fp8-s8k-h32-d64"}
+
+  roofline:
+    func: "tileops.perf.formulas.fp8_lighting_indexer_roofline"
+
+  source:
+    kernel: tileops/kernels/fp8_lighting_indexer.py
+    kernel_map:
+      fp8_lighting_indexer_kernel: FP8LightingIndexerKernel
+    op: tileops/ops/fp8_lighting_indexer.py
+    test: tests/ops/test_fp8_lighting_indexer.py
+    bench: benchmarks/ops/bench_fp8_lighting_indexer.py
+    bench_manifest_driven: false
+
+TopkSelectorOp:
+  ref_api: "torch.topk"
+  family: attention_indexing
+  status: implemented
+
+  signature:
+    inputs:
+      index_score: {dtype: "float32", shape: "[batch, seq_len, seq_len_kv, kv_group]"}
+      starts: {dtype: "int32", shape: "[batch, seq_len]"}
+      ends: {dtype: "int32", shape: "[batch, seq_len]"}
+    outputs:
+      indexes: {dtype: "int32", shape: "[batch, seq_len, kv_group, topk]"}
+    params:
+      batch: {type: int}
+      seq_len: {type: int}
+      seq_len_kv: {type: int}
+      kv_group: {type: int}
+      topk: {type: int}
+      in_dtype: {type: torch.dtype}
+      out_dtype: {type: torch.dtype}
+    shape_rules:
+    - "index_score.shape == (batch, seq_len, seq_len_kv, kv_group)"
+    - "starts.shape == (batch, seq_len)"
+    - "ends.shape == (batch, seq_len)"
+    - "0 < topk <= seq_len_kv"
+
+  workloads:
+  - {batch: 1, seq_len: 32768, seq_len_kv: 65536, kv_group: 1, topk: 1024, in_dtype: float32, out_dtype: int32, dtypes: [float32], label: "topk1024-s32k-kv64k"}
+  - {batch: 1, seq_len: 32768, seq_len_kv: 65536, kv_group: 1, topk: 2048, in_dtype: float32, out_dtype: int32, dtypes: [float32], label: "topk2048-s32k-kv64k"}
+
+  roofline:
+    func: "tileops.perf.formulas.topk_selector_roofline"
+
+  source:
+    kernel: tileops/kernels/topk_selector.py
+    kernel_map:
+      topk_selector_kernel: TopkSelectorKernel
+    op: tileops/ops/topk_selector.py
+    test: tests/ops/test_topk_selector.py
+    bench: benchmarks/ops/bench_topk_selector.py
+    bench_manifest_driven: false

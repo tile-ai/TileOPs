@@ -1,0 +1,42 @@
+# Narrow quantization helper operators.
+#
+# These entries describe existing helper surfaces only. They do not claim the
+# full INT8/INT4/NF4/FP8 quantization family from the older release plan.
+
+FP8QuantOp:
+  ref_api: "none"
+  family: quantization
+  status: implemented
+
+  signature:
+    inputs:
+      input_tensor: {dtype: "float16 | bfloat16 | float32", shape: "[batch, seq_len_kv, kv_group, index_dim]"}
+    outputs:
+      scale_tensor: {dtype: "float32", shape: "[batch, seq_len_kv, kv_group]"}
+      output_tensor: {dtype: "float8_e4m3fn", shape: "[batch, seq_len_kv, kv_group, index_dim]"}
+    params:
+      batch: {type: int}
+      seq_len_kv: {type: int}
+      kv_group: {type: int}
+      index_dim: {type: int}
+      in_dtype: {type: torch.dtype}
+    shape_rules:
+    - "input_tensor.shape == (batch, seq_len_kv, kv_group, index_dim)"
+    - "index_dim > 0"
+
+  workloads:
+  - {batch: 1, seq_len_kv: 8192, kv_group: 1, index_dim: 64, in_dtype: float16, dtypes: [float16], label: "kv-index-8k-d64-fp16"}
+  - {batch: 1, seq_len_kv: 8192, kv_group: 1, index_dim: 64, in_dtype: bfloat16, dtypes: [bfloat16], label: "kv-index-8k-d64-bf16"}
+  - {batch: 1, seq_len_kv: 4096, kv_group: 1, index_dim: 128, in_dtype: float32, dtypes: [float32], label: "kv-index-4k-d128-fp32"}
+
+  roofline:
+    func: "tileops.perf.formulas.fp8_quant_roofline"
+
+  source:
+    kernel: tileops/kernels/fp8_quant.py
+    kernel_map:
+      fp8_quant_kernel: FP8QuantKernel
+    op: tileops/ops/fp8_quant.py
+    test: tests/ops/test_fp8_quant.py
+    bench: benchmarks/ops/bench_fp8_quant.py
+    bench_manifest_driven: false
