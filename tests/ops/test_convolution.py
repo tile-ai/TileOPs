@@ -846,5 +846,142 @@ def test_conv3d_dispatches_kernel() -> None:
     assert isinstance(op.kernel, Conv3dKernel)
 
 
+@pytest.mark.smoke
+def test_conv1d_preferred_api_infers_shape_and_dtype() -> None:
+    x = torch.randn(2, 4, 16, dtype=torch.float16, device="cuda")
+    weight = torch.randn(8, 4, 3, dtype=torch.float16, device="cuda")
+    op = Conv1dFwdOp(stride=1, padding=1, dilation=1, groups=1)
+
+    y = op(x, weight)
+    ref = F.conv1d(x, weight, bias=None, stride=1, padding=1, dilation=1, groups=1)
+
+    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_conv2d_preferred_api_infers_shape_and_dtype() -> None:
+    x = torch.randn(2, 32, 16, 16, dtype=torch.float16, device="cuda")
+    weight = torch.randn(64, 32, 3, 3, dtype=torch.float16, device="cuda")
+    op = Conv2dFwdOp(stride=1, padding=1, dilation=1, groups=1)
+
+    y = op(x, weight)
+    ref = F.conv2d(x, weight, bias=None, stride=1, padding=1, dilation=1, groups=1)
+
+    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_conv3d_preferred_api_infers_shape_and_dtype() -> None:
+    x = torch.randn(1, 8, 6, 8, 8, dtype=torch.float16, device="cuda")
+    weight = torch.randn(12, 8, 3, 3, 3, dtype=torch.float16, device="cuda")
+    op = Conv3dFwdOp(stride=1, padding=1, dilation=1, groups=1)
+
+    y = op(x, weight)
+    ref = F.conv3d(x, weight, bias=None, stride=1, padding=1, dilation=1, groups=1)
+
+    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_conv1d_bias_preferred_api_infers_shape_and_dtype() -> None:
+    x = torch.randn(2, 4, 16, dtype=torch.float16, device="cuda")
+    weight = torch.randn(8, 4, 3, dtype=torch.float16, device="cuda")
+    bias = torch.randn(8, dtype=torch.float16, device="cuda")
+    op = Conv1dBiasFwdOp(stride=1, padding=1, dilation=1, groups=1)
+
+    y = op(x, weight, bias)
+    ref = F.conv1d(x, weight, bias=bias, stride=1, padding=1, dilation=1, groups=1)
+
+    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_conv2d_bias_preferred_api_infers_shape_and_dtype() -> None:
+    x = torch.randn(1, 16, 12, 12, dtype=torch.float16, device="cuda")
+    weight = torch.randn(24, 16, 3, 3, dtype=torch.float16, device="cuda")
+    bias = torch.randn(24, dtype=torch.float16, device="cuda")
+    op = Conv2dBiasFwdOp(stride=1, padding=1, dilation=1, groups=1)
+
+    y = op(x, weight, bias)
+    ref = F.conv2d(x, weight, bias=bias, stride=1, padding=1, dilation=1, groups=1)
+
+    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_conv3d_bias_preferred_api_infers_shape_and_dtype() -> None:
+    x = torch.randn(1, 8, 6, 8, 8, dtype=torch.float16, device="cuda")
+    weight = torch.randn(12, 8, 3, 3, 3, dtype=torch.float16, device="cuda")
+    bias = torch.randn(12, dtype=torch.float16, device="cuda")
+    op = Conv3dBiasFwdOp(stride=1, padding=1, dilation=1, groups=1)
+
+    y = op(x, weight, bias)
+    ref = F.conv3d(x, weight, bias=bias, stride=1, padding=1, dilation=1, groups=1)
+
+    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_conv2d_committed_input_shape_mismatch_raises() -> None:
+    x = torch.randn(1, 16, 12, 12, dtype=torch.float16, device="cuda")
+    weight = torch.randn(24, 16, 3, 3, dtype=torch.float16, device="cuda")
+    op = Conv2dFwdOp(
+        n=1,
+        c_in=16,
+        h=10,
+        w=12,
+        c_out=24,
+        kernel_size=(3, 3),
+        padding=1,
+        dtype=torch.float16,
+    )
+
+    with pytest.raises(ValueError, match="Expected input shape"):
+        op(x, weight)
+
+
+@pytest.mark.smoke
+def test_conv2d_committed_weight_shape_mismatch_raises() -> None:
+    x = torch.randn(1, 16, 12, 12, dtype=torch.float16, device="cuda")
+    weight = torch.randn(24, 16, 5, 5, dtype=torch.float16, device="cuda")
+    op = Conv2dFwdOp(
+        n=1,
+        c_in=16,
+        h=12,
+        w=12,
+        c_out=24,
+        kernel_size=(3, 3),
+        padding=1,
+        dtype=torch.float16,
+    )
+
+    with pytest.raises(ValueError, match="Expected weight shape"):
+        op(x, weight)
+
+
+@pytest.mark.smoke
+def test_conv2d_dynamic_shape_kernel_cache_and_roofline() -> None:
+    op = Conv2dFwdOp(stride=1, padding=1)
+    x1 = torch.randn(1, 16, 12, 12, dtype=torch.float16, device="cuda")
+    w1 = torch.randn(24, 16, 3, 3, dtype=torch.float16, device="cuda")
+    x2 = torch.randn(2, 16, 12, 12, dtype=torch.float16, device="cuda")
+    w2 = torch.randn(24, 16, 3, 3, dtype=torch.float16, device="cuda")
+
+    with pytest.raises(RuntimeError, match="requires a prior forward"):
+        op.eval_roofline()
+
+    op(x1, w1)
+    assert len(op._kernel_cache) == 1
+    flops, nbytes = op.eval_roofline()
+    assert flops > 0
+    assert nbytes > 0
+
+    op(x1, w1)
+    assert len(op._kernel_cache) == 1
+
+    op(x2, w2)
+    assert len(op._kernel_cache) == 2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
