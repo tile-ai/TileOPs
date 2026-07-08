@@ -714,5 +714,78 @@ def test_avg_pool3d_rejects_wrong_ncdhw_shape(monkeypatch: pytest.MonkeyPatch) -
         op(x)
 
 
+@pytest.mark.smoke
+def test_avg_pool1d_preferred_api_infers_shape_and_dtype() -> None:
+    x = torch.randn(2, 4, 16, dtype=torch.float16, device="cuda")
+    op = AvgPool1dFwdOp(kernel_size=3, stride=2, padding=1)
+
+    y = op(x)
+    ref = F.avg_pool1d(x, kernel_size=3, stride=2, padding=1)
+
+    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_avg_pool2d_preferred_api_infers_shape_and_dtype() -> None:
+    x = torch.randn(2, 4, 16, 18, dtype=torch.float16, device="cuda")
+    op = AvgPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+
+    y = op(x)
+    ref = F.avg_pool2d(x, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+
+    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_avg_pool3d_preferred_api_infers_shape_and_dtype() -> None:
+    x = torch.randn(1, 4, 8, 10, 12, dtype=torch.float16, device="cuda")
+    op = AvgPool3dFwdOp(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 0, 0))
+
+    y = op(x)
+    ref = F.avg_pool3d(x, kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 0, 0))
+
+    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_avg_pool2d_committed_input_shape_mismatch_raises() -> None:
+    x = torch.randn(2, 4, 16, 18, dtype=torch.float16, device="cuda")
+    op = AvgPool2dFwdOp(
+        n=2,
+        c_in=4,
+        h_in=15,
+        w_in=18,
+        kernel_size=(3, 3),
+        stride=(2, 2),
+        padding=(1, 1),
+        dtype=torch.float16,
+    )
+
+    with pytest.raises(ValueError, match="Expected input shape"):
+        op(x)
+
+
+@pytest.mark.smoke
+def test_avg_pool2d_dynamic_shape_kernel_cache_and_roofline() -> None:
+    op = AvgPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+    x1 = torch.randn(1, 4, 16, 16, dtype=torch.float16, device="cuda")
+    x2 = torch.randn(2, 4, 16, 16, dtype=torch.float16, device="cuda")
+
+    with pytest.raises(RuntimeError, match="requires a prior forward"):
+        op.eval_roofline()
+
+    op(x1)
+    assert len(op._kernel_cache) == 1
+    flops, nbytes = op.eval_roofline()
+    assert flops > 0
+    assert nbytes > 0
+
+    op(x1)
+    assert len(op._kernel_cache) == 1
+
+    op(x2)
+    assert len(op._kernel_cache) == 2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
