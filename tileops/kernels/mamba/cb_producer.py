@@ -8,13 +8,17 @@ Replaces torch.compile(einsum) with specialized TileOps kernel that:
 1. Exploits causal structure (only compute lower triangle)
 2. Fuses mask application
 3. Uses optimal tile sizes for QxQxN GEMM
+4. Accepts contiguous (B, S, G, N) input to avoid reshape/permute overhead
 
 Input:
-  C: [B, C, G, Q, N]  dtype (fp16/bf16)
-  B: [B, C, G, Q, N]  dtype (fp16/bf16)
+  C: [B, S, G, N]  dtype (fp16/bf16), contiguous
+  B: [B, S, G, N]  dtype (fp16/bf16), contiguous
 
 Output:
   cb: [B, C, G, Q, Q]  dtype (direct output to avoid standalone cast)
+
+Note: Kernel computes absolute sequence indices internally (bc * Q + l_abs)
+to load from contiguous (B, S, G, N) layout.
 """
 
 import functools
@@ -52,6 +56,7 @@ def _cb_producer_kernel(
     G = n_groups
     Q = chunk_len
     N = d_state
+    S = C * Q  # Total sequence length
 
     @tilelang.jit(out_idx=[-1])
     def kernel_func(
@@ -60,8 +65,8 @@ def _cb_producer_kernel(
         block_n: int,
         threads: int,
     ):
-        C_shape = (B, C, G, Q, N)
-        B_shape = (B, C, G, Q, N)
+        C_shape = (B, S, G, N)  # Accept contiguous (B, S, G, N) shape
+        B_shape = (B, S, G, N)  # Accept contiguous (B, S, G, N) shape
         cb_shape = (B, C, G, Q, Q)
 
         @T.prim_func
@@ -109,20 +114,22 @@ def _cb_producer_kernel(
                         n0 = n_blk * block_n
 
                         # Load C tile [block_l, block_n]
+                        # Use absolute sequence index: bc * Q + l_abs
                         for ll, nn in T.Parallel(block_l, block_n):
                             l_abs = l0 + ll
                             n_abs = n0 + nn
                             if l_abs < Q and n_abs < N:
-                                C_tile[ll, nn] = C_mat[bb, bc, bg, l_abs, n_abs]
+                                C_tile[ll, nn] = C_mat[bb, bc * Q + l_abs, bg, n_abs]
                             else:
                                 C_tile[ll, nn] = T.cast(T.float32(0.0), dtype)
 
                         # Load B tile [block_s, block_n]
+                        # Use absolute sequence index: bc * Q + s_abs
                         for ss, nn in T.Parallel(block_s, block_n):
                             s_abs = s0 + ss
                             n_abs = n0 + nn
                             if s_abs < Q and n_abs < N:
-                                B_tile[ss, nn] = B_mat[bb, bc, bg, s_abs, n_abs]
+                                B_tile[ss, nn] = B_mat[bb, bc * Q + s_abs, bg, n_abs]
                             else:
                                 B_tile[ss, nn] = T.cast(T.float32(0.0), dtype)
 
@@ -293,8 +300,8 @@ class CBProducerKernel(Kernel):
     ) -> torch.Tensor:
         """
         Args:
-            C_mat: [B, C, G, Q, N]  dtype
-            B_mat: [B, C, G, Q, N]  dtype
+            C_mat: [B, S, G, N]  dtype (contiguous)
+            B_mat: [B, S, G, N]  dtype (contiguous)
 
         Returns:
             cb: [B, C, G, Q, Q]  dtype
@@ -304,5 +311,5 @@ class CBProducerKernel(Kernel):
             self.dtype_str,
             self.config["block_l"], self.config["block_s"],
             self.config["block_n"], self.config["threads"],
-            C_mat.contiguous(), B_mat.contiguous(),
+            C_mat, B_mat,
         )

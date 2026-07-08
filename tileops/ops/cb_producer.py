@@ -76,8 +76,8 @@ class CBProducerOp(Op):
     ) -> torch.Tensor:
         """
         Args:
-            C_mat: [B, C, G, Q, N]  dtype
-            B_mat: [B, C, G, Q, N]  dtype
+            C_mat: [B, S, G, N]  dtype (contiguous)
+            B_mat: [B, S, G, N]  dtype (contiguous)
 
         Returns:
             cb: [B, C, G, Q, Q]  dtype

@@ -227,11 +227,8 @@ class Mamba2FwdOp:
 
         # ── 2. CB matrix ─────────────────────────────────────────────────────
         # cb[b,c,g,l,s] = C[b,c*Q+l,g,:] @ B[b,c*Q+s,g,:]^T  for s <= l, else 0.
-        # Reshape seqlen-fused B/C into (B, C, G, Q, N) for the batched matmul.
-        n_groups  = self.n_groups
-        C_chunked = C.reshape(batch, num_chunks, chunk_size, n_groups, d_state).permute(0, 1, 3, 2, 4)  # (B, C, G, Q, N)
-        B_chunked = B.reshape(batch, num_chunks, chunk_size, n_groups, d_state).permute(0, 1, 3, 2, 4)  # (B, C, G, Q, N)
-        cb = self._cb_producer_op(C_chunked, B_chunked)  # (B, C, G, Q, Q)  dtype (direct output, no cast needed)
+        # Pass contiguous C and B directly to avoid reshape/permute/contiguous overhead
+        cb = self._cb_producer_op(C, B)  # (B, C, G, Q, Q)  dtype (direct output, no cast needed)
 
         # ── 3. SSDChunkState ─────────────────────────────────────────────────
         # Pass pre-allocated seq_idx zeros; avoids a FillFunctor<int> per call.
