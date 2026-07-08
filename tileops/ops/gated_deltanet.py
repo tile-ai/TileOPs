@@ -633,4 +633,5 @@ class GatedDeltaNetDecodeOp(Op):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self._validate_dtypes(q, k, v, g, beta, state)
         return self.kernel(q, k, v, g, beta, state)
