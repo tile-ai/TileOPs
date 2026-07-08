@@ -242,8 +242,8 @@ class Mamba2FwdOp:
 
         # ── 4. SSDStatePassing ───────────────────────────────────────────────
         chunk_states_flat = chunk_states.reshape(batch, num_chunks, n_heads, d_head * d_state)
-        # Extract last dA value per chunk - use contiguous() instead of clone()
-        # contiguous() only copies if needed, avoiding unnecessary kernel launch
+        # Extract last dA value per chunk - use contiguous() to ensure a contiguous layout
+        # Note: since this is a slice of a 4D tensor, it is non-contiguous and will always copy
         dA_chunk_cumsum = dA_cumsum[..., chunk_size - 1].contiguous()  # (B, H, C)
 
         if initial_states is None:

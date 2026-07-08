@@ -80,6 +80,6 @@ class CBProducerOp(Op):
             B_mat: [B, C, G, Q, N]  dtype
 
         Returns:
-            cb: [B, C, G, Q, Q]  float32
+            cb: [B, C, G, Q, Q]  dtype
         """
         return self.kernel(C_mat, B_mat)

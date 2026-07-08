@@ -14,7 +14,7 @@ Input:
   B: [B, C, G, Q, N]  dtype (fp16/bf16)
 
 Output:
-  cb: [B, C, G, Q, Q]  float32 (for numerical stability in chunk_scan)
+  cb: [B, C, G, Q, Q]  dtype (direct output to avoid standalone cast)
 """
 
 import functools
@@ -297,7 +297,7 @@ class CBProducerKernel(Kernel):
             B_mat: [B, C, G, Q, N]  dtype
 
         Returns:
-            cb: [B, C, G, Q, Q]  float32
+            cb: [B, C, G, Q, Q]  dtype
         """
         return _cb_producer_wrapped(
             self.batch, self.num_chunks, self.n_groups, self.chunk_len, self.d_state,
