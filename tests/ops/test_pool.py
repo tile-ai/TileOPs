@@ -304,23 +304,23 @@ def test_avg_pool2d_dispatches_kernel() -> None:
         stride=(2, 2),
         padding=(1, 1),
     )
+    x = torch.randn(1, 32, 28, 28, device="cuda", dtype=torch.float16).contiguous()
+    op(x)
     assert isinstance(op.kernel, AvgPool2dSpatialKernel)
 
 
 @pytest.mark.smoke
 def test_avg_pool2d_rejects_non_positive_output_size() -> None:
+    op = AvgPool2dFwdOp(
+        kernel_size=(5, 5),
+        stride=(1, 1),
+        padding=(0, 0),
+        ceil_mode=False,
+        count_include_pad=True,
+    )
+    x = torch.randn(1, 1, 2, 2, device="cuda", dtype=torch.float16).contiguous()
     with pytest.raises(ValueError, match="output size must be greater than zero"):
-        AvgPool2dFwdOp(
-            n=1,
-            c_in=1,
-            h_in=2,
-            w_in=2,
-            kernel_size=(5, 5),
-            stride=(1, 1),
-            padding=(0, 0),
-            ceil_mode=False,
-            count_include_pad=True,
-        )
+        op(x)
 
 
 @pytest.mark.smoke
@@ -447,7 +447,7 @@ def test_avg_pool2d_rejects_wrong_nchw_shape(monkeypatch: pytest.MonkeyPatch) ->
         kernel_map={"avg_pool2d_kernel": _DummyKernel},
     )
     x = torch.randn(2, 16, 16, 8)
-    with pytest.raises(ValueError, match=r"expects input shape \(2, 8, 16, 16\)"):
+    with pytest.raises(ValueError, match=r"Expected input shape compatible with \(2, 8, 16, 16\)"):
         op(x)
 
 
@@ -590,6 +590,8 @@ def test_avg_pool3d_dispatches_kernel() -> None:
         stride=(2, 2, 2),
         padding=(0, 0, 0),
     )
+    x = torch.randn(1, 16, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
+    op(x)
     assert isinstance(op.kernel, AvgPool3dKernel)
 
 
@@ -710,7 +712,7 @@ def test_avg_pool3d_rejects_wrong_ncdhw_shape(monkeypatch: pytest.MonkeyPatch) -
         kernel_map={"avg_pool3d_kernel": _DummyKernel},
     )
     x = torch.randn(1, 8, 8, 8, 4)
-    with pytest.raises(ValueError, match=r"expects input shape \(1, 4, 8, 8, 8\)"):
+    with pytest.raises(ValueError, match=r"Expected input shape compatible with \(1, 4, 8, 8, 8\)"):
         op(x)
 
 
