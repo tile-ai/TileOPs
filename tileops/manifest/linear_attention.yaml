@@ -103,6 +103,7 @@ GatedDeltaNetDecodeOp:
     kernel_map:
       GatedDeltaNetDecodeKernel: GatedDeltaNetDecodeKernel
       GatedDeltaNetDecodeFP32Kernel: GatedDeltaNetDecodeFP32Kernel
+      GatedDeltaNetDecodeRawCudaFlaStyleKernel: GatedDeltaNetDecodeRawCudaFlaStyleKernel
     op: tileops/ops/gated_deltanet.py
     test: tests/ops/test_gated_deltanet_recurrence.py
     bench: benchmarks/ops/bench_gated_deltanet_recurrence.py
