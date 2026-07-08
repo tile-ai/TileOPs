@@ -3,7 +3,7 @@ import torch
 from workloads.workload_base import WorkloadBase
 
 
-class BmmTest(WorkloadBase):
+class BmmWorkload(WorkloadBase):
     """Workload for batched matmul: a=[B,M,K], b=[B,K,N] -> d=[B,M,N]."""
 
     def __init__(self, batch: int, m: int, n: int, k: int, dtype: torch.dtype):

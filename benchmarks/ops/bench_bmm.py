@@ -4,9 +4,9 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from tests.ops.test_bmm import BmmTest
 from tileops.manifest import load_workloads
 from tileops.ops import BmmFwdOp
-from workloads.bmm import BmmTest
 
 _OP_NAME = "BmmFwdOp"
 
@@ -14,13 +14,6 @@ _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
     "float16": torch.float16,
 }
-
-
-class _BmmTestBaseline(BmmTest):
-    """Adds baseline ref_program for benchmark profiling."""
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return torch.bmm(a, b)
 
 
 class BmmBenchmark(BenchmarkBase[BmmTest]):
@@ -66,7 +59,7 @@ def _manifest_params() -> list:
 @pytest.mark.parametrize("batch, m, n, k, dtype_str", _manifest_params())
 def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype_str: str) -> None:
     dtype = _DTYPE_MAP[dtype_str]
-    test = _BmmTestBaseline(batch, m, n, k, dtype)
+    test = BmmTest(batch, m, n, k, dtype)
     a, b = test.gen_inputs()
 
     op = BmmFwdOp(tune=True)

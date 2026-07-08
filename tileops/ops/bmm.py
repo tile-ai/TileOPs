@@ -88,6 +88,12 @@ class BmmFwdOp(Op):
 
     def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
         """Project onto the dims the kernel actually specializes on."""
+        if len(input_shapes) == 2:
+            a_shape, b_shape = input_shapes
+            if len(a_shape) == 3 and len(b_shape) == 3:
+                batch, m, k = a_shape
+                _, _, n = b_shape
+                return (batch, m, n, k, None if self.dtype is None else str(self.dtype))
         return (self.batch, self.m, self.n, self.k,
                 None if self.dtype is None else str(self.dtype))
 

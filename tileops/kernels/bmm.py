@@ -138,8 +138,8 @@ def _bmm_wrapped_kernel(
 @_bmm_wrapped_kernel.register_fake
 def _(batch: int, m: int, n: int, k: int, dtype: str, block_m: int, block_n: int,
       block_k: int, num_stages: int, threads: int,
-      *inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:
-    return torch.empty((batch, m, n), dtype=inputs[0].dtype, device=inputs[0].device)
+      a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    return torch.empty((batch, m, n), dtype=a.dtype, device=a.device)
 
 
 class BmmKernel(Kernel):
@@ -162,6 +162,9 @@ class BmmKernel(Kernel):
                  config: Optional[dict] = None,
                  tune: bool = False) -> None:
         super().__init__()
+        if k % 16 != 0:
+            raise ValueError(
+                f"BmmKernel requires contraction dim k to be a multiple of 16, got k={k}")
         self.batch = batch
         self.m = m
         self.n = n
@@ -173,26 +176,33 @@ class BmmKernel(Kernel):
     @property
     def default_config(self) -> dict:
         # 64x64x64, stages=2, 1 warpgroup. Modal winner on H20-3e manifest
+        block_k = 64 if self.k % 64 == 0 else (32 if self.k % 32 == 0 else 16)
         return {
             "block_m": 64,
             "block_n": 64,
-            "block_k": 64,
+            "block_k": block_k,
             "num_stages": 2,
             "threads": 128,
         }
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return [
+        block_k_options = [32, 64]
+        if self.k % 32 != 0 and self.k % 16 == 0:
+            block_k_options = [16]
+        configs = [
             {"block_m": bm, "block_n": bn, "block_k": bk,
              "num_stages": ns, "threads": 128}
             for bm in [64, 128]
             for bn in [64, 128]
-            for bk in [32, 64]
+            for bk in block_k_options
             for ns in [2, 3, 4]
         ]
+        return [c for c in configs if self.k % c["block_k"] == 0]
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # Call the compiled JIT directly (cf. GemmKernel); the torch custom-op
         # is retained only for torch.compile compatibility.
-        return self.kernel(**self.config)(a, b)
+        if not hasattr(self, "_compiled_kernel"):
+            self._compiled_kernel = self.kernel(**self.config)
+        return self._compiled_kernel(a, b)

@@ -3,10 +3,10 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import BmmFwdOp
-from workloads.bmm import BmmTest as _BmmTestWorkload
+from workloads.bmm import BmmWorkload
 
 
-class BmmTest(_BmmTestWorkload, TestBase):
+class BmmTest(BmmWorkload, TestBase):
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return torch.bmm(a, b)
 
