@@ -178,13 +178,13 @@ def test_conv1d(
         dtype=dtype,
         tune=tune,
     )
-    if groups > 1:
-        assert isinstance(op.kernel, GroupConv1dKernel)
-        assert op.kernel.use_direct is (c_in // groups == 1 and c_out // groups == 1)
     atol, rtol = (1e-3, 1e-3)
     if dtype == torch.bfloat16:
         atol, rtol = (1.6e-2, 1.6e-2)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    if groups > 1:
+        assert isinstance(op.kernel, GroupConv1dKernel)
+        assert op.kernel.use_direct is (c_in // groups == 1 and c_out // groups == 1)
 
 
 @pytest.mark.smoke
@@ -321,6 +321,9 @@ def test_conv1d_dispatches_kernel(
         padding=padding,
         dilation=dilation,
     )
+    x = torch.randn(1, 32, 256, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, kernel_size, device="cuda", dtype=torch.float16).contiguous()
+    op(x, weight)
     assert isinstance(op.kernel, expected_kernel)
 
 
@@ -488,10 +491,10 @@ def test_conv2d(
         dtype=dtype,
         tune=tune,
     )
-    if groups > 1:
-        assert isinstance(op.kernel, GroupConv2dKernel)
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    if groups > 1:
+        assert isinstance(op.kernel, GroupConv2dKernel)
 
 
 @pytest.mark.smoke
@@ -547,26 +550,34 @@ def test_conv2d_dispatches_1x1_kernel() -> None:
     op = Conv2dFwdOp(
         n=1,
         c_in=32,
-        h=16,
-        w=16,
+        h=32,
+        w=32,
         c_out=64,
         kernel_size=1,
     )
+    x = torch.randn(1, 32, 32, 32, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 1, 1, device="cuda", dtype=torch.float16).contiguous()
+    op(x, weight)
     assert isinstance(op.kernel, Conv2d1x1Kernel)
 
 
 @pytest.mark.smoke
 def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
+    # Use c_in not divisible by 32 so the symmetric kernel is not selected and
+    # the general kernel handles the padded 1x1 case without the im2col-TMA
+    # constraints that affect the symmetric path.
     op = Conv2dFwdOp(
         n=1,
-        c_in=32,
-        h=16,
-        w=16,
+        c_in=16,
+        h=32,
+        w=32,
         c_out=64,
         kernel_size=1,
         padding=1,
     )
-    assert isinstance(op.kernel, Conv2dSymmetricKernel)
+    x = torch.randn(1, 16, 32, 32, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 16, 1, 1, device="cuda", dtype=torch.float16).contiguous()
+    op(x, weight)
     assert not isinstance(op.kernel, Conv2d1x1Kernel)
 
 
@@ -575,12 +586,15 @@ def test_conv2d_dispatches_3x3_kernel() -> None:
     op = Conv2dFwdOp(
         n=1,
         c_in=32,
-        h=16,
-        w=16,
+        h=32,
+        w=32,
         c_out=64,
         kernel_size=3,
         padding=1,
     )
+    x = torch.randn(1, 32, 32, 32, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+    op(x, weight)
     assert isinstance(op.kernel, Conv2dSymmetricKernel)
 
 
@@ -589,12 +603,15 @@ def test_conv2d_dispatches_5x5_kernel() -> None:
     op = Conv2dFwdOp(
         n=1,
         c_in=32,
-        h=16,
-        w=16,
+        h=32,
+        w=32,
         c_out=64,
         kernel_size=5,
         padding=2,
     )
+    x = torch.randn(1, 32, 32, 32, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 5, 5, device="cuda", dtype=torch.float16).contiguous()
+    op(x, weight)
     assert isinstance(op.kernel, Conv2dSymmetricKernel)
 
 
@@ -746,10 +763,10 @@ def test_conv3d(
         dtype=dtype,
         tune=tune,
     )
-    if groups > 1:
-        assert isinstance(op.kernel, GroupConv3dKernel)
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    if groups > 1:
+        assert isinstance(op.kernel, GroupConv3dKernel)
 
 
 @pytest.mark.smoke
@@ -836,13 +853,16 @@ def test_conv3d_dispatches_kernel() -> None:
         n=1,
         c_in=8,
         d=8,
-        h=16,
-        w=16,
+        h=32,
+        w=32,
         c_out=16,
         kernel_size=3,
         stride=1,
         padding=1,
     )
+    x = torch.randn(1, 8, 8, 32, 32, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(16, 8, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+    op(x, weight)
     assert isinstance(op.kernel, Conv3dKernel)
 
 
@@ -860,7 +880,7 @@ def test_conv1d_preferred_api_infers_shape_and_dtype() -> None:
 
 @pytest.mark.smoke
 def test_conv2d_preferred_api_infers_shape_and_dtype() -> None:
-    x = torch.randn(2, 32, 16, 16, dtype=torch.float16, device="cuda")
+    x = torch.randn(2, 32, 32, 32, dtype=torch.float16, device="cuda")
     weight = torch.randn(64, 32, 3, 3, dtype=torch.float16, device="cuda")
     op = Conv2dFwdOp(stride=1, padding=1, dilation=1, groups=1)
 
@@ -897,9 +917,9 @@ def test_conv1d_bias_preferred_api_infers_shape_and_dtype() -> None:
 
 @pytest.mark.smoke
 def test_conv2d_bias_preferred_api_infers_shape_and_dtype() -> None:
-    x = torch.randn(1, 16, 12, 12, dtype=torch.float16, device="cuda")
-    weight = torch.randn(24, 16, 3, 3, dtype=torch.float16, device="cuda")
-    bias = torch.randn(24, dtype=torch.float16, device="cuda")
+    x = torch.randn(1, 32, 32, 32, dtype=torch.float16, device="cuda")
+    weight = torch.randn(64, 32, 3, 3, dtype=torch.float16, device="cuda")
+    bias = torch.randn(64, dtype=torch.float16, device="cuda")
     op = Conv2dBiasFwdOp(stride=1, padding=1, dilation=1, groups=1)
 
     y = op(x, weight, bias)
@@ -923,13 +943,13 @@ def test_conv3d_bias_preferred_api_infers_shape_and_dtype() -> None:
 
 @pytest.mark.smoke
 def test_conv2d_committed_input_shape_mismatch_raises() -> None:
-    x = torch.randn(1, 16, 12, 12, dtype=torch.float16, device="cuda")
+    x = torch.randn(1, 16, 32, 32, dtype=torch.float16, device="cuda")
     weight = torch.randn(24, 16, 3, 3, dtype=torch.float16, device="cuda")
     op = Conv2dFwdOp(
         n=1,
         c_in=16,
-        h=10,
-        w=12,
+        h=30,
+        w=32,
         c_out=24,
         kernel_size=(3, 3),
         padding=1,
@@ -942,13 +962,13 @@ def test_conv2d_committed_input_shape_mismatch_raises() -> None:
 
 @pytest.mark.smoke
 def test_conv2d_committed_weight_shape_mismatch_raises() -> None:
-    x = torch.randn(1, 16, 12, 12, dtype=torch.float16, device="cuda")
+    x = torch.randn(1, 16, 32, 32, dtype=torch.float16, device="cuda")
     weight = torch.randn(24, 16, 5, 5, dtype=torch.float16, device="cuda")
     op = Conv2dFwdOp(
         n=1,
         c_in=16,
-        h=12,
-        w=12,
+        h=32,
+        w=32,
         c_out=24,
         kernel_size=(3, 3),
         padding=1,
@@ -962,9 +982,9 @@ def test_conv2d_committed_weight_shape_mismatch_raises() -> None:
 @pytest.mark.smoke
 def test_conv2d_dynamic_shape_kernel_cache_and_roofline() -> None:
     op = Conv2dFwdOp(stride=1, padding=1)
-    x1 = torch.randn(1, 16, 12, 12, dtype=torch.float16, device="cuda")
+    x1 = torch.randn(1, 16, 32, 32, dtype=torch.float16, device="cuda")
     w1 = torch.randn(24, 16, 3, 3, dtype=torch.float16, device="cuda")
-    x2 = torch.randn(2, 16, 12, 12, dtype=torch.float16, device="cuda")
+    x2 = torch.randn(2, 16, 32, 32, dtype=torch.float16, device="cuda")
     w2 = torch.randn(24, 16, 3, 3, dtype=torch.float16, device="cuda")
 
     with pytest.raises(RuntimeError, match="requires a prior forward"):
