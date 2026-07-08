@@ -110,7 +110,7 @@ def _cb_producer_kernel(
                     T.clear(acc)
 
                     # Blocked GEMM over N dimension
-                    for n_blk in range(T.ceildiv(N, block_n)):
+                    for n_blk in T.serial(T.ceildiv(N, block_n)):
                         n0 = n_blk * block_n
 
                         # Load C tile [block_l, block_n]

@@ -48,12 +48,11 @@ class CBProducerOp(Op):
         self.d_state = d_state
         self.dtype = dtype
 
-        if kernel_map is None:
-            self.kernel = CBProducerKernel(
-                batch, num_chunks, n_groups, chunk_len, d_state, dtype, tune=tune
-            )
-        else:
-            self.kernel = kernel_map["cb_producer"]
+        # Use standard Op dispatch pattern
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["cb_producer"](
+            batch, num_chunks, n_groups, chunk_len, d_state, dtype, tune=tune
+        )
 
         print(
             f"CBProducerOp initialized with config: {self.kernel.config}"
@@ -61,12 +60,9 @@ class CBProducerOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        """Default kernel map."""
+        """Default kernel map - returns kernel class, not instance."""
         return {
-            "cb_producer": CBProducerKernel(
-                self.batch, self.num_chunks, self.n_groups,
-                self.chunk_len, self.d_state, self.dtype, tune=False
-            )
+            "cb_producer": CBProducerKernel
         }
 
     def forward(
