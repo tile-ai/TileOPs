@@ -306,41 +306,42 @@ def _get_env_metadata() -> list[str]:
     else:
         lines.append("- **GPU model**: N/A (no CUDA device)")
 
-    # Try to get NVIDIA driver version from nvidia-smi
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=5,
-        )
-        driver = result.stdout.strip().split("\n")[0] if result.returncode == 0 else "N/A"
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        driver = "N/A"
-    lines.append(f"- **Driver version**: {driver}")
-
+    # Try to get NVIDIA driver version and clocks from nvidia-smi.
+    gpu_query_fields = [
+        "driver_version",
+        "clocks.current.sm",
+        "clocks.current.memory",
+        "clocks.applications.graphics",
+        "clocks.applications.memory",
+    ]
+    gpu_query_values = []
     try:
         result = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=clocks.current.sm,clocks.current.memory,"
-                "clocks.applications.graphics,clocks.applications.memory",
+                f"--query-gpu={','.join(gpu_query_fields)}",
                 "--format=csv,noheader,nounits",
             ],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            clock_values = [part.strip() for part in result.stdout.splitlines()[0].split(",")]
-            if len(clock_values) == 4:
-                sm_clock, mem_clock, app_sm_clock, app_mem_clock = clock_values
-                lines.append(
-                    "- **GPU clocks**: "
-                    f"SM current {sm_clock} MHz, memory current {mem_clock} MHz, "
-                    f"application SM {app_sm_clock} MHz, "
-                    f"application memory {app_mem_clock} MHz"
-                )
-    except (FileNotFoundError, IndexError, subprocess.TimeoutExpired):
+            gpu_query_values = [
+                part.strip() for part in result.stdout.splitlines()[0].split(",")
+            ]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
+
+    driver = gpu_query_values[0] if len(gpu_query_values) == len(gpu_query_fields) else "N/A"
+    lines.append(f"- **Driver version**: {driver}")
+
+    if len(gpu_query_values) == len(gpu_query_fields):
+        sm_clock, mem_clock, app_sm_clock, app_mem_clock = gpu_query_values[1:]
+        lines.append(
+            "- **GPU clocks**: "
+            f"SM current {sm_clock} MHz, memory current {mem_clock} MHz, "
+            f"application SM {app_sm_clock} MHz, "
+            f"application memory {app_mem_clock} MHz"
+        )
 
     return lines
 
