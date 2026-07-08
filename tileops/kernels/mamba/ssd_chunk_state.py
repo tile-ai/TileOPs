@@ -113,7 +113,7 @@ def _ssd_chunk_state_fwd_kernel(
         def main(
             x: T.Tensor((B, S, H, P), dtype),                # type: ignore
             Bmat: T.Tensor((B, S, G, N), dtype),              # type: ignore
-            dt: T.Tensor((B, H, C, Q), accum_dtype),          # type: ignore
+            dt: T.Tensor((B, H, C, Q), dtype),                # type: ignore  Accept dtype, cast on load
             dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),   # type: ignore
             seq_idx: T.Tensor((B, S), "int32"),               # type: ignore
             out: T.Tensor((B, C, H, P, N), accum_dtype),      # type: ignore
@@ -215,7 +215,7 @@ def _ssd_chunk_state_fwd_kernel(
                         )
                         dt_l = T.if_then_else(
                             l_idx < Q,
-                            dt[bz, bh, bc, l_idx],
+                            T.cast(dt[bz, bh, bc, l_idx], accum_dtype),  # Cast dtype to float32
                             T.float32(0.0),
                         )
                         if has_seq_idx:

@@ -36,6 +36,7 @@ class DaCumsumFwdOp(Op):
         chunk_len: int,
         n_heads: int,
         seq_len: int,
+        dtype: torch.dtype = torch.float16,
         dt_softplus: bool = False,
         has_dt_bias: bool = False,
         dt_min: float = 0.0,
@@ -48,14 +49,15 @@ class DaCumsumFwdOp(Op):
         self.chunk_len = chunk_len
         self.n_heads = n_heads
         self.seq_len = seq_len
+        self.dtype = dtype
         self.dt_softplus = dt_softplus
         self.has_dt_bias = has_dt_bias
         self.dt_min = dt_min
         self.dt_max = dt_max
-        self.dtype = torch.float32
+        # Note: removed self.dtype = torch.float32 override - use provided dtype
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["da_cumsum_fwd"](
-            batch, num_chunks, chunk_len, n_heads, seq_len,
+            batch, num_chunks, chunk_len, n_heads, seq_len, dtype,
             dt_softplus=dt_softplus,
             has_dt_bias=has_dt_bias,
             dt_min=dt_min,
