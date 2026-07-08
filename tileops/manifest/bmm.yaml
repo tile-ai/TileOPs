@@ -1,0 +1,45 @@
+# Batched GEMM family.
+#
+# BmmFwdOp: strict 3D-3D batched matrix multiplication
+BmmFwdOp:
+  ref_api: "torch.bmm"
+  family: bmm
+  status: implemented
+
+  signature:
+    inputs:
+      a: {dtype: "float16 | bfloat16"}
+      b: {dtype: "same_as(a)"}
+    outputs:
+      d: {dtype: "same_as(a)"}
+    shape_rules:
+    # a: [B, M, K], b: [B, K, N] -> d: [B, M, N]. Batch dim and contraction
+    # dim must match; no broadcasting is performed (this is torch.bmm, not
+    # torch.matmul).
+    - "a.shape[0] == b.shape[0]"
+    - "a.shape[2] == b.shape[1]"
+    - "d.shape == (a.shape[0], a.shape[1], b.shape[2])"
+
+  workloads:
+  # A representative sweep across small/large batch counts and decode/prefill
+  - {b: 8, m: 128, n: 128, k: 128, dtypes: [float16, bfloat16], label: "small-b8-128"}
+  - {b: 8, m: 1024, n: 1024, k: 1024, dtypes: [float16, bfloat16], label: "square-b8-1k"}
+  - {b: 16, m: 512, n: 512, k: 512, dtypes: [float16, bfloat16], label: "square-b16-512"}
+  - {b: 32, m: 256, n: 256, k: 256, dtypes: [float16, bfloat16], label: "square-b32-256"}
+  - {b: 4, m: 4096, n: 4096, k: 4096, dtypes: [bfloat16], label: "square-b4-4k"}
+  - {b: 8, m: 2048, n: 2048, k: 2048, dtypes: [float16, bfloat16], label: "square-b8-2k"}
+  - {b: 64, m: 128, n: 2048, k: 128, dtypes: [float16, bfloat16], label: "mha-decode-b64-qk"}
+  - {b: 64, m: 128, n: 128, k: 2048, dtypes: [float16, bfloat16], label: "mha-decode-b64-pv"}
+  - {b: 128, m: 512, n: 512, k: 2048, dtypes: [bfloat16], label: "moe-prefill-b128"}
+
+  roofline:
+    func: "tileops.perf.formulas.bmm_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/bmm.py
+    op: tileops/ops/bmm.py
+    test: tests/ops/test_bmm.py
+    bench: benchmarks/ops/bench_bmm.py
+    bench_manifest_driven: true
+    kernel_map:
+      bmm_kernel: BmmKernel

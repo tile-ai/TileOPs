@@ -34,6 +34,7 @@ from .attention import (
     NSATopkVarlenKernel,
     SparseMlaKernel,
 )
+from .bmm import BmmKernel
 from .convolution import (
     Conv1dKernel,
     Conv1dPointwiseKernel,
@@ -96,6 +97,7 @@ __all__ = [
     "BatchNormFwdInferKernel",
     "BatchNormFwdTrainKernel",
     "BinaryKernel",
+    "BmmKernel",
     "Conv1dKernel",
     "Conv1dPointwiseKernel",
     "Conv2d1x1Kernel",
