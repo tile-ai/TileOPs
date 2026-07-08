@@ -28,6 +28,7 @@ __all__ = [
     "clamp_min_fwd_roofline",
     "deepseek_dsa_decode_roofline",
     "deepseek_mla_decode_roofline",
+    "deltanet_decode_roofline",
     "div_fwd_roofline",
     "dropout_roofline",
     "engram_decode_roofline",
@@ -39,9 +40,11 @@ __all__ = [
     "fp8_lighting_indexer_roofline",
     "fp8_quant_roofline",
     "fused_moe_fwd_bytes",
+    "gated_deltanet_decode_roofline",
     "gated_deltanet_prefill_fwd_roofline",
     "ge_fwd_roofline",
     "gemm_fwd_roofline",
+    "gla_decode_roofline",
     "gqa_bwd_roofline",
     "gqa_decode_paged_roofline",
     "gqa_decode_roofline",
@@ -282,6 +285,50 @@ def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) ->
     output_elems = batch * heads * seq_len * dim_v + batch * heads * dim_k * dim_v
     nbytes = (input_elems + output_elems) * elem_bytes
     return int(flops), int(nbytes)
+
+
+def _linear_attention_decode_dims(data: dict[str, Any]) -> tuple[int, int, int, int]:
+    if "q_shape" in data:
+        batch, heads, dim_k = data["q_shape"]
+        state_shape = data["state_shape"]
+        _, state_heads, state_dim_k, dim_v = state_shape
+        if state_heads != heads or state_dim_k != dim_k:
+            raise ValueError("decode q_shape and state_shape must share heads and dim_k")
+        return batch, heads, dim_k, dim_v
+    return data["batch"], data["heads"], data["dim_k"], data["dim_v"]
+
+
+def deltanet_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for single-step DeltaNet recurrence decode."""
+    data = _shape_or_attrs(op, kwargs)
+    batch, heads, dim_k, dim_v = _linear_attention_decode_dims(data)
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    flops = 2 * batch * heads * (3 * dim_k * dim_v + dim_k)
+    nbytes = batch * heads * (2 * dim_k + 2 * dim_v + 1 + 2 * dim_k * dim_v)
+    return int(flops), int(nbytes * elem_bytes)
+
+
+def gated_deltanet_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for single-step Gated DeltaNet recurrence decode."""
+    data = _shape_or_attrs(op, kwargs)
+    batch, heads, dim_k, dim_v = _linear_attention_decode_dims(data)
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    flops = 2 * batch * heads * (3 * dim_k * dim_v + dim_k)
+    nbytes = batch * heads * (2 * dim_k + 2 * dim_v + 2 + 2 * dim_k * dim_v)
+    return int(flops), int(nbytes * elem_bytes)
+
+
+def gla_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for single-step GLA recurrence decode."""
+    data = _shape_or_attrs(op, kwargs)
+    batch, heads, dim_k, dim_v = _linear_attention_decode_dims(data)
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    flops = 2 * batch * heads * (2 * dim_k * dim_v + dim_k)
+    nbytes = batch * heads * (3 * dim_k + 2 * dim_v + 2 * dim_k * dim_v)
+    return int(flops), int(nbytes * elem_bytes)
 
 
 def gqa_prefill_fp8_tensor_core_roofline(

@@ -64,6 +64,39 @@ class GLADecodeOp(Op):
             "GLADecodeFP32Kernel": GLADecodeFP32Kernel,
         }
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        gk_shape: tuple[int, ...],
+        state_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        del k_shape, gk_shape
+        return {
+            "o": (q_shape[0], q_shape[1], v_shape[-1]),
+            "new_state": state_shape,
+        }
+
+    def _validate_dtypes(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        gk: torch.Tensor,
+        state: torch.Tensor,
+    ) -> None:
+        if self.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            raise ValueError(f"Unsupported dtype: {self.dtype}")
+        for name, tensor in (("q", q), ("k", k), ("v", v), ("gk", gk), ("state", state)):
+            if tensor.dtype != self.dtype:
+                raise ValueError(f"{name}.dtype must be {self.dtype}, got {tensor.dtype}")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        from tileops.perf.formulas import gla_decode_roofline
+
+        return gla_decode_roofline(self)
+
     def forward(
         self,
         q: torch.Tensor,

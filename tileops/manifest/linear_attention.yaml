@@ -60,3 +60,337 @@ GatedDeltaNetPrefillFwdOp:
     test: tests/ops/test_gated_deltanet_prefill.py
     bench: benchmarks/ops/bench_gated_deltanet_prefill.py
     bench_manifest_driven: true
+
+GatedDeltaNetDecodeOp:
+  # Single-token serving decode. The input state is read-only from the public
+  # contract perspective; the op returns a fresh new_state tensor.
+  ref_api: "none"
+  family: linear_attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, H, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, H, DV]"}
+      g: {dtype: "same_as(q)", shape: "[B, H]"}
+      beta: {dtype: "same_as(q)", shape: "[B, H]"}
+      state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, H, DV]"}
+      new_state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+    params: {}
+    shape_rules:
+      - "q.shape == (B, H, DK)"
+      - "k.shape == (B, H, DK)"
+      - "v.shape == (B, H, DV)"
+      - "g.shape == (B, H)"
+      - "beta.shape == (B, H)"
+      - "state.shape == (B, H, DK, DV)"
+      - "o.shape == (B, H, DV)"
+      - "new_state.shape == (B, H, DK, DV)"
+
+  workloads:
+    - {q_shape: [1, 4, 64], k_shape: [1, 4, 64], v_shape: [1, 4, 64], g_shape: [1, 4], beta_shape: [1, 4], state_shape: [1, 4, 64, 64], dtypes: [float16, bfloat16, float32], label: "gdn-decode-smoke-d64"}
+    - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], g_shape: [1, 32], beta_shape: [1, 32], state_shape: [1, 32, 128, 128], dtypes: [bfloat16, float32], label: "gdn-decode-b1-h32-d128"}
+    - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], g_shape: [8, 32], beta_shape: [8, 32], state_shape: [8, 32, 128, 128], dtypes: [bfloat16, float32], label: "gdn-decode-b8-h32-d128"}
+
+  roofline:
+    func: "tileops.perf.formulas.gated_deltanet_decode_roofline"
+
+  source:
+    kernel: tileops/kernels/gated_deltanet_recurrence.py
+    kernel_map:
+      GatedDeltaNetDecodeKernel: GatedDeltaNetDecodeKernel
+      GatedDeltaNetDecodeFP32Kernel: GatedDeltaNetDecodeFP32Kernel
+    op: tileops/ops/gated_deltanet.py
+    test: tests/ops/test_gated_deltanet_recurrence.py
+    bench: benchmarks/ops/bench_gated_deltanet_recurrence.py
+    bench_manifest_driven: true
+
+DeltaNetDecodeOp:
+  # Single-token ungated DeltaNet decode. Like GDN decode, state ownership is
+  # functional: state is read and new_state is returned.
+  ref_api: "none"
+  family: linear_attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, H, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, H, DV]"}
+      beta: {dtype: "same_as(q)", shape: "[B, H]"}
+      state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, H, DV]"}
+      new_state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+    params: {}
+    shape_rules:
+      - "q.shape == (B, H, DK)"
+      - "k.shape == (B, H, DK)"
+      - "v.shape == (B, H, DV)"
+      - "beta.shape == (B, H)"
+      - "state.shape == (B, H, DK, DV)"
+      - "o.shape == (B, H, DV)"
+      - "new_state.shape == (B, H, DK, DV)"
+
+  workloads:
+    - {q_shape: [1, 4, 64], k_shape: [1, 4, 64], v_shape: [1, 4, 64], beta_shape: [1, 4], state_shape: [1, 4, 64, 64], dtypes: [float16, bfloat16, float32], label: "delta-decode-smoke-d64"}
+    - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], beta_shape: [1, 32], state_shape: [1, 32, 128, 128], dtypes: [bfloat16, float32], label: "delta-decode-b1-h32-d128"}
+    - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], beta_shape: [8, 32], state_shape: [8, 32, 128, 128], dtypes: [bfloat16, float32], label: "delta-decode-b8-h32-d128"}
+
+  roofline:
+    func: "tileops.perf.formulas.deltanet_decode_roofline"
+
+  source:
+    kernel: tileops/kernels/deltanet_recurrence.py
+    kernel_map:
+      DeltaNetDecodeKernel: DeltaNetDecodeKernel
+      DeltaNetDecodeFP32Kernel: DeltaNetDecodeFP32Kernel
+    op: tileops/ops/deltanet_recurrence.py
+    test: tests/ops/test_deltanet_recurrence.py
+    bench: benchmarks/ops/bench_deltanet_recurrence.py
+    bench_manifest_driven: true
+
+GLADecodeOp:
+  # Single-token GLA decode. The scale parameter is semantic and fixed at op
+  # construction; state is returned functionally as new_state.
+  ref_api: "none"
+  family: linear_attention
+  status: implemented
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, H, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, H, DV]"}
+      gk: {dtype: "same_as(q)", shape: "[B, H, DK]"}
+      state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, H, DV]"}
+      new_state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+    params:
+      scale: {type: float, default: -1.0}
+    shape_rules:
+      - "q.shape == (B, H, DK)"
+      - "k.shape == (B, H, DK)"
+      - "v.shape == (B, H, DV)"
+      - "gk.shape == (B, H, DK)"
+      - "state.shape == (B, H, DK, DV)"
+      - "o.shape == (B, H, DV)"
+      - "new_state.shape == (B, H, DK, DV)"
+
+  workloads:
+    - {q_shape: [1, 4, 64], k_shape: [1, 4, 64], v_shape: [1, 4, 64], gk_shape: [1, 4, 64], state_shape: [1, 4, 64, 64], scale: 0.125, dtypes: [float16, bfloat16, float32], label: "gla-decode-smoke-d64"}
+    - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], gk_shape: [1, 32, 128], state_shape: [1, 32, 128, 128], scale: 0.08838834764831845, dtypes: [float16, bfloat16, float32], label: "gla-decode-b1-h32-d128"}
+    - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], gk_shape: [8, 32, 128], state_shape: [8, 32, 128, 128], scale: 0.08838834764831845, dtypes: [float16, bfloat16, float32], label: "gla-decode-b8-h32-d128"}
+
+  roofline:
+    func: "tileops.perf.formulas.gla_decode_roofline"
+
+  source:
+    kernel: tileops/kernels/gla_recurrence.py
+    kernel_map:
+      GLADecodeKernel: GLADecodeKernel
+      GLADecodeFP32Kernel: GLADecodeFP32Kernel
+    op: tileops/ops/gated_linear_attn.py
+    test: tests/ops/test_gla_recurrence.py
+    bench: benchmarks/ops/bench_gla_recurrence.py
+    bench_manifest_driven: true
+
+# The remaining code-present chunkwise/training Linear Attention surfaces are
+# intentionally spec-only for this pass. They expose backward-only artifacts
+# (Aw/Au/w/u/h) or optional initial/final state choices that need a separate
+# release-facing wrapper before they should count as implemented manifest ops.
+
+GatedDeltaNetFwdOp:
+  ref_api: "none"
+  family: linear_attention
+  status: spec-only
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, H, S, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+      g: {dtype: "same_as(q)", shape: "[B, H, S]"}
+      beta: {dtype: "same_as(q)", shape: "[B, H, S]"}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
+      Aw: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
+      Au: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
+    params:
+      chunk_size: {type: int, default: 64}
+    shape_rules:
+      - "S % chunk_size == 0"
+      - "NC == S // chunk_size"
+  workloads: []
+  roofline: {flops: 0, bytes: 0}
+  source:
+    kernel: tileops/kernels/gated_deltanet/gated_deltanet_fwd.py
+    op: tileops/ops/gated_deltanet.py
+    test: tests/ops/test_gated_deltanet_fwd.py
+    bench: benchmarks/ops/bench_gated_deltanet.py
+    bench_manifest_driven: false
+
+GatedDeltaNetBwdOp:
+  ref_api: "none"
+  family: linear_attention
+  status: spec-only
+  signature:
+    inputs:
+      do: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DV]"}
+      q: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
+      k: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
+      v: {dtype: "same_as(do)", shape: "[B, H, S, DV]"}
+      g: {dtype: "same_as(do)", shape: "[B, H, S]"}
+      beta: {dtype: "same_as(do)", shape: "[B, H, S]"}
+      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
+    outputs:
+      dq: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
+      dk: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
+      dv: {dtype: "same_as(do)", shape: "[B, H, S, DV]"}
+      dg: {dtype: "same_as(do)", shape: "[B, H, S]"}
+      dbeta: {dtype: "same_as(do)", shape: "[B, H, S]"}
+    params:
+      chunk_size: {type: int, default: 64}
+    shape_rules:
+      - "S % chunk_size == 0"
+      - "NC == S // chunk_size"
+  workloads: []
+  roofline: {flops: 0, bytes: 0}
+  source:
+    kernel: tileops/kernels/gated_deltanet/gated_deltanet_bwd.py
+    op: tileops/ops/gated_deltanet.py
+    test: tests/ops/test_gated_deltanet_chunkwise_bwd.py
+    bench: benchmarks/ops/bench_gated_deltanet.py
+    bench_manifest_driven: false
+
+DeltaNetFwdOp:
+  ref_api: "none"
+  family: linear_attention
+  status: spec-only
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, H, S, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+      beta: {dtype: "same_as(q)", shape: "[B, H, S]"}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
+      Aw: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
+      Au: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
+      w: {dtype: "float32", shape: "[B, H, S, DK]"}
+      u: {dtype: "float32", shape: "[B, H, S, DV]"}
+    params:
+      chunk_size: {type: int, default: 64}
+    shape_rules:
+      - "S % chunk_size == 0"
+      - "NC == S // chunk_size"
+  workloads: []
+  roofline: {flops: 0, bytes: 0}
+  source:
+    kernel: tileops/kernels/deltanet/deltanet_fwd.py
+    op: tileops/ops/deltanet.py
+    test: tests/ops/test_deltanet_fwd.py
+    bench: benchmarks/ops/bench_deltanet.py
+    bench_manifest_driven: false
+
+DeltaNetBwdOp:
+  ref_api: "none"
+  family: linear_attention
+  status: spec-only
+  signature:
+    inputs:
+      do: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DV]"}
+      q: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
+      k: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
+      v: {dtype: "same_as(do)", shape: "[B, H, S, DV]"}
+      beta: {dtype: "same_as(do)", shape: "[B, H, S]"}
+      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
+      Aw: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
+      Au: {dtype: "float32", shape: "[B, H, S, chunk_size]"}
+      w: {dtype: "float32", shape: "[B, H, S, DK]"}
+      u: {dtype: "float32", shape: "[B, H, S, DV]"}
+    outputs:
+      dq: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
+      dk: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
+      dv: {dtype: "same_as(do)", shape: "[B, H, S, DV]"}
+      dbeta: {dtype: "same_as(do)", shape: "[B, H, S]"}
+    params:
+      chunk_size: {type: int, default: 64}
+    shape_rules:
+      - "S % chunk_size == 0"
+      - "NC == S // chunk_size"
+  workloads: []
+  roofline: {flops: 0, bytes: 0}
+  source:
+    kernel: tileops/kernels/deltanet/deltanet_bwd.py
+    op: tileops/ops/deltanet.py
+    test: tests/ops/test_deltanet_chunkwise_bwd.py
+    bench: benchmarks/ops/bench_deltanet.py
+    bench_manifest_driven: false
+
+GLAFwdOp:
+  ref_api: "none"
+  family: linear_attention
+  status: spec-only
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, S, H, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
+      g: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
+      final_state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+    params:
+      chunk_size: {type: int, default: 64}
+      scale: {type: float, default: -1.0}
+      output_final_state: {type: bool, default: false}
+    shape_rules:
+      - "S % chunk_size == 0"
+  workloads: []
+  roofline: {flops: 0, bytes: 0}
+  source:
+    kernel: tileops/kernels/gla/gla_fwd.py
+    op: tileops/ops/gla.py
+    test: tests/ops/test_gla_chunkwise_fwd.py
+    bench: benchmarks/ops/bench_gla_chunkwise.py
+    bench_manifest_driven: false
+
+GLABwdOp:
+  ref_api: "none"
+  family: linear_attention
+  status: spec-only
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, S, H, DK]"}
+      k: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+      v: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
+      g: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+      h: {dtype: "float32", shape: "[B, NC + 1, H, DK, DV]"}
+      do: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
+      dht: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+    outputs:
+      dq: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+      dk: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+      dv: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
+      dg: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
+    params:
+      chunk_size: {type: int, default: 64}
+      scale: {type: float, default: -1.0}
+      has_initial_state: {type: bool, default: false}
+    shape_rules:
+      - "S % chunk_size == 0"
+      - "NC == S // chunk_size"
+  workloads: []
+  roofline: {flops: 0, bytes: 0}
+  source:
+    kernel: tileops/kernels/gla/gla_bwd.py
+    op: tileops/ops/gla.py
+    test: tests/ops/test_gla_chunkwise_bwd.py
+    bench: benchmarks/ops/bench_gla_chunkwise.py
+    bench_manifest_driven: false

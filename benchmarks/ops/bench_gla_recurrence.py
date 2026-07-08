@@ -10,10 +10,14 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
+from benchmarks.ops.attention.manifest_params import manifest_params
+from tileops.manifest import load_workloads
 from tileops.ops import GLADecodeOp
 from workloads.gla import GLADecodeTest
 from workloads.workload_base import FixtureBase
+
+_OP_NAME = "GLADecodeOp"
 
 
 def gla_decode_torch(
@@ -81,24 +85,20 @@ class GLADecodeBenchmark(BenchmarkBase[GLADecodeTest]):
 
 class GLADecodeBenchFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, dim_k, dim_v, dtype", [
-            (1, 32, 64, 64, torch.float32),
-            (1, 32, 128, 128, torch.float32),
-            (1, 32, 128, 128, torch.float16),
-            (1, 32, 128, 128, torch.bfloat16),
-            (8, 32, 128, 128, torch.float32),
-            (8, 32, 128, 128, torch.float16),
-            (8, 32, 128, 128, torch.bfloat16),
-            (16, 32, 128, 128, torch.float32),
-            (16, 32, 128, 128, torch.float16),
-            (16, 32, 128, 128, torch.bfloat16),
-            (32, 32, 128, 128, torch.float32),
-            (32, 32, 128, 128, torch.float16),
-            (32, 32, 128, 128, torch.bfloat16),
-            (64, 32, 128, 128, torch.float32),
-            (64, 32, 128, 128, torch.float16),
-            (64, 32, 128, 128, torch.bfloat16),
-        ]),
+        (
+            "batch, heads, dim_k, dim_v, scale, dtype, tune",
+            manifest_params(
+                load_workloads(_OP_NAME),
+                lambda w: (
+                    w["q_shape"][0],
+                    w["q_shape"][1],
+                    w["q_shape"][2],
+                    w["v_shape"][2],
+                    w.get("scale", w["q_shape"][2] ** -0.5),
+                ),
+                tune=False,
+            ),
+        ),
     ]
 
 
@@ -108,15 +108,16 @@ def test_gla_decode_bench(
     heads: int,
     dim_k: int,
     dim_v: int,
+    scale: float,
     dtype: torch.dtype,
+    tune: bool,
 ) -> None:
-    scale = dim_k ** -0.5
     test = _GLADecodeTestBaseline(batch, heads, dim_k, dim_v, dtype, scale=scale)
-    bm = GLADecodeBenchmark(test)
     inputs = test.gen_inputs()
 
     # --- TileOPs ---
-    op = GLADecodeOp(batch, heads, dim_k, dim_v, scale=scale, dtype=dtype)
+    op = GLADecodeOp(batch, heads, dim_k, dim_v, scale=scale, dtype=dtype, tune=tune)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
