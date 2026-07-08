@@ -253,7 +253,7 @@ class Conv1dFwdOp(Op):
         )
         self.stride = _conv_tuple(stride, 1, "stride", "Conv1d")[0]
         self.dilation = _conv_tuple(dilation, 1, "dilation", "Conv1d")[0]
-        self._padding_arg = padding
+        self.padding = padding
         self.groups = groups
         self.dtype = dtype
         self._committed_n = n
@@ -318,7 +318,7 @@ class Conv1dFwdOp(Op):
             l_in,
             kernel_l,
             self.stride,
-            self._padding_arg,
+            self.padding,
             self.dilation,
         )
         _validate_conv_params(
@@ -453,7 +453,6 @@ class Conv1dFwdOp(Op):
         self.c_in_g = c_in_g
         self.c_out_g = c_out // self.groups
         self.kernel_size = kernel_l
-        self.padding = pad_left
         self.padding_right = pad_right
         self.padding_pair = (pad_left, pad_right)
         self.out_l = out_l
@@ -481,7 +480,7 @@ class Conv1dFwdOp(Op):
             l_in,
             kernel_size,
             self.stride,
-            getattr(self, "_padding_arg", self.padding),
+            self.padding,
             self.dilation,
         )
         return {"output": (n, c_out, l_out)}
@@ -601,7 +600,6 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
         self.c_in_g = c_in_g
         self.c_out_g = c_out // self.groups
         self.kernel_size = kernel_l
-        self.padding = pad_left
         self.padding_right = pad_right
         self.padding_pair = (pad_left, pad_right)
         self.out_l = out_l
@@ -699,7 +697,7 @@ class Conv2dFwdOp(Op):
         )
         self.stride = _pair(stride)
         self.dilation = _conv_tuple(dilation, 2, "dilation", "Conv2d")
-        self._padding_arg = padding
+        self.padding = padding
         self.groups = groups
         self.dtype = dtype
         self._committed_n = n
@@ -782,7 +780,7 @@ class Conv2dFwdOp(Op):
             ),
         )
         padding = _conv_padding_to_tuple(
-            self._padding_arg, self.stride, (kernel_h, kernel_w), "Conv2d", self.dilation
+            self.padding, self.stride, (kernel_h, kernel_w), "Conv2d", self.dilation
         )
         _validate_conv_params(
             op_name="Conv2d",
@@ -978,7 +976,7 @@ class Conv2dFwdOp(Op):
         self.c_in_g = c_in_g
         self.c_out_g = c_out // self.groups
         self.kernel_size = (kernel_h, kernel_w)
-        self.padding = (pad_h, pad_w)
+        self.resolved_padding = (pad_h, pad_w)
         self.out_h = out_h
         self.out_w = out_w
         self.dtype = dtype
@@ -1162,7 +1160,7 @@ class Conv2dBiasFwdOp(Conv2dFwdOp):
         self.c_in_g = c_in_g
         self.c_out_g = c_out // self.groups
         self.kernel_size = (kernel_h, kernel_w)
-        self.padding = (pad_h, pad_w)
+        self.resolved_padding = (pad_h, pad_w)
         self.out_h = out_h
         self.out_w = out_w
         self.dtype = dtype
@@ -1277,7 +1275,7 @@ class Conv3dFwdOp(Op):
         )
         self.stride = _triple(stride)
         self.dilation = _conv_tuple(dilation, 3, "dilation", "Conv3d")
-        self._padding_arg = padding
+        self.padding = padding
         self.groups = groups
         self.dtype = dtype
         self._committed_n = n
@@ -1370,7 +1368,7 @@ class Conv3dFwdOp(Op):
             ),
         )
         padding = _conv_padding_to_tuple(
-            self._padding_arg,
+            self.padding,
             self.stride,
             (kernel_d, kernel_h, kernel_w),
             "Conv3d",
@@ -1543,7 +1541,7 @@ class Conv3dFwdOp(Op):
         self.c_in_g = c_in_g
         self.c_out_g = c_out // self.groups
         self.kernel_size = (kernel_d, kernel_h, kernel_w)
-        self.padding = (pad_d, pad_h, pad_w)
+        self.resolved_padding = (pad_d, pad_h, pad_w)
         self.out_d = out_d
         self.out_h = out_h
         self.out_w = out_w
@@ -1752,7 +1750,7 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
         self.c_in_g = c_in_g
         self.c_out_g = c_out // self.groups
         self.kernel_size = (kernel_d, kernel_h, kernel_w)
-        self.padding = (pad_d, pad_h, pad_w)
+        self.resolved_padding = (pad_d, pad_h, pad_w)
         self.out_d = out_d
         self.out_h = out_h
         self.out_w = out_w

@@ -52,10 +52,10 @@ class AvgPool1dFwdOp(Op):
 
     def __init__(
         self,
+        kernel_size: int | Tuple[int],
         n: Optional[int] = None,
         c_in: Optional[int] = None,
         l_in: Optional[int] = None,
-        kernel_size: int | Tuple[int] = 1,
         stride: Optional[int | Tuple[int]] = None,
         padding: int | Tuple[int] = 0,
         ceil_mode: bool = False,
@@ -224,11 +224,11 @@ class AvgPool2dFwdOp(Op):
 
     def __init__(
         self,
+        kernel_size: int | Tuple[int, int],
         n: Optional[int] = None,
         c_in: Optional[int] = None,
         h_in: Optional[int] = None,
         w_in: Optional[int] = None,
-        kernel_size: int | Tuple[int, int] = 1,
         stride: Optional[int | Tuple[int, int]] = None,
         padding: int | Tuple[int, int] = 0,
         ceil_mode: bool = False,
@@ -451,12 +451,12 @@ class AvgPool3dFwdOp(Op):
 
     def __init__(
         self,
+        kernel_size: int | Tuple[int, int, int],
         n: Optional[int] = None,
         c_in: Optional[int] = None,
         d_in: Optional[int] = None,
         h_in: Optional[int] = None,
         w_in: Optional[int] = None,
-        kernel_size: int | Tuple[int, int, int] = 1,
         stride: Optional[int | Tuple[int, int, int]] = None,
         padding: int | Tuple[int, int, int] = 0,
         ceil_mode: bool = False,
