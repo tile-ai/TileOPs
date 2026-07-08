@@ -1081,6 +1081,26 @@ def gemm_fwd_roofline(op: "Op") -> tuple[int, int]:
     return int(flops), int(nbytes)
 
 
+def gemm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
+    """Roofline for dense FP8 ``GemmFp8Op``."""
+    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
+        raise RuntimeError(
+            "GemmFp8Op.eval_roofline() is valid only after the first forward(); "
+            "m/n/k and dtype are inferred from the inputs."
+        )
+    m, n, k = op.m, op.n, op.k
+    input_bytes = op.dtype.itemsize
+    out_bytes = op.out_dtype.itemsize
+    scale_a_shape = getattr(op, "scale_a_shape", (1, 1))
+    scale_b_shape = getattr(op, "scale_b_shape", (1, 1))
+    scale_elems = scale_a_shape[0] * scale_a_shape[1] + scale_b_shape[0] * scale_b_shape[1]
+    flops = 2 * m * n * k
+    nbytes = (m * k + n * k) * input_bytes + m * n * out_bytes + scale_elems * 4
+    if getattr(op, "has_bias", False):
+        nbytes += n * out_bytes
+    return int(flops), int(nbytes)
+
+
 def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
     batch_sum = int(op.batch_sum)
     batch_count = int(op.batch_count)
