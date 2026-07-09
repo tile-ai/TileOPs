@@ -1,9 +1,9 @@
 """Benchmark: TileOPs Gated DeltaNet inference prefill.
 
 When FLA is installed, record it as the independent baseline. A pure-torch
-reference is kept only for small ad-hoc fallback rows; the manifest's
-long-context Qwen rows require FLA so no-FLA runs do not spend minutes or OOM
-inside the reference recurrence.
+reference is kept only for small manifest fallback rows; the long-context Qwen
+rows require FLA so no-FLA runs do not spend minutes or OOM inside the
+reference recurrence.
 
 The benchmark measures the serving-oriented BTHD layout because that is the
 production fast path used by FLA/Qwen-style inference prefill.

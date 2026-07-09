@@ -43,6 +43,11 @@ GatedDeltaNetPrefillFwdOp:
       - "chunk_size is None or S % chunk_size == 0"
 
   workloads:
+    # Small fallback row for environments without FLA. The benchmark uses the
+    # pure-torch reference only up to S=4096; the long-context Qwen rows below
+    # require FLA as their independent baseline.
+    - {q_shape: [1, 4096, 16, 128], k_shape: [1, 4096, 16, 128], v_shape: [1, 4096, 16, 128], g_shape: [1, 4096, 16], beta_shape: [1, 4096, 16], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "fallback-gdn-prefill-b1-s4k-h16-d128-bthd"}
+
     # Qwen3.5-aligned inference prefill rows using the public FLA BTHD
     # contract. Tests use smaller branch-covering shapes in tests/ops; these
     # rows are intentionally long-context benchmark coverage.
