@@ -477,7 +477,7 @@ jobs:
           # call) fails as a timeout with a thread dump instead of wedging the job. --no-deps
           # tileops install doesn't bring this; pin via constraints.txt so the install is
           # deterministic (the runner image should bake it and drop this install — follow-up).
-          python3 -m pip install -q -c constraints.txt pytest-timeout
+          python3 -m pip install -q -c constraints.txt pytest-timeout pytest-xdist
           current_dir="$(pwd)"
           export PYTHONPATH="${current_dir}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
@@ -497,8 +497,11 @@ jobs:
           echo "Resolved test scope: ${TEST_SCOPE}"
           echo "Resolved pytest targets: ${PYTEST_TARGETS}"
           read -r -a TARGETS <<< "${PYTEST_TARGETS}"
-          echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
+          XDIST_N="${PYTEST_XDIST_N:-auto}"
+          XDIST_DIST_MODE="${PYTEST_XDIST_DIST_MODE:-loadfile}"
+          echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s) with -n ${XDIST_N} --dist=${XDIST_DIST_MODE}"
           python3 -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" \
+            -n "${XDIST_N}" --dist="${XDIST_DIST_MODE}" \
             --timeout=600 --timeout-method=thread \
             --junit-xml=gpu_smoke_results.xml | tee gpu_smoke.log
 

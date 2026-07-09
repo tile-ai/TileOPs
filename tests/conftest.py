@@ -1,9 +1,51 @@
+import gc
+import os
 from collections import defaultdict
 
 import pytest
 import torch
 
 from tests.test_base import _check_result
+
+
+def _xdist_worker_id() -> str | None:
+    """Return the xdist worker id (``gw0``/``gw1``/...) or ``None`` on the
+    main process / serial run.  ``master`` is the controller in xdist and
+    also does not run tests, so we treat it like the serial case."""
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker or worker == "master":
+        return None
+    return worker
+
+
+def _partition_tilelang_tmp_dir(worker: str) -> None:
+    """Give this xdist worker a private ``TILELANG_TMP_DIR`` subdirectory.
+
+    Idempotent: the ``_TILEOPS_TMP_PARTITIONED`` sentinel prevents a nested
+    pytest invocation (or a re-entered ``pytest_configure``) from stacking
+    ``gwN`` suffixes.
+    """
+    if os.environ.get("_TILEOPS_TMP_PARTITIONED") == "1":
+        return
+    base = os.environ.get("TILELANG_TMP_DIR")
+    if not base:
+        # tilelang has its own default (usually under $HOME); mirror it
+        # so the partition is still deterministic across workers.
+        base = os.path.expanduser("~/.tilelang/tmp")
+    worker_tmp = os.path.join(base, worker)
+    try:
+        os.makedirs(worker_tmp, exist_ok=True)
+    except OSError:
+        # Fall through — the compile step will surface a clearer error
+        # than we could here (e.g. read-only fs on a fork runner).
+        return
+    os.environ["TILELANG_TMP_DIR"] = worker_tmp
+    os.environ["_TILEOPS_TMP_PARTITIONED"] = "1"
+
+
+_XDIST_WORKER = _xdist_worker_id()
+if _XDIST_WORKER is not None:
+    _partition_tilelang_tmp_dir(_XDIST_WORKER)
 
 
 def _under_repo_tests(item: pytest.Item) -> bool:
@@ -45,6 +87,28 @@ def setup() -> None:
     torch.manual_seed(1235)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(1235)
+
+
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """Release GPU memory between tests when running under xdist.
+
+    With ``-n auto`` several workers share the same GPU(s).  Large kernels
+    (attention, MoE) can hold multi-GB tensors long enough for a peer
+    worker to trip OOM.  Dropping unreferenced CUDA blocks after each test
+    keeps the per-worker footprint bounded without affecting correctness.
+    Skipped on serial runs to preserve the historical (fast) teardown path.
+    """
+    if _XDIST_WORKER is None:
+        return
+    try:
+        if torch.cuda.is_available():
+            gc.collect()
+            torch.cuda.empty_cache()
+    except (RuntimeError, AttributeError):
+        # A wedged CUDA context (e.g. after a kernel launch failure) can
+        # make ``empty_cache`` itself raise.  The test result is already
+        # captured; do not mask it with a teardown error.
+        pass
 
 
 NON_RUNTIME_OPS_TIER_FILES = {
