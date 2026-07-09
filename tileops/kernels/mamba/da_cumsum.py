@@ -298,7 +298,7 @@ class DaCumsumFwdKernel(Kernel):
                 Required when the kernel was constructed with has_dt_bias=True.
 
         Returns:
-            dt_out: (batch, n_heads, num_chunks, chunk_len) float32 — processed dt.
+            dt_out: (batch, n_heads, num_chunks, chunk_len) dtype — processed dt in target dtype.
             dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
         """
         dt = dt.contiguous()

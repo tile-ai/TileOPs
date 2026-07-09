@@ -41,7 +41,7 @@ def da_cumsum_fwd_ref(
     computes dt_out and the chunk-local inclusive prefix sum of dA = dt_out * A.
 
     Returns:
-        dt_out:    (batch, n_heads, num_chunks, chunk_len) float32
+        dt_out:    (batch, n_heads, num_chunks, chunk_len) float32 (reference uses float32)
         dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32
     """
     b, S, h = dt.shape

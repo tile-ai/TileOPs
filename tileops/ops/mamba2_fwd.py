@@ -222,7 +222,7 @@ class Mamba2FwdOp:
             dt_bias = self._zero_dt_bias
 
         dt_out, dA_cumsum = self._da_cumsum_op.forward(dt, A, dt_bias)
-        # dt_out:    (B, H, C, Q)  float32
+        # dt_out:    (B, H, C, Q)  dtype
         # dA_cumsum: (B, H, C, Q)  float32
 
         # ── 2. CB matrix ─────────────────────────────────────────────────────

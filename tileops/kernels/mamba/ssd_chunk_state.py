@@ -7,7 +7,7 @@ Inputs (pre-reshaped to chunked view):
   Bmat:       (batch, seq_len, n_groups, d_state)
               -- State Space Model (SSM) B matrix, grouped over heads
   dt:         (batch, n_heads, num_chunks, chunk_len)
-              -- per-position discretization factor (float32)
+              -- per-position discretization factor (dtype, cast to float32 internally for accumulation)
   dA_cumsum:  (batch, n_heads, num_chunks, chunk_len)
               -- chunk-local prefix sums of dA = dt * A (float32)
   seq_idx:    (batch, seq_len)  int32, optional
