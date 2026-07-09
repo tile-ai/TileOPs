@@ -511,8 +511,11 @@ class Conv1dFwdOp(Op):
             raise ValueError(
                 f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
             )
-        if self.dtype is not None and input.dtype != self.dtype:
-            raise ValueError(f"input.dtype must match op dtype {self.dtype}, got {input.dtype}")
+        committed_dtype = getattr(self, "_committed_dtype", None)
+        if committed_dtype is not None and input.dtype != committed_dtype:
+            raise ValueError(
+                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
+            )
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -1045,8 +1048,11 @@ class Conv2dFwdOp(Op):
             raise ValueError(
                 f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
             )
-        if self.dtype is not None and input.dtype != self.dtype:
-            raise ValueError(f"input.dtype must match op dtype {self.dtype}, got {input.dtype}")
+        committed_dtype = getattr(self, "_committed_dtype", None)
+        if committed_dtype is not None and input.dtype != committed_dtype:
+            raise ValueError(
+                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
+            )
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -1628,8 +1634,11 @@ class Conv3dFwdOp(Op):
             raise ValueError(
                 f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
             )
-        if self.dtype is not None and input.dtype != self.dtype:
-            raise ValueError(f"input.dtype must match op dtype {self.dtype}, got {input.dtype}")
+        committed_dtype = getattr(self, "_committed_dtype", None)
+        if committed_dtype is not None and input.dtype != committed_dtype:
+            raise ValueError(
+                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
+            )
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
