@@ -341,8 +341,20 @@ class SSDChunkStateFwdKernel(Kernel):
               * dt[b, h, c, l]
               * (1 if not has_seq_idx else (seq_idx[b,c*Q+Q-1] >= 0 and seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
 
-    Inputs:  x, Bmat, dt, dA_cumsum[, seq_idx]
-    Output:  out  (batch, num_chunks, n_heads, d_head, d_state), float32
+    Inputs:
+        x:         (batch, seqlen, n_heads, d_head)           dtype
+        Bmat:      (batch, seqlen, n_groups, d_state)         dtype
+        dt:        (batch, n_heads, num_chunks, chunk_len)    dtype — accepts target dtype,
+                   will be cast to fp32 internally for accumulation
+        dA_cumsum: (batch, n_heads, num_chunks, chunk_len)    float32
+        seq_idx:   (batch, seqlen)                            int32 (optional)
+
+    Output:
+        out:       (batch, num_chunks, n_heads, d_head, d_state) float32
+
+    Note: If dt.dtype != self.dtype, forward() will silently cast it. This incurs an
+    extra kernel launch. For best performance, callers should ensure dt is already in
+    the target dtype.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -421,6 +433,21 @@ class SSDChunkStateFwdKernel(Kernel):
         dA_cumsum: torch.Tensor,
         seq_idx: torch.Tensor,
     ) -> torch.Tensor:
+        """Compute chunk-end SSM states.
+
+        Args:
+            x: (batch, seqlen, n_heads, d_head) dtype
+            Bmat: (batch, seqlen, n_groups, d_state) dtype
+            dt: (batch, n_heads, num_chunks, chunk_len) dtype — will be cast to fp32 internally
+            dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32
+            seq_idx: (batch, seqlen) int32
+
+        Returns:
+            out: (batch, num_chunks, n_heads, d_head, d_state) float32
+
+        Note: If dt.dtype != self.dtype, this method silently casts dt, which incurs an
+        extra kernel launch. For best performance, ensure dt is already in self.dtype.
+        """
         if dt.dtype != self.dtype:
             dt = dt.to(self.dtype)
         return _ssd_chunk_state_fwd_wrapped(

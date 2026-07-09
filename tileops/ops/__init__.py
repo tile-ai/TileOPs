@@ -19,6 +19,7 @@ from .attention import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
+from .cb_producer import CBProducerOp
 from .convolution import (
     Conv1dBiasFwdOp,
     Conv1dFwdOp,

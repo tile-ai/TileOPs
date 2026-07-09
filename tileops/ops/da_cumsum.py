@@ -16,6 +16,9 @@ class DaCumsumFwdOp(Op):
     Applies optional per-head bias, optional softplus activation, and clamping to
     raw dt values, then computes the chunk-local inclusive prefix sum of dA = dt * A.
 
+    Note: dt_out is cast to the target dtype for storage efficiency, but dA_cumsum
+    is computed from the fp32 dt values before casting, ensuring numerical precision.
+
     Args:
         batch:        Batch size.
         num_chunks:   Number of chunks (seq_len / chunk_len).
@@ -36,7 +39,7 @@ class DaCumsumFwdOp(Op):
         chunk_len: int,
         n_heads: int,
         seq_len: int,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype = torch.float32,
         dt_softplus: bool = False,
         has_dt_bias: bool = False,
         dt_min: float = 0.0,
@@ -85,7 +88,8 @@ class DaCumsumFwdOp(Op):
 
         Returns:
             dt_out: (batch, n_heads, num_chunks, chunk_len) dtype — processed dt in target dtype.
-            dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
+            dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum
+                of dA = dt_val * A, computed from fp32 dt_val before casting dt_out.
         """
         if not dt.is_cuda:
             raise ValueError("dt must be a CUDA tensor")

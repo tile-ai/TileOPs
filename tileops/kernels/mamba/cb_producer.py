@@ -260,7 +260,7 @@ class CBProducerKernel(Kernel):
         self.d_state = d_state
         self.dtype = dtype
 
-        self.kernel_func = _cb_producer_kernel(
+        self.kernel = _cb_producer_kernel(
             batch, num_chunks, n_groups, chunk_len, d_state, self.dtype_str
         )
         self.init_config(config, tune)
@@ -308,10 +308,9 @@ class CBProducerKernel(Kernel):
         """
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
-        return _cb_producer_wrapped(
-            self.batch, self.num_chunks, self.n_groups, self.chunk_len, self.d_state,
-            self.dtype_str,
+        # Compile kernel with current config, then call with tensors
+        compiled_kernel = self.kernel(
             self.config["block_l"], self.config["block_s"],
             self.config["block_n"], self.config["threads"],
-            C_mat, B_mat,
         )
+        return compiled_kernel(C_mat, B_mat)

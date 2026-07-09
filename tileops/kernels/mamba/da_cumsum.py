@@ -8,7 +8,7 @@ Inputs:
 
 Outputs:
   dt_out:    (batch, n_heads, num_chunks, chunk_len)   -- dtype (bf16/fp16), processed dt after bias/softplus/clamp
-  dA_cumsum: (batch, n_heads, num_chunks, chunk_len)   -- float32, inclusive prefix sum of dA = dt_out * A
+  dA_cumsum: (batch, n_heads, num_chunks, chunk_len)   -- float32, inclusive prefix sum of dA = dt_val * A
 
 For each (b, h, c, l), the kernel computes:
 
@@ -17,7 +17,7 @@ For each (b, h, c, l), the kernel computes:
   if dt_softplus:   dt_val = softplus(dt_val)   # with bypass for dt_val > 20
                     dt_val = clamp(dt_val, dt_min, dt_max)
   dt_out[b,h,c,l]  = dt_val (cast to dtype for storage efficiency)
-  dA_cumsum[b,h,c,l] = sum_{i=0}^{l} dt_out[b,h,c,i] * A[h]  (computed in float32 for precision)
+  dA_cumsum[b,h,c,l] = sum_{i=0}^{l} dt_val[b,h,c,i] * A[h]  (computed from fp32 dt_val before casting dt_out)
 
 This matches _chunk_cumsum_fwd_kernel in the Mamba-2 Triton reference
 (mamba_ssm/ops/triton/ssd_chunk_state.py).
@@ -235,7 +235,7 @@ class DaCumsumFwdKernel(Kernel):
         chunk_len: int,
         n_heads: int,
         seq_len: int,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype = torch.float32,
         dt_softplus: bool = False,
         has_dt_bias: bool = False,
         dt_min: float = 0.0,
