@@ -38,7 +38,6 @@ End-to-end::
 
 import os
 
-from . import passes
 from .decode import decode as _decode
 from .markers import (
     DEFAULT_LANE,
@@ -54,6 +53,12 @@ from .record import MAX_EVENTS_DEFAULT
 from .ui import export_timeline_html as _export_timeline_html
 
 __all__ = ["trace"]
+
+
+def _passes():
+    from . import passes
+
+    return passes
 
 
 class _Trace:
@@ -297,7 +302,7 @@ class _Trace:
         Example:
             >>> return trace.lower(main, max_events=1024)
         """
-        return passes.lower(primfunc, max_events=max_events)
+        return _passes().lower(primfunc, max_events=max_events)
 
     def strip(self, primfunc):
         """Primitive: no-op every marker so the kernel compiles without tracing.
@@ -314,7 +319,7 @@ class _Trace:
         Example:
             >>> return trace.strip(main)
         """
-        return passes.strip(primfunc)
+        return _passes().strip(primfunc)
 
     # == Run & export =======================================================
 
@@ -367,7 +372,7 @@ class _Trace:
             >>> *_, slots = compiled(a, b)
             >>> events = trace.decode(compiled, slots)
         """
-        maps = passes.lookup_meta(compiled)
+        maps = _passes().lookup_meta(compiled)
         return _decode(slots, id_to_name=maps["id_to_name"],
                        group_id_to_name=maps["group_id_to_name"],
                        lane_id_to_name=maps["lane_id_to_name"],
@@ -416,7 +421,7 @@ class _Trace:
         Example:
             >>> trace.export_html(events, "timeline.html", compiled=compiled)
         """
-        maps = passes.lookup_meta(compiled)
+        maps = _passes().lookup_meta(compiled)
         _export_timeline_html(events, path, group_id_to_name=maps["group_id_to_name"],
                               lane_id_to_name=maps["lane_id_to_name"],
                               flows=maps["flows"], title=title,
