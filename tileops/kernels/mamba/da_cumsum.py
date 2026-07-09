@@ -235,7 +235,7 @@ class DaCumsumFwdKernel(Kernel):
         chunk_len: int,
         n_heads: int,
         seq_len: int,
-        dtype: torch.dtype,
+        dtype: torch.dtype = torch.float32,
         dt_softplus: bool = False,
         has_dt_bias: bool = False,
         dt_min: float = 0.0,
