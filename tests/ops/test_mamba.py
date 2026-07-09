@@ -147,6 +147,21 @@ def test_cb_producer_fwd_noncontiguous():
     allclose_compare(cb_out, cb_ref, atol=1e-3, rtol=1e-3)
 
 
+@pytest.mark.smoke
+def test_cb_producer_fwd_tune():
+    """CBProducerOp should support tune=True without errors."""
+    batch, num_chunks, chunk_len, n_groups, d_state = 1, 1, 64, 1, 64
+    dtype = torch.float16
+
+    # Small shape to keep autotune fast
+    test = CBProducerFwdTest(batch, num_chunks, chunk_len, n_groups, d_state, dtype=dtype)
+    op = CBProducerOp(
+        batch, num_chunks, n_groups, chunk_len, d_state, dtype=dtype, tune=True
+    )
+    inputs = test.gen_inputs()
+    test.check(op, *inputs, atol=1e-3, rtol=1e-3)
+
+
 class DaCumsumFwdTest(_DaCumsumFwdTestWorkload, TestBase):
     def ref_program(self, dt, A, dt_bias):
         return da_cumsum_fwd_ref(

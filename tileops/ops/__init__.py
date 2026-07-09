@@ -114,6 +114,7 @@ __all__ = [
     "AdaLayerNormZeroFwdOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
+    "CBProducerOp",
     "Conv1dBiasFwdOp",
     "Conv1dFwdOp",
     "Conv2dBiasFwdOp",

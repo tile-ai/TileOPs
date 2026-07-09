@@ -308,9 +308,10 @@ class CBProducerKernel(Kernel):
         """
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
-        # Compile kernel with current config, then call with tensors
-        compiled_kernel = self.kernel(
+        return _cb_producer_wrapped(
+            self.batch, self.num_chunks, self.n_groups, self.chunk_len, self.d_state,
+            self.dtype_str,
             self.config["block_l"], self.config["block_s"],
             self.config["block_n"], self.config["threads"],
+            C_mat, B_mat,
         )
-        return compiled_kernel(C_mat, B_mat)
