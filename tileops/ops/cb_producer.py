@@ -54,10 +54,6 @@ class CBProducerOp(Op):
             batch, num_chunks, n_groups, chunk_len, d_state, dtype, tune=tune
         )
 
-        print(
-            f"CBProducerOp initialized with config: {self.kernel.config}"
-        )
-
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         """Default kernel map - returns kernel class, not instance."""

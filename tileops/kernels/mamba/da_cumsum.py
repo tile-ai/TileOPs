@@ -222,7 +222,7 @@ class DaCumsumFwdKernel(Kernel):
         dt_bias (n_heads,) float32 — per-head dt bias; required when has_dt_bias=True.
 
     Outputs:
-        dt_out    (batch, n_heads, num_chunks, chunk_len) float32 — processed dt.
+        dt_out    (batch, n_heads, num_chunks, chunk_len) dtype — processed dt in target dtype.
         dA_cumsum (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
     """
 
