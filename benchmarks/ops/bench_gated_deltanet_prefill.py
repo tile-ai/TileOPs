@@ -1,7 +1,9 @@
 """Benchmark: TileOPs Gated DeltaNet inference prefill.
 
-When FLA is installed, record it as the independent baseline. Otherwise fall
-back to a pure-torch reference so every benchmark row has a non-TileOps entry.
+When FLA is installed, record it as the independent baseline. A pure-torch
+reference is kept only for small ad-hoc fallback rows; the manifest's
+long-context Qwen rows require FLA so no-FLA runs do not spend minutes or OOM
+inside the reference recurrence.
 
 The benchmark measures the serving-oriented BTHD layout because that is the
 production fast path used by FLA/Qwen-style inference prefill.
@@ -25,6 +27,7 @@ from tileops.ops import GatedDeltaNetPrefillFwdOp
 from workloads.gated_deltanet import GatedDeltaNetPrefillFwdTest
 
 _OP_NAME = "GatedDeltaNetPrefillFwdOp"
+_TORCH_FALLBACK_MAX_SEQ_LEN = 4096
 
 
 try:
@@ -169,6 +172,10 @@ def _gdn_prefill_args(
     )
 
 
+def _can_use_torch_fallback(seq_len: int) -> bool:
+    return seq_len <= _TORCH_FALLBACK_MAX_SEQ_LEN
+
+
 _BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), _gdn_prefill_args, tune=False)
 
 
@@ -187,6 +194,14 @@ def test_gated_deltanet_prefill_fwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
+    fla_fn = _fla_prefill_fwd()
+    if fla_fn is None and not _can_use_torch_fallback(seq_len):
+        pytest.skip(
+            "FLA is required for long-context GDN prefill benchmark rows; "
+            "the pure-torch fallback is capped at "
+            f"S <= {_TORCH_FALLBACK_MAX_SEQ_LEN}"
+        )
+
     test = _GatedDeltaNetPrefillFwdTestBaseline(
         batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, layout=layout
     )
@@ -206,7 +221,6 @@ def test_gated_deltanet_prefill_fwd_bench(
     bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
 
-    fla_fn = _fla_prefill_fwd()
     if fla_fn is not None:
         fla_inputs = _to_fla_public_layout(*inputs, layout)
         result_fla = bm.profile(fla_fn, *fla_inputs)
