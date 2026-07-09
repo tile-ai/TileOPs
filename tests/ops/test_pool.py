@@ -789,5 +789,53 @@ def test_avg_pool2d_dynamic_shape_kernel_cache_and_roofline() -> None:
     assert len(op._kernel_cache) == 2
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("op_cls", "kwargs", "error_type", "match"),
+    [
+        (AvgPool1dFwdOp, {"kernel_size": 3, "n": 0}, ValueError, "n must be greater than zero"),
+        (
+            AvgPool2dFwdOp,
+            {"kernel_size": 3, "h_in": -1},
+            ValueError,
+            "h_in must be greater than zero",
+        ),
+        (
+            AvgPool3dFwdOp,
+            {"kernel_size": 3, "w_in": True},
+            TypeError,
+            "w_in must be an int",
+        ),
+    ],
+)
+def test_avg_pool_optional_committed_dims_validate_at_construction(
+    op_cls: type[AvgPool1dFwdOp | AvgPool2dFwdOp | AvgPool3dFwdOp],
+    kwargs: dict[str, object],
+    error_type: type[Exception],
+    match: str,
+) -> None:
+    with pytest.raises(error_type, match=match):
+        op_cls(**kwargs)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_cls", [AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp])
+def test_avg_pool_dynamic_dtype_uses_committed_dtype_only(
+    op_cls: type[AvgPool1dFwdOp | AvgPool2dFwdOp | AvgPool3dFwdOp],
+) -> None:
+    op = op_cls(kernel_size=2)
+    op.dtype = torch.float16
+
+    op._validate_dtypes(torch.empty((), dtype=torch.bfloat16))
+
+
+@pytest.mark.smoke
+def test_avg_pool_committed_dtype_still_rejects_mismatch() -> None:
+    op = AvgPool2dFwdOp(kernel_size=2, dtype=torch.float16)
+
+    with pytest.raises(ValueError, match="input.dtype must match op dtype"):
+        op._validate_dtypes(torch.empty((), dtype=torch.bfloat16))
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

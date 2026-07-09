@@ -93,6 +93,15 @@ def _validate_conv_groups(op_name: str, c_in: int, c_out: int, groups: int) -> N
         raise ValueError(f"{op_name} c_out must be divisible by groups")
 
 
+def _validate_optional_positive_ints(
+    op_name: str,
+    values: Tuple[tuple[str, Optional[int]], ...],
+) -> None:
+    for name, value in values:
+        if value is not None:
+            _validate_positive_int(name, value, op_name)
+
+
 def _validate_conv_params(
     *,
     op_name: str,
@@ -242,6 +251,12 @@ class Conv1dFwdOp(Op):
         _has_bias: bool = False,
     ) -> None:
         _validate_positive_int("groups", groups, "Conv1d")
+        _validate_optional_positive_ints(
+            "Conv1d",
+            (("n", n), ("c_in", c_in), ("l_in", l_in), ("c_out", c_out)),
+        )
+        if c_in is not None and c_out is not None:
+            _validate_conv_groups("Conv1d", c_in, c_out, groups)
         self.n = n
         self.c_in = c_in
         self.l_in = l_in
@@ -687,6 +702,12 @@ class Conv2dFwdOp(Op):
         _has_bias: bool = False,
     ) -> None:
         _validate_positive_int("groups", groups, "Conv2d")
+        _validate_optional_positive_ints(
+            "Conv2d",
+            (("n", n), ("c_in", c_in), ("h", h), ("w", w), ("c_out", c_out)),
+        )
+        if c_in is not None and c_out is not None:
+            _validate_conv_groups("Conv2d", c_in, c_out, groups)
         self.n = n
         self.c_in = c_in
         self.h = h
@@ -1264,6 +1285,19 @@ class Conv3dFwdOp(Op):
         _has_bias: bool = False,
     ) -> None:
         _validate_positive_int("groups", groups, "Conv3d")
+        _validate_optional_positive_ints(
+            "Conv3d",
+            (
+                ("n", n),
+                ("c_in", c_in),
+                ("d", d),
+                ("h", h),
+                ("w", w),
+                ("c_out", c_out),
+            ),
+        )
+        if c_in is not None and c_out is not None:
+            _validate_conv_groups("Conv3d", c_in, c_out, groups)
         self.n = n
         self.c_in = c_in
         self.d = d

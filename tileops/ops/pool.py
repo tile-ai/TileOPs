@@ -27,6 +27,15 @@ def _validate_positive_int(name: str, value: int, op_name: str) -> None:
         raise ValueError(f"{op_name} {name} must be greater than zero")
 
 
+def _validate_optional_positive_ints(
+    op_name: str,
+    values: Tuple[tuple[str, Optional[int]], ...],
+) -> None:
+    for name, value in values:
+        if value is not None:
+            _validate_positive_int(name, value, op_name)
+
+
 def _device_index(tensor: torch.Tensor) -> int | None:
     return tensor.device.index
 
@@ -64,6 +73,10 @@ class AvgPool1dFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        _validate_optional_positive_ints(
+            "AvgPool1dFwdOp",
+            (("n", n), ("c_in", c_in), ("l_in", l_in)),
+        )
         self.n = n
         self.c_in = c_in
         self.l_in = l_in
@@ -185,9 +198,10 @@ class AvgPool1dFwdOp(Op):
                 "input.dtype must be float16, bfloat16, or float32, "
                 f"got {input.dtype}"
             )
-        if self.dtype is not None and input.dtype != self.dtype:
+        committed_dtype = getattr(self, "_committed_dtype", None)
+        if committed_dtype is not None and input.dtype != committed_dtype:
             raise ValueError(
-                f"input.dtype must match op dtype {self.dtype}, got {input.dtype}"
+                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
             )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -238,6 +252,10 @@ class AvgPool2dFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        _validate_optional_positive_ints(
+            "AvgPool2dFwdOp",
+            (("n", n), ("c_in", c_in), ("h_in", h_in), ("w_in", w_in)),
+        )
         self.n = n
         self.c_in = c_in
         self.h_in = h_in
@@ -402,9 +420,10 @@ class AvgPool2dFwdOp(Op):
                 "input.dtype must be float16, bfloat16, or float32, "
                 f"got {input.dtype}"
             )
-        if self.dtype is not None and input.dtype != self.dtype:
+        committed_dtype = getattr(self, "_committed_dtype", None)
+        if committed_dtype is not None and input.dtype != committed_dtype:
             raise ValueError(
-                f"input.dtype must match op dtype {self.dtype}, got {input.dtype}"
+                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
             )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -466,6 +485,16 @@ class AvgPool3dFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        _validate_optional_positive_ints(
+            "AvgPool3dFwdOp",
+            (
+                ("n", n),
+                ("c_in", c_in),
+                ("d_in", d_in),
+                ("h_in", h_in),
+                ("w_in", w_in),
+            ),
+        )
         self.n = n
         self.c_in = c_in
         self.d_in = d_in
@@ -621,9 +650,10 @@ class AvgPool3dFwdOp(Op):
                 "input.dtype must be float16, bfloat16, or float32, "
                 f"got {input.dtype}"
             )
-        if self.dtype is not None and input.dtype != self.dtype:
+        committed_dtype = getattr(self, "_committed_dtype", None)
+        if committed_dtype is not None and input.dtype != committed_dtype:
             raise ValueError(
-                f"input.dtype must match op dtype {self.dtype}, got {input.dtype}"
+                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
             )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:

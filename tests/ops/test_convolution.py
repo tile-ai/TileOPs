@@ -1003,5 +1003,42 @@ def test_conv2d_dynamic_shape_kernel_cache_and_roofline() -> None:
     assert len(op._kernel_cache) == 2
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("op_cls", "kwargs", "error_type", "match"),
+    [
+        (Conv1dFwdOp, {"n": 0}, ValueError, "n must be greater than zero"),
+        (Conv2dFwdOp, {"h": -1}, ValueError, "h must be greater than zero"),
+        (Conv3dFwdOp, {"w": True}, TypeError, "w must be an int"),
+        (
+            Conv1dFwdOp,
+            {"c_in": 5, "c_out": 8, "groups": 2},
+            ValueError,
+            "c_in must be divisible by groups",
+        ),
+        (
+            Conv2dFwdOp,
+            {"c_in": 8, "c_out": 5, "groups": 2},
+            ValueError,
+            "c_out must be divisible by groups",
+        ),
+        (
+            Conv3dFwdOp,
+            {"c_in": 5, "c_out": 8, "groups": 2},
+            ValueError,
+            "c_in must be divisible by groups",
+        ),
+    ],
+)
+def test_conv_optional_committed_dims_validate_at_construction(
+    op_cls: type[Conv1dFwdOp | Conv2dFwdOp | Conv3dFwdOp],
+    kwargs: dict[str, object],
+    error_type: type[Exception],
+    match: str,
+) -> None:
+    with pytest.raises(error_type, match=match):
+        op_cls(**kwargs)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
