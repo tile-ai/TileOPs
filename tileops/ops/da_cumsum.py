@@ -36,7 +36,7 @@ class DaCumsumFwdOp(Op):
         chunk_len: int,
         n_heads: int,
         seq_len: int,
-        dtype: torch.dtype = torch.float32,
+        dtype: torch.dtype = torch.float16,
         dt_softplus: bool = False,
         has_dt_bias: bool = False,
         dt_min: float = 0.0,

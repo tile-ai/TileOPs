@@ -34,6 +34,7 @@ def da_cumsum_fwd_ref(
     dt_softplus: bool = False,
     dt_min: float = 0.0,
     dt_max: float = float("inf"),
+    dtype: torch.dtype = torch.float32,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """PyTorch reference for da_cumsum_fwd.
 
@@ -41,7 +42,7 @@ def da_cumsum_fwd_ref(
     computes dt_out and the chunk-local inclusive prefix sum of dA = dt_out * A.
 
     Returns:
-        dt_out:    (batch, n_heads, num_chunks, chunk_len) float32 (reference uses float32)
+        dt_out:    (batch, n_heads, num_chunks, chunk_len) dtype — in target dtype
         dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32
     """
     b, S, h = dt.shape
@@ -54,7 +55,7 @@ def da_cumsum_fwd_ref(
         dt_val = F.softplus(dt_val)
     dt_val = torch.clamp(dt_val, min=dt_min, max=dt_max)
     dt_chunked = dt_val.reshape(b, C, Q, h)           # (b, C, Q, h)
-    dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
+    dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous().to(dtype)  # (b, h, C, Q) in target dtype
     dA = dt_chunked * A.float()                        # (b, C, Q, h)
     dA_cumsum = dA.cumsum(dim=2).permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
     return dt_out, dA_cumsum
@@ -68,20 +69,22 @@ class DaCumsumFwdTest(_DaCumsumFwdTestWorkload, TestBase):
             dt_softplus=self.dt_softplus,
             dt_min=self.dt_min,
             dt_max=self.dt_max,
+            dtype=self.dtype,
         )
 
 
 @DaCumsumFwdFixture
-def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, tune):
+def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune):
     test = DaCumsumFwdTest(
         batch, num_chunks, chunk_len, n_heads,
-        has_dt_bias=has_dt_bias, dt_softplus=dt_softplus,
+        has_dt_bias=has_dt_bias, dt_softplus=dt_softplus, dtype=dtype,
     )
     op = DaCumsumFwdOp(
         batch, num_chunks, chunk_len, n_heads,
         seq_len=num_chunks * chunk_len,
         has_dt_bias=has_dt_bias,
         dt_softplus=dt_softplus,
+        dtype=dtype,
         tune=tune,
     )
     inputs = test.gen_inputs()

@@ -8,21 +8,21 @@ class DaCumsumFwdFixture(FixtureBase):
     def get_params(cls):
         import pytest
         return [
-            ("batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, tune", [
+            ("batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune", [
                 # feature: no bias, no softplus (baseline path)
-                pytest.param(1, 2,  64,  4, False, False, False, marks=pytest.mark.smoke),
+                pytest.param(1, 2,  64,  4, False, False, torch.float16, False, marks=pytest.mark.smoke),
                 # feature: bias only (has_dt_bias branch, no softplus)
-                pytest.param(1, 2,  64,  4, True,  False, False, marks=pytest.mark.smoke),
+                pytest.param(1, 2,  64,  4, True,  False, torch.bfloat16, False, marks=pytest.mark.smoke),
                 # feature: softplus only (no bias, dt_softplus branch)
-                pytest.param(1, 2,  64,  4, False, True,  False, marks=pytest.mark.smoke),
+                pytest.param(1, 2,  64,  4, False, True,  torch.float16, False, marks=pytest.mark.smoke),
                 # feature: bias + softplus (full pipeline)
-                pytest.param(1, 2,  64,  4, True,  True,  False, marks=pytest.mark.full),
+                pytest.param(1, 2,  64,  4, True,  True,  torch.bfloat16, False, marks=pytest.mark.full),
                 # shape: larger batch and chunk count
-                pytest.param(2, 4,  64,  8, False, False, False, marks=pytest.mark.full),
+                pytest.param(2, 4,  64,  8, False, False, torch.float16, False, marks=pytest.mark.full),
                 # shape: larger chunk_len tile
-                pytest.param(1, 2, 128,  4, False, False, False, marks=pytest.mark.full),
+                pytest.param(1, 2, 128,  4, False, False, torch.bfloat16, False, marks=pytest.mark.full),
                 # shape + feature: large shape with full pipeline
-                pytest.param(2, 4, 128, 16, True,  True,  False, marks=pytest.mark.full),
+                pytest.param(2, 4, 128, 16, True,  True,  torch.float16, False, marks=pytest.mark.full),
             ]),
         ]
 
@@ -35,6 +35,7 @@ class DaCumsumFwdTest(WorkloadBase):
         n_heads: int,
         has_dt_bias: bool = False,
         dt_softplus: bool = False,
+        dtype: torch.dtype = torch.float16,
         dt_min: float = 0.0,
         dt_max: float = float("inf"),
     ):
@@ -44,6 +45,7 @@ class DaCumsumFwdTest(WorkloadBase):
         self.n_heads = n_heads
         self.has_dt_bias = has_dt_bias
         self.dt_softplus = dt_softplus
+        self.dtype = dtype
         self.dt_min = dt_min
         self.dt_max = dt_max
 
