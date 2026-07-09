@@ -228,7 +228,7 @@ class Mamba2FwdOp:
         # ── 2. CB matrix ─────────────────────────────────────────────────────
         # cb[b,c,g,l,s] = C[b,c*Q+l,g,:] @ B[b,c*Q+s,g,:]^T  for s <= l, else 0.
         # Pass contiguous C and B directly to avoid reshape/permute/contiguous overhead
-        cb = self._cb_producer_op(C, B)  # (B, C, G, Q, Q)  dtype (direct output, no cast needed)
+        cb = self._cb_producer_op.forward(C, B)  # (B, C, G, Q, Q)  dtype (direct output, no cast needed)
 
         # ── 3. SSDChunkState ─────────────────────────────────────────────────
         # Pass pre-allocated seq_idx zeros; avoids a FillFunctor<int> per call.

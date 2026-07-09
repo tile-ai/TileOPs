@@ -306,6 +306,8 @@ class CBProducerKernel(Kernel):
         Returns:
             cb: [B, C, G, Q, Q]  dtype
         """
+        C_mat = C_mat.contiguous()
+        B_mat = B_mat.contiguous()
         return _cb_producer_wrapped(
             self.batch, self.num_chunks, self.n_groups, self.chunk_len, self.d_state,
             self.dtype_str,

@@ -74,4 +74,6 @@ class CBProducerOp(Op):
         Returns:
             cb: [B, C, G, Q, Q]  dtype
         """
+        C_mat = C_mat.contiguous()
+        B_mat = B_mat.contiguous()
         return self.kernel(C_mat, B_mat)
