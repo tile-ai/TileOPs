@@ -421,6 +421,8 @@ class SSDChunkStateFwdKernel(Kernel):
         dA_cumsum: torch.Tensor,
         seq_idx: torch.Tensor,
     ) -> torch.Tensor:
+        if dt.dtype != self.dtype:
+            dt = dt.to(self.dtype)
         return _ssd_chunk_state_fwd_wrapped(
             self.batch, self.num_chunks, self.chunk_len, self.n_heads, self.d_head,
             self.d_state, self.n_groups, self.has_seq_idx, self.dtype_str,
