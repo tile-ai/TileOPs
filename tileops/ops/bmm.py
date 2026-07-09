@@ -84,6 +84,10 @@ class BmmFwdOp(Op):
                 f"b contributes K={k_b} (a.shape={tuple(a.shape)}, "
                 f"b.shape={tuple(b.shape)})."
             )
+        if k_a % 16 != 0:
+            raise ValueError(
+                f"BmmFwdOp requires contraction dim K to be a multiple of 16 "
+                f"(WGMMA alignment; see manifest shape_rules), got K={k_a}")
         return batch_a, m, n, k_a
 
     def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
@@ -112,7 +116,7 @@ class BmmFwdOp(Op):
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # Fast path: same input signature as the last call → reuse the already
         # built/JIT'd kernel directly.
-        sig = (a.shape, b.shape, a.dtype)
+        sig = (a.shape, b.shape, a.dtype, b.dtype)
         if sig != self._active_sig:
             self._validate_dtypes(a, b)
             batch, m, n, k = self._infer_bmnk(a, b)

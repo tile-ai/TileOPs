@@ -120,5 +120,26 @@ def test_bmm_dtype_mismatch_raises() -> None:
         op(a, b)
 
 
+@pytest.mark.smoke
+def test_bmm_b_dtype_change_after_valid_call_raises() -> None:
+    op = BmmFwdOp()
+    a = torch.randn(4, 16, 16, device="cuda", dtype=torch.float16)
+    b_ok = torch.randn(4, 16, 16, device="cuda", dtype=torch.float16)
+    op(a, b_ok)  # populate the fast path
+    b_bad = torch.randn(4, 16, 16, device="cuda", dtype=torch.bfloat16)
+    with pytest.raises(ValueError):
+        op(a, b_bad)
+
+
+@pytest.mark.smoke
+def test_bmm_k_not_multiple_of_16_raises() -> None:
+    """K must be a multiple of 16 (manifest shape_rules + op precondition)."""
+    op = BmmFwdOp()
+    a = torch.randn(4, 16, 24, device="cuda", dtype=torch.float16)
+    b = torch.randn(4, 24, 16, device="cuda", dtype=torch.float16)
+    with pytest.raises(ValueError, match="multiple of 16"):
+        op(a, b)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

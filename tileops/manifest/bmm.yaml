@@ -18,6 +18,7 @@ BmmFwdOp:
     # torch.matmul).
     - "a.shape[0] == b.shape[0]"
     - "a.shape[2] == b.shape[1]"
+    - "a.shape[2] % 16 == 0"
     - "d.shape == (a.shape[0], a.shape[1], b.shape[2])"
 
   workloads:
