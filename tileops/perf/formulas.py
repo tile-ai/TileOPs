@@ -1300,3 +1300,27 @@ def mhc_post_roofline(op: "Op") -> tuple[int, int]:
     x_out_bytes = batch * n_expand * c_x * x_elem
     nbytes = x_layer_out_bytes + h_post_bytes + x_res_bytes + x_out_bytes
     return int(flops), int(nbytes)
+
+def bmm_fwd_roofline(op: "Op") -> tuple[int, int]:
+    """Roofline for batched GEMM ``BmmFwdOp`` (``d[i] = a[i] @ b[i]``).
+
+    Models ``torch.bmm`` exactly: strict 3D-3D with no broadcasting. Each of
+    the ``B`` batch items is an independent ``(M, K) @ (K, N)`` GEMM whose
+    flops/bytes are ``B``-scaled totals. ``BmmFwdOp`` is input-inferred, so
+    the logical dims ``batch/m/n/k`` and the dtype are bound on the op during
+    ``forward()``; this reads them directly, matching ``gemm_fwd_roofline``'s
+    contract. Valid only after the first ``forward()``.
+
+    Raises:
+        RuntimeError: If called before ``forward()`` has bound the dims.
+    """
+    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
+        raise RuntimeError(
+            "BmmFwdOp.eval_roofline() is valid only after the first forward(); "
+            "batch/m/n/k and dtype are inferred from the inputs."
+        )
+    batch, m, n, k = op.batch, op.m, op.n, op.k
+    elem_bytes = op.dtype.itemsize
+    flops = 2 * batch * m * n * k
+    nbytes = batch * (m * k + n * k + m * n) * elem_bytes
+    return int(flops), int(nbytes)
