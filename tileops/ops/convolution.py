@@ -85,23 +85,6 @@ def _validate_positive_int(name: str, value: int, op_name: str) -> None:
         raise ValueError(f"{op_name} {name} must be greater than zero")
 
 
-def _validate_conv_groups(op_name: str, c_in: int, c_out: int, groups: int) -> None:
-    _validate_positive_int("groups", groups, op_name)
-    if c_in % groups != 0:
-        raise ValueError(f"{op_name} c_in must be divisible by groups")
-    if c_out % groups != 0:
-        raise ValueError(f"{op_name} c_out must be divisible by groups")
-
-
-def _validate_optional_positive_ints(
-    op_name: str,
-    values: Tuple[tuple[str, Optional[int]], ...],
-) -> None:
-    for name, value in values:
-        if value is not None:
-            _validate_positive_int(name, value, op_name)
-
-
 def _validate_conv_params(
     *,
     op_name: str,
@@ -171,22 +154,6 @@ def _device_index(tensor: torch.Tensor) -> int | None:
     return tensor.device.index
 
 
-def _validate_committed_shape(
-    op_name: str,
-    name: str,
-    actual_shape: Tuple[int, ...],
-    expected_shape: Tuple[int | None, ...],
-) -> None:
-    if any(
-        expected is not None and expected != actual
-        for actual, expected in zip(actual_shape, expected_shape, strict=True)
-    ):
-        raise ValueError(
-            f"{op_name} Expected {name} shape compatible with {expected_shape}, "
-            f"but got {actual_shape}"
-        )
-
-
 def _conv1d_padding_pair_and_l_out(
     l_in: int,
     kernel_size: int,
@@ -236,47 +203,25 @@ class Conv1dFwdOp(Op):
 
     def __init__(
         self,
-        n: Optional[int] = None,
-        c_in: Optional[int] = None,
-        l_in: Optional[int] = None,
-        c_out: Optional[int] = None,
-        kernel_size: Optional[int | Tuple[int]] = None,
         stride: int | Tuple[int] = 1,
         padding: int | Tuple[int] | str = 0,
         dilation: int | Tuple[int] = 1,
         groups: int = 1,
-        dtype: Optional[torch.dtype] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
         _has_bias: bool = False,
     ) -> None:
         _validate_positive_int("groups", groups, "Conv1d")
-        _validate_optional_positive_ints(
-            "Conv1d",
-            (("n", n), ("c_in", c_in), ("l_in", l_in), ("c_out", c_out)),
-        )
-        if c_in is not None and c_out is not None:
-            _validate_conv_groups("Conv1d", c_in, c_out, groups)
-        self.n = n
-        self.c_in = c_in
-        self.l_in = l_in
-        self.c_out = c_out
-        self.kernel_size = (
-            None
-            if kernel_size is None
-            else _conv_tuple(kernel_size, 1, "kernel_size", "Conv1d")[0]
-        )
+        self.n = None
+        self.c_in = None
+        self.l_in = None
+        self.c_out = None
+        self.kernel_size = None
         self.stride = _conv_tuple(stride, 1, "stride", "Conv1d")[0]
         self.dilation = _conv_tuple(dilation, 1, "dilation", "Conv1d")[0]
         self.padding = padding
         self.groups = groups
-        self.dtype = dtype
-        self._committed_n = n
-        self._committed_c_in = c_in
-        self._committed_l_in = l_in
-        self._committed_c_out = c_out
-        self._committed_kernel_size = self.kernel_size
-        self._committed_dtype = dtype
+        self.dtype = None
         self.has_bias = _has_bias
         self.tune = tune
 
@@ -311,24 +256,6 @@ class Conv1dFwdOp(Op):
             raise ValueError(
                 f"Conv1d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}"
             )
-        _validate_committed_shape(
-            "Conv1d",
-            "input",
-            tuple(input.shape),
-            (self._committed_n, self._committed_c_in, self._committed_l_in),
-        )
-        _validate_committed_shape(
-            "Conv1d",
-            "weight",
-            tuple(weight.shape),
-            (
-                self._committed_c_out,
-                None
-                if self._committed_c_in is None
-                else self._committed_c_in // self.groups,
-                self._committed_kernel_size,
-            ),
-        )
         pad_left, pad_right, out_l = _conv1d_padding_pair_and_l_out(
             l_in,
             kernel_l,
@@ -511,11 +438,6 @@ class Conv1dFwdOp(Op):
             raise ValueError(
                 f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
             )
-        committed_dtype = getattr(self, "_committed_dtype", None)
-        if committed_dtype is not None and input.dtype != committed_dtype:
-            raise ValueError(
-                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
-            )
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -540,17 +462,11 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
 
     def __init__(
         self,
-        n: Optional[int] = None,
-        c_in: Optional[int] = None,
-        l_in: Optional[int] = None,
-        c_out: Optional[int] = None,
-        kernel_size: Optional[int | Tuple[int]] = None,
         stride: int | Tuple[int] = 1,
         padding: int | Tuple[int] | str = 0,
         dilation: int | Tuple[int] = 1,
         groups: int = 1,
         bias: bool = True,
-        dtype: Optional[torch.dtype] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -560,16 +476,10 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
                 "Use Conv1dFwdOp for the no-bias variant."
             )
         super().__init__(
-            n=n,
-            c_in=c_in,
-            l_in=l_in,
-            c_out=c_out,
-            kernel_size=kernel_size,
             stride=stride,
             padding=padding,
             dilation=dilation,
             groups=groups,
-            dtype=dtype,
             kernel_map=kernel_map,
             tune=tune,
             _has_bias=True,
@@ -594,9 +504,8 @@ class Conv1dBiasFwdOp(Conv1dFwdOp):
             out_l,
             dtype,
         ) = self._resolve_spec_1d(input, weight)
-        _validate_committed_shape(
-            "Conv1d", "bias", tuple(bias.shape), (c_out,)
-        )
+        if tuple(bias.shape) != (c_out,):
+            raise ValueError(f"Conv1d expects bias shape ({c_out},), got {tuple(bias.shape)}")
         kernel = self._get_kernel_1d(
             n,
             c_in,
@@ -689,48 +598,26 @@ class Conv2dFwdOp(Op):
 
     def __init__(
         self,
-        n: Optional[int] = None,
-        c_in: Optional[int] = None,
-        h: Optional[int] = None,
-        w: Optional[int] = None,
-        c_out: Optional[int] = None,
-        kernel_size: Optional[int | Tuple[int, int]] = None,
         stride: int | Tuple[int, int] = 1,
         padding: int | Tuple[int, int] | str = 0,
         dilation: int | Tuple[int, int] = 1,
         groups: int = 1,
-        dtype: Optional[torch.dtype] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
         _has_bias: bool = False,
     ) -> None:
         _validate_positive_int("groups", groups, "Conv2d")
-        _validate_optional_positive_ints(
-            "Conv2d",
-            (("n", n), ("c_in", c_in), ("h", h), ("w", w), ("c_out", c_out)),
-        )
-        if c_in is not None and c_out is not None:
-            _validate_conv_groups("Conv2d", c_in, c_out, groups)
-        self.n = n
-        self.c_in = c_in
-        self.h = h
-        self.w = w
-        self.c_out = c_out
-        self.kernel_size = (
-            None if kernel_size is None else _pair(kernel_size)
-        )
+        self.n = None
+        self.c_in = None
+        self.h = None
+        self.w = None
+        self.c_out = None
+        self.kernel_size = None
         self.stride = _pair(stride)
         self.dilation = _conv_tuple(dilation, 2, "dilation", "Conv2d")
         self.padding = padding
         self.groups = groups
-        self.dtype = dtype
-        self._committed_n = n
-        self._committed_c_in = c_in
-        self._committed_h = h
-        self._committed_w = w
-        self._committed_c_out = c_out
-        self._committed_kernel_size = self.kernel_size
-        self._committed_dtype = dtype
+        self.dtype = None
         self.has_bias = _has_bias
         self.tune = tune
 
@@ -780,29 +667,6 @@ class Conv2dFwdOp(Op):
             raise ValueError(
                 f"Conv2d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}"
             )
-        _validate_committed_shape(
-            "Conv2d",
-            "input",
-            tuple(input.shape),
-            (self._committed_n, self._committed_c_in, self._committed_h, self._committed_w),
-        )
-        _validate_committed_shape(
-            "Conv2d",
-            "weight",
-            tuple(weight.shape),
-            (
-                self._committed_c_out,
-                None
-                if self._committed_c_in is None
-                else self._committed_c_in // self.groups,
-                self._committed_kernel_size[0]
-                if self._committed_kernel_size is not None
-                else None,
-                self._committed_kernel_size[1]
-                if self._committed_kernel_size is not None
-                else None,
-            ),
-        )
         padding = _conv_padding_to_tuple(
             self.padding, self.stride, (kernel_h, kernel_w), "Conv2d", self.dilation
         )
@@ -1048,11 +912,6 @@ class Conv2dFwdOp(Op):
             raise ValueError(
                 f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
             )
-        committed_dtype = getattr(self, "_committed_dtype", None)
-        if committed_dtype is not None and input.dtype != committed_dtype:
-            raise ValueError(
-                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
-            )
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -1100,18 +959,11 @@ class Conv2dBiasFwdOp(Conv2dFwdOp):
 
     def __init__(
         self,
-        n: Optional[int] = None,
-        c_in: Optional[int] = None,
-        h: Optional[int] = None,
-        w: Optional[int] = None,
-        c_out: Optional[int] = None,
-        kernel_size: Optional[int | Tuple[int, int]] = None,
         stride: int | Tuple[int, int] = 1,
         padding: int | Tuple[int, int] | str = 0,
         dilation: int | Tuple[int, int] = 1,
         groups: int = 1,
         bias: bool = True,
-        dtype: Optional[torch.dtype] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -1121,17 +973,10 @@ class Conv2dBiasFwdOp(Conv2dFwdOp):
                 "Use Conv2dFwdOp for the no-bias variant."
             )
         super().__init__(
-            n=n,
-            c_in=c_in,
-            h=h,
-            w=w,
-            c_out=c_out,
-            kernel_size=kernel_size,
             stride=stride,
             padding=padding,
             dilation=dilation,
             groups=groups,
-            dtype=dtype,
             kernel_map=kernel_map,
             tune=tune,
             _has_bias=True,
@@ -1159,9 +1004,8 @@ class Conv2dBiasFwdOp(Conv2dFwdOp):
             out_w,
             dtype,
         ) = self._resolve_spec_2d(input, weight)
-        _validate_committed_shape(
-            "Conv2d", "bias", tuple(bias.shape), (c_out,)
-        )
+        if tuple(bias.shape) != (c_out,):
+            raise ValueError(f"Conv2d expects bias shape ({c_out},), got {tuple(bias.shape)}")
         kernel = self._get_kernel_2d(
             n,
             c_in,
@@ -1274,58 +1118,27 @@ class Conv3dFwdOp(Op):
 
     def __init__(
         self,
-        n: Optional[int] = None,
-        c_in: Optional[int] = None,
-        d: Optional[int] = None,
-        h: Optional[int] = None,
-        w: Optional[int] = None,
-        c_out: Optional[int] = None,
-        kernel_size: Optional[int | Tuple[int, int, int]] = None,
         stride: int | Tuple[int, int, int] = 1,
         padding: int | Tuple[int, int, int] | str = 0,
         dilation: int | Tuple[int, int, int] = 1,
         groups: int = 1,
-        dtype: Optional[torch.dtype] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
         _has_bias: bool = False,
     ) -> None:
         _validate_positive_int("groups", groups, "Conv3d")
-        _validate_optional_positive_ints(
-            "Conv3d",
-            (
-                ("n", n),
-                ("c_in", c_in),
-                ("d", d),
-                ("h", h),
-                ("w", w),
-                ("c_out", c_out),
-            ),
-        )
-        if c_in is not None and c_out is not None:
-            _validate_conv_groups("Conv3d", c_in, c_out, groups)
-        self.n = n
-        self.c_in = c_in
-        self.d = d
-        self.h = h
-        self.w = w
-        self.c_out = c_out
-        self.kernel_size = (
-            None if kernel_size is None else _triple(kernel_size)
-        )
+        self.n = None
+        self.c_in = None
+        self.d = None
+        self.h = None
+        self.w = None
+        self.c_out = None
+        self.kernel_size = None
         self.stride = _triple(stride)
         self.dilation = _conv_tuple(dilation, 3, "dilation", "Conv3d")
         self.padding = padding
         self.groups = groups
-        self.dtype = dtype
-        self._committed_n = n
-        self._committed_c_in = c_in
-        self._committed_d = d
-        self._committed_h = h
-        self._committed_w = w
-        self._committed_c_out = c_out
-        self._committed_kernel_size = self.kernel_size
-        self._committed_dtype = dtype
+        self.dtype = None
         self.has_bias = _has_bias
         self.tune = tune
 
@@ -1375,38 +1188,6 @@ class Conv3dFwdOp(Op):
             raise ValueError(
                 f"Conv3d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}"
             )
-        _validate_committed_shape(
-            "Conv3d",
-            "input",
-            tuple(input.shape),
-            (
-                self._committed_n,
-                self._committed_c_in,
-                self._committed_d,
-                self._committed_h,
-                self._committed_w,
-            ),
-        )
-        _validate_committed_shape(
-            "Conv3d",
-            "weight",
-            tuple(weight.shape),
-            (
-                self._committed_c_out,
-                None
-                if self._committed_c_in is None
-                else self._committed_c_in // self.groups,
-                self._committed_kernel_size[0]
-                if self._committed_kernel_size is not None
-                else None,
-                self._committed_kernel_size[1]
-                if self._committed_kernel_size is not None
-                else None,
-                self._committed_kernel_size[2]
-                if self._committed_kernel_size is not None
-                else None,
-            ),
-        )
         padding = _conv_padding_to_tuple(
             self.padding,
             self.stride,
@@ -1634,11 +1415,6 @@ class Conv3dFwdOp(Op):
             raise ValueError(
                 f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
             )
-        committed_dtype = getattr(self, "_committed_dtype", None)
-        if committed_dtype is not None and input.dtype != committed_dtype:
-            raise ValueError(
-                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
-            )
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -1695,19 +1471,11 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
 
     def __init__(
         self,
-        n: Optional[int] = None,
-        c_in: Optional[int] = None,
-        d: Optional[int] = None,
-        h: Optional[int] = None,
-        w: Optional[int] = None,
-        c_out: Optional[int] = None,
-        kernel_size: Optional[int | Tuple[int, int, int]] = None,
         stride: int | Tuple[int, int, int] = 1,
         padding: int | Tuple[int, int, int] | str = 0,
         dilation: int | Tuple[int, int, int] = 1,
         groups: int = 1,
         bias: bool = True,
-        dtype: Optional[torch.dtype] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -1717,18 +1485,10 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
                 "Use Conv3dFwdOp for the no-bias variant."
             )
         super().__init__(
-            n=n,
-            c_in=c_in,
-            d=d,
-            h=h,
-            w=w,
-            c_out=c_out,
-            kernel_size=kernel_size,
             stride=stride,
             padding=padding,
             dilation=dilation,
             groups=groups,
-            dtype=dtype,
             kernel_map=kernel_map,
             tune=tune,
             _has_bias=True,
@@ -1760,9 +1520,8 @@ class Conv3dBiasFwdOp(Conv3dFwdOp):
             out_w,
             dtype,
         ) = self._resolve_spec_3d(input, weight)
-        _validate_committed_shape(
-            "Conv3d", "bias", tuple(bias.shape), (c_out,)
-        )
+        if tuple(bias.shape) != (c_out,):
+            raise ValueError(f"Conv3d expects bias shape ({c_out},), got {tuple(bias.shape)}")
         kernel = self._get_kernel_3d(
             n,
             c_in,

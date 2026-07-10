@@ -20,40 +20,8 @@ from .op_base import Op
 __all__ = ["AvgPool1dFwdOp", "AvgPool2dFwdOp", "AvgPool3dFwdOp"]
 
 
-def _validate_positive_int(name: str, value: int, op_name: str) -> None:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"{op_name} {name} must be an int")
-    if value <= 0:
-        raise ValueError(f"{op_name} {name} must be greater than zero")
-
-
-def _validate_optional_positive_ints(
-    op_name: str,
-    values: Tuple[tuple[str, Optional[int]], ...],
-) -> None:
-    for name, value in values:
-        if value is not None:
-            _validate_positive_int(name, value, op_name)
-
-
 def _device_index(tensor: torch.Tensor) -> int | None:
     return tensor.device.index
-
-
-def _validate_committed_shape(
-    op_name: str,
-    name: str,
-    actual_shape: Tuple[int, ...],
-    expected_shape: Tuple[int | None, ...],
-) -> None:
-    if any(
-        expected is not None and expected != actual
-        for actual, expected in zip(actual_shape, expected_shape, strict=True)
-    ):
-        raise ValueError(
-            f"{op_name} Expected {name} shape compatible with {expected_shape}, "
-            f"but got {actual_shape}"
-        )
 
 
 class AvgPool1dFwdOp(Op):
@@ -62,24 +30,16 @@ class AvgPool1dFwdOp(Op):
     def __init__(
         self,
         kernel_size: int | Tuple[int],
-        n: Optional[int] = None,
-        c_in: Optional[int] = None,
-        l_in: Optional[int] = None,
         stride: Optional[int | Tuple[int]] = None,
         padding: int | Tuple[int] = 0,
         ceil_mode: bool = False,
         count_include_pad: bool = True,
-        dtype: Optional[torch.dtype] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        _validate_optional_positive_ints(
-            "AvgPool1dFwdOp",
-            (("n", n), ("c_in", c_in), ("l_in", l_in)),
-        )
-        self.n = n
-        self.c_in = c_in
-        self.l_in = l_in
+        self.n = None
+        self.c_in = None
+        self.l_in = None
         self.kernel_size = _normalize_pool_dims("kernel_size", kernel_size, 1)[0]
         self.stride = (
             (self.kernel_size,)
@@ -89,7 +49,7 @@ class AvgPool1dFwdOp(Op):
         self.padding = _normalize_pool_dims("padding", padding, 1)[0]
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
-        self.dtype = dtype
+        self.dtype = None
         self.tune = tune
         validate_pool_params(
             ndim=1,
@@ -97,11 +57,6 @@ class AvgPool1dFwdOp(Op):
             stride=(self.stride,),
             padding=(self.padding,),
         )
-        self._committed_n = n
-        self._committed_c_in = c_in
-        self._committed_l_in = l_in
-        self._committed_dtype = dtype
-
         self.dispatch_kernel(kernel_map)
         if "avg_pool1d_kernel" not in self.kernel_map:
             raise NotImplementedError(
@@ -121,12 +76,6 @@ class AvgPool1dFwdOp(Op):
         if input.ndim != 3:
             raise ValueError("AvgPool1dFwdOp expects input to be a 3D NCL tensor")
         n, c_in, l_in = input.shape
-        _validate_committed_shape(
-            "AvgPool1dFwdOp",
-            "input",
-            tuple(input.shape),
-            (self._committed_n, self._committed_c_in, self._committed_l_in),
-        )
         if not input.is_cuda:
             raise ValueError("input must be a CUDA tensor")
         self._validate_dtypes(input)
@@ -198,12 +147,6 @@ class AvgPool1dFwdOp(Op):
                 "input.dtype must be float16, bfloat16, or float32, "
                 f"got {input.dtype}"
             )
-        committed_dtype = getattr(self, "_committed_dtype", None)
-        if committed_dtype is not None and input.dtype != committed_dtype:
-            raise ValueError(
-                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
-            )
-
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         n, c_in, l_in, out_l, dtype = self._resolve_input_1d(input)
         input = input.contiguous()
@@ -239,27 +182,18 @@ class AvgPool2dFwdOp(Op):
     def __init__(
         self,
         kernel_size: int | Tuple[int, int],
-        n: Optional[int] = None,
-        c_in: Optional[int] = None,
-        h_in: Optional[int] = None,
-        w_in: Optional[int] = None,
         stride: Optional[int | Tuple[int, int]] = None,
         padding: int | Tuple[int, int] = 0,
         ceil_mode: bool = False,
         count_include_pad: bool = True,
         divisor_override: Optional[int] = None,
-        dtype: Optional[torch.dtype] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        _validate_optional_positive_ints(
-            "AvgPool2dFwdOp",
-            (("n", n), ("c_in", c_in), ("h_in", h_in), ("w_in", w_in)),
-        )
-        self.n = n
-        self.c_in = c_in
-        self.h_in = h_in
-        self.w_in = w_in
+        self.n = None
+        self.c_in = None
+        self.h_in = None
+        self.w_in = None
         self.kernel_size = _normalize_pool_dims("kernel_size", kernel_size, 2)
         self.stride = (
             self.kernel_size
@@ -270,7 +204,7 @@ class AvgPool2dFwdOp(Op):
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
         self.divisor_override = divisor_override
-        self.dtype = dtype
+        self.dtype = None
         self.tune = tune
         validate_pool_params(
             ndim=2,
@@ -279,12 +213,6 @@ class AvgPool2dFwdOp(Op):
             padding=self.padding,
             divisor_override=divisor_override,
         )
-        self._committed_n = n
-        self._committed_c_in = c_in
-        self._committed_h_in = h_in
-        self._committed_w_in = w_in
-        self._committed_dtype = dtype
-
         self.dispatch_kernel(kernel_map)
         if (
             "avg_pool2d_kernel" not in self.kernel_map
@@ -311,17 +239,6 @@ class AvgPool2dFwdOp(Op):
         if input.ndim != 4:
             raise ValueError("AvgPool2dFwdOp expects input to be a 4D NCHW tensor")
         n, c_in, h_in, w_in = input.shape
-        _validate_committed_shape(
-            "AvgPool2dFwdOp",
-            "input",
-            tuple(input.shape),
-            (
-                self._committed_n,
-                self._committed_c_in,
-                self._committed_h_in,
-                self._committed_w_in,
-            ),
-        )
         if not input.is_cuda:
             raise ValueError("input must be a CUDA tensor")
         self._validate_dtypes(input)
@@ -420,12 +337,6 @@ class AvgPool2dFwdOp(Op):
                 "input.dtype must be float16, bfloat16, or float32, "
                 f"got {input.dtype}"
             )
-        committed_dtype = getattr(self, "_committed_dtype", None)
-        if committed_dtype is not None and input.dtype != committed_dtype:
-            raise ValueError(
-                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
-            )
-
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         n, c_in, h_in, w_in, out_h, out_w, dtype = self._resolve_input_2d(input)
         input = input.contiguous()
@@ -471,35 +382,19 @@ class AvgPool3dFwdOp(Op):
     def __init__(
         self,
         kernel_size: int | Tuple[int, int, int],
-        n: Optional[int] = None,
-        c_in: Optional[int] = None,
-        d_in: Optional[int] = None,
-        h_in: Optional[int] = None,
-        w_in: Optional[int] = None,
         stride: Optional[int | Tuple[int, int, int]] = None,
         padding: int | Tuple[int, int, int] = 0,
         ceil_mode: bool = False,
         count_include_pad: bool = True,
         divisor_override: Optional[int] = None,
-        dtype: Optional[torch.dtype] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        _validate_optional_positive_ints(
-            "AvgPool3dFwdOp",
-            (
-                ("n", n),
-                ("c_in", c_in),
-                ("d_in", d_in),
-                ("h_in", h_in),
-                ("w_in", w_in),
-            ),
-        )
-        self.n = n
-        self.c_in = c_in
-        self.d_in = d_in
-        self.h_in = h_in
-        self.w_in = w_in
+        self.n = None
+        self.c_in = None
+        self.d_in = None
+        self.h_in = None
+        self.w_in = None
         self.kernel_size = _normalize_pool_dims("kernel_size", kernel_size, 3)
         self.stride = (
             self.kernel_size
@@ -510,7 +405,7 @@ class AvgPool3dFwdOp(Op):
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
         self.divisor_override = divisor_override
-        self.dtype = dtype
+        self.dtype = None
         self.tune = tune
         validate_pool_params(
             ndim=3,
@@ -519,13 +414,6 @@ class AvgPool3dFwdOp(Op):
             padding=self.padding,
             divisor_override=divisor_override,
         )
-        self._committed_n = n
-        self._committed_c_in = c_in
-        self._committed_d_in = d_in
-        self._committed_h_in = h_in
-        self._committed_w_in = w_in
-        self._committed_dtype = dtype
-
         self.dispatch_kernel(kernel_map)
         if "avg_pool3d_kernel" not in self.kernel_map:
             raise NotImplementedError(
@@ -545,18 +433,6 @@ class AvgPool3dFwdOp(Op):
         if input.ndim != 5:
             raise ValueError("AvgPool3dFwdOp expects input to be a 5D NCDHW tensor")
         n, c_in, d_in, h_in, w_in = input.shape
-        _validate_committed_shape(
-            "AvgPool3dFwdOp",
-            "input",
-            tuple(input.shape),
-            (
-                self._committed_n,
-                self._committed_c_in,
-                self._committed_d_in,
-                self._committed_h_in,
-                self._committed_w_in,
-            ),
-        )
         if not input.is_cuda:
             raise ValueError("input must be a CUDA tensor")
         self._validate_dtypes(input)
@@ -650,12 +526,6 @@ class AvgPool3dFwdOp(Op):
                 "input.dtype must be float16, bfloat16, or float32, "
                 f"got {input.dtype}"
             )
-        committed_dtype = getattr(self, "_committed_dtype", None)
-        if committed_dtype is not None and input.dtype != committed_dtype:
-            raise ValueError(
-                f"input.dtype must match op dtype {committed_dtype}, got {input.dtype}"
-            )
-
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         n, c_in, d_in, h_in, w_in, out_d, out_h, out_w, dtype = self._resolve_input_3d(
             input

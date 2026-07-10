@@ -166,16 +166,10 @@ def test_conv1d(
 ) -> None:
     test = Conv1dTest(n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, groups, dtype)
     op = Conv1dBiasFwdOp(
-        n=n,
-        c_in=c_in,
-        l_in=l_in,
-        c_out=c_out,
-        kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         dilation=dilation,
         groups=groups,
-        dtype=dtype,
         tune=tune,
     )
     atol, rtol = (1e-3, 1e-3)
@@ -189,15 +183,7 @@ def test_conv1d(
 
 @pytest.mark.smoke
 def test_conv1d_no_bias_matches_torch() -> None:
-    op = Conv1dFwdOp(
-        n=1,
-        c_in=32,
-        l_in=256,
-        c_out=64,
-        kernel_size=5,
-        stride=2,
-        padding=2,
-    )
+    op = Conv1dFwdOp(stride=2, padding=2)
     x = torch.randn(1, 32, 256, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 5, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight)
@@ -207,15 +193,7 @@ def test_conv1d_no_bias_matches_torch() -> None:
 
 @pytest.mark.smoke
 def test_conv1d_bias_requires_bias_tensor() -> None:
-    op = Conv1dBiasFwdOp(
-        n=1,
-        c_in=32,
-        l_in=256,
-        c_out=64,
-        kernel_size=5,
-        stride=2,
-        padding=2,
-    )
+    op = Conv1dBiasFwdOp(stride=2, padding=2)
     x = torch.randn(1, 32, 256, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 5, device="cuda", dtype=torch.float16).contiguous()
     bias = torch.zeros(64, device="cuda", dtype=torch.float16).contiguous()
@@ -236,11 +214,6 @@ def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None
     stride, padding = 1, 2
     op_kwargs = {"bias": use_bias} if op_cls is Conv1dBiasFwdOp else {}
     op = op_cls(
-        n=n,
-        c_in=c_in,
-        l_in=l_in,
-        c_out=c_out,
-        kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         dilation=dilation,
@@ -277,11 +250,6 @@ def test_conv1d_same_padding_even_kernel_matches_torch(op_cls, use_bias: bool) -
     n, c_in, l_in, c_out, kernel_size = 1, 16, 129, 32, 2
     op_kwargs = {"bias": use_bias} if op_cls is Conv1dBiasFwdOp else {}
     op = op_cls(
-        n=n,
-        c_in=c_in,
-        l_in=l_in,
-        c_out=c_out,
-        kernel_size=kernel_size,
         padding="same",
         **op_kwargs,
     )
@@ -312,11 +280,6 @@ def test_conv1d_dispatches_kernel(
     expected_kernel: type,
 ) -> None:
     op = Conv1dFwdOp(
-        n=1,
-        c_in=32,
-        l_in=256,
-        c_out=64,
-        kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         dilation=dilation,
@@ -478,17 +441,10 @@ def test_conv2d(
 ) -> None:
     test = Conv2dTest(n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype)
     op = Conv2dBiasFwdOp(
-        n=n,
-        c_in=c_in,
-        h=h,
-        w=w,
-        c_out=c_out,
-        kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         dilation=dilation,
         groups=groups,
-        dtype=dtype,
         tune=tune,
     )
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
@@ -500,12 +456,6 @@ def test_conv2d(
 @pytest.mark.smoke
 def test_conv2d_no_bias_matches_torch() -> None:
     op = Conv2dFwdOp(
-        n=1,
-        c_in=32,
-        h=16,
-        w=16,
-        c_out=64,
-        kernel_size=5,
         stride=2,
         padding=4,
         dilation=2,
@@ -529,12 +479,6 @@ def test_conv2d_no_bias_matches_torch() -> None:
 def test_conv2d_no_bias_grouped_matches_torch() -> None:
     groups = 8
     op = Conv2dFwdOp(
-        n=1,
-        c_in=16,
-        h=16,
-        w=16,
-        c_out=32,
-        kernel_size=3,
         padding=1,
         groups=groups,
     )
@@ -547,14 +491,7 @@ def test_conv2d_no_bias_grouped_matches_torch() -> None:
 
 @pytest.mark.smoke
 def test_conv2d_dispatches_1x1_kernel() -> None:
-    op = Conv2dFwdOp(
-        n=1,
-        c_in=32,
-        h=32,
-        w=32,
-        c_out=64,
-        kernel_size=1,
-    )
+    op = Conv2dFwdOp()
     x = torch.randn(1, 32, 32, 32, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 1, 1, device="cuda", dtype=torch.float16).contiguous()
     op(x, weight)
@@ -566,15 +503,7 @@ def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
     # Use c_in not divisible by 32 so the symmetric kernel is not selected and
     # the general kernel handles the padded 1x1 case without the im2col-TMA
     # constraints that affect the symmetric path.
-    op = Conv2dFwdOp(
-        n=1,
-        c_in=16,
-        h=32,
-        w=32,
-        c_out=64,
-        kernel_size=1,
-        padding=1,
-    )
+    op = Conv2dFwdOp(padding=1)
     x = torch.randn(1, 16, 32, 32, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 16, 1, 1, device="cuda", dtype=torch.float16).contiguous()
     op(x, weight)
@@ -583,15 +512,7 @@ def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
 
 @pytest.mark.smoke
 def test_conv2d_dispatches_3x3_kernel() -> None:
-    op = Conv2dFwdOp(
-        n=1,
-        c_in=32,
-        h=32,
-        w=32,
-        c_out=64,
-        kernel_size=3,
-        padding=1,
-    )
+    op = Conv2dFwdOp(padding=1)
     x = torch.randn(1, 32, 32, 32, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 3, 3, device="cuda", dtype=torch.float16).contiguous()
     op(x, weight)
@@ -600,15 +521,7 @@ def test_conv2d_dispatches_3x3_kernel() -> None:
 
 @pytest.mark.smoke
 def test_conv2d_dispatches_5x5_kernel() -> None:
-    op = Conv2dFwdOp(
-        n=1,
-        c_in=32,
-        h=32,
-        w=32,
-        c_out=64,
-        kernel_size=5,
-        padding=2,
-    )
+    op = Conv2dFwdOp(padding=2)
     x = torch.randn(1, 32, 32, 32, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 5, 5, device="cuda", dtype=torch.float16).contiguous()
     op(x, weight)
@@ -749,18 +662,10 @@ def test_conv3d(
 ) -> None:
     test = Conv3dTest(n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype)
     op = Conv3dBiasFwdOp(
-        n=n,
-        c_in=c_in,
-        d=d,
-        h=h,
-        w=w,
-        c_out=c_out,
-        kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         dilation=dilation,
         groups=groups,
-        dtype=dtype,
         tune=tune,
     )
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
@@ -772,13 +677,6 @@ def test_conv3d(
 @pytest.mark.smoke
 def test_conv3d_no_bias_matches_torch() -> None:
     op = Conv3dFwdOp(
-        n=1,
-        c_in=8,
-        d=8,
-        h=16,
-        w=16,
-        c_out=16,
-        kernel_size=3,
         stride=2,
         padding=2,
         dilation=2,
@@ -802,13 +700,6 @@ def test_conv3d_no_bias_matches_torch() -> None:
 def test_conv3d_no_bias_grouped_matches_torch() -> None:
     groups = 4
     op = Conv3dFwdOp(
-        n=1,
-        c_in=8,
-        d=4,
-        h=12,
-        w=12,
-        c_out=16,
-        kernel_size=3,
         padding=1,
         groups=groups,
     )
@@ -822,13 +713,6 @@ def test_conv3d_no_bias_grouped_matches_torch() -> None:
 @pytest.mark.smoke
 def test_conv3d_accepts_zero_bias() -> None:
     op = Conv3dBiasFwdOp(
-        n=1,
-        c_in=8,
-        d=8,
-        h=16,
-        w=16,
-        c_out=16,
-        kernel_size=3,
         stride=2,
         padding=1,
     )
@@ -849,17 +733,7 @@ def test_conv3d_accepts_zero_bias() -> None:
 
 @pytest.mark.smoke
 def test_conv3d_dispatches_kernel() -> None:
-    op = Conv3dFwdOp(
-        n=1,
-        c_in=8,
-        d=8,
-        h=32,
-        w=32,
-        c_out=16,
-        kernel_size=3,
-        stride=1,
-        padding=1,
-    )
+    op = Conv3dFwdOp(stride=1, padding=1)
     x = torch.randn(1, 8, 8, 32, 32, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(16, 8, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
     op(x, weight)
@@ -942,44 +816,6 @@ def test_conv3d_bias_preferred_api_infers_shape_and_dtype() -> None:
 
 
 @pytest.mark.smoke
-def test_conv2d_committed_input_shape_mismatch_raises() -> None:
-    x = torch.randn(1, 16, 32, 32, dtype=torch.float16, device="cuda")
-    weight = torch.randn(24, 16, 3, 3, dtype=torch.float16, device="cuda")
-    op = Conv2dFwdOp(
-        n=1,
-        c_in=16,
-        h=30,
-        w=32,
-        c_out=24,
-        kernel_size=(3, 3),
-        padding=1,
-        dtype=torch.float16,
-    )
-
-    with pytest.raises(ValueError, match="Expected input shape"):
-        op(x, weight)
-
-
-@pytest.mark.smoke
-def test_conv2d_committed_weight_shape_mismatch_raises() -> None:
-    x = torch.randn(1, 16, 32, 32, dtype=torch.float16, device="cuda")
-    weight = torch.randn(24, 16, 5, 5, dtype=torch.float16, device="cuda")
-    op = Conv2dFwdOp(
-        n=1,
-        c_in=16,
-        h=32,
-        w=32,
-        c_out=24,
-        kernel_size=(3, 3),
-        padding=1,
-        dtype=torch.float16,
-    )
-
-    with pytest.raises(ValueError, match="Expected weight shape"):
-        op(x, weight)
-
-
-@pytest.mark.smoke
 def test_conv2d_dynamic_shape_kernel_cache_and_roofline() -> None:
     op = Conv2dFwdOp(stride=1, padding=1)
     x1 = torch.randn(1, 16, 32, 32, dtype=torch.float16, device="cuda")
@@ -1001,43 +837,6 @@ def test_conv2d_dynamic_shape_kernel_cache_and_roofline() -> None:
 
     op(x2, w2)
     assert len(op._kernel_cache) == 2
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("op_cls", "kwargs", "error_type", "match"),
-    [
-        (Conv1dFwdOp, {"n": 0}, ValueError, "n must be greater than zero"),
-        (Conv2dFwdOp, {"h": -1}, ValueError, "h must be greater than zero"),
-        (Conv3dFwdOp, {"w": True}, TypeError, "w must be an int"),
-        (
-            Conv1dFwdOp,
-            {"c_in": 5, "c_out": 8, "groups": 2},
-            ValueError,
-            "c_in must be divisible by groups",
-        ),
-        (
-            Conv2dFwdOp,
-            {"c_in": 8, "c_out": 5, "groups": 2},
-            ValueError,
-            "c_out must be divisible by groups",
-        ),
-        (
-            Conv3dFwdOp,
-            {"c_in": 5, "c_out": 8, "groups": 2},
-            ValueError,
-            "c_in must be divisible by groups",
-        ),
-    ],
-)
-def test_conv_optional_committed_dims_validate_at_construction(
-    op_cls: type[Conv1dFwdOp | Conv2dFwdOp | Conv3dFwdOp],
-    kwargs: dict[str, object],
-    error_type: type[Exception],
-    match: str,
-) -> None:
-    with pytest.raises(error_type, match=match):
-        op_cls(**kwargs)
 
 
 if __name__ == "__main__":
