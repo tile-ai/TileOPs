@@ -497,7 +497,7 @@ jobs:
           echo "Resolved test scope: ${TEST_SCOPE}"
           echo "Resolved pytest targets: ${PYTEST_TARGETS}"
           read -r -a TARGETS <<< "${PYTEST_TARGETS}"
-          XDIST_N="${PYTEST_XDIST_N:-auto}"
+          XDIST_N="${PYTEST_XDIST_N:-2}"
           XDIST_DIST_MODE="${PYTEST_XDIST_DIST_MODE:-loadfile}"
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s) with -n ${XDIST_N} --dist=${XDIST_DIST_MODE}"
           python3 -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" \

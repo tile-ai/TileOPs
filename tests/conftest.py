@@ -101,7 +101,7 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
     if _XDIST_WORKER is None:
         return
     try:
-        if torch.cuda.is_available():
+        if torch.cuda.is_initialized():
             gc.collect()
             torch.cuda.empty_cache()
     except (RuntimeError, AttributeError):
