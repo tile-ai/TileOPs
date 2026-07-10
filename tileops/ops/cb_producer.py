@@ -74,6 +74,17 @@ class CBProducerOp(Op):
         Returns:
             cb: [B, C, G, Q, Q]  dtype
         """
+        S = self.num_chunks * self.chunk_len
+        expected_shape = (self.batch, S, self.n_groups, self.d_state)
+        for name, t in (("C_mat", C_mat), ("B_mat", B_mat)):
+            if t.dtype != self.dtype:
+                raise ValueError(
+                    f"{name}.dtype={t.dtype} does not match op dtype={self.dtype}"
+                )
+            if t.shape != torch.Size(expected_shape):
+                raise ValueError(
+                    f"{name}.shape={tuple(t.shape)} does not match expected {expected_shape}"
+                )
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
         return self.kernel(C_mat, B_mat)

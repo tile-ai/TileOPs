@@ -214,7 +214,8 @@ def _(
     B_mat: torch.Tensor,
 ) -> torch.Tensor:
     return C_mat.new_empty(
-        (batch, num_chunks, n_groups, chunk_len, chunk_len), dtype=C_mat.dtype  # Return in dtype, not float32
+        (batch, num_chunks, n_groups, chunk_len, chunk_len),
+        dtype={"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}.get(dtype, torch.float16),
     )
 
 
