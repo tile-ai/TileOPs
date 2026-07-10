@@ -61,6 +61,7 @@ def _deltanet_decode_tl(
         ):
             with T.Kernel(batch, head, threads=threads) as (bid, hid):
                 h_tile = T.alloc_shared([k_tile, dim_v], dtype)
+                h_tile_o = T.alloc_shared([k_tile, dim_v], dtype)
                 sk_frag = T.alloc_fragment([dim_v], accum_dtype)
                 sq_frag = T.alloc_fragment([dim_v], accum_dtype)
                 v_new = T.alloc_shared([dim_v], accum_dtype)
@@ -74,13 +75,15 @@ def _deltanet_decode_tl(
                 # lower reliably without sacrificing recurrent decode numerics.
                 T.fill(sk_frag, 0.0)
                 T.fill(sq_frag, 0.0)
-                for kk in T.Serial(dim_k):
-                    k_val = T.cast(k[bid, hid, kk], accum_dtype)
-                    q_val = T.cast(q[bid, hid, kk], accum_dtype)
-                    for j in T.Parallel(dim_v):
-                        h_val = T.cast(state[bid, hid, kk, j], accum_dtype)
-                        sk_frag[j] = sk_frag[j] + k_val * h_val
-                        sq_frag[j] = sq_frag[j] + q_val * h_val
+                for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
+                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile_o)
+                    for kk in T.Serial(k_tile):
+                        k_val = T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype)
+                        q_val = T.cast(q[bid, hid, kt * k_tile + kk], accum_dtype)
+                        for j in T.Parallel(dim_v):
+                            h_val = T.cast(h_tile_o[kk, j], accum_dtype)
+                            sk_frag[j] = sk_frag[j] + k_val * h_val
+                            sq_frag[j] = sq_frag[j] + q_val * h_val
 
                 # q . k is a scalar reduction, so keep it separate from the
                 # matvec loop whose inner work is parallelized over dim_v.
