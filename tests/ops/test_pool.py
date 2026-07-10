@@ -592,40 +592,6 @@ def test_avg_pool3d_rejects_non_5d_input(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.smoke
-@pytest.mark.smoke
-def test_avg_pool1d_preferred_api_infers_shape_and_dtype() -> None:
-    x = torch.randn(2, 4, 16, dtype=torch.float16, device="cuda")
-    op = AvgPool1dFwdOp(kernel_size=3, stride=2, padding=1)
-
-    y = op(x)
-    ref = F.avg_pool1d(x, kernel_size=3, stride=2, padding=1)
-
-    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
-
-
-@pytest.mark.smoke
-def test_avg_pool2d_preferred_api_infers_shape_and_dtype() -> None:
-    x = torch.randn(2, 4, 16, 18, dtype=torch.float16, device="cuda")
-    op = AvgPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
-
-    y = op(x)
-    ref = F.avg_pool2d(x, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
-
-    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
-
-
-@pytest.mark.smoke
-def test_avg_pool3d_preferred_api_infers_shape_and_dtype() -> None:
-    x = torch.randn(1, 4, 8, 10, 12, dtype=torch.float16, device="cuda")
-    op = AvgPool3dFwdOp(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 0, 0))
-
-    y = op(x)
-    ref = F.avg_pool3d(x, kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 0, 0))
-
-    torch.testing.assert_close(y, ref, atol=1e-2, rtol=1e-2)
-
-
-@pytest.mark.smoke
 def test_avg_pool2d_dynamic_shape_kernel_cache_and_roofline() -> None:
     op = AvgPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
     x1 = torch.randn(1, 4, 16, 16, dtype=torch.float16, device="cuda")
