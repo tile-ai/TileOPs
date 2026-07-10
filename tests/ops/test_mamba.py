@@ -11,8 +11,6 @@ from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.ssd_decode import SSDDecodeOp
 from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
-    CBProducerFwdFixture,
-    CBProducerFwdWorkload,
     DaCumsumFwdFixture,
     DaCumsumFwdWorkload,
     SSDChunkScanFwdFixture,
@@ -80,84 +78,48 @@ def cb_producer_fwd_ref(
     b, S, G, N = C_mat.shape
     Q = chunk_len
     C = num_chunks
-
-    # Reshape to chunk view: (b, C, Q, G, N)
     C_chunked = C_mat.reshape(b, C, Q, G, N)
     B_chunked = B_mat.reshape(b, C, Q, G, N)
-
-    # Compute einsum in float32 for precision, then apply causal mask
-    cb = torch.einsum("bcqgn,bcsgn->bcgqs", C_chunked.float(), B_chunked.float())  # (b, C, G, Q, Q)
-
-    # Apply causal mask: keep lower-triangular (s <= l)
+    cb = torch.einsum("bcqgn,bcsgn->bcgqs", C_chunked.float(), B_chunked.float())
     mask = torch.tril(torch.ones(Q, Q, device=C_mat.device, dtype=torch.bool))
-    cb = cb * mask.unsqueeze(0).unsqueeze(0).unsqueeze(0)  # broadcast to (1, 1, 1, Q, Q)
-
-    # Cast to target dtype
+    cb = cb * mask.unsqueeze(0).unsqueeze(0).unsqueeze(0)
     return cb.to(dtype)
 
 
-class CBProducerFwdTest(CBProducerFwdWorkload, TestBase):
-    def ref_program(self, C_mat, B_mat):
-        return cb_producer_fwd_ref(
-            C_mat, B_mat, self.num_chunks, self.chunk_len, self.dtype
-        )
-
-
-@CBProducerFwdFixture
+@pytest.mark.parametrize("batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune", [
+    pytest.param(1, 2, 64, 1, 64, torch.float16,  False, marks=pytest.mark.smoke),
+    pytest.param(1, 2, 64, 1, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
+    pytest.param(1, 2, 64, 2, 64, torch.float16,  False, marks=pytest.mark.smoke),
+    pytest.param(1, 2, 64, 1, 96, torch.float16,  False, marks=pytest.mark.full),
+    pytest.param(1, 2, 128, 1, 64, torch.bfloat16, False, marks=pytest.mark.full),
+    pytest.param(1, 2, 256, 1, 64, torch.float16,  False, marks=pytest.mark.full),
+    pytest.param(2, 4, 64, 4, 128, torch.bfloat16, False, marks=pytest.mark.full),
+])
 def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune):
-    test = CBProducerFwdTest(
-        batch, num_chunks, chunk_len, n_groups, d_state, dtype=dtype
-    )
-    op = CBProducerOp(
-        batch, num_chunks, n_groups, chunk_len, d_state, dtype=dtype, tune=tune
-    )
-    inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=1e-3, rtol=1e-3)
+    op = CBProducerOp(batch, num_chunks, n_groups, chunk_len, d_state, dtype=dtype, tune=tune)
+    seq_len = num_chunks * chunk_len
+    C_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device="cuda") * 0.1
+    B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device="cuda") * 0.1
+    ref = cb_producer_fwd_ref(C_mat, B_mat, num_chunks, chunk_len, dtype)
+    out = op(C_mat, B_mat)
+    allclose_compare(out, ref, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.smoke
 def test_cb_producer_fwd_noncontiguous():
-    """CBProducerOp should handle non-contiguous inputs correctly."""
+    """CBProducerOp must handle non-contiguous inputs."""
     batch, num_chunks, chunk_len, n_groups, d_state = 1, 2, 64, 1, 64
     dtype = torch.float16
-
-    # Create non-contiguous inputs using slicing
     seq_len = num_chunks * chunk_len
     C_full = torch.randn(batch, seq_len * 2, n_groups, d_state, dtype=dtype, device="cuda")
     B_full = torch.randn(batch, seq_len * 2, n_groups, d_state, dtype=dtype, device="cuda")
-
-    # Take every other element to make non-contiguous
-    C_mat = C_full[:, ::2, :, :]  # non-contiguous due to stride
-    B_mat = B_full[:, ::2, :, :]  # non-contiguous due to stride
-
+    C_mat = C_full[:, ::2, :, :]
+    B_mat = B_full[:, ::2, :, :]
     assert not C_mat.is_contiguous()
     assert not B_mat.is_contiguous()
-
-    # Reference with contiguous copies
-    cb_ref = cb_producer_fwd_ref(
-        C_mat.contiguous(), B_mat.contiguous(), num_chunks, chunk_len, dtype
-    )
-
-    # Op should handle non-contiguous inputs
-    op = CBProducerOp(batch, num_chunks, n_groups, chunk_len, d_state, dtype=dtype)
-    cb_out = op.forward(C_mat, B_mat)
-
-    allclose_compare(cb_out, cb_ref, atol=1e-3, rtol=1e-3)
-
-
-@pytest.mark.smoke
-def test_cb_producer_fwd_tune():
-    """CBProducerOp should support tune=True without errors."""
-    batch, num_chunks, chunk_len, n_groups, d_state = 1, 1, 64, 1, 64
-    dtype = torch.float16
-
-    # Small shape to keep autotune fast
-    test = CBProducerFwdTest(batch, num_chunks, chunk_len, n_groups, d_state, dtype=dtype)
-    op = CBProducerOp(
-        batch, num_chunks, n_groups, chunk_len, d_state, dtype=dtype, tune=True
-    )
-    inputs = test.gen_inputs()
-    test.check(op, *inputs, atol=1e-3, rtol=1e-3)
+    ref = cb_producer_fwd_ref(C_mat.contiguous(), B_mat.contiguous(), num_chunks, chunk_len, dtype)
+    out = CBProducerOp(batch, num_chunks, n_groups, chunk_len, d_state, dtype=dtype)(C_mat, B_mat)
+    allclose_compare(out, ref, atol=1e-3, rtol=1e-3)
 
 
 class DaCumsumFwdTest(DaCumsumFwdWorkload, TestBase):

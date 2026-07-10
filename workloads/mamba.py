@@ -64,56 +64,6 @@ class DaCumsumFwdWorkload(WorkloadBase):
         return dt_raw, A, dt_bias
 
 
-class CBProducerFwdFixture(FixtureBase):
-    @classmethod
-    def get_params(cls):
-        import pytest
-        return [
-            ("batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune", [
-                # feature: basic smoke test with fp16
-                pytest.param(1, 2, 64, 1, 64, torch.float16, False, marks=pytest.mark.smoke),
-                # feature: bfloat16
-                pytest.param(1, 2, 64, 1, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # feature: n_groups > 1
-                pytest.param(1, 2, 64, 2, 64, torch.float16, False, marks=pytest.mark.smoke),
-                # shape: d_state not 64-aligned
-                pytest.param(1, 2, 64, 1, 96, torch.float16, False, marks=pytest.mark.full),
-                # shape: larger chunk_len
-                pytest.param(1, 2, 128, 1, 64, torch.bfloat16, False, marks=pytest.mark.full),
-                # shape: chunk_len=256
-                pytest.param(1, 2, 256, 1, 64, torch.float16, False, marks=pytest.mark.full),
-                # shape: larger batch and groups
-                pytest.param(2, 4, 64, 4, 128, torch.bfloat16, False, marks=pytest.mark.full),
-            ]),
-        ]
-
-
-class CBProducerFwdWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        num_chunks: int,
-        chunk_len: int,
-        n_groups: int,
-        d_state: int,
-        dtype: torch.dtype = torch.float16,
-    ):
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.chunk_len = chunk_len
-        self.n_groups = n_groups
-        self.d_state = d_state
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        b, C, Q, G, N = self.batch, self.num_chunks, self.chunk_len, self.n_groups, self.d_state
-        seq_len = C * Q
-        # Random C and B matrices
-        C_mat = torch.randn(b, seq_len, G, N, dtype=self.dtype, device="cuda") * 0.1
-        B_mat = torch.randn(b, seq_len, G, N, dtype=self.dtype, device="cuda") * 0.1
-        return C_mat, B_mat
-
-
 class SSDChunkScanFwdFixture(FixtureBase):
     @classmethod
     def get_params(cls):
