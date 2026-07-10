@@ -19,7 +19,6 @@ from .attention import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
-from .cb_producer import CBProducerOp
 from .convolution import (
     Conv1dBiasFwdOp,
     Conv1dFwdOp,
@@ -114,7 +113,6 @@ __all__ = [
     "AdaLayerNormZeroFwdOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
-    "CBProducerOp",
     "Conv1dBiasFwdOp",
     "Conv1dFwdOp",
     "Conv2dBiasFwdOp",

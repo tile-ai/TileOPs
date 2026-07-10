@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import TestBase, allclose_compare
-from tileops.ops.cb_producer import CBProducerOp
+from tileops.ops.cb_producer import CBProducerOp  # Internal use only, not public API
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
