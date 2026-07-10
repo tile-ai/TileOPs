@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import TestBase, allclose_compare
-from tileops.ops.cb_producer import CBProducerOp  # Internal use only, not public API
+from tileops.ops.cb_producer import CBProducerOp
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
@@ -12,19 +12,17 @@ from tileops.ops.ssd_decode import SSDDecodeOp
 from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
     CBProducerFwdFixture,
+    CBProducerFwdWorkload,
     DaCumsumFwdFixture,
+    DaCumsumFwdWorkload,
     SSDChunkScanFwdFixture,
+    SSDChunkScanFwdWorkload,
     SSDChunkStateFwdFixture,
+    SSDChunkStateFwdWorkload,
     SSDDecodeFixture,
+    SSDDecodeWorkload,
     SSDStatePassingFwdFixture,
-)
-from workloads.mamba import CBProducerFwdTest as _CBProducerFwdTestWorkload
-from workloads.mamba import DaCumsumFwdTest as _DaCumsumFwdTestWorkload
-from workloads.mamba import SSDChunkScanFwdTest as _SSDChunkScanFwdTestWorkload
-from workloads.mamba import SSDChunkStateFwdTest as _SSDChunkStateFwdTestWorkload
-from workloads.mamba import SSDDecodeTest as _SSDDecodeTestWorkload
-from workloads.mamba import (
-    SSDStatePassingFwdTest as _SSDStatePassingFwdTestWorkload,
+    SSDStatePassingFwdWorkload,
 )
 
 
@@ -98,7 +96,7 @@ def cb_producer_fwd_ref(
     return cb.to(dtype)
 
 
-class CBProducerFwdTest(_CBProducerFwdTestWorkload, TestBase):
+class CBProducerFwdTest(CBProducerFwdWorkload, TestBase):
     def ref_program(self, C_mat, B_mat):
         return cb_producer_fwd_ref(
             C_mat, B_mat, self.num_chunks, self.chunk_len, self.dtype
@@ -162,7 +160,7 @@ def test_cb_producer_fwd_tune():
     test.check(op, *inputs, atol=1e-3, rtol=1e-3)
 
 
-class DaCumsumFwdTest(_DaCumsumFwdTestWorkload, TestBase):
+class DaCumsumFwdTest(DaCumsumFwdWorkload, TestBase):
     def ref_program(self, dt, A, dt_bias):
         return da_cumsum_fwd_ref(
             dt, A, self.num_chunks, self.chunk_len,
@@ -268,7 +266,7 @@ def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
     return out
 
 
-class SSDChunkScanFwdTest(_SSDChunkScanFwdTestWorkload, TestBase):
+class SSDChunkScanFwdTest(SSDChunkScanFwdWorkload, TestBase):
     def ref_program(self, x, cb, dA_cumsum, C, prev_states, dt):
         return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, self.n_groups)
 
@@ -320,7 +318,7 @@ def ssd_chunk_state_fwd_ref(
     return out.permute(0, 1, 2, 4, 3)
 
 
-class SSDChunkStateFwdTest(_SSDChunkStateFwdTestWorkload, TestBase):
+class SSDChunkStateFwdTest(SSDChunkStateFwdWorkload, TestBase):
     def ref_program(self, x, Bmat, dt, dA_cumsum, seq_idx):
         return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.n_groups, seq_idx=seq_idx)
 
@@ -401,7 +399,7 @@ def ssd_state_passing_fwd_ref(
     return torch.stack(out, dim=1), s
 
 
-class SSDStatePassingFwdTest(_SSDStatePassingFwdTestWorkload, TestBase):
+class SSDStatePassingFwdTest(SSDStatePassingFwdWorkload, TestBase):
     def ref_program(self, states, dA_chunk_cumsum, initial_states):
         return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
 
@@ -488,7 +486,7 @@ def ssd_decode_ref(
     return y_out
 
 
-class SSDDecodeTest(_SSDDecodeTestWorkload, TestBase):
+class SSDDecodeTest(SSDDecodeWorkload, TestBase):
     def ref_program(self, A, dt, x, B_in, C_in, state):
         return ssd_decode_ref(A, dt, x, B_in, C_in, state)
 

@@ -26,7 +26,7 @@ class DaCumsumFwdFixture(FixtureBase):
             ]),
         ]
 
-class DaCumsumFwdTest(WorkloadBase):
+class DaCumsumFwdWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -88,7 +88,7 @@ class CBProducerFwdFixture(FixtureBase):
         ]
 
 
-class CBProducerFwdTest(WorkloadBase):
+class CBProducerFwdWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -128,7 +128,7 @@ class SSDChunkScanFwdFixture(FixtureBase):
         ]
 
 
-class SSDChunkScanFwdTest(WorkloadBase):
+class SSDChunkScanFwdWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -189,7 +189,7 @@ class SSDChunkStateFwdFixture(FixtureBase):
             ]),
         ]
 
-class SSDChunkStateFwdTest(WorkloadBase):
+class SSDChunkStateFwdWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -251,7 +251,7 @@ class SSDDecodeFixture(FixtureBase):
             ]),
         ]
 
-class SSDDecodeTest(WorkloadBase):
+class SSDDecodeWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -294,7 +294,7 @@ class SSDStatePassingFwdFixture(FixtureBase):
             ]),
         ]
 
-class SSDStatePassingFwdTest(WorkloadBase):
+class SSDStatePassingFwdWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
