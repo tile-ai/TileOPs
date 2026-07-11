@@ -131,15 +131,11 @@ def test_avg_pool1d_bench(
     inputs = test.gen_inputs()
 
     op = AvgPool1dFwdOp(
-        n=n,
-        c_in=c_in,
-        l_in=l_in,
         kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         ceil_mode=ceil_mode,
         count_include_pad=count_include_pad,
-        dtype=dtype,
         tune=tune,
     )
     bm = AvgPool1dBenchmark(test, op)
@@ -285,17 +281,12 @@ def test_avg_pool2d_bench(
     inputs = test.gen_inputs()
 
     op = AvgPool2dFwdOp(
-        n=n,
-        c_in=c_in,
-        h_in=h_in,
-        w_in=w_in,
         kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         ceil_mode=ceil_mode,
         count_include_pad=count_include_pad,
         divisor_override=divisor_override,
-        dtype=dtype,
         tune=tune,
     )
     bm = AvgPool2dBenchmark(test, op)
@@ -452,18 +443,12 @@ def test_avg_pool3d_bench(
     inputs = test.gen_inputs()
 
     op = AvgPool3dFwdOp(
-        n=n,
-        c_in=c_in,
-        d_in=d_in,
-        h_in=h_in,
-        w_in=w_in,
         kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         ceil_mode=ceil_mode,
         count_include_pad=count_include_pad,
         divisor_override=divisor_override,
-        dtype=dtype,
         tune=tune,
     )
     bm = AvgPool3dBenchmark(test, op)

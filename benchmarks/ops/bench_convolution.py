@@ -108,15 +108,10 @@ def test_conv1d_bench(
     x, weight, bias = inputs
 
     op = Conv1dBiasFwdOp(
-        n=n,
-        c_in=c_in,
-        l_in=l_in,
-        c_out=c_out,
-        kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         dilation=dilation,
-        dtype=dtype,
+        groups=1,
         tune=tune,
     )
     result = bm.profile(op, *inputs)
@@ -248,17 +243,10 @@ def test_conv2d_bench(
     x, weight, bias = inputs
 
     op = Conv2dBiasFwdOp(
-        n=n,
-        c_in=c_in,
-        h=h,
-        w=w,
-        c_out=c_out,
-        kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         dilation=dilation,
         groups=groups,
-        dtype=dtype,
         tune=tune,
     )
     result = bm.profile(op, *inputs)
@@ -390,18 +378,10 @@ def test_conv3d_bench(
     x, weight, bias = inputs
 
     op = Conv3dBiasFwdOp(
-        n=n,
-        c_in=c_in,
-        d=d,
-        h=h,
-        w=w,
-        c_out=c_out,
-        kernel_size=kernel_size,
         stride=stride,
         padding=padding,
         dilation=dilation,
         groups=groups,
-        dtype=dtype,
         tune=tune,
     )
     result = bm.profile(op, *inputs)
