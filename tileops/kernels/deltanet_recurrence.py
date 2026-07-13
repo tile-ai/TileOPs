@@ -398,14 +398,15 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
         tune: bool = False,
     ):
         super().__init__()
-        if tune:
-            raise NotImplementedError("Raw CUDA DeltaNet decode does not autotune.")
         self.batch = batch
         self.head = head
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self.init_config(config, tune=False)
+        if tune:
+            self._autotune_raw_cuda()
+        else:
+            self.init_config(config, tune=False)
         if self.config["raw_group_size"] != 2:
             raise ValueError(
                 "raw_group_size must equal 2 because this kernel uses fixed "
@@ -436,6 +437,55 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
             "raw_group_size": 2,
             "raw_maxrregcount": 146,
         }
+
+    @property
+    def raw_autotune_configs(self) -> list[dict]:
+        base = self.default_config
+        return [
+            {**base, "raw_maxrregcount": raw_maxrregcount}
+            for raw_maxrregcount in (0, 128, 132, 146, 160)
+        ]
+
+    def _autotune_raw_cuda(self) -> None:
+        from tilelang.profiler import do_bench
+
+        best_time = float("inf")
+        best_config = self.default_config
+
+        B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
+        torch_dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16}[self.dtype_str]
+        q = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
+        k = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
+        v = torch.randn(B, H, DV, device="cuda", dtype=torch_dtype)
+        beta = torch.rand(B, H, device="cuda", dtype=torch_dtype)
+        state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
+
+        print(f"Start autotuning {self.__class__.__name__}...")
+        for config in self.raw_autotune_configs:
+            try:
+                fn = _deltanet_decode_raw_cuda_flastyle_tl(
+                    B,
+                    H,
+                    DK,
+                    DV,
+                    config["v_tile"],
+                    config["raw_group_size"],
+                    config["raw_maxrregcount"],
+                    self.dtype_str,
+                )(config["threads"])
+                t = do_bench(
+                    lambda _fn=fn: _fn(q, k, v, beta, state),
+                    warmup=10,
+                    rep=20,
+                )
+                if t < best_time:
+                    best_time = t
+                    best_config = config
+            except Exception:
+                continue
+
+        self.config = best_config
+        print(f"{self.__class__.__name__} initialized with config: {self.config}")
 
     def forward(
         self,
