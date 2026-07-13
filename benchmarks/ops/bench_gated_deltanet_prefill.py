@@ -10,7 +10,7 @@ production fast path used by FLA/Qwen-style inference prefill.
 """
 
 import inspect
-from typing import Any
+from typing import Any, Sequence
 
 import pytest
 import torch
@@ -47,7 +47,9 @@ class _GatedDeltaNetPrefillFwdTestBaseline(GatedDeltaNetPrefillFwdTest):
         g: torch.Tensor,
         beta: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        q, k, v, g, beta = _to_bhtd_layout(q, k, v, g, beta, self.layout)
+        q, k, v, g, beta = convert_gdn_prefill_layout(
+            (q, k, v, g, beta), self.layout, "bhtd"
+        )
         batch, heads, seq_len, dim_k = k.shape
         dim_v = v.shape[-1]
         chunk_size = self.chunk_size
@@ -67,7 +69,8 @@ class _GatedDeltaNetPrefillFwdTestBaseline(GatedDeltaNetPrefillFwdTest):
         final_state, o = kernel2_gated_deltanet_torch(
             q, k, g_cum, w, u, initial_state, chunk_size
         )
-        return _from_bhtd_layout(o.to(self.dtype), final_state.to(self.dtype), self.layout)
+        (o,) = convert_gdn_prefill_layout((o.to(self.dtype),), "bhtd", self.layout)
+        return o, final_state.to(self.dtype)
 
 
 def _fla_prefill_fwd():
@@ -93,58 +96,39 @@ def _fla_prefill_fwd():
     return baseline_fn
 
 
-def _to_bhtd_layout(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-    layout: str,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def _normalize_gdn_prefill_layout(layout: str) -> str:
     layout = layout.lower()
-    if layout == "bthd":
-        return (
-            q.permute(0, 2, 1, 3).contiguous(),
-            k.permute(0, 2, 1, 3).contiguous(),
-            v.permute(0, 2, 1, 3).contiguous(),
-            g.permute(0, 2, 1).contiguous(),
-            beta.permute(0, 2, 1).contiguous(),
-        )
-    if layout in ("bhtd", "bhsd"):
-        return q, k, v, g, beta
+    if layout == "bhsd":
+        return "bhtd"
+    if layout in ("bhtd", "bthd"):
+        return layout
     raise ValueError(f"Unsupported layout: {layout}")
 
 
-def _from_bhtd_layout(
-    o: torch.Tensor,
-    final_state: torch.Tensor,
-    layout: str,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    if layout.lower() == "bthd":
-        return o.permute(0, 2, 1, 3).contiguous(), final_state
-    return o, final_state
+def convert_gdn_prefill_layout(
+    tensors: Sequence[torch.Tensor],
+    src_layout: str,
+    dst_layout: str,
+) -> tuple[torch.Tensor, ...]:
+    src_layout = _normalize_gdn_prefill_layout(src_layout)
+    dst_layout = _normalize_gdn_prefill_layout(dst_layout)
+    if src_layout == dst_layout:
+        return tuple(tensors)
+    if {src_layout, dst_layout} != {"bhtd", "bthd"}:
+        raise ValueError(f"Unsupported layout conversion: {src_layout} -> {dst_layout}")
 
-
-def _to_fla_public_layout(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-    layout: str,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    layout = layout.lower()
-    if layout == "bthd":
-        return q, k, v, g, beta
-    if layout in ("bhtd", "bhsd"):
-        return (
-            q.permute(0, 2, 1, 3).contiguous(),
-            k.permute(0, 2, 1, 3).contiguous(),
-            v.permute(0, 2, 1, 3).contiguous(),
-            g.permute(0, 2, 1).contiguous(),
-            beta.permute(0, 2, 1).contiguous(),
-        )
-    raise ValueError(f"Unsupported layout: {layout}")
+    converted = []
+    for tensor in tensors:
+        if tensor.ndim == 4:
+            converted.append(tensor.permute(0, 2, 1, 3).contiguous())
+        elif tensor.ndim == 3:
+            converted.append(tensor.permute(0, 2, 1).contiguous())
+        else:
+            raise ValueError(
+                "GDN prefill layout conversion expects 3D gate tensors or "
+                f"4D sequence tensors, got {tensor.ndim}D"
+            )
+    return tuple(converted)
 
 
 def _gdn_prefill_args(
@@ -222,7 +206,7 @@ def test_gated_deltanet_prefill_fwd_bench(
     result = bm.profile(op, *inputs)
 
     if fla_fn is not None:
-        fla_inputs = _to_fla_public_layout(*inputs, layout)
+        fla_inputs = convert_gdn_prefill_layout(inputs, layout, "bthd")
         result_fla = bm.profile(fla_fn, *fla_inputs)
         result["speedup_vs_fla"] = result_fla["latency_ms"] / result["latency_ms"]
         BenchmarkReport.record(op, locals(), result, tag="tileops")
