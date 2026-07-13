@@ -151,11 +151,9 @@ def clean_logits_(threads: int = 512,):
     ):
         with T.Kernel(seq_len, batch, threads=threads) as (bx, by):
             tx = T.get_thread_binding()
-            cu_k_s = T.min(CuSeqLenKS[bx], seq_len_kv)
-            cu_k_e = T.min(CuSeqLenKE[bx], seq_len_kv)
+            cu_k_s = T.max(T.min(CuSeqLenKS[bx], seq_len_kv), 0)
+            cu_k_e = T.max(T.min(CuSeqLenKE[bx], seq_len_kv), cu_k_s)
 
-            # Only positions outside [cu_k_s, cu_k_e) need -inf; iterate the two
-            # out-of-window spans instead of scanning all seq_len_kv positions.
             for n_i in T.serial(T.ceildiv(cu_k_s, threads)):
                 idx = n_i * threads + tx
                 if idx < cu_k_s:
