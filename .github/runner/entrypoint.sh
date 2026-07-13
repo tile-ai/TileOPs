@@ -19,7 +19,9 @@ fi
 # Jobs run as children of the listener and inherit its environment; a job that reads
 # RUNNER_TOKEN can register a rogue runner with trusted labels while the token is valid.
 # Hold the token in an unexported shell variable and drop it from the environment before
-# anything else runs.
+# anything else runs. unset first: if reg_token arrived exported from the container
+# environment, plain assignment would keep the export attribute and leak the token anyway.
+unset reg_token
 reg_token="${RUNNER_TOKEN}"
 unset RUNNER_TOKEN
 
