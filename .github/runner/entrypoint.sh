@@ -16,6 +16,15 @@ fi
 : "${RUNNER_TOKEN:?Environment variable RUNNER_TOKEN is required}"
 : "${RUNNER_URL:?Environment variable RUNNER_URL is required}"
 
+# Jobs run as children of the listener and inherit its environment; a job that reads
+# RUNNER_TOKEN can register a rogue runner with trusted labels while the token is valid.
+# Hold the token in an unexported shell variable and drop it from the environment before
+# anything else runs. unset first: if reg_token arrived exported from the container
+# environment, plain assignment would keep the export attribute and leak the token anyway.
+unset reg_token
+reg_token="${RUNNER_TOKEN}"
+unset RUNNER_TOKEN
+
 RUNNER_NAME="${RUNNER_NAME:-$(hostname)}"
 RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,tile-ops,venv}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-_work}"
@@ -23,7 +32,7 @@ RUNNER_WORKDIR="${RUNNER_WORKDIR:-_work}"
 # ── Cleanup function — deregister runner on exit ─────────────────────────────
 cleanup() {
     echo "Removing runner registration..."
-    ./config.sh remove --token "${RUNNER_TOKEN}" 2>/dev/null || true
+    ./config.sh remove --token "${reg_token}" 2>/dev/null || true
 }
 
 trap cleanup EXIT INT TERM
@@ -31,7 +40,7 @@ trap cleanup EXIT INT TERM
 # ── Configure the runner (ephemeral: one job per lifecycle) ──────────────────
 ./config.sh \
     --url "${RUNNER_URL}" \
-    --token "${RUNNER_TOKEN}" \
+    --token "${reg_token}" \
     --name "${RUNNER_NAME}" \
     --labels "${RUNNER_LABELS}" \
     --work "${RUNNER_WORKDIR}" \

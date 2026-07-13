@@ -100,7 +100,9 @@ tilelang is missing (the image provides it).
 ## Run as a self-hosted runner
 
 `entrypoint.sh` registers an ephemeral runner (one job per container), then deregisters on
-exit. Provide a registration token and the target URL; bind-mount the host cache.
+exit. Provide a registration token and the target URL; bind-mount the host cache. The
+entrypoint removes `RUNNER_TOKEN` from the environment before the runner starts, so jobs
+cannot read the registration token.
 
 ```bash
 docker run -d --gpus all \
