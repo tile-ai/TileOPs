@@ -1108,6 +1108,10 @@ class FusedGatedKernel(Kernel):
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
             return {"threads": 256, "num_per_thread": 16}
+        if self.strategy == "explicit_parallel" and self.dtype in (torch.float16, torch.bfloat16):
+            # 128x8 keeps block_N=1024 but widens loads to 128-bit and lifts occupancy.
+            # Only fp16/bf16 gain the width: fp32 npt=4 already saturates LDG.128.
+            return {"threads": 128, "num_per_thread": 8}
         npt = _strategy_npt(self.strategy, self.dtype)
         return {"threads": 256, "num_per_thread": npt}
 
