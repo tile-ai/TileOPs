@@ -7,8 +7,9 @@ computes:
     drms_w_h, drms_w_v  — gradients w.r.t. RMSNorm weights
     dconv_w             — gradient w.r.t. conv weights
 
-Three-pass design:
-    Pass 1:  SiLU+residual bwd -> dconv_w + store d_silu_out to buffer
+Staged design:
+    Pass 1:  SiLU+residual bwd -> store d_silu_out to buffer
+    Pass 1a: Reduce dconv_w from the buffered d_silu values
     Pass 1b: Conv transpose -> RMSNorm(v_hat) bwd -> d(v_hat)
     Pass 2:  Gate bwd -> RMSNorm(H) bwd, RMSNorm(k) bwd -> dH, dk, dv
 """
@@ -71,11 +72,8 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 for j in T.Parallel(d_padded):
                     drms_w_h[j] = 0.0
                     drms_w_v[j] = 0.0
-                for p in T.serial(KS):
-                    for j in T.Parallel(d_padded):
-                        dconv_w[p, j] = 0.0
 
-            # ======== Pass 1: SiLU bwd + dconv_w ========
+            # ======== Pass 1: SiLU bwd ========
             with T.Kernel(seq_len, M, threads=threads) as (bx, by):
                 dy_local = T.alloc_fragment((d_padded,), accum_dtype)
                 conv_out = T.alloc_fragment((d_padded,), accum_dtype)
@@ -112,26 +110,37 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                     sig = 1.0 / (1.0 + T.exp(-conv_out[j]))
                     d_silu[j] = dy_local[j] * (sig + conv_out[j] * sig * (1.0 - sig))
 
-                # dconv_w[p,j] += d_silu[j] * v_hat_norm[src_t, j]
-                for p in T.serial(KS):
-                    src_t = tid - (KS - 1) + p
-                    for j in T.Parallel(d_padded):
-                        raw_val = T.if_then_else(
-                            src_t >= 0,
-                            T.cast(vhat[bid, src_t, j], accum_dtype),
-                            0.0,
-                        )
+                # Store d_silu for conv transpose in pass 1b
+                for j in T.Parallel(d_padded):
+                    dvhat_buf[bid, tid, j] = d_silu[j]
+
+            # ======== dconv_w reduction ========
+            # TileLang 0.1.11 lowers atomic_add(dconv_w[p, j], ...) in Pass 1
+            # into a launch-failing kernel. This separate reduction adds a
+            # small fixed launch cost but keeps the backward path correct.
+            with T.Kernel(KS, threads=threads) as (bx,):
+                dconv_local = T.alloc_fragment((d_padded,), accum_dtype)
+                p = bx
+                for j in T.Parallel(d_padded):
+                    dconv_local[j] = 0.0
+                for bid in T.serial(M):
+                    for tid in T.serial(seq_len):
+                        src_t = tid - (KS - 1) + p
                         src_rrms = T.if_then_else(
                             src_t >= 0,
                             rrms_v[bid, src_t],
                             0.0,
                         )
-                        normed = raw_val * src_rrms * T.cast(rms_w_v[j], accum_dtype)
-                        T.atomic_add(dconv_w[p, j], d_silu[j] * normed)
-
-                # Store d_silu for conv transpose in pass 1b
+                        for j in T.Parallel(d_padded):
+                            raw_val = T.if_then_else(
+                                src_t >= 0,
+                                T.cast(vhat[bid, src_t, j], accum_dtype),
+                                0.0,
+                            )
+                            normed = raw_val * src_rrms * T.cast(rms_w_v[j], accum_dtype)
+                            dconv_local[j] += dvhat_buf[bid, tid, j] * normed
                 for j in T.Parallel(d_padded):
-                    dvhat_buf[bid, tid, j] = d_silu[j]
+                    dconv_w[p, j] = dconv_local[j]
 
             # ======== Pass 1b: conv transpose + RMSNorm(vhat) bwd ========
             # d(v_hat_norm[t,j]) = sum_p conv_w[p,j] * d_silu[t+(KS-1)-p, j]
@@ -384,8 +393,9 @@ def _(M, seq_len, d, eps, dtype_str, threads,
 class EngramGateConvBwdKernel(Kernel):
     """Engram GateConv backward kernel.
 
-    Three-pass backward:
-      Pass 1:  SiLU bwd + dconv_w accumulation
+    Staged backward:
+      Pass 1:  SiLU bwd -> d_silu buffer
+      Pass 1a: dconv_w reduction
       Pass 1b: Conv transpose + RMSNorm(vhat) bwd -> d(vhat)
       Pass 2:  Gate bwd -> dH, dk, dv + drms_w_h accumulation
     """
