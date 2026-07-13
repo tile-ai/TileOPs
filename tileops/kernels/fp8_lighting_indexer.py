@@ -183,7 +183,7 @@ def fp8_lighting_indexer_wrapped_kernel(batch: int, seq_len: int, heads: int, in
                                                                 index_dim), IndexK, IndexKScale,
                                                     Logits, Weights, CuSeqLenKS, CuSeqLenKE)
     if clean_logits:
-        clean_logits_()(Logits, CuSeqLenKS, CuSeqLenKE)
+        clean_logits_(threads=threads)(Logits, CuSeqLenKS, CuSeqLenKE)
 
 
 @fp8_lighting_indexer_wrapped_kernel.register_fake
