@@ -125,7 +125,7 @@ class GroupNormFwdOp(Op):
 
     def _resolve_spec(
         self, x: torch.Tensor
-    ) -> Tuple[int, int, Tuple[int, ...], int, int, int, int, torch.dtype]:
+    ) -> Tuple[int, int, Tuple[int, ...], int, int, int, int, int, torch.dtype]:
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.ndim < 2:
@@ -399,7 +399,7 @@ class GroupNormFwdOpNoAffine(Op):
 
     def _resolve_spec(
         self, x: torch.Tensor
-    ) -> Tuple[int, int, Tuple[int, ...], int, int, int, int, int, torch.dtype]:
+    ) -> Tuple[int, int, Tuple[int, ...], int, int, int, int, int, int, torch.dtype]:
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
         if x.ndim < 2:
