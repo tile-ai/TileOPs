@@ -619,6 +619,49 @@ class GatedDeltaNetDecodeOp(Op):
             if tensor.dtype != self.dtype:
                 raise ValueError(f"{name}.dtype must be {self.dtype}, got {tensor.dtype}")
 
+    def _validate_shapes(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        state: torch.Tensor,
+    ) -> None:
+        q_shape = (self.batch, self.heads, self.dim_k)
+        v_shape = (self.batch, self.heads, self.dim_v)
+        gate_shape = (self.batch, self.heads)
+        state_shape = (self.batch, self.heads, self.dim_k, self.dim_v)
+        expected_shapes = (
+            ("q", q, q_shape),
+            ("k", k, q_shape),
+            ("v", v, v_shape),
+            ("g", g, gate_shape),
+            ("beta", beta, gate_shape),
+            ("state", state, state_shape),
+        )
+        for name, tensor, expected in expected_shapes:
+            if tuple(tensor.shape) != expected:
+                raise ValueError(
+                    f"{name} must have shape {expected}, got {tuple(tensor.shape)}"
+                )
+        if not all(tensor.is_cuda for tensor in (q, k, v, g, beta, state)):
+            raise ValueError("q, k, v, g, beta, and state must be CUDA tensors")
+
+    def _validate_output_shapes(
+        self,
+        o: torch.Tensor,
+        new_state: torch.Tensor,
+    ) -> None:
+        o_shape = (self.batch, self.heads, self.dim_v)
+        state_shape = (self.batch, self.heads, self.dim_k, self.dim_v)
+        if tuple(o.shape) != o_shape:
+            raise ValueError(f"o must have shape {o_shape}, got {tuple(o.shape)}")
+        if tuple(new_state.shape) != state_shape:
+            raise ValueError(
+                f"new_state must have shape {state_shape}, got {tuple(new_state.shape)}"
+            )
+
     def eval_roofline(self) -> tuple[int, int]:
         from tileops.perf.formulas import gated_deltanet_decode_roofline
 
@@ -634,4 +677,7 @@ class GatedDeltaNetDecodeOp(Op):
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         self._validate_dtypes(q, k, v, g, beta, state)
-        return self.kernel(q, k, v, g, beta, state)
+        self._validate_shapes(q, k, v, g, beta, state)
+        o, new_state = self.kernel(q, k, v, g, beta, state)
+        self._validate_output_shapes(o, new_state)
+        return o, new_state

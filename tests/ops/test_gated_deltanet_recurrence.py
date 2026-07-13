@@ -231,5 +231,25 @@ def test_gated_deltanet_decode_raw_cuda_dispatch_rejects_unsupported_sm100(
     )
 
 
+@pytest.mark.smoke
+def test_gated_deltanet_decode_rejects_manifest_shape_mismatch() -> None:
+    op = object.__new__(GatedDeltaNetDecodeOp)
+    op.batch = 2
+    op.heads = 3
+    op.dim_k = 4
+    op.dim_v = 5
+    op.dtype = torch.float32
+
+    q = torch.empty(2, 3, 4)
+    k = torch.empty(2, 3, 4)
+    v = torch.empty(2, 3, 5)
+    g = torch.empty(2, 4)
+    beta = torch.empty(2, 3)
+    state = torch.empty(2, 3, 4, 5)
+
+    with pytest.raises(ValueError, match="g must have shape"):
+        op.forward(q, k, v, g, beta, state)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
