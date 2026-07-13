@@ -6,14 +6,14 @@ delegates to :class:`GroupNormKernel` with that grouping.
 
 User-facing API mirrors :func:`torch.nn.functional.instance_norm`:
 
-    op = InstanceNormFwdOp(N=batch, C=channels, spatial=(H, W), dtype=dtype)
+    op = InstanceNormFwdOp()
     y = op(x, weight, bias)
 
 Input tensors accept shape ``(N, C, *spatial)``.
 """
 
 import math
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -85,10 +85,10 @@ class InstanceNormFwdOp(Op):
 
     def __init__(
         self,
-        N: int,
-        C: int,
-        spatial: tuple,
-        dtype: torch.dtype,
+        N: Optional[int] = None,
+        C: Optional[int] = None,
+        spatial: Optional[tuple] = None,
+        dtype: Optional[torch.dtype] = None,
         use_input_stats: bool = True,
         momentum: float = 0.1,
         eps: float = 1e-5,
@@ -104,49 +104,40 @@ class InstanceNormFwdOp(Op):
             )
         self.N = N
         self.C = C
-        self.spatial = spatial
+        self.spatial = tuple(spatial) if spatial is not None else None
         self.dtype = dtype
+        self._committed_N = N
+        self._committed_C = C
+        self._committed_spatial = self.spatial
+        self._committed_dtype = dtype
         self.use_input_stats = use_input_stats
         self.momentum = momentum
         self.eps = eps
-        self.spatial_size = math.prod(spatial)
-        # InstanceNorm: each channel is its own group (num_groups = C)
-        # so D = (C/C) * spatial_size = spatial_size and M = N * C.
+        self.tune = tune
+        self.spatial_size = math.prod(self.spatial) if self.spatial is not None else None
         self.D = self.spatial_size
-        self.M = N * C
-        self.D_padded = align_up(self.D, ALIGNMENT)
+        self.M = N * C if N is not None and C is not None else None
+        self.D_padded = align_up(self.D, ALIGNMENT) if self.D is not None else None
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["group_norm"](
-            self.M, self.D, eps, dtype, tune=tune,
-        )
-        # The compiled kernel binds to the active CUDA device at construction
-        # time, so subsequent forwards must receive inputs on that same
-        # device. Capture it here so forward() can raise a clean error
-        # rather than letting the kernel layer surface an opaque
-        # device-mismatch failure.
-        self._kernel_device = torch.device("cuda", torch.cuda.current_device())
-        # Pre-allocate forward-time constants. The kernel binds 1D weight/bias
-        # row-broadcast inputs; per-channel affine doesn't fit that layout, so
-        # the kernel call uses identity (unit/zero) buffers and the affine is
-        # applied after. These tensors are immutable for the op's lifetime.
-        self._unit_weight = torch.ones(
-            self.D_padded, dtype=dtype, device=self._kernel_device,
-        )
-        self._zero_bias = torch.zeros(
-            self.D_padded, dtype=dtype, device=self._kernel_device,
-        )
-        self._expected_shape = (self.N, self.C, *self.spatial)
-        self._affine_shape = (1, self.C) + (1,) * len(self.spatial)
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self._constant_cache: Dict[tuple, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self.kernel: Optional[Kernel] = None
+        self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype]] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"group_norm": GroupNormKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
-        elem_bytes = self.dtype.itemsize
+        if self._last_roofline_spec is None:
+            raise RuntimeError(
+                "InstanceNormFwdOp.eval_roofline() requires a prior forward() call"
+            )
+        N, C, spatial_size, dtype = self._last_roofline_spec
+        elem_bytes = dtype.itemsize
         return (
-            5 * self.N * self.C * self.spatial_size,
-            (2 * self.N * self.C * self.spatial_size + 2 * self.C) * elem_bytes,
+            5 * N * C * spatial_size,
+            (2 * N * C * spatial_size + 2 * C) * elem_bytes,
         )
 
     def _validate_dtypes(
@@ -156,16 +147,98 @@ class InstanceNormFwdOp(Op):
         bias: torch.Tensor,
     ) -> None:
         allowed = (torch.float32, torch.float16, torch.bfloat16)
-        if self.dtype not in allowed:
-            raise ValueError(
-                f"self.dtype must be one of {allowed}, got {self.dtype}"
-            )
+        expected_dtype = getattr(self, "_committed_dtype", None)
         for name, t in (("x", x), ("weight", weight), ("bias", bias)):
-            if t.dtype != self.dtype:
+            if t.dtype not in allowed:
+                raise ValueError(f"{name}.dtype must be one of {allowed}, got {t.dtype}")
+            if expected_dtype is None:
+                expected_dtype = t.dtype
+            if t.dtype != expected_dtype:
                 raise ValueError(
-                    f"Expected {name}.dtype == self.dtype ({self.dtype}), "
+                    f"Expected {name}.dtype == {expected_dtype}, "
                     f"got {t.dtype}"
                 )
+
+    def _resolve_spec(
+        self, x: torch.Tensor
+    ) -> Tuple[int, int, Tuple[int, ...], int, int, int, torch.dtype]:
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if x.ndim < 2:
+            raise ValueError("x must have shape (N, C, *spatial)")
+        if x.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            raise ValueError(
+                "x.dtype must be float32, float16, or bfloat16, "
+                f"got {x.dtype}"
+            )
+        committed_dtype = getattr(self, "_committed_dtype", None)
+        if committed_dtype is not None and x.dtype != committed_dtype:
+            raise ValueError(
+                f"Expected x.dtype {committed_dtype}, got {x.dtype}"
+            )
+        N, C, *spatial_list = x.shape
+        spatial = tuple(spatial_list)
+        if self._committed_N is not None and self._committed_N != N:
+            raise ValueError(f"Expected N={self._committed_N}, got {N}")
+        if self._committed_C is not None and self._committed_C != C:
+            raise ValueError(f"Expected C={self._committed_C}, got {C}")
+        if (
+            self._committed_spatial is not None
+            and spatial != self._committed_spatial
+        ):
+            raise ValueError(
+                f"Expected shape spatial={self._committed_spatial}, got {spatial}"
+            )
+        spatial_size = math.prod(spatial)
+        D = spatial_size
+        M = N * C
+        D_padded = align_up(D, ALIGNMENT)
+        return N, C, spatial, spatial_size, D, M, D_padded, x.dtype
+
+    def _bind_spec(
+        self,
+        N: int,
+        C: int,
+        spatial: Tuple[int, ...],
+        spatial_size: int,
+        D: int,
+        M: int,
+        D_padded: int,
+        dtype: torch.dtype,
+    ) -> None:
+        self.N = N
+        self.C = C
+        self.spatial = spatial
+        self.spatial_size = spatial_size
+        self.D = D
+        self.M = M
+        self.D_padded = D_padded
+        self.dtype = dtype
+        self._last_roofline_spec = (N, C, spatial_size, dtype)
+
+    def _get_kernel_and_constants(
+        self,
+        M: int,
+        D: int,
+        D_padded: int,
+        dtype: torch.dtype,
+        device: torch.device,
+        device_index: Optional[int],
+    ) -> Tuple[Kernel, torch.Tensor, torch.Tensor]:
+        key = (M, D, D_padded, dtype, device_index, self.eps, self.tune)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["group_norm"](
+                M, D, self.eps, dtype, tune=self.tune,
+            )
+        if key not in self._constant_cache:
+            self._constant_cache[key] = (
+                torch.ones(D_padded, dtype=dtype, device=device),
+                torch.zeros(D_padded, dtype=dtype, device=device),
+            )
+        kernel = self._kernel_cache[key]
+        self.kernel = kernel
+        unit_weight, zero_bias = self._constant_cache[key]
+        return kernel, unit_weight, zero_bias
 
     def forward(
         self,
@@ -200,27 +273,16 @@ class InstanceNormFwdOp(Op):
                 "affine-free path"
             )
         self._validate_dtypes(x, weight, bias)
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if x.device != self._kernel_device:
-            raise ValueError(
-                f"Device mismatch: op was constructed for {self._kernel_device} "
-                f"but x is on {x.device}. Construct a separate op instance per "
-                f"CUDA device."
-            )
-        if tuple(x.shape) != self._expected_shape:
-            raise ValueError(
-                f"Expected x shape {self._expected_shape}, got {tuple(x.shape)}"
-            )
+        N, C, spatial, spatial_size, D, M, D_padded, dtype = self._resolve_spec(x)
         if not weight.is_cuda:
             raise ValueError("weight must be a CUDA tensor")
         if weight.device != x.device:
             raise ValueError(
                 f"Expected weight on {x.device}, got {weight.device}"
             )
-        if weight.ndim != 1 or weight.shape[0] != self.C:
+        if weight.ndim != 1 or weight.shape[0] != C:
             raise ValueError(
-                f"Expected weight shape ({self.C},), got {weight.shape}"
+                f"Expected weight shape ({C},), got {weight.shape}"
             )
         if not bias.is_cuda:
             raise ValueError("bias must be a CUDA tensor")
@@ -228,30 +290,35 @@ class InstanceNormFwdOp(Op):
             raise ValueError(
                 f"Expected bias on {x.device}, got {bias.device}"
             )
-        if bias.ndim != 1 or bias.shape[0] != self.C:
+        if bias.ndim != 1 or bias.shape[0] != C:
             raise ValueError(
-                f"Expected bias shape ({self.C},), got {bias.shape}"
+                f"Expected bias shape ({C},), got {bias.shape}"
             )
 
+        self._bind_spec(N, C, spatial, spatial_size, D, M, D_padded, dtype)
+        kernel, unit_weight, zero_bias = self._get_kernel_and_constants(
+            M, D, D_padded, dtype, x.device, x.device.index,
+        )
         orig_shape = x.shape
         x = x.contiguous()
-        x_2d = x.reshape(self.M, self.D)
+        x_2d = x.reshape(M, D)
 
-        if self.D_padded != self.D:
-            x_2d = F.pad(x_2d, (0, self.D_padded - self.D))
+        if D_padded != D:
+            x_2d = F.pad(x_2d, (0, D_padded - D))
 
         # Kernel broadcasts 1D weight/bias row-wise; per-channel affine is
         # applied after, so run the kernel with identity (unit/zero) buffers.
-        y_2d = self.kernel(x_2d, self._unit_weight, self._zero_bias)
+        y_2d = kernel(x_2d, unit_weight, zero_bias)
 
         # Trim padding
-        if self.D_padded != self.D:
-            y_2d = y_2d[:, :self.D]
+        if D_padded != D:
+            y_2d = y_2d[:, :D]
 
         # Reshape back: (N*C, spatial_size) -> (N, C, *spatial)
         y = y_2d.reshape(orig_shape)
 
-        y = y * weight.reshape(self._affine_shape) + bias.reshape(self._affine_shape)
+        affine_shape = (1, C) + (1,) * len(spatial)
+        y = y * weight.reshape(affine_shape) + bias.reshape(affine_shape)
         return y
 
 
@@ -293,10 +360,10 @@ class InstanceNormFwdOpNoAffine(Op):
 
     def __init__(
         self,
-        N: int,
-        C: int,
-        spatial: tuple,
-        dtype: torch.dtype,
+        N: Optional[int] = None,
+        C: Optional[int] = None,
+        spatial: Optional[tuple] = None,
+        dtype: Optional[torch.dtype] = None,
         use_input_stats: bool = True,
         momentum: float = 0.1,
         eps: float = 1e-5,
@@ -306,36 +373,45 @@ class InstanceNormFwdOpNoAffine(Op):
     ):
         self.N = N
         self.C = C
-        self.spatial = spatial
+        self.spatial = tuple(spatial) if spatial is not None else None
         self.dtype = dtype
+        self._committed_N = N
+        self._committed_C = C
+        self._committed_spatial = self.spatial
+        self._committed_dtype = dtype
         self.use_input_stats = use_input_stats
         self.momentum = momentum
         self.eps = eps
-        self.spatial_size = math.prod(spatial)
+        self.tune = tune
+        self.spatial_size = math.prod(self.spatial) if self.spatial is not None else None
         self.D = self.spatial_size
-        self.M = N * C
-        # Eval-mode broadcast layout for running stats: [1, C, 1, ...] (one 1 per spatial dim).
-        self._running_stats_broadcast_shape = [1, C] + [1] * len(spatial)
-        self.D_padded = align_up(self.D, ALIGNMENT)
-        # Kernel launches T.ceildiv(M, block_m) programs, each copying a full
-        # block_m-row tile. Pad M to a multiple of the largest candidate
-        # block_m so the tail program never reads/writes past the input.
-        self.M_padded = align_up(self.M, _M_BLOCK_ALIGN)
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["instance_norm_no_affine"](
-            self.M_padded, self.D, eps, dtype, tune=tune,
+        self.M = N * C if N is not None and C is not None else None
+        self._running_stats_broadcast_shape = (
+            [1, C] + [1] * len(self.spatial)
+            if C is not None and self.spatial is not None
+            else None
         )
-        self._kernel_device = torch.device("cuda", torch.cuda.current_device())
+        self.D_padded = align_up(self.D, ALIGNMENT) if self.D is not None else None
+        self.M_padded = align_up(self.M, _M_BLOCK_ALIGN) if self.M is not None else None
+        self.dispatch_kernel(kernel_map)
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel: Optional[Kernel] = None
+        self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype]] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"instance_norm_no_affine": InstanceNormNoAffineKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
-        elem_bytes = self.dtype.itemsize
+        if self._last_roofline_spec is None:
+            raise RuntimeError(
+                "InstanceNormFwdOpNoAffine.eval_roofline() requires a prior forward() call"
+            )
+        N, C, spatial_size, dtype = self._last_roofline_spec
+        elem_bytes = dtype.itemsize
         return (
-            3 * self.N * self.C * self.spatial_size,
-            2 * self.N * self.C * self.spatial_size * elem_bytes,
+            3 * N * C * spatial_size,
+            2 * N * C * spatial_size * elem_bytes,
         )
 
     def _validate_dtypes(
@@ -361,17 +437,14 @@ class InstanceNormFwdOpNoAffine(Op):
                 ``x.dtype`` does not match ``self.dtype``.
         """
         allowed = (torch.float32, torch.float16, torch.bfloat16)
-        if self.dtype not in allowed:
-            raise ValueError(
-                f"self.dtype must be one of {allowed}, got {self.dtype}"
-            )
         if x.dtype not in allowed:
             raise ValueError(
                 f"x.dtype must be one of {allowed}, got {x.dtype}"
             )
-        if x.dtype != self.dtype:
+        committed_dtype = getattr(self, "_committed_dtype", None)
+        if committed_dtype is not None and x.dtype != committed_dtype:
             raise ValueError(
-                f"Expected x.dtype {self.dtype}, got {x.dtype}"
+                f"Expected x.dtype {committed_dtype}, got {x.dtype}"
             )
         if running_mean.dtype != torch.float32:
             raise ValueError(
@@ -383,7 +456,7 @@ class InstanceNormFwdOpNoAffine(Op):
             )
 
     def _validate_running_stats(
-        self, name: str, t: torch.Tensor, x_device: torch.device,
+        self, name: str, t: torch.Tensor, x_device: torch.device, C: int,
     ) -> None:
         """Validate device, dtype, and shape of a running-stats tensor."""
         if not t.is_cuda:
@@ -396,10 +469,87 @@ class InstanceNormFwdOpNoAffine(Op):
             raise ValueError(
                 f"Expected {name}.dtype torch.float32, got {t.dtype}"
             )
-        if t.ndim != 1 or t.shape[0] != self.C:
+        if t.ndim != 1 or t.shape[0] != C:
             raise ValueError(
-                f"Expected {name} shape ({self.C},), got {tuple(t.shape)}"
+                f"Expected {name} shape ({C},), got {tuple(t.shape)}"
             )
+
+    def _resolve_spec(
+        self, x: torch.Tensor
+    ) -> Tuple[int, int, Tuple[int, ...], int, int, int, int, int, torch.dtype]:
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if x.ndim < 2:
+            raise ValueError("x must have shape (N, C, *spatial)")
+        if x.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            raise ValueError(
+                "x.dtype must be float32, float16, or bfloat16, "
+                f"got {x.dtype}"
+            )
+        committed_dtype = getattr(self, "_committed_dtype", None)
+        if committed_dtype is not None and x.dtype != committed_dtype:
+            raise ValueError(
+                f"Expected x.dtype {committed_dtype}, got {x.dtype}"
+            )
+        N, C, *spatial_list = x.shape
+        spatial = tuple(spatial_list)
+        if self._committed_N is not None and self._committed_N != N:
+            raise ValueError(f"Expected N={self._committed_N}, got {N}")
+        if self._committed_C is not None and self._committed_C != C:
+            raise ValueError(f"Expected C={self._committed_C}, got {C}")
+        if (
+            self._committed_spatial is not None
+            and spatial != self._committed_spatial
+        ):
+            raise ValueError(
+                f"Expected shape spatial={self._committed_spatial}, got {spatial}"
+            )
+        spatial_size = math.prod(spatial)
+        D = spatial_size
+        M = N * C
+        D_padded = align_up(D, ALIGNMENT)
+        M_padded = align_up(M, _M_BLOCK_ALIGN)
+        return N, C, spatial, spatial_size, D, M, D_padded, M_padded, x.dtype
+
+    def _bind_spec(
+        self,
+        N: int,
+        C: int,
+        spatial: Tuple[int, ...],
+        spatial_size: int,
+        D: int,
+        M: int,
+        D_padded: int,
+        M_padded: int,
+        dtype: torch.dtype,
+    ) -> None:
+        self.N = N
+        self.C = C
+        self.spatial = spatial
+        self.spatial_size = spatial_size
+        self.D = D
+        self.M = M
+        self.D_padded = D_padded
+        self.M_padded = M_padded
+        self._running_stats_broadcast_shape = [1, C] + [1] * len(spatial)
+        self.dtype = dtype
+        self._last_roofline_spec = (N, C, spatial_size, dtype)
+
+    def _get_kernel(
+        self,
+        M_padded: int,
+        D: int,
+        dtype: torch.dtype,
+        device_index: Optional[int],
+    ) -> Kernel:
+        key = (M_padded, D, dtype, device_index, self.eps, self.tune)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["instance_norm_no_affine"](
+                M_padded, D, self.eps, dtype, tune=self.tune,
+            )
+        kernel = self._kernel_cache[key]
+        self.kernel = kernel
+        return kernel
 
     def forward(
         self,
@@ -428,21 +578,20 @@ class InstanceNormFwdOpNoAffine(Op):
                 shapes are incompatible with the configured dimensions.
         """
         self._validate_dtypes(x, running_mean, running_var)
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if x.device != self._kernel_device:
-            raise ValueError(
-                f"Device mismatch: op was constructed for {self._kernel_device} "
-                f"but x is on {x.device}. Construct a separate op instance per "
-                f"CUDA device."
-            )
-        expected_shape = (self.N, self.C, *self.spatial)
-        if tuple(x.shape) != expected_shape:
-            raise ValueError(
-                f"Expected x shape {expected_shape}, got {tuple(x.shape)}"
-            )
-        self._validate_running_stats("running_mean", running_mean, x.device)
-        self._validate_running_stats("running_var", running_var, x.device)
+        (
+            N,
+            C,
+            spatial,
+            spatial_size,
+            D,
+            M,
+            D_padded,
+            M_padded,
+            dtype,
+        ) = self._resolve_spec(x)
+        self._validate_running_stats("running_mean", running_mean, x.device, C)
+        self._validate_running_stats("running_var", running_var, x.device, C)
+        self._bind_spec(N, C, spatial, spatial_size, D, M, D_padded, M_padded, dtype)
 
         if not self.use_input_stats:
             # Eval-mode path: y = (x - running_mean[c]) / sqrt(running_var[c] + eps).
@@ -456,19 +605,20 @@ class InstanceNormFwdOpNoAffine(Op):
 
         orig_shape = x.shape
         x = x.contiguous()
-        x_2d = x.reshape(self.M, self.D)
+        x_2d = x.reshape(M, D)
 
-        if self.D_padded != self.D:
-            x_2d = F.pad(x_2d, (0, self.D_padded - self.D))
-        if self.M_padded != self.M:
+        if D_padded != D:
+            x_2d = F.pad(x_2d, (0, D_padded - D))
+        if M_padded != M:
             # Pad along dim 0 (M); padded rows are dropped after the kernel.
-            x_2d = F.pad(x_2d, (0, 0, 0, self.M_padded - self.M))
+            x_2d = F.pad(x_2d, (0, 0, 0, M_padded - M))
 
-        y_2d = self.kernel(x_2d)
+        kernel = self._get_kernel(M_padded, D, dtype, x.device.index)
+        y_2d = kernel(x_2d)
 
-        if self.M_padded != self.M:
-            y_2d = y_2d[:self.M, :]
-        if self.D_padded != self.D:
-            y_2d = y_2d[:, :self.D]
+        if M_padded != M:
+            y_2d = y_2d[:M, :]
+        if D_padded != D:
+            y_2d = y_2d[:, :D]
 
         return y_2d.reshape(orig_shape)

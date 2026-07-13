@@ -65,10 +65,7 @@ def test_group_norm_bench(n: int, c: int, spatial: tuple, num_groups: int,
     test = GroupNormTest(n, c, spatial, num_groups, dtype)
     x, weight, bias = test.gen_inputs()
 
-    op = GroupNormFwdOp(
-        N=n, C=c, spatial=spatial, num_groups=num_groups,
-        dtype=dtype, tune=tune,
-    )
+    op = GroupNormFwdOp(num_groups=num_groups, tune=tune)
     bm = GroupNormBenchmark(test, op)
     result = bm.profile(op, x, weight, bias)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -89,10 +86,7 @@ def test_group_norm_no_affine_bench(n: int, c: int, spatial: tuple,
     test = GroupNormTest(n, c, spatial, num_groups, dtype)
     x, _, _ = test.gen_inputs()
 
-    op = GroupNormFwdOpNoAffine(
-        N=n, C=c, spatial=spatial, num_groups=num_groups,
-        dtype=dtype, tune=tune,
-    )
+    op = GroupNormFwdOpNoAffine(num_groups=num_groups, tune=tune)
     bm = GroupNormBenchmark(test, op)
     result = bm.profile(op, x)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

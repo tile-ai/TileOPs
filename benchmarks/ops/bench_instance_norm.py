@@ -59,7 +59,7 @@ def test_instance_norm_bench(n: int, c: int, spatial: tuple,
     test = InstanceNormTest(n, c, spatial, dtype)
     x, weight, bias = test.gen_inputs()
 
-    op = InstanceNormFwdOp(N=n, C=c, spatial=spatial, dtype=dtype, tune=tune)
+    op = InstanceNormFwdOp(tune=tune)
     bm = InstanceNormBenchmark(test, op)
     result = bm.profile(op, x, weight, bias)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -78,9 +78,7 @@ def test_instance_norm_no_affine_bench(n: int, c: int, spatial: tuple,
     test = InstanceNormTest(n, c, spatial, dtype)
     x, _, _ = test.gen_inputs()
 
-    op = InstanceNormFwdOpNoAffine(
-        N=n, C=c, spatial=spatial, dtype=dtype, tune=tune,
-    )
+    op = InstanceNormFwdOpNoAffine(tune=tune)
     bm = InstanceNormBenchmark(test, op)
     # Running stats are required positional args (R16) but ignored on the
     # use_input_stats=True path; pass placeholders.

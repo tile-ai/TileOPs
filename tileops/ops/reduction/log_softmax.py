@@ -4,7 +4,7 @@ Provides:
   - LogSoftmaxFwdOp: y = log_softmax(x, dim)
 
 Example:
-    >>> op = LogSoftmaxFwdOp(N=4096, dtype=torch.float16, dim=-1)
+    >>> op = LogSoftmaxFwdOp(dim=-1)
     >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
     >>> y = op(x)  # shape: (1024, 4096)
 """
@@ -25,19 +25,18 @@ class LogSoftmaxFwdOp(_SoftmaxBaseOp):
     """Log-softmax operator: y = log_softmax(x, dim).
 
     Output has the same shape and dtype as input. The reduction-dim extent
-    ``N`` is committed at construction time per manifest
-    ``static_dims.N = "x.shape[dim]"`` (R20); ``forward()`` validates the
-    actual tensor against the committed value.
+    ``N`` and dtype are inferred from ``x`` during ``forward()``. Optional
+    ``N`` and ``dtype`` constructor arguments are retained as compatibility
+    guards and, when provided, are validated against the input tensor.
 
     Args:
-        N: Reduction-dim size (statically committed at ctor; corresponds to
-            manifest ``static_dims.N = "x.shape[dim]"``).
-        dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default ``None``, matching PyTorch's
             ``torch.nn.functional.log_softmax``). When ``None``, the axis is
             resolved at forward time using PyTorch's implicit-axis rule
             (``0`` for ``ndim in {0, 1, 3}`` else ``1``) and the same
             deprecation ``UserWarning`` is emitted.
+        N: Optional committed reduction-dim size for compatibility.
+        dtype: Optional committed data type for compatibility.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """
@@ -48,8 +47,8 @@ class LogSoftmaxFwdOp(_SoftmaxBaseOp):
 
     def __init__(
         self,
-        N: int,
-        dtype: torch.dtype,
+        N: Optional[int] = None,
+        dtype: Optional[torch.dtype] = None,
         dim: Optional[int] = None,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
