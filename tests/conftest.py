@@ -77,10 +77,7 @@ TILELANG_019_KNOWN_FAILING_NODEIDS = {
     "tests/ops/test_norm_ops.py::TestBatchNormCustomOp::test_bwd_torch_compile_smoke",
 }
 
-TILELANG_019_KNOWN_FAILING_PREFIXES = (
-    "tests/test_autotune.py::test_mha_kernel_autotune",
-    "tests/test_compile.py::test_mha_kernel_compile",
-)
+TILELANG_019_KNOWN_FAILING_PREFIXES = ()
 
 def _get_callspec_params(item: pytest.Item) -> dict | None:
     callspec = getattr(item, "callspec", None)

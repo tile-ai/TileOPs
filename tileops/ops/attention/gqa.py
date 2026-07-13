@@ -303,7 +303,10 @@ class GroupedQueryAttentionFwdOp(Op):
             sm_scale=self.sm_scale,
             softcap=self.softcap,
         )
-        return {"gqa_prefill_fwd_kernel": dense_kernel_cls}
+        return {
+            "gqa_prefill_fwd_kernel": dense_kernel_cls,
+            "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
+        }
 
     @property
     def kernel(self) -> Kernel:
