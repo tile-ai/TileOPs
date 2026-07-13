@@ -1733,7 +1733,11 @@ class SiluAndMulFwdKernel(FusedGatedKernel):
 
     @staticmethod
     def activation_func(x):
-        return x * T.sigmoid(x)
+        # exp2 form (fp32): exp2 lowers to one MUFU.EX2 vs expf's multi-op sequence.
+        g = T.Cast("float32", x)
+        one = T.cast(1.0, "float32")
+        log2e = T.cast(1.4426950408889634, "float32")
+        return g / (one + T.exp2(-g * log2e))
 
 
 class GeluAndMulFwdKernel(FusedGatedKernel):
