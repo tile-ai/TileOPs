@@ -212,6 +212,17 @@ class TestSourcePaths:
                 )
 
 
+class TestManifestRegressions:
+    """Focused checks for manifest/code contract bugs caught in review."""
+
+    def test_gdn_decode_manifest_lists_raw_cuda_kernel(self, all_ops):
+        kernel_map = all_ops["GatedDeltaNetDecodeOp"]["source"]["kernel_map"]
+        assert (
+            kernel_map["GatedDeltaNetDecodeRawCudaFlaStyleKernel"]
+            == "GatedDeltaNetDecodeRawCudaFlaStyleKernel"
+        )
+
+
 class TestManifestAPI:
     """Tests for the programmatic manifest API (tileops.manifest)."""
 

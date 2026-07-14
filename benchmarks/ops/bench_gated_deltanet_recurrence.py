@@ -3,10 +3,14 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
+from benchmarks.ops.attention.manifest_params import manifest_params
+from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetDecodeOp
 from workloads.gated_deltanet import GatedDeltaNetDecodeTest
 from workloads.workload_base import FixtureBase
+
+_OP_NAME = "GatedDeltaNetDecodeOp"
 
 
 def gated_deltanet_decode_torch(
@@ -81,21 +85,14 @@ class GatedDeltaNetDecodeBenchmark(BenchmarkBase[GatedDeltaNetDecodeTest]):
 
 class GatedDeltaNetDecodeBenchFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, dim_k, dim_v, dtype", [
-            (1, 32, 128, 128, torch.float32),
-            (1, 32, 128, 128, torch.bfloat16),
-            (8, 32, 128, 128, torch.float32),
-            (8, 32, 128, 128, torch.bfloat16),
-            (16, 32, 128, 128, torch.float32),
-            (16, 32, 128, 128, torch.bfloat16),
-            (32, 32, 128, 128, torch.float32),
-            (32, 32, 128, 128, torch.bfloat16),
-            (1, 32, 64, 64, torch.float32),
-            (8, 32, 64, 64, torch.float32),
-            (32, 32, 64, 64, torch.float32),
-            (64, 32, 128, 128, torch.float32),
-            (64, 32, 128, 128, torch.bfloat16),
-        ]),
+        (
+            "batch, heads, dim_k, dim_v, dtype, tune",
+            manifest_params(
+                load_workloads(_OP_NAME),
+                lambda w: (w["q_shape"][0], w["q_shape"][1], w["q_shape"][2], w["v_shape"][2]),
+                tune=False,
+            ),
+        ),
     ]
 
 
@@ -106,12 +103,13 @@ def test_gated_deltanet_decode_bench(
     dim_k: int,
     dim_v: int,
     dtype: torch.dtype,
+    tune: bool,
 ) -> None:
     test = _GatedDeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
-    bm = GatedDeltaNetDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = GatedDeltaNetDecodeOp(batch, heads, dim_k, dim_v, dtype)
+    op = GatedDeltaNetDecodeOp(batch, heads, dim_k, dim_v, dtype, tune=tune)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

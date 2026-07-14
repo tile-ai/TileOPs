@@ -183,5 +183,25 @@ def test_gla_decode_vs_fla(
     torch.testing.assert_close(s_tile, s_fla.to(dtype), **tols)
 
 
+@pytest.mark.smoke
+def test_gla_decode_rejects_manifest_shape_mismatch() -> None:
+    op = object.__new__(GLADecodeOp)
+    op.batch = 2
+    op.heads = 3
+    op.dim_k = 4
+    op.dim_v = 5
+    op.scale = -1.0
+    op.dtype = torch.float32
+
+    q = torch.empty(2, 3, 4)
+    k = torch.empty(2, 3, 4)
+    v = torch.empty(2, 3, 5)
+    gk = torch.empty(2, 3, 5)
+    state = torch.empty(2, 3, 4, 5)
+
+    with pytest.raises(ValueError, match="gk must have shape"):
+        op.forward(q, k, v, gk, state)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
