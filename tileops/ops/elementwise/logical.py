@@ -1,12 +1,17 @@
 """Element-wise logical ops (output bool)."""
 
+import torch
+
 from tileops.kernels.elementwise import (
+    LogicalAndBoolStorageFwdKernel,
     LogicalAndFwdKernel,
+    LogicalNotBoolStorageFwdKernel,
     LogicalNotFwdKernel,
+    LogicalOrBoolStorageFwdKernel,
     LogicalOrFwdKernel,
 )
 
-from ._base import UnaryOp, _BoolOutputBinaryOp
+from ._base import UnaryOp, _BoolOutputBinaryOp, _OP_REGISTRY
 
 
 class LogicalAndFwdOp(_BoolOutputBinaryOp):
@@ -14,6 +19,7 @@ class LogicalAndFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "logical_and"
     kernel_cls = LogicalAndFwdKernel
+    bool_storage_kernel_cls = LogicalAndBoolStorageFwdKernel
 
 
 class LogicalOrFwdOp(_BoolOutputBinaryOp):
@@ -21,6 +27,7 @@ class LogicalOrFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "logical_or"
     kernel_cls = LogicalOrFwdKernel
+    bool_storage_kernel_cls = LogicalOrBoolStorageFwdKernel
 
 
 class LogicalNotFwdOp(UnaryOp):
@@ -28,3 +35,45 @@ class LogicalNotFwdOp(UnaryOp):
 
     _op_name = "logical_not"
     kernel_cls = LogicalNotFwdKernel
+    bool_storage_kernel_cls = LogicalNotBoolStorageFwdKernel
+
+    @property
+    def default_kernel_map(self):
+        return {
+            self._op_name: self.kernel_cls,
+            f"{self._op_name}_bool_storage": self.bool_storage_kernel_cls,
+        }
+
+    def __init__(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        strategy=None,
+        kernel_map=None,
+        tune: bool = False,
+    ):
+        if dtype != torch.bool:
+            self._bool_storage = False
+            super().__init__(
+                N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+            )
+            return
+
+        self.N_total = N_total
+        self.dtype = dtype
+        self.strategy = strategy
+        self.dispatch_kernel(kernel_map)
+        self._bool_storage = True
+        self.kernel = self.kernel_map[f"{self._op_name}_bool_storage"](
+            N_total, torch.uint8, strategy=strategy, tune=tune,
+        )
+        self.output_dtype = torch.bool
+        self._instance_key = id(self)
+        _OP_REGISTRY[self._instance_key] = self
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        if self._bool_storage:
+            orig_shape = input.shape
+            flat = input.contiguous().view(-1).view(torch.uint8)
+            return self.kernel(flat).view(torch.bool).reshape(orig_shape)
+        return super()._eager_forward(input)

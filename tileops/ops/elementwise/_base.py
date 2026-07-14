@@ -1163,21 +1163,47 @@ class _AlphaScaledBinaryOp(BinaryOp):
 
 
 class _BoolOutputBinaryOp(BinaryOp):
-    """Binary op base whose kernel emits int8 (1/0) and whose Op output is bool.
+    """Binary op base whose public output dtype is bool."""
 
-    TileLang cannot vectorize bool, so the kernel produces int8. The Op
-    casts to ``torch.bool`` after the kernel call. ``register_fake``
-    already declares ``torch.bool`` as the output dtype, so the
-    ``torch.compile`` path stays consistent.
-    """
+    bool_storage_kernel_cls: Optional[type] = None
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        kernel_map = {self._op_name: self.kernel_cls}
+        if self.bool_storage_kernel_cls is not None:
+            kernel_map[f"{self._op_name}_bool_storage"] = self.bool_storage_kernel_cls
+        return kernel_map
+
+    def _build_kernel_instance(
+        self, coalesced_shape, a_strides, b_strides, strategy, tune,
+    ):
+        self._bool_storage = (
+            self.dtype == torch.bool and self.bool_storage_kernel_cls is not None
+        )
+        if self._bool_storage:
+            return self.kernel_map[f"{self._op_name}_bool_storage"](
+                self.N_total, torch.uint8, coalesced_shape, a_strides, b_strides,
+                self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+            )
+        return super()._build_kernel_instance(
+            coalesced_shape, a_strides, b_strides, strategy, tune,
+        )
 
     def _eager_forward(
         self,
         input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
         other: torch.Tensor,
     ) -> torch.Tensor:
+        if getattr(self, "_bool_storage", False):
+            result = self.kernel(
+                input.contiguous().view(-1).view(torch.uint8),
+                other.contiguous().view(-1).view(torch.uint8),
+            ).reshape(self.out_shape)
+            return result.view(torch.bool)
         result = super()._eager_forward(input, other)
-        return result.to(torch.bool)
+        if result.dtype is not torch.bool:
+            return result.to(torch.bool)
+        return result
 
 
 _MANIFEST_INT_DTYPES = (

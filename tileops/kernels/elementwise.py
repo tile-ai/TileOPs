@@ -78,6 +78,7 @@ __all__ = [
     "TanhFwdKernel",
     # --- unary: logical / bitwise (2) ---
     "BitwiseNotFwdKernel",
+    "LogicalNotBoolStorageFwdKernel",
     "LogicalNotFwdKernel",
     # --- unary: special predicates (3) ---
     "IsfiniteFwdKernel",
@@ -95,15 +96,23 @@ __all__ = [
     "LerpFwdKernel",
     "MaximumFwdKernel",
     "MinimumFwdKernel",
-    # --- comparison (OUTPUT_DTYPE = torch.int8, cast to bool by Op layer) ---
+    # --- comparison (OUTPUT_DTYPE = torch.bool) ---
+    "EqBoolStorageFwdKernel",
     "EqFwdKernel",
-    "NeFwdKernel",
-    "GtFwdKernel",
-    "LtFwdKernel",
+    "GeBoolStorageFwdKernel",
     "GeFwdKernel",
+    "GtBoolStorageFwdKernel",
+    "GtFwdKernel",
+    "LeBoolStorageFwdKernel",
     "LeFwdKernel",
-    # --- logical (OUTPUT_DTYPE = torch.int8, cast to bool by Op layer) ---
+    "LtFwdKernel",
+    "LtBoolStorageFwdKernel",
+    "NeBoolStorageFwdKernel",
+    "NeFwdKernel",
+    # --- logical (OUTPUT_DTYPE = torch.bool) ---
+    "LogicalAndBoolStorageFwdKernel",
     "LogicalAndFwdKernel",
+    "LogicalOrBoolStorageFwdKernel",
     "LogicalOrFwdKernel",
     # --- bitwise ---
     "BitwiseAndFwdKernel",
@@ -679,9 +688,21 @@ class UnaryKernel(Kernel):
             self.output_dtype = torch.float16
         else:
             self.output_dtype = self.OUTPUT_DTYPE or dtype
+        # torch.bool maps to TileLang ``boolx<N>`` for vectorised loads, which
+        # the CUDA codegen cannot lower. Keep bool inputs on the scalar path.
+        if dtype == torch.bool:
+            if strategy is not None and strategy != "direct":
+                warnings.warn(
+                    f"UnaryKernel: dtype=torch.bool requires strategy="
+                    f"'direct' (TileLang cannot lower vectorised boolx<N> "
+                    f"loads); overriding requested strategy={strategy!r}.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            self.strategy = "direct"
         # fp8: register_copy may not reliably handle 8-bit fragments;
         # default to explicit_parallel for fp8 dtypes
-        if strategy is None and _is_fp8(dtype):
+        elif strategy is None and _is_fp8(dtype):
             self.strategy = "explicit_parallel"
         else:
             self.strategy = strategy or self.DEFAULT_STRATEGY
@@ -869,6 +890,7 @@ class BinaryKernel(Kernel):
         # stores, which the CUDA codegen cannot lower. Force the scalar
         # ``direct`` strategy for bool inputs regardless of caller request.
         bool_input = dtype == torch.bool
+        bool_output = self.OUTPUT_DTYPE == torch.bool
         if bool_input:
             if strategy is not None and strategy != "direct":
                 warnings.warn(
@@ -883,11 +905,11 @@ class BinaryKernel(Kernel):
             # register_copy requires same-shape contiguous inputs (no
             # broadcast); silently downgrade to explicit_parallel when
             # the caller requests register_copy on broadcast shapes.
-            if strategy == "register_copy" and not self._same_shape:
+            if strategy == "register_copy" and (not self._same_shape or bool_output):
                 self.strategy = "explicit_parallel"
             else:
                 self.strategy = strategy
-        elif self._same_shape:
+        elif self._same_shape and not bool_output:
             # register_copy gives vectorized 128-bit loads, ~2-3x faster
             # for complex op_funcs that block TVM's auto-vectorizer.
             self.strategy = "register_copy"
@@ -1187,16 +1209,38 @@ class FloatUnaryKernel(UnaryKernel):
 class FloatPredicateKernel(FloatUnaryKernel):
     """Unary kernel base for float predicates with bool output."""
 
-    DEFAULT_STRATEGY = "direct"
+    DEFAULT_STRATEGY = "explicit_parallel"
     OUTPUT_DTYPE = torch.bool
 
 
 class LogicalUnaryKernel(UnaryKernel):
     """Unary kernel base for logical predicates with bool output."""
 
-    DEFAULT_STRATEGY = "direct"
+    DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
+
+
+class _Uint8StorageUnaryKernel(UnaryKernel):
+    """Unary bool-storage kernel: public bool tensors are viewed as uint8."""
+
+    DEFAULT_STRATEGY = "register_copy"
+    SUPPORTED_DTYPES = (torch.uint8,)
+
+    @property
+    def default_config(self) -> dict:
+        return {"threads": 256, "num_per_thread": 16}
+
+
+class _Uint8StorageBinaryKernel(BinaryKernel):
+    """Binary bool-storage kernel: public bool tensors are viewed as uint8."""
+
+    DEFAULT_STRATEGY = "explicit_parallel"
+    SUPPORTED_DTYPES = (torch.uint8,)
+
+    @property
+    def default_config(self) -> dict:
+        return {"threads": 256, "num_per_thread": 16}
 
 
 class ReluFwdKernel(FloatUnaryKernel):
@@ -1569,121 +1613,185 @@ class MinimumFwdKernel(BinaryKernel):
 
 
 # ---------------------------------------------------------------------------
-# Comparison kernel subclasses (output int8: 1/0 flags, cast to bool in Op layer)
+# Comparison kernel subclasses (bool output)
 # ---------------------------------------------------------------------------
 
 
 class EqFwdKernel(BinaryKernel):
-    """Element-wise equality: y = (a == b), stored as int8 (1/0)."""
+    """Element-wise equality: y = (a == b)."""
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
-    OUTPUT_DTYPE = torch.int8
+    OUTPUT_DTYPE = torch.bool
+    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
-        one = T.IntImm("int8", 1)
-        zero = T.IntImm("int8", 0)
-        return T.if_then_else(a == b, one, zero)
+        return a == b
+
+
+class EqBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+    """Element-wise equality on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.bitwise_xor(T.bitwise_xor(a, b), T.cast(1, "uint8"))
 
 
 class NeFwdKernel(BinaryKernel):
-    """Element-wise not-equal: y = (a != b), stored as int8 (1/0)."""
+    """Element-wise not-equal: y = (a != b)."""
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
-    OUTPUT_DTYPE = torch.int8
+    OUTPUT_DTYPE = torch.bool
+    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
-        one = T.IntImm("int8", 1)
-        zero = T.IntImm("int8", 0)
-        return T.if_then_else(a != b, one, zero)
+        return a != b
+
+
+class NeBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+    """Element-wise not-equal on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.bitwise_xor(a, b)
 
 
 class GtFwdKernel(BinaryKernel):
-    """Element-wise greater-than: y = (a > b), stored as int8 (1/0)."""
+    """Element-wise greater-than: y = (a > b)."""
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
-    OUTPUT_DTYPE = torch.int8
+    OUTPUT_DTYPE = torch.bool
+    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
-        one = T.IntImm("int8", 1)
-        zero = T.IntImm("int8", 0)
-        return T.if_then_else(a > b, one, zero)
+        return a > b
+
+
+class GtBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+    """Element-wise greater-than on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.if_then_else(
+            a > b, T.cast(1, "uint8"), T.cast(0, "uint8"),
+        )
 
 
 class LtFwdKernel(BinaryKernel):
-    """Element-wise less-than: y = (a < b), stored as int8 (1/0)."""
+    """Element-wise less-than: y = (a < b)."""
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
-    OUTPUT_DTYPE = torch.int8
+    OUTPUT_DTYPE = torch.bool
+    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
-        one = T.IntImm("int8", 1)
-        zero = T.IntImm("int8", 0)
-        return T.if_then_else(a < b, one, zero)
+        return a < b
+
+
+class LtBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+    """Element-wise less-than on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.if_then_else(
+            a < b, T.cast(1, "uint8"), T.cast(0, "uint8"),
+        )
 
 
 class GeFwdKernel(BinaryKernel):
-    """Element-wise greater-equal: y = (a >= b), stored as int8 (1/0)."""
+    """Element-wise greater-equal: y = (a >= b)."""
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
-    OUTPUT_DTYPE = torch.int8
+    OUTPUT_DTYPE = torch.bool
+    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
-        one = T.IntImm("int8", 1)
-        zero = T.IntImm("int8", 0)
-        return T.if_then_else(a >= b, one, zero)
+        return a >= b
+
+
+class GeBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+    """Element-wise greater-equal on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.if_then_else(
+            a >= b, T.cast(1, "uint8"), T.cast(0, "uint8"),
+        )
 
 
 class LeFwdKernel(BinaryKernel):
-    """Element-wise less-equal: y = (a <= b), stored as int8 (1/0)."""
+    """Element-wise less-equal: y = (a <= b)."""
 
     SUPPORTED_DTYPES = _BINARY_FULL_DTYPES
-    OUTPUT_DTYPE = torch.int8
+    OUTPUT_DTYPE = torch.bool
+    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
-        one = T.IntImm("int8", 1)
-        zero = T.IntImm("int8", 0)
-        return T.if_then_else(a <= b, one, zero)
+        return a <= b
+
+
+class LeBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+    """Element-wise less-equal on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.if_then_else(
+            a <= b, T.cast(1, "uint8"), T.cast(0, "uint8"),
+        )
 
 
 # ---------------------------------------------------------------------------
-# Logical kernel subclasses (output int8: 1/0-encoded logical values)
+# Logical kernel subclasses (bool output)
 # ---------------------------------------------------------------------------
 
 
 class LogicalAndFwdKernel(BinaryKernel):
-    """Element-wise logical AND with non-zero truthiness, stored as int8."""
+    """Element-wise logical AND with non-zero truthiness."""
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
-    OUTPUT_DTYPE = torch.int8
+    OUTPUT_DTYPE = torch.bool
+    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
-        one = T.IntImm("int8", 1)
-        zero = T.IntImm("int8", 0)
         a_nonzero = a != T.cast(0, a.dtype)
         b_nonzero = b != T.cast(0, b.dtype)
-        return T.if_then_else(a_nonzero & b_nonzero, one, zero)
+        return a_nonzero & b_nonzero
+
+
+class LogicalAndBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+    """Element-wise logical AND on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.bitwise_and(a, b)
 
 
 class LogicalOrFwdKernel(BinaryKernel):
-    """Element-wise logical OR with non-zero truthiness, stored as int8."""
+    """Element-wise logical OR with non-zero truthiness."""
 
     SUPPORTED_DTYPES = _LOGICAL_DTYPES
-    OUTPUT_DTYPE = torch.int8
+    OUTPUT_DTYPE = torch.bool
+    DEFAULT_STRATEGY = "explicit_parallel"
 
     @staticmethod
     def op_func(a, b):
-        one = T.IntImm("int8", 1)
-        zero = T.IntImm("int8", 0)
         a_nonzero = a != T.cast(0, a.dtype)
         b_nonzero = b != T.cast(0, b.dtype)
-        return T.if_then_else(a_nonzero | b_nonzero, one, zero)
+        return a_nonzero | b_nonzero
+
+
+class LogicalOrBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+    """Element-wise logical OR on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.bitwise_or(a, b)
 
 
 # ---------------------------------------------------------------------------
@@ -2065,6 +2173,14 @@ class LogicalNotFwdKernel(LogicalUnaryKernel):
     @staticmethod
     def op_func(x):
         return x == T.cast(0, x.dtype)
+
+
+class LogicalNotBoolStorageFwdKernel(_Uint8StorageUnaryKernel):
+    """Element-wise logical NOT on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(x):
+        return T.bitwise_xor(x, T.cast(1, "uint8"))
 
 
 class BitwiseNotFwdKernel(UnaryKernel):
