@@ -11,7 +11,7 @@ from tileops.kernels.elementwise import (
     LogicalOrFwdKernel,
 )
 
-from ._base import UnaryOp, _BoolOutputBinaryOp, _OP_REGISTRY
+from ._base import UnaryOp, _BoolOutputBinaryOp
 
 
 class LogicalAndFwdOp(_BoolOutputBinaryOp):
@@ -59,17 +59,12 @@ class LogicalNotFwdOp(UnaryOp):
             )
             return
 
-        self.N_total = N_total
-        self.dtype = dtype
-        self.strategy = strategy
-        self.dispatch_kernel(kernel_map)
+        self._prepare_unary_instance(N_total, dtype, strategy, kernel_map)
         self._bool_storage = True
         self.kernel = self.kernel_map[f"{self._op_name}_bool_storage"](
             N_total, torch.uint8, strategy=strategy, tune=tune,
         )
-        self.output_dtype = torch.bool
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
+        self._finish_unary_instance(output_dtype=torch.bool)
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
         if self._bool_storage:

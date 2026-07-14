@@ -890,13 +890,27 @@ class BinaryKernel(Kernel):
         # stores, which the CUDA codegen cannot lower. Force the scalar
         # ``direct`` strategy for bool inputs regardless of caller request.
         bool_input = dtype == torch.bool
-        bool_output = self.OUTPUT_DTYPE == torch.bool
+        bool_output = torch.bool == self.OUTPUT_DTYPE
+        bool_output_needs_scalar = bool_output and dtype in (
+            torch.uint8, torch.int8, torch.int16,
+        )
         if bool_input:
             if strategy is not None and strategy != "direct":
                 warnings.warn(
                     f"BinaryKernel: dtype=torch.bool requires strategy="
                     f"'direct' (TileLang cannot lower vectorised boolx<N> "
                     f"loads); overriding requested strategy={strategy!r}.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            self.strategy = "direct"
+        elif bool_output_needs_scalar:
+            if strategy is not None and strategy != "direct":
+                warnings.warn(
+                    f"BinaryKernel: dtype={dtype} with torch.bool output "
+                    f"requires strategy='direct' (TileLang cannot lower "
+                    f"vectorised boolx<N> stores for sub-32-bit integer "
+                    f"inputs); overriding requested strategy={strategy!r}.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
@@ -1674,9 +1688,7 @@ class GtBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 
     @staticmethod
     def op_func(a, b):
-        return T.if_then_else(
-            a > b, T.cast(1, "uint8"), T.cast(0, "uint8"),
-        )
+        return T.bitwise_and(a, T.bitwise_xor(b, T.cast(1, "uint8")))
 
 
 class LtFwdKernel(BinaryKernel):
@@ -1696,9 +1708,7 @@ class LtBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 
     @staticmethod
     def op_func(a, b):
-        return T.if_then_else(
-            a < b, T.cast(1, "uint8"), T.cast(0, "uint8"),
-        )
+        return T.bitwise_and(T.bitwise_xor(a, T.cast(1, "uint8")), b)
 
 
 class GeFwdKernel(BinaryKernel):
@@ -1718,9 +1728,7 @@ class GeBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 
     @staticmethod
     def op_func(a, b):
-        return T.if_then_else(
-            a >= b, T.cast(1, "uint8"), T.cast(0, "uint8"),
-        )
+        return T.bitwise_or(a, T.bitwise_xor(b, T.cast(1, "uint8")))
 
 
 class LeFwdKernel(BinaryKernel):
@@ -1740,9 +1748,7 @@ class LeBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
 
     @staticmethod
     def op_func(a, b):
-        return T.if_then_else(
-            a <= b, T.cast(1, "uint8"), T.cast(0, "uint8"),
-        )
+        return T.bitwise_or(T.bitwise_xor(a, T.cast(1, "uint8")), b)
 
 
 # ---------------------------------------------------------------------------

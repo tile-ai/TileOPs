@@ -643,17 +643,33 @@ class UnaryOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        self._prepare_unary_instance(N_total, dtype, strategy, kernel_map)
+        self.kernel = self.kernel_map[self._op_name](
+            N_total, dtype, strategy=strategy, tune=tune,
+        )
+        self._finish_unary_instance()
+
+    def _prepare_unary_instance(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        strategy: Optional[str],
+        kernel_map: Optional[Dict[str, Kernel]],
+    ) -> None:
         self.N_total = N_total
         self.dtype = dtype
         self.strategy = strategy
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            N_total, dtype, strategy=strategy, tune=tune,
-        )
+
+    def _finish_unary_instance(
+        self, output_dtype: Optional[torch.dtype] = None,
+    ) -> None:
         # Use _fp8_output_dtype (the final dtype after Op-layer post-cast)
         # rather than kernel.output_dtype (which is fp16 for e5m2).
         fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        self.output_dtype = fp8_out or getattr(self.kernel, "output_dtype", dtype)
+        self.output_dtype = output_dtype or fp8_out or getattr(
+            self.kernel, "output_dtype", self.dtype,
+        )
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -1198,8 +1214,8 @@ class _BoolOutputBinaryOp(BinaryOp):
             result = self.kernel(
                 input.contiguous().view(-1).view(torch.uint8),
                 other.contiguous().view(-1).view(torch.uint8),
-            ).reshape(self.out_shape)
-            return result.view(torch.bool)
+            )
+            return result.view(torch.bool).reshape(self.out_shape)
         result = super()._eager_forward(input, other)
         if result.dtype is not torch.bool:
             return result.to(torch.bool)
