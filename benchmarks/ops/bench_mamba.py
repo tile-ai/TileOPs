@@ -105,10 +105,10 @@ class DaCumsumFwdBenchmark(BenchmarkBase[DaCumsumFwdWorkload]):
 
 
 @DaCumsumFwdFixture
-def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, tune):
+def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune):
     test = DaCumsumFwdWorkload(
         batch, num_chunks, chunk_len, n_heads,
-        has_dt_bias=has_dt_bias, dt_softplus=dt_softplus,
+        has_dt_bias=has_dt_bias, dt_softplus=dt_softplus, dtype=dtype,
     )
     bm = DaCumsumFwdBenchmark(test)
     inputs = test.gen_inputs()  # (dt_raw, A, dt_bias)
@@ -118,6 +118,7 @@ def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, has_dt_bias,
         seq_len=num_chunks * chunk_len,
         has_dt_bias=has_dt_bias,
         dt_softplus=dt_softplus,
+        dtype=dtype,
         tune=tune,
     )
     result = bm.profile(op, *inputs)

@@ -90,6 +90,7 @@ def cb_producer_fwd_ref(
     pytest.param(1, 2, 64, 1, 64, torch.float16,  False, marks=pytest.mark.smoke),
     pytest.param(1, 2, 64, 1, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
     pytest.param(1, 2, 64, 2, 64, torch.float16,  False, marks=pytest.mark.smoke),
+    pytest.param(1, 2, 64, 1, 64, torch.float16,  True,  marks=pytest.mark.smoke),
     pytest.param(1, 2, 64, 1, 96, torch.float16,  False, marks=pytest.mark.full),
     pytest.param(1, 2, 128, 1, 64, torch.bfloat16, False, marks=pytest.mark.full),
     pytest.param(1, 2, 256, 1, 64, torch.float16,  False, marks=pytest.mark.full),
