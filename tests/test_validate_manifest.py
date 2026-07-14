@@ -4678,6 +4678,41 @@ class TestStrictParityC5Dispatch:
             "BranchOp", {}, BranchOp,
         ) == []
 
+    def test_dispatch_kernel_call_in_helper_detected(self, validator):
+        """S13 walker follows class-local helpers called from __init__."""
+        from tileops.ops.op_base import Op
+
+        class HelperOp(Op):
+            def __init__(self, kernel_map=None):
+                self._prepare(kernel_map)
+            def _prepare(self, kernel_map=None):
+                self.dispatch_kernel(kernel_map)
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        assert validator.check_c5_dispatch_kernel_invariant(
+            "HelperOp", {}, HelperOp,
+        ) == []
+
+    def test_unhashable_helper_attribute_is_advisory(self, validator):
+        """S13 walker does not crash on unhashable self.<attr>() targets."""
+        from tileops.ops.op_base import Op
+
+        class UnhashableHelperAttrOp(Op):
+            _prepare = []
+            def __init__(self, kernel_map=None):
+                self._prepare(kernel_map)
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        warnings = []
+        assert validator.check_c5_dispatch_kernel_invariant(
+            "UnhashableHelperAttrOp", {}, UnhashableHelperAttrOp, warnings=warnings,
+        ) == []
+        assert any("S13 advisory" in warning for warning in warnings), warnings
+
 
 class TestStrictParityC6C7Stub:
     """C6 / C7: _validate_dtypes / eval_roofline must not be base stubs."""

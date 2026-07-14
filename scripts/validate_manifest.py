@@ -3208,7 +3208,7 @@ _MISSING = object()
 def _init_calls_dispatch_kernel(cls: type) -> "bool | None":
     """Return True if ``cls.__init__`` body either calls
     ``self.dispatch_kernel(...)`` directly or delegates via
-    ``super().__init__(...)``.
+    ``super().__init__(...)`` / a ``self.<helper>(...)`` method.
 
     ``None`` means we could not parse the source (built-in / dynamically
     generated ``__init__``); the caller treats that as inconclusive.
@@ -3219,34 +3219,58 @@ def _init_calls_dispatch_kernel(cls: type) -> "bool | None":
     ``super().__init__(...)`` satisfies S13 transitively — the parent's
     body owns the dispatch call. No runtime construction; no GPU.
     """
-    try:
-        src = inspect.getsource(cls.__init__)
-    except (OSError, TypeError):
-        return None
-    try:
-        tree = ast.parse(textwrap.dedent(src))
-    except SyntaxError:
-        return None
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-            continue
-        # self.dispatch_kernel(...)
-        if (
-            node.func.attr == "dispatch_kernel"
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "self"
-        ):
-            return True
-        # super().__init__(...): delegates to the parent's body which is
-        # expected to honor S13 itself.
-        if (
-            node.func.attr == "__init__"
-            and isinstance(node.func.value, ast.Call)
-            and isinstance(node.func.value.func, ast.Name)
-            and node.func.value.func.id == "super"
-        ):
-            return True
-    return False
+    def _body_calls_dispatch(fn, seen: set[int]) -> "bool | None":
+        key = id(fn)
+        if key in seen:
+            return False
+        seen.add(key)
+        try:
+            src = inspect.getsource(fn)
+        except (OSError, TypeError):
+            return None
+        try:
+            tree = ast.parse(textwrap.dedent(src))
+        except SyntaxError:
+            return None
+
+        inconclusive = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            # self.dispatch_kernel(...)
+            if (
+                node.func.attr == "dispatch_kernel"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "self"
+            ):
+                return True
+            # super().__init__(...): delegates to the parent's body which is
+            # expected to honor S13 itself.
+            if (
+                node.func.attr == "__init__"
+                and isinstance(node.func.value, ast.Call)
+                and isinstance(node.func.value.func, ast.Name)
+                and node.func.value.func.id == "super"
+            ):
+                return True
+            # self.<helper>(...): follow class-local helper methods such as
+            # UnaryOp._prepare_unary_instance without constructing the Op.
+            if (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "self"
+                and node.func.attr != "__init__"
+            ):
+                helper = getattr(cls, node.func.attr, None)
+                if helper is None:
+                    continue
+                helper_result = _body_calls_dispatch(inspect.unwrap(helper), seen)
+                if helper_result is True:
+                    return True
+                if helper_result is None:
+                    inconclusive = True
+        return None if inconclusive else False
+
+    return _body_calls_dispatch(inspect.unwrap(cls.__init__), set())
 
 
 def check_c3_ctor_signature_parity(
