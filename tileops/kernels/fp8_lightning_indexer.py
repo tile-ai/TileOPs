@@ -116,9 +116,9 @@ def _fp8_lightning_indexer_kernel(batch,
                         for g in T.Serial(kv_group):
                             for bn_i, d_i in T.Parallel(block_N, index_dim):
                                 index_k_group_shared[bn_i, d_i] = index_k_shared[bn_i, g, d_i]  #
-                            for i, d in T.Parallel(block_Q * heads_per_group, index_dim):
-                                index_q_group_shared[i, d] = index_q_shared[g * heads_per_group +
-                                                                            i, d]  #
+                            for bq_i, h_i, d_i in T.Parallel(block_Q, heads_per_group, index_dim):
+                                index_q_group_shared[bq_i * heads_per_group + h_i, d_i] = (
+                                    index_q_shared[bq_i * heads + g * heads_per_group + h_i, d_i])
                             T.gemm(
                                 index_k_group_shared,
                                 index_q_group_shared,
