@@ -43,11 +43,26 @@ GatedDeltaNetPrefillFwdOp:
       - "chunk_size is None or S % chunk_size == 0"
 
   workloads:
-    # Serving-oriented BTHD rows, matching FLA/Qwen inference prefill.
-    - {q_shape: [1, 512, 16, 128], k_shape: [1, 512, 16, 128], v_shape: [1, 512, 16, 128], g_shape: [1, 512, 16], beta_shape: [1, 512, 16], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b1-s512-h16-d128"}
-    - {q_shape: [4, 2048, 16, 64], k_shape: [4, 2048, 16, 64], v_shape: [4, 2048, 16, 128], g_shape: [4, 2048, 16], beta_shape: [4, 2048, 16], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b4-s2k-h16-dk64-dv128"}
-    - {q_shape: [1, 2048, 16, 128], k_shape: [1, 2048, 16, 128], v_shape: [1, 2048, 16, 128], g_shape: [1, 2048, 16], beta_shape: [1, 2048, 16], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b1-s2k-h16-d128"}
-    - {q_shape: [1, 8192, 16, 128], k_shape: [1, 8192, 16, 128], v_shape: [1, 8192, 16, 128], g_shape: [1, 8192, 16], beta_shape: [1, 8192, 16], chunk_size: 64, dtypes: [float16, bfloat16], label: "gdn-prefill-b1-s8k-h16-d128"}
+    # Small fallback row for environments without FLA. The benchmark uses the
+    # pure-torch reference only up to S=4096; the long-context Qwen rows below
+    # require FLA as their independent baseline.
+    - {q_shape: [1, 4096, 16, 128], k_shape: [1, 4096, 16, 128], v_shape: [1, 4096, 16, 128], g_shape: [1, 4096, 16], beta_shape: [1, 4096, 16], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "fallback-gdn-prefill-b1-s4k-h16-d128-bthd"}
+
+    # Qwen3.5-aligned inference prefill rows using the public FLA BTHD
+    # contract. Tests use smaller branch-covering shapes in tests/ops; these
+    # rows are intentionally long-context benchmark coverage.
+    - {q_shape: [1, 32768, 16, 128], k_shape: [1, 32768, 16, 128], v_shape: [1, 32768, 16, 128], g_shape: [1, 32768, 16], beta_shape: [1, 32768, 16], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s32k-h16-d128-bthd"}
+    - {q_shape: [1, 65536, 16, 128], k_shape: [1, 65536, 16, 128], v_shape: [1, 65536, 16, 128], g_shape: [1, 65536, 16], beta_shape: [1, 65536, 16], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s64k-h16-d128-bthd"}
+    - {q_shape: [1, 131072, 16, 128], k_shape: [1, 131072, 16, 128], v_shape: [1, 131072, 16, 128], g_shape: [1, 131072, 16], beta_shape: [1, 131072, 16], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s128k-h16-d128-bthd"}
+    - {q_shape: [1, 32768, 32, 128], k_shape: [1, 32768, 32, 128], v_shape: [1, 32768, 32, 128], g_shape: [1, 32768, 32], beta_shape: [1, 32768, 32], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s32k-h32-d128-bthd"}
+    - {q_shape: [1, 65536, 32, 128], k_shape: [1, 65536, 32, 128], v_shape: [1, 65536, 32, 128], g_shape: [1, 65536, 32], beta_shape: [1, 65536, 32], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s64k-h32-d128-bthd"}
+    - {q_shape: [1, 131072, 32, 128], k_shape: [1, 131072, 32, 128], v_shape: [1, 131072, 32, 128], g_shape: [1, 131072, 32], beta_shape: [1, 131072, 32], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s128k-h32-d128-bthd"}
+    - {q_shape: [1, 32768, 48, 128], k_shape: [1, 32768, 48, 128], v_shape: [1, 32768, 48, 128], g_shape: [1, 32768, 48], beta_shape: [1, 32768, 48], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s32k-h48-d128-bthd"}
+    - {q_shape: [1, 65536, 48, 128], k_shape: [1, 65536, 48, 128], v_shape: [1, 65536, 48, 128], g_shape: [1, 65536, 48], beta_shape: [1, 65536, 48], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s64k-h48-d128-bthd"}
+    - {q_shape: [1, 131072, 48, 128], k_shape: [1, 131072, 48, 128], v_shape: [1, 131072, 48, 128], g_shape: [1, 131072, 48], beta_shape: [1, 131072, 48], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s128k-h48-d128-bthd"}
+    - {q_shape: [1, 32768, 64, 128], k_shape: [1, 32768, 64, 128], v_shape: [1, 32768, 64, 128], g_shape: [1, 32768, 64], beta_shape: [1, 32768, 64], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s32k-h64-d128-bthd"}
+    - {q_shape: [1, 65536, 64, 128], k_shape: [1, 65536, 64, 128], v_shape: [1, 65536, 64, 128], g_shape: [1, 65536, 64], beta_shape: [1, 65536, 64], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s64k-h64-d128-bthd"}
+    - {q_shape: [1, 131072, 64, 128], k_shape: [1, 131072, 64, 128], v_shape: [1, 131072, 64, 128], g_shape: [1, 131072, 64], beta_shape: [1, 131072, 64], chunk_size: 64, layout: bthd, dtypes: [float16, bfloat16], label: "qwen35-gdn-prefill-b1-s128k-h64-d128-bthd"}
 
   roofline:
     func: "tileops.perf.formulas.gated_deltanet_prefill_fwd_roofline"
