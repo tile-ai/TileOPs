@@ -25,37 +25,15 @@ Design notes
 * All intermediate tensors remain on-device; no host syncs between sub-ops.
 """
 
-import functools
 from typing import Optional, Tuple
 
 import torch
 
+from .cb_producer import CBProducerOp
 from .da_cumsum import DaCumsumFwdOp
 from .ssd_chunk_scan import SSDChunkScanFwdOp
 from .ssd_chunk_state import SSDChunkStateFwdOp
 from .ssd_state_passing import SSDStatePassingFwdOp
-
-
-@functools.lru_cache(maxsize=32)
-def _get_cb_fn(dtype: torch.dtype):
-    """Return a torch.compile-fused CB-matrix builder.
-
-    Computes the causal C@B coupling matrix for one group:
-      cb[b, c, g, l, s] = C[b, c*Q+l, g, :] @ B[b, c*Q+s, g, :]^T,  for s <= l
-                         = 0                                           for s > l
-
-    This is a lower-triangular batched outer product in state-space dimension N,
-    matching _bmm_chunk_fwd from mamba_ssm. The kernel then multiplies cb by
-    exp(dA[l] - dA[s]) * dt[s] — so cb must not include any decay factor.
-    """
-    def _build_cb(C_g: torch.Tensor, B_g: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        # C_g, B_g: (B, C, G, Q, N)  in storage dtype
-        # mask:     (1, 1, 1, Q, Q)  lower-triangular bool
-        cb = torch.einsum("bcgln,bcgsn->bcgls", C_g.float(), B_g.float())  # (B, C, G, Q, Q)
-        return torch.where(mask, cb, 0.0).to(dtype)
-
-    return torch.compile(_build_cb, fullgraph=True)
-
 
 __all__ = ["Mamba2FwdOp"]
 
@@ -121,6 +99,7 @@ class Mamba2FwdOp:
             chunk_len=chunk_size,
             n_heads=n_heads,
             seq_len=seqlen,
+            dtype=dtype,
             dt_softplus=dt_softplus,
             has_dt_bias=True,   # always pass dt_bias; caller passes zeros if unused
             tune=tune,
@@ -164,11 +143,16 @@ class Mamba2FwdOp:
             tune=tune,
         )
 
-        # Causal mask for CB construction — lower-triangular (Q, Q), broadcast
-        # over (B, C, G, Q, Q).  Allocated once; moved to GPU on first forward.
-        mask = torch.ones(chunk_size, chunk_size, dtype=torch.bool).tril()
-        self._cb_mask_cpu = mask
-        self._cb_fn = _get_cb_fn(dtype)  # compiled fused C@B kernel
+        # CB Producer Op - replaces torch.compile einsum
+        self._cb_producer_op = CBProducerOp(
+            batch=batch,
+            num_chunks=num_chunks,
+            n_groups=n_groups,
+            chunk_len=chunk_size,
+            d_state=d_state,
+            dtype=dtype,
+            tune=tune,
+        )
 
         # Pre-allocated zero tensors — avoids FillFunctor kernel launches on the
         # hot path for optional inputs that are commonly omitted.
@@ -184,7 +168,6 @@ class Mamba2FwdOp:
         self._zero_dt_bias: Optional[torch.Tensor]   = None
         self._zero_init_flat: Optional[torch.Tensor] = None
         self._zero_seq_idx: Optional[torch.Tensor]   = None
-        self._cb_mask: Optional[torch.Tensor]        = None
 
     # ------------------------------------------------------------------
     # Forward
@@ -234,22 +217,18 @@ class Mamba2FwdOp:
             self._zero_dt_bias    = self._zero_dt_bias_cpu.to(dev)
             self._zero_init_flat  = self._zero_init_flat_cpu.to(dev)
             self._zero_seq_idx    = self._zero_seq_idx_cpu.to(dev)
-            self._cb_mask         = self._cb_mask_cpu.to(dev).view(1, 1, 1, chunk_size, chunk_size)
         # ── 1. DaCumsum ──────────────────────────────────────────────────────
         if dt_bias is None:
             dt_bias = self._zero_dt_bias
 
         dt_out, dA_cumsum = self._da_cumsum_op.forward(dt, A, dt_bias)
-        # dt_out:    (B, H, C, Q)  float32
+        # dt_out:    (B, H, C, Q)  dtype
         # dA_cumsum: (B, H, C, Q)  float32
 
         # ── 2. CB matrix ─────────────────────────────────────────────────────
         # cb[b,c,g,l,s] = C[b,c*Q+l,g,:] @ B[b,c*Q+s,g,:]^T  for s <= l, else 0.
-        # Reshape seqlen-fused B/C into (B, C, G, Q, N) for the batched matmul.
-        n_groups  = self.n_groups
-        C_chunked = C.reshape(batch, num_chunks, chunk_size, n_groups, d_state).permute(0, 1, 3, 2, 4)  # (B, C, G, Q, N)
-        B_chunked = B.reshape(batch, num_chunks, chunk_size, n_groups, d_state).permute(0, 1, 3, 2, 4)  # (B, C, G, Q, N)
-        cb = self._cb_fn(C_chunked, B_chunked, self._cb_mask)  # (B, C, G, Q, Q)  dtype
+        # Pass contiguous C and B directly to avoid reshape/permute/contiguous overhead
+        cb = self._cb_producer_op.forward(C, B)  # (B, C, G, Q, Q)  dtype (direct output, no cast needed)
 
         # ── 3. SSDChunkState ─────────────────────────────────────────────────
         # Pass pre-allocated seq_idx zeros; avoids a FillFunctor<int> per call.
@@ -260,8 +239,9 @@ class Mamba2FwdOp:
 
         # ── 4. SSDStatePassing ───────────────────────────────────────────────
         chunk_states_flat = chunk_states.reshape(batch, num_chunks, n_heads, d_head * d_state)
-        # Standard slice + clone: contiguous tensor, portable across all PyTorch versions.
-        dA_chunk_cumsum = dA_cumsum[..., chunk_size - 1].clone()  # (B, H, C)
+        # Extract last dA value per chunk - use contiguous() to ensure a contiguous layout
+        # Note: since this is a slice of a 4D tensor, it is non-contiguous and will always copy
+        dA_chunk_cumsum = dA_cumsum[..., chunk_size - 1].contiguous()  # (B, H, C)
 
         if initial_states is None:
             init_flat = self._zero_init_flat
@@ -274,10 +254,10 @@ class Mamba2FwdOp:
 
         # Unflatten to (B, C, H, P, N) in float32 (accum_dtype) for chunk_scan.
         prev_states  = prev_states_flat.reshape(batch, num_chunks, n_heads, d_head, d_state)
-        dt_out_typed = dt_out.to(self.dtype)
+        # dt_out is now in dtype (no cast needed) - DaCumsum outputs typed dt directly
 
         # ── 5. SSDChunkScan ──────────────────────────────────────────────────
-        y = self._chunk_scan_op.forward(x, cb, dA_cumsum, C, prev_states, dt_out_typed)
+        y = self._chunk_scan_op.forward(x, cb, dA_cumsum, C, prev_states, dt_out)
         # y: (B, S, H, P)  float32
 
         if return_final_states:

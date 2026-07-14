@@ -7,8 +7,8 @@ Inputs:
   dt_bias:  (n_heads,)                                  -- optional per-head dt bias (float32)
 
 Outputs:
-  dt_out:    (batch, n_heads, num_chunks, chunk_len)   -- float32, processed dt after bias/softplus/clamp
-  dA_cumsum: (batch, n_heads, num_chunks, chunk_len)   -- float32, inclusive prefix sum of dA = dt_out * A
+  dt_out:    (batch, n_heads, num_chunks, chunk_len)   -- dtype (bf16/fp16), processed dt after bias/softplus/clamp
+  dA_cumsum: (batch, n_heads, num_chunks, chunk_len)   -- float32, inclusive prefix sum of dA = dt_val * A
 
 For each (b, h, c, l), the kernel computes:
 
@@ -16,8 +16,8 @@ For each (b, h, c, l), the kernel computes:
   if has_dt_bias:   dt_val += dt_bias[h]
   if dt_softplus:   dt_val = softplus(dt_val)   # with bypass for dt_val > 20
                     dt_val = clamp(dt_val, dt_min, dt_max)
-  dt_out[b,h,c,l]  = dt_val
-  dA_cumsum[b,h,c,l] = sum_{i=0}^{l} dt_out[b,h,c,i] * A[h]
+  dt_out[b,h,c,l]  = dt_val (cast to dtype for storage efficiency)
+  dA_cumsum[b,h,c,l] = sum_{i=0}^{l} dt_val[b,h,c,i] * A[h]  (computed from fp32 dt_val before casting dt_out)
 
 This matches _chunk_cumsum_fwd_kernel in the Mamba-2 Triton reference
 (mamba_ssm/ops/triton/ssd_chunk_state.py).
@@ -51,6 +51,7 @@ def _da_cumsum_fwd_kernel(
     chunk_len: int,
     n_heads: int,
     seq_len: int,
+    dtype: str,
     dt_softplus: bool = False,
     has_dt_bias: bool = False,
     dt_min: float = 0.0,
@@ -83,8 +84,8 @@ def _da_cumsum_fwd_kernel(
             dt:        T.Tensor((B, S, H), accum_dtype),          # type: ignore  # raw dt input
             A:         T.Tensor((H,),       accum_dtype),           # type: ignore
             dt_bias:   T.Tensor((H,),       accum_dtype),           # type: ignore
-            dt_out:    T.Tensor((B, H, C, Q), accum_dtype),        # type: ignore
-            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),        # type: ignore
+            dt_out:    T.Tensor((B, H, C, Q), dtype),              # type: ignore  # Output in dtype for chunk_scan
+            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),        # type: ignore  # Keep float32 for precision
         ):
             # Grid: one block per (batch, chunk, head-tile).
             # block_h heads are processed together in parallel within each block.
@@ -147,7 +148,7 @@ def _da_cumsum_fwd_kernel(
                 for i, j in T.Parallel(block_h, Q):
                     bh = bh_tile * block_h + i
                     with T.If(bh < H), T.Then():
-                        dt_out[bb, bh, bc, j]    = dt_shared[i, j]
+                        dt_out[bb, bh, bc, j]    = T.cast(dt_shared[i, j], dtype)  # Cast to dtype for storage
                         dA_cumsum[bb, bh, bc, j] = dA_shared[i, j]
 
         return main
@@ -162,6 +163,7 @@ def _da_cumsum_fwd_wrapped(
     chunk_len: int,
     n_heads: int,
     seq_len: int,
+    dtype: str,
     threads: int,
     dt_softplus: bool,
     has_dt_bias: bool,
@@ -173,7 +175,7 @@ def _da_cumsum_fwd_wrapped(
     dt_bias: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     return _da_cumsum_fwd_kernel(
-        batch, num_chunks, chunk_len, n_heads, seq_len,
+        batch, num_chunks, chunk_len, n_heads, seq_len, dtype,
         dt_softplus, has_dt_bias, dt_min, dt_max,
     )(block_h, threads)(dt, A, dt_bias)
 
@@ -185,6 +187,7 @@ def _(
     chunk_len: int,
     n_heads: int,
     seq_len: int,
+    dtype: str,
     threads: int,
     dt_softplus: bool,
     has_dt_bias: bool,
@@ -195,7 +198,10 @@ def _(
     A: torch.Tensor,
     dt_bias: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    dt_out    = dt.new_empty((batch, n_heads, num_chunks, chunk_len), dtype=torch.float32)
+    # Convert dtype string to torch.dtype
+    dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+    torch_dtype = dtype_map.get(dtype, torch.float16)
+    dt_out    = dt.new_empty((batch, n_heads, num_chunks, chunk_len), dtype=torch_dtype)
     dA_cumsum = dt.new_empty((batch, n_heads, num_chunks, chunk_len), dtype=torch.float32)
     return dt_out, dA_cumsum
 
@@ -216,7 +222,7 @@ class DaCumsumFwdKernel(Kernel):
         dt_bias (n_heads,) float32 — per-head dt bias; required when has_dt_bias=True.
 
     Outputs:
-        dt_out    (batch, n_heads, num_chunks, chunk_len) float32 — processed dt.
+        dt_out    (batch, n_heads, num_chunks, chunk_len) dtype — processed dt in target dtype.
         dA_cumsum (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
     """
 
@@ -229,6 +235,7 @@ class DaCumsumFwdKernel(Kernel):
         chunk_len: int,
         n_heads: int,
         seq_len: int,
+        dtype: torch.dtype = torch.float32,
         dt_softplus: bool = False,
         has_dt_bias: bool = False,
         dt_min: float = 0.0,
@@ -246,9 +253,9 @@ class DaCumsumFwdKernel(Kernel):
         self.has_dt_bias = has_dt_bias
         self.dt_min = dt_min
         self.dt_max = dt_max
-        self.dtype = torch.float32
+        self.dtype = dtype
         self.kernel = _da_cumsum_fwd_kernel(
-            batch, num_chunks, chunk_len, n_heads, seq_len,
+            batch, num_chunks, chunk_len, n_heads, seq_len, self.dtype_str,
             dt_softplus, has_dt_bias, dt_min, dt_max,
         )
         self.init_config(config, tune)
@@ -291,7 +298,7 @@ class DaCumsumFwdKernel(Kernel):
                 Required when the kernel was constructed with has_dt_bias=True.
 
         Returns:
-            dt_out: (batch, n_heads, num_chunks, chunk_len) float32 — processed dt.
+            dt_out: (batch, n_heads, num_chunks, chunk_len) dtype — processed dt in target dtype.
             dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
         """
         dt = dt.contiguous()
@@ -303,6 +310,7 @@ class DaCumsumFwdKernel(Kernel):
 
         return _da_cumsum_fwd_wrapped(
             self.batch, self.num_chunks, self.chunk_len, self.n_heads, self.seq_len,
+            self.dtype_str,
             self.config["threads"],
             self.dt_softplus, self.has_dt_bias, self.dt_min, self.dt_max,
             self.config["block_h"],

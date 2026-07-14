@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import TestBase, allclose_compare
+from tileops.ops.cb_producer import CBProducerOp
 from tileops.ops.da_cumsum import DaCumsumFwdOp
 from tileops.ops.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
@@ -11,17 +12,15 @@ from tileops.ops.ssd_decode import SSDDecodeOp
 from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
     DaCumsumFwdFixture,
+    DaCumsumFwdWorkload,
     SSDChunkScanFwdFixture,
+    SSDChunkScanFwdWorkload,
     SSDChunkStateFwdFixture,
+    SSDChunkStateFwdWorkload,
     SSDDecodeFixture,
+    SSDDecodeWorkload,
     SSDStatePassingFwdFixture,
-)
-from workloads.mamba import DaCumsumFwdTest as _DaCumsumFwdTestWorkload
-from workloads.mamba import SSDChunkScanFwdTest as _SSDChunkScanFwdTestWorkload
-from workloads.mamba import SSDChunkStateFwdTest as _SSDChunkStateFwdTestWorkload
-from workloads.mamba import SSDDecodeTest as _SSDDecodeTestWorkload
-from workloads.mamba import (
-    SSDStatePassingFwdTest as _SSDStatePassingFwdTestWorkload,
+    SSDStatePassingFwdWorkload,
 )
 
 
@@ -34,6 +33,7 @@ def da_cumsum_fwd_ref(
     dt_softplus: bool = False,
     dt_min: float = 0.0,
     dt_max: float = float("inf"),
+    dtype: torch.dtype = torch.float32,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """PyTorch reference for da_cumsum_fwd.
 
@@ -41,7 +41,7 @@ def da_cumsum_fwd_ref(
     computes dt_out and the chunk-local inclusive prefix sum of dA = dt_out * A.
 
     Returns:
-        dt_out:    (batch, n_heads, num_chunks, chunk_len) float32
+        dt_out:    (batch, n_heads, num_chunks, chunk_len) dtype — in target dtype
         dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32
     """
     b, S, h = dt.shape
@@ -54,13 +54,76 @@ def da_cumsum_fwd_ref(
         dt_val = F.softplus(dt_val)
     dt_val = torch.clamp(dt_val, min=dt_min, max=dt_max)
     dt_chunked = dt_val.reshape(b, C, Q, h)           # (b, C, Q, h)
-    dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
+    dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous().to(dtype)  # (b, h, C, Q) in target dtype
     dA = dt_chunked * A.float()                        # (b, C, Q, h)
     dA_cumsum = dA.cumsum(dim=2).permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
     return dt_out, dA_cumsum
 
 
-class DaCumsumFwdTest(_DaCumsumFwdTestWorkload, TestBase):
+def cb_producer_fwd_ref(
+    C_mat: torch.Tensor,
+    B_mat: torch.Tensor,
+    num_chunks: int,
+    chunk_len: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """PyTorch reference for cb_producer_fwd.
+
+    Computes the causal C@B coupling matrix:
+    cb[b,c,g,l,s] = C[b,c*Q+l,g,:] @ B[b,c*Q+s,g,:]^T for s <= l, else 0
+
+    Returns:
+        cb: (batch, num_chunks, n_groups, chunk_len, chunk_len) dtype
+    """
+    b, S, G, N = C_mat.shape
+    Q = chunk_len
+    C = num_chunks
+    C_chunked = C_mat.reshape(b, C, Q, G, N)
+    B_chunked = B_mat.reshape(b, C, Q, G, N)
+    cb = torch.einsum("bcqgn,bcsgn->bcgqs", C_chunked.float(), B_chunked.float())
+    mask = torch.tril(torch.ones(Q, Q, device=C_mat.device, dtype=torch.bool))
+    cb = cb * mask.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+    return cb.to(dtype)
+
+
+@pytest.mark.parametrize("batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune", [
+    pytest.param(1, 2, 64, 1, 64, torch.float16,  False, marks=pytest.mark.smoke),
+    pytest.param(1, 2, 64, 1, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
+    pytest.param(1, 2, 64, 2, 64, torch.float16,  False, marks=pytest.mark.smoke),
+    pytest.param(1, 2, 64, 1, 64, torch.float16,  True,  marks=pytest.mark.full),
+    pytest.param(1, 2, 64, 1, 96, torch.float16,  False, marks=pytest.mark.full),
+    pytest.param(1, 2, 128, 1, 64, torch.bfloat16, False, marks=pytest.mark.full),
+    pytest.param(1, 2, 256, 1, 64, torch.float16,  False, marks=pytest.mark.full),
+    pytest.param(2, 4, 64, 4, 128, torch.bfloat16, False, marks=pytest.mark.full),
+])
+def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune):
+    op = CBProducerOp(batch, num_chunks, n_groups, chunk_len, d_state, dtype=dtype, tune=tune)
+    seq_len = num_chunks * chunk_len
+    C_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device="cuda") * 0.1
+    B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device="cuda") * 0.1
+    ref = cb_producer_fwd_ref(C_mat, B_mat, num_chunks, chunk_len, dtype)
+    out = op(C_mat, B_mat)
+    allclose_compare(out, ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_cb_producer_fwd_noncontiguous():
+    """CBProducerOp must handle non-contiguous inputs."""
+    batch, num_chunks, chunk_len, n_groups, d_state = 1, 2, 64, 1, 64
+    dtype = torch.float16
+    seq_len = num_chunks * chunk_len
+    C_full = torch.randn(batch, seq_len * 2, n_groups, d_state, dtype=dtype, device="cuda")
+    B_full = torch.randn(batch, seq_len * 2, n_groups, d_state, dtype=dtype, device="cuda")
+    C_mat = C_full[:, ::2, :, :]
+    B_mat = B_full[:, ::2, :, :]
+    assert not C_mat.is_contiguous()
+    assert not B_mat.is_contiguous()
+    ref = cb_producer_fwd_ref(C_mat.contiguous(), B_mat.contiguous(), num_chunks, chunk_len, dtype)
+    out = CBProducerOp(batch, num_chunks, n_groups, chunk_len, d_state, dtype=dtype)(C_mat, B_mat)
+    allclose_compare(out, ref, atol=1e-3, rtol=1e-3)
+
+
+class DaCumsumFwdTest(DaCumsumFwdWorkload, TestBase):
     def ref_program(self, dt, A, dt_bias):
         return da_cumsum_fwd_ref(
             dt, A, self.num_chunks, self.chunk_len,
@@ -68,20 +131,22 @@ class DaCumsumFwdTest(_DaCumsumFwdTestWorkload, TestBase):
             dt_softplus=self.dt_softplus,
             dt_min=self.dt_min,
             dt_max=self.dt_max,
+            dtype=self.dtype,
         )
 
 
 @DaCumsumFwdFixture
-def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, tune):
+def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune):
     test = DaCumsumFwdTest(
         batch, num_chunks, chunk_len, n_heads,
-        has_dt_bias=has_dt_bias, dt_softplus=dt_softplus,
+        has_dt_bias=has_dt_bias, dt_softplus=dt_softplus, dtype=dtype,
     )
     op = DaCumsumFwdOp(
         batch, num_chunks, chunk_len, n_heads,
         seq_len=num_chunks * chunk_len,
         has_dt_bias=has_dt_bias,
         dt_softplus=dt_softplus,
+        dtype=dtype,
         tune=tune,
     )
     inputs = test.gen_inputs()
@@ -164,7 +229,7 @@ def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
     return out
 
 
-class SSDChunkScanFwdTest(_SSDChunkScanFwdTestWorkload, TestBase):
+class SSDChunkScanFwdTest(SSDChunkScanFwdWorkload, TestBase):
     def ref_program(self, x, cb, dA_cumsum, C, prev_states, dt):
         return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, self.n_groups)
 
@@ -216,7 +281,7 @@ def ssd_chunk_state_fwd_ref(
     return out.permute(0, 1, 2, 4, 3)
 
 
-class SSDChunkStateFwdTest(_SSDChunkStateFwdTestWorkload, TestBase):
+class SSDChunkStateFwdTest(SSDChunkStateFwdWorkload, TestBase):
     def ref_program(self, x, Bmat, dt, dA_cumsum, seq_idx):
         return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.n_groups, seq_idx=seq_idx)
 
@@ -297,7 +362,7 @@ def ssd_state_passing_fwd_ref(
     return torch.stack(out, dim=1), s
 
 
-class SSDStatePassingFwdTest(_SSDStatePassingFwdTestWorkload, TestBase):
+class SSDStatePassingFwdTest(SSDStatePassingFwdWorkload, TestBase):
     def ref_program(self, states, dA_chunk_cumsum, initial_states):
         return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
 
@@ -384,7 +449,7 @@ def ssd_decode_ref(
     return y_out
 
 
-class SSDDecodeTest(_SSDDecodeTestWorkload, TestBase):
+class SSDDecodeTest(SSDDecodeWorkload, TestBase):
     def ref_program(self, A, dt, x, B_in, C_in, state):
         return ssd_decode_ref(A, dt, x, B_in, C_in, state)
 
