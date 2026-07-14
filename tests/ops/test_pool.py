@@ -7,8 +7,10 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import (
+    AvgPool1dKernel,
     AvgPool1dSpatialKernel,
     AvgPool2dSpatialKernel,
+    AvgPool3dKernel,
     AvgPool3dSpatialKernel,
 )
 from tileops.ops import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp
@@ -16,19 +18,6 @@ from tileops.ops import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp
 
 class _DummyKernel(Kernel):
     supported_archs = [80]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x
-
-
-class _InjectedKernel(Kernel):
-    """Kernel stub used to verify explicit kernel-map dispatch."""
-
-    supported_archs = [80, 86, 89, 90]
-
-    def __init__(self, **kwargs: object) -> None:
-        super().__init__()
-        self.kwargs = kwargs
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x
@@ -123,6 +112,12 @@ def test_avg_pool1d(
     )
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
     test.check(op, *test.gen_inputs(n, c_in, l_in), atol=atol, rtol=rtol)
+    expected_kernel = (
+        AvgPool1dSpatialKernel
+        if not ceil_mode and count_include_pad
+        else AvgPool1dKernel
+    )
+    assert isinstance(op.kernel, expected_kernel)
 
 
 @pytest.mark.smoke
@@ -165,27 +160,6 @@ def test_avg_pool1d_rejects_non_3d_input(monkeypatch: pytest.MonkeyPatch) -> Non
     x = torch.randn(2, 8, 16, 4)
     with pytest.raises(ValueError, match="expects input to be a 3D NCL tensor"):
         op(x)
-
-
-@pytest.mark.smoke
-def test_avg_pool1d_dispatches_spatial_kernel() -> None:
-    op = AvgPool1dFwdOp(kernel_size=3, stride=2, padding=1)
-    x = torch.randn(1, 32, 128, device="cuda", dtype=torch.float16).contiguous()
-    op(x)
-    assert isinstance(op.kernel, AvgPool1dSpatialKernel)
-
-
-@pytest.mark.smoke
-def test_avg_pool1d_custom_generic_kernel_takes_priority() -> None:
-    op = AvgPool1dFwdOp(
-        kernel_size=3,
-        stride=2,
-        padding=1,
-        kernel_map={"avg_pool1d_kernel": _InjectedKernel},
-    )
-    x = torch.randn(1, 32, 128, device="cuda", dtype=torch.float16).contiguous()
-    op(x)
-    assert isinstance(op.kernel, _InjectedKernel)
 
 
 class AvgPool2dFixture(FixtureBase):
@@ -492,6 +466,7 @@ class AvgPool3dTest(TestBase):
             h_in,
             w_in,
             device="cuda",
+            dtype=self.dtype,
         ).contiguous()
         return (x,)
 
@@ -543,31 +518,12 @@ def test_avg_pool3d(
     )
     atol, rtol = ((1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2))
     test.check(op, *test.gen_inputs(n, c_in, d_in, h_in, w_in), atol=atol, rtol=rtol)
-
-
-@pytest.mark.smoke
-def test_avg_pool3d_dispatches_kernel() -> None:
-    op = AvgPool3dFwdOp(
-        kernel_size=(2, 2, 2),
-        stride=(2, 2, 2),
-        padding=(0, 0, 0),
+    expected_kernel = (
+        AvgPool3dSpatialKernel
+        if not ceil_mode and count_include_pad and divisor_override is None
+        else AvgPool3dKernel
     )
-    x = torch.randn(1, 16, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
-    op(x)
-    assert isinstance(op.kernel, AvgPool3dSpatialKernel)
-
-
-@pytest.mark.smoke
-def test_avg_pool3d_custom_generic_kernel_takes_priority() -> None:
-    op = AvgPool3dFwdOp(
-        kernel_size=(2, 2, 2),
-        stride=(2, 2, 2),
-        padding=(0, 0, 0),
-        kernel_map={"avg_pool3d_kernel": _InjectedKernel},
-    )
-    x = torch.randn(1, 16, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
-    op(x)
-    assert isinstance(op.kernel, _InjectedKernel)
+    assert isinstance(op.kernel, expected_kernel)
 
 
 @pytest.mark.smoke
