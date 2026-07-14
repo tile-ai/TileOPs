@@ -2,15 +2,15 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.fp8_lighting_indexer import FP8LightingIndexerKernel
+from tileops.kernels.fp8_lightning_indexer import FP8LightningIndexerKernel
 from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
-__all__ = ["FP8LightingIndexerOp"]
+__all__ = ["FP8LightningIndexerOp"]
 
 
-class FP8LightingIndexerOp(Op):
+class FP8LightningIndexerOp(Op):
 
     def __init__(self,
                  batch,
@@ -32,12 +32,12 @@ class FP8LightingIndexerOp(Op):
         self.clean_logits = clean_logits
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["fp8_lighting_indexer_kernel"](
+        self.kernel = self.kernel_map["fp8_lightning_indexer_kernel"](
             batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, config, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fp8_lighting_indexer_kernel": FP8LightingIndexerKernel}
+        return {"fp8_lightning_indexer_kernel": FP8LightningIndexerKernel}
 
     def torch_quant_forward(self, index_q: torch.Tensor, index_k: torch.Tensor,
                             weights: torch.Tensor, cu_seqlen_ks: torch.Tensor,

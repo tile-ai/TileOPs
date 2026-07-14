@@ -1,6 +1,6 @@
 # Attention indexing and sparse selection operators.
 
-FP8LightingIndexerOp:
+FP8LightningIndexerOp:
   ref_api: "none"
   family: attention_indexing
   status: implemented
@@ -36,19 +36,19 @@ FP8LightingIndexerOp:
     - "index_k_scale.shape == (batch, seq_len_kv, kv_group)"
 
   workloads:
-  - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [bfloat16], label: "lighting-indexer-bf16-s8k-h32-d64"}
-  - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [float8_e4m3fn], label: "lighting-indexer-fp8-s8k-h32-d64"}
+  - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [bfloat16], label: "lightning-indexer-bf16-s8k-h32-d64"}
+  - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [float8_e4m3fn], label: "lightning-indexer-fp8-s8k-h32-d64"}
 
   roofline:
-    func: "tileops.perf.formulas.fp8_lighting_indexer_roofline"
+    func: "tileops.perf.formulas.fp8_lightning_indexer_roofline"
 
   source:
-    kernel: tileops/kernels/fp8_lighting_indexer.py
+    kernel: tileops/kernels/fp8_lightning_indexer.py
     kernel_map:
-      fp8_lighting_indexer_kernel: FP8LightingIndexerKernel
-    op: tileops/ops/fp8_lighting_indexer.py
-    test: tests/ops/test_fp8_lighting_indexer.py
-    bench: benchmarks/ops/bench_fp8_lighting_indexer.py
+      fp8_lightning_indexer_kernel: FP8LightningIndexerKernel
+    op: tileops/ops/fp8_lightning_indexer.py
+    test: tests/ops/test_fp8_lightning_indexer.py
+    bench: benchmarks/ops/bench_fp8_lightning_indexer.py
     bench_manifest_driven: false
 
 TopkSelectorOp:

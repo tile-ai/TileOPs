@@ -4,13 +4,13 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import FP8LightingIndexerOp
-from workloads.fp8_lighting_indexer import (
-    FP8LightingIndexerTest as _FP8LightingIndexerTestWorkload,
+from tileops.ops import FP8LightningIndexerOp
+from workloads.fp8_lightning_indexer import (
+    FP8LightningIndexerTest as _FP8LightningIndexerTestWorkload,
 )
 
 
-class FP8LightingIndexerTest(_FP8LightingIndexerTestWorkload, TestBase):
+class FP8LightningIndexerTest(_FP8LightningIndexerTestWorkload, TestBase):
 
     @staticmethod
     def _compute_correlation(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -39,7 +39,7 @@ class FP8LightingIndexerTest(_FP8LightingIndexerTestWorkload, TestBase):
         ).all(), "Error: nonfinite value mismatch"
         output = output.masked_fill(~a_finite, 0)
         output_ref = output_ref.masked_fill(~b_finite, 0)
-        correlation = FP8LightingIndexerTest._compute_correlation(output, output_ref)
+        correlation = FP8LightningIndexerTest._compute_correlation(output, output_ref)
         difference = 1.0 - correlation
         assert 0 <= difference <= tolerance, \
             f"outputs is not close to outputs_ref, difference: {difference}"
@@ -72,7 +72,7 @@ class FP8LightingIndexerTest(_FP8LightingIndexerTestWorkload, TestBase):
         return (logits,)
 
 
-class FP8LightingIndexerFixture(FixtureBase):
+class FP8LightningIndexerFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, config, tune", [
              pytest.param(1, 4096, 32, 64, 8192, 1, True, None, False, marks=pytest.mark.smoke),
@@ -81,12 +81,12 @@ class FP8LightingIndexerFixture(FixtureBase):
     ]
 
 
-@FP8LightingIndexerFixture
+@FP8LightningIndexerFixture
 def test_indexer(batch: int, seq_len: int, heads: int, index_dim: int, seq_len_kv: int,
                  kv_group: int, clean_logits: bool, config: Optional[dict], tune: bool) -> None:
-    test = FP8LightingIndexerTest(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
+    test = FP8LightningIndexerTest(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
                                   clean_logits, config)
-    op = FP8LightingIndexerOp(
+    op = FP8LightningIndexerOp(
         batch=batch,
         seq_len=seq_len,
         heads=heads,
@@ -96,7 +96,7 @@ def test_indexer(batch: int, seq_len: int, heads: int, index_dim: int, seq_len_k
         clean_logits=clean_logits,
         config=config,
         tune=tune)
-    test.check(op, *test.gen_inputs(), compare=FP8LightingIndexerTest._validate_tensor_match)
+    test.check(op, *test.gen_inputs(), compare=FP8LightningIndexerTest._validate_tensor_match)
 
 
 if __name__ == "__main__":

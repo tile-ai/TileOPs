@@ -51,7 +51,7 @@ from .dropout import DropoutKernel
 from .elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
 from .engram import EngramDecodeKernel, EngramGateConvBwdKernel, EngramGateConvFwdKernel
 from .fft import FFTC2CKernel
-from .fp8_lighting_indexer import FP8LightingIndexerKernel
+from .fp8_lightning_indexer import FP8LightningIndexerKernel
 from .fp8_quant import FP8QuantKernel
 from .gated_deltanet import (
     GatedDeltaNetBwdKernel,
@@ -112,7 +112,7 @@ __all__ = [
     "EngramGateConvBwdKernel",
     "EngramGateConvFwdKernel",
     "FFTC2CKernel",
-    "FP8LightingIndexerKernel",
+    "FP8LightningIndexerKernel",
     "FP8QuantKernel",
     "FlashAttnBwdPostprocessKernel",
     "FlashAttnBwdPreprocessKernel",

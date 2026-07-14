@@ -4,11 +4,11 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.ops import FP8LightingIndexerOp
-from workloads.fp8_lighting_indexer import FP8LightingIndexerTest
+from tileops.ops import FP8LightningIndexerOp
+from workloads.fp8_lightning_indexer import FP8LightningIndexerTest
 
 
-class _FP8LightingIndexerTestBaseline(FP8LightingIndexerTest):
+class _FP8LightningIndexerTestBaseline(FP8LightningIndexerTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, kv: torch.Tensor, weights: torch.Tensor,
@@ -39,7 +39,7 @@ class _FP8LightingIndexerTestBaseline(FP8LightingIndexerTest):
         return (logits,)
 
 
-class FP8LightingIndexerBenchmark(BenchmarkBase[FP8LightingIndexerTest]):
+class FP8LightningIndexerBenchmark(BenchmarkBase[FP8LightningIndexerTest]):
 
     def calculate_flops(self) -> Optional[float]:
         # Flops depend on the actual mask cost which varies per input
@@ -73,15 +73,15 @@ _FP8_LIGHTING_INDEXER_BENCH_PARAMS = [
     "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, config, tune",
     _FP8_LIGHTING_INDEXER_BENCH_PARAMS,
 )
-def test_fp8_lighting_indexer_bench(batch: int, seq_len: int, heads: int, index_dim: int,
+def test_fp8_lightning_indexer_bench(batch: int, seq_len: int, heads: int, index_dim: int,
                                     seq_len_kv: int, kv_group: int, clean_logits: bool,
                                     config: Optional[dict], tune: bool) -> None:
-    test = _FP8LightingIndexerTestBaseline(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
+    test = _FP8LightningIndexerTestBaseline(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
                                   clean_logits, config)
-    bm = FP8LightingIndexerBenchmark(test)
+    bm = FP8LightningIndexerBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = FP8LightingIndexerOp(batch=batch,
+    op = FP8LightningIndexerOp(batch=batch,
                               seq_len=seq_len,
                               heads=heads,
                               index_dim=index_dim,

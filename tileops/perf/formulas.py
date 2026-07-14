@@ -36,7 +36,7 @@ __all__ = [
     "eq_fwd_roofline",
     "fft_c2c_roofline",
     "floor_divide_fwd_roofline",
-    "fp8_lighting_indexer_roofline",
+    "fp8_lightning_indexer_roofline",
     "fp8_quant_roofline",
     "fused_moe_fwd_bytes",
     "gated_deltanet_prefill_fwd_roofline",
@@ -1171,7 +1171,7 @@ def fp8_quant_roofline(op: "Op") -> tuple[int, int]:
     return int(flops), int(nbytes)
 
 
-def fp8_lighting_indexer_roofline(op: "Op") -> tuple[int, int]:
+def fp8_lightning_indexer_roofline(op: "Op") -> tuple[int, int]:
     batch = int(op.batch)
     seq_len = int(op.seq_len)
     heads = int(op.heads)

@@ -8,7 +8,7 @@ from tilelang import language as T
 
 from tileops.kernels.kernel_base import Kernel
 
-__all__ = ["FP8LightingIndexerKernel"]
+__all__ = ["FP8LightningIndexerKernel"]
 
 # block_Q == 1 deadlocks the software pipeline (some warps never reach the
 # pipeline barrier); such tiles must run unpipelined. block_Q >= 2 is safe.
@@ -16,7 +16,7 @@ _MIN_PIPELINED_BLOCK_Q = 2
 
 
 @functools.lru_cache(maxsize=32)
-def _fp8_lighting_indexer_kernel(batch,
+def _fp8_lightning_indexer_kernel(batch,
                                  seq_len,
                                  heads,
                                  index_dim,
@@ -28,7 +28,7 @@ def _fp8_lighting_indexer_kernel(batch,
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },)
-    def _fp8_lighting_indexer_func(
+    def _fp8_lightning_indexer_func(
         block_N=256,
         num_stages=3,
         threads=512,
@@ -52,7 +52,7 @@ def _fp8_lighting_indexer_kernel(batch,
         logits_shape = [batch, seq_len, seq_len_kv, kv_group]
 
         @T.prim_func
-        def _fp8_lighting_indexer_main(
+        def _fp8_lightning_indexer_main(
                 IndexQ: T.Tensor(index_q_shape, dtype),  # type: ignore
                 IndexK: T.Tensor(index_k_shape, dtype),  # type: ignore
                 IndexKScale: T.Tensor(index_k_scale_shape, accum_dtype),  # type: ignore
@@ -144,9 +144,9 @@ def _fp8_lighting_indexer_kernel(batch,
                                g] = logits[bn_i, bq_i, g]
 
         # Return the kernel function handle
-        return _fp8_lighting_indexer_main
+        return _fp8_lightning_indexer_main
 
-    return _fp8_lighting_indexer_func
+    return _fp8_lightning_indexer_func
 
 
 @tilelang.jit
@@ -184,8 +184,8 @@ def clean_logits_(threads: int = 512,):
     return clean_logits_kernel
 
 
-@torch.library.custom_op("top::fp8_lighting_indexer_wrapped_kernel", mutates_args=("Logits",))
-def fp8_lighting_indexer_wrapped_kernel(batch: int, seq_len: int, heads: int, index_dim: int,
+@torch.library.custom_op("top::fp8_lightning_indexer_wrapped_kernel", mutates_args=("Logits",))
+def fp8_lightning_indexer_wrapped_kernel(batch: int, seq_len: int, heads: int, index_dim: int,
                                         seq_len_kv: int, kv_group: int, clean_logits: bool,
                                         block_N: int, num_stages: int, threads: int, block_Q: int,
                                         IndexQ: torch.Tensor, IndexK: torch.Tensor,
@@ -193,7 +193,7 @@ def fp8_lighting_indexer_wrapped_kernel(batch: int, seq_len: int, heads: int, in
                                         Weights: torch.Tensor, CuSeqLenKS: torch.Tensor,
                                         CuSeqLenKE: torch.Tensor) -> None:
 
-    _fp8_lighting_indexer_kernel(batch, seq_len, heads, index_dim, seq_len_kv,
+    _fp8_lightning_indexer_kernel(batch, seq_len, heads, index_dim, seq_len_kv,
                                  kv_group)(block_N, num_stages, threads,
                                            block_Q)(IndexQ.view(batch, seq_len * heads,
                                                                 index_dim), IndexK, IndexKScale,
@@ -202,7 +202,7 @@ def fp8_lighting_indexer_wrapped_kernel(batch: int, seq_len: int, heads: int, in
         clean_logits_(threads=threads)(Logits, CuSeqLenKS, CuSeqLenKE)
 
 
-@fp8_lighting_indexer_wrapped_kernel.register_fake
+@fp8_lightning_indexer_wrapped_kernel.register_fake
 def _(
         batch: int,
         seq_len: int,
@@ -225,7 +225,7 @@ def _(
     return None
 
 
-class FP8LightingIndexerKernel(Kernel):
+class FP8LightningIndexerKernel(Kernel):
     supported_archs: list[int] = [90]
 
     def __init__(self,
@@ -248,7 +248,7 @@ class FP8LightingIndexerKernel(Kernel):
         self.clean_logits = clean_logits
         self.config = config
 
-        self.kernel = _fp8_lighting_indexer_kernel(self.batch, self.seq_len, self.heads,
+        self.kernel = _fp8_lightning_indexer_kernel(self.batch, self.seq_len, self.heads,
                                                    self.index_dim, self.seq_len_kv, self.kv_group,
                                                    self.clean_logits)
 
@@ -287,7 +287,7 @@ class FP8LightingIndexerKernel(Kernel):
         Logits = torch.empty([self.batch, self.seq_len, self.seq_len_kv, self.kv_group],
                              device=IndexQ.device,
                              dtype=torch.float32)
-        fp8_lighting_indexer_wrapped_kernel(
+        fp8_lightning_indexer_wrapped_kernel(
             self.batch, self.seq_len, self.heads, self.index_dim, self.seq_len_kv, self.kv_group,
             self.clean_logits, self.config["block_N"], self.config["num_stages"],
             self.config["threads"], self.config["block_Q"], IndexQ, IndexK, IndexKScale, Logits,
