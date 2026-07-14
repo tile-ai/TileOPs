@@ -6,10 +6,22 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+import tileops.ops.attention.gqa as gqa_module
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.kernel_base import Kernel
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from workloads.attention.mha import MhaBwdTest as _MhaBwdTestWorkload
 from workloads.attention.mha import MhaFwdTest as _MhaFwdTestWorkload
+
+
+class _FakeDenseKernel(Kernel):
+    def forward(self, *args: object, **kwargs: object) -> object:
+        return None
+
+
+class _FakeSquareDenseKernel(Kernel):
+    def forward(self, *args: object, **kwargs: object) -> object:
+        return None
 
 
 class MhaBwdTest(_MhaBwdTestWorkload, TestBase):
@@ -101,6 +113,33 @@ def test_mha_fwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, d
     test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_mha_fwd_dispatches_to_gqa_kernel() -> None:
+    op = MultiHeadAttentionFwdOp(1, 8, 128, 64, False, torch.float16)
+    assert op.kernel.__class__.__name__.startswith("GQA")
+
+
+@pytest.mark.smoke
+def test_mha_fwd_preserves_gqa_square_dense_fast_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gqa_module, "is_h200", lambda: True)
+    op = MultiHeadAttentionFwdOp(
+        batch=4,
+        heads=64,
+        seq_len=512,
+        dim=128,
+        is_causal=True,
+        dtype=torch.float16,
+        kernel_map={
+            "gqa_prefill_fwd_kernel": _FakeDenseKernel,
+            "gqa_prefill_square_fwd_kernel": _FakeSquareDenseKernel,
+        },
+    )
+
+    assert isinstance(op.kernel, _FakeSquareDenseKernel)
 
 
 @MhaBwdFixture
