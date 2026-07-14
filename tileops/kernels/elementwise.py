@@ -690,12 +690,27 @@ class UnaryKernel(Kernel):
             self.output_dtype = self.OUTPUT_DTYPE or dtype
         # torch.bool maps to TileLang ``boolx<N>`` for vectorised loads, which
         # the CUDA codegen cannot lower. Keep bool inputs on the scalar path.
+        bool_output = torch.bool == self.OUTPUT_DTYPE
+        bool_output_needs_scalar = bool_output and dtype in (
+            torch.uint8, torch.int8, torch.int16,
+        )
         if dtype == torch.bool:
             if strategy is not None and strategy != "direct":
                 warnings.warn(
                     f"UnaryKernel: dtype=torch.bool requires strategy="
                     f"'direct' (TileLang cannot lower vectorised boolx<N> "
                     f"loads); overriding requested strategy={strategy!r}.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            self.strategy = "direct"
+        elif bool_output_needs_scalar:
+            if strategy is not None and strategy != "direct":
+                warnings.warn(
+                    f"UnaryKernel: dtype={dtype} with torch.bool output "
+                    f"requires strategy='direct' (TileLang cannot lower "
+                    f"vectorised boolx<N> stores for sub-32-bit integer "
+                    f"inputs); overriding requested strategy={strategy!r}.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
