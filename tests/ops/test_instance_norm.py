@@ -238,6 +238,41 @@ def test_instance_norm_lazily_specializes_per_device() -> None:
 
 
 @pytest.mark.smoke
+def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
+    """One op instance reuses identical specs and caches changed specs."""
+    op = InstanceNormFwdOp()
+
+    def run_case(n: int, c: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
+        x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+        weight = torch.randn((c,), dtype=dtype, device="cuda")
+        bias = torch.randn((c,), dtype=dtype, device="cuda")
+
+        y = op(x, weight, bias)
+        y_ref = F.instance_norm(
+            x.float(), weight=weight.float(), bias=bias.float(), eps=1e-5,
+        ).to(dtype)
+        atol, rtol = _get_tolerances(dtype)
+        assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
+
+    run_case(2, 8, (4, 4), torch.float16)
+    assert len(op._kernel_cache) == 1
+    assert op.eval_roofline() == (
+        5 * 2 * 8 * 16,
+        (2 * 2 * 8 * 16 + 2 * 8) * torch.float16.itemsize,
+    )
+
+    run_case(2, 8, (4, 4), torch.float16)
+    assert len(op._kernel_cache) == 1
+
+    run_case(3, 12, (2, 8), torch.bfloat16)
+    assert len(op._kernel_cache) == 2
+    assert op.eval_roofline() == (
+        5 * 3 * 12 * 16,
+        (2 * 3 * 12 * 16 + 2 * 12) * torch.bfloat16.itemsize,
+    )
+
+
+@pytest.mark.smoke
 def test_instance_norm_rejects_affine_device_mismatch() -> None:
     """Forward must raise ValueError when weight/bias live on a different CUDA device than x.
 

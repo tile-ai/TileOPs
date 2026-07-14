@@ -251,6 +251,33 @@ class BatchNormFwdOp(Op):
         """Backward-compatible validation entry point."""
         self._resolve_spec(x)
 
+    def _forward_impl(
+        self,
+        x: torch.Tensor,
+        running_mean: torch.Tensor,
+        running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> torch.Tensor:
+        N, C, spatial, L, dtype = self._resolve_spec(x)
+        self._validate_channel_tensor("running_mean", running_mean, C, x.device, torch.float32)
+        self._validate_channel_tensor("running_var", running_var, C, x.device, torch.float32)
+        self._validate_channel_tensor("weight", weight, C, x.device, torch.float32)
+        self._validate_channel_tensor("bias", bias, C, x.device, torch.float32)
+        self._bind_spec(N, C, spatial, L, dtype)
+        x_cl, orig_shape = self._prepare(x)
+        kernel = self._get_kernel(C, L, dtype, x.device.index)
+
+        if self.training:
+            y_cl, _mean, _rstd = kernel(
+                x_cl, weight.float(), bias.float(),
+                running_mean, running_var)
+        else:
+            y_cl = kernel(
+                x_cl, weight.float(), bias.float(),
+                running_mean, running_var)
+        return _restore_shape(y_cl, orig_shape)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -280,24 +307,7 @@ class BatchNormFwdOp(Op):
         Returns:
             Normalized output tensor with the same shape as ``x``.
         """
-        N, C, spatial, L, dtype = self._resolve_spec(x)
-        self._validate_channel_tensor("running_mean", running_mean, C, x.device, torch.float32)
-        self._validate_channel_tensor("running_var", running_var, C, x.device, torch.float32)
-        self._validate_channel_tensor("weight", weight, C, x.device, torch.float32)
-        self._validate_channel_tensor("bias", bias, C, x.device, torch.float32)
-        self._bind_spec(N, C, spatial, L, dtype)
-        x_cl, orig_shape = self._prepare(x)
-        kernel = self._get_kernel(C, L, dtype, x.device.index)
-
-        if self.training:
-            y_cl, _mean, _rstd = kernel(
-                x_cl, weight.float(), bias.float(),
-                running_mean, running_var)
-        else:
-            y_cl = kernel(
-                x_cl, weight.float(), bias.float(),
-                running_mean, running_var)
-        return _restore_shape(y_cl, orig_shape)
+        return self._forward_impl(x, running_mean, running_var, weight, bias)
 
 
 class BatchNormBwdOp(Op):
@@ -469,6 +479,30 @@ class BatchNormBwdOp(Op):
         if tensor.ndim != 1 or tensor.shape[0] != C:
             raise ValueError(f"Expected {name} shape ({C},), got {tuple(tensor.shape)}")
 
+    def _forward_impl(
+        self,
+        grad_out: torch.Tensor,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        mean: torch.Tensor,
+        rstd: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        N, C, spatial, L, dtype = self._resolve_spec(grad_out, x)
+        self._validate_channel_tensor("weight", weight, C, grad_out.device, torch.float32)
+        self._validate_channel_tensor("mean", mean, C, grad_out.device, torch.float32)
+        self._validate_channel_tensor("rstd", rstd, C, grad_out.device, torch.float32)
+        self._bind_spec(N, C, spatial, L, dtype)
+        orig_shape = grad_out.shape
+        go_cl = self._prepare(grad_out)
+        x_cl = self._prepare(x)
+        kernel = self._get_kernel(C, L, dtype, grad_out.device.index)
+
+        grad_x_cl, grad_weight, grad_bias = kernel(
+            go_cl, x_cl, weight.float(), mean, rstd)
+
+        grad_x = _restore_shape(grad_x_cl, orig_shape)
+        return grad_x, grad_weight, grad_bias
+
     def forward(
         self,
         grad_out: torch.Tensor,
@@ -497,21 +531,7 @@ class BatchNormBwdOp(Op):
             has the same shape as ``x``, ``grad_weight`` has shape ``(C,)``,
             and ``grad_bias`` has shape ``(C,)``.
         """
-        N, C, spatial, L, dtype = self._resolve_spec(grad_out, x)
-        self._validate_channel_tensor("weight", weight, C, grad_out.device, torch.float32)
-        self._validate_channel_tensor("mean", mean, C, grad_out.device, torch.float32)
-        self._validate_channel_tensor("rstd", rstd, C, grad_out.device, torch.float32)
-        self._bind_spec(N, C, spatial, L, dtype)
-        orig_shape = grad_out.shape
-        go_cl = self._prepare(grad_out)
-        x_cl = self._prepare(x)
-        kernel = self._get_kernel(C, L, dtype, grad_out.device.index)
-
-        grad_x_cl, grad_weight, grad_bias = kernel(
-            go_cl, x_cl, weight.float(), mean, rstd)
-
-        grad_x = _restore_shape(grad_x_cl, orig_shape)
-        return grad_x, grad_weight, grad_bias
+        return self._forward_impl(grad_out, x, weight, mean, rstd)
 
 
 # ---------------------------------------------------------------------------
@@ -569,23 +589,7 @@ def _batchnorm_fwd_eager_forward(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     """Direct kernel call (no torch.compile wrapping)."""
-    N, C, spatial, L, dtype = self._resolve_spec(x)
-    self._validate_channel_tensor("running_mean", running_mean, C, x.device, torch.float32)
-    self._validate_channel_tensor("running_var", running_var, C, x.device, torch.float32)
-    self._validate_channel_tensor("weight", weight, C, x.device, torch.float32)
-    self._validate_channel_tensor("bias", bias, C, x.device, torch.float32)
-    self._bind_spec(N, C, spatial, L, dtype)
-    x_cl, orig_shape = self._prepare(x)
-    kernel = self._get_kernel(C, L, dtype, x.device.index)
-    if self.training:
-        y_cl, _mean, _rstd = kernel(
-            x_cl, weight.float(), bias.float(),
-            running_mean, running_var)
-    else:
-        y_cl = kernel(
-            x_cl, weight.float(), bias.float(),
-            running_mean, running_var)
-    return _restore_shape(y_cl, orig_shape)
+    return self._forward_impl(x, running_mean, running_var, weight, bias)
 
 
 BatchNormFwdOp._eager_forward = _batchnorm_fwd_eager_forward
@@ -659,19 +663,7 @@ def _batchnorm_bwd_eager_forward(
     rstd: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Direct kernel call (no torch.compile wrapping)."""
-    N, C, spatial, L, dtype = self._resolve_spec(grad_out, x)
-    self._validate_channel_tensor("weight", weight, C, grad_out.device, torch.float32)
-    self._validate_channel_tensor("mean", mean, C, grad_out.device, torch.float32)
-    self._validate_channel_tensor("rstd", rstd, C, grad_out.device, torch.float32)
-    self._bind_spec(N, C, spatial, L, dtype)
-    orig_shape = grad_out.shape
-    go_cl = self._prepare(grad_out)
-    x_cl = self._prepare(x)
-    kernel = self._get_kernel(C, L, dtype, grad_out.device.index)
-    grad_x_cl, grad_weight, grad_bias = kernel(
-        go_cl, x_cl, weight.float(), mean, rstd)
-    grad_x = _restore_shape(grad_x_cl, orig_shape)
-    return grad_x, grad_weight, grad_bias
+    return self._forward_impl(grad_out, x, weight, mean, rstd)
 
 
 BatchNormBwdOp._eager_forward = _batchnorm_bwd_eager_forward
