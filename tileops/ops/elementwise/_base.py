@@ -643,17 +643,33 @@ class UnaryOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
+        self._prepare_unary_instance(N_total, dtype, strategy, kernel_map)
+        self.kernel = self.kernel_map[self._op_name](
+            N_total, dtype, strategy=strategy, tune=tune,
+        )
+        self._finish_unary_instance()
+
+    def _prepare_unary_instance(
+        self,
+        N_total: int,
+        dtype: torch.dtype,
+        strategy: Optional[str],
+        kernel_map: Optional[Dict[str, Kernel]],
+    ) -> None:
         self.N_total = N_total
         self.dtype = dtype
         self.strategy = strategy
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            N_total, dtype, strategy=strategy, tune=tune,
-        )
+
+    def _finish_unary_instance(
+        self, output_dtype: Optional[torch.dtype] = None,
+    ) -> None:
         # Use _fp8_output_dtype (the final dtype after Op-layer post-cast)
         # rather than kernel.output_dtype (which is fp16 for e5m2).
         fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        self.output_dtype = fp8_out or getattr(self.kernel, "output_dtype", dtype)
+        self.output_dtype = output_dtype or fp8_out or getattr(
+            self.kernel, "output_dtype", self.dtype,
+        )
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -1163,21 +1179,47 @@ class _AlphaScaledBinaryOp(BinaryOp):
 
 
 class _BoolOutputBinaryOp(BinaryOp):
-    """Binary op base whose kernel emits int8 (1/0) and whose Op output is bool.
+    """Binary op base whose public output dtype is bool."""
 
-    TileLang cannot vectorize bool, so the kernel produces int8. The Op
-    casts to ``torch.bool`` after the kernel call. ``register_fake``
-    already declares ``torch.bool`` as the output dtype, so the
-    ``torch.compile`` path stays consistent.
-    """
+    bool_storage_kernel_cls: Optional[type] = None
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        kernel_map = {self._op_name: self.kernel_cls}
+        if self.bool_storage_kernel_cls is not None:
+            kernel_map[f"{self._op_name}_bool_storage"] = self.bool_storage_kernel_cls
+        return kernel_map
+
+    def _build_kernel_instance(
+        self, coalesced_shape, a_strides, b_strides, strategy, tune,
+    ):
+        self._bool_storage = (
+            self.dtype == torch.bool and self.bool_storage_kernel_cls is not None
+        )
+        if self._bool_storage:
+            return self.kernel_map[f"{self._op_name}_bool_storage"](
+                self.N_total, torch.uint8, coalesced_shape, a_strides, b_strides,
+                self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+            )
+        return super()._build_kernel_instance(
+            coalesced_shape, a_strides, b_strides, strategy, tune,
+        )
 
     def _eager_forward(
         self,
         input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
         other: torch.Tensor,
     ) -> torch.Tensor:
+        if getattr(self, "_bool_storage", False):
+            result = self.kernel(
+                input.contiguous().view(-1).view(torch.uint8),
+                other.contiguous().view(-1).view(torch.uint8),
+            )
+            return result.view(torch.bool).reshape(self.out_shape)
         result = super()._eager_forward(input, other)
-        return result.to(torch.bool)
+        if result.dtype is not torch.bool:
+            return result.to(torch.bool)
+        return result
 
 
 _MANIFEST_INT_DTYPES = (

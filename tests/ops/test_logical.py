@@ -131,6 +131,20 @@ def test_logical_broadcast(
     _bool_compare(out, ref)
 
 
+@pytest.mark.smoke
+def test_logical_and_bool_broadcast() -> None:
+    """Bool-input binary broadcast path uses uint8 storage internally."""
+    a_shape = (2, 512, 768)
+    b_shape = (1, 1, 768)
+    a = torch.randint(0, 2, a_shape, device="cuda").to(torch.bool)
+    b = torch.randint(0, 2, b_shape, device="cuda").to(torch.bool)
+    op = LogicalAndFwdOp(a_shape=a_shape, b_shape=b_shape, dtype=torch.bool)
+    ref = torch.logical_and(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    _bool_compare(out, ref)
+
+
 # ---------------------------------------------------------------------------
 # LogicalNot op
 # ---------------------------------------------------------------------------

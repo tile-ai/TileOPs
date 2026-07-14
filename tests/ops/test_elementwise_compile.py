@@ -426,6 +426,7 @@ def test_unary_float_compile(op_cls, ref_fn, input_fn, name):
 
 _UNARY_BOOL_OPS = [
     pytest.param(LogicalNotFwdOp, lambda x: ~(x != 0), torch.float16, "logical_not", marks=pytest.mark.full),
+    pytest.param(LogicalNotFwdOp, torch.logical_not, torch.bool, "logical_not_bool", marks=pytest.mark.smoke),
     pytest.param(IsnanFwdOp, torch.isnan, torch.float16, "isnan", marks=pytest.mark.full),
     pytest.param(IsinfFwdOp, torch.isinf, torch.float16, "isinf", marks=pytest.mark.full),
     pytest.param(IsfiniteFwdOp, torch.isfinite, torch.float16, "isfinite", marks=pytest.mark.full),
@@ -438,7 +439,10 @@ def test_unary_bool_compile(op_cls, ref_fn, dtype, name):
     n = _N
     op = op_cls(N_total=n, dtype=dtype)
     compiled_op = torch.compile(op, fullgraph=True)
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    if dtype == torch.bool:
+        x = torch.rand(n, device="cuda") > 0.5
+    else:
+        x = torch.randn(n, dtype=dtype, device="cuda")
     out = compiled_op(x)
     ref = ref_fn(x)
     assert out.dtype == torch.bool
