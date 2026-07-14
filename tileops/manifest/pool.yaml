@@ -48,6 +48,7 @@ AvgPool1dFwdOp:
     kernel: tileops/kernels/pool/avg_pool1d.py
     kernel_map:
       avg_pool1d_kernel: AvgPool1dKernel
+      avg_pool1d_spatial_kernel: AvgPool1dSpatialKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
@@ -179,6 +180,7 @@ AvgPool3dFwdOp:
     kernel: tileops/kernels/pool/avg_pool3d.py
     kernel_map:
       avg_pool3d_kernel: AvgPool3dKernel
+      avg_pool3d_spatial_kernel: AvgPool3dSpatialKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py

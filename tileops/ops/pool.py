@@ -5,9 +5,11 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import (
     AvgPool1dKernel,
+    AvgPool1dSpatialKernel,
     AvgPool2dKernel,
     AvgPool2dSpatialKernel,
     AvgPool3dKernel,
+    AvgPool3dSpatialKernel,
 )
 from tileops.kernels.pool.common import (
     _normalize_pool_dims,
@@ -58,16 +60,29 @@ class AvgPool1dFwdOp(Op):
             padding=(self.padding,),
         )
         self.dispatch_kernel(kernel_map)
-        if "avg_pool1d_kernel" not in self.kernel_map:
+        if (
+            "avg_pool1d_kernel" not in self.kernel_map
+            and "avg_pool1d_spatial_kernel" not in self.kernel_map
+        ):
             raise NotImplementedError(
-                "AvgPool1dFwdOp requires 'avg_pool1d_kernel' in kernel_map"
+                "AvgPool1dFwdOp requires 'avg_pool1d_kernel' or "
+                "'avg_pool1d_spatial_kernel' in kernel_map"
             )
+        self._has_explicit_generic_kernel = (
+            kernel_map is not None and "avg_pool1d_kernel" in kernel_map
+        )
+        self._has_explicit_spatial_kernel = (
+            kernel_map is not None and "avg_pool1d_spatial_kernel" in kernel_map
+        )
         self._kernel_cache: Dict[tuple, Kernel] = {}
         self._last_roofline_spec: Optional[tuple] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"avg_pool1d_kernel": AvgPool1dKernel}
+        return {
+            "avg_pool1d_kernel": AvgPool1dKernel,
+            "avg_pool1d_spatial_kernel": AvgPool1dSpatialKernel,
+        }
 
     def _resolve_input_1d(
         self,
@@ -97,8 +112,22 @@ class AvgPool1dFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
+        use_spatial_fast_path = (
+            not self.ceil_mode
+            and self.count_include_pad
+            and "avg_pool1d_spatial_kernel" in self.kernel_map
+            and (
+                not self._has_explicit_generic_kernel
+                or self._has_explicit_spatial_kernel
+            )
+        )
+        kernel_name = (
+            "avg_pool1d_spatial_kernel"
+            if use_spatial_fast_path
+            else "avg_pool1d_kernel"
+        )
         key = (
-            "general",
+            kernel_name,
             n,
             c_in,
             l_in,
@@ -112,18 +141,26 @@ class AvgPool1dFwdOp(Op):
             self.tune,
         )
         if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["avg_pool1d_kernel"](
+            kernel_kwargs = dict(
                 n=n,
                 c_in=c_in,
                 l_in=l_in,
                 kernel_l=self.kernel_size,
                 stride_l=self.stride,
                 pad_l=self.padding,
-                ceil_mode=self.ceil_mode,
-                count_include_pad=self.count_include_pad,
                 dtype=dtype,
                 tune=self.tune,
             )
+            if use_spatial_fast_path:
+                self._kernel_cache[key] = self.kernel_map[kernel_name](
+                    **kernel_kwargs
+                )
+            else:
+                self._kernel_cache[key] = self.kernel_map[kernel_name](
+                    **kernel_kwargs,
+                    ceil_mode=self.ceil_mode,
+                    count_include_pad=self.count_include_pad,
+                )
         return self._kernel_cache[key]
 
     def _infer_output_shapes(
@@ -415,16 +452,29 @@ class AvgPool3dFwdOp(Op):
             divisor_override=divisor_override,
         )
         self.dispatch_kernel(kernel_map)
-        if "avg_pool3d_kernel" not in self.kernel_map:
+        if (
+            "avg_pool3d_kernel" not in self.kernel_map
+            and "avg_pool3d_spatial_kernel" not in self.kernel_map
+        ):
             raise NotImplementedError(
-                "AvgPool3dFwdOp requires 'avg_pool3d_kernel' in kernel_map"
+                "AvgPool3dFwdOp requires 'avg_pool3d_kernel' or "
+                "'avg_pool3d_spatial_kernel' in kernel_map"
             )
+        self._has_explicit_generic_kernel = (
+            kernel_map is not None and "avg_pool3d_kernel" in kernel_map
+        )
+        self._has_explicit_spatial_kernel = (
+            kernel_map is not None and "avg_pool3d_spatial_kernel" in kernel_map
+        )
         self._kernel_cache: Dict[tuple, Kernel] = {}
         self._last_roofline_spec: Optional[tuple] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"avg_pool3d_kernel": AvgPool3dKernel}
+        return {
+            "avg_pool3d_kernel": AvgPool3dKernel,
+            "avg_pool3d_spatial_kernel": AvgPool3dSpatialKernel,
+        }
 
     def _resolve_input_3d(
         self,
@@ -462,8 +512,23 @@ class AvgPool3dFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
+        use_spatial_fast_path = (
+            not self.ceil_mode
+            and self.count_include_pad
+            and self.divisor_override is None
+            and "avg_pool3d_spatial_kernel" in self.kernel_map
+            and (
+                not self._has_explicit_generic_kernel
+                or self._has_explicit_spatial_kernel
+            )
+        )
+        kernel_name = (
+            "avg_pool3d_spatial_kernel"
+            if use_spatial_fast_path
+            else "avg_pool3d_kernel"
+        )
         key = (
-            "general",
+            kernel_name,
             n,
             c_in,
             d_in,
@@ -480,7 +545,7 @@ class AvgPool3dFwdOp(Op):
             self.tune,
         )
         if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["avg_pool3d_kernel"](
+            kernel_kwargs = dict(
                 n=n,
                 c_in=c_in,
                 d_in=d_in,
@@ -495,12 +560,20 @@ class AvgPool3dFwdOp(Op):
                 pad_d=self.padding[0],
                 pad_h=self.padding[1],
                 pad_w=self.padding[2],
-                ceil_mode=self.ceil_mode,
-                count_include_pad=self.count_include_pad,
-                divisor_override=self.divisor_override,
                 dtype=dtype,
                 tune=self.tune,
             )
+            if use_spatial_fast_path:
+                self._kernel_cache[key] = self.kernel_map[kernel_name](
+                    **kernel_kwargs
+                )
+            else:
+                self._kernel_cache[key] = self.kernel_map[kernel_name](
+                    **kernel_kwargs,
+                    ceil_mode=self.ceil_mode,
+                    count_include_pad=self.count_include_pad,
+                    divisor_override=self.divisor_override,
+                )
         return self._kernel_cache[key]
 
     def _infer_output_shapes(

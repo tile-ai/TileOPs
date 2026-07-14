@@ -78,7 +78,14 @@ from .norm import (
     LayerNormKernel,
     RMSNormKernel,
 )
-from .pool import AvgPool1dKernel, AvgPool2dKernel, AvgPool3dKernel
+from .pool import (
+    AvgPool1dKernel,
+    AvgPool1dSpatialKernel,
+    AvgPool2dKernel,
+    AvgPool2dSpatialKernel,
+    AvgPool3dKernel,
+    AvgPool3dSpatialKernel,
+)
 from .rope import (
     RopeLlama31Kernel,
     RopeLongRopeKernel,
@@ -91,8 +98,11 @@ from .topk_selector import TopkSelectorKernel
 
 __all__ = [
     "AvgPool1dKernel",
+    "AvgPool1dSpatialKernel",
     "AvgPool2dKernel",
+    "AvgPool2dSpatialKernel",
     "AvgPool3dKernel",
+    "AvgPool3dSpatialKernel",
     "BatchNormBwdKernel",
     "BatchNormFwdInferKernel",
     "BatchNormFwdTrainKernel",
