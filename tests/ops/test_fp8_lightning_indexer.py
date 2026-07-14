@@ -5,12 +5,10 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import FP8LightningIndexerOp
-from workloads.fp8_lightning_indexer import (
-    FP8LightningIndexerTest as _FP8LightningIndexerTestWorkload,
-)
+from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
 
 
-class FP8LightningIndexerTest(_FP8LightningIndexerTestWorkload, TestBase):
+class FP8LightningIndexerTest(FP8LightningIndexerWorkload, TestBase):
 
     @staticmethod
     def _compute_correlation(a: torch.Tensor, b: torch.Tensor) -> float:

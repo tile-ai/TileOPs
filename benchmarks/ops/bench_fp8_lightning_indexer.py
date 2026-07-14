@@ -5,10 +5,10 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import FP8LightningIndexerOp
-from workloads.fp8_lightning_indexer import FP8LightningIndexerTest
+from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
 
 
-class _FP8LightningIndexerTestBaseline(FP8LightningIndexerTest):
+class _FP8LightningIndexerBaseline(FP8LightningIndexerWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, kv: torch.Tensor, weights: torch.Tensor,
@@ -39,7 +39,7 @@ class _FP8LightningIndexerTestBaseline(FP8LightningIndexerTest):
         return (logits,)
 
 
-class FP8LightningIndexerBenchmark(BenchmarkBase[FP8LightningIndexerTest]):
+class FP8LightningIndexerBenchmark(BenchmarkBase[FP8LightningIndexerWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         # Flops depend on the actual mask cost which varies per input
@@ -76,7 +76,7 @@ _FP8_LIGHTING_INDEXER_BENCH_PARAMS = [
 def test_fp8_lightning_indexer_bench(batch: int, seq_len: int, heads: int, index_dim: int,
                                     seq_len_kv: int, kv_group: int, clean_logits: bool,
                                     config: Optional[dict], tune: bool) -> None:
-    test = _FP8LightningIndexerTestBaseline(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
+    test = _FP8LightningIndexerBaseline(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
                                   clean_logits, config)
     bm = FP8LightningIndexerBenchmark(test)
     inputs = test.gen_inputs()
