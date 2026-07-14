@@ -450,7 +450,8 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
-        best_config = self.default_config
+        best_config: Optional[dict] = None
+        failures: list[str] = []
 
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
         torch_dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16}[self.dtype_str]
@@ -481,8 +482,23 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
                 if t < best_time:
                     best_time = t
                     best_config = config
-            except Exception:
+            except Exception as exc:
+                failures.append(
+                    f"{config}: {type(exc).__name__}: {exc}"
+                )
                 continue
+
+        if failures:
+            print(
+                f"{self.__class__.__name__} skipped {len(failures)} raw autotune "
+                f"candidate(s): {failures}"
+            )
+        if best_config is None:
+            print(
+                f"{self.__class__.__name__} found no successful raw autotune "
+                "candidate; falling back to default config."
+            )
+            best_config = self.default_config
 
         self.config = best_config
         print(f"{self.__class__.__name__} initialized with config: {self.config}")

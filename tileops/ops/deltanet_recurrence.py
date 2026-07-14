@@ -43,7 +43,6 @@ class DeltaNetDecodeOp(Op):
         dim_k: int,
         dim_v: int,
         dtype: torch.dtype,
-        tune: bool,
     ) -> bool:
         if dtype not in (torch.float16, torch.bfloat16) or dim_k != 128 or dim_v != 128:
             return False
@@ -71,7 +70,7 @@ class DeltaNetDecodeOp(Op):
         #   fp32 -> FP32 kernel (no TF32)
         #   fp16/bf16 DK=DV=128 on Hopper -> raw CUDA warp-per-Vtile kernel
         #   other fp16/bf16 shapes -> default TileLang kernel
-        use_raw_cuda_decode = self._should_use_raw_cuda_decode(dim_k, dim_v, dtype, tune)
+        use_raw_cuda_decode = self._should_use_raw_cuda_decode(dim_k, dim_v, dtype)
         if dtype == torch.float32:
             kernel_cls = self.kernel_map["DeltaNetDecodeFP32Kernel"]
         elif use_raw_cuda_decode:
