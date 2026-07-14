@@ -180,18 +180,17 @@ def test_instance_norm_forward_required_signature() -> None:
 
 
 @pytest.mark.smoke
-def test_instance_norm_rejects_ctor_input_dtype_mismatch() -> None:
+def test_instance_norm_rejects_input_affine_dtype_mismatch() -> None:
     op = InstanceNormFwdOp.__new__(InstanceNormFwdOp)
-    op.dtype = torch.float16
-    op._committed_dtype = torch.float16
 
     fp16 = torch.empty(0, dtype=torch.float16)
     bf16 = torch.empty(0, dtype=torch.bfloat16)
+    int32 = torch.empty(0, dtype=torch.int32)
 
     op._validate_dtypes(fp16, fp16, fp16)
 
     with pytest.raises(ValueError, match="x.dtype"):
-        op._validate_dtypes(bf16, fp16, fp16)
+        op._validate_dtypes(int32, fp16, fp16)
     with pytest.raises(ValueError, match="weight.dtype"):
         op._validate_dtypes(fp16, bf16, fp16)
     with pytest.raises(ValueError, match="bias.dtype"):

@@ -314,8 +314,6 @@ BatchNormFwdOp:
       training: {type: bool, default: false}
       momentum: {type: float, default: 0.1}
       eps: {type: float, default: 1.0e-5}
-    static_dims:
-      C: "x.shape[1]"
     shape_rules:
       - "running_mean.shape == (x.shape[1],)"
       - "running_var.shape == (x.shape[1],)"
@@ -368,8 +366,6 @@ BatchNormBwdOp:
       grad_weight: {dtype: "float32"}
       grad_bias: {dtype: "float32"}
     params: {}
-    static_dims:
-      C: "grad_out.shape[1]"
     shape_rules:
       - "x.shape == grad_out.shape"
       - "weight.shape == (grad_out.shape[1],)"
@@ -421,8 +417,6 @@ GroupNormFwdOp:
     params:
       num_groups: {type: int}
       eps: {type: float, default: 1.0e-5}
-    static_dims:
-      C: "x.shape[1]"
     shape_rules:
       - "weight.shape == (x.shape[1],)"
       - "bias.shape == (x.shape[1],)"
@@ -473,8 +467,6 @@ GroupNormFwdOpNoAffine:
     params:
       num_groups: {type: int}
       eps: {type: float, default: 1.0e-5}
-    static_dims:
-      C: "x.shape[1]"
     shape_rules:
       - "x.shape[1] % num_groups == 0"
       - "output.shape == x.shape"
@@ -522,8 +514,6 @@ InstanceNormFwdOp:
       use_input_stats: {type: bool, default: true}
       momentum: {type: float, default: 0.1}
       eps: {type: float, default: 1.0e-5}
-    static_dims:
-      C: "x.shape[1]"
     shape_rules:
       - "weight.shape == (x.shape[1],)"
       - "bias.shape == (x.shape[1],)"
@@ -575,8 +565,6 @@ InstanceNormFwdOpNoAffine:
       use_input_stats: {type: bool, default: true}
       momentum: {type: float, default: 0.1}
       eps: {type: float, default: 1.0e-5}
-    static_dims:
-      C: "x.shape[1]"
     shape_rules:
       - "running_mean.shape == (x.shape[1],)"
       - "running_var.shape == (x.shape[1],)"

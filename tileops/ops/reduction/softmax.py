@@ -11,8 +11,6 @@ Example:
 
 from typing import Dict, Optional
 
-import torch
-
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.softmax import SoftmaxKernel
 
@@ -25,9 +23,7 @@ class SoftmaxFwdOp(_SoftmaxBaseOp):
     """Softmax operator: y = softmax(x, dim).
 
     Output has the same shape and dtype as input. The reduction-dim extent
-    ``N`` and dtype are inferred from ``x`` during ``forward()``. Optional
-    ``N`` and ``dtype`` constructor arguments are retained as compatibility
-    guards and, when provided, are validated against the input tensor.
+    ``N`` and dtype are inferred from ``x`` during ``forward()``.
 
     Args:
         dim: Reduction dimension (default ``None``, matching PyTorch's
@@ -35,8 +31,6 @@ class SoftmaxFwdOp(_SoftmaxBaseOp):
             resolved at forward time using PyTorch's implicit-axis rule
             (``0`` for ``ndim in {0, 1, 3}`` else ``1``) and the same
             deprecation ``UserWarning`` is emitted.
-        N: Optional committed reduction-dim size for compatibility.
-        dtype: Optional committed data type for compatibility.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """
@@ -47,13 +41,9 @@ class SoftmaxFwdOp(_SoftmaxBaseOp):
 
     def __init__(
         self,
-        N: Optional[int] = None,
-        dtype: Optional[torch.dtype] = None,
         dim: Optional[int] = None,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        super().__init__(
-            N=N, dtype=dtype, dim=dim, kernel_map=kernel_map, tune=tune,
-        )
+        super().__init__(dim=dim, kernel_map=kernel_map, tune=tune)

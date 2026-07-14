@@ -38,8 +38,8 @@ class TestBatchNormFwdValidation:
 
     def test_rejects_wrong_dtype(self):
         from tileops.ops.norm.batch_norm import BatchNormFwdOp
-        op = BatchNormFwdOp(dtype=torch.float16)
-        x_wrong = torch.randn(4, 8, 4, 4, device="cuda", dtype=torch.float32)
+        op = BatchNormFwdOp()
+        x_wrong = torch.randn(4, 8, 4, 4, device="cuda", dtype=torch.float64)
         _, weight, bias, rm, rv = self._make_inputs()
         with pytest.raises(ValueError, match="dtype"):
             op(x_wrong, rm, rv, weight, bias)

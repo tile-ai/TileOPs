@@ -21,7 +21,6 @@ kernel's block_l (chosen automatically by the kernel's default_config).
 """
 
 import functools
-import math
 import weakref
 from typing import Dict, Optional, Tuple
 
@@ -85,10 +84,6 @@ class BatchNormFwdOp(Op):
         to ``(C, L)`` internally where ``L = N * prod(spatial)``.
 
     Args:
-        N: Optional committed batch size for compatibility.
-        C: Optional committed channel count for compatibility.
-        spatial: Optional committed spatial dimensions for compatibility.
-        dtype: Optional committed input/output data type for compatibility.
         training: Default ``training`` flag for ``forward()``; per the
             manifest the default is ``False``.
         momentum: Running-stat update momentum (used in training mode).
@@ -99,10 +94,6 @@ class BatchNormFwdOp(Op):
 
     def __init__(
         self,
-        N: Optional[int] = None,
-        C: Optional[int] = None,
-        spatial: Tuple[int, ...] = (),
-        dtype: Optional[torch.dtype] = None,
         training: bool = False,
         momentum: float = 0.1,
         eps: float = 1e-5,
@@ -110,19 +101,11 @@ class BatchNormFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.N = N
-        self.C = C
-        self.spatial = tuple(spatial)
-        self.L = (
-            N * math.prod(self.spatial)
-            if N is not None and self.spatial
-            else N
-        )
-        self.dtype = dtype
-        self._committed_N = N
-        self._committed_C = C
-        self._committed_spatial = tuple(spatial) if spatial else None
-        self._committed_dtype = dtype
+        self.N: Optional[int] = None
+        self.C: Optional[int] = None
+        self.spatial: Optional[Tuple[int, ...]] = None
+        self.L: Optional[int] = None
+        self.dtype: Optional[torch.dtype] = None
         self.training = training
         self.eps = eps
         self.momentum = momentum
@@ -169,23 +152,8 @@ class BatchNormFwdOp(Op):
                 "x.dtype must be float32, float16, or bfloat16, "
                 f"got {x.dtype}"
             )
-        if self._committed_dtype is not None and x.dtype != self._committed_dtype:
-            raise ValueError(
-                f"Expected x.dtype {self._committed_dtype}, got {x.dtype}"
-            )
         N, C, *spatial_list = x.shape
         spatial = tuple(spatial_list)
-        if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(f"Expected N={self._committed_N}, got {N}")
-        if self._committed_C is not None and self._committed_C != C:
-            raise ValueError(f"Expected C={self._committed_C}, got {C}")
-        if (
-            self._committed_spatial is not None
-            and spatial != self._committed_spatial
-        ):
-            raise ValueError(
-                f"Expected spatial={self._committed_spatial}, got {spatial}"
-            )
         L = x.numel() // C
         return N, C, spatial, L, x.dtype
 
@@ -246,10 +214,6 @@ class BatchNormFwdOp(Op):
         else:
             self.infer_kernel = kernel
         return kernel
-
-    def _validate_inputs(self, x: torch.Tensor) -> None:
-        """Backward-compatible validation entry point."""
-        self._resolve_spec(x)
 
     def _forward_impl(
         self,
@@ -324,36 +288,21 @@ class BatchNormBwdOp(Op):
         to ``(C, L)`` internally where ``L = N * prod(spatial)``.
 
     Args:
-        N: Optional committed batch size for compatibility.
-        C: Optional committed channel count for compatibility.
-        *spatial: Optional committed spatial dimensions for compatibility.
-        dtype: Optional committed data type of ``grad_out``, ``x``, and ``grad_x``.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
         self,
-        N: Optional[int] = None,
-        C: Optional[int] = None,
-        *spatial: int,
-        dtype: Optional[torch.dtype] = None,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.N = N
-        self.C = C
-        self.spatial = spatial
-        self.L = (
-            N * math.prod(spatial)
-            if N is not None and spatial
-            else N
-        )
-        self.dtype = dtype
-        self._committed_N = N
-        self._committed_C = C
-        self._committed_spatial = tuple(spatial) if spatial else None
-        self._committed_dtype = dtype
+        self.N: Optional[int] = None
+        self.C: Optional[int] = None
+        self.spatial: Optional[Tuple[int, ...]] = None
+        self.L: Optional[int] = None
+        self.dtype: Optional[torch.dtype] = None
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
@@ -407,26 +356,8 @@ class BatchNormBwdOp(Op):
                 "grad_out.dtype must be float32, float16, or bfloat16, "
                 f"got {grad_out.dtype}"
             )
-        if (
-            self._committed_dtype is not None
-            and grad_out.dtype != self._committed_dtype
-        ):
-            raise ValueError(
-                f"Expected grad_out.dtype {self._committed_dtype}, got {grad_out.dtype}"
-            )
         N, C, *spatial_list = grad_out.shape
         spatial = tuple(spatial_list)
-        if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(f"Expected N={self._committed_N}, got {N}")
-        if self._committed_C is not None and self._committed_C != C:
-            raise ValueError(f"Expected C={self._committed_C}, got {C}")
-        if (
-            self._committed_spatial is not None
-            and spatial != self._committed_spatial
-        ):
-            raise ValueError(
-                f"Expected spatial={self._committed_spatial}, got {spatial}"
-            )
         L = grad_out.numel() // C
         return N, C, spatial, L, grad_out.dtype
 

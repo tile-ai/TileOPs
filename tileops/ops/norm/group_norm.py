@@ -54,13 +54,8 @@ class GroupNormFwdOp(Op):
         Hidden dimension is padded to 256-element alignment internally.
 
     Args:
-        N: Batch size.
-        C: Number of channels.
-        spatial: Spatial dimensions tuple ``(H, W, ...)``.
         num_groups: Number of groups (manifest ``params.num_groups``).
             Must divide *C* evenly.
-        dtype: Data type (``torch.float32``, ``torch.float16``, or
-            ``torch.bfloat16``).
         eps: Epsilon for numerical stability.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
@@ -69,38 +64,22 @@ class GroupNormFwdOp(Op):
     def __init__(
         self,
         num_groups: int,
-        N: Optional[int] = None,
-        C: Optional[int] = None,
-        spatial: Optional[tuple] = None,
-        dtype: Optional[torch.dtype] = None,
         eps: float = 1e-5,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if C is not None and C % num_groups != 0:
-            raise ValueError(
-                f"C={C} must be divisible by num_groups={num_groups}"
-            )
-        self.N = N
-        self.C = C
-        self.spatial = tuple(spatial) if spatial is not None else None
+        self.N: Optional[int] = None
+        self.C: Optional[int] = None
+        self.spatial: Optional[Tuple[int, ...]] = None
         self.num_groups = num_groups
-        self.dtype = dtype
-        self._committed_N = N
-        self._committed_C = C
-        self._committed_spatial = self.spatial
-        self._committed_dtype = dtype
+        self.dtype: Optional[torch.dtype] = None
         self.eps = eps
         self.tune = tune
-        self.spatial_size = math.prod(self.spatial) if self.spatial is not None else None
-        self.D = (
-            (C // num_groups) * self.spatial_size
-            if C is not None and self.spatial_size is not None
-            else None
-        )
-        self.M = N * num_groups if N is not None else None
-        self.D_padded = align_up(self.D, ALIGNMENT) if self.D is not None else None
+        self.spatial_size: Optional[int] = None
+        self.D: Optional[int] = None
+        self.M: Optional[int] = None
+        self.D_padded: Optional[int] = None
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, Kernel] = {}
         self._constant_cache: Dict[tuple, Tuple[torch.Tensor, torch.Tensor]] = {}
@@ -135,23 +114,8 @@ class GroupNormFwdOp(Op):
                 "x.dtype must be float32, float16, or bfloat16, "
                 f"got {x.dtype}"
             )
-        if self._committed_dtype is not None and x.dtype != self._committed_dtype:
-            raise ValueError(
-                f"Expected x.dtype {self._committed_dtype}, got {x.dtype}"
-            )
         N, C, *spatial_list = x.shape
         spatial = tuple(spatial_list)
-        if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(f"Expected N={self._committed_N}, got {N}")
-        if self._committed_C is not None and self._committed_C != C:
-            raise ValueError(f"Expected C={self._committed_C}, got {C}")
-        if (
-            self._committed_spatial is not None
-            and spatial != self._committed_spatial
-        ):
-            raise ValueError(
-                f"Expected shape spatial={self._committed_spatial}, got {spatial}"
-            )
         if C % self.num_groups != 0:
             raise ValueError(
                 f"C={C} must be divisible by num_groups={self.num_groups}"
@@ -328,13 +292,8 @@ class GroupNormFwdOpNoAffine(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
 
     Args:
-        N: Batch size.
-        C: Number of channels.
-        spatial: Spatial dimensions tuple ``(H, W, ...)``.
         num_groups: Number of groups (manifest ``params.num_groups``).
             Must divide *C* evenly.
-        dtype: Data type (``torch.float32``, ``torch.float16``, or
-            ``torch.bfloat16``).
         eps: Epsilon for numerical stability.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
@@ -343,39 +302,23 @@ class GroupNormFwdOpNoAffine(Op):
     def __init__(
         self,
         num_groups: int,
-        N: Optional[int] = None,
-        C: Optional[int] = None,
-        spatial: Optional[tuple] = None,
-        dtype: Optional[torch.dtype] = None,
         eps: float = 1e-5,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if C is not None and C % num_groups != 0:
-            raise ValueError(
-                f"C={C} must be divisible by num_groups={num_groups}"
-            )
-        self.N = N
-        self.C = C
-        self.spatial = tuple(spatial) if spatial is not None else None
+        self.N: Optional[int] = None
+        self.C: Optional[int] = None
+        self.spatial: Optional[Tuple[int, ...]] = None
         self.num_groups = num_groups
-        self.dtype = dtype
-        self._committed_N = N
-        self._committed_C = C
-        self._committed_spatial = self.spatial
-        self._committed_dtype = dtype
+        self.dtype: Optional[torch.dtype] = None
         self.eps = eps
         self.tune = tune
-        self.spatial_size = math.prod(self.spatial) if self.spatial is not None else None
-        self.D = (
-            (C // num_groups) * self.spatial_size
-            if C is not None and self.spatial_size is not None
-            else None
-        )
-        self.M = N * num_groups if N is not None else None
-        self.D_padded = align_up(self.D, ALIGNMENT) if self.D is not None else None
-        self.M_padded = align_up(self.M, _M_BLOCK_ALIGN) if self.M is not None else None
+        self.spatial_size: Optional[int] = None
+        self.D: Optional[int] = None
+        self.M: Optional[int] = None
+        self.D_padded: Optional[int] = None
+        self.M_padded: Optional[int] = None
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel: Optional[Kernel] = None
@@ -409,23 +352,8 @@ class GroupNormFwdOpNoAffine(Op):
                 "x.dtype must be float32, float16, or bfloat16, "
                 f"got {x.dtype}"
             )
-        if self._committed_dtype is not None and x.dtype != self._committed_dtype:
-            raise ValueError(
-                f"Expected x.dtype {self._committed_dtype}, got {x.dtype}"
-            )
         N, C, *spatial_list = x.shape
         spatial = tuple(spatial_list)
-        if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(f"Expected N={self._committed_N}, got {N}")
-        if self._committed_C is not None and self._committed_C != C:
-            raise ValueError(f"Expected C={self._committed_C}, got {C}")
-        if (
-            self._committed_spatial is not None
-            and spatial != self._committed_spatial
-        ):
-            raise ValueError(
-                f"Expected shape spatial={self._committed_spatial}, got {spatial}"
-            )
         if C % self.num_groups != 0:
             raise ValueError(
                 f"C={C} must be divisible by num_groups={self.num_groups}"

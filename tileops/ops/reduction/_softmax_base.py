@@ -45,8 +45,9 @@ class _SoftmaxBaseOp(Op):
     override output reshaping if needed.
 
     Args:
-        dtype: Data type (float32, float16, or bfloat16).
+        dtype: Optional committed dtype for subclasses that still expose it.
         dim: Reduction dimension (default -1).
+        N: Optional committed reduction dim for subclasses that still expose it.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """

@@ -61,11 +61,6 @@ class InstanceNormFwdOp(Op):
         for this op.
 
     Args:
-        N: Batch size.
-        C: Number of channels.
-        spatial: Spatial dimensions tuple ``(H, W, ...)``.
-        dtype: Data type (``torch.float32``, ``torch.float16``, or
-            ``torch.bfloat16``).
         use_input_stats: Mirrors ``torch.nn.functional.instance_norm``. When
             ``True`` (the default and only supported value), per-batch
             statistics are computed from the input. ``False`` (the
@@ -85,10 +80,6 @@ class InstanceNormFwdOp(Op):
 
     def __init__(
         self,
-        N: Optional[int] = None,
-        C: Optional[int] = None,
-        spatial: Optional[tuple] = None,
-        dtype: Optional[torch.dtype] = None,
         use_input_stats: bool = True,
         momentum: float = 0.1,
         eps: float = 1e-5,
@@ -102,22 +93,18 @@ class InstanceNormFwdOp(Op):
                 "is not supported by InstanceNormFwdOp; only "
                 "use_input_stats=True (per-batch statistics) is implemented."
             )
-        self.N = N
-        self.C = C
-        self.spatial = tuple(spatial) if spatial is not None else None
-        self.dtype = dtype
-        self._committed_N = N
-        self._committed_C = C
-        self._committed_spatial = self.spatial
-        self._committed_dtype = dtype
+        self.N: Optional[int] = None
+        self.C: Optional[int] = None
+        self.spatial: Optional[Tuple[int, ...]] = None
+        self.dtype: Optional[torch.dtype] = None
         self.use_input_stats = use_input_stats
         self.momentum = momentum
         self.eps = eps
         self.tune = tune
-        self.spatial_size = math.prod(self.spatial) if self.spatial is not None else None
-        self.D = self.spatial_size
-        self.M = N * C if N is not None and C is not None else None
-        self.D_padded = align_up(self.D, ALIGNMENT) if self.D is not None else None
+        self.spatial_size: Optional[int] = None
+        self.D: Optional[int] = None
+        self.M: Optional[int] = None
+        self.D_padded: Optional[int] = None
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, Kernel] = {}
         self._constant_cache: Dict[tuple, Tuple[torch.Tensor, torch.Tensor]] = {}
@@ -147,12 +134,10 @@ class InstanceNormFwdOp(Op):
         bias: torch.Tensor,
     ) -> None:
         allowed = (torch.float32, torch.float16, torch.bfloat16)
-        expected_dtype = getattr(self, "_committed_dtype", None)
+        expected_dtype = x.dtype
         for name, t in (("x", x), ("weight", weight), ("bias", bias)):
             if t.dtype not in allowed:
                 raise ValueError(f"{name}.dtype must be one of {allowed}, got {t.dtype}")
-            if expected_dtype is None:
-                expected_dtype = t.dtype
             if t.dtype != expected_dtype:
                 raise ValueError(
                     f"Expected {name}.dtype == {expected_dtype}, "
@@ -171,24 +156,8 @@ class InstanceNormFwdOp(Op):
                 "x.dtype must be float32, float16, or bfloat16, "
                 f"got {x.dtype}"
             )
-        committed_dtype = getattr(self, "_committed_dtype", None)
-        if committed_dtype is not None and x.dtype != committed_dtype:
-            raise ValueError(
-                f"Expected x.dtype {committed_dtype}, got {x.dtype}"
-            )
         N, C, *spatial_list = x.shape
         spatial = tuple(spatial_list)
-        if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(f"Expected N={self._committed_N}, got {N}")
-        if self._committed_C is not None and self._committed_C != C:
-            raise ValueError(f"Expected C={self._committed_C}, got {C}")
-        if (
-            self._committed_spatial is not None
-            and spatial != self._committed_spatial
-        ):
-            raise ValueError(
-                f"Expected shape spatial={self._committed_spatial}, got {spatial}"
-            )
         spatial_size = math.prod(spatial)
         D = spatial_size
         M = N * C
@@ -340,11 +309,6 @@ class InstanceNormFwdOpNoAffine(Op):
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
 
     Args:
-        N: Batch size.
-        C: Number of channels.
-        spatial: Spatial dimensions tuple ``(H, W, ...)``.
-        dtype: Data type (``torch.float32``, ``torch.float16``, or
-            ``torch.bfloat16``).
         use_input_stats: Mirrors ``torch.nn.functional.instance_norm``. When
             ``True`` (the default), per-instance statistics are computed from
             the input. When ``False``, the supplied ``running_mean`` and
@@ -360,10 +324,6 @@ class InstanceNormFwdOpNoAffine(Op):
 
     def __init__(
         self,
-        N: Optional[int] = None,
-        C: Optional[int] = None,
-        spatial: Optional[tuple] = None,
-        dtype: Optional[torch.dtype] = None,
         use_input_stats: bool = True,
         momentum: float = 0.1,
         eps: float = 1e-5,
@@ -371,28 +331,20 @@ class InstanceNormFwdOpNoAffine(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.N = N
-        self.C = C
-        self.spatial = tuple(spatial) if spatial is not None else None
-        self.dtype = dtype
-        self._committed_N = N
-        self._committed_C = C
-        self._committed_spatial = self.spatial
-        self._committed_dtype = dtype
+        self.N: Optional[int] = None
+        self.C: Optional[int] = None
+        self.spatial: Optional[Tuple[int, ...]] = None
+        self.dtype: Optional[torch.dtype] = None
         self.use_input_stats = use_input_stats
         self.momentum = momentum
         self.eps = eps
         self.tune = tune
-        self.spatial_size = math.prod(self.spatial) if self.spatial is not None else None
-        self.D = self.spatial_size
-        self.M = N * C if N is not None and C is not None else None
-        self._running_stats_broadcast_shape = (
-            [1, C] + [1] * len(self.spatial)
-            if C is not None and self.spatial is not None
-            else None
-        )
-        self.D_padded = align_up(self.D, ALIGNMENT) if self.D is not None else None
-        self.M_padded = align_up(self.M, _M_BLOCK_ALIGN) if self.M is not None else None
+        self.spatial_size: Optional[int] = None
+        self.D: Optional[int] = None
+        self.M: Optional[int] = None
+        self._running_stats_broadcast_shape: Optional[list[int]] = None
+        self.D_padded: Optional[int] = None
+        self.M_padded: Optional[int] = None
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel: Optional[Kernel] = None
@@ -441,11 +393,6 @@ class InstanceNormFwdOpNoAffine(Op):
             raise ValueError(
                 f"x.dtype must be one of {allowed}, got {x.dtype}"
             )
-        committed_dtype = getattr(self, "_committed_dtype", None)
-        if committed_dtype is not None and x.dtype != committed_dtype:
-            raise ValueError(
-                f"Expected x.dtype {committed_dtype}, got {x.dtype}"
-            )
         if running_mean.dtype != torch.float32:
             raise ValueError(
                 f"Expected running_mean.dtype torch.float32, got {running_mean.dtype}"
@@ -486,24 +433,8 @@ class InstanceNormFwdOpNoAffine(Op):
                 "x.dtype must be float32, float16, or bfloat16, "
                 f"got {x.dtype}"
             )
-        committed_dtype = getattr(self, "_committed_dtype", None)
-        if committed_dtype is not None and x.dtype != committed_dtype:
-            raise ValueError(
-                f"Expected x.dtype {committed_dtype}, got {x.dtype}"
-            )
         N, C, *spatial_list = x.shape
         spatial = tuple(spatial_list)
-        if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(f"Expected N={self._committed_N}, got {N}")
-        if self._committed_C is not None and self._committed_C != C:
-            raise ValueError(f"Expected C={self._committed_C}, got {C}")
-        if (
-            self._committed_spatial is not None
-            and spatial != self._committed_spatial
-        ):
-            raise ValueError(
-                f"Expected shape spatial={self._committed_spatial}, got {spatial}"
-            )
         spatial_size = math.prod(spatial)
         D = spatial_size
         M = N * C
