@@ -64,15 +64,17 @@ def _fp8_lighting_indexer_kernel(batch,
             heads_per_group = heads // kv_group
             with T.Kernel(T.ceildiv(seq_len, block_Q), batch, threads=threads) as (bx, by):
                 index_q_shared = T.alloc_shared([block_Q * heads, index_dim], dtype)
-                index_q_group_shared = T.alloc_shared([block_Q * heads_per_group, index_dim], dtype)
-                index_k_shared = T.alloc_shared([block_N, kv_group, index_dim], dtype)
-                index_k_group_shared = T.alloc_shared([block_N, index_dim], dtype)
                 index_k_scale_fragment = T.alloc_fragment([block_N, kv_group], accum_dtype)
                 s = T.alloc_fragment([block_N, block_Q * heads], accum_dtype)  #
                 s_reshaped = T.reshape(s, (block_N, block_Q, heads_per_group, kv_group))
-                s_tmp = T.alloc_fragment([block_N, block_Q * heads_per_group], accum_dtype)
                 logits = T.alloc_fragment([block_N, block_Q, kv_group], accum_dtype)
                 weights = T.alloc_fragment([block_Q, heads], accum_dtype)
+                index_k_group_shared = T.alloc_shared([block_N, index_dim], dtype)
+                if kv_group > 1:
+                    index_k_shared = T.alloc_shared([block_N, kv_group, index_dim], dtype)
+                    index_q_group_shared = T.alloc_shared([block_Q * heads_per_group, index_dim],
+                                                          dtype)
+                    s_tmp = T.alloc_fragment([block_N, block_Q * heads_per_group], accum_dtype)
 
                 seq_len_i = bx * block_Q
                 b_i = by
@@ -93,27 +95,41 @@ def _fp8_lighting_indexer_kernel(batch,
 
                 for nbn_i in T.Pipelined(
                         T.ceildiv(cu_k_e_max - cu_k_s_min, block_N), num_stages=num_stages):
-                    T.copy(IndexK[b_i, cu_k_s_min + nbn_i * block_N, 0, 0], index_k_shared)
+                    if kv_group > 1:
+                        T.copy(IndexK[b_i, cu_k_s_min + nbn_i * block_N, 0, 0], index_k_shared)
                     T.copy(IndexKScale[b_i, cu_k_s_min + nbn_i * block_N, 0],
                            index_k_scale_fragment)
 
-                    for g in T.Serial(kv_group):
-                        for bn_i, d_i in T.Parallel(block_N, index_dim):
-                            index_k_group_shared[bn_i, d_i] = index_k_shared[bn_i, g, d_i]  #
-                        for i, d in T.Parallel(block_Q * heads_per_group, index_dim):
-                            index_q_group_shared[i, d] = index_q_shared[g * heads_per_group + i,
-                                                                        d]  #
+                    if kv_group == 1:
+                        T.copy(
+                            IndexK[b_i, cu_k_s_min + nbn_i * block_N:cu_k_s_min +
+                                   (nbn_i + 1) * block_N, 0, 0:index_dim], index_k_group_shared)
                         T.gemm(
                             index_k_group_shared,
-                            index_q_group_shared,
-                            s_tmp,
+                            index_q_shared,
+                            s,
                             transpose_B=True,
                             clear_accum=True,
                             policy=T.GemmWarpPolicy.FullCol,
                         )
-                        for bn_i, bq_i, h_i in T.Parallel(block_N, block_Q, heads_per_group):
-                            s_reshaped[bn_i, bq_i, h_i, g] = (
-                                s_tmp[bn_i, bq_i * heads_per_group + h_i])
+                    else:
+                        for g in T.Serial(kv_group):
+                            for bn_i, d_i in T.Parallel(block_N, index_dim):
+                                index_k_group_shared[bn_i, d_i] = index_k_shared[bn_i, g, d_i]  #
+                            for i, d in T.Parallel(block_Q * heads_per_group, index_dim):
+                                index_q_group_shared[i, d] = index_q_shared[g * heads_per_group +
+                                                                            i, d]  #
+                            T.gemm(
+                                index_k_group_shared,
+                                index_q_group_shared,
+                                s_tmp,
+                                transpose_B=True,
+                                clear_accum=True,
+                                policy=T.GemmWarpPolicy.FullCol,
+                            )
+                            for bn_i, bq_i, h_i in T.Parallel(block_N, block_Q, heads_per_group):
+                                s_reshaped[bn_i, bq_i, h_i, g] = (
+                                    s_tmp[bn_i, bq_i * heads_per_group + h_i])
 
                     for bn_i, bq_i, h_i, g in T.Parallel(block_N, block_Q, heads_per_group,
                                                          kv_group):
