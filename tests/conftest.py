@@ -59,28 +59,11 @@ TILELANG_019_SKIP_REASON = (
     "when these tests pass against the current tilelang."
 )
 
-TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES = (
-    "tests/ops/test_batch_norm.py",
-)
+TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES = ()
 
-TILELANG_019_KNOWN_FAILING_NODEIDS = {
-    "tests/ops/test_engram.py::test_engram_gate_conv_bwd[1-32-256-dtype0-False]",
-    "tests/ops/test_engram.py::test_engram_gate_conv_bwd[1-32-256-dtype1-False]",
-    "tests/ops/test_engram.py::test_engram_gate_conv_bwd[2-64-512-dtype2-False]",
-    "tests/ops/test_engram.py::test_engram_gate_conv_bwd[2-16-256-dtype3-False]",
-    "tests/ops/test_engram.py::test_engram_decode[1-512-256-12-4-3-dtype0-False]",
-    "tests/ops/test_engram.py::test_engram_decode[1-512-256-12-4-3-dtype1-False]",
-    "tests/ops/test_engram.py::test_engram_decode[4-1024-512-20-4-5-dtype2-False]",
-    "tests/ops/test_engram.py::test_engram_decode[8-512-256-18-4-3-dtype3-False]",
-    "tests/ops/test_engram.py::test_engram_decode_multi_step",
-    "tests/ops/test_norm_ops.py::TestBatchNormCustomOp::test_fwd_torch_compile_smoke",
-    "tests/ops/test_norm_ops.py::TestBatchNormCustomOp::test_bwd_torch_compile_smoke",
-}
+TILELANG_019_KNOWN_FAILING_NODEIDS = set()
 
-TILELANG_019_KNOWN_FAILING_PREFIXES = (
-    "tests/test_autotune.py::test_mha_kernel_autotune",
-    "tests/test_compile.py::test_mha_kernel_compile",
-)
+TILELANG_019_KNOWN_FAILING_PREFIXES = ()
 
 def _get_callspec_params(item: pytest.Item) -> dict | None:
     callspec = getattr(item, "callspec", None)

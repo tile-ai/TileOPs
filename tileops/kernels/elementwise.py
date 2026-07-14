@@ -1108,6 +1108,10 @@ class FusedGatedKernel(Kernel):
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
             return {"threads": 256, "num_per_thread": 16}
+        if self.strategy == "explicit_parallel" and self.dtype in (torch.float16, torch.bfloat16):
+            # 128x8 keeps block_N=1024 but widens loads to 128-bit and lifts occupancy.
+            # Only fp16/bf16 gain the width: fp32 npt=4 already saturates LDG.128.
+            return {"threads": 128, "num_per_thread": 8}
         npt = _strategy_npt(self.strategy, self.dtype)
         return {"threads": 256, "num_per_thread": npt}
 
@@ -1733,7 +1737,11 @@ class SiluAndMulFwdKernel(FusedGatedKernel):
 
     @staticmethod
     def activation_func(x):
-        return x * T.sigmoid(x)
+        # exp2 form (fp32): exp2 lowers to one MUFU.EX2 vs expf's multi-op sequence.
+        g = T.Cast("float32", x)
+        one = T.cast(1.0, "float32")
+        log2e = T.cast(1.4426950408889634, "float32")
+        return g / (one + T.exp2(-g * log2e))
 
 
 class GeluAndMulFwdKernel(FusedGatedKernel):

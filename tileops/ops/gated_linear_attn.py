@@ -64,6 +64,79 @@ class GLADecodeOp(Op):
             "GLADecodeFP32Kernel": GLADecodeFP32Kernel,
         }
 
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        gk_shape: tuple[int, ...],
+        state_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        del k_shape, gk_shape
+        return {
+            "o": (q_shape[0], q_shape[1], v_shape[-1]),
+            "new_state": state_shape,
+        }
+
+    def _validate_dtypes(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        gk: torch.Tensor,
+        state: torch.Tensor,
+    ) -> None:
+        if self.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            raise ValueError(f"Unsupported dtype: {self.dtype}")
+        for name, tensor in (("q", q), ("k", k), ("v", v), ("gk", gk), ("state", state)):
+            if tensor.dtype != self.dtype:
+                raise ValueError(f"{name}.dtype must be {self.dtype}, got {tensor.dtype}")
+
+    def _validate_shapes(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        gk: torch.Tensor,
+        state: torch.Tensor,
+    ) -> None:
+        q_shape = (self.batch, self.heads, self.dim_k)
+        v_shape = (self.batch, self.heads, self.dim_v)
+        state_shape = (self.batch, self.heads, self.dim_k, self.dim_v)
+        expected_shapes = (
+            ("q", q, q_shape),
+            ("k", k, q_shape),
+            ("v", v, v_shape),
+            ("gk", gk, q_shape),
+            ("state", state, state_shape),
+        )
+        for name, tensor, expected in expected_shapes:
+            if tuple(tensor.shape) != expected:
+                raise ValueError(
+                    f"{name} must have shape {expected}, got {tuple(tensor.shape)}"
+                )
+        if not all(tensor.is_cuda for tensor in (q, k, v, gk, state)):
+            raise ValueError("q, k, v, gk, and state must be CUDA tensors")
+
+    def _validate_output_shapes(
+        self,
+        o: torch.Tensor,
+        new_state: torch.Tensor,
+    ) -> None:
+        o_shape = (self.batch, self.heads, self.dim_v)
+        state_shape = (self.batch, self.heads, self.dim_k, self.dim_v)
+        if tuple(o.shape) != o_shape:
+            raise ValueError(f"o must have shape {o_shape}, got {tuple(o.shape)}")
+        if tuple(new_state.shape) != state_shape:
+            raise ValueError(
+                f"new_state must have shape {state_shape}, got {tuple(new_state.shape)}"
+            )
+
+    def eval_roofline(self) -> tuple[int, int]:
+        from tileops.perf.formulas import gla_decode_roofline
+
+        return gla_decode_roofline(self)
+
     def forward(
         self,
         q: torch.Tensor,
@@ -72,4 +145,8 @@ class GLADecodeOp(Op):
         gk: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.kernel(q, k, v, gk, state)
+        self._validate_dtypes(q, k, v, gk, state)
+        self._validate_shapes(q, k, v, gk, state)
+        o, new_state = self.kernel(q, k, v, gk, state)
+        self._validate_output_shapes(o, new_state)
+        return o, new_state

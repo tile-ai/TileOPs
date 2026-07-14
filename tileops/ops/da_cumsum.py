@@ -16,6 +16,9 @@ class DaCumsumFwdOp(Op):
     Applies optional per-head bias, optional softplus activation, and clamping to
     raw dt values, then computes the chunk-local inclusive prefix sum of dA = dt * A.
 
+    Note: dt_out is cast to the target dtype for storage efficiency, but dA_cumsum
+    is computed from the fp32 dt values before casting, ensuring numerical precision.
+
     Args:
         batch:        Batch size.
         num_chunks:   Number of chunks (seq_len / chunk_len).
@@ -36,6 +39,7 @@ class DaCumsumFwdOp(Op):
         chunk_len: int,
         n_heads: int,
         seq_len: int,
+        dtype: torch.dtype = torch.float32,
         dt_softplus: bool = False,
         has_dt_bias: bool = False,
         dt_min: float = 0.0,
@@ -48,14 +52,14 @@ class DaCumsumFwdOp(Op):
         self.chunk_len = chunk_len
         self.n_heads = n_heads
         self.seq_len = seq_len
+        self.dtype = dtype
         self.dt_softplus = dt_softplus
         self.has_dt_bias = has_dt_bias
         self.dt_min = dt_min
         self.dt_max = dt_max
-        self.dtype = torch.float32
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["da_cumsum_fwd"](
-            batch, num_chunks, chunk_len, n_heads, seq_len,
+            batch, num_chunks, chunk_len, n_heads, seq_len, dtype,
             dt_softplus=dt_softplus,
             has_dt_bias=has_dt_bias,
             dt_min=dt_min,
@@ -82,8 +86,9 @@ class DaCumsumFwdOp(Op):
                 Required when the op was constructed with has_dt_bias=True.
 
         Returns:
-            dt_out: (batch, n_heads, num_chunks, chunk_len) float32 — processed dt.
-            dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
+            dt_out: (batch, n_heads, num_chunks, chunk_len) dtype — processed dt in target dtype.
+            dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum
+                of dA = dt_val * A, computed from fp32 dt_val before casting dt_out.
         """
         if not dt.is_cuda:
             raise ValueError("dt must be a CUDA tensor")

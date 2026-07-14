@@ -3,10 +3,14 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
+from benchmarks.ops.attention.manifest_params import manifest_params
+from tileops.manifest import load_workloads
 from tileops.ops import DeltaNetDecodeOp
 from workloads.deltanet import DeltaNetDecodeTest
 from workloads.workload_base import FixtureBase
+
+_OP_NAME = "DeltaNetDecodeOp"
 
 
 def deltanet_decode_torch(
@@ -71,21 +75,14 @@ class DeltaNetDecodeBenchmark(BenchmarkBase[DeltaNetDecodeTest]):
 
 class DeltaNetDecodeBenchFixture(FixtureBase):
     PARAMS = [
-        ("batch, heads, dim_k, dim_v, dtype", [
-            pytest.param(1, 32, 128, 128, torch.float32, marks=pytest.mark.smoke),
-            pytest.param(1, 32, 128, 128, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(8, 32, 128, 128, torch.float32, marks=pytest.mark.full),
-            pytest.param(8, 32, 128, 128, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(16, 32, 128, 128, torch.float32, marks=pytest.mark.full),
-            pytest.param(16, 32, 128, 128, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(32, 32, 128, 128, torch.float32, marks=pytest.mark.full),
-            pytest.param(32, 32, 128, 128, torch.bfloat16, marks=pytest.mark.full),
-            pytest.param(1, 32, 64, 64, torch.float32, marks=pytest.mark.full),
-            pytest.param(8, 32, 64, 64, torch.float32, marks=pytest.mark.full),
-            pytest.param(32, 32, 64, 64, torch.float32, marks=pytest.mark.full),
-            pytest.param(64, 32, 128, 128, torch.float32, marks=pytest.mark.nightly),
-            pytest.param(64, 32, 128, 128, torch.bfloat16, marks=pytest.mark.nightly),
-        ]),
+        (
+            "batch, heads, dim_k, dim_v, dtype, tune",
+            manifest_params(
+                load_workloads(_OP_NAME),
+                lambda w: (w["q_shape"][0], w["q_shape"][1], w["q_shape"][2], w["v_shape"][2]),
+                tune=False,
+            ),
+        ),
     ]
 
 
@@ -96,12 +93,13 @@ def test_deltanet_decode_bench(
     dim_k: int,
     dim_v: int,
     dtype: torch.dtype,
+    tune: bool,
 ) -> None:
     test = _DeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
-    bm = DeltaNetDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = DeltaNetDecodeOp(batch, heads, dim_k, dim_v, dtype)
+    op = DeltaNetDecodeOp(batch, heads, dim_k, dim_v, dtype, tune=tune)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

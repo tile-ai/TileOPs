@@ -167,13 +167,23 @@ def test_binary_default_config_preserves_strategy_npt_split():
 
 
 @pytest.mark.full
-def test_fused_gated_default_config_preserves_strategy_npt_split():
-    """Fused-gated kernels should keep the direct/explicit_parallel npt split."""
+def test_fused_gated_explicit_uses_occupancy_config():
+    """Fused-gated explicit_parallel uses the 128x8 occupancy config for fp16/bf16.
+
+    threads=128, npt=8 keeps block_N = 1024 (same tiling as the old 256x4) while
+    raising occupancy/ILP at large M. fp32 falls back to 256/4: npt=4 already
+    saturates the 128-bit load width, so 128/8 would only add register pressure.
+    The direct strategy keeps the dtype-driven npt.
+    """
     with (
         patch.object(SiluAndMulFwdKernel, "_build_kernel", return_value=None),
         patch.object(SiluAndMulFwdKernel, "init_config"),
     ):
         direct = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.float16, strategy="direct")
-        explicit = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.float16, strategy="explicit_parallel")
+        explicit_fp16 = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.float16, strategy="explicit_parallel")
+        explicit_bf16 = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.bfloat16, strategy="explicit_parallel")
+        explicit_fp32 = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.float32, strategy="explicit_parallel")
     assert direct.default_config["num_per_thread"] == 8
-    assert explicit.default_config["num_per_thread"] == 4
+    assert explicit_fp16.default_config == {"threads": 128, "num_per_thread": 8}
+    assert explicit_bf16.default_config == {"threads": 128, "num_per_thread": 8}
+    assert explicit_fp32.default_config == {"threads": 256, "num_per_thread": 4}

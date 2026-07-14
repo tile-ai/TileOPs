@@ -6,17 +6,17 @@ import torch.nn.functional as F
 from tileops.kernels.attention import (
     FlashAttnBwdPostprocessKernel,
     FlashAttnBwdPreprocessKernel,
+    GQAFwdWsPersistentCausalKernel,
     MHABwdKernel,
     MHABwdWgmmaPipelinedKernel,
     MHADecodeKernel,
     MHADecodePagedKernel,
-    MHAFwdKernel,
-    MHAFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import is_hopper
 
 from ..op_base import Op
+from .gqa import GroupedQueryAttentionFwdOp, _select_gqa_prefill_fwd_kernel_cls
 
 __all__ = [
     "MultiHeadAttentionBwdOp",
@@ -27,7 +27,12 @@ __all__ = [
 
 
 class MultiHeadAttentionFwdOp(Op):
-    """Layout: BSHD"""
+    """Layout: BSHD.
+
+    MHA is the heads_kv == heads specialization of GQA, so route the
+    maintained forward path through the GQA prefill dispatcher while keeping
+    the historical MHA return contract `(output, lse)`.
+    """
 
     def __init__(self,
                  batch: int,
@@ -43,18 +48,53 @@ class MultiHeadAttentionFwdOp(Op):
         self.seq_len = seq_len  # TODO: support s_q != s_kv
         self.dim = dim
         self.is_causal = is_causal
-
         self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["mha_fwd_kernel"](
-            batch, heads, seq_len, dim, is_causal, self.dtype, tune=tune)
+        self._gqa_op = GroupedQueryAttentionFwdOp(
+            batch=batch,
+            heads=heads,
+            heads_kv=heads,
+            seq_len=seq_len,
+            dim=dim,
+            is_causal=is_causal,
+            dtype=dtype,
+            kernel_map=self.kernel_map,
+            tune=tune,
+        )
+        # GroupedQueryAttentionFwdOp instantiates its kernel lazily. MHA's
+        # torch.compile smoke expects forward to call an already-built custom op,
+        # so instantiate the same dense-path choice at construction time.
+        self._kernel = (
+            self._gqa_op._prefill_op._get_square_dense_kernel()
+            if self._gqa_op._prefill_op._uses_square_dense_fast_path()
+            else self._gqa_op.kernel
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mha_fwd_kernel": MHAFwdWgmmaPipelinedKernel if is_hopper() else MHAFwdKernel}
+        return {
+            "gqa_prefill_fwd_kernel": _select_gqa_prefill_fwd_kernel_cls(
+                self.dim,
+                self.is_causal,
+                self.dtype,
+                sm_scale=None,
+                softcap=0.0,
+                hopper=is_hopper(),
+            ),
+            "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
+        }
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    @property
+    def kernel(self) -> Kernel:
+        return self._kernel
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         return self.kernel(q, k, v)
 
 
