@@ -166,6 +166,7 @@ class BmmFp8Op(Op):
         out_dtype: torch.dtype | str = "bfloat16",
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        b_layout: str = "kn",
     ) -> None:
         if isinstance(out_dtype, str):
             out_dtype = getattr(torch, out_dtype)
@@ -173,8 +174,12 @@ class BmmFp8Op(Op):
             raise ValueError(
                 f"BmmFp8Op outputs torch.float16 or torch.bfloat16, "
                 f"got {out_dtype}")
+        if b_layout not in ("kn", "nk"):
+            raise ValueError(
+                f"BmmFp8Op b_layout must be 'kn' or 'nk', got {b_layout!r}")
         self.out_dtype = out_dtype
         self._tune = tune
+        self.b_layout = b_layout
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[Hashable, Kernel] = {}
         self._active_sig: Optional[tuple] = None
@@ -202,17 +207,6 @@ class BmmFp8Op(Op):
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
     ) -> None:
-        if not a.is_cuda:
-            raise ValueError(
-                f"BmmFp8Op expects all inputs to be on CUDA, got device {a.device}"
-            )
-        if (b.device != a.device or scale_a.device != a.device
-                or scale_b.device != a.device):
-            raise ValueError(
-                f"BmmFp8Op expects all inputs to be on the same CUDA device, got "
-                f"a: {a.device}, b: {b.device}, scale_a: {scale_a.device}, "
-                f"scale_b: {scale_b.device}"
-            )
         if a.dtype != torch.float8_e4m3fn:
             raise ValueError(
                 f"BmmFp8Op only supports torch.float8_e4m3fn, got {a.dtype}")
@@ -225,11 +219,6 @@ class BmmFp8Op(Op):
         self, a: torch.Tensor, b: torch.Tensor,
     ) -> Tuple[int, int, int, int, bool]:
         """Derive logical ``(batch, m, n, k, b_is_nk)`` from ``a`` and ``b``.
-
-        ``a`` must be ``[B, M, K]``.  ``b`` may be either ``[B, K, N]``
-        (torch.bmm layout, N-innermost) or ``[B, N, K]`` (K-innermost,
-        the layout the WGMMA-fp8 TN kernel wants directly).  Returns
-        ``b_is_nk=True`` when the second form is detected.
         """
         if a.dim() != 3 or b.dim() != 3:
             raise ValueError(
@@ -244,17 +233,21 @@ class BmmFp8Op(Op):
                 f"BmmFp8Op batch dim mismatch: a.shape[0]={batch_a} vs "
                 f"b.shape[0]={batch_b}"
             )
-        # Layout inference: which axis of B carries the contraction K?
-        kn_ok = (b1 == k)  # b is [B, K, N]
-        nk_ok = (b2 == k)  # b is [B, N, K]
-        if not (kn_ok or nk_ok):
-            raise ValueError(
-                f"BmmFp8Op contraction dim mismatch: a contributes K={k}, "
-                f"but b.shape={tuple(b.shape)} matches neither [B,K,N] "
-                f"(needs b.shape[1]==K) nor [B,N,K] (needs b.shape[2]==K)."
-            )
-        b_is_nk = (b.stride(-2) == 1) if kn_ok and nk_ok else nk_ok
-        n = b1 if b_is_nk else b2
+        if self.b_layout == "nk":
+            if b2 != k:
+                raise ValueError(
+                    f"BmmFp8Op b_layout='nk' but b={tuple(b.shape)} is not a "
+                    f"valid [B,N,K] (needs b.shape[2]==K={k})"
+                )
+            n, b_is_nk = b1, True
+        else:  # 'kn'
+            if b1 != k:
+                raise ValueError(
+                    f"BmmFp8Op contraction dim mismatch: a contributes K={k}, "
+                    f"but b.shape={tuple(b.shape)} is not a valid [B,K,N] "
+                    f"(needs b.shape[1]==K={k})."
+                )
+            n, b_is_nk = b2, False
         if k % 32 != 0:
             raise ValueError(
                 f"BmmFp8Op requires contraction dim K to be a multiple of "
@@ -268,6 +261,17 @@ class BmmFp8Op(Op):
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
     ) -> Tuple[int, int, int, int, bool]:
+        if not a.is_cuda:
+            raise ValueError(
+                f"BmmFp8Op expects all inputs to be on CUDA, got device {a.device}"
+            )
+        if (b.device != a.device or scale_a.device != a.device
+                or scale_b.device != a.device):
+            raise ValueError(
+                f"BmmFp8Op expects all inputs to be on the same CUDA device, got "
+                f"a: {a.device}, b: {b.device}, scale_a: {scale_a.device}, "
+                f"scale_b: {scale_b.device}"
+            )
         batch, m, n, k, b_is_nk = self._infer_bmnk(a, b)
         if scale_a.dim() != 0 or scale_b.dim() != 0:
             raise ValueError(

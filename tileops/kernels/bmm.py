@@ -728,11 +728,8 @@ class BmmFp8Kernel(Kernel):
         self._sm_count = torch.cuda.get_device_properties(
             device).multi_processor_count
         self._use_ws = self._ws_eligible(batch, m, n, k, self._sm_count)
-        self._use_persistent = self._use_ws or self._persistent_eligible(m, n, k)
-        # Kernel expects N-major B (``[B, N, K]``, K innermost) -- see
-        # :func:`_bmm_fp8_kernel`.  Callers with a torch.bmm-style
-        # ``[B, K, N]`` buffer materialise the K-innermost view at the
-        # op layer (:class:`BmmFp8Op`).
+        self._use_persistent = self._use_ws or self._persistent_eligible(
+            m, n, k, self._use_ws)
         if self._use_ws:
             self.kernel = _bmm_fp8_persistent_ws_kernel(
                 batch, m, n, k, self.dtype_str, self.out_dtype_str,
@@ -769,26 +766,13 @@ class BmmFp8Kernel(Kernel):
         return False
 
     @staticmethod
-    def _persistent_eligible(m: int, n: int, k: int) -> bool:
-        """True iff some ``(bm, bn, bk)`` in the search space divides m/n/k.
-
-        Persistent variant emits unconditional TMA loads (no
-        ``T.if_then_else`` tail path), so it can only run when at least
-        one aligned tile shape exists.  In practice every "regular"
-        BMM shape (``m, n, k`` multiples of 64/64/32) qualifies; only
-        odd tail shapes fall through to :func:`_bmm_fp8_kernel`.
-        """
-        for bm in (64, 128, 256):
-            if m % bm != 0:
-                continue
-            for bn in (64, 128, 256):
-                if n % bn != 0:
-                    continue
-                for bk in (32, 64, 128):
-                    if bk > k or k % bk != 0:
-                        continue
-                    return True
-        return False
+    def _persistent_eligible(m: int, n: int, k: int, use_ws: bool) -> bool:
+        if use_ws:
+            bn_ok = (n % 128 == 0) or (n % 256 == 0)
+            bk_ok = ((k % 64 == 0 and k // 64 >= 2)
+                     or (k % 128 == 0 and k // 128 >= 2))
+            return m % 128 == 0 and bn_ok and bk_ok
+        return m % 128 == 0 and n % 128 == 0 and k % 128 == 0
 
     @property
     def out_dtype_str(self) -> str:

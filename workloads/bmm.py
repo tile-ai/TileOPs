@@ -18,11 +18,6 @@ class BmmWorkload(WorkloadBase):
         b = torch.randn(self.batch, self.k, self.n, device="cuda", dtype=self.dtype)
         return a, b
 
-
-# randn * _FP8_INIT_SCALE keeps generated values roughly within ~4 sigma of the
-# fp8_e4m3fn dynamic range (+/-448) so K-loop accumulation up to K ~= 8192 does
-# not saturate.  Kept at module scope so downstream tests can import and reason
-# about the magnitude without re-guessing the magic number.
 _FP8_INIT_SCALE: float = 0.25
 
 

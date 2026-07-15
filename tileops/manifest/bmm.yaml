@@ -63,6 +63,7 @@ BmmFp8Op:
       d: {dtype: "bfloat16 | float16", shape: "[B, M, N]"}
     params:
       out_dtype: {type: dtype, default: bfloat16}
+      b_layout: {type: str, default: "kn", choices: ["kn", "nk"]}
     # Only fp8_e4m3fn inputs are supported (fp8_e5m2 is rejected at
     # forward-time by :meth:`BmmFp8Op._validate_dtypes`); output picks
     # a single dtype per compile.  ``dtype_combos`` pins the Cartesian
@@ -72,11 +73,11 @@ BmmFp8Op:
       - {a: float8_e4m3fn, b: float8_e4m3fn, scale_a: float32, scale_b: float32, d: float16}
     shape_rules:
     - "a.shape[0] == b.shape[0]"
-    - "b.shape[1] == a.shape[2] or b.shape[2] == a.shape[2]"
+    - "(b.shape[1] == a.shape[2]) if b_layout == 'kn' else (b.shape[2] == a.shape[2])"
     - "a.shape[2] % 32 == 0"
     # per_tensor: single global fp32 scalar (0-D) shared across the whole batch
     - "scale_a.shape == () and scale_b.shape == ()"
-    - "d.shape == (a.shape[0], a.shape[1], (b.shape[2] if b.shape[1]==a.shape[2] else b.shape[1]))"
+    - "d.shape == (a.shape[0], a.shape[1], b.shape[2] if b_layout == 'kn' else b.shape[1])"
 
   workloads:
   - {b: 4, m: 1024, n: 1024, k: 1024, dtypes: [float8_e4m3fn], label: "square-b4-1k-per-tensor"}

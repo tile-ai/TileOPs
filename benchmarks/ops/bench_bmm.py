@@ -144,7 +144,8 @@ def test_bmm_fp8_bench(
     b_nk = b_kn.transpose(-2, -1).contiguous()      # [B, N, K], K-innermost
     b_kmajor = b_nk.transpose(-2, -1)               # [B, K, N] view, zero-copy
 
-    op = BmmFp8Op(out_dtype=out_dtype, tune=True)
+    # Fast path: feed [B, N, K] (K-innermost) via explicit b_layout='nk'.
+    op = BmmFp8Op(out_dtype=out_dtype, tune=True, b_layout="nk")
     bm = BmmFp8Benchmark(test, op)
     result = bm.profile(op, a, b_nk, scale_a, scale_b)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -160,12 +161,6 @@ def test_bmm_fp8_bench(
             a, b_kmajor, scale_a, scale_b,
         )
     except RuntimeError as exc:
-        # Only RuntimeError is expected here: it typically signals that the
-        # underlying cuBLASLt / CUDNN FP8 backend refuses this specific
-        # (shape, dtype, arch) combination.  ImportError is already handled
-        # by ``importorskip`` above; letting AttributeError / TypeError
-        # propagate keeps genuine bugs visible in bench reports instead of
-        # silently degrading the comparison surface.
         pytest.skip(f"flashinfer bmm_fp8 unavailable for this shape: {exc}")
     BenchmarkReport.record(
         op, locals(), result_flashinfer, tag="flashinfer-bmm-fp8",

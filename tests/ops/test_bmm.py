@@ -157,9 +157,6 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
 
 
 class BmmFp8Fixture(FixtureBase):
-    # Only *supported* dtype combinations belong in the main fixture; a
-    # rejected dtype (e5m2) is exercised by its own dedicated negative
-    # test below so that each parametrised case has a single purpose.
     PARAMS = [
         ("batch, m, n, k, dtype, out_dtype", [
             pytest.param(
@@ -339,11 +336,9 @@ def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
     # unambiguously carries K.
     b_nk = b_kn.transpose(-2, -1).contiguous()
     assert b_nk.shape == (batch, n, k)
-    op = BmmFp8Op(out_dtype=torch.bfloat16)
-    out_kn = op(a, b_kn, scale_a, scale_b).clone()
-    # New op instance to avoid the KN cached signature masking layout
-    # dispatch bugs.
-    op_nk = BmmFp8Op(out_dtype=torch.bfloat16)
+    op_kn = BmmFp8Op(out_dtype=torch.bfloat16)  # default b_layout='kn'
+    op_nk = BmmFp8Op(out_dtype=torch.bfloat16, b_layout="nk")
+    out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
     out_nk = op_nk(a, b_nk, scale_a, scale_b)
     # Numerically identical: same kernel, same buffer bits, just no
     # internal DtoD copy on the NK path.
@@ -352,23 +347,51 @@ def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
 
 @pytest.mark.smoke
 def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
-    """When K == N, shape is ambiguous; a non-contiguous NK view forces
-    the fast path (``stride(-2) == 1`` tie-breaker).
-    """
     batch, m, n, k = 4, 128, 128, 128  # K == N
     test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, scale_a, scale_b = test.gen_inputs()  # contiguous [B, K, N]
-    # ``transpose`` alone (no contiguous) yields the NK view; shape becomes
-    # [B, N, K] but stride is (K*N, 1, N) so stride(-2) == 1, marking the
-    # buffer as K-innermost so the op treats it as NK-input.
     b_nk_view = b_kn.transpose(-2, -1)
     assert b_nk_view.shape == (batch, n, k)
     assert b_nk_view.stride(-2) == 1
-    op_kn = BmmFp8Op(out_dtype=torch.bfloat16)
-    op_nk = BmmFp8Op(out_dtype=torch.bfloat16)
+    op_kn = BmmFp8Op(out_dtype=torch.bfloat16)  # default 'kn'
+    op_nk = BmmFp8Op(out_dtype=torch.bfloat16, b_layout="nk")
     out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
     out_nk = op_nk(a, b_nk_view, scale_a, scale_b)
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.smoke
+def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
+    batch, m, n, k = 4, 128, 128, 128  # K == N
+    test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
+    a, b_kn, scale_a, scale_b = test.gen_inputs()  # contiguous [B, K, N]
+    # Physical contiguous [B, N, K]: stride is (N*K, K, 1) => stride(-2) == K.
+    b_nk = b_kn.transpose(-2, -1).contiguous()
+    assert b_nk.is_contiguous()
+    assert b_nk.shape == (batch, n, k)
+    assert b_nk.stride(-2) == k
+
+    # Same logical B matrix, explicit layouts.  Both must yield the same d.
+    op_nk = BmmFp8Op(out_dtype=torch.bfloat16, b_layout="nk")
+    out_nk = op_nk(a, b_nk, scale_a, scale_b).clone()
+    op_kn = BmmFp8Op(out_dtype=torch.bfloat16)  # default 'kn'
+    out_kn = op_kn(a, b_kn, scale_a, scale_b)
+    torch.testing.assert_close(out_nk, out_kn, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.smoke
+def test_bmm_fp8_persistent_default_tile_boundary() -> None:
+    batch, m, n, k = 8, 64, 64, 32
+    test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
+    a, b_kn, scale_a, scale_b = test.gen_inputs()
+    op = BmmFp8Op(out_dtype=torch.bfloat16)
+    out = op(a, b_kn, scale_a, scale_b)
+
+    # Reference computed in float32 with the same per-tensor scales.
+    a_f = a.float() * scale_a
+    b_f = b_kn.float() * scale_b
+    ref = torch.bmm(a_f, b_f).to(torch.bfloat16)
+    torch.testing.assert_close(out, ref, atol=0.05, rtol=0.05)
 
 
 if __name__ == "__main__":
