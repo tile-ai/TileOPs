@@ -81,12 +81,14 @@ LOGICAL_BINARY_KERNELS = [LogicalAndFwdKernel, LogicalOrFwdKernel]
 @pytest.mark.full
 @pytest.mark.parametrize("kernel_cls", COMPARISON_KERNELS + LOGICAL_BINARY_KERNELS)
 def test_bool_like_elementwise_kernels_expose_torch_dtype_output(kernel_cls):
-    """Comparison and logical kernels should declare `OUTPUT_DTYPE` as `torch.int8`."""
+    """Comparison and logical kernels should declare public bool output."""
     assert isinstance(kernel_cls.OUTPUT_DTYPE, torch.dtype), (
         f"{kernel_cls.__name__}.OUTPUT_DTYPE is {type(kernel_cls.OUTPUT_DTYPE).__name__} "
         f"({kernel_cls.OUTPUT_DTYPE!r}), expected torch.dtype"
     )
-    assert torch.int8 == kernel_cls.OUTPUT_DTYPE
+    # Bool-storage specializations may use uint8 internally, but the public
+    # kernel contract is a torch.bool output dtype.
+    assert torch.bool == kernel_cls.OUTPUT_DTYPE
 
 
 # ---------------------------------------------------------------------------

@@ -4678,6 +4678,24 @@ class TestStrictParityC5Dispatch:
             "BranchOp", {}, BranchOp,
         ) == []
 
+    def test_dispatch_kernel_call_in_helper_rejected(self, validator):
+        """S13 requires dispatch_kernel in __init__ or super().__init__."""
+        from tileops.ops.op_base import Op
+
+        class HelperOp(Op):
+            def __init__(self, kernel_map=None):
+                self._prepare(kernel_map)
+            def _prepare(self, kernel_map=None):
+                self.dispatch_kernel(kernel_map)
+            def forward(self, x): return None
+            @property
+            def default_kernel_map(self): return {}
+
+        errs = validator.check_c5_dispatch_kernel_invariant(
+            "HelperOp", {}, HelperOp,
+        )
+        assert any("does not call self.dispatch_kernel" in e for e in errs), errs
+
 
 class TestStrictParityC6C7Stub:
     """C6 / C7: _validate_dtypes / eval_roofline must not be base stubs."""

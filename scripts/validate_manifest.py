@@ -3220,14 +3220,26 @@ def _init_calls_dispatch_kernel(cls: type) -> "bool | None":
     body owns the dispatch call. No runtime construction; no GPU.
     """
     try:
-        src = inspect.getsource(cls.__init__)
+        lines, start_lineno = inspect.getsourcelines(cls.__init__)
     except (OSError, TypeError):
         return None
     try:
-        tree = ast.parse(textwrap.dedent(src))
+        tree = ast.parse(textwrap.dedent("".join(lines)))
     except SyntaxError:
         return None
+    code = getattr(cls.__init__, "__code__", None)
+    target_lineno = getattr(code, "co_firstlineno", None)
+    init_node = None
     for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != "__init__":
+            continue
+        if target_lineno is None or start_lineno + node.lineno - 1 == target_lineno:
+            init_node = node
+            break
+    if init_node is None:
+        return None
+
+    for node in ast.walk(init_node):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
         # self.dispatch_kernel(...)

@@ -44,27 +44,27 @@ class LogicalNotFwdOp(UnaryOp):
             f"{self._op_name}_bool_storage": self.bool_storage_kernel_cls,
         }
 
-    def __init__(
+    def _build_kernel_instance(
         self,
+        *,
         N_total: int,
         dtype: torch.dtype,
-        strategy=None,
-        kernel_map=None,
+        strategy,
         tune: bool = False,
     ):
-        if dtype != torch.bool:
-            self._bool_storage = False
-            super().__init__(
-                N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
+        self._bool_storage = dtype == torch.bool
+        if self._bool_storage:
+            return self.kernel_map[f"{self._op_name}_bool_storage"](
+                N_total, torch.uint8, strategy=strategy, tune=tune,
             )
-            return
-
-        self._prepare_unary_instance(N_total, dtype, strategy, kernel_map)
-        self._bool_storage = True
-        self.kernel = self.kernel_map[f"{self._op_name}_bool_storage"](
-            N_total, torch.uint8, strategy=strategy, tune=tune,
+        return super()._build_kernel_instance(
+            N_total=N_total, dtype=dtype, strategy=strategy, tune=tune,
         )
-        self._finish_unary_instance(output_dtype=torch.bool)
+
+    def _resolve_output_dtype(self):
+        if self._bool_storage:
+            return torch.bool
+        return super()._resolve_output_dtype()
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
         if self._bool_storage:
