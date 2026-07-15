@@ -37,6 +37,20 @@ DOCKER_BUILDKIT=1 docker build \
 Tag with the tilelang commit's **short SHA** (`:65dbc98`). If you rebuild the same commit,
 add a numeric suffix (`:65dbc98-2`).
 
+## Roll out an updated runner image
+
+Changes to this Dockerfile are not picked up by CI automatically. After a Dockerfile change
+lands, rebuild and tag the image from a GPU host using the build command above, then push it:
+
+```bash
+docker push ghcr.io/tile-ai/tileops-runner:<new-tag>
+```
+
+Then update the runner launcher configuration in TileOpsGov (`ci/runner-launcher/common.env`,
+the `IMAGE=` value) to point at the new tag, and restart/redeploy the local runner launcher.
+Merging the TileOPs PR only changes the image recipe; the live self-hosted runners keep using
+their existing image until that local Docker rollout is done.
+
 ### Build args
 
 | Arg                | Default                                | Purpose                                                   |

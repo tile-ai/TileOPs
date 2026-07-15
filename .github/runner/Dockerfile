@@ -157,7 +157,15 @@ ARG RUNNER_VERSION=2.334.0
 # useradd before WORKDIR: home stays ci-runner-owned, and WORKDIR precedes the relative-path RUN (hadolint).
 # Pin UID/GID 1000 so the account deterministically owns the shared /ci-cache bind-mount across
 # hosts (it matches the majority of existing warm-cache entries; host normalization preserves them).
-RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner
+# FlashInfer's flashinfer-cubin package keeps its packaged cubin tree under site-packages.
+# Some baselines materialize TRTLLM GEMM entries there at runtime, so the unprivileged runner
+# must own that tree instead of inheriting pip's root-owned directories.
+RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner \
+    && FLASHINFER_CUBIN_DIR="$(python -c 'import pathlib, flashinfer_cubin; print(pathlib.Path(flashinfer_cubin.get_cubin_dir()))' 2>/dev/null || true)" \
+    && if [ -n "${FLASHINFER_CUBIN_DIR}" ]; then \
+        mkdir -p "${FLASHINFER_CUBIN_DIR}/flashinfer/trtllm/gemm"; \
+        chown -R ci-runner:ci-runner "${FLASHINFER_CUBIN_DIR}"; \
+    fi
 WORKDIR /home/ci-runner/runner
 RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && curl -fsSL -o runner.tar.gz \
