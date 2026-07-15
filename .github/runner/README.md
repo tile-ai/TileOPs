@@ -88,6 +88,23 @@ docker run --rm --gpus all ghcr.io/tile-ai/tileops-runner:65dbc98 python - <<'PY
 import torch
 print("torch", torch.__version__, "cuda", torch.version.cuda)   # expect 2.10.0+cu129, cuda 12.9
 import tilelang; print("tilelang", tilelang.__version__)
+import flashinfer, flashinfer_cubin
+print("flashinfer", flashinfer.__version__)
+from pathlib import Path
+cubin_dir = Path(flashinfer_cubin.get_cubin_dir())
+probe_dir = cubin_dir / "flashinfer" / "trtllm" / "gemm" / "_tileops_write_probe"
+probe_dir.mkdir(parents=True, exist_ok=True)
+(probe_dir / "probe.txt").write_text("ok")
+print("flashinfer cubin write OK")
+
+import selective_scan_cuda
+import mamba_ssm
+from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+assert mamba_chunk_scan_combined is not None
+print("mamba", mamba_ssm.__version__)
+
+import deep_gemm
+print("deep_gemm", deep_gemm.__version__)
 
 # cuBLAS probe: matmul / bmm / einsum on the GPU
 a = torch.randn(512, 512, device="cuda", dtype=torch.float16)

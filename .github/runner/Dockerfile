@@ -96,9 +96,10 @@ RUN python -m pip freeze | grep -iE '^(torch|torchvision|torchaudio)==' > /tmp/t
     done
 # The Mamba benchmarks compare against the official mamba_ssm Triton kernels. Keep this
 # best-effort and dependency-free so it cannot re-resolve the CUDA-specific torch/triton stack
-# or pull the newer mamba_ssm tilelang/apache-tvm-ffi pins into the runner image. Skip the
-# unrelated CUDA extension build; these benchmarks import mamba_ssm.ops.triton.*.
-RUN MAMBA_FORCE_BUILD=TRUE MAMBA_SKIP_CUDA_BUILD=TRUE \
+# or pull the newer mamba_ssm tilelang/apache-tvm-ffi pins into the runner image. mamba_ssm's
+# package import loads selective_scan_cuda, so the CUDA extension must be built even when the
+# benchmark uses the Triton modules.
+RUN MAMBA_FORCE_BUILD=TRUE \
     python -m pip install --no-cache-dir --no-build-isolation --no-deps \
         -c /tmp/constraints.txt -c /tmp/torch-cu129.txt \
         "mamba-ssm==2.3.1" \
@@ -159,9 +160,11 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         && git remote add origin https://github.com/tile-ai/tilelang.git \
         && git fetch --depth 1 origin "${TILELANG_GIT_SHA}" \
         && git checkout -q FETCH_HEAD \
-        && git submodule update --init --depth 1 --recursive 3rdparty/cutlass 3rdparty/tvm \
+        && git submodule update --init --depth 1 --recursive \
+            3rdparty/composable_kernel 3rdparty/cutlass 3rdparty/tvm \
         && mkdir -p /opt/tilelang-wheels \
-        && python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
+        && CMAKE_BUILD_PARALLEL_LEVEL="${MAX_JOBS}" \
+            python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
         && python -m pip install --no-deps /opt/tilelang-wheels/tilelang-*.whl \
         && rm -rf /tmp/tilelang; \
     elif [ -n "${TILELANG_VERSION}" ]; then \
