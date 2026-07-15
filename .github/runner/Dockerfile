@@ -110,7 +110,13 @@ RUN { mkdir -p /tmp/DeepGEMM \
         && cd /tmp/DeepGEMM \
         && git init -q \
         && git remote add origin https://github.com/deepseek-ai/DeepGEMM.git \
-        && git fetch --depth 1 origin "${DEEPGEMM_GIT_SHA}" \
+        && for attempt in 1 2 3 4 5; do \
+            git -c http.version=HTTP/1.1 fetch --depth 1 origin "${DEEPGEMM_GIT_SHA}" && break; \
+            status="$?"; \
+            echo "WARNING: DeepGEMM fetch failed (attempt ${attempt}/5, status ${status})"; \
+            if [ "${attempt}" = 5 ]; then exit "${status}"; fi; \
+            sleep "$((attempt * 10))"; \
+        done \
         && git checkout -q FETCH_HEAD \
         && for attempt in 1 2 3 4 5; do \
             git -c http.version=HTTP/1.1 submodule update --init --depth 1 --jobs 1 \
