@@ -15,15 +15,15 @@ import torch.nn.functional as F
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.kernels.pool.common import pool_output_dim
 from tileops.manifest import load_workloads
-from tileops.ops import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp
+from tileops.ops import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp, MaxPool2dFwdOp
 
 _AVG_POOL1D_OP_NAME = "AvgPool1dFwdOp"
 _AVG_POOL2D_OP_NAME = "AvgPool2dFwdOp"
 _AVG_POOL3D_OP_NAME = "AvgPool3dFwdOp"
+_MAX_POOL2D_OP_NAME = "MaxPool2dFwdOp"
 
 
 class AvgPool1dBenchCase:
-
     def __init__(
         self,
         n: int,
@@ -62,7 +62,6 @@ class AvgPool1dBenchCase:
 
 
 class AvgPool1dBenchmark(BenchmarkBase[AvgPool1dBenchCase]):
-
     _roofline_cache: Optional[tuple[float, float]] = None
 
     def __init__(self, test: AvgPool1dBenchCase, op: AvgPool1dFwdOp) -> None:
@@ -127,7 +126,9 @@ def test_avg_pool1d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = AvgPool1dBenchCase(n, c_in, l_in, kernel_size, stride, padding, ceil_mode, count_include_pad, dtype)
+    test = AvgPool1dBenchCase(
+        n, c_in, l_in, kernel_size, stride, padding, ceil_mode, count_include_pad, dtype
+    )
     inputs = test.gen_inputs()
 
     op = AvgPool1dFwdOp(
@@ -147,7 +148,6 @@ def test_avg_pool1d_bench(
 
 
 class AvgPool2dBenchCase:
-
     def __init__(
         self,
         n: int,
@@ -193,7 +193,6 @@ class AvgPool2dBenchCase:
 
 
 class AvgPool2dBenchmark(BenchmarkBase[AvgPool2dBenchCase]):
-
     _roofline_cache: Optional[tuple[float, float]] = None
 
     def __init__(self, test: AvgPool2dBenchCase, op: AvgPool2dFwdOp) -> None:
@@ -298,7 +297,6 @@ def test_avg_pool2d_bench(
 
 
 class AvgPool3dBenchCase:
-
     def __init__(
         self,
         n: int,
@@ -352,7 +350,6 @@ class AvgPool3dBenchCase:
 
 
 class AvgPool3dBenchmark(BenchmarkBase[AvgPool3dBenchCase]):
-
     _roofline_cache: Optional[tuple[float, float]] = None
 
     def __init__(self, test: AvgPool3dBenchCase, op: AvgPool3dFwdOp) -> None:
@@ -457,3 +454,145 @@ def test_avg_pool3d_bench(
 
     result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record("avg_pool3d", locals(), result_bl, tag="torch-ref")
+
+
+class MaxPool2dBenchCase:
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        h_in: int,
+        w_in: int,
+        kernel_size: tuple[int, int],
+        stride: Optional[tuple[int, int]],
+        padding: tuple[int, int],
+        dilation: tuple[int, int],
+        ceil_mode: bool,
+        dtype: torch.dtype,
+    ) -> None:
+        self.n = n
+        self.c_in = c_in
+        self.h_in = h_in
+        self.w_in = w_in
+        self.kernel_size = kernel_size
+        self.stride = kernel_size if stride is None else stride
+        self.padding = padding
+        self.dilation = dilation
+        self.ceil_mode = ceil_mode
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.randn(
+            self.n, self.c_in, self.h_in, self.w_in, device="cuda", dtype=self.dtype
+        ).contiguous()
+        return (x,)
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return F.max_pool2d(
+            x,
+            kernel_size=self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            ceil_mode=self.ceil_mode,
+            return_indices=False,
+        )
+
+
+class MaxPool2dBenchmark(BenchmarkBase[MaxPool2dBenchCase]):
+    _roofline_cache: Optional[tuple[float, float]] = None
+
+    def __init__(self, test: MaxPool2dBenchCase, op: MaxPool2dFwdOp) -> None:
+        super().__init__(test)
+        self._op = op
+
+    def _get_roofline(self) -> tuple[float, float]:
+        if self._roofline_cache is None:
+            self._roofline_cache = self._op.eval_roofline()
+        return self._roofline_cache
+
+    def calculate_flops(self) -> Optional[float]:
+        return self._get_roofline()[0]
+
+    def calculate_memory(self) -> Optional[float]:
+        return self._get_roofline()[1]
+
+
+def _max_pool2d_bench_params() -> list:
+    params = []
+    for workload in load_workloads(_MAX_POOL2D_OP_NAME):
+        n, c_in, h_in, w_in = workload["input_shape"]
+        kernel_size = tuple(workload["kernel_size"])
+        stride = workload.get("stride")
+        if stride is not None:
+            stride = tuple(stride)
+        padding = tuple(workload.get("padding", (0, 0)))
+        dilation = tuple(workload.get("dilation", (1, 1)))
+        ceil_mode = workload.get("ceil_mode", False)
+        label = workload.get("label", f"{n}x{c_in}x{h_in}x{w_in}")
+        for dtype_str in workload["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(
+                pytest.param(
+                    n,
+                    c_in,
+                    h_in,
+                    w_in,
+                    kernel_size,
+                    stride,
+                    padding,
+                    dilation,
+                    ceil_mode,
+                    dtype,
+                    True,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
+    return params
+
+
+@pytest.mark.parametrize(
+    "n, c_in, h_in, w_in, kernel_size, stride, padding, dilation, ceil_mode, dtype, tune",
+    _max_pool2d_bench_params(),
+)
+def test_max_pool2d_bench(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    kernel_size: tuple[int, int],
+    stride: Optional[tuple[int, int]],
+    padding: tuple[int, int],
+    dilation: tuple[int, int],
+    ceil_mode: bool,
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    test = MaxPool2dBenchCase(
+        n,
+        c_in,
+        h_in,
+        w_in,
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+        ceil_mode,
+        dtype,
+    )
+    inputs = test.gen_inputs()
+
+    op = MaxPool2dFwdOp(
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        ceil_mode=ceil_mode,
+        tune=tune,
+    )
+    bm = MaxPool2dBenchmark(test, op)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
