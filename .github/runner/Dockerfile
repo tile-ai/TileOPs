@@ -94,6 +94,44 @@ RUN python -m pip freeze | grep -iE '^(torch|torchvision|torchaudio)==' > /tmp/t
             -c /tmp/constraints.txt -c /tmp/torch-cu129.txt "$pkg" \
             || echo "WARNING: bench baseline '$pkg' install failed (non-fatal)"; \
     done
+# The Mamba benchmarks compare against the official mamba_ssm Triton kernels. Keep this
+# best-effort and dependency-free so it cannot re-resolve the CUDA-specific torch/triton stack
+# or pull the newer mamba_ssm tilelang/apache-tvm-ffi pins into the runner image. mamba_ssm's
+# package import loads selective_scan_cuda, so the CUDA extension must be built even when the
+# benchmark uses the Triton modules.
+RUN MAMBA_FORCE_BUILD=TRUE \
+    python -m pip install --no-cache-dir --no-build-isolation --no-deps \
+        -c /tmp/constraints.txt -c /tmp/torch-cu129.txt \
+        "mamba-ssm==2.3.1" \
+    || echo "WARNING: mamba-ssm 2.3.1 install failed (non-fatal)"
+# The grouped-GEMM benchmark can compare against DeepGEMM. Install from the official tag
+# instead of PyPI's stale 1.0.0 sdist, and fetch only the submodules needed for its headers.
+ARG DEEPGEMM_GIT_SHA=c9f8b34dcdacc20aa746b786f983492c51072870
+RUN { mkdir -p /tmp/DeepGEMM \
+        && cd /tmp/DeepGEMM \
+        && git init -q \
+        && git remote add origin https://github.com/deepseek-ai/DeepGEMM.git \
+        && for attempt in 1 2 3 4 5; do \
+            git -c http.version=HTTP/1.1 fetch --depth 1 origin "${DEEPGEMM_GIT_SHA}" && break; \
+            status="$?"; \
+            echo "WARNING: DeepGEMM fetch failed (attempt ${attempt}/5, status ${status})"; \
+            if [ "${attempt}" = 5 ]; then exit "${status}"; fi; \
+            sleep "$((attempt * 10))"; \
+        done \
+        && git checkout -q FETCH_HEAD \
+        && for attempt in 1 2 3 4 5; do \
+            git -c http.version=HTTP/1.1 submodule update --init --depth 1 --jobs 1 \
+                third-party/cutlass third-party/fmt && break; \
+            status="$?"; \
+            echo "WARNING: DeepGEMM submodule fetch failed (attempt ${attempt}/5, status ${status})"; \
+            rm -rf third-party/cutlass third-party/fmt .git/modules/third-party/cutlass .git/modules/third-party/fmt; \
+            if [ "${attempt}" = 5 ]; then exit "${status}"; fi; \
+            sleep "$((attempt * 10))"; \
+        done \
+        && DG_FORCE_BUILD=1 python -m pip install --no-cache-dir --no-build-isolation --no-deps \
+            -c /tmp/constraints.txt -c /tmp/torch-cu129.txt .; } \
+    || echo "WARNING: DeepGEMM v2.1.1.post3 install failed (non-fatal)"; \
+    rm -rf /tmp/DeepGEMM
 # The attention benchmarks (benchmarks/ops/attention/) need a flashinfer newer than the 0.6.6
 # vllm pulls. Upgrade flashinfer-python/-cubin with --no-deps so torch and vllm's other deps are
 # untouched; add plain cuda-tile (flashinfer>=0.6.7 needs it — the [tileiras] extra would pull a
@@ -122,9 +160,11 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         && git remote add origin https://github.com/tile-ai/tilelang.git \
         && git fetch --depth 1 origin "${TILELANG_GIT_SHA}" \
         && git checkout -q FETCH_HEAD \
-        && git submodule update --init --depth 1 --recursive 3rdparty/cutlass 3rdparty/tvm \
+        && git submodule update --init --depth 1 --recursive \
+            3rdparty/composable_kernel 3rdparty/cutlass 3rdparty/tvm \
         && mkdir -p /opt/tilelang-wheels \
-        && python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
+        && CMAKE_BUILD_PARALLEL_LEVEL="${MAX_JOBS}" \
+            python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
         && python -m pip install --no-deps /opt/tilelang-wheels/tilelang-*.whl \
         && rm -rf /tmp/tilelang; \
     elif [ -n "${TILELANG_VERSION}" ]; then \
@@ -157,7 +197,15 @@ ARG RUNNER_VERSION=2.334.0
 # useradd before WORKDIR: home stays ci-runner-owned, and WORKDIR precedes the relative-path RUN (hadolint).
 # Pin UID/GID 1000 so the account deterministically owns the shared /ci-cache bind-mount across
 # hosts (it matches the majority of existing warm-cache entries; host normalization preserves them).
-RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner
+# FlashInfer's flashinfer-cubin package keeps its packaged cubin tree under site-packages.
+# Some baselines materialize TRTLLM GEMM entries there at runtime, so the unprivileged runner
+# must own the writable directories instead of inheriting pip's root-owned directories.
+RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner \
+    && FLASHINFER_CUBIN_DIR="$(python -c 'import pathlib, flashinfer_cubin; print(pathlib.Path(flashinfer_cubin.get_cubin_dir()))' 2>/dev/null || true)" \
+    && if [ -n "${FLASHINFER_CUBIN_DIR}" ]; then \
+        mkdir -p "${FLASHINFER_CUBIN_DIR}/flashinfer/trtllm/gemm"; \
+        find "${FLASHINFER_CUBIN_DIR}" -type d -exec chown ci-runner:ci-runner {} +; \
+    fi
 WORKDIR /home/ci-runner/runner
 RUN mkdir -p /home/ci-runner/runner/_work/_tool \
     && curl -fsSL -o runner.tar.gz \

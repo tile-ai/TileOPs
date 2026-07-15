@@ -37,29 +37,43 @@ DOCKER_BUILDKIT=1 docker build \
 Tag with the tilelang commit's **short SHA** (`:65dbc98`). If you rebuild the same commit,
 add a numeric suffix (`:65dbc98-2`).
 
+## Roll out an updated runner image
+
+Changes to this Dockerfile are not picked up by CI automatically. After a Dockerfile change
+lands, rebuild and tag the image from a GPU host using the build command above, then push it:
+
+```bash
+docker push ghcr.io/tile-ai/tileops-runner:<new-tag>
+```
+
+Then redeploy the self-hosted runner launcher to use the new tag (maintainer task, done
+outside this repository). Merging the TileOPs PR only changes the image recipe; the live
+self-hosted runners keep using their existing image until that manual rollout is done.
+
 ### Build args
 
-| Arg                | Default                                | Purpose                                                   |
-| ------------------ | -------------------------------------- | --------------------------------------------------------- |
-| `TILELANG_GIT_SHA` | *(none)*                               | tilelang commit to shallow-clone and compile (main mode). |
-| `TILELANG_VERSION` | *(none)*                               | tilelang PyPI version to `pip install` (release mode).    |
-| `BASE_IMAGE`       | `nvidia/cuda:12.9.1-devel-ubuntu22.04` | Public CUDA `devel` base (Python 3.12 via deadsnakes).    |
-| `MAX_JOBS`         | `64`                                   | Parallelism for the tilelang / FA2 / FA3 source builds.   |
-| `NVCC_THREADS`     | `4`                                    | Per-`nvcc` threads.                                       |
-| `RUNNER_VERSION`   | `2.334.0`                              | GitHub Actions runner version baked into `final`.         |
+| Arg                | Default                                    | Purpose                                                                   |
+| ------------------ | ------------------------------------------ | ------------------------------------------------------------------------- |
+| `TILELANG_GIT_SHA` | *(none)*                                   | tilelang commit to shallow-clone and compile (main mode).                 |
+| `TILELANG_VERSION` | *(none)*                                   | tilelang PyPI version to `pip install` (release mode).                    |
+| `BASE_IMAGE`       | `nvidia/cuda:12.9.1-devel-ubuntu22.04`     | Public CUDA `devel` base (Python 3.12 via deadsnakes).                    |
+| `MAX_JOBS`         | `64`                                       | Parallelism for the tilelang / FA2 / FA3 source builds.                   |
+| `NVCC_THREADS`     | `4`                                        | Per-`nvcc` threads.                                                       |
+| `DEEPGEMM_GIT_SHA` | `c9f8b34dcdacc20aa746b786f983492c51072870` | DeepGEMM commit for the grouped-GEMM benchmark baseline (`v2.1.1.post3`). |
+| `RUNNER_VERSION`   | `2.334.0`                                  | GitHub Actions runner version baked into `final`.                         |
 
 Set exactly one of `TILELANG_GIT_SHA` / `TILELANG_VERSION`; the build fails fast if neither is set.
 
 ### Stages (`--target`)
 
-| Stage       | Contents                                                                                                                                                                                 |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `runtime`   | Python 3.12 + torch / torchvision / torchaudio `2.10.0 / 0.25.0 / 2.10.0 +cu129` + triton `3.6.0` + tilelang build/runtime deps (incl. `apache-tvm-ffi 0.1.11`). **No tilelang itself.** |
-| `post-fa3`  | `runtime` + pytest / pytest-xdist / ruff + FlashAttention-3 (built from the `hopper/` source).                                                                                           |
-| `fa2`       | `post-fa3` + FlashAttention-2 (`flash-attn 2.8.3`, source-built in its own layer so changes to the bench loop never recompile it).                                                       |
-| `fullstack` | `fa2` + flash-linear-attention `0.4.2` + vLLM `0.19.1`, then flashinfer-python/-cubin upgraded to `0.6.11.post2` (`--no-deps`, so torch stays +cu129). sgl-kernel is not installed.      |
-| `tilelang`  | `fullstack` + the tilelang wheel (`--no-deps`), then the build-time guard. Built **last** so a SHA bump rebuilds only this layer.                                                        |
-| `final`     | `tilelang` + the GitHub Actions runner (no TileOPs source baked).                                                                                                                        |
+| Stage       | Contents                                                                                                                                                                                                                         |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime`   | Python 3.12 + torch / torchvision / torchaudio `2.10.0 / 0.25.0 / 2.10.0 +cu129` + triton `3.6.0` + tilelang build/runtime deps (incl. `apache-tvm-ffi 0.1.11`). **No tilelang itself.**                                         |
+| `post-fa3`  | `runtime` + pytest / pytest-xdist / ruff + FlashAttention-3 (built from the `hopper/` source).                                                                                                                                   |
+| `fa2`       | `post-fa3` + FlashAttention-2 (`flash-attn 2.8.3`, source-built in its own layer so changes to the bench loop never recompile it).                                                                                               |
+| `fullstack` | `fa2` + flash-linear-attention `0.4.2` + vLLM `0.19.1` + mamba-ssm `2.3.1` + DeepGEMM `2.1.1.post3`, then flashinfer-python/-cubin upgraded to `0.6.11.post2` (`--no-deps`, so torch stays +cu129). sgl-kernel is not installed. |
+| `tilelang`  | `fullstack` + the tilelang wheel (`--no-deps`), then the build-time guard. Built **last** so a SHA bump rebuilds only this layer.                                                                                                |
+| `final`     | `tilelang` + the GitHub Actions runner (no TileOPs source baked).                                                                                                                                                                |
 
 Build an earlier stage for debugging with `--target runtime` (etc.).
 
@@ -74,6 +88,23 @@ docker run --rm --gpus all ghcr.io/tile-ai/tileops-runner:65dbc98 python - <<'PY
 import torch
 print("torch", torch.__version__, "cuda", torch.version.cuda)   # expect 2.10.0+cu129, cuda 12.9
 import tilelang; print("tilelang", tilelang.__version__)
+import flashinfer, flashinfer_cubin
+print("flashinfer", flashinfer.__version__)
+from pathlib import Path
+cubin_dir = Path(flashinfer_cubin.get_cubin_dir())
+probe_dir = cubin_dir / "flashinfer" / "trtllm" / "gemm" / "_tileops_write_probe"
+probe_dir.mkdir(parents=True, exist_ok=True)
+(probe_dir / "probe.txt").write_text("ok")
+print("flashinfer cubin write OK")
+
+import selective_scan_cuda
+import mamba_ssm
+from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+assert mamba_chunk_scan_combined is not None
+print("mamba", mamba_ssm.__version__)
+
+import deep_gemm
+print("deep_gemm", deep_gemm.__version__)
 
 # cuBLAS probe: matmul / bmm / einsum on the GPU
 a = torch.randn(512, 512, device="cuda", dtype=torch.float16)
