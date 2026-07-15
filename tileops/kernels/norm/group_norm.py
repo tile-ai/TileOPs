@@ -17,7 +17,6 @@ which is tiled from the weight/bias vectors accordingly.
 """
 
 import functools
-import itertools
 from typing import Optional
 
 import tilelang
@@ -25,6 +24,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+
+from ._config import select_row_config, select_row_configs
 
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
@@ -175,23 +176,11 @@ class GroupNormKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Shared memory budget: 1 buffer * block_m * D_padded * dtype_size < 48KB
-        smem_per_row = self.D_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m = (48 * 1024) // smem_per_row
-        block_m = 1
-        for bm in [1, 2, 4, 8, 16]:
-            if bm <= max_block_m:
-                block_m = bm
-        return {"block_m": block_m, "threads": 256}
+        return select_row_config(self.D_padded)
 
     @property
     def autotune_configs(self) -> list[dict]:
-        smem_per_row = self.D_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m = (48 * 1024) // smem_per_row
-        block_ms = [bm for bm in [1, 2, 4, 8, 16] if bm <= max_block_m]
-        threads_list = [128, 256]
-        configs = list(itertools.product(block_ms, threads_list))
-        return [{"block_m": bm, "threads": t} for bm, t in configs]
+        return select_row_configs(self.D_padded)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
         return _group_norm_wrapped(
@@ -337,22 +326,11 @@ class GroupNormNoAffineKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        smem_per_row = self.D_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m = (48 * 1024) // smem_per_row
-        block_m = 1
-        for bm in [1, 2, 4, 8, 16]:
-            if bm <= max_block_m:
-                block_m = bm
-        return {"block_m": block_m, "threads": 256}
+        return select_row_config(self.D_padded)
 
     @property
     def autotune_configs(self) -> list[dict]:
-        smem_per_row = self.D_padded * torch.tensor([], dtype=self.dtype).element_size()
-        max_block_m = (48 * 1024) // smem_per_row
-        block_ms = [bm for bm in [1, 2, 4, 8, 16] if bm <= max_block_m]
-        threads_list = [128, 256]
-        configs = list(itertools.product(block_ms, threads_list))
-        return [{"block_m": bm, "threads": t} for bm, t in configs]
+        return select_row_configs(self.D_padded)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return _group_norm_no_affine_wrapped(
