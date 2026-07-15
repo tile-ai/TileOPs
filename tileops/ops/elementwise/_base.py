@@ -643,36 +643,38 @@ class UnaryOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self._prepare_unary_instance(N_total, dtype, strategy, kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            N_total, dtype, strategy=strategy, tune=tune,
-        )
-        self._finish_unary_instance()
-
-    def _prepare_unary_instance(
-        self,
-        N_total: int,
-        dtype: torch.dtype,
-        strategy: Optional[str],
-        kernel_map: Optional[Dict[str, Kernel]],
-    ) -> None:
         self.N_total = N_total
         self.dtype = dtype
         self.strategy = strategy
         self.dispatch_kernel(kernel_map)
-
-    def _finish_unary_instance(
-        self, output_dtype: Optional[torch.dtype] = None,
-    ) -> None:
-        # Use _fp8_output_dtype (the final dtype after Op-layer post-cast)
-        # rather than kernel.output_dtype (which is fp16 for e5m2).
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        self.output_dtype = output_dtype or fp8_out or getattr(
-            self.kernel, "output_dtype", self.dtype,
+        self.kernel = self._build_kernel_instance(
+            N_total=N_total, dtype=dtype, strategy=strategy, tune=tune,
         )
+        self.output_dtype = self._resolve_output_dtype()
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
+
+    def _build_kernel_instance(
+        self,
+        *,
+        N_total: int,
+        dtype: torch.dtype,
+        strategy: Optional[str],
+        tune: bool,
+    ):
+        """Construct the kernel. Subclasses override to specialize construction."""
+        return self.kernel_map[self._op_name](
+            N_total, dtype, strategy=strategy, tune=tune,
+        )
+
+    def _resolve_output_dtype(self) -> torch.dtype:
+        # Use _fp8_output_dtype (the final dtype after Op-layer post-cast)
+        # rather than kernel.output_dtype (which is fp16 for e5m2).
+        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
+        return fp8_out or getattr(
+            self.kernel, "output_dtype", self.dtype,
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
