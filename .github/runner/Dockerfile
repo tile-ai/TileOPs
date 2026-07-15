@@ -159,12 +159,16 @@ ARG RUNNER_VERSION=2.334.0
 # hosts (it matches the majority of existing warm-cache entries; host normalization preserves them).
 # FlashInfer's flashinfer-cubin package keeps its packaged cubin tree under site-packages.
 # Some baselines materialize TRTLLM GEMM entries there at runtime, so the unprivileged runner
-# must own that tree instead of inheriting pip's root-owned directories.
+# must own the writable directories instead of inheriting pip's root-owned directories.
 RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner \
     && FLASHINFER_CUBIN_DIR="$(python -c 'import pathlib, flashinfer_cubin; print(pathlib.Path(flashinfer_cubin.get_cubin_dir()))' 2>/dev/null || true)" \
     && if [ -n "${FLASHINFER_CUBIN_DIR}" ]; then \
         mkdir -p "${FLASHINFER_CUBIN_DIR}/flashinfer/trtllm/gemm"; \
-        chown -R ci-runner:ci-runner "${FLASHINFER_CUBIN_DIR}"; \
+        chown ci-runner:ci-runner \
+            "${FLASHINFER_CUBIN_DIR}" \
+            "${FLASHINFER_CUBIN_DIR}/flashinfer" \
+            "${FLASHINFER_CUBIN_DIR}/flashinfer/trtllm" \
+            "${FLASHINFER_CUBIN_DIR}/flashinfer/trtllm/gemm"; \
     fi
 WORKDIR /home/ci-runner/runner
 RUN mkdir -p /home/ci-runner/runner/_work/_tool \
