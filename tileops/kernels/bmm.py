@@ -696,6 +696,7 @@ class BmmFp8Kernel(Kernel):
         k: int,
         dtype: torch.dtype,
         out_dtype: torch.dtype,
+        device: Optional[torch.device] = None,
         config: Optional[dict] = None,
         tune: bool = False,
     ) -> None:
@@ -703,7 +704,9 @@ class BmmFp8Kernel(Kernel):
         # Every dispatched variant emits WGMMA + TMA (SM90+ only); fail fast
         # with a clear message on pre-Hopper GPUs instead of a downstream
         # nvcc / PTX error at JIT time.
-        cc = torch.cuda.get_device_capability(torch.cuda.current_device())
+        if device is None:
+            device = torch.device(torch.cuda.current_device())
+        cc = torch.cuda.get_device_capability(device)
         if cc[0] != 9:
             raise NotImplementedError(
                 f"BmmFp8Kernel requires SM90 (Hopper); "
@@ -723,7 +726,7 @@ class BmmFp8Kernel(Kernel):
         #   2) plain persistent (removes wave quantisation);
         #   3) classic 3D grid (handles arbitrary M/N tails).
         self._sm_count = torch.cuda.get_device_properties(
-            torch.cuda.current_device()).multi_processor_count
+            device).multi_processor_count
         self._use_ws = self._ws_eligible(batch, m, n, k, self._sm_count)
         self._use_persistent = self._use_ws or self._persistent_eligible(m, n, k)
         # Kernel expects N-major B (``[B, N, K]``, K innermost) -- see
@@ -861,7 +864,8 @@ class BmmFp8Kernel(Kernel):
                         continue
                     threads = 128 if bm == 64 else 256
                     for ns in (2, 3, 4):
-                        smem = (bm * bk + bk * bn) * ns  # fp8 = 1B / elem
+                        # Include c_shared (bm * bn * 2 bytes) in the budget
+                        smem = (bm * bk + bk * bn) * ns + bm * bn * 2
                         if smem > SMEM_BUDGET_BYTES:
                             continue
                         raw_configs.append({

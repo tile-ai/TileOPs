@@ -163,10 +163,6 @@ class BmmFp8Op(Op):
 
     def __init__(
         self,
-        # ``out_dtype`` accepts either ``torch.dtype`` or a string alias
-        # (``"bfloat16"`` / ``"float16"``) so callers driven by the
-        # manifest loader -- which passes YAML string defaults -- can
-        # instantiate the op without an explicit conversion.
         out_dtype: torch.dtype | str = "bfloat16",
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -206,6 +202,17 @@ class BmmFp8Op(Op):
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
     ) -> None:
+        if not a.is_cuda:
+            raise ValueError(
+                f"BmmFp8Op expects all inputs to be on CUDA, got device {a.device}"
+            )
+        if (b.device != a.device or scale_a.device != a.device
+                or scale_b.device != a.device):
+            raise ValueError(
+                f"BmmFp8Op expects all inputs to be on the same CUDA device, got "
+                f"a: {a.device}, b: {b.device}, scale_a: {scale_a.device}, "
+                f"scale_b: {scale_b.device}"
+            )
         if a.dtype != torch.float8_e4m3fn:
             raise ValueError(
                 f"BmmFp8Op only supports torch.float8_e4m3fn, got {a.dtype}")
@@ -278,12 +285,14 @@ class BmmFp8Op(Op):
         n: int,
         k: int,
         dtype: torch.dtype,
+        device: torch.device,
     ) -> Kernel:
-        key = (batch, m, n, k, dtype, self.out_dtype)
+        key = (batch, m, n, k, dtype, self.out_dtype, device)
         kernel = self._kernel_cache.get(key)
         if kernel is None:
             kernel = self.kernel_map["bmm_fp8_kernel"](
-                batch, m, n, k, dtype, self.out_dtype, tune=self._tune)
+                batch, m, n, k, dtype, self.out_dtype, device=device,
+                tune=self._tune)
             self._kernel_cache[key] = kernel
         return kernel
 
@@ -294,10 +303,6 @@ class BmmFp8Op(Op):
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
     ) -> torch.Tensor:
-        # ``b.stride()`` is part of the signature because layout inference
-        # for the K == N case falls back to ``b.stride(-2) == 1`` (see
-        # :meth:`_infer_bmnk`); a stride change without a shape change can
-        # therefore flip the KN/NK dispatch and must invalidate the cache.
         sig = (
             a.shape,
             b.shape,
@@ -321,7 +326,7 @@ class BmmFp8Op(Op):
             self.scale_a_shape = tuple(scale_a.shape)
             self.scale_b_shape = tuple(scale_b.shape)
             self._b_is_nk = b_is_nk
-            kernel = self._get_kernel(batch, m, n, k, a.dtype)
+            kernel = self._get_kernel(batch, m, n, k, a.dtype, device=a.device)
             self._active = kernel
             self._active_sig = sig
         if self._b_is_nk:
