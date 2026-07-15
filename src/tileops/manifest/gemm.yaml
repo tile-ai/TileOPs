@@ -57,6 +57,7 @@ GemmFwdOp:
     kernel_map:
       gemm_kernel: GemmKernel
       gemv_kernel: GemvKernel
+      small_batch_kernel: SmallBatchGemmKernel
 
 GemmFp8FwdOp:
   ref_api: "torch._scaled_mm"

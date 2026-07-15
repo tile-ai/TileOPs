@@ -54,7 +54,13 @@ from .gated_deltanet_recurrence import (
     GatedDeltaNetDecodeKernel,
     GatedDeltaNetDecodeRawCudaFlaStyleKernel,
 )
-from .gemm import GemmFp8BlockScaledKernel, GemmFp8EpilogueKernel, GemmKernel, GemvKernel
+from .gemm import (
+    GemmFp8BlockScaledKernel,
+    GemmFp8EpilogueKernel,
+    GemmKernel,
+    GemvKernel,
+    SmallBatchGemmKernel,
+)
 from .gla import GLABwdKernel, GLAFwdKernel
 from .gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 from .grouped_gemm import GroupedGemmKernel
@@ -189,6 +195,7 @@ __all__ = [
     "RopeNeoxPositionIdsKernel",
     "RopeNonNeoxKernel",
     "RopeYarnKernel",
+    "SmallBatchGemmKernel",
     "SparseMlaKernel",
     "TopkSelectorKernel",
     "UnaryKernel",
