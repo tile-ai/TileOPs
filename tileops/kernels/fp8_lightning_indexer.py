@@ -8,7 +8,7 @@ from tilelang import language as T
 
 from tileops.kernels.kernel_base import Kernel
 
-__all__ = ["FP8LightingIndexerKernel"]
+__all__ = ["FP8LightningIndexerKernel"]
 
 # block_Q == 1 deadlocks the software pipeline (some warps never reach the
 # pipeline barrier); such tiles must run unpipelined. block_Q >= 2 is safe.
@@ -16,7 +16,7 @@ _MIN_PIPELINED_BLOCK_Q = 2
 
 
 @functools.lru_cache(maxsize=32)
-def _fp8_lighting_indexer_kernel(batch,
+def _fp8_lightning_indexer_kernel(batch,
                                  seq_len,
                                  heads,
                                  index_dim,
@@ -28,7 +28,7 @@ def _fp8_lighting_indexer_kernel(batch,
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },)
-    def _fp8_lighting_indexer_func(
+    def _fp8_lightning_indexer_func(
         block_N=256,
         num_stages=3,
         threads=512,
@@ -52,7 +52,7 @@ def _fp8_lighting_indexer_kernel(batch,
         logits_shape = [batch, seq_len, seq_len_kv, kv_group]
 
         @T.prim_func
-        def _fp8_lighting_indexer_main(
+        def _fp8_lightning_indexer_main(
                 IndexQ: T.Tensor(index_q_shape, dtype),  # type: ignore
                 IndexK: T.Tensor(index_k_shape, dtype),  # type: ignore
                 IndexKScale: T.Tensor(index_k_scale_shape, accum_dtype),  # type: ignore
@@ -64,15 +64,17 @@ def _fp8_lighting_indexer_kernel(batch,
             heads_per_group = heads // kv_group
             with T.Kernel(T.ceildiv(seq_len, block_Q), batch, threads=threads) as (bx, by):
                 index_q_shared = T.alloc_shared([block_Q * heads, index_dim], dtype)
-                index_q_group_shared = T.alloc_shared([block_Q * heads_per_group, index_dim], dtype)
-                index_k_shared = T.alloc_shared([block_N, kv_group, index_dim], dtype)
-                index_k_group_shared = T.alloc_shared([block_N, index_dim], dtype)
                 index_k_scale_fragment = T.alloc_fragment([block_N, kv_group], accum_dtype)
                 s = T.alloc_fragment([block_N, block_Q * heads], accum_dtype)  #
                 s_reshaped = T.reshape(s, (block_N, block_Q, heads_per_group, kv_group))
-                s_tmp = T.alloc_fragment([block_N, block_Q * heads_per_group], accum_dtype)
                 logits = T.alloc_fragment([block_N, block_Q, kv_group], accum_dtype)
                 weights = T.alloc_fragment([block_Q, heads], accum_dtype)
+                index_k_group_shared = T.alloc_shared([block_N, index_dim], dtype)
+                if kv_group > 1:
+                    index_k_shared = T.alloc_shared([block_N, kv_group, index_dim], dtype)
+                    index_q_group_shared = T.alloc_shared([block_Q * heads_per_group, index_dim],
+                                                          dtype)
+                    s_tmp = T.alloc_fragment([block_N, block_Q * heads_per_group], accum_dtype)
 
                 seq_len_i = bx * block_Q
                 b_i = by
@@ -93,27 +95,41 @@ def _fp8_lighting_indexer_kernel(batch,
 
                 for nbn_i in T.Pipelined(
                         T.ceildiv(cu_k_e_max - cu_k_s_min, block_N), num_stages=num_stages):
-                    T.copy(IndexK[b_i, cu_k_s_min + nbn_i * block_N, 0, 0], index_k_shared)
+                    if kv_group > 1:
+                        T.copy(IndexK[b_i, cu_k_s_min + nbn_i * block_N, 0, 0], index_k_shared)
                     T.copy(IndexKScale[b_i, cu_k_s_min + nbn_i * block_N, 0],
                            index_k_scale_fragment)
 
-                    for g in T.Serial(kv_group):
-                        for bn_i, d_i in T.Parallel(block_N, index_dim):
-                            index_k_group_shared[bn_i, d_i] = index_k_shared[bn_i, g, d_i]  #
-                        for i, d in T.Parallel(block_Q * heads_per_group, index_dim):
-                            index_q_group_shared[i, d] = index_q_shared[g * heads_per_group + i,
-                                                                        d]  #
+                    if kv_group == 1:
+                        T.copy(
+                            IndexK[b_i, cu_k_s_min + nbn_i * block_N:cu_k_s_min +
+                                   (nbn_i + 1) * block_N, 0, 0:index_dim], index_k_group_shared)
                         T.gemm(
                             index_k_group_shared,
-                            index_q_group_shared,
-                            s_tmp,
+                            index_q_shared,
+                            s,
                             transpose_B=True,
                             clear_accum=True,
                             policy=T.GemmWarpPolicy.FullCol,
                         )
-                        for bn_i, bq_i, h_i in T.Parallel(block_N, block_Q, heads_per_group):
-                            s_reshaped[bn_i, bq_i, h_i, g] = (
-                                s_tmp[bn_i, bq_i * heads_per_group + h_i])
+                    else:
+                        for g in T.Serial(kv_group):
+                            for bn_i, d_i in T.Parallel(block_N, index_dim):
+                                index_k_group_shared[bn_i, d_i] = index_k_shared[bn_i, g, d_i]  #
+                            for bq_i, h_i, d_i in T.Parallel(block_Q, heads_per_group, index_dim):
+                                index_q_group_shared[bq_i * heads_per_group + h_i, d_i] = (
+                                    index_q_shared[bq_i * heads + g * heads_per_group + h_i, d_i])
+                            T.gemm(
+                                index_k_group_shared,
+                                index_q_group_shared,
+                                s_tmp,
+                                transpose_B=True,
+                                clear_accum=True,
+                                policy=T.GemmWarpPolicy.FullCol,
+                            )
+                            for bn_i, bq_i, h_i in T.Parallel(block_N, block_Q, heads_per_group):
+                                s_reshaped[bn_i, bq_i, h_i, g] = (
+                                    s_tmp[bn_i, bq_i * heads_per_group + h_i])
 
                     for bn_i, bq_i, h_i, g in T.Parallel(block_N, block_Q, heads_per_group,
                                                          kv_group):
@@ -128,9 +144,9 @@ def _fp8_lighting_indexer_kernel(batch,
                                g] = logits[bn_i, bq_i, g]
 
         # Return the kernel function handle
-        return _fp8_lighting_indexer_main
+        return _fp8_lightning_indexer_main
 
-    return _fp8_lighting_indexer_func
+    return _fp8_lightning_indexer_func
 
 
 @tilelang.jit
@@ -168,8 +184,8 @@ def clean_logits_(threads: int = 512,):
     return clean_logits_kernel
 
 
-@torch.library.custom_op("top::fp8_lighting_indexer_wrapped_kernel", mutates_args=("Logits",))
-def fp8_lighting_indexer_wrapped_kernel(batch: int, seq_len: int, heads: int, index_dim: int,
+@torch.library.custom_op("top::fp8_lightning_indexer_wrapped_kernel", mutates_args=("Logits",))
+def fp8_lightning_indexer_wrapped_kernel(batch: int, seq_len: int, heads: int, index_dim: int,
                                         seq_len_kv: int, kv_group: int, clean_logits: bool,
                                         block_N: int, num_stages: int, threads: int, block_Q: int,
                                         IndexQ: torch.Tensor, IndexK: torch.Tensor,
@@ -177,7 +193,7 @@ def fp8_lighting_indexer_wrapped_kernel(batch: int, seq_len: int, heads: int, in
                                         Weights: torch.Tensor, CuSeqLenKS: torch.Tensor,
                                         CuSeqLenKE: torch.Tensor) -> None:
 
-    _fp8_lighting_indexer_kernel(batch, seq_len, heads, index_dim, seq_len_kv,
+    _fp8_lightning_indexer_kernel(batch, seq_len, heads, index_dim, seq_len_kv,
                                  kv_group)(block_N, num_stages, threads,
                                            block_Q)(IndexQ.view(batch, seq_len * heads,
                                                                 index_dim), IndexK, IndexKScale,
@@ -186,7 +202,7 @@ def fp8_lighting_indexer_wrapped_kernel(batch: int, seq_len: int, heads: int, in
         clean_logits_(threads=threads)(Logits, CuSeqLenKS, CuSeqLenKE)
 
 
-@fp8_lighting_indexer_wrapped_kernel.register_fake
+@fp8_lightning_indexer_wrapped_kernel.register_fake
 def _(
         batch: int,
         seq_len: int,
@@ -209,7 +225,7 @@ def _(
     return None
 
 
-class FP8LightingIndexerKernel(Kernel):
+class FP8LightningIndexerKernel(Kernel):
     supported_archs: list[int] = [90]
 
     def __init__(self,
@@ -232,7 +248,7 @@ class FP8LightingIndexerKernel(Kernel):
         self.clean_logits = clean_logits
         self.config = config
 
-        self.kernel = _fp8_lighting_indexer_kernel(self.batch, self.seq_len, self.heads,
+        self.kernel = _fp8_lightning_indexer_kernel(self.batch, self.seq_len, self.heads,
                                                    self.index_dim, self.seq_len_kv, self.kv_group,
                                                    self.clean_logits)
 
@@ -271,7 +287,7 @@ class FP8LightingIndexerKernel(Kernel):
         Logits = torch.empty([self.batch, self.seq_len, self.seq_len_kv, self.kv_group],
                              device=IndexQ.device,
                              dtype=torch.float32)
-        fp8_lighting_indexer_wrapped_kernel(
+        fp8_lightning_indexer_wrapped_kernel(
             self.batch, self.seq_len, self.heads, self.index_dim, self.seq_len_kv, self.kv_group,
             self.clean_logits, self.config["block_N"], self.config["num_stages"],
             self.config["threads"], self.config["block_Q"], IndexQ, IndexK, IndexKScale, Logits,
