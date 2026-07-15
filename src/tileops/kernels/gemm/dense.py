@@ -10,12 +10,14 @@ from tileops.trace import trace
 from tileops.utils import get_sm_version, str2dtype
 
 from .call_spec import gemv_region
+from .call_spec import gemv_region, small_batch_region
 
 __all__ = [
     "GemmFp8BlockScaledKernel",
     "GemmFp8EpilogueKernel",
     "GemmKernel",
     "GemvKernel",
+    "SmallBatchGemmKernel",
 ]
 
 
@@ -1736,6 +1738,92 @@ def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
     return _gemv_func
 
 
+@functools.lru_cache(maxsize=32)
+def _gemm_small_m_kernel(m: int, n: int, k: int, dtype: str = "float16") -> Callable:
+    """Small-batch (2<=m<=16) NT GEMM ``C[m,n] = A[m,k] @ B[n,k]ᵀ`` for SM90.
+
+    A bandwidth-bound generalization of :func:`_gemv_kernel`: the weight matrix
+    ``B`` is streamed once through a cp.async SMEM ring, and each B-tile is
+    reused across all ``m`` rows (arithmetic intensity ~= m, the regime where
+    saturating HBM — not tensor-core rate — is the goal). The gemv scalar
+    accumulator ``(1,)`` becomes ``(m,)``; one ``tvm_thread_allreduce`` over the
+    ``tk`` reduce lanes runs per output row.
+
+    Unlike the shipped gemv, the epilogue write is N-tail guarded so ``block_n``
+    values > 1 stay correct on non-``block_n``-divisible ``n``. The K tail needs
+    no explicit mask: the partial-tile ``T.copy`` zero-fills the out-of-bounds
+    ``b_shared`` and the ``x * 0`` product masks the (unpredicated) OOB ``a``
+    read — the same behavior the gemv relies on.
+
+    Args:
+        m: Batch rows (2..16).
+        n: Output columns (weight rows).
+        k: Contraction dim; the innermost dim of both ``a`` and ``b``.
+        dtype: TileLang dtype string (``"float16"`` / ``"bfloat16"``).
+
+    Returns:
+        A JIT factory ``(block_n, reduce_threads, num_stages) -> compiled`` whose
+        compiled kernel maps ``(a[m,k], b[n,k]) -> c[m,n]``.
+    """
+    accum_dtype = "float"
+
+    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _small_m_func(
+        block_n: int = 1,
+        reduce_threads: int = 128,
+        num_stages: int = 4,
+    ) -> Callable:
+        tile_k = 128 // (str2dtype[dtype].itemsize * 8)
+        block_k = reduce_threads * tile_k
+
+        @T.prim_func
+        def _small_m_main(
+            a: T.Tensor((m, k), dtype),
+            b: T.Tensor((n, k), dtype),
+            c: T.Tensor((m, n), dtype),
+        ):
+            # threads=(reduce_threads, block_n): tk=threadIdx.x is the fast reduce
+            # lane over K (consecutive threads read consecutive B columns →
+            # coalesced 128-bit loads); tn=threadIdx.y selects the output column.
+            with T.Kernel(T.ceildiv(n, block_n), threads=(reduce_threads, block_n)) as bn:
+                tk = T.get_thread_binding(0)
+                tn = T.get_thread_binding(1)
+                c_accum = T.alloc_local((m,), accum_dtype)
+                T.clear(c_accum)
+                b_shared = T.alloc_shared((block_n, block_k), dtype)
+                a_local = T.alloc_local((m, tile_k), dtype)
+
+                for bk in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+                    T.copy(b[bn * block_n, bk * block_k], b_shared, disable_tma=True)
+                    for mi in T.serial(m):
+                        for _k in T.vectorized(tile_k):
+                            a_local[mi, _k] = a[mi, bk * block_k + tk * tile_k + _k]
+                    for mi in T.serial(m):
+                        for _k in T.serial(tile_k):
+                            c_accum[mi] += a_local[mi, _k].astype(accum_dtype) * b_shared[
+                                tn, tk * tile_k + _k
+                            ].astype(accum_dtype)
+
+                c_reduced = T.alloc_local((1,), accum_dtype)
+                for mi in T.serial(m):
+                    with T.attr(
+                        T.comm_reducer(lambda x, y: x + y, [T.Cast(accum_dtype, 0)]),
+                        "reduce_scope",
+                        T.reinterpret(T.uint64(0), dtype="handle"),
+                    ):
+                        T.evaluate(
+                            T.tvm_thread_allreduce(
+                                T.uint32(1), c_accum[mi], True, c_reduced[0], tk, dtype="handle"
+                            )
+                        )
+                    if bn * block_n + tn < n:
+                        c[mi, bn * block_n + tn] = c_reduced[0]
+
+        return _small_m_main
+
+    return _small_m_func
+
+
 @torch.library.custom_op("tileops::gemv_wrapped_kernel", mutates_args=())
 def _gemv_wrapped_kernel(
     n: int,
@@ -1835,6 +1923,89 @@ class GemvKernel(Kernel):
         # Call the JIT-compiled kernel directly to avoid Python overhead from
         # closure recreation + JIT cache lookup in _gemv_wrapped_kernel on every
         # forward pass. _gemv_wrapped_kernel is kept for torch.compile compatibility.
+        return self.kernel(
+            self.config["block_n"],
+            self.config["reduce_threads"],
+            self.config["num_stages"],
+        )(a, b)
+
+
+class SmallBatchGemmKernel(Kernel):
+    """Small-batch (small-m, NT) kernel-mode of ``GemmFwdOp`` — a batched GEMV.
+
+    For small ``m`` the NT GEMM ``C[m,n] = A[m,k] @ B[n,k]ᵀ`` is HBM-bandwidth
+    bound (arithmetic intensity ~= m), and the generic warp-specialized
+    ``GemmKernel`` badly underfills the GPU there (e.g. m=2, n=2112 launches ~17
+    CTAs on 132 SMs). This mode instead streams the weight matrix once through a
+    cp.async ring and reuses each SMEM tile across all ``m`` rows
+    (:func:`_gemm_small_m_kernel`, the CUDA-core generalization of
+    :class:`GemvKernel`). Measured on H200 it beats the generic path 1.1-3.2x on
+    underfilled decode shapes and reaches cuBLAS parity/beyond at low ``m``.
+
+    Scope: SM90, NT only (``B`` is ``[N,K]`` → K contiguous → coalesced reduction
+    over K; NN/TN/TT do not have that layout and fall through to ``GemmKernel``).
+    The kernel is correct for any ``m``; the region it is selected for is the
+    occupancy band stated by :func:`~tileops.kernels.gemm.call_spec.small_batch_region`.
+
+    Args:
+        m: Batch rows.
+        n: Output columns.
+        k: Contraction dim.
+        dtype: Input/output torch dtype (fp16 / bf16); fp32 accumulation.
+        config: Optional explicit config; defaults to :attr:`default_config`.
+        tune: Whether to autotune over :attr:`autotune_configs`.
+    """
+
+    supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return small_batch_region(call)
+
+    def __init__(
+        self,
+        m: int,
+        n: int,
+        k: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        self.m = m
+        self.n = n
+        self.k = k
+        self.dtype = dtype
+        self.kernel = _gemm_small_m_kernel(m, n, k, self.dtype_str)
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        # Modal best across m<=8 on both decode shapes (H200 sweep): one output
+        # column per block, a 64-lane reduction over K, 4-deep cp.async pipeline.
+        # tune=True refines per shape (short-K high-m prefers reduce_threads=32).
+        return {"block_n": 1, "reduce_threads": 64, "num_stages": 4}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # reduce_threads splits K across lanes (>32 → cross-warp SMEM tree reduce);
+        # block_n is output columns per block; num_stages pipelines the B cp.async.
+        # Guards: threads = reduce_threads*block_n <= 1024, and the B ring SMEM
+        # (block_n * reduce_threads * tile_k(=8) * itemsize(2) * num_stages) within
+        # the 224 KB opt-in budget.
+        _TILE_K = 8
+        _SMEM_CAP = 224 * 1024
+        configs = []
+        for rt in (32, 64, 128):
+            for bn in (1, 2, 4):
+                if rt * bn > 1024:
+                    continue
+                for ns in (2, 3, 4, 5):
+                    if bn * (rt * _TILE_K) * 2 * ns <= _SMEM_CAP:
+                        configs.append({"block_n": bn, "reduce_threads": rt, "num_stages": ns})
+        return configs
+
+    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.kernel(
             self.config["block_n"],
             self.config["reduce_threads"],

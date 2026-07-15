@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.gemm import SmallBatchGemmKernel
 from tileops.kernels.gemm.dense import GemmFp8BlockScaledKernel
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
@@ -189,6 +190,53 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-tuned-thin-n-alt",
                 ),
+                # small-batch NT kernel-mode: tier-1 (m<=4) on both decode regimes +
+                # both dtypes + a non-power-of-two n tail; tier-2 (5<=m<=8) on a
+                # severely-underfilled grid.
+                pytest.param(
+                    2,
+                    2112,
+                    7168,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-small-batch-m2",
+                ),
+                pytest.param(
+                    4,
+                    7168,
+                    2048,
+                    torch.float16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-small-batch-m4",
+                ),
+                pytest.param(
+                    4,
+                    3000,
+                    2048,
+                    torch.float16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-small-batch-m4-boundary",
+                ),
+                pytest.param(
+                    8,
+                    2112,
+                    7168,
+                    torch.float16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-small-batch-m8-underfilled",
+                ),
             ],
         ),
     ]
@@ -315,8 +363,8 @@ class GemmW4A16Fixture(FixtureBase):
                     512,
                     512,
                     torch.float16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-w4a16-m1",
+                    marks=pytest.mark.full,
+                    id="full-w4a16-m1",
                 ),
                 pytest.param(
                     16,
@@ -373,8 +421,6 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test = GemmW4A16Test(m, n, k, dtype)
     op = GemmW4A16FwdOp()
     test.check(op, *test.gen_inputs(), atol=7e-2, rtol=5e-2)
-    expected = "GemmW4A16DecodeKernel" if m == 1 else "GemmW4A16Kernel"
-    assert op.kernel.__class__.__name__ == expected
 
 
 @pytest.mark.smoke
@@ -517,3 +563,32 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     op = GemmFwdOp(trans_a=False, trans_b=False, tune=tune)
     tolerances = {"atol": 1e-2, "rtol": 1e-2}
     test.check(op, *test.gen_inputs(), **tolerances)
+
+
+@pytest.mark.smoke
+def test_small_batch_dispatch() -> None:
+    """Occupancy-tiered small_batch dispatch (NT); boundaries stay on gemv/gemm.
+
+    Dispatch only — ``_get_kernel`` constructs kernel objects without triggering
+    a JIT compile (that happens on first forward), so this stays smoke-fast.
+    """
+    from tileops.utils import get_sm_version
+
+    if get_sm_version() not in (SmallBatchGemmKernel.supported_archs or []):
+        pytest.skip("small_batch kernel-mode is SM90-only")
+
+    op = GemmFwdOp(trans_a=False, trans_b=True)  # NT
+    # tier 1 (2 <= m <= 4): any underfilled grid.
+    assert op._get_kernel(4, 2112, 7168, torch.float16)[0] == "small_batch"
+    assert op._get_kernel(4, 7168, 2048, torch.float16)[0] == "small_batch"
+    # tier 2 (5 <= m <= 8): only a severely-underfilled grid (<= ~20% of a wave).
+    assert op._get_kernel(8, 2112, 7168, torch.float16)[0] == "small_batch"
+    assert op._get_kernel(8, 7168, 2048, torch.float16)[0] == "gemm"  # 56 CTAs: not severe
+    # boundaries
+    assert op._get_kernel(1, 2112, 7168, torch.float16)[0] == "lhs_row"  # gemv
+    assert op._get_kernel(9, 2112, 7168, torch.float16)[0] == "gemm"  # m > 8
+    wide_n = op._sm_count * 128  # generic fills the GPU
+    assert op._get_kernel(4, wide_n, 2048, torch.float16)[0] == "gemm"
+    op_nn = GemmFwdOp(trans_a=False, trans_b=False)  # non-NT
+    assert op_nn._get_kernel(4, 2112, 7168, torch.float16)[0] == "gemm"
+
