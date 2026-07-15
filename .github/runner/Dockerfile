@@ -96,9 +96,10 @@ RUN python -m pip freeze | grep -iE '^(torch|torchvision|torchaudio)==' > /tmp/t
     done
 # The Mamba benchmarks compare against the official mamba_ssm Triton kernels. Keep this
 # best-effort and dependency-free so it cannot re-resolve the CUDA-specific torch/triton stack
-# or pull the newer mamba_ssm tilelang/apache-tvm-ffi pins into the runner image. Force source
-# build so setup.py skips its cached-wheel URL probe and lets BuildExtension honor MAX_JOBS.
-RUN MAMBA_FORCE_BUILD=TRUE python -m pip install --no-cache-dir --no-build-isolation --no-deps \
+# or pull the newer mamba_ssm tilelang/apache-tvm-ffi pins into the runner image. Skip the
+# unrelated CUDA extension build; these benchmarks import mamba_ssm.ops.triton.*.
+RUN MAMBA_FORCE_BUILD=TRUE MAMBA_SKIP_CUDA_BUILD=TRUE \
+    python -m pip install --no-cache-dir --no-build-isolation --no-deps \
         -c /tmp/constraints.txt -c /tmp/torch-cu129.txt \
         "mamba-ssm==2.3.1" \
     || echo "WARNING: mamba-ssm 2.3.1 install failed (non-fatal)"
