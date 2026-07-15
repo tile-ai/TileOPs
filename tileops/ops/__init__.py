@@ -19,7 +19,7 @@ from .attention import (
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
 )
-from .bmm import BmmFwdOp
+from .bmm import BmmFp8Op, BmmFwdOp
 from .convolution import (
     Conv1dBiasFwdOp,
     Conv1dFwdOp,
@@ -114,6 +114,7 @@ __all__ = [
     "AdaLayerNormZeroFwdOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
+    "BmmFp8Op",
     "BmmFwdOp",
     "Conv1dBiasFwdOp",
     "Conv1dFwdOp",
