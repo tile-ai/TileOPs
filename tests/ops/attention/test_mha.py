@@ -145,7 +145,6 @@ def test_mha_fwd_preserves_gqa_square_dense_fast_path(
 @MhaBwdFixture
 def test_mha_bwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype,
                  tune: bool) -> None:
-    pytest.skip("MHA backward fails under tilelang 0.1.9 due to autodiff lowering regression; re-enable when backward produces numerically correct grads.")
     test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
