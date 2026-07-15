@@ -112,7 +112,15 @@ RUN { mkdir -p /tmp/DeepGEMM \
         && git remote add origin https://github.com/deepseek-ai/DeepGEMM.git \
         && git fetch --depth 1 origin "${DEEPGEMM_GIT_SHA}" \
         && git checkout -q FETCH_HEAD \
-        && git submodule update --init --depth 1 third-party/cutlass third-party/fmt \
+        && for attempt in 1 2 3 4 5; do \
+            git -c http.version=HTTP/1.1 submodule update --init --depth 1 --jobs 1 \
+                third-party/cutlass third-party/fmt && break; \
+            status="$?"; \
+            echo "WARNING: DeepGEMM submodule fetch failed (attempt ${attempt}/5, status ${status})"; \
+            rm -rf third-party/cutlass third-party/fmt .git/modules/third-party/cutlass .git/modules/third-party/fmt; \
+            if [ "${attempt}" = 5 ]; then exit "${status}"; fi; \
+            sleep "$((attempt * 10))"; \
+        done \
         && DG_FORCE_BUILD=1 python -m pip install --no-cache-dir --no-build-isolation --no-deps \
             -c /tmp/constraints.txt -c /tmp/torch-cu129.txt .; } \
     || echo "WARNING: DeepGEMM v2.1.1.post3 install failed (non-fatal)"; \
