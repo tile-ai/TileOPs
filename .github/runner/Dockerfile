@@ -96,11 +96,22 @@ RUN python -m pip freeze | grep -iE '^(torch|torchvision|torchaudio)==' > /tmp/t
     done
 # The Mamba benchmarks compare against the official mamba_ssm Triton kernels. Keep this
 # best-effort and dependency-free so it cannot re-resolve the CUDA-specific torch/triton stack
-# or pull the newer mamba_ssm tilelang/apache-tvm-ffi pins into the runner image.
-RUN python -m pip install --no-cache-dir --no-build-isolation --no-deps \
+# or pull the newer mamba_ssm tilelang/apache-tvm-ffi pins into the runner image. Force source
+# build so setup.py skips its cached-wheel URL probe and lets BuildExtension honor MAX_JOBS.
+RUN MAMBA_FORCE_BUILD=TRUE python -m pip install --no-cache-dir --no-build-isolation --no-deps \
         -c /tmp/constraints.txt -c /tmp/torch-cu129.txt \
         "mamba-ssm==2.3.1" \
     || echo "WARNING: mamba-ssm 2.3.1 install failed (non-fatal)"
+# The grouped-GEMM benchmark can compare against DeepGEMM. Install from the official tag
+# instead of PyPI's stale 1.0.0 sdist, and fetch only the submodules needed for its headers.
+RUN { git clone --depth 1 --branch v2.1.1.post3 \
+            https://github.com/deepseek-ai/DeepGEMM.git /tmp/DeepGEMM \
+        && cd /tmp/DeepGEMM \
+        && git submodule update --init --depth 1 third-party/cutlass third-party/fmt \
+        && DG_FORCE_BUILD=1 python -m pip install --no-cache-dir --no-build-isolation --no-deps \
+            -c /tmp/constraints.txt -c /tmp/torch-cu129.txt .; } \
+    || echo "WARNING: DeepGEMM v2.1.1.post3 install failed (non-fatal)"; \
+    rm -rf /tmp/DeepGEMM
 # The attention benchmarks (benchmarks/ops/attention/) need a flashinfer newer than the 0.6.6
 # vllm pulls. Upgrade flashinfer-python/-cubin with --no-deps so torch and vllm's other deps are
 # untouched; add plain cuda-tile (flashinfer>=0.6.7 needs it — the [tileiras] extra would pull a
@@ -171,11 +182,7 @@ RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-run
     && FLASHINFER_CUBIN_DIR="$(python -c 'import pathlib, flashinfer_cubin; print(pathlib.Path(flashinfer_cubin.get_cubin_dir()))' 2>/dev/null || true)" \
     && if [ -n "${FLASHINFER_CUBIN_DIR}" ]; then \
         mkdir -p "${FLASHINFER_CUBIN_DIR}/flashinfer/trtllm/gemm"; \
-        chown ci-runner:ci-runner \
-            "${FLASHINFER_CUBIN_DIR}" \
-            "${FLASHINFER_CUBIN_DIR}/flashinfer" \
-            "${FLASHINFER_CUBIN_DIR}/flashinfer/trtllm" \
-            "${FLASHINFER_CUBIN_DIR}/flashinfer/trtllm/gemm"; \
+        find "${FLASHINFER_CUBIN_DIR}" -type d -exec chown ci-runner:ci-runner {} +; \
     fi
 WORKDIR /home/ci-runner/runner
 RUN mkdir -p /home/ci-runner/runner/_work/_tool \

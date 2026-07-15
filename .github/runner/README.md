@@ -46,10 +46,9 @@ lands, rebuild and tag the image from a GPU host using the build command above, 
 docker push ghcr.io/tile-ai/tileops-runner:<new-tag>
 ```
 
-Then update the runner launcher configuration in TileOpsGov (`ci/runner-launcher/common.env`,
-the `IMAGE=` value) to point at the new tag, and restart/redeploy the local runner launcher.
-Merging the TileOPs PR only changes the image recipe; the live self-hosted runners keep using
-their existing image until that local Docker rollout is done.
+Then redeploy the self-hosted runner launcher to use the new tag (maintainer task, done
+outside this repository). Merging the TileOPs PR only changes the image recipe; the live
+self-hosted runners keep using their existing image until that manual rollout is done.
 
 ### Build args
 
@@ -66,14 +65,14 @@ Set exactly one of `TILELANG_GIT_SHA` / `TILELANG_VERSION`; the build fails fast
 
 ### Stages (`--target`)
 
-| Stage       | Contents                                                                                                                                                                                                |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `runtime`   | Python 3.12 + torch / torchvision / torchaudio `2.10.0 / 0.25.0 / 2.10.0 +cu129` + triton `3.6.0` + tilelang build/runtime deps (incl. `apache-tvm-ffi 0.1.11`). **No tilelang itself.**                |
-| `post-fa3`  | `runtime` + pytest / pytest-xdist / ruff + FlashAttention-3 (built from the `hopper/` source).                                                                                                          |
-| `fa2`       | `post-fa3` + FlashAttention-2 (`flash-attn 2.8.3`, source-built in its own layer so changes to the bench loop never recompile it).                                                                      |
-| `fullstack` | `fa2` + flash-linear-attention `0.4.2` + vLLM `0.19.1` + mamba-ssm `2.3.1`, then flashinfer-python/-cubin upgraded to `0.6.11.post2` (`--no-deps`, so torch stays +cu129). sgl-kernel is not installed. |
-| `tilelang`  | `fullstack` + the tilelang wheel (`--no-deps`), then the build-time guard. Built **last** so a SHA bump rebuilds only this layer.                                                                       |
-| `final`     | `tilelang` + the GitHub Actions runner (no TileOPs source baked).                                                                                                                                       |
+| Stage       | Contents                                                                                                                                                                                                                         |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime`   | Python 3.12 + torch / torchvision / torchaudio `2.10.0 / 0.25.0 / 2.10.0 +cu129` + triton `3.6.0` + tilelang build/runtime deps (incl. `apache-tvm-ffi 0.1.11`). **No tilelang itself.**                                         |
+| `post-fa3`  | `runtime` + pytest / pytest-xdist / ruff + FlashAttention-3 (built from the `hopper/` source).                                                                                                                                   |
+| `fa2`       | `post-fa3` + FlashAttention-2 (`flash-attn 2.8.3`, source-built in its own layer so changes to the bench loop never recompile it).                                                                                               |
+| `fullstack` | `fa2` + flash-linear-attention `0.4.2` + vLLM `0.19.1` + mamba-ssm `2.3.1` + DeepGEMM `2.1.1.post3`, then flashinfer-python/-cubin upgraded to `0.6.11.post2` (`--no-deps`, so torch stays +cu129). sgl-kernel is not installed. |
+| `tilelang`  | `fullstack` + the tilelang wheel (`--no-deps`), then the build-time guard. Built **last** so a SHA bump rebuilds only this layer.                                                                                                |
+| `final`     | `tilelang` + the GitHub Actions runner (no TileOPs source baked).                                                                                                                                                                |
 
 Build an earlier stage for debugging with `--target runtime` (etc.).
 
