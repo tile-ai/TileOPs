@@ -4,9 +4,9 @@ Provides the shared validate -> reshape -> kernel -> trim -> reshape
 pattern for softmax, log_softmax, and logsumexp ops.  Alignment padding
 is handled inside the kernel via masked loads, not on the host.
 
-Construction: ``op(dtype=..., dim=-1)``.  M and N are derived
+Construction: ``op(dim=-1)``.  M, N, and dtype are derived
 from the input tensor at forward time, and kernels are cached by
-``(M, N)`` to avoid rebuilds.
+``(M, N, dtype, device)`` to avoid rebuilds.
 """
 
 import warnings
@@ -25,7 +25,7 @@ __all__ = ["_SoftmaxBaseOp"]
 
 
 def _resolve_implicit_softmax_dim(name: str, ndim: int) -> int:
-    """Mirror ``torch.nn.functional._get_softmax_dim``: pick 0 for ``ndim in {0, 1, 3}`` else 1, with the same deprecation warning."""
+    """Mirror ``torch.nn.functional._get_softmax_dim``."""
     warnings.warn(
         f"Implicit dimension choice for {name} has been deprecated. "
         "Change the call to include dim=X as an argument.",
@@ -45,8 +45,9 @@ class _SoftmaxBaseOp(Op):
     override output reshaping if needed.
 
     Args:
-        dtype: Data type (float32, float16, or bfloat16).
+        dtype: Optional committed dtype for subclasses that still expose it.
         dim: Reduction dimension (default -1).
+        N: Optional committed reduction dim for subclasses that still expose it.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """
@@ -64,7 +65,7 @@ class _SoftmaxBaseOp(Op):
 
     def __init__(
         self,
-        dtype: torch.dtype,
+        dtype: Optional[torch.dtype] = None,
         dim: Union[int, List[int]] = -1,
         N: Optional[int] = None,
         *,
@@ -72,13 +73,15 @@ class _SoftmaxBaseOp(Op):
         tune: bool = False,
     ):
         self.dtype = dtype
+        self._committed_dtype = dtype
         self.dim = dim
         self.N = N
         self.keepdim = False
         self._tune = tune
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, object] = {}
-        self._last_roofline_mn: tuple[int, int] | None = None
+        self.kernel: object | None = None
+        self._last_roofline_spec: tuple[int, int, torch.dtype] | None = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -92,10 +95,18 @@ class _SoftmaxBaseOp(Op):
         """Validate input tensor."""
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        if x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            raise ValueError(
+                "x.dtype must be float16, bfloat16, or float32, "
+                f"got {x.dtype}"
+            )
+        if self._committed_dtype is not None and x.dtype != self._committed_dtype:
+            raise ValueError(
+                f"Expected x.dtype {self._committed_dtype}, got {x.dtype}"
+            )
         if x.ndim == 0:
             raise ValueError("Input tensor must be at least 1D")
+        self.dtype = x.dtype
 
     # ------------------------------------------------------------------
     # Forward
@@ -132,9 +143,13 @@ class _SoftmaxBaseOp(Op):
             x, orig_shape, _kept = flatten_for_multidim(x, dims)
             N = x.shape[-1]
             M = prod(x.shape[:-1])
-            self._last_roofline_mn = (M, N)
+            dtype = x.dtype
+            self._last_roofline_spec = (M, N, dtype)
             x = x.reshape(M, N)
-            kernel = self._get_or_create_kernel(M, N, device_index=x.device.index)
+            kernel = self._get_or_create_kernel(
+                M, N, dtype=dtype, device_index=x.device.index,
+            )
+            self.kernel = kernel
             # Alignment padding is handled by the kernel's forward().
             y = kernel(x)
             N_padded = align_up(N, DEFAULT_ALIGNMENT)
@@ -163,7 +178,8 @@ class _SoftmaxBaseOp(Op):
         # Op-layer cache-key / introspection consumers see the committed axis.
         self._static_axes = frozenset({(0, dim)})
         M = prod(s for i, s in enumerate(x.shape) if i != dim)
-        self._last_roofline_mn = (M, N)
+        dtype = x.dtype
+        self._last_roofline_spec = (M, N, dtype)
 
         # If reduction dim is not the last, move it to the end.
         needs_transpose = dim != x.ndim - 1
@@ -173,7 +189,10 @@ class _SoftmaxBaseOp(Op):
         x = x.contiguous().reshape(M, N)
 
         # Get or create cached kernel for this (M, N, device).
-        kernel = self._get_or_create_kernel(M, N, device_index=x.device.index)
+        kernel = self._get_or_create_kernel(
+            M, N, dtype=dtype, device_index=x.device.index,
+        )
+        self.kernel = kernel
 
         # Alignment padding is handled by the kernel's forward().
         y = kernel(x)
@@ -186,13 +205,13 @@ class _SoftmaxBaseOp(Op):
         return self._reshape_output(y, orig_shape, dim, needs_transpose)
 
     def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_mn is None:
+        if self._last_roofline_spec is None:
             raise RuntimeError(
                 f"{type(self).__name__}.eval_roofline() requires a prior forward() "
                 "call to bind dynamic input shape"
             )
-        M, N = self._last_roofline_mn
-        elem_bytes = self.dtype.itemsize
+        M, N, dtype = self._last_roofline_spec
+        elem_bytes = dtype.itemsize
         if self._op_kind == "softmax":
             return 5 * M * N, 2 * M * N * elem_bytes
         if self._op_kind == "log_softmax":
@@ -203,13 +222,19 @@ class _SoftmaxBaseOp(Op):
             f"{type(self).__name__} has unknown roofline op kind {self._op_kind!r}"
         )
 
-    def _get_or_create_kernel(self, M: int, N: int, device_index: int | None = None) -> object:
-        """Return a cached kernel for (M, N, device_index), creating one if needed."""
-        key = (M, N, device_index)
+    def _get_or_create_kernel(
+        self,
+        M: int,
+        N: int,
+        dtype: torch.dtype,
+        device_index: int | None = None,
+    ) -> object:
+        """Return a cached kernel for (M, N, dtype, device), creating one if needed."""
+        key = (M, N, dtype, device_index)
         if key not in self._kernel_cache:
             kernel_cls = self.kernel_map[self._kernel_key]
             self._kernel_cache[key] = kernel_cls(
-                M, N, self._op_kind, self.dtype, tune=self._tune,
+                M, N, self._op_kind, dtype, tune=self._tune,
                 device_index=device_index,
             )
         return self._kernel_cache[key]

@@ -5,13 +5,10 @@ in a standard TileOPs Op interface.
 
 User-facing API mirrors :func:`torch.nn.functional.batch_norm`:
 
-    fwd_op = BatchNormFwdOp(
-        N, C, spatial, dtype=dtype, training=False,
-        momentum=0.1, eps=1e-5,
-    )
+    fwd_op = BatchNormFwdOp(training=False, momentum=0.1, eps=1e-5)
     y = fwd_op(x, running_mean, running_var, weight, bias)
 
-    bwd_op = BatchNormBwdOp(N, C, *spatial, dtype=dtype)
+    bwd_op = BatchNormBwdOp()
     grad_x, grad_weight, grad_bias = bwd_op(grad_out, x, weight, mean, rstd)
 
 Forward returns the normalized output only (manifest contract); ``mean`` and
@@ -24,7 +21,6 @@ kernel's block_l (chosen automatically by the kernel's default_config).
 """
 
 import functools
-import math
 import weakref
 from typing import Dict, Optional, Tuple
 
@@ -88,10 +84,6 @@ class BatchNormFwdOp(Op):
         to ``(C, L)`` internally where ``L = N * prod(spatial)``.
 
     Args:
-        N: Batch size.
-        C: Number of channels.
-        *spatial: Spatial dimensions (H, W, ...).
-        dtype: Input/output data type.
         training: Default ``training`` flag for ``forward()``; per the
             manifest the default is ``False``.
         momentum: Running-stat update momentum (used in training mode).
@@ -102,10 +94,6 @@ class BatchNormFwdOp(Op):
 
     def __init__(
         self,
-        N: int,
-        C: int,
-        spatial: Tuple[int, ...] = (),
-        dtype: torch.dtype = torch.float16,
         training: bool = False,
         momentum: float = 0.1,
         eps: float = 1e-5,
@@ -113,21 +101,22 @@ class BatchNormFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.N = N
-        self.C = C
-        self.spatial = tuple(spatial)
-        self.L = N * math.prod(self.spatial) if self.spatial else N
-        self.dtype = dtype
+        self.N: Optional[int] = None
+        self.C: Optional[int] = None
+        self.spatial: Optional[Tuple[int, ...]] = None
+        self.L: Optional[int] = None
+        self.dtype: Optional[torch.dtype] = None
         self.training = training
         self.eps = eps
         self.momentum = momentum
+        self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-
-        self.train_kernel: BatchNormFwdTrainKernel = self.kernel_map["fwd_train_kernel"](
-            C, self.L, dtype, eps, momentum, tune=tune)
-        self.infer_kernel: BatchNormFwdInferKernel = self.kernel_map["fwd_infer_kernel"](
-            C, self.L, dtype, eps, tune=tune)
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel: Optional[Kernel] = None
+        self.train_kernel: Optional[BatchNormFwdTrainKernel] = None
+        self.infer_kernel: Optional[BatchNormFwdInferKernel] = None
+        self._last_roofline_spec: Optional[tuple[int, int, torch.dtype]] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -137,29 +126,121 @@ class BatchNormFwdOp(Op):
         }
 
     def eval_roofline(self) -> tuple[int, int]:
-        elem_bytes = self.dtype.itemsize
+        if self._last_roofline_spec is None:
+            raise RuntimeError(
+                "BatchNormFwdOp.eval_roofline() requires a prior forward() call"
+            )
+        C, L, dtype = self._last_roofline_spec
+        elem_bytes = dtype.itemsize
         return (
-            10 * self.C * self.L,
-            2 * self.C * self.L * elem_bytes + 4 * self.C * 4,
+            10 * C * L,
+            2 * C * L * elem_bytes + 4 * C * 4,
         )
 
     def _prepare(self, x: torch.Tensor) -> Tuple[torch.Tensor, Tuple]:
         """Reshape x to (C, L)."""
         return _reshape_to_CL(x)
 
-    def _validate_inputs(self, x: torch.Tensor) -> None:
-        """Validate device, dtype, and shape of the input tensor."""
+    def _resolve_spec(self, x: torch.Tensor) -> Tuple[int, int, Tuple[int, ...], int, torch.dtype]:
+        """Validate input metadata and return (N, C, spatial, L, dtype)."""
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
+        if x.ndim < 2:
+            raise ValueError("x must have shape (N, C, *spatial)")
+        if x.dtype not in (torch.float32, torch.float16, torch.bfloat16):
             raise ValueError(
-                f"Expected x.dtype {self.dtype}, got {x.dtype}"
+                "x.dtype must be float32, float16, or bfloat16, "
+                f"got {x.dtype}"
             )
-        expected_shape = (self.N, self.C, *self.spatial)
-        if x.shape != expected_shape:
-            raise ValueError(
-                f"Expected input shape {expected_shape}, got {x.shape}"
-            )
+        N, C, *spatial_list = x.shape
+        spatial = tuple(spatial_list)
+        L = x.numel() // C
+        return N, C, spatial, L, x.dtype
+
+    @staticmethod
+    def _validate_channel_tensor(
+        name: str,
+        tensor: torch.Tensor,
+        C: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> None:
+        if not tensor.is_cuda:
+            raise ValueError(f"{name} must be a CUDA tensor")
+        if tensor.device != device:
+            raise ValueError(f"Expected {name} on {device}, got {tensor.device}")
+        if tensor.dtype != dtype:
+            raise ValueError(f"Expected {name}.dtype {dtype}, got {tensor.dtype}")
+        if tensor.ndim != 1 or tensor.shape[0] != C:
+            raise ValueError(f"Expected {name} shape ({C},), got {tuple(tensor.shape)}")
+
+    def _bind_spec(
+        self,
+        N: int,
+        C: int,
+        spatial: Tuple[int, ...],
+        L: int,
+        dtype: torch.dtype,
+    ) -> None:
+        self.N = N
+        self.C = C
+        self.spatial = spatial
+        self.L = L
+        self.dtype = dtype
+        self._last_roofline_spec = (C, L, dtype)
+
+    def _get_kernel(
+        self,
+        C: int,
+        L: int,
+        dtype: torch.dtype,
+        device_index: Optional[int],
+    ) -> Kernel:
+        mode = "train" if self.training else "infer"
+        key = (mode, C, L, dtype, device_index, self.eps, self.momentum, self.tune)
+        if key not in self._kernel_cache:
+            if self.training:
+                self._kernel_cache[key] = self.kernel_map["fwd_train_kernel"](
+                    C, L, dtype, self.eps, self.momentum, tune=self.tune,
+                )
+            else:
+                self._kernel_cache[key] = self.kernel_map["fwd_infer_kernel"](
+                    C, L, dtype, self.eps, tune=self.tune,
+                )
+        kernel = self._kernel_cache[key]
+        self.kernel = kernel
+        if self.training:
+            self.train_kernel = kernel
+        else:
+            self.infer_kernel = kernel
+        return kernel
+
+    def _forward_impl(
+        self,
+        x: torch.Tensor,
+        running_mean: torch.Tensor,
+        running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> torch.Tensor:
+        N, C, spatial, L, dtype = self._resolve_spec(x)
+        self._validate_channel_tensor("running_mean", running_mean, C, x.device, torch.float32)
+        self._validate_channel_tensor("running_var", running_var, C, x.device, torch.float32)
+        self._validate_channel_tensor("weight", weight, C, x.device, torch.float32)
+        self._validate_channel_tensor("bias", bias, C, x.device, torch.float32)
+        self._bind_spec(N, C, spatial, L, dtype)
+        x_cl, orig_shape = self._prepare(x)
+        kernel = self._get_kernel(C, L, dtype, x.device.index)
+
+        if self.training:
+            y_cl, _mean, _rstd = kernel(
+                x_cl, weight.float(), bias.float(),
+                running_mean, running_var)
+        else:
+            y_cl = kernel(
+                x_cl, weight.float(), bias.float(),
+                running_mean, running_var)
+        return _restore_shape(y_cl, orig_shape)
 
     def forward(
         self,
@@ -190,18 +271,7 @@ class BatchNormFwdOp(Op):
         Returns:
             Normalized output tensor with the same shape as ``x``.
         """
-        self._validate_inputs(x)
-        x_cl, orig_shape = self._prepare(x)
-
-        if self.training:
-            y_cl, _mean, _rstd = self.train_kernel(
-                x_cl, weight.float(), bias.float(),
-                running_mean, running_var)
-        else:
-            y_cl = self.infer_kernel(
-                x_cl, weight.float(), bias.float(),
-                running_mean, running_var)
-        return _restore_shape(y_cl, orig_shape)
+        return self._forward_impl(x, running_mean, running_var, weight, bias)
 
 
 class BatchNormBwdOp(Op):
@@ -218,48 +288,151 @@ class BatchNormBwdOp(Op):
         to ``(C, L)`` internally where ``L = N * prod(spatial)``.
 
     Args:
-        N: Batch size.
-        C: Number of channels.
-        *spatial: Spatial dimensions (H, W, ...).
-        dtype: Data type of ``grad_out``, ``x``, and ``grad_x``.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """
 
     def __init__(
         self,
-        N: int,
-        C: int,
-        *spatial: int,
-        dtype: torch.dtype = torch.float16,
+        *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.N = N
-        self.C = C
-        self.spatial = spatial
-        self.L = N * math.prod(spatial) if spatial else N
-        self.dtype = dtype
+        self.N: Optional[int] = None
+        self.C: Optional[int] = None
+        self.spatial: Optional[Tuple[int, ...]] = None
+        self.L: Optional[int] = None
+        self.dtype: Optional[torch.dtype] = None
+        self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-
-        self.bwd_kernel: BatchNormBwdKernel = self.kernel_map["bwd_kernel"](
-            C, self.L, dtype, tune=tune)
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel: Optional[Kernel] = None
+        self.bwd_kernel: Optional[BatchNormBwdKernel] = None
+        self._last_roofline_spec: Optional[tuple[int, int, torch.dtype]] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"bwd_kernel": BatchNormBwdKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
-        elem_bytes = self.dtype.itemsize
+        if self._last_roofline_spec is None:
+            raise RuntimeError(
+                "BatchNormBwdOp.eval_roofline() requires a prior forward() call"
+            )
+        C, L, dtype = self._last_roofline_spec
+        elem_bytes = dtype.itemsize
         return (
-            8 * self.C * self.L,
-            3 * self.C * self.L * elem_bytes + 3 * self.C * 4,
+            8 * C * L,
+            3 * C * L * elem_bytes + 3 * C * 4,
         )
 
     def _prepare(self, t: torch.Tensor) -> torch.Tensor:
         t_cl, _ = _reshape_to_CL(t)
         return t_cl
+
+    def _resolve_spec(
+        self, grad_out: torch.Tensor, x: torch.Tensor
+    ) -> Tuple[int, int, Tuple[int, ...], int, torch.dtype]:
+        if not grad_out.is_cuda:
+            raise ValueError("grad_out must be a CUDA tensor")
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if grad_out.device != x.device:
+            raise ValueError(
+                f"Expected grad_out and x on the same device, got "
+                f"{grad_out.device} and {x.device}"
+            )
+        if grad_out.shape != x.shape:
+            raise ValueError(f"Expected x shape {grad_out.shape}, got {x.shape}")
+        if grad_out.dtype != x.dtype:
+            raise ValueError(
+                f"Expected x.dtype {grad_out.dtype}, got {x.dtype}"
+            )
+        if grad_out.ndim < 2:
+            raise ValueError("grad_out must have shape (N, C, *spatial)")
+        if grad_out.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            raise ValueError(
+                "grad_out.dtype must be float32, float16, or bfloat16, "
+                f"got {grad_out.dtype}"
+            )
+        N, C, *spatial_list = grad_out.shape
+        spatial = tuple(spatial_list)
+        L = grad_out.numel() // C
+        return N, C, spatial, L, grad_out.dtype
+
+    def _bind_spec(
+        self,
+        N: int,
+        C: int,
+        spatial: Tuple[int, ...],
+        L: int,
+        dtype: torch.dtype,
+    ) -> None:
+        self.N = N
+        self.C = C
+        self.spatial = spatial
+        self.L = L
+        self.dtype = dtype
+        self._last_roofline_spec = (C, L, dtype)
+
+    def _get_kernel(
+        self,
+        C: int,
+        L: int,
+        dtype: torch.dtype,
+        device_index: Optional[int],
+    ) -> Kernel:
+        key = (C, L, dtype, device_index, self.tune)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["bwd_kernel"](
+                C, L, dtype, tune=self.tune,
+            )
+        kernel = self._kernel_cache[key]
+        self.kernel = kernel
+        self.bwd_kernel = kernel
+        return kernel
+
+    @staticmethod
+    def _validate_channel_tensor(
+        name: str,
+        tensor: torch.Tensor,
+        C: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> None:
+        if not tensor.is_cuda:
+            raise ValueError(f"{name} must be a CUDA tensor")
+        if tensor.device != device:
+            raise ValueError(f"Expected {name} on {device}, got {tensor.device}")
+        if tensor.dtype != dtype:
+            raise ValueError(f"Expected {name}.dtype {dtype}, got {tensor.dtype}")
+        if tensor.ndim != 1 or tensor.shape[0] != C:
+            raise ValueError(f"Expected {name} shape ({C},), got {tuple(tensor.shape)}")
+
+    def _forward_impl(
+        self,
+        grad_out: torch.Tensor,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        mean: torch.Tensor,
+        rstd: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        N, C, spatial, L, dtype = self._resolve_spec(grad_out, x)
+        self._validate_channel_tensor("weight", weight, C, grad_out.device, torch.float32)
+        self._validate_channel_tensor("mean", mean, C, grad_out.device, torch.float32)
+        self._validate_channel_tensor("rstd", rstd, C, grad_out.device, torch.float32)
+        self._bind_spec(N, C, spatial, L, dtype)
+        orig_shape = grad_out.shape
+        go_cl = self._prepare(grad_out)
+        x_cl = self._prepare(x)
+        kernel = self._get_kernel(C, L, dtype, grad_out.device.index)
+
+        grad_x_cl, grad_weight, grad_bias = kernel(
+            go_cl, x_cl, weight.float(), mean, rstd)
+
+        grad_x = _restore_shape(grad_x_cl, orig_shape)
+        return grad_x, grad_weight, grad_bias
 
     def forward(
         self,
@@ -289,15 +462,7 @@ class BatchNormBwdOp(Op):
             has the same shape as ``x``, ``grad_weight`` has shape ``(C,)``,
             and ``grad_bias`` has shape ``(C,)``.
         """
-        orig_shape = grad_out.shape
-        go_cl = self._prepare(grad_out)
-        x_cl = self._prepare(x)
-
-        grad_x_cl, grad_weight, grad_bias = self.bwd_kernel(
-            go_cl, x_cl, weight.float(), mean, rstd)
-
-        grad_x = _restore_shape(grad_x_cl, orig_shape)
-        return grad_x, grad_weight, grad_bias
+        return self._forward_impl(grad_out, x, weight, mean, rstd)
 
 
 # ---------------------------------------------------------------------------
@@ -355,17 +520,7 @@ def _batchnorm_fwd_eager_forward(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     """Direct kernel call (no torch.compile wrapping)."""
-    self._validate_inputs(x)
-    x_cl, orig_shape = self._prepare(x)
-    if self.training:
-        y_cl, _mean, _rstd = self.train_kernel(
-            x_cl, weight.float(), bias.float(),
-            running_mean, running_var)
-    else:
-        y_cl = self.infer_kernel(
-            x_cl, weight.float(), bias.float(),
-            running_mean, running_var)
-    return _restore_shape(y_cl, orig_shape)
+    return self._forward_impl(x, running_mean, running_var, weight, bias)
 
 
 BatchNormFwdOp._eager_forward = _batchnorm_fwd_eager_forward
@@ -439,13 +594,7 @@ def _batchnorm_bwd_eager_forward(
     rstd: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Direct kernel call (no torch.compile wrapping)."""
-    orig_shape = grad_out.shape
-    go_cl = self._prepare(grad_out)
-    x_cl = self._prepare(x)
-    grad_x_cl, grad_weight, grad_bias = self.bwd_kernel(
-        go_cl, x_cl, weight.float(), mean, rstd)
-    grad_x = _restore_shape(grad_x_cl, orig_shape)
-    return grad_x, grad_weight, grad_bias
+    return self._forward_impl(grad_out, x, weight, mean, rstd)
 
 
 BatchNormBwdOp._eager_forward = _batchnorm_bwd_eager_forward

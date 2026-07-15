@@ -61,7 +61,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 def test_group_norm_op(n: int, c: int, spatial: tuple, g: int,
                        dtype: torch.dtype, tune: bool) -> None:
     test = GroupNormTest(n, c, spatial, g, dtype)
-    op = GroupNormFwdOp(N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype)
+    op = GroupNormFwdOp(num_groups=g)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -85,7 +85,7 @@ def test_group_norm_non_contiguous(n: int, c: int, spatial: tuple, g: int,
     weight = torch.randn(c, dtype=dtype, device="cuda")
     bias = torch.randn(c, dtype=dtype, device="cuda")
 
-    op = GroupNormFwdOp(N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype)
+    op = GroupNormFwdOp(num_groups=g)
 
     y_ref = F.group_norm(
         x.contiguous().float(), g,
@@ -102,7 +102,7 @@ def test_group_norm_non_contiguous(n: int, c: int, spatial: tuple, g: int,
 def test_group_norm_rejects_none_weight_or_bias() -> None:
     """Affine op rejects ``weight=None`` / ``bias=None``; affine-free path lives on NoAffine."""
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
-    op = GroupNormFwdOp(N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype)
+    op = GroupNormFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     weight = torch.randn((c,), dtype=dtype, device="cuda")
     bias = torch.randn((c,), dtype=dtype, device="cuda")
@@ -127,22 +127,13 @@ def test_group_norm_forward_required_signature() -> None:
 
 
 @pytest.mark.smoke
-def test_group_norm_rejects_device_mismatch() -> None:
-    """Forward must raise ValueError when input device differs from kernel device.
-
-    The compiled kernel binds to the active CUDA device at construction
-    time, so callers must construct one op per device. Verify the op
-    surfaces a clean ValueError rather than letting the kernel layer
-    raise an opaque device-id error.
-    """
+def test_group_norm_lazily_specializes_per_device() -> None:
+    """A single op can lazily build specializations for different CUDA devices."""
     if torch.cuda.device_count() < 2:
-        pytest.skip("device-mismatch test requires >= 2 CUDA devices")
+        pytest.skip("multi-device test requires >= 2 CUDA devices")
 
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
-    with torch.cuda.device(0):
-        op = GroupNormFwdOp(
-            N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype,
-        )
+    op = GroupNormFwdOp(num_groups=g)
     x_other = torch.randn(
         (n, c, *spatial), dtype=dtype, device=torch.device("cuda", 1),
     )
@@ -152,8 +143,44 @@ def test_group_norm_rejects_device_mismatch() -> None:
     bias_other = torch.randn(
         (c,), dtype=dtype, device=torch.device("cuda", 1),
     )
-    with pytest.raises(ValueError, match="[Dd]evice mismatch"):
-        op(x_other, weight_other, bias_other)
+    y = op(x_other, weight_other, bias_other)
+    assert y.device == x_other.device
+    assert len(op._kernel_cache) == 1
+
+
+@pytest.mark.smoke
+def test_group_norm_lazy_cache_reuse_and_respecialization() -> None:
+    """One op instance reuses identical specs and caches changed specs."""
+    op = GroupNormFwdOp(num_groups=4)
+
+    def run_case(n: int, c: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
+        x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+        weight = torch.randn((c,), dtype=dtype, device="cuda")
+        bias = torch.randn((c,), dtype=dtype, device="cuda")
+
+        y = op(x, weight, bias)
+        y_ref = F.group_norm(
+            x.float(), 4, weight=weight.float(), bias=bias.float(), eps=1e-5,
+        ).to(dtype)
+        atol, rtol = _get_tolerances(dtype)
+        assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
+
+    run_case(2, 16, (4, 4), torch.float16)
+    assert len(op._kernel_cache) == 1
+    assert op.eval_roofline() == (
+        5 * 2 * 16 * 16,
+        (2 * 2 * 16 * 16 + 2 * 16) * torch.float16.itemsize,
+    )
+
+    run_case(2, 16, (4, 4), torch.float16)
+    assert len(op._kernel_cache) == 1
+
+    run_case(3, 24, (2, 8), torch.bfloat16)
+    assert len(op._kernel_cache) == 2
+    assert op.eval_roofline() == (
+        5 * 3 * 24 * 16,
+        (2 * 3 * 24 * 16 + 2 * 24) * torch.bfloat16.itemsize,
+    )
 
 
 @pytest.mark.smoke
@@ -168,10 +195,7 @@ def test_group_norm_rejects_affine_device_mismatch() -> None:
         pytest.skip("affine-device-mismatch test requires >= 2 CUDA devices")
 
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
-    with torch.cuda.device(0):
-        op = GroupNormFwdOp(
-            N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype,
-        )
+    op = GroupNormFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device=torch.device("cuda", 0))
     weight_other = torch.randn((c,), dtype=dtype, device=torch.device("cuda", 1))
     bias_other = torch.randn((c,), dtype=dtype, device=torch.device("cuda", 1))
@@ -207,7 +231,7 @@ class GroupNormNoAffineFixture(FixtureBase):
 def test_group_norm_no_affine_op(n: int, c: int, spatial: tuple, g: int,
                                  dtype: torch.dtype) -> None:
     """No-affine GroupNorm op matches torch.nn.functional.group_norm with weight=bias=None."""
-    op = GroupNormFwdOpNoAffine(N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype)
+    op = GroupNormFwdOpNoAffine(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
@@ -226,45 +250,19 @@ def test_group_norm_no_affine_forward_signature() -> None:
 
 
 @pytest.mark.smoke
-def test_group_norm_no_affine_rejects_device_mismatch() -> None:
-    """Forward raises ValueError when input lives on a different CUDA device."""
+def test_group_norm_no_affine_lazily_specializes_per_device() -> None:
+    """No-affine op can lazily build specializations for different CUDA devices."""
     if torch.cuda.device_count() < 2:
-        pytest.skip("device-mismatch test requires >= 2 CUDA devices")
+        pytest.skip("multi-device test requires >= 2 CUDA devices")
 
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
-    with torch.cuda.device(0):
-        op = GroupNormFwdOpNoAffine(
-            N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype,
-        )
+    op = GroupNormFwdOpNoAffine(num_groups=g)
     x_other = torch.randn(
         (n, c, *spatial), dtype=dtype, device=torch.device("cuda", 1),
     )
-    with pytest.raises(ValueError, match="[Dd]evice mismatch"):
-        op(x_other)
-
-
-@pytest.mark.smoke
-def test_group_norm_no_affine_rejects_shape_mismatch() -> None:
-    """Forward raises ValueError when input shape differs from configured (N, C, *spatial)."""
-    n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
-    op = GroupNormFwdOpNoAffine(
-        N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype,
-    )
-    x_bad = torch.randn((n, c, 4, 8), dtype=dtype, device="cuda")
-    with pytest.raises(ValueError, match="shape"):
-        op(x_bad)
-
-
-@pytest.mark.smoke
-def test_group_norm_no_affine_rejects_dtype_mismatch() -> None:
-    """Forward raises ValueError when input dtype differs from configured dtype."""
-    n, c, spatial, g = 2, 32, (8, 8), 8
-    op = GroupNormFwdOpNoAffine(
-        N=n, C=c, spatial=spatial, num_groups=g, dtype=torch.float16,
-    )
-    x = torch.randn((n, c, *spatial), dtype=torch.float32, device="cuda")
-    with pytest.raises(ValueError, match="dtype"):
-        op(x)
+    y = op(x_other)
+    assert y.device == x_other.device
+    assert len(op._kernel_cache) == 1
 
 
 @pytest.mark.smoke
@@ -279,8 +277,7 @@ def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple,
                                          g: int) -> None:
     """No-affine GroupNorm handles M not divisible by the kernel's block_m."""
     dtype = torch.float16
-    op = GroupNormFwdOpNoAffine(N=n, C=c, spatial=spatial, num_groups=g,
-                                dtype=dtype)
+    op = GroupNormFwdOpNoAffine(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None,

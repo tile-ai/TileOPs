@@ -73,7 +73,5 @@ def test_layer_norm_accepts_tuple_normalized_shape_runtime() -> None:
 def test_group_norm_uses_num_groups_kwarg() -> None:
     from tileops.ops.norm.group_norm import GroupNormFwdOp
 
-    op = GroupNormFwdOp(
-        N=2, C=32, spatial=(8, 8), num_groups=8, dtype=torch.float16,
-    )
+    op = GroupNormFwdOp(num_groups=8)
     assert op.num_groups == 8

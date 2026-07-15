@@ -115,7 +115,7 @@ def test_batch_norm_fwd(N, C, spatial, dtype, training):
     running_mean_ref = running_mean.clone()
     running_var_ref = running_var.clone()
 
-    op = BatchNormFwdOp(N, C, tuple(spatial), dtype=dtype, training=training)
+    op = BatchNormFwdOp(training=training)
     # Manifest input order: (x, running_mean, running_var, weight, bias).
     y = op(x, running_mean, running_var, weight, bias)
 
@@ -144,7 +144,7 @@ def test_batch_norm_bwd(N, C, spatial, dtype):
     test = BatchNormBwdTest(N, C, spatial, dtype)
     grad_out, x, weight, mean, rstd = test.gen_inputs()
 
-    op = BatchNormBwdOp(N, C, *spatial, dtype=dtype)
+    op = BatchNormBwdOp()
     grad_x, grad_weight, grad_bias = op(grad_out, x, weight, mean, rstd)
 
     ref_gx, ref_gw, ref_gb = test.ref_program(grad_out, x, weight, mean, rstd)
@@ -171,7 +171,7 @@ def test_batch_norm_fwd_returns_single_tensor() -> None:
         pytest.skip("CUDA required for forward call")
 
     N, C, H, W = 4, 8, 4, 4
-    op = BatchNormFwdOp(N, C, (H, W), dtype=torch.float16, training=False)
+    op = BatchNormFwdOp(training=False)
     x = torch.randn(N, C, H, W, device="cuda", dtype=torch.float16)
     weight = torch.randn(C, device="cuda", dtype=torch.float32)
     bias = torch.randn(C, device="cuda", dtype=torch.float32)
