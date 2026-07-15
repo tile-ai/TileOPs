@@ -52,14 +52,15 @@ self-hosted runners keep using their existing image until that manual rollout is
 
 ### Build args
 
-| Arg                | Default                                | Purpose                                                   |
-| ------------------ | -------------------------------------- | --------------------------------------------------------- |
-| `TILELANG_GIT_SHA` | *(none)*                               | tilelang commit to shallow-clone and compile (main mode). |
-| `TILELANG_VERSION` | *(none)*                               | tilelang PyPI version to `pip install` (release mode).    |
-| `BASE_IMAGE`       | `nvidia/cuda:12.9.1-devel-ubuntu22.04` | Public CUDA `devel` base (Python 3.12 via deadsnakes).    |
-| `MAX_JOBS`         | `64`                                   | Parallelism for the tilelang / FA2 / FA3 source builds.   |
-| `NVCC_THREADS`     | `4`                                    | Per-`nvcc` threads.                                       |
-| `RUNNER_VERSION`   | `2.334.0`                              | GitHub Actions runner version baked into `final`.         |
+| Arg                | Default                                    | Purpose                                                                   |
+| ------------------ | ------------------------------------------ | ------------------------------------------------------------------------- |
+| `TILELANG_GIT_SHA` | *(none)*                                   | tilelang commit to shallow-clone and compile (main mode).                 |
+| `TILELANG_VERSION` | *(none)*                                   | tilelang PyPI version to `pip install` (release mode).                    |
+| `BASE_IMAGE`       | `nvidia/cuda:12.9.1-devel-ubuntu22.04`     | Public CUDA `devel` base (Python 3.12 via deadsnakes).                    |
+| `MAX_JOBS`         | `64`                                       | Parallelism for the tilelang / FA2 / FA3 source builds.                   |
+| `NVCC_THREADS`     | `4`                                        | Per-`nvcc` threads.                                                       |
+| `DEEPGEMM_GIT_SHA` | `c9f8b34dcdacc20aa746b786f983492c51072870` | DeepGEMM commit for the grouped-GEMM benchmark baseline (`v2.1.1.post3`). |
+| `RUNNER_VERSION`   | `2.334.0`                                  | GitHub Actions runner version baked into `final`.                         |
 
 Set exactly one of `TILELANG_GIT_SHA` / `TILELANG_VERSION`; the build fails fast if neither is set.
 

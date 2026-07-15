@@ -104,9 +104,13 @@ RUN MAMBA_FORCE_BUILD=TRUE python -m pip install --no-cache-dir --no-build-isola
     || echo "WARNING: mamba-ssm 2.3.1 install failed (non-fatal)"
 # The grouped-GEMM benchmark can compare against DeepGEMM. Install from the official tag
 # instead of PyPI's stale 1.0.0 sdist, and fetch only the submodules needed for its headers.
-RUN { git clone --depth 1 --branch v2.1.1.post3 \
-            https://github.com/deepseek-ai/DeepGEMM.git /tmp/DeepGEMM \
+ARG DEEPGEMM_GIT_SHA=c9f8b34dcdacc20aa746b786f983492c51072870
+RUN { mkdir -p /tmp/DeepGEMM \
         && cd /tmp/DeepGEMM \
+        && git init -q \
+        && git remote add origin https://github.com/deepseek-ai/DeepGEMM.git \
+        && git fetch --depth 1 origin "${DEEPGEMM_GIT_SHA}" \
+        && git checkout -q FETCH_HEAD \
         && git submodule update --init --depth 1 third-party/cutlass third-party/fmt \
         && DG_FORCE_BUILD=1 python -m pip install --no-cache-dir --no-build-isolation --no-deps \
             -c /tmp/constraints.txt -c /tmp/torch-cu129.txt .; } \
