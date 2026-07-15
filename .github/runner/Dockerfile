@@ -94,6 +94,13 @@ RUN python -m pip freeze | grep -iE '^(torch|torchvision|torchaudio)==' > /tmp/t
             -c /tmp/constraints.txt -c /tmp/torch-cu129.txt "$pkg" \
             || echo "WARNING: bench baseline '$pkg' install failed (non-fatal)"; \
     done
+# The Mamba benchmarks compare against the official mamba_ssm Triton kernels. Keep this
+# best-effort and dependency-free so it cannot re-resolve the CUDA-specific torch/triton stack
+# or pull the newer mamba_ssm tilelang/apache-tvm-ffi pins into the runner image.
+RUN python -m pip install --no-cache-dir --no-build-isolation --no-deps \
+        -c /tmp/constraints.txt -c /tmp/torch-cu129.txt \
+        "mamba-ssm==2.3.1" \
+    || echo "WARNING: mamba-ssm 2.3.1 install failed (non-fatal)"
 # The attention benchmarks (benchmarks/ops/attention/) need a flashinfer newer than the 0.6.6
 # vllm pulls. Upgrade flashinfer-python/-cubin with --no-deps so torch and vllm's other deps are
 # untouched; add plain cuda-tile (flashinfer>=0.6.7 needs it — the [tileiras] extra would pull a
