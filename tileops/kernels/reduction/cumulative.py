@@ -126,9 +126,12 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                             # Fast path when current tile is fully in-bounds
                             with T.If((tile_idx + 1) * block_n <= N):
                                 with T.Then():
-                                    # Element-wise load into padded shared_in
+                                    # Element-wise load into padded shared_in with M bounds check
                                     for i, j in T.Parallel(block_m, block_n):
-                                        shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
+                                        # TileLang requires T.If/T.Then as nested context managers
+                                        with T.If(pid_m * block_m + i < M):  # noqa: SIM117
+                                            with T.Then():
+                                                shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
                                 with T.Else():
@@ -146,9 +149,12 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                             T.cast(_identity, "float32"),
                                         )
                         else:
-                            # Element-wise load into padded shared_in
+                            # Element-wise load into padded shared_in with M bounds check
                             for i, j in T.Parallel(block_m, block_n):
-                                shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
+                                # TileLang requires T.If/T.Then as nested context managers
+                                with T.If(pid_m * block_m + i < M):  # noqa: SIM117
+                                    with T.Then():
+                                        shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
                             for i, j in T.Parallel(block_m, block_n):
                                 tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
 
@@ -158,11 +164,14 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                 acc[i] = acc[i] + tile_f32[i, j]
                                 out_f32[i, j] = acc[i]
 
-                        # Cast back to shared_out (padded) then write to global
+                        # Cast back to shared_out (padded) then write to global with M bounds check
                         for i, j in T.Parallel(block_m, block_n):
                             shared_out[i, j] = T.cast(out_f32[i, j], dtype)
                         for i, j in T.Parallel(block_m, block_n):
-                            y[pid_m * block_m + i, tile_idx * block_n + j] = shared_out[i, j]
+                            # TileLang requires T.If/T.Then as nested context managers
+                            with T.If(pid_m * block_m + i < M):  # noqa: SIM117
+                                with T.Then():
+                                    y[pid_m * block_m + i, tile_idx * block_n + j] = shared_out[i, j]
 
             return main
 
@@ -197,9 +206,12 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                             # Fast path when current tile is fully in-bounds
                             with T.If((tile_idx + 1) * block_n <= N):
                                 with T.Then():
-                                    # Element-wise load into padded shared_in
+                                    # Element-wise load into padded shared_in with M bounds check
                                     for i, j in T.Parallel(block_m, block_n):
-                                        shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
+                                        # TileLang requires T.If/T.Then as nested context managers
+                                        with T.If(pid_m * block_m + i < M):  # noqa: SIM117
+                                            with T.Then():
+                                                shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
                                     for i, j in T.Parallel(block_m, block_n):
                                         tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
                                 with T.Else():
@@ -217,9 +229,12 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                             T.cast(_identity, "float32"),
                                         )
                         else:
-                            # Element-wise load into padded shared_in
+                            # Element-wise load into padded shared_in with M bounds check
                             for i, j in T.Parallel(block_m, block_n):
-                                shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
+                                # TileLang requires T.If/T.Then as nested context managers
+                                with T.If(pid_m * block_m + i < M):  # noqa: SIM117
+                                    with T.Then():
+                                        shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
                             for i, j in T.Parallel(block_m, block_n):
                                 tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
 
@@ -229,11 +244,14 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
                                 acc[i] = acc[i] * tile_f32[i, j]
                                 out_f32[i, j] = acc[i]
 
-                        # Cast back to shared_out (padded) then write to global
+                        # Cast back to shared_out (padded) then write to global with M bounds check
                         for i, j in T.Parallel(block_m, block_n):
                             shared_out[i, j] = T.cast(out_f32[i, j], dtype)
                         for i, j in T.Parallel(block_m, block_n):
-                            y[pid_m * block_m + i, tile_idx * block_n + j] = shared_out[i, j]
+                            # TileLang requires T.If/T.Then as nested context managers
+                            with T.If(pid_m * block_m + i < M):  # noqa: SIM117
+                                with T.Then():
+                                    y[pid_m * block_m + i, tile_idx * block_n + j] = shared_out[i, j]
 
             return main
 
@@ -328,14 +346,16 @@ class CumulativeKernel(Kernel):
         """
         block_n = _DEFAULT_BLOCK_N
         elem_size = torch.tensor([], dtype=self.dtype).element_size()
-        smem_per_row = 2 * block_n * elem_size
+        # Account for padding in shared memory budget calculation
+        smem_per_row = 2 * (block_n + _SMEM_PAD) * elem_size
         max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
 
         # Shape-adaptive block_m for better SM utilization
         if self.M < 128:
             # Small M: use block_m=2 for better SM utilization
             # NCU shows block_m=2 gives 28% SM util vs 3.5% for block_m=16
-            block_m = min(2, max_block_m)
+            # Cap by self.M to avoid wasting resources on very small shapes
+            block_m = min(self.M, min(2, max_block_m))
         else:
             # Large M: use larger block_m for memory efficiency
             block_m = 1
