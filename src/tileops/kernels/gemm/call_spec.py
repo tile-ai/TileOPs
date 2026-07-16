@@ -37,24 +37,26 @@ def gemv_region(call: GemmCall) -> bool:
 def small_batch_region(call: GemmCall) -> bool:
     """Whether the small-batch bandwidth kernel serves this call.
 
-    For small ``m`` an NT GEMM is HBM-bound and the warp-specialized kernel
-    underfills the GPU: its grid is one M-tile wide, so ~``ceil(n/128)`` CTAs.
-    The region is set by that occupancy rather than by ``k``, in two tiers by
-    ``m`` (the bandwidth kernel's per-row cost rises with ``m``):
+    Its CUDA-core inner loop pays ``m`` FMAs and ``m`` converts per weight
+    element, so its lead over the tensor-core kernel shrinks as ``m`` grows.
+    Once the analytic small-``m`` configs (split-K / simple, see
+    ``gemm_heuristics._tiny_m_config``) lifted the general kernel to cuBLAS
+    parity the crossover moved down to ``m == 2`` — measured on H200 (per-rep
+    interleaved, full config-grid sweep on the decode shapes): this kernel
+    beats the best general config at ``m = 2`` on all three families and loses
+    from ``m = 3`` up (gate-up 1.02x vs 1.05x, down 0.81x vs 0.92x).
 
-    - ``2 <= m <= 4``: whenever the generic grid underfills a wave.
-    - ``5 <= m <= 8``: only when it is severely underfilled (<= ~20% of a
-      wave); by ~25% the generic tensor-core kernel is already faster.
+    The occupancy condition stands: the general grid is one M-tile wide, so
+    ~``ceil(n/128)`` CTAs, and with that at a full wave the streaming kernel
+    has no idle SMs to reclaim.
 
-    ``m >= 9`` regresses even when severely underfilled, and ``m == 1`` is the
-    GEMV region. NT only: the reduction over ``K`` needs ``K`` contiguous.
+    ``m == 1`` is the GEMV region. NT only: the reduction over ``K`` needs
+    ``K`` contiguous.
     """
-    if call.trans_a or not call.trans_b:
+    if call.trans_a or not call.trans_b or call.m != 2:
         return False
     sm_count = (
         torch.cuda.get_device_properties(
             torch.cuda.current_device()).multi_processor_count
         if torch.cuda.is_available() else 132)
-    n_ctas = -(-call.n // 128)
-    return ((2 <= call.m <= 4 and n_ctas < sm_count)
-            or (5 <= call.m <= 8 and 5 * n_ctas <= sm_count))
+    return -(-call.n // 128) < sm_count
