@@ -23,9 +23,112 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-__all__ = ["DeltaNetDecodeFP32Kernel", "DeltaNetDecodeKernel"]
+__all__ = [
+    "DeltaNetDecodeFP32Kernel",
+    "DeltaNetDecodeKernel",
+    "DeltaNetDecodeRawCudaFlaStyleKernel",
+]
 
 _DEFAULT_K_TILE = 16
+
+
+@functools.lru_cache(maxsize=32)
+def _deltanet_decode_raw_cuda_flastyle_tl(
+    batch: int,
+    head: int,
+    dim_k: int,
+    dim_v: int,
+    v_tile: int = 16,
+    raw_group_size: int = 2,
+    raw_maxrregcount: int = 146,
+    dtype: str = "bfloat16",
+):
+    if dtype not in ("float16", "bfloat16"):
+        raise ValueError("Raw CUDA DeltaNet decode currently supports float16/bfloat16 only.")
+    if dim_k != 128 or dim_v != 128:
+        raise ValueError("Raw CUDA DeltaNet decode currently requires DK=DV=128.")
+    if dim_v % v_tile != 0:
+        raise ValueError(f"dim_v={dim_v} must be divisible by v_tile={v_tile}")
+    if raw_group_size != 2:
+        raise ValueError("raw_group_size must equal 2 for the fixed two-lane reductions.")
+    if raw_group_size * v_tile != 32:
+        raise ValueError("raw_group_size * v_tile must equal one warp")
+    if dim_k % raw_group_size != 0:
+        raise ValueError(f"dim_k={dim_k} must be divisible by raw_group_size={raw_group_size}")
+
+    total_blocks = batch * head * (dim_v // v_tile)
+    k_chunk = dim_k // raw_group_size
+
+    raw_compile_flags = ["-O3", "-DENABLE_BF16", "--use_fast_math"]
+    if raw_maxrregcount > 0:
+        raw_compile_flags.append(f"--maxrregcount={raw_maxrregcount}")
+
+    @tilelang.jit(
+        out_idx=[-2, -1],
+        compile_flags=raw_compile_flags,
+    )
+    def _decode_func(threads=32):
+        @T.prim_func
+        def deltanet_decode_raw_cuda_flastyle(
+            q: T.Tensor([batch, head, dim_k], dtype),
+            k: T.Tensor([batch, head, dim_k], dtype),
+            v: T.Tensor([batch, head, dim_v], dtype),
+            beta: T.Tensor([batch, head], dtype),
+            state: T.Tensor([batch, head, dim_k, dim_v], dtype),
+            o: T.Tensor([batch, head, dim_v], dtype),
+            new_state: T.Tensor([batch, head, dim_k, dim_v], dtype),
+        ):
+            with T.Kernel(total_blocks, threads=threads) as (block,):
+                tx = T.get_thread_binding()
+                vid = block % (dim_v // v_tile)
+                nh = block // (dim_v // v_tile)
+                bid = nh // head
+                hid = nh - bid * head
+                v_lane = tx // raw_group_size
+                k_rank = tx - v_lane * raw_group_size
+                v_idx = vid * v_tile + v_lane
+                k_begin = k_rank * k_chunk
+
+                k_shared = T.alloc_shared([dim_k], "float32")
+                q_shared = T.alloc_shared([dim_k], "float32")
+                h = T.alloc_local([k_chunk], "float32")
+                old_partial = T.alloc_var("float32", init=0.0)
+                out_partial = T.alloc_var("float32", init=0.0)
+                v_new = T.alloc_var("float32", init=0.0)
+
+                for i in T.serial(T.ceildiv(dim_k, 32)):
+                    kk = tx + i * 32
+                    if kk < dim_k:
+                        k_shared[kk] = T.cast(k[bid, hid, kk], "float32")
+                        q_shared[kk] = T.cast(q[bid, hid, kk], "float32")
+                T.sync_threads()
+
+                beta_val = T.cast(beta[bid, hid], "float32")
+
+                for ii in T.serial(k_chunk):
+                    kk = k_begin + ii
+                    h_val = T.cast(state[bid, hid, kk, v_idx], "float32")
+                    h[ii] = h_val
+                    old_partial += h_val * k_shared[kk]
+
+                old_val = old_partial + T.shfl_down(old_partial, 1, width=raw_group_size)
+                if k_rank == 0:
+                    v_new = beta_val * (T.cast(v[bid, hid, v_idx], "float32") - old_val)
+                v_new = T.shfl_sync(v_new, v_lane * raw_group_size, width=raw_group_size)
+
+                for ii in T.serial(k_chunk):
+                    kk = k_begin + ii
+                    h_new = h[ii] + k_shared[kk] * v_new
+                    new_state[bid, hid, kk, v_idx] = T.cast(h_new, dtype)
+                    out_partial += h_new * q_shared[kk]
+
+                out_val = out_partial + T.shfl_down(out_partial, 1, width=raw_group_size)
+                if k_rank == 0:
+                    o[bid, hid, v_idx] = T.cast(out_val, dtype)
+
+        return deltanet_decode_raw_cuda_flastyle
+
+    return _decode_func
 
 
 @functools.lru_cache(maxsize=32)
@@ -261,6 +364,144 @@ class DeltaNetDecodeKernel(Kernel):
             "threads": 128,
             "k_tile": _DEFAULT_K_TILE,
         }
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+        state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self._kernel_fn(q, k, v, beta, state)
+
+
+class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
+    """Hopper low-precision decode kernel for the DK=DV=128 DeltaNet case.
+
+    This is the ungated counterpart of the Gated DeltaNet raw fast path. One
+    warp handles one `(batch, head, V tile)`, two lanes cooperate on each
+    output value, and each lane keeps its half of the K dimension live in fp32
+    local storage.
+    """
+
+    supported_archs: list[int] = [90]
+
+    def __init__(
+        self,
+        batch: int,
+        head: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: str = "bfloat16",
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ):
+        super().__init__()
+        self.batch = batch
+        self.head = head
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.dtype = dtype
+        if tune:
+            self._autotune_raw_cuda()
+        else:
+            self.init_config(config, tune=False)
+        if self.config["raw_group_size"] != 2:
+            raise ValueError(
+                "raw_group_size must equal 2 because this kernel uses fixed "
+                "two-lane shuffle reductions."
+            )
+        required_threads = self.config["raw_group_size"] * self.config["v_tile"]
+        if self.config["threads"] != required_threads:
+            raise ValueError(
+                f"threads ({self.config['threads']}) must equal raw_group_size * v_tile "
+                f"({required_threads}) for the warp-lane mapping used by this kernel."
+            )
+        self._kernel_fn = _deltanet_decode_raw_cuda_flastyle_tl(
+            batch,
+            head,
+            dim_k,
+            dim_v,
+            self.config["v_tile"],
+            self.config["raw_group_size"],
+            self.config["raw_maxrregcount"],
+            self.dtype_str,
+        )(self.config["threads"])
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "threads": 32,
+            "v_tile": 16,
+            "raw_group_size": 2,
+            "raw_maxrregcount": 146,
+        }
+
+    @property
+    def raw_autotune_configs(self) -> list[dict]:
+        base = self.default_config
+        return [
+            {**base, "raw_maxrregcount": raw_maxrregcount}
+            for raw_maxrregcount in (0, 128, 132, 146, 160)
+        ]
+
+    def _autotune_raw_cuda(self) -> None:
+        from tilelang.profiler import do_bench
+
+        best_time = float("inf")
+        best_config: Optional[dict] = None
+        failures: list[str] = []
+
+        B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
+        torch_dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16}[self.dtype_str]
+        q = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
+        k = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
+        v = torch.randn(B, H, DV, device="cuda", dtype=torch_dtype)
+        beta = torch.rand(B, H, device="cuda", dtype=torch_dtype)
+        state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
+
+        print(f"Start autotuning {self.__class__.__name__}...")
+        for config in self.raw_autotune_configs:
+            try:
+                fn = _deltanet_decode_raw_cuda_flastyle_tl(
+                    B,
+                    H,
+                    DK,
+                    DV,
+                    config["v_tile"],
+                    config["raw_group_size"],
+                    config["raw_maxrregcount"],
+                    self.dtype_str,
+                )(config["threads"])
+                t = do_bench(
+                    lambda _fn=fn: _fn(q, k, v, beta, state),
+                    warmup=10,
+                    rep=20,
+                )
+                if t < best_time:
+                    best_time = t
+                    best_config = config
+            except Exception as exc:
+                failures.append(
+                    f"{config}: {type(exc).__name__}: {exc}"
+                )
+                continue
+
+        if failures:
+            print(
+                f"{self.__class__.__name__} skipped {len(failures)} raw autotune "
+                f"candidate(s): {failures}"
+            )
+        if best_config is None:
+            print(
+                f"{self.__class__.__name__} found no successful raw autotune "
+                "candidate; falling back to default config."
+            )
+            best_config = self.default_config
+
+        self.config = best_config
+        print(f"{self.__class__.__name__} initialized with config: {self.config}")
 
     def forward(
         self,

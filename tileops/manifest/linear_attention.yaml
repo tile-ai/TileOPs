@@ -164,6 +164,7 @@ DeltaNetDecodeOp:
     kernel_map:
       DeltaNetDecodeKernel: DeltaNetDecodeKernel
       DeltaNetDecodeFP32Kernel: DeltaNetDecodeFP32Kernel
+      DeltaNetDecodeRawCudaFlaStyleKernel: DeltaNetDecodeRawCudaFlaStyleKernel
     op: tileops/ops/deltanet_recurrence.py
     test: tests/ops/test_deltanet_recurrence.py
     bench: benchmarks/ops/bench_deltanet_recurrence.py
