@@ -37,6 +37,13 @@ GemmOp:
   - {m: 4096, n: 4096, k: 7168, trans_a: false, trans_b: true, dtypes: [float16, bfloat16], label: "ds-v3-prefill-attn-proj"}
   - {m: 4096, n: 7168, k: 16384, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "k-dominant-7168x16384"}
   - {m: 4096, n: 24576, k: 1536, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "wide-n-24576"}
+  # Mid-m band: samples of m = 9..127, the token-count gap below the
+  # decode/prefill sweep (m in {128, 1024, 4096}); n/k reuse the
+  # DeepSeek-V3 projection shapes above.
+  - {m: 16, n: 4096, k: 7168, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "mid-m16-attn"}
+  - {m: 32, n: 4096, k: 7168, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "mid-m32-attn"}
+  - {m: 64, n: 7168, k: 2048, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "mid-m64-down"}
+  - {m: 96, n: 2112, k: 7168, trans_a: false, trans_b: true, dtypes: [bfloat16], label: "mid-m96-gate-up"}
 
   roofline:
     func: "tileops.perf.formulas.gemm_fwd_roofline"
