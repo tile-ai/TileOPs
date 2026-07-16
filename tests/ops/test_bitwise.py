@@ -153,6 +153,36 @@ def test_bitwise_broadcast(
     _exact_compare(out, ref)
 
 
+class BoolBitwiseFixture(FixtureBase):
+    PARAMS = [
+        ("op_name, op_cls, ref_fn, a_shape, b_shape", [
+            pytest.param(
+                name, cls, ref, a_s, b_s,
+                marks=pytest.mark.smoke if a_s == b_s else pytest.mark.full,
+            )
+            for a_s, b_s in [
+                ((2048, 4096), (2048, 4096)),
+                ((2, 512, 768), (1, 1, 768)),
+            ]
+            for name, cls, ref in _BITWISE_OPS
+        ]),
+    ]
+
+
+@BoolBitwiseFixture
+def test_bool_bitwise_fast_path(
+    op_name, op_cls, ref_fn, a_shape, b_shape,
+) -> None:
+    a = torch.randint(0, 2, a_shape, dtype=torch.bool, device="cuda")
+    b = torch.randint(0, 2, b_shape, dtype=torch.bool, device="cuda")
+    op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=torch.bool)
+    ref = ref_fn(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    assert out.dtype == torch.bool
+    _exact_compare(out, ref)
+
+
 # ---------------------------------------------------------------------------
 # BitwiseNot op
 # ---------------------------------------------------------------------------
