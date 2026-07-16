@@ -126,6 +126,7 @@ class MultiHeadAttentionBwdOp(Op):
 
         self.dtype = dtype
 
+        self.dispatch_kernel(self._gqa_kernel_map(kernel_map))
         self._gqa_op = GroupedQueryAttentionBwdOp(
             batch=batch,
             heads=heads,
@@ -134,7 +135,7 @@ class MultiHeadAttentionBwdOp(Op):
             dim=dim,
             is_causal=is_causal,
             dtype=dtype,
-            kernel_map=self._gqa_kernel_map(kernel_map),
+            kernel_map=self.kernel_map,
             tune=tune,
         )
         self.kernel_map = self._gqa_op.kernel_map
