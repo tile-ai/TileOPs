@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
@@ -11,6 +11,7 @@ from tileops.kernels.pool import (
     AvgPool3dKernel,
     AvgPool3dSpatialKernel,
     MaxPool2dKernel,
+    MaxPool2dWithIndicesKernel,
 )
 from tileops.kernels.pool.common import (
     _normalize_pool_dims,
@@ -25,6 +26,7 @@ __all__ = [
     "AvgPool2dFwdOp",
     "AvgPool3dFwdOp",
     "MaxPool2dFwdOp",
+    "MaxPool2dIndicesFwdOp",
 ]
 
 
@@ -382,8 +384,10 @@ class AvgPool2dFwdOp(Op):
         return flops, bytes_
 
 
-class MaxPool2dFwdOp(Op):
-    """Max pooling over PyTorch-compatible NCHW inputs (return_indices=False)."""
+class _MaxPool2dFwdOpBase(Op):
+    """Shared implementation for MaxPool2dFwdOp and MaxPool2dIndicesFwdOp."""
+
+    _kernel_slot: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -418,23 +422,19 @@ class MaxPool2dFwdOp(Op):
             dilation=self.dilation,
         )
         self.dispatch_kernel(kernel_map)
-        if "max_pool2d_kernel" not in self.kernel_map:
-            raise NotImplementedError("MaxPool2dFwdOp requires 'max_pool2d_kernel' in kernel_map")
+        if self._kernel_slot not in self.kernel_map:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} requires {self._kernel_slot!r} in kernel_map"
+            )
         self._kernel_cache: Dict[tuple, Kernel] = {}
         self._last_roofline_spec: Optional[tuple] = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "max_pool2d_kernel": MaxPool2dKernel,
-        }
 
     def _resolve_input_2d(
         self,
         input: torch.Tensor,
     ) -> tuple[int, int, int, int, int, int, torch.dtype]:
         if input.ndim != 4:
-            raise ValueError("MaxPool2dFwdOp expects input to be a 4D NCHW tensor")
+            raise ValueError(f"{self.__class__.__name__} expects input to be a 4D NCHW tensor")
         n, c_in, h_in, w_in = input.shape
         if not input.is_cuda:
             raise ValueError("input must be a CUDA tensor")
@@ -457,7 +457,7 @@ class MaxPool2dFwdOp(Op):
         )
         if out_h <= 0 or out_w <= 0:
             raise ValueError(
-                "MaxPool2dFwdOp calculated output size must be greater than zero, "
+                f"{self.__class__.__name__} calculated output size must be greater than zero, "
                 f"got ({out_h}, {out_w})"
             )
         return n, c_in, h_in, w_in, out_h, out_w, input.dtype
@@ -486,7 +486,7 @@ class MaxPool2dFwdOp(Op):
             self.tune,
         )
         if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["max_pool2d_kernel"](
+            self._kernel_cache[key] = self.kernel_map[self._kernel_slot](
                 n=n,
                 c_in=c_in,
                 h_in=h_in,
@@ -505,6 +505,24 @@ class MaxPool2dFwdOp(Op):
             )
         return self._kernel_cache[key]
 
+
+class MaxPool2dFwdOp(_MaxPool2dFwdOpBase):
+    """Max pooling over PyTorch-compatible NCHW inputs (return_indices=False)."""
+
+    _kernel_slot = "max_pool2d_kernel"
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {
+            "max_pool2d_kernel": MaxPool2dKernel,
+        }
+
+    def _validate_dtypes(self, input: torch.Tensor) -> None:
+        if input.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
+            raise ValueError(
+                f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}"
+            )
+
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         if len(input_shape) != 4:
             raise ValueError("MaxPool2dFwdOp expects input_shape to be 4D NCHW")
@@ -519,12 +537,6 @@ class MaxPool2dFwdOp(Op):
         out_h = pool_output_dim(h_in, kernel_size[0], stride[0], padding[0], ceil_mode, dilation[0])
         out_w = pool_output_dim(w_in, kernel_size[1], stride[1], padding[1], ceil_mode, dilation[1])
         return {"output": (n, c_in, out_h, out_w)}
-
-    def _validate_dtypes(self, input: torch.Tensor) -> None:
-        if input.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
-            raise ValueError(
-                f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}"
-            )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         n, c_in, h_in, w_in, out_h, out_w, dtype = self._resolve_input_2d(input)
@@ -551,6 +563,68 @@ class MaxPool2dFwdOp(Op):
         elem_bytes = torch.empty((), dtype=dtype).element_size()
         flops = n * c_in * out_h * out_w * self.kernel_size[0] * self.kernel_size[1]
         bytes_ = (n * c_in * h_in * w_in + n * c_in * out_h * out_w) * elem_bytes
+        return flops, bytes_
+
+
+class MaxPool2dIndicesFwdOp(_MaxPool2dFwdOpBase):
+    """Max pooling over PyTorch-compatible NCHW inputs (return_indices=True)."""
+
+    _kernel_slot = "max_pool2d_with_indices_kernel"
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {
+            "max_pool2d_with_indices_kernel": MaxPool2dWithIndicesKernel,
+        }
+
+    def _validate_dtypes(self, input: torch.Tensor) -> None:
+        if input.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
+            raise ValueError(
+                f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}"
+            )
+
+    def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
+        if len(input_shape) != 4:
+            raise ValueError("MaxPool2dIndicesFwdOp expects input_shape to be 4D NCHW")
+        n, c_in, h_in, w_in = input_shape
+        kernel_size = getattr(self, "kernel_size", None)
+        stride = getattr(self, "stride", None)
+        padding = getattr(self, "padding", None)
+        dilation = getattr(self, "dilation", (1, 1))
+        ceil_mode = getattr(self, "ceil_mode", False)
+        if kernel_size is None or stride is None or padding is None:
+            return {"output": (n, c_in, 0, 0), "indices": (n, c_in, 0, 0)}
+        out_h = pool_output_dim(h_in, kernel_size[0], stride[0], padding[0], ceil_mode, dilation[0])
+        out_w = pool_output_dim(w_in, kernel_size[1], stride[1], padding[1], ceil_mode, dilation[1])
+        return {"output": (n, c_in, out_h, out_w), "indices": (n, c_in, out_h, out_w)}
+
+    def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        n, c_in, h_in, w_in, out_h, out_w, dtype = self._resolve_input_2d(input)
+        input = input.contiguous()
+        kernel = self._get_kernel_2d(n, c_in, h_in, w_in, dtype, _device_index(input))
+        self.kernel = kernel
+        self.n = n
+        self.c_in = c_in
+        self.h_in = h_in
+        self.w_in = w_in
+        self.out_h = out_h
+        self.out_w = out_w
+        self.dtype = dtype
+        self._last_roofline_spec = (n, c_in, h_in, w_in, out_h, out_w, dtype)
+        return kernel(input)
+
+    def eval_roofline(self) -> tuple[int, int]:
+        if self._last_roofline_spec is None:
+            raise RuntimeError(
+                "MaxPool2dIndicesFwdOp.eval_roofline() requires a prior forward() "
+                "call to bind input shape and dtype"
+            )
+        n, c_in, h_in, w_in, out_h, out_w, dtype = self._last_roofline_spec
+        elem_bytes = torch.empty((), dtype=dtype).element_size()
+        flops = n * c_in * out_h * out_w * self.kernel_size[0] * self.kernel_size[1]
+        bytes_ = (
+            n * c_in * h_in * w_in + n * c_in * out_h * out_w
+        ) * elem_bytes + n * c_in * out_h * out_w * 8
         return flops, bytes_
 
 

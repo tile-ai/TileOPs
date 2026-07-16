@@ -13,8 +13,15 @@ from tileops.kernels.pool import (
     AvgPool3dKernel,
     AvgPool3dSpatialKernel,
     MaxPool2dKernel,
+    MaxPool2dWithIndicesKernel,
 )
-from tileops.ops import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp, MaxPool2dFwdOp
+from tileops.ops import (
+    AvgPool1dFwdOp,
+    AvgPool2dFwdOp,
+    AvgPool3dFwdOp,
+    MaxPool2dFwdOp,
+    MaxPool2dIndicesFwdOp,
+)
 
 
 class _DummyKernel(Kernel):
@@ -851,257 +858,129 @@ def test_avg_pool_dynamic_dtype_ignores_last_runtime_dtype(
     op._validate_dtypes(torch.empty((), dtype=torch.bfloat16))
 
 
+_MAX_POOL2D_PARAMS = [
+    # Smoke: one config across all supported dtypes.
+    pytest.param(
+        2,
+        8,
+        16,
+        16,
+        (3, 3),
+        (2, 2),
+        (1, 1),
+        (1, 1),
+        False,
+        torch.float16,
+        False,
+        True,
+        marks=[pytest.mark.smoke, pytest.mark.packaging],
+        id="smoke-3x3-s2-p1-fp16",
+    ),
+    pytest.param(
+        2,
+        8,
+        16,
+        16,
+        (3, 3),
+        (2, 2),
+        (1, 1),
+        (1, 1),
+        False,
+        torch.bfloat16,
+        False,
+        True,
+        marks=pytest.mark.smoke,
+        id="smoke-3x3-s2-p1-bf16",
+    ),
+    pytest.param(
+        1,
+        8,
+        16,
+        16,
+        (3, 3),
+        (2, 2),
+        (1, 1),
+        (1, 1),
+        False,
+        torch.float32,
+        False,
+        True,
+        marks=pytest.mark.smoke,
+        id="smoke-3x3-s2-p1-fp32",
+    ),
+    # Full: distinct setting combinations.
+    pytest.param(
+        1,
+        4,
+        14,
+        14,
+        (3, 3),
+        None,
+        (1, 1),
+        (2, 1),
+        False,
+        torch.float16,
+        False,
+        True,
+        marks=pytest.mark.full,
+        id="full-default-stride-dilation-fp16",
+    ),
+    pytest.param(
+        1,
+        4,
+        23,
+        27,
+        (3, 5),
+        (2, 3),
+        (1, 2),
+        (1, 1),
+        True,
+        torch.float16,
+        False,
+        True,
+        marks=pytest.mark.full,
+        id="full-nonsquare-ceil-fp16",
+    ),
+    pytest.param(
+        2,
+        8,
+        16,
+        16,
+        (3, 3),
+        (2, 2),
+        (1, 1),
+        (1, 1),
+        False,
+        torch.float16,
+        False,
+        False,
+        marks=pytest.mark.full,
+        id="full-noncontiguous-3x3-fp16",
+    ),
+    pytest.param(
+        1,
+        4,
+        23,
+        27,
+        (3, 5),
+        (2, 3),
+        (1, 2),
+        (1, 1),
+        True,
+        torch.bfloat16,
+        False,
+        True,
+        marks=pytest.mark.full,
+        id="full-nonsquare-ceil-bf16",
+    ),
+]
+
+
 class MaxPool2dFixture(FixtureBase):
     PARAMS = [
         (
             "n, c_in, h_in, w_in, kernel_size, stride, padding, dilation, ceil_mode, dtype, tune, contiguous",
-            [
-                # Smoke representative: one config across all supported dtypes.
-                pytest.param(
-                    2,
-                    8,
-                    16,
-                    16,
-                    (3, 3),
-                    (2, 2),
-                    (1, 1),
-                    (1, 1),
-                    False,
-                    torch.float16,
-                    False,
-                    True,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging],
-                    id="smoke-3x3-s2-p1-fp16",
-                ),
-                pytest.param(
-                    2,
-                    8,
-                    16,
-                    16,
-                    (3, 3),
-                    (2, 2),
-                    (1, 1),
-                    (1, 1),
-                    False,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    marks=pytest.mark.smoke,
-                    id="smoke-3x3-s2-p1-bf16",
-                ),
-                pytest.param(
-                    2,
-                    8,
-                    16,
-                    16,
-                    (3, 3),
-                    (2, 2),
-                    (1, 1),
-                    (1, 1),
-                    False,
-                    torch.float32,
-                    False,
-                    True,
-                    marks=pytest.mark.smoke,
-                    id="smoke-3x3-s2-p1-fp32",
-                ),
-                # Full: cover distinct setting combinations (one dtype each).
-                pytest.param(
-                    1,
-                    4,
-                    14,
-                    14,
-                    (3, 3),
-                    None,
-                    (1, 1),
-                    (2, 1),
-                    False,
-                    torch.float16,
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-default-stride-dilation-fp16",
-                ),
-                pytest.param(
-                    1,
-                    4,
-                    23,
-                    27,
-                    (3, 5),
-                    (2, 3),
-                    (1, 2),
-                    (1, 1),
-                    True,
-                    torch.float16,
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-nonsquare-ceil-fp16",
-                ),
-                pytest.param(
-                    2,
-                    8,
-                    16,
-                    16,
-                    (3, 3),
-                    (2, 2),
-                    (1, 1),
-                    (1, 1),
-                    False,
-                    torch.float16,
-                    False,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-noncontiguous-3x3-fp16",
-                ),
-                # ResNet stem manifest workload across dtypes.
-                pytest.param(
-                    32,
-                    64,
-                    112,
-                    112,
-                    (3, 3),
-                    (2, 2),
-                    (1, 1),
-                    (1, 1),
-                    False,
-                    torch.float16,
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-resnet-stem-fp16",
-                ),
-                pytest.param(
-                    32,
-                    64,
-                    112,
-                    112,
-                    (3, 3),
-                    (2, 2),
-                    (1, 1),
-                    (1, 1),
-                    False,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-resnet-stem-bf16",
-                ),
-                pytest.param(
-                    32,
-                    64,
-                    112,
-                    112,
-                    (3, 3),
-                    (2, 2),
-                    (1, 1),
-                    (1, 1),
-                    False,
-                    torch.float32,
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-resnet-stem-fp32",
-                ),
-                # VGG block manifest workload across dtypes.
-                pytest.param(
-                    16,
-                    128,
-                    56,
-                    56,
-                    (2, 2),
-                    (2, 2),
-                    (0, 0),
-                    (1, 1),
-                    False,
-                    torch.float16,
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-vgg-block-fp16",
-                ),
-                pytest.param(
-                    16,
-                    128,
-                    56,
-                    56,
-                    (2, 2),
-                    (2, 2),
-                    (0, 0),
-                    (1, 1),
-                    False,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-vgg-block-bf16",
-                ),
-                pytest.param(
-                    16,
-                    128,
-                    56,
-                    56,
-                    (2, 2),
-                    (2, 2),
-                    (0, 0),
-                    (1, 1),
-                    False,
-                    torch.float32,
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-vgg-block-fp32",
-                ),
-                # AlexNet-style ceil manifest workload across dtypes.
-                pytest.param(
-                    32,
-                    64,
-                    55,
-                    55,
-                    (3, 3),
-                    (2, 2),
-                    (0, 0),
-                    (1, 1),
-                    True,
-                    torch.float16,
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-alexnet-ceil-fp16",
-                ),
-                pytest.param(
-                    32,
-                    64,
-                    55,
-                    55,
-                    (3, 3),
-                    (2, 2),
-                    (0, 0),
-                    (1, 1),
-                    True,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-alexnet-ceil-bf16",
-                ),
-                pytest.param(
-                    32,
-                    64,
-                    55,
-                    55,
-                    (3, 3),
-                    (2, 2),
-                    (0, 0),
-                    (1, 1),
-                    True,
-                    torch.float32,
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-alexnet-ceil-fp32",
-                ),
-            ],
+            _MAX_POOL2D_PARAMS,
         ),
     ]
 
@@ -1116,6 +995,7 @@ class MaxPool2dTest(TestBase):
         ceil_mode: bool,
         dtype: torch.dtype,
         contiguous: bool = True,
+        return_indices: bool = False,
     ) -> None:
         self.kernel_size = kernel_size
         self.stride = stride
@@ -1124,6 +1004,7 @@ class MaxPool2dTest(TestBase):
         self.ceil_mode = ceil_mode
         self.dtype = dtype
         self.contiguous = contiguous
+        self.return_indices = return_indices
 
     def gen_inputs(
         self,
@@ -1142,7 +1023,7 @@ class MaxPool2dTest(TestBase):
             assert not x.is_contiguous()
         return (x,)
 
-    def ref_program(self, input: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, input: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         return F.max_pool2d(
             input,
             kernel_size=self.kernel_size,
@@ -1150,7 +1031,7 @@ class MaxPool2dTest(TestBase):
             padding=self.padding,
             dilation=self.dilation,
             ceil_mode=self.ceil_mode,
-            return_indices=False,
+            return_indices=self.return_indices,
         )
 
 
@@ -1169,6 +1050,7 @@ def test_max_pool2d(
     tune: bool,
     contiguous: bool,
 ) -> None:
+    # Test return_indices=False path.
     test = MaxPool2dTest(
         kernel_size,
         stride,
@@ -1177,6 +1059,7 @@ def test_max_pool2d(
         ceil_mode,
         dtype,
         contiguous=contiguous,
+        return_indices=False,
     )
     op = MaxPool2dFwdOp(
         kernel_size=kernel_size,
@@ -1188,7 +1071,29 @@ def test_max_pool2d(
     )
     test.check(op, *test.gen_inputs(n, c_in, h_in, w_in), atol=0, rtol=0)
 
+    # Test return_indices=True path on the same inputs.
+    test_idx = MaxPool2dTest(
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+        ceil_mode,
+        dtype,
+        contiguous=contiguous,
+        return_indices=True,
+    )
+    op_idx = MaxPool2dIndicesFwdOp(
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        ceil_mode=ceil_mode,
+        tune=tune,
+    )
+    test_idx.check(op_idx, *test_idx.gen_inputs(n, c_in, h_in, w_in), atol=0, rtol=0)
 
+
+@pytest.mark.parametrize("return_indices", [False, True])
 @pytest.mark.parametrize(
     ("case_name", "input_builder"),
     [
@@ -1197,11 +1102,13 @@ def test_max_pool2d(
             lambda: torch.tensor(
                 [[[[-1.0, -2.0, -3.0, -4.0]]]], device="cuda", dtype=torch.float16
             ),
+            id="all-negative",
             marks=pytest.mark.smoke,
         ),
         pytest.param(
             "window_all_neg_inf",
             lambda: torch.full((1, 1, 4, 4), float("-inf"), device="cuda", dtype=torch.float16),
+            id="window-all-neg-inf",
             marks=pytest.mark.full,
         ),
         pytest.param(
@@ -1209,53 +1116,159 @@ def test_max_pool2d(
             lambda: torch.tensor(
                 [[[[1.0, float("nan"), 3.0, 4.0]]]], device="cuda", dtype=torch.float16
             ),
+            id="window-with-nan",
             marks=pytest.mark.full,
         ),
         pytest.param(
             "padding_does_not_win_over_negative",
             lambda: torch.full((1, 1, 4, 4), -5.0, device="cuda", dtype=torch.float16),
+            id="padding-does-not-win",
             marks=pytest.mark.full,
         ),
     ],
 )
-def test_max_pool2d_special_values(case_name: str, input_builder: callable) -> None:
-    op = MaxPool2dFwdOp(kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+def test_max_pool2d_special_values(
+    case_name: str,
+    input_builder: callable,
+    return_indices: bool,
+) -> None:
     x = input_builder()
-    out = op(x)
-    ref = F.max_pool2d(x, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), return_indices=False)
-    torch.testing.assert_close(out, ref, rtol=0, atol=0, equal_nan=True)
+    kwargs = {
+        "kernel_size": (3, 3),
+        "stride": (1, 1),
+        "padding": (1, 1),
+        "return_indices": return_indices,
+    }
+    ref = F.max_pool2d(x, **kwargs)
+    if return_indices:
+        op = MaxPool2dIndicesFwdOp(kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        out, idx = op(x)
+        torch.testing.assert_close(out, ref[0], rtol=0, atol=0, equal_nan=True)
+        torch.testing.assert_close(idx, ref[1], rtol=0, atol=0)
+    else:
+        op = MaxPool2dFwdOp(kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        out = op(x)
+        torch.testing.assert_close(out, ref, rtol=0, atol=0, equal_nan=True)
 
 
-@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("op_cls", "kernel_slot"),
+    [
+        pytest.param(MaxPool2dFwdOp, "max_pool2d_kernel", id="max-pool2d"),
+        pytest.param(
+            MaxPool2dIndicesFwdOp,
+            "max_pool2d_with_indices_kernel",
+            id="max-pool2d-indices",
+        ),
+    ],
+)
 @pytest.mark.parametrize(
     ("kwargs", "exc_type", "match"),
     [
-        ({"kernel_size": True}, TypeError, "kernel_size must be an int or a tuple of 2 ints"),
-        ({"stride": True}, TypeError, "stride must be an int or a tuple of 2 ints"),
-        ({"padding": True}, TypeError, "padding must be an int or a tuple of 2 ints"),
-        ({"dilation": True}, TypeError, "dilation must be an int or a tuple of 2 ints"),
-        ({"kernel_size": (3, True)}, TypeError, "kernel_size must contain only ints"),
-        ({"kernel_size": (3, 3), "stride": (1, 0)}, ValueError, "stride must be greater than zero"),
-        (
+        pytest.param(
+            {"kernel_size": True},
+            TypeError,
+            "kernel_size must be an int or a tuple of 2 ints",
+            id="kernel-size-type",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            {"stride": True},
+            TypeError,
+            "stride must be an int or a tuple of 2 ints",
+            id="stride-type",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            {"padding": True},
+            TypeError,
+            "padding must be an int or a tuple of 2 ints",
+            id="padding-type",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            {"dilation": True},
+            TypeError,
+            "dilation must be an int or a tuple of 2 ints",
+            id="dilation-type",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            {"kernel_size": (3, True)},
+            TypeError,
+            "kernel_size must contain only ints",
+            id="kernel-size-contents",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            {"kernel_size": (3, 3), "stride": (1, 0)},
+            ValueError,
+            "stride must be greater than zero",
+            id="zero-stride",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
             {"kernel_size": (3, 3), "dilation": (0, 1)},
             ValueError,
             "dilation must be greater than zero",
+            id="zero-dilation",
+            marks=pytest.mark.full,
         ),
-        ({"kernel_size": (3, 3), "padding": (2, 1)}, ValueError, "padding must be at most half"),
-        ({"kernel_size": (3, 3), "padding": (-1, 0)}, ValueError, "padding must be non-negative"),
-        ({"kernel_size": (3, 3), "ceil_mode": "true"}, TypeError, "ceil_mode must be a bool"),
+        pytest.param(
+            {"kernel_size": (3, 3), "padding": (2, 1)},
+            ValueError,
+            "padding must be at most half",
+            id="padding-too-large",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            {"kernel_size": (3, 3), "padding": (-1, 0)},
+            ValueError,
+            "padding must be non-negative",
+            id="padding-negative",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            {"kernel_size": (3, 3), "ceil_mode": "true"},
+            TypeError,
+            "ceil_mode must be a bool",
+            id="ceil-mode-type",
+            marks=pytest.mark.full,
+        ),
     ],
 )
 def test_max_pool2d_rejects_invalid_params(
-    kwargs: dict[str, object], exc_type: type[Exception], match: str
+    op_cls: type,
+    kernel_slot: str,
+    kwargs: dict[str, object],
+    exc_type: type[Exception],
+    match: str,
 ) -> None:
+    _ = kernel_slot
     base_kwargs = {"kernel_size": (3, 3)}
     base_kwargs.update(kwargs)
     with pytest.raises(exc_type, match=match):
-        MaxPool2dFwdOp(**base_kwargs)
+        op_cls(**base_kwargs)
+
+
+_MAX_POOL2D_DUMMY_KERNELS: dict[type, type[Kernel]] = {
+    MaxPool2dFwdOp: MaxPool2dKernel,
+    MaxPool2dIndicesFwdOp: MaxPool2dWithIndicesKernel,
+}
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    ("op_cls", "kernel_slot"),
+    [
+        pytest.param(MaxPool2dFwdOp, "max_pool2d_kernel", id="max-pool2d"),
+        pytest.param(
+            MaxPool2dIndicesFwdOp,
+            "max_pool2d_with_indices_kernel",
+            id="max-pool2d-indices",
+        ),
+    ],
+)
 @pytest.mark.parametrize(
     ("case_name", "extra_kwargs", "input_spec", "expected_match", "needs_dummy_kernel"),
     [
@@ -1265,6 +1278,7 @@ def test_max_pool2d_rejects_invalid_params(
             ((2, 8, 16), None),
             "expects input to be a 4D NCHW tensor",
             True,
+            id="non-4d-input",
             marks=pytest.mark.smoke,
         ),
         pytest.param(
@@ -1273,6 +1287,7 @@ def test_max_pool2d_rejects_invalid_params(
             ((1, 1, 8, 8), None),
             "input must be a CUDA tensor",
             False,
+            id="cpu-input",
             marks=pytest.mark.full,
         ),
         pytest.param(
@@ -1281,6 +1296,7 @@ def test_max_pool2d_rejects_invalid_params(
             ((1, 1, 8, 8), torch.float64),
             "input.dtype must be float16, bfloat16, or float32",
             False,
+            id="unsupported-dtype",
             marks=pytest.mark.full,
         ),
         pytest.param(
@@ -1289,11 +1305,14 @@ def test_max_pool2d_rejects_invalid_params(
             ((1, 1, 2, 2), torch.float16),
             "output size must be greater than zero",
             False,
+            id="non-positive-output-size",
             marks=pytest.mark.full,
         ),
     ],
 )
 def test_max_pool2d_rejects_invalid_input(
+    op_cls: type,
+    kernel_slot: str,
     case_name: str,
     extra_kwargs: dict[str, object],
     input_spec: tuple[tuple[int, ...], torch.dtype | None],
@@ -1301,12 +1320,13 @@ def test_max_pool2d_rejects_invalid_input(
     needs_dummy_kernel: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _ = case_name
     kwargs = {"kernel_size": (3, 3)}
     kwargs.update(extra_kwargs)
     if needs_dummy_kernel:
         monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
-        kwargs["kernel_map"] = {"max_pool2d_kernel": MaxPool2dKernel}
-    op = MaxPool2dFwdOp(**kwargs)
+        kwargs["kernel_map"] = {kernel_slot: _MAX_POOL2D_DUMMY_KERNELS[op_cls]}
+    op = op_cls(**kwargs)
 
     shape, dtype = input_spec
     x = torch.randn(*shape) if dtype is None else torch.randn(*shape, device="cuda", dtype=dtype)
@@ -1316,8 +1336,19 @@ def test_max_pool2d_rejects_invalid_input(
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_max_pool2d_dynamic_shape_kernel_cache_and_roofline() -> None:
-    op = MaxPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+@pytest.mark.parametrize(
+    ("op_cls", "return_indices"),
+    [
+        pytest.param(MaxPool2dFwdOp, False, id="max-pool2d"),
+        pytest.param(MaxPool2dIndicesFwdOp, True, id="max-pool2d-indices"),
+    ],
+)
+def test_max_pool2d_dynamic_shape_kernel_cache_and_roofline(
+    op_cls: type,
+    return_indices: bool,
+) -> None:
+    _ = return_indices
+    op = op_cls(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
     x1 = torch.randn(1, 4, 16, 16, dtype=torch.float16, device="cuda")
     x2 = torch.randn(2, 4, 16, 16, dtype=torch.float16, device="cuda")
 
@@ -1339,15 +1370,35 @@ def test_max_pool2d_dynamic_shape_kernel_cache_and_roofline() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_max_pool2d_compile_fullgraph() -> None:
-    op = MaxPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+@pytest.mark.parametrize(
+    ("op_cls", "return_indices"),
+    [
+        pytest.param(MaxPool2dFwdOp, False, id="max-pool2d"),
+        pytest.param(MaxPool2dIndicesFwdOp, True, id="max-pool2d-indices"),
+    ],
+)
+def test_max_pool2d_compile_fullgraph(
+    op_cls: type,
+    return_indices: bool,
+) -> None:
+    op = op_cls(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
     x = torch.randn(2, 8, 16, 16, device="cuda", dtype=torch.float16)
     # Warm up the kernel cache so torch.compile traces only the custom-op call.
     op(x)
     compiled = torch.compile(op, fullgraph=True)
     out = compiled(x)
-    ref = F.max_pool2d(x, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), return_indices=False)
-    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+    ref = F.max_pool2d(
+        x,
+        kernel_size=(3, 3),
+        stride=(2, 2),
+        padding=(1, 1),
+        return_indices=return_indices,
+    )
+    if return_indices:
+        torch.testing.assert_close(out[0], ref[0], atol=0, rtol=0, equal_nan=True)
+        torch.testing.assert_close(out[1], ref[1], atol=0, rtol=0)
+    else:
+        torch.testing.assert_close(out, ref, atol=0, rtol=0)
 
 
 @pytest.mark.parametrize(
