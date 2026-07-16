@@ -33,14 +33,13 @@ def _feasible_threads(n_padded: int, dtype: torch.dtype = torch.float16) -> list
     """Thread counts that divide the row and keep loads 128-bit vectorizable.
 
     128-bit needs ``16 // element_size`` elements per thread (8 for fp16/bf16,
-    4 for fp32), so the floor is dtype-dependent.
+    4 for fp32). If no candidate meets that floor (small rows), fall back to any
+    thread count that divides the row so the autotune space is never empty.
     """
-    min_elements = 16 // dtype.itemsize
-    return [
-        threads
-        for threads in _CANDIDATE_THREADS
-        if n_padded % threads == 0 and n_padded // threads >= min_elements
-    ]
+    min_elements = 16 // torch.tensor([], dtype=dtype).element_size()
+    candidates = [t for t in _CANDIDATE_THREADS if n_padded % t == 0]
+    vectorizable = [t for t in candidates if n_padded // t >= min_elements]
+    return vectorizable or candidates
 
 
 def select_row_config(n_padded: int) -> dict:
@@ -49,16 +48,23 @@ def select_row_config(n_padded: int) -> dict:
     return {"block_m": 1, "threads": _DEFAULT_THREADS}
 
 
-def select_row_configs(n_padded: int, dtype: torch.dtype = torch.float16) -> list[dict]:
+def select_row_configs(
+    n_padded: int, dtype: torch.dtype = torch.float16, num_buffers: int = 1
+) -> list[dict]:
     """Autotune space: block_m x usable thread counts, default always included.
 
     block_m is swept (not pinned) so the interface is preserved; configs that
-    collapse are rejected by the autotuner's own measured runtime.
+    collapse are rejected by the autotuner's own measured runtime. block_m is
+    capped by the 48 KB shared-memory budget for ``num_buffers`` row-sized
+    buffers, and the default is always a member so the list is never empty.
     """
     threads = _feasible_threads(n_padded, dtype)
+    smem_per_row = n_padded * torch.tensor([], dtype=dtype).element_size()
+    max_block_m = (48 * 1024) // (num_buffers * smem_per_row)
     configs = [
         {"block_m": block_m, "threads": t}
         for block_m in _CANDIDATE_BLOCK_M
+        if block_m <= max_block_m
         for t in threads
     ]
     default = select_row_config(n_padded)
