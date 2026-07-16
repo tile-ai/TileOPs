@@ -333,14 +333,27 @@ class CumulativeKernel(Kernel):
 
         if self.use_parallel:
             # Three-pass parallel scan
+            n_tiles = align_up(N, DEFAULT_ALIGNMENT) // 256  # Using default block_n=256
             self.kernel_local = _parallel_scan_local_kernel(M, N, op_kind, self.dtype_str)
+            self.kernel_carry = _parallel_scan_carry_kernel(M, n_tiles)
             self.kernel_propagate = _parallel_scan_propagate_kernel(M, N, self.dtype_str)
             self.kernel = None  # Not used for parallel
-            tune = False  # Disable autotuning for parallel path (uses optimized defaults)
+
+            # Parallel backend does not support autotuning yet
+            if tune:
+                import warnings
+                warnings.warn(
+                    f"Autotuning is not supported for parallel scan backend "
+                    f"(shape {M}×{N}). Using optimized defaults.",
+                    UserWarning,
+                    stacklevel=2
+                )
+                tune = False
         else:
             # Sequential scan (original implementation)
             self.kernel = _cumulative_kernel(M, N, op_kind, self.dtype_str)
             self.kernel_local = None
+            self.kernel_carry = None
             self.kernel_propagate = None
 
         self.init_config(config, tune)
@@ -410,17 +423,14 @@ class CumulativeKernel(Kernel):
             block_m = self.config["block_m"]
             block_n = self.config["block_n"]
             threads = self.config["threads"]
-            n_tiles = self.N_padded // block_n
 
             # Pass 1: Local scan within each tile (JIT kernel auto-allocates outputs)
             local_fn = self.kernel_local(block_m, block_n, threads)
             y_local, tile_sums = local_fn(x)
 
-            # Pass 2: Exclusive scan of tile sums (PyTorch)
-            tile_carries = torch.cumsum(tile_sums, dim=1, dtype=torch.float32)
-            tile_carries_exclusive = torch.zeros_like(tile_carries)
-            if n_tiles > 1:
-                tile_carries_exclusive[:, 1:] = tile_carries[:, :-1]
+            # Pass 2: Exclusive scan of tile sums (TileLang kernel)
+            carry_fn = self.kernel_carry(block_m, threads)
+            tile_carries_exclusive = carry_fn(tile_sums)
 
             # Pass 3: Propagate carries (JIT kernel auto-allocates output)
             propagate_fn = self.kernel_propagate(block_m, block_n, threads)
@@ -528,6 +538,38 @@ def _parallel_scan_local_kernel(M: int, N: int, op_kind: str, dtype: str):
                     row = pid_m * block_m + i
                     with T.If(row < M), T.Then():
                         tile_sums[row, tile_idx] = tile_shared[i, block_n - 1]
+
+        return main
+
+    return _func
+
+
+@functools.lru_cache(maxsize=32)
+def _parallel_scan_carry_kernel(M: int, n_tiles: int):
+    """Pass 2: Exclusive cumsum on tile boundary values (small array M x n_tiles).
+
+    Uses sequential scan since n_tiles is typically small (e.g., 128-256).
+    Output is exclusive scan: out[i, 0] = 0, out[i, j] = cumsum(in[i, :j])
+    """
+    @tilelang.jit(out_idx=[1])
+    def _func(block_m, threads):
+        @T.prim_func
+        def main(
+            tile_sums: T.Tensor[(M, n_tiles), "float32"],  # noqa: F821
+            tile_carries: T.Tensor[(M, n_tiles), "float32"],  # noqa: F821
+        ):
+            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
+                # Sequential scan along n_tiles dimension for each row
+                for i in T.Parallel(block_m):
+                    row = pid_m * block_m + i
+                    with T.If(row < M), T.Then():
+                        # Exclusive scan: first element is 0
+                        tile_carries[row, 0] = T.float32(0.0)
+                        running_sum = T.float32(0.0)
+                        # Sequential loop over tiles
+                        for j in T.Serial(n_tiles - 1):
+                            running_sum = running_sum + tile_sums[row, j]
+                            tile_carries[row, j + 1] = running_sum
 
         return main
 
