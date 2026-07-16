@@ -109,6 +109,12 @@ class MultiHeadAttentionBwdOp(Op):
     matching the forward path's dispatch through GQA.
     """
 
+    _LEGACY_KERNEL_MAP_KEYS = frozenset({
+        "mha_bwd_preprocess_kernel",
+        "mha_bwd_kernel",
+        "mha_bwd_postprocess_kernel",
+    })
+
     def __init__(self,
                  batch: int,
                  heads: int,
@@ -159,16 +165,14 @@ class MultiHeadAttentionBwdOp(Op):
     def _gqa_kernel_map(kernel_map: Optional[Dict[str, Kernel]]) -> Optional[Dict[str, Kernel]]:
         if kernel_map is None:
             return None
-        translated = dict(kernel_map)
-        aliases = {
-            "mha_bwd_preprocess_kernel": "gqa_bwd_preprocess_kernel",
-            "mha_bwd_kernel": "gqa_bwd_kernel",
-            "mha_bwd_postprocess_kernel": "gqa_bwd_postprocess_kernel",
-        }
-        for old_key, new_key in aliases.items():
-            if old_key in translated and new_key not in translated:
-                translated[new_key] = translated.pop(old_key)
-        return translated
+        legacy_keys = MultiHeadAttentionBwdOp._LEGACY_KERNEL_MAP_KEYS.intersection(kernel_map)
+        if legacy_keys:
+            keys = ", ".join(sorted(legacy_keys))
+            raise ValueError(
+                "MultiHeadAttentionBwdOp delegates to GroupedQueryAttentionBwdOp; "
+                f"legacy MHA backward kernel_map keys are not compatible: {keys}. "
+                "Use gqa_bwd_* keys with kernels that implement the GQA backward ABI.")
+        return dict(kernel_map)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
                 do: torch.Tensor,

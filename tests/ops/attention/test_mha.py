@@ -24,6 +24,15 @@ class _FakeSquareDenseKernel(Kernel):
         return None
 
 
+class _FakeLegacyMhaBwdKernel(Kernel):
+    def __init__(self, batch: int, heads: int, seq_len: int, dim: int,
+                 is_causal: bool, dtype: torch.dtype, tune: bool = False) -> None:
+        super().__init__()
+
+    def forward(self, *args: object, **kwargs: object) -> object:
+        return None
+
+
 class MhaBwdTest(_MhaBwdTestWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
                     grad_output: torch.Tensor,
@@ -140,6 +149,20 @@ def test_mha_fwd_preserves_gqa_square_dense_fast_path(
     )
 
     assert isinstance(op.kernel, _FakeSquareDenseKernel)
+
+
+@pytest.mark.smoke
+def test_mha_bwd_rejects_legacy_kernel_map_keys() -> None:
+    with pytest.raises(ValueError, match="legacy MHA backward kernel_map keys"):
+        MultiHeadAttentionBwdOp(
+            batch=1,
+            heads=8,
+            seq_len=128,
+            dim=64,
+            is_causal=False,
+            dtype=torch.float16,
+            kernel_map={"mha_bwd_kernel": _FakeLegacyMhaBwdKernel},
+        )
 
 
 @MhaBwdFixture
