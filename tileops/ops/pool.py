@@ -429,6 +429,12 @@ class _MaxPool2dFwdOpBase(Op):
         self._kernel_cache: Dict[tuple, Kernel] = {}
         self._last_roofline_spec: Optional[tuple] = None
 
+    def _validate_dtypes(self, input: torch.Tensor) -> None:
+        if input.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
+            raise ValueError(
+                f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}"
+            )
+
     def _resolve_input_2d(
         self,
         input: torch.Tensor,
@@ -510,18 +516,14 @@ class MaxPool2dFwdOp(_MaxPool2dFwdOpBase):
     """Max pooling over PyTorch-compatible NCHW inputs (return_indices=False)."""
 
     _kernel_slot = "max_pool2d_kernel"
+    # Keep a concrete binding so manifest dtype codegen honors the shared validator.
+    _validate_dtypes = _MaxPool2dFwdOpBase._validate_dtypes
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "max_pool2d_kernel": MaxPool2dKernel,
         }
-
-    def _validate_dtypes(self, input: torch.Tensor) -> None:
-        if input.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
-            raise ValueError(
-                f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}"
-            )
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         if len(input_shape) != 4:
@@ -570,18 +572,14 @@ class MaxPool2dIndicesFwdOp(_MaxPool2dFwdOpBase):
     """Max pooling over PyTorch-compatible NCHW inputs (return_indices=True)."""
 
     _kernel_slot = "max_pool2d_with_indices_kernel"
+    # Keep a concrete binding so manifest dtype codegen honors the shared validator.
+    _validate_dtypes = _MaxPool2dFwdOpBase._validate_dtypes
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "max_pool2d_with_indices_kernel": MaxPool2dWithIndicesKernel,
         }
-
-    def _validate_dtypes(self, input: torch.Tensor) -> None:
-        if input.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
-            raise ValueError(
-                f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}"
-            )
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         if len(input_shape) != 4:

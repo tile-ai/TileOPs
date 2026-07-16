@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Callable, Optional
 
 import pytest
 import torch
@@ -1184,7 +1184,7 @@ def test_max_pool2d(
 )
 def test_max_pool2d_special_values(
     case_name: str,
-    input_builder: callable,
+    input_builder: Callable[[], torch.Tensor],
     return_indices: bool,
 ) -> None:
     x = input_builder()
