@@ -25,11 +25,8 @@ Shared memory padding:
   ``(block_n + SMEM_PAD) / 2``.  Choosing SMEM_PAD=8 makes the stride
   68 words, which is not a multiple of 32, so each successive row starts
   in a different bank set.  Element-wise indexing (``smem[i, j]``) is
-  used for all smem<->fragment transfers; ``T.copy`` is kept only for the
-  fast aligned global<->smem path on the input side (still uses unpadded
-  ``shared_in`` allocated with the exact ``block_n`` width required by
-  T.copy).  The output uses element-wise global writes to avoid the shape
-  mismatch that would arise from a padded ``T.copy`` target.
+  used for all smem<->fragment transfers and all global<->smem transfers
+  to avoid shape and alignment mismatches with ``T.copy``.
 """
 
 import functools
@@ -354,8 +351,8 @@ class CumulativeKernel(Kernel):
         if self.M < 128:
             # Small M: use block_m=2 for better SM utilization
             # NCU shows block_m=2 gives 28% SM util vs 3.5% for block_m=16
-            # Cap by self.M to avoid wasting resources on very small shapes
-            block_m = min(self.M, min(2, max_block_m))
+            # Cap by self.M to avoid wasting resources on very small shapes, ensuring at least 1
+            block_m = max(1, min(self.M, min(2, max_block_m)))
         else:
             # Large M: use larger block_m for memory efficiency
             block_m = 1
@@ -373,7 +370,8 @@ class CumulativeKernel(Kernel):
             # block_n must evenly divide N_padded
             if self.N_padded % block_n != 0:
                 continue
-            smem_per_row = 2 * block_n * elem_size
+            # Account for padding in shared memory budget calculation
+            smem_per_row = 2 * (block_n + _SMEM_PAD) * elem_size
             max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
             block_ms = [bm for bm in [1, 2, 4, 8, 16] if bm <= max_block_m]
             threads_list = [128, 256]
