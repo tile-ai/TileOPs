@@ -1284,6 +1284,70 @@ def _gemm_coop2_splitk_kernel(
     return _gemm_coop2_splitk_func
 
 
+@functools.lru_cache(maxsize=32)
+def _gemm_simple_kernel(
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
+) -> Callable:
+    """Non-warp-specialized pipelined GEMM for short-mainloop shapes (SM90).
+
+    A stock ``T.Pipelined`` + ``T.gemm`` kernel: every thread cooperates in
+    both copy and math, and the compiler schedules the cp.async/TMA overlap.
+    On short-K skinny-M NT shapes (the decode-down family: ~16 K iterations,
+    about one CTA wave) this beats the warp-specialized kernel by ~4% — with
+    so short a mainloop the WS producer warpgroup's fixed costs (barrier
+    protocol per iteration, idle tail, 128 threads not doing math) outweigh
+    the benefit of its hand-managed deeper ring.
+
+    Selected via config only (``simple: True``, pinned per-shape in
+    ``GemmKernel._TUNED_CONFIGS``). Requires tiles that divide the problem
+    exactly; the builder raises ``ValueError`` otherwise.
+    """
+    if trans_a:
+        raise ValueError("_gemm_simple_kernel supports trans_a=False only")
+    accum_dtype = "float"
+
+    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _simple_func(
+        block_m: int = 64,
+        block_n: int = 128,
+        block_k: int = 128,
+        num_stages: int = 4,
+        threads: int = 128,
+        panel_size: int = 8,
+    ) -> Callable:
+        if m % block_m or n % block_n or k % block_k:
+            raise ValueError(
+                f"_gemm_simple_kernel requires exact tiling: got "
+                f"m={m} % {block_m}, n={n} % {block_n}, k={k} % {block_k}"
+            )
+        b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
+
+        @T.prim_func
+        def _gemm_simple_main(
+            a: T.Tensor((m, k), dtype),  # type: ignore
+            b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
+            c: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(n // block_n, m // block_m, threads=threads) as (bx, by):
+                T.use_swizzle(panel_size, enable=panel_size > 0)
+                a_smem = T.alloc_shared((block_m, block_k), dtype)
+                b_smem = T.alloc_shared(b_tile, dtype)
+                c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                T.clear(c_local)
+                for ki in T.Pipelined(k // block_k, num_stages=num_stages):
+                    T.copy(a[by * block_m, ki * block_k], a_smem)
+                    if trans_b:
+                        T.copy(b[bx * block_n, ki * block_k], b_smem)
+                    else:
+                        T.copy(b[ki * block_k, bx * block_n], b_smem)
+                    T.gemm(a_smem, b_smem, c_local, transpose_B=trans_b)
+                T.copy(c_local, c[by * block_m, bx * block_n])
+
+        return _gemm_simple_main
+
+    return _simple_func
+
+
 @torch.library.custom_op("top::gemm_wrapped_kernel", mutates_args=())
 def _gemm_wrapped_kernel(
     m: int,
@@ -1441,10 +1505,27 @@ class GemmKernel(Kernel):
             "block_k": 128,
             "panel_size": 10,
         },
+        # decode-down family (skinny-M NT, n=7168, k=2048): the non-warp-
+        # specialized pipelined kernel (``simple``) wins the short-mainloop
+        # regime (16 K-iters, ~1 CTA wave) by ~4% over the WS kernel — the
+        # producer warpgroup's fixed costs outweigh its deeper ring there.
+        # Verified per-rep interleaved, two independent fresh-build rounds.
         (128, 7168, 2048, False, True, "bfloat16"): {
+            "simple": True,
             "block_m": 64,
             "block_n": 128,
             "block_k": 128,
+            "num_stages": 4,
+            "threads": 128,
+            "panel_size": 8,
+        },
+        (64, 7168, 2048, False, True, "bfloat16"): {
+            "simple": True,
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 128,
+            "num_stages": 4,
+            "threads": 128,
             "panel_size": 8,
         },
         (4096, 2112, 7168, False, True, "bfloat16"): {
@@ -1554,6 +1635,22 @@ class GemmKernel(Kernel):
         return configs
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        # Simple (non-warp-specialized) pipelined path for short-mainloop
+        # shapes pinned in ``_TUNED_CONFIGS`` (``simple: True``).
+        if self.config.get("simple"):
+            cfg = self.config
+            compiled = _gemm_simple_kernel(
+                self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str
+            )(
+                cfg["block_m"],
+                cfg["block_n"],
+                cfg["block_k"],
+                cfg["num_stages"],
+                cfg.get("threads", 128),
+                cfg.get("panel_size", 8),
+            )
+            return compiled(a, b)
+
         # coop2 path: persistent 2-consumer (cooperative) kernel for large-M NT
         # shapes whose grid fills the GPU. Selected via config (``coop2``) from
         # ``default_config`` / ``_TUNED_CONFIGS``. Called directly (like split-K)
