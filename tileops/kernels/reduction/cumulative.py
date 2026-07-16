@@ -333,9 +333,9 @@ class CumulativeKernel(Kernel):
 
         if self.use_parallel:
             # Three-pass parallel scan
-            n_tiles = align_up(N, DEFAULT_ALIGNMENT) // 256  # Using default block_n=256
+            # Note: n_tiles will be determined from config after init_config()
             self.kernel_local = _parallel_scan_local_kernel(M, N, op_kind, self.dtype_str)
-            self.kernel_carry = _parallel_scan_carry_kernel(M, n_tiles)
+            self.kernel_carry = None  # Will be created after config is known
             self.kernel_propagate = _parallel_scan_propagate_kernel(M, N, self.dtype_str)
             self.kernel = None  # Not used for parallel
 
@@ -357,6 +357,11 @@ class CumulativeKernel(Kernel):
             self.kernel_propagate = None
 
         self.init_config(config, tune)
+
+        # Create carry kernel after config is known (need block_n for n_tiles)
+        if self.use_parallel:
+            n_tiles = self.N_padded // self.config["block_n"]
+            self.kernel_carry = _parallel_scan_carry_kernel(M, n_tiles)
 
     @property
     def default_config(self) -> dict:
@@ -429,7 +434,7 @@ class CumulativeKernel(Kernel):
             y_local, tile_sums = local_fn(x)
 
             # Pass 2: Exclusive scan of tile sums (TileLang kernel)
-            carry_fn = self.kernel_carry(block_m, threads)
+            carry_fn = self.kernel_carry(threads)
             tile_carries_exclusive = carry_fn(tile_sums)
 
             # Pass 3: Propagate carries (JIT kernel auto-allocates output)
@@ -550,22 +555,24 @@ def _parallel_scan_carry_kernel(M: int, n_tiles: int):
 
     Uses sequential scan since n_tiles is typically small (e.g., 128-256).
     Output is exclusive scan: out[i, 0] = 0, out[i, j] = cumsum(in[i, :j])
+
+    Each thread processes one complete row to avoid data races.
     """
     @tilelang.jit(out_idx=[1])
-    def _func(block_m, threads):
+    def _func(threads):
         @T.prim_func
         def main(
             tile_sums: T.Tensor[(M, n_tiles), "float32"],  # noqa: F821
             tile_carries: T.Tensor[(M, n_tiles), "float32"],  # noqa: F821
         ):
-            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                # Sequential scan along n_tiles dimension for each row
-                for i in T.Parallel(block_m):
-                    row = pid_m * block_m + i
-                    with T.If(row < M), T.Then():
+            with T.Kernel(M, threads=threads) as row:  # noqa: SIM117
+                # Each thread handles one complete row
+                with T.If(row < M):
+                    with T.Then():
                         # Exclusive scan: first element is 0
                         tile_carries[row, 0] = T.float32(0.0)
-                        running_sum = T.float32(0.0)
+                        # Mutable accumulator for loop-carried state
+                        running_sum = T.alloc_var("float32", init=0.0)
                         # Sequential loop over tiles
                         for j in T.Serial(n_tiles - 1):
                             running_sum = running_sum + tile_sums[row, j]

@@ -330,5 +330,49 @@ def test_cumprod_dim_axis1(
         f"cumprod dim=1 max err: {(y - ref).abs().max()}"
 
 
+# Test coverage for parallel scan path (N > 8192)
+@pytest.mark.parametrize(
+    "M, N, dtype",
+    [
+        pytest.param(64, 16384, torch.float32, marks=pytest.mark.smoke),   # block_n=128 path
+        pytest.param(64, 32768, torch.bfloat16, marks=pytest.mark.smoke),  # block_n=256 path
+        pytest.param(32, 16384, torch.float16, marks=pytest.mark.smoke),   # Different M
+    ],
+)
+def test_cumsum_parallel_scan(M: int, N: int, dtype: torch.dtype) -> None:
+    """Test parallel scan backend for small-M, large-N workloads."""
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
+
+    device = torch.device("cuda")
+    x = torch.randn(M, N, dtype=dtype, device=device)
+
+    op = CumsumFwdOp(dtype=dtype, dim=-1)
+    y = op(x)
+
+    # Verify correctness
+    ref = x.float().cumsum(dim=-1).to(dtype)
+    assert torch.allclose(y, ref, atol=1e-2, rtol=1e-2), \
+        f"Parallel scan failed for shape ({M}, {N}), max_diff={torch.abs(y - ref).max()}"
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("N", [16384, 32768])
+def test_cumsum_parallel_scan_all_ones(N: int) -> None:
+    """Test carry propagation across multiple tiles with all-ones input."""
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
+
+    device = torch.device("cuda")
+    M = 1
+    x = torch.ones(M, N, dtype=torch.float32, device=device)
+
+    op = CumsumFwdOp(dtype=torch.float32, dim=-1)
+    y = op(x)
+
+    # All-ones cumsum should produce [1, 2, 3, ..., N]
+    expected = torch.arange(1, N + 1, dtype=torch.float32, device=device).unsqueeze(0)
+    assert torch.allclose(y, expected, atol=1e-3, rtol=1e-3), \
+        f"Carry propagation failed: y[0,512]={y[0,512]}, expected=513; y[0,-1]={y[0,-1]}, expected={N}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
