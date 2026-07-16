@@ -44,3 +44,56 @@ BmmFwdOp:
     bench_manifest_driven: true
     kernel_map:
       bmm_kernel: BmmKernel
+
+# BmmFp8Op: strict 3D-3D batched FP8 GEMM with per-tensor scaling.
+# A single fp32 scalar per operand is shared across the whole batch,
+# mirroring flashinfer.bmm_fp8's A_scale / B_scale signature 1:1.
+BmmFp8Op:
+  ref_api: "none"
+  family: bmm
+  status: implemented
+
+  signature:
+    inputs:
+      a: {dtype: "float8_e4m3fn", shape: "[B, M, K]"}
+      b: {dtype: "same_as(a)", shape: "[B, K, N] | [B, N, K]"}
+      scale_a: {dtype: "float32"}
+      scale_b: {dtype: "float32"}
+    outputs:
+      d: {dtype: "bfloat16 | float16", shape: "[B, M, N]"}
+    params:
+      out_dtype: {type: dtype, default: bfloat16}
+      b_layout: {type: str, default: "kn", choices: ["kn", "nk"]}
+    # Only fp8_e4m3fn inputs are supported (fp8_e5m2 is rejected at
+    # forward-time by :meth:`BmmFp8Op._validate_dtypes`); output picks
+    # a single dtype per compile.  ``dtype_combos`` pins the Cartesian
+    # product so validators do not treat (e5m2, *) as legal.
+    dtype_combos:
+      - {a: float8_e4m3fn, b: float8_e4m3fn, scale_a: float32, scale_b: float32, d: bfloat16}
+      - {a: float8_e4m3fn, b: float8_e4m3fn, scale_a: float32, scale_b: float32, d: float16}
+    shape_rules:
+    - "a.shape[0] == b.shape[0]"
+    - "(b.shape[1] == a.shape[2]) if b_layout == 'kn' else (b.shape[2] == a.shape[2])"
+    - "a.shape[2] % 32 == 0"
+    # per_tensor: single global fp32 scalar (0-D) shared across the whole batch
+    - "scale_a.shape == () and scale_b.shape == ()"
+    - "d.shape == (a.shape[0], a.shape[1], b.shape[2] if b_layout == 'kn' else b.shape[1])"
+
+  workloads:
+  - {b: 4, m: 1024, n: 1024, k: 1024, dtypes: [float8_e4m3fn], label: "square-b4-1k-per-tensor"}
+  - {b: 8, m: 2048, n: 2048, k: 2048, dtypes: [float8_e4m3fn], label: "square-b8-2k-per-tensor"}
+  - {b: 32, m: 128, n: 128, k: 2048, dtypes: [float8_e4m3fn], label: "mha-decode-b32-pv-per-tensor"}
+  - {b: 64, m: 128, n: 2048, k: 128, dtypes: [float8_e4m3fn], label: "mha-decode-b64-qk-per-tensor"}
+  - {b: 128, m: 512, n: 512, k: 2048, dtypes: [float8_e4m3fn], label: "moe-prefill-b128-per-tensor"}
+
+  roofline:
+    func: "tileops.perf.formulas.bmm_fp8_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/bmm.py
+    op: tileops/ops/bmm.py
+    test: tests/ops/test_bmm.py
+    bench: benchmarks/ops/bench_bmm.py
+    bench_manifest_driven: true
+    kernel_map:
+      bmm_fp8_kernel: BmmFp8Kernel

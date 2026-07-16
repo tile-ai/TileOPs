@@ -1371,3 +1371,35 @@ def bmm_fwd_roofline(op: "Op") -> tuple[int, int]:
     flops = 2 * batch * m * n * k
     nbytes = batch * (m * k + n * k + m * n) * elem_bytes
     return int(flops), int(nbytes)
+
+
+def bmm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
+    """Roofline for batched FP8 GEMM ``BmmFp8Op``.
+
+    Broadcast-free 3D-3D semantics scaled by the batch factor; matches
+    the fp16 ``bmm_fwd_roofline`` layout of ``a: [B, M, K]`` and
+    ``b: [B, K, N]``. The op is per-tensor-only and doesn't fuse a
+    bias, so the ``nbytes`` accounting has exactly three terms:
+
+      * ``B * M * K``  fp8 input bytes (A)
+      * ``B * K * N``  fp8 input bytes (B)
+      * ``B * M * N``  ``out_dtype`` bytes (C)
+      * ``+ 8``        two fp32 per-tensor scalars (A_scale, B_scale),
+                       batch-independent -- a single global scale per
+                       operand shared across the whole batch, matching
+                       ``flashinfer.bmm_fp8``'s ``A_scale`` / ``B_scale``.
+
+    Valid only after the first ``forward()`` (dims/dtype are inferred
+    from the inputs then).
+    """
+    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
+        raise RuntimeError(
+            "BmmFp8Op.eval_roofline() is valid only after the first forward(); "
+            "batch/m/n/k and dtype are inferred from the inputs."
+        )
+    batch, m, n, k = op.batch, op.m, op.n, op.k
+    input_bytes = op.dtype.itemsize
+    out_bytes = op.out_dtype.itemsize
+    flops = 2 * batch * m * n * k
+    nbytes = batch * ((m * k + n * k) * input_bytes + m * n * out_bytes) + 8
+    return int(flops), int(nbytes)
