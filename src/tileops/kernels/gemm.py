@@ -10,6 +10,7 @@ from tileops.trace import trace
 from tileops.utils import get_sm_version, str2dtype
 
 from .gemm_call import gemv_region, small_batch_region
+from .gemm_heuristics import best_config as _heuristic_best_config
 
 __all__ = [
     "GemmFp8BlockScaledKernel",
@@ -1498,10 +1499,15 @@ class GemmKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Modal autotune winner across the manifest workloads (H200): every
-        # large shape picks 128x128x64 with the deepest ring. Small-M decode
-        # shapes prefer narrower tiles — those live in ``_TUNED_CONFIGS`` and
-        # are merged in below.
+        # Two-tier selection:
+        #   1. ``_TUNED_CONFIGS`` exact hit — human-pinned shapes stay
+        #      authoritative and are never overridden by the model;
+        #   2. otherwise the analytic selector picks structure + tiles
+        #      (``gemm_heuristics.best_config``). It replaces both the old
+        #      modal 128x128x64 fallback and the hand-written "coop2 when the
+        #      grid fills the GPU" gate: the selector reproduces those choices
+        #      where they were measured best and picks narrower tiles /
+        #      split-K for the shapes the modal default starved.
         modal = {
             "block_m": 128,
             "block_n": 128,
@@ -1517,23 +1523,9 @@ class GemmKernel(Kernel):
             # coop2 configs are self-contained (own schema); do not merge the
             # single-consumer modal keys into them.
             return dict(override) if override.get("coop2") else {**modal, **override}
-        # Unlisted NT shape whose natural coop2 grid fills the GPU (>= one wave
-        # of 256-wide tiles): route to the 2-consumer persistent kernel. Small-M
-        # / non-NT shapes fall through to the single-consumer modal config.
-        if (
-            not self.trans_a
-            and self.trans_b
-            and -(-self.m // 128) * -(-self.n // 256) >= self.sm_count
-        ):
-            return {
-                "coop2": True,
-                "block_n": 256,
-                "block_k": 64,
-                "num_stages": 3,
-                "group_size_m": 16,
-                "stage_n": 0,
-            }
-        return modal
+        return _heuristic_best_config(
+            self.m, self.n, self.k, self.trans_a, self.trans_b, self.sm_count
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:
