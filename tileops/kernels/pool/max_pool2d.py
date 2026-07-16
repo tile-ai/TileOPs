@@ -285,13 +285,11 @@ def _max_pool2d_with_indices_kernel(
                         has_nan = T.alloc_var(T.bool)
                         max_idx = T.alloc_var(T.int64)
                         nan_idx = T.alloc_var(T.int64)
-                        first_nan = T.alloc_var(T.bool)
                         first_valid = T.alloc_var(T.bool)
                         max_val = T.cast(float("-inf"), accum_dtype)
                         has_nan = False
                         max_idx = T.cast(0, "int64")
                         nan_idx = T.cast(0, "int64")
-                        first_nan = True
                         first_valid = True
                         for kh in T.serial(kernel_h):
                             for kw in T.serial(kernel_w):
@@ -302,9 +300,9 @@ def _max_pool2d_with_indices_kernel(
                                     flat_idx = T.cast(ih * w_in + iw, "int64")
                                     is_nan = T.isnan(val)
                                     if is_nan:
-                                        if first_nan:
-                                            nan_idx = flat_idx
-                                            first_nan = False
+                                        # PyTorch records the last NaN visited in
+                                        # a pooling window.
+                                        nan_idx = flat_idx
                                         has_nan = True
                                     elif first_valid:
                                         max_val = val

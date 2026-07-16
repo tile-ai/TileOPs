@@ -15,6 +15,7 @@ from tileops.kernels.pool import (
     MaxPool2dKernel,
     MaxPool2dWithIndicesKernel,
 )
+from tileops.manifest import load_workloads
 from tileops.ops import (
     AvgPool1dFwdOp,
     AvgPool2dFwdOp,
@@ -976,6 +977,44 @@ _MAX_POOL2D_PARAMS = [
 ]
 
 
+def _max_pool2d_manifest_test_params() -> list:
+    """Build exact correctness cases from the MaxPool2d manifest workloads."""
+    params = []
+    for workload in load_workloads("MaxPool2dFwdOp"):
+        n, c_in, h_in, w_in = workload["input_shape"]
+        kernel_size = tuple(workload["kernel_size"])
+        stride = workload.get("stride")
+        if stride is not None:
+            stride = tuple(stride)
+        padding = tuple(workload.get("padding", (0, 0)))
+        dilation = tuple(workload.get("dilation", (1, 1)))
+        ceil_mode = workload.get("ceil_mode", False)
+        label = workload.get("label", f"{n}x{c_in}x{h_in}x{w_in}")
+        for dtype_str in workload["dtypes"]:
+            params.append(
+                pytest.param(
+                    n,
+                    c_in,
+                    h_in,
+                    w_in,
+                    kernel_size,
+                    stride,
+                    padding,
+                    dilation,
+                    ceil_mode,
+                    getattr(torch, dtype_str),
+                    False,
+                    True,
+                    marks=pytest.mark.full,
+                    id=f"manifest-{label}-{dtype_str}",
+                )
+            )
+    return params
+
+
+_MAX_POOL2D_PARAMS.extend(_max_pool2d_manifest_test_params())
+
+
 class MaxPool2dFixture(FixtureBase):
     PARAMS = [
         (
@@ -1117,6 +1156,22 @@ def test_max_pool2d(
                 [[[[1.0, float("nan"), 3.0, 4.0]]]], device="cuda", dtype=torch.float16
             ),
             id="window-with-nan",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "window_with_multiple_nans",
+            lambda: torch.tensor(
+                [[[[float("nan"), 1.0, float("nan"), 0.0]]]],
+                device="cuda",
+                dtype=torch.float16,
+            ),
+            id="window-with-multiple-nans",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "window_with_tied_maxima",
+            lambda: torch.tensor([[[[5.0, 5.0, 4.0, 3.0]]]], device="cuda", dtype=torch.float16),
+            id="window-with-tied-maxima",
             marks=pytest.mark.full,
         ),
         pytest.param(

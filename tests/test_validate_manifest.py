@@ -672,7 +672,8 @@ class TestSignature:
 
         assert errors == []
         assert warn_list == [
-            "[signature] MissingSpecOnlyOp: skipped because status is spec-only"
+            "[signature] MissingSpecOnlyOp: skipped because status is spec-only "
+            "and source.op is null"
         ]
 
     def test_implemented_null_source_op_fails(self, validator):

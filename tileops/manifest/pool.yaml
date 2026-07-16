@@ -434,7 +434,8 @@ MaxPool2dIndicesFwdOp:
       max_pool2d_with_indices_kernel: MaxPool2dWithIndicesKernel
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
-    bench: null
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: true
 
 MaxPool3dFwdOp:
   ref_api: "torch.nn.functional.max_pool3d"
