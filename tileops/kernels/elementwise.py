@@ -115,8 +115,11 @@ __all__ = [
     "LogicalOrBoolStorageFwdKernel",
     "LogicalOrFwdKernel",
     # --- bitwise ---
+    "BitwiseAndBoolStorageFwdKernel",
     "BitwiseAndFwdKernel",
+    "BitwiseOrBoolStorageFwdKernel",
     "BitwiseOrFwdKernel",
+    "BitwiseXorBoolStorageFwdKernel",
     "BitwiseXorFwdKernel",
     # --- fused gated ---
     "SiluAndMulFwdKernel",
@@ -1834,6 +1837,14 @@ class BitwiseAndFwdKernel(BinaryKernel):
         return a & b
 
 
+class BitwiseAndBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+    """Element-wise bitwise AND on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.bitwise_and(a, b)
+
+
 class BitwiseOrFwdKernel(BinaryKernel):
     """Element-wise bitwise OR: y = a | b (integer inputs)."""
 
@@ -1844,6 +1855,14 @@ class BitwiseOrFwdKernel(BinaryKernel):
         return a | b
 
 
+class BitwiseOrBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+    """Element-wise bitwise OR on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.bitwise_or(a, b)
+
+
 class BitwiseXorFwdKernel(BinaryKernel):
     """Element-wise bitwise XOR: y = a ^ b (integer inputs)."""
 
@@ -1852,6 +1871,14 @@ class BitwiseXorFwdKernel(BinaryKernel):
     @staticmethod
     def op_func(a, b):
         return a ^ b
+
+
+class BitwiseXorBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
+    """Element-wise bitwise XOR on uint8-backed bool storage."""
+
+    @staticmethod
+    def op_func(a, b):
+        return T.bitwise_xor(a, b)
 
 
 # ---------------------------------------------------------------------------

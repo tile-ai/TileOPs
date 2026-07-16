@@ -604,6 +604,20 @@ def test_bitwise_binary_compile(op_cls, ref_fn, name):
     assert torch.equal(out, ref)
 
 
+@pytest.mark.parametrize("op_cls, ref_fn, name", _BITWISE_BINARY_OPS)
+def test_bool_bitwise_binary_compile(op_cls, ref_fn, name):
+    """Compile-smoke for bool bitwise ops using the uint8 storage path."""
+    shape = _SMALL
+    a = torch.randint(0, 2, shape, device="cuda").bool()
+    b = torch.randint(0, 2, shape, device="cuda").bool()
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.bool)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(a, b)
+    ref = ref_fn(a, b)
+    assert out.dtype == torch.bool
+    assert torch.equal(out, ref)
+
+
 # --- Remaining fused gated ops ---
 
 _FUSED_GATED_OPS = [
