@@ -35,7 +35,7 @@ def _feasible_threads(n_padded: int, dtype: torch.dtype = torch.float16) -> list
     128-bit needs ``16 // element_size`` elements per thread (8 for fp16/bf16,
     4 for fp32), so the floor is dtype-dependent.
     """
-    min_elements = 16 // torch.tensor([], dtype=dtype).element_size()
+    min_elements = 16 // dtype.itemsize
     return [
         threads
         for threads in _CANDIDATE_THREADS
@@ -45,14 +45,8 @@ def _feasible_threads(n_padded: int, dtype: torch.dtype = torch.float16) -> list
 
 def select_row_config(n_padded: int) -> dict:
     """Structurally collapse-free default ``{block_m, threads}`` for a row reduction."""
-    threads = _DEFAULT_THREADS
-    if n_padded % threads:
-        # N_padded is a multiple of the 256-element alignment, so 128 always
-        # divides it; this is a guard, not a live path.
-        threads = next(
-            (t for t in _CANDIDATE_THREADS if n_padded % t == 0), _DEFAULT_THREADS
-        )
-    return {"block_m": 1, "threads": threads}
+    # N_padded is a multiple of the 256-element alignment, so 128 always divides it.
+    return {"block_m": 1, "threads": _DEFAULT_THREADS}
 
 
 def select_row_configs(n_padded: int, dtype: torch.dtype = torch.float16) -> list[dict]:
