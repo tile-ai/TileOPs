@@ -200,6 +200,40 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int) -> float:
     return us
 
 
+def _tiny_m_config(k: int) -> dict:
+    """m <= 8 NT band: bandwidth-regime rule, not the compute-regime score.
+
+    The score above divides byte terms by wave efficiency — right when SMs
+    bound the shape, wrong at m <= 8 where the kernel is a weight stream
+    (arithmetic intensity ~= m) and DRAM is shared across however many CTAs
+    carry it. Ranked that way, full-wave narrow tiles (bn=64 split-K) beat
+    the measured-best wide tiles (bn=128, ~half wave), costing 3-8%.
+
+    Measured rule (H200 per-rep interleaved sweep, {2112x7168, 7168x2048,
+    4096x7168} x m{2,4,8} x {full sb grid, split-K/simple/basic variants},
+    winner reproduced in every cell; dh/wi1_small_batch/tinym_fit.py):
+
+    - long K: grid-z split-K on the 64-row tile — split_k=4 when the K-tile
+      count allows >= 12 iterations per slice (shorter slices pay the WS
+      pipeline fill/drain: split_k=8 at 7 iters/slice measured 20% slower,
+      and split_k=2 at 8 iters/slice lost to the plain tile on the 16-tile K);
+    - short K: the plain (split_k=1) 64-row tile — split-K slices of a
+      16-tile K are too short to amortize, and the ``simple`` structure is
+      unavailable here (``_gemm_simple_kernel`` requires ``m % block_m == 0``,
+      never true at m <= 8).
+
+    Both use block_n=128: half the CTAs of bn=64 still saturate the weight
+    stream, and the padded-A reread (block_m=64 vs m <= 8) through L2 halves.
+    """
+    k_iters = math.ceil(k / 128)
+    for sk in (4, 2):
+        if k_iters % sk == 0 and k_iters // sk >= 12:
+            return {"block_m": 64, "block_n": 128, "block_k": 128,
+                    "num_stages": 4, "panel_size": 16, "split_k": sk}
+    return {"block_m": 64, "block_n": 128, "block_k": 128,
+            "num_stages": 4, "panel_size": 8, "split_k": 1}
+
+
 @functools.lru_cache(maxsize=512)
 def best_config(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
                 sm_count: int = 132) -> dict:
@@ -215,9 +249,12 @@ def best_config(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
 
     Returns:
         A config dict in ``GemmKernel`` schema — either the single-consumer
-        form (``block_m/block_n/block_k/num_stages/panel_size/split_k``) or
-        a structure-flagged form (``coop2`` / ``coop2_splitk``).
+        form (``block_m/block_n/block_k/num_stages/panel_size/split_k``,
+        optionally ``simple``) or a structure-flagged form (``coop2`` /
+        ``coop2_splitk``).
     """
+    if m <= 8 and not trans_a and trans_b:
+        return _tiny_m_config(k)
     cands = _enumerate(m, n, k, trans_a, trans_b, sm_count)
     if not cands:  # degenerate shapes: fall back to the modal default
         return {"block_m": 128, "block_n": 128, "block_k": 64,

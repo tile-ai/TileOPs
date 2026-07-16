@@ -1989,18 +1989,24 @@ class SmallBatchGemmKernel(Kernel):
     """Small-batch (small-m, NT) kernel-mode of ``GemmFwdOp`` — a batched GEMV.
 
     For small ``m`` the NT GEMM ``C[m,n] = A[m,k] @ B[n,k]ᵀ`` is HBM-bandwidth
-    bound (arithmetic intensity ~= m), and the generic warp-specialized
-    ``GemmKernel`` badly underfills the GPU there (e.g. m=2, n=2112 launches ~17
-    CTAs on 132 SMs). This mode instead streams the weight matrix once through a
-    cp.async ring and reuses each SMEM tile across all ``m`` rows
+    bound (arithmetic intensity ~= m). This mode streams the weight matrix once
+    through a cp.async ring and reuses each SMEM tile across all ``m`` rows
     (:func:`_gemm_small_m_kernel`, the CUDA-core generalization of
-    :class:`GemvKernel`). Measured on H200 it beats the generic path 1.1-3.2x on
-    underfilled decode shapes and reaches cuBLAS parity/beyond at low ``m``.
+    :class:`GemvKernel`). Its inner loop pays ``m`` FMAs + ``m`` converts per
+    weight element on CUDA cores, so the lead over the tensor-core
+    ``GemmKernel`` shrinks as ``m`` grows. Measured on H200 (per-rep
+    interleaved, full config grid, vs the analytic small-m generic configs):
+    at ``m == 2`` it is the fastest option on all three decode families
+    (0.97-1.10x the best cuBLAS); from ``m == 3`` the split-K / simple generic
+    overtakes it (e.g. 7168x2048: 0.81x vs the generic's 0.92x).
 
     Scope: SM90, NT only (``B`` is ``[N,K]`` → K contiguous → coalesced reduction
     over K; NN/TN/TT do not have that layout and fall through to ``GemmKernel``).
-    The kernel is correct for any ``m``; the region it is selected for is the
-    occupancy band stated by :func:`~tileops.kernels.gemm_call.small_batch_region`.
+    The kernel is correct for any ``m``; the region it is selected for is
+    ``m == 2`` on an underfilled generic grid, stated by
+    :func:`~tileops.kernels.gemm_call.small_batch_region`. Everything above
+    routes to ``GemmKernel``, whose small-m band picks split-K / simple
+    configs (``gemm_heuristics._tiny_m_config``).
 
     Args:
         m: Batch rows.
@@ -2036,10 +2042,22 @@ class SmallBatchGemmKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Modal best across m<=8 on both decode shapes (H200 sweep): one output
-        # column per block, a 64-lane reduction over K, 4-deep cp.async pipeline.
-        # tune=True refines per shape (short-K high-m prefers reduce_threads=32).
-        return {"block_n": 1, "reduce_threads": 64, "num_stages": 4}
+        # Modal best across the dispatched band (H200 per-rep interleaved
+        # sweep): one output column per block, a 64-lane reduction over K,
+        # 4-deep cp.async ring. One measured exception: when the grid alone
+        # fills the device's CTA slots (block_n=1 → n CTAs vs the 32-per-SM
+        # cap) AND the per-thread K loop is long, resident warps already hide
+        # the load latency and the deep ring only adds sync overhead — the
+        # 2-stage ring is ~9% faster there (attn-family 4096x7168 at m=2).
+        # tune=True refines per shape over autotune_configs.
+        cfg = {"block_n": 1, "reduce_threads": 64, "num_stages": 4}
+        sm_count = (torch.cuda.get_device_properties(
+            torch.cuda.current_device()).multi_processor_count
+            if torch.cuda.is_available() else 132)
+        k_iters = -(-self.k // (64 * 8))  # reduce_threads * tile_k(fp16/bf16)
+        if self.n >= 28 * sm_count and k_iters >= 12:
+            cfg["num_stages"] = 2
+        return cfg
 
     @property
     def autotune_configs(self) -> list[dict]:

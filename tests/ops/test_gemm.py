@@ -212,7 +212,7 @@ class GemmFixture(FixtureBase):
                     True,
                     False,
                     marks=pytest.mark.full,
-                    id="full-fp16-small-batch-m4",
+                    id="full-fp16-small-m4-simple",
                 ),
                 pytest.param(
                     4,
@@ -223,7 +223,7 @@ class GemmFixture(FixtureBase):
                     True,
                     False,
                     marks=pytest.mark.full,
-                    id="full-fp16-small-batch-m4-boundary",
+                    id="full-fp16-small-m4-simple-ntail",
                 ),
                 pytest.param(
                     8,
@@ -234,7 +234,7 @@ class GemmFixture(FixtureBase):
                     True,
                     False,
                     marks=pytest.mark.full,
-                    id="full-fp16-small-batch-m8-underfilled",
+                    id="full-fp16-small-m8-splitk",
                 ),
             ],
         ),
@@ -531,8 +531,10 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
 
 @pytest.mark.smoke
 def test_small_batch_dispatch() -> None:
-    """Occupancy-tiered small_batch dispatch (NT); boundaries stay on gemv/gemm.
+    """small_batch dispatches only at m == 2 on underfilled NT grids.
 
+    m == 1 stays on gemv, m >= 3 / full grids / non-NT stay on the generic
+    kernel (whose small-m band picks split-K / simple configs analytically).
     Dispatch only — ``_get_kernel`` constructs kernel objects without triggering
     a JIT compile (that happens on first forward), so this stays smoke-fast.
     """
@@ -542,19 +544,23 @@ def test_small_batch_dispatch() -> None:
         pytest.skip("small_batch kernel-mode is SM90-only")
 
     op = GemmFwdOp(trans_a=False, trans_b=True)  # NT
-    # tier 1 (2 <= m <= 4): any underfilled grid.
-    assert op._get_kernel(4, 2112, 7168, torch.float16)[0] == "small_batch"
-    assert op._get_kernel(4, 7168, 2048, torch.float16)[0] == "small_batch"
-    # tier 2 (5 <= m <= 8): only a severely-underfilled grid (<= ~20% of a wave).
-    assert op._get_kernel(8, 2112, 7168, torch.float16)[0] == "small_batch"
-    assert op._get_kernel(8, 7168, 2048, torch.float16)[0] == "gemm"  # 56 CTAs: not severe
+    # m == 2 on an underfilled generic grid: the bandwidth kernel's band.
+    assert op._get_kernel(2, 2112, 7168, torch.float16)[0] == "small_batch"
+    assert op._get_kernel(2, 7168, 2048, torch.float16)[0] == "small_batch"
+    # m >= 3: the split-K / simple generic configs overtake the bandwidth
+    # kernel (its per-element CUDA-core cost scales with m).
+    assert op._get_kernel(3, 2112, 7168, torch.float16)[0] == "gemm"
+    assert op._get_kernel(4, 7168, 2048, torch.float16)[0] == "gemm"
+    assert op._get_kernel(8, 2112, 7168, torch.float16)[0] == "gemm"
     # boundaries
     assert op._get_kernel(1, 2112, 7168, torch.float16)[0] == "lhs_row"  # gemv
-    assert op._get_kernel(9, 2112, 7168, torch.float16)[0] == "gemm"  # m > 8
-    wide_n = op._sm_count * 128  # generic fills the GPU
-    assert op._get_kernel(4, wide_n, 2048, torch.float16)[0] == "gemm"
+    from tileops.kernels.gemm_heuristics import TINY_M_BLOCK_N
+    from tileops.utils import get_sm_count
+
+    wide_n = get_sm_count() * TINY_M_BLOCK_N  # generic fills the GPU
+    assert op._get_kernel(2, wide_n, 2048, torch.float16)[0] == "gemm"
     op_nn = GemmFwdOp(trans_a=False, trans_b=False)  # non-NT
-    assert op_nn._get_kernel(4, 2112, 7168, torch.float16)[0] == "gemm"
+    assert op_nn._get_kernel(2, 2112, 7168, torch.float16)[0] == "gemm"
 
 
 if __name__ == "__main__":
