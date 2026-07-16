@@ -337,10 +337,12 @@ def test_gated_deltanet_prefill_bthd_layout_matches_bhtd() -> None:
 
 
 @pytest.mark.smoke
-def test_gated_deltanet_prefill_bthd_blocksolve_path_matches_bhtd() -> None:
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_gated_deltanet_prefill_bthd_blocksolve_path_matches_bhtd(
+    dtype: torch.dtype,
+) -> None:
     torch.manual_seed(42)
     B, H, S, DK, DV, BC = 1, 16, 128, 128, 128, 64
-    dtype = torch.float16
 
     test = GatedDeltaNetPrefillFwdTest(B, H, S, DK, DV, BC, dtype)
     q, k, v, g, beta = test.gen_inputs()
