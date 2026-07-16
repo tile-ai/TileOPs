@@ -336,6 +336,7 @@ class CumulativeKernel(Kernel):
             self.kernel_local = _parallel_scan_local_kernel(M, N, op_kind, self.dtype_str)
             self.kernel_propagate = _parallel_scan_propagate_kernel(M, N, self.dtype_str)
             self.kernel = None  # Not used for parallel
+            tune = False  # Disable autotuning for parallel path (uses optimized defaults)
         else:
             # Sequential scan (original implementation)
             self.kernel = _cumulative_kernel(M, N, op_kind, self.dtype_str)
@@ -411,12 +412,7 @@ class CumulativeKernel(Kernel):
             threads = self.config["threads"]
             n_tiles = self.N_padded // block_n
 
-            # Allocate intermediate buffers
-            y_local = torch.empty((self.M, self.N_padded), dtype=torch.float32, device=x.device)
-            tile_sums = torch.empty((self.M, n_tiles), dtype=torch.float32, device=x.device)
-            y_final = torch.empty((self.M, self.N_padded), dtype=self.dtype, device=x.device)
-
-            # Pass 1: Local scan within each tile
+            # Pass 1: Local scan within each tile (JIT kernel auto-allocates outputs)
             local_fn = self.kernel_local(block_m, block_n, threads)
             y_local, tile_sums = local_fn(x)
 
@@ -426,7 +422,7 @@ class CumulativeKernel(Kernel):
             if n_tiles > 1:
                 tile_carries_exclusive[:, 1:] = tile_carries[:, :-1]
 
-            # Pass 3: Propagate carries
+            # Pass 3: Propagate carries (JIT kernel auto-allocates output)
             propagate_fn = self.kernel_propagate(block_m, block_n, threads)
             y_final = propagate_fn(y_local, tile_carries_exclusive)
 
