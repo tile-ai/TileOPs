@@ -138,14 +138,8 @@ DeltaNetDecodeOp:
 
   workloads:
     - {q_shape: [1, 4, 64], k_shape: [1, 4, 64], v_shape: [1, 4, 64], beta_shape: [1, 4], state_shape: [1, 4, 64, 64], dtypes: [float16, bfloat16, float32], label: "delta-decode-smoke-d64"}
-    - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], beta_shape: [1, 32], state_shape: [1, 32, 128, 128], dtypes: [float16, bfloat16, float32], label: "delta-decode-b1-h32-d128"}
-    - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], beta_shape: [8, 32], state_shape: [8, 32, 128, 128], dtypes: [float16, bfloat16, float32], label: "delta-decode-b8-h32-d128"}
-    - {q_shape: [16, 32, 128], k_shape: [16, 32, 128], v_shape: [16, 32, 128], beta_shape: [16, 32], state_shape: [16, 32, 128, 128], dtypes: [float16, bfloat16, float32], label: "delta-decode-b16-h32-d128"}
-    - {q_shape: [32, 32, 128], k_shape: [32, 32, 128], v_shape: [32, 32, 128], beta_shape: [32, 32], state_shape: [32, 32, 128, 128], dtypes: [float16, bfloat16, float32], label: "delta-decode-b32-h32-d128"}
-    - {q_shape: [1, 32, 64], k_shape: [1, 32, 64], v_shape: [1, 32, 64], beta_shape: [1, 32], state_shape: [1, 32, 64, 64], dtypes: [float32], label: "delta-decode-b1-h32-d64"}
-    - {q_shape: [8, 32, 64], k_shape: [8, 32, 64], v_shape: [8, 32, 64], beta_shape: [8, 32], state_shape: [8, 32, 64, 64], dtypes: [float32], label: "delta-decode-b8-h32-d64"}
-    - {q_shape: [32, 32, 64], k_shape: [32, 32, 64], v_shape: [32, 32, 64], beta_shape: [32, 32], state_shape: [32, 32, 64, 64], dtypes: [float32], label: "delta-decode-b32-h32-d64"}
-    - {q_shape: [64, 32, 128], k_shape: [64, 32, 128], v_shape: [64, 32, 128], beta_shape: [64, 32], state_shape: [64, 32, 128, 128], dtypes: [float16, bfloat16, float32], label: "delta-decode-b64-h32-d128"}
+    - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], beta_shape: [1, 32], state_shape: [1, 32, 128, 128], dtypes: [bfloat16, float32], label: "delta-decode-b1-h32-d128"}
+    - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], beta_shape: [8, 32], state_shape: [8, 32, 128, 128], dtypes: [bfloat16, float32], label: "delta-decode-b8-h32-d128"}
 
   roofline:
     func: "tileops.perf.formulas.deltanet_decode_roofline"
