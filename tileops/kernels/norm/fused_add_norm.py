@@ -186,7 +186,7 @@ class FusedAddLayerNormKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return select_row_configs(self.N_padded)
+        return select_row_configs(self.N_padded, self.dtype)
 
     def forward(
         self,
@@ -348,7 +348,7 @@ class FusedAddRMSNormKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return select_row_configs(self.N_padded)
+        return select_row_configs(self.N_padded, self.dtype)
 
     def forward(
         self,

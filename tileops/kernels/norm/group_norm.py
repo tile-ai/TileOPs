@@ -180,7 +180,7 @@ class GroupNormKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return select_row_configs(self.D_padded)
+        return select_row_configs(self.D_padded, self.dtype)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
         return _group_norm_wrapped(
@@ -330,7 +330,7 @@ class GroupNormNoAffineKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return select_row_configs(self.D_padded)
+        return select_row_configs(self.D_padded, self.dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return _group_norm_no_affine_wrapped(

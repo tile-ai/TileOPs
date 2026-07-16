@@ -152,7 +152,7 @@ class LayerNormKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return select_row_configs(self.N_padded)
+        return select_row_configs(self.N_padded, self.dtype)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
         return _layer_norm_wrapped(

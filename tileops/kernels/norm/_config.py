@@ -15,6 +15,8 @@ knob so the kernel interface is not narrowed; configs that collapse lose on thei
 measured runtime.
 """
 
+import torch
+
 __all__ = ["select_row_config", "select_row_configs"]
 
 # Powers of two only (tl::AllReduce is an XOR butterfly) that also divide
@@ -27,12 +29,17 @@ _CANDIDATE_BLOCK_M = (1, 2, 4, 8)
 _DEFAULT_THREADS = 128  # measured optimum; see the module docstring
 
 
-def _feasible_threads(n_padded: int) -> list[int]:
-    """Thread counts that divide the row and keep loads vectorizable (>=8/thread)."""
+def _feasible_threads(n_padded: int, dtype: torch.dtype = torch.float16) -> list[int]:
+    """Thread counts that divide the row and keep loads 128-bit vectorizable.
+
+    128-bit needs ``16 // element_size`` elements per thread (8 for fp16/bf16,
+    4 for fp32), so the floor is dtype-dependent.
+    """
+    min_elements = 16 // torch.tensor([], dtype=dtype).element_size()
     return [
         threads
         for threads in _CANDIDATE_THREADS
-        if n_padded % threads == 0 and n_padded // threads >= 8
+        if n_padded % threads == 0 and n_padded // threads >= min_elements
     ]
 
 
@@ -48,13 +55,13 @@ def select_row_config(n_padded: int) -> dict:
     return {"block_m": 1, "threads": threads}
 
 
-def select_row_configs(n_padded: int) -> list[dict]:
+def select_row_configs(n_padded: int, dtype: torch.dtype = torch.float16) -> list[dict]:
     """Autotune space: block_m x usable thread counts, default always included.
 
     block_m is swept (not pinned) so the interface is preserved; configs that
     collapse are rejected by the autotuner's own measured runtime.
     """
-    threads = _feasible_threads(n_padded)
+    threads = _feasible_threads(n_padded, dtype)
     configs = [
         {"block_m": block_m, "threads": t}
         for block_m in _CANDIDATE_BLOCK_M
