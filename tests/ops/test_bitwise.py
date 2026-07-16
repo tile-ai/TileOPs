@@ -173,8 +173,8 @@ class BoolBitwiseFixture(FixtureBase):
 def test_bool_bitwise_fast_path(
     op_name, op_cls, ref_fn, a_shape, b_shape,
 ) -> None:
-    a = torch.randint(0, 2, a_shape, dtype=torch.bool, device="cuda")
-    b = torch.randint(0, 2, b_shape, dtype=torch.bool, device="cuda")
+    a = torch.randint(0, 2, a_shape, device="cuda").bool()
+    b = torch.randint(0, 2, b_shape, device="cuda").bool()
     op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=torch.bool)
     ref = ref_fn(a, b)
     with torch.no_grad():
