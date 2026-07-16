@@ -1466,7 +1466,7 @@ def _gated_deltanet_prefill_wrapped_kernel(
             chunk_size == 64
             and dim_k == 128
             and dim_v == 128
-            and dtype == "float16"
+            and dtype in ("float16", "bfloat16")
         )
         use_partitioned_prefill = (
             os.environ.get(
