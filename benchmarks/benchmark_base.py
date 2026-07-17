@@ -85,9 +85,10 @@ _bench_results = threading.local()
 
 
 # Name of the ``record_function`` annotation wrapping the timed call. Kineto
-# projects this scope onto the device timeline, so kernels the call launches
-# fall inside its window while the L2-flush ``cache.zero_()`` (enqueued outside
-# the scope) does not.
+# projects this scope onto the device timeline. The L2-flush ``cache.zero_()``
+# is synchronized to completion before the window opens (see ``bench_kernel``),
+# so its device event cannot fall inside a window regardless of how the
+# projection behaves; kernels the timed call launches do.
 _KERNEL_REGION = "tileops_bench_kernel"
 
 
@@ -238,11 +239,16 @@ def bench_kernel(
     # leak across the warmup/active boundary.  A plain per-trial context records
     # exactly the calls we want — no schedule, no on_trace_ready callback.
     #
-    # Only the timed call is wrapped in record_function(_KERNEL_REGION), so the
-    # L2-flush cache.zero_() enqueued just before it is attributed by scope (not
-    # kernel name) and excluded.  Flush and call share the stream, so the flush
-    # completes before the call begins (L2 cold) without a sync between them; we
-    # sync only after the call so its kernels are recorded before the next flush.
+    # Only the timed call is wrapped in record_function(_KERNEL_REGION).  The
+    # parser attributes device events purely by timestamp interval, and Kineto's
+    # projection of the annotation window onto the device timeline is not
+    # guaranteed to exclude a flush merely enqueued before the window (issue
+    # #1723: under cold TileLang cache + autotune the flush event was observed
+    # inside the window, adding one flush duration per measured repeat).  We
+    # therefore synchronize after cache.zero_() so the flush completes before
+    # the window opens; L2 is still cold for the measured call, and the extra
+    # sync only adds host-side latency, never device time.  The post-call sync
+    # keeps the measured kernels recorded before the next flush.
     trial_means: list[float] = []
     try:
         with suppress_stdout_stderr():
@@ -258,6 +264,10 @@ def bench_kernel(
                 ) as profiler:
                     for i in range(n_repeat):
                         cache.zero_()
+                        # Drain the flush so its device event ends before the
+                        # timed window opens; without this, projection quirks
+                        # can place it inside the window (see comment above).
+                        torch.cuda.synchronize()
                         with torch.profiler.record_function(_KERNEL_REGION):
                             _run(i)
                         torch.cuda.synchronize()  # kernel recorded in isolation
