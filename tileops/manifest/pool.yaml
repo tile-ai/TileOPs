@@ -302,7 +302,7 @@ MaxPool2dFwdOp:
   ref_api: "torch.nn.functional.max_pool2d"
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=False)
   family: pool
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -337,9 +337,9 @@ MaxPool2dFwdOp:
     # Real-model sources: ResNet stem uses 3x3 stride-2 max pooling on
     # 64-channel 112x112 features; VGG blocks use 2x2 stride-2 max pooling;
     # AlexNet-style CNNs use 3x3 stride-2 pooling on early 55x55 features.
-    - {input_shape: [32, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "resnet-stem"}
-    - {input_shape: [16, 128, 56, 56], kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtypes: [float16], label: "vgg-block"}
-    - {input_shape: [32, 64, 55, 55], kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtypes: [bfloat16], label: "alexnet-ceil"}
+    - {input_shape: [32, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16, bfloat16, float32], label: "resnet-stem"}
+    - {input_shape: [16, 128, 56, 56], kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtypes: [float16, bfloat16, float32], label: "vgg-block"}
+    - {input_shape: [32, 64, 55, 55], kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtypes: [float16, bfloat16, float32], label: "alexnet-ceil"}
 
   roofline:
     vars:
@@ -359,17 +359,19 @@ MaxPool2dFwdOp:
     bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
 
   source:
-    # Spec-only: MaxPool Op/Kernel classes are not implemented yet.
-    kernel: null
-    op: null
-    test: null
-    bench: null
+    kernel: tileops/kernels/pool/max_pool2d.py
+    kernel_map:
+      max_pool2d_kernel: MaxPool2dKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: true
 
 MaxPool2dIndicesFwdOp:
   ref_api: "torch.nn.functional.max_pool2d"
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=True)
   family: pool
-  status: spec-only
+  status: implemented
   variant_of: MaxPool2dFwdOp
 
   signature:
@@ -405,9 +407,9 @@ MaxPool2dIndicesFwdOp:
   workloads:
     # Same model sources as MaxPool2dFwdOp; indices output is consumed by
     # unpooling or argmax-tracking paths rather than changing input shapes.
-    - {input_shape: [32, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "resnet-stem"}
-    - {input_shape: [16, 128, 56, 56], kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtypes: [float16], label: "vgg-block"}
-    - {input_shape: [32, 64, 55, 55], kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtypes: [bfloat16], label: "alexnet-ceil"}
+    - {input_shape: [32, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16, bfloat16, float32], label: "resnet-stem"}
+    - {input_shape: [16, 128, 56, 56], kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtypes: [float16, bfloat16, float32], label: "vgg-block"}
+    - {input_shape: [32, 64, 55, 55], kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtypes: [float16, bfloat16, float32], label: "alexnet-ceil"}
 
   roofline:
     vars:
@@ -427,11 +429,13 @@ MaxPool2dIndicesFwdOp:
     bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes + N * C * out_H * out_W * 8"
 
   source:
-    # Spec-only: shares the primary's future Op/Kernel source.
-    kernel: null
-    op: null
-    test: null
-    bench: null
+    kernel: tileops/kernels/pool/max_pool2d.py
+    kernel_map:
+      max_pool2d_with_indices_kernel: MaxPool2dWithIndicesKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: true
 
 MaxPool3dFwdOp:
   ref_api: "torch.nn.functional.max_pool3d"

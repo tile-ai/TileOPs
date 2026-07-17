@@ -89,6 +89,8 @@ from .pool import (
     AvgPool2dSpatialKernel,
     AvgPool3dKernel,
     AvgPool3dSpatialKernel,
+    MaxPool2dKernel,
+    MaxPool2dWithIndicesKernel,
 )
 from .rope import (
     RopeLlama31Kernel,
@@ -183,6 +185,8 @@ __all__ = [
     "MHCPreKernel",
     "MLADecodeKernel",
     "MLADecodeWsKernel",
+    "MaxPool2dKernel",
+    "MaxPool2dWithIndicesKernel",
     "MeanPoolingFwdKernel",
     "MoePermuteAlignKernel",
     "NSACmpFwdVarlenKernel",

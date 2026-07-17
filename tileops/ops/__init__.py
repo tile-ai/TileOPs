@@ -63,7 +63,13 @@ from .norm import (
     RMSNormFwdOp,
 )
 from .op_base import Op
-from .pool import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp
+from .pool import (
+    AvgPool1dFwdOp,
+    AvgPool2dFwdOp,
+    AvgPool3dFwdOp,
+    MaxPool2dFwdOp,
+    MaxPool2dIndicesFwdOp,
+)
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---
 from .reduction import (
@@ -160,6 +166,8 @@ __all__ = [
     "LayerNormFwdOp",
     "MHCPostOp",
     "MHCPreOp",
+    "MaxPool2dFwdOp",
+    "MaxPool2dIndicesFwdOp",
     "MeanPoolingForwardOp",
     "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
