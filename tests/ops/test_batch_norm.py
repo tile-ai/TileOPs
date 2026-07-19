@@ -76,6 +76,8 @@ class BatchNormFwdFixture(FixtureBase):
             # Non-aligned spatial: H*W=900, exercises partial-tile path
             pytest.param(8, 64, (30, 30), torch.float16, True, marks=pytest.mark.full),
             pytest.param(8, 64, (30, 30), torch.bfloat16, True, marks=pytest.mark.full),
+            # High channel count oversubscribes the SMs, exposing the running-stat update race.
+            pytest.param(16, 1024, (512,), torch.float16, True, marks=pytest.mark.full),
         ]),
     ]
 
@@ -129,6 +131,13 @@ def test_batch_norm_fwd(N, C, spatial, dtype, training):
         f"fwd mismatch (training={training}): max_err={max_err:.4e}"
 
     if training:
+        # allclose is masked when running_mean starts near the batch mean; check determinism.
+        rm2, rv2 = running_mean_ref.clone(), running_var_ref.clone()
+        op(x, rm2, rv2, weight, bias)
+        det_err = (running_mean.float() - rm2.float()).abs().max()
+        assert torch.equal(running_mean, rm2) and torch.equal(running_var, rv2), \
+            f"running stats non-deterministic across runs: max_err={det_err:.4e}"
+
         rm_err = (running_mean.float() - ref_rm.float()).abs().max()
         assert torch.allclose(running_mean.float(), ref_rm.float(), atol=atol, rtol=rtol), \
             f"running_mean mismatch: max_err={rm_err:.4e}"
