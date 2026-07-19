@@ -1,6 +1,7 @@
 import torch
 
 from tileops.ops import MultiHeadAttentionFwdOp
+from workloads.attention.gqa import _compute_gqa_square_lse
 from workloads.workload_base import WorkloadBase
 
 
@@ -48,9 +49,19 @@ class MhaBwdTest(WorkloadBase):
         fwd_op = MultiHeadAttentionFwdOp(self.batch, self.heads, self.seq_len, self.dim,
                                          self.is_causal, self.dtype)
         with torch.no_grad():
-            o, lse = fwd_op(q, k, v)
+            result = fwd_op(q, k, v)
+            o = result[0] if isinstance(result, tuple) else result
+            lse = _compute_gqa_square_lse(
+                q,
+                k,
+                heads=self.heads,
+                heads_kv=self.heads,
+                dim=self.dim,
+                is_causal=self.is_causal,
+            )
 
         return q, k, v, o, grad_output, lse
+
 
 class MhaFwdTest(WorkloadBase):
 

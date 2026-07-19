@@ -89,9 +89,9 @@ MultiHeadAttentionBwdOp:
   source:
     kernel: tileops/kernels/attention/gqa_bwd.py
     kernel_map:
-      mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-      mha_bwd_kernel: MHABwdKernel
-      mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
+      gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
+      gqa_bwd_kernel: GQABwdKernel
+      gqa_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha.py
     bench: benchmarks/ops/attention/bench_mha.py
