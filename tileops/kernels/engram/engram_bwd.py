@@ -40,7 +40,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
     KS = CONV_KERNEL_SIZE
 
     @tilelang.jit(
-        out_idx=[12, 13, 14, 15, 16, 17, 18],
+        out_idx=[12, 13, 14, 15, 16, 17, 18, 19],
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads):
@@ -66,6 +66,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
             drms_w_v: T.Tensor((d_padded,), accum_dtype),
             dconv_w: T.Tensor((KS, d_padded), accum_dtype),
             dvhat_buf: T.Tensor((M, seq_len, d_padded), accum_dtype),
+            dvhat_out: T.Tensor((M, seq_len, d_padded), accum_dtype),
         ):
             # ======== Zero-init accumulated outputs ========
             with T.Kernel(1, threads=threads) as (bx,):
@@ -207,7 +208,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
 
                 # Store total d(vhat)
                 for j in T.Parallel(d_padded):
-                    dvhat_buf[bid, tid, j] = dvhat_local[j]
+                    dvhat_out[bid, tid, j] = dvhat_local[j]
 
             # ======== Pass 2: gate backward ========
             with T.Kernel(seq_len, M, threads=threads) as (bx, by):
@@ -233,7 +234,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 tid = bx
 
                 for j in T.Parallel(d_padded):
-                    dvhat_local[j] = dvhat_buf[bid, tid, j]
+                    dvhat_local[j] = dvhat_out[bid, tid, j]
                     v_local[j] = T.cast(v[bid, tid, j], accum_dtype)
                     h_local[j] = T.cast(H[bid, tid, j], accum_dtype)
                     k_local[j] = T.cast(k[bid, tid, j], accum_dtype)
@@ -332,11 +333,12 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
             drms_w_v: T.Tensor((d_padded,), accum_dtype),
             dconv_w: T.Tensor((KS, d_padded), accum_dtype),
             dvhat_buf: T.Tensor((M, seq_len, d_padded), accum_dtype),
+            dvhat_out: T.Tensor((M, seq_len, d_padded), accum_dtype),
         ):
             _gate_conv_bwd(
                 dY, H, k, v, rms_w_h, rms_w_v, conv_w,
                 vhat, alpha, rrms_h, rrms_k, rrms_v,
-                dH, dk, dv, drms_w_h, drms_w_v, dconv_w, dvhat_buf,
+                dH, dk, dv, drms_w_h, drms_w_v, dconv_w, dvhat_buf, dvhat_out,
             )
 
         return main
@@ -387,6 +389,7 @@ def _(M, seq_len, d, eps, dtype_str, threads,
         torch.empty((d_padded,), dtype=torch.float32, device=device),       # drms_w_v
         torch.empty((CONV_KERNEL_SIZE, d_padded), dtype=torch.float32, device=device),  # dconv_w
         torch.empty((M, seq_len, d_padded), dtype=torch.float32, device=device),  # dvhat_buf
+        torch.empty((M, seq_len, d_padded), dtype=torch.float32, device=device),  # dvhat_out
     ]
 
 
