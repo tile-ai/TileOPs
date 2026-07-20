@@ -260,6 +260,31 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
 # ---------------------------------------------------------------------------
 
 
+@torch.library.custom_op("top::cumulative_parallel_fwd", mutates_args=())
+def _cumulative_parallel_fwd_wrapped(
+    M: int,
+    N: int,
+    dtype_str: str,
+    block_m: int,
+    block_n: int,
+    threads: int,
+    x: torch.Tensor,
+) -> torch.Tensor:
+    n_tiles = align_up(N, DEFAULT_ALIGNMENT) // block_n
+    local_fn = _parallel_scan_local_kernel(M, N, "sum", dtype_str)(block_m, block_n, threads)
+    y_local, tile_sums = local_fn(x)
+    carry_fn = _parallel_scan_carry_kernel(M, n_tiles)(threads)
+    tile_carries_exclusive = carry_fn(tile_sums)
+    propagate_fn = _parallel_scan_propagate_kernel(M, N, dtype_str)(block_m, block_n, threads)
+    return propagate_fn(y_local, tile_carries_exclusive)
+
+
+@_cumulative_parallel_fwd_wrapped.register_fake
+def _(M, N, dtype_str, block_m, block_n, threads, x):
+    N_padded = align_up(N, DEFAULT_ALIGNMENT)
+    return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
+
+
 @torch.library.custom_op("top::cumulative_fwd", mutates_args=())
 def _cumulative_fwd_wrapped(
     M: int,
@@ -332,11 +357,6 @@ class CumulativeKernel(Kernel):
         self.use_parallel = (M < 128 and N > 8192 and op_kind == "sum")
 
         if self.use_parallel:
-            # Three-pass parallel scan
-            # Note: n_tiles will be determined from config after init_config()
-            self.kernel_local = _parallel_scan_local_kernel(M, N, op_kind, self.dtype_str)
-            self.kernel_carry = None  # Will be created after config is known
-            self.kernel_propagate = _parallel_scan_propagate_kernel(M, N, self.dtype_str)
             self.kernel = None  # Not used for parallel
 
             # Parallel backend does not support autotuning yet
@@ -352,16 +372,8 @@ class CumulativeKernel(Kernel):
         else:
             # Sequential scan (original implementation)
             self.kernel = _cumulative_kernel(M, N, op_kind, self.dtype_str)
-            self.kernel_local = None
-            self.kernel_carry = None
-            self.kernel_propagate = None
 
         self.init_config(config, tune)
-
-        # Create carry kernel after config is known (need block_n for n_tiles)
-        if self.use_parallel:
-            n_tiles = self.N_padded // self.config["block_n"]
-            self.kernel_carry = _parallel_scan_carry_kernel(M, n_tiles)
 
     @property
     def default_config(self) -> dict:
@@ -424,24 +436,15 @@ class CumulativeKernel(Kernel):
             Output tensor of shape (M, N_padded).
         """
         if self.use_parallel:
-            # Three-pass parallel scan
-            block_m = self.config["block_m"]
-            block_n = self.config["block_n"]
-            threads = self.config["threads"]
-
-            # Pass 1: Local scan within each tile (JIT kernel auto-allocates outputs)
-            local_fn = self.kernel_local(block_m, block_n, threads)
-            y_local, tile_sums = local_fn(x)
-
-            # Pass 2: Exclusive scan of tile sums (TileLang kernel)
-            carry_fn = self.kernel_carry(threads)
-            tile_carries_exclusive = carry_fn(tile_sums)
-
-            # Pass 3: Propagate carries (JIT kernel auto-allocates output)
-            propagate_fn = self.kernel_propagate(block_m, block_n, threads)
-            y_final = propagate_fn(y_local, tile_carries_exclusive)
-
-            return y_final
+            return _cumulative_parallel_fwd_wrapped(
+                self.M,
+                self.N,
+                self.dtype_str,
+                self.config["block_m"],
+                self.config["block_n"],
+                self.config["threads"],
+                x,
+            )
         else:
             # Sequential scan (original implementation)
             return _cumulative_fwd_wrapped(

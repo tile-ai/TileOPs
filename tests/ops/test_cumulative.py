@@ -374,5 +374,39 @@ def test_cumsum_parallel_scan_all_ones(N: int) -> None:
         f"Carry propagation failed: y[0,512]={y[0,512]}, expected=513; y[0,-1]={y[0,-1]}, expected={N}"
 
 
+# ---------------------------------------------------------------------------
+# torch.compile regression: parallel scan branch must be compile-safe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "M, N, dtype",
+    [
+        pytest.param(64, 512, torch.float16),    # sequential branch — baseline
+        pytest.param(64, 16384, torch.float16),  # parallel branch — regression case
+    ],
+)
+def test_cumsum_torch_compile_fullgraph(M: int, N: int, dtype: torch.dtype) -> None:
+    """torch.compile(fullgraph=True) must succeed for both sequential and parallel branches.
+
+    N=512 exercises _cumulative_fwd_wrapped (sequential custom_op).
+    N=16384 exercises _cumulative_parallel_fwd_wrapped (parallel custom_op) —
+    this is the regression case: without the custom_op boundary, torch.compile
+    raises 'unsupported Function.call' when tracing the raw JIT callables.
+    """
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
+
+    op = CumsumFwdOp(dtype=dtype, dim=-1)
+    compiled = torch.compile(op, fullgraph=True)
+
+    x = torch.randn(M, N, dtype=dtype, device="cuda")
+    y = compiled(x)
+
+    ref = x.float().cumsum(dim=-1).to(dtype)
+    assert torch.allclose(y, ref, atol=1e-2, rtol=1e-2), \
+        f"Compiled output mismatch for shape ({M},{N}): max_diff={torch.abs(y - ref).max()}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
