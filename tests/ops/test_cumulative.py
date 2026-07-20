@@ -398,9 +398,13 @@ def test_cumsum_torch_compile_fullgraph(M: int, N: int, dtype: torch.dtype) -> N
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     op = CumsumFwdOp(dtype=dtype, dim=-1)
-    compiled = torch.compile(op, fullgraph=True)
-
     x = torch.randn(M, N, dtype=dtype, device="cuda")
+
+    # Pre-warm the kernel cache before compiling so construction never
+    # happens inside the compiled region.
+    op(x)
+
+    compiled = torch.compile(op, fullgraph=True)
     y = compiled(x)
 
     ref = x.float().cumsum(dim=-1).to(dtype)

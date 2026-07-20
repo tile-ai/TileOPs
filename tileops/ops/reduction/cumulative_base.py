@@ -87,6 +87,7 @@ class CumulativeOp(Op):
         # Read x + write y = 2 * M * N elements.
         return (M * N, 2 * M * N * elem_bytes)
 
+    @torch.compiler.disable
     def _get_kernel(
         self, M: int, N: int, dtype: torch.dtype, device_index: int | None,
     ) -> Kernel:
