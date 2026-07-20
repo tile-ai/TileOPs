@@ -67,8 +67,12 @@ from .pool import (
     AvgPool1dFwdOp,
     AvgPool2dFwdOp,
     AvgPool3dFwdOp,
+    MaxPool1dFwdOp,
+    MaxPool1dIndicesFwdOp,
     MaxPool2dFwdOp,
     MaxPool2dIndicesFwdOp,
+    MaxPool3dFwdOp,
+    MaxPool3dIndicesFwdOp,
 )
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---
@@ -166,8 +170,12 @@ __all__ = [
     "LayerNormFwdOp",
     "MHCPostOp",
     "MHCPreOp",
+    "MaxPool1dFwdOp",
+    "MaxPool1dIndicesFwdOp",
     "MaxPool2dFwdOp",
     "MaxPool2dIndicesFwdOp",
+    "MaxPool3dFwdOp",
+    "MaxPool3dIndicesFwdOp",
     "MeanPoolingForwardOp",
     "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
