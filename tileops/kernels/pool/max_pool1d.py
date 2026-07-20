@@ -52,7 +52,8 @@ def _max_pool1d_kernel(
                             iw = ow * stride_w - pad_w + kw * dilation_w
                             if iw >= 0 and iw < l_in:
                                 val = T.cast(x[batch, c_idx, iw], accum_dtype)
-                                has_nan = has_nan | T.isnan(val)
+                                if T.isnan(val):
+                                    has_nan = True
                                 max_val = T.max(max_val, val)
 
                         result = T.if_then_else(

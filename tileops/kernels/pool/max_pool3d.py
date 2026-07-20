@@ -79,7 +79,8 @@ def _max_pool3d_kernel(
                                         and iw < w_in
                                     ):
                                         val = T.cast(x[batch, c_idx, id_, ih, iw], accum_dtype)
-                                        has_nan = has_nan | T.isnan(val)
+                                        if T.isnan(val):
+                                            has_nan = True
                                         max_val = T.max(max_val, val)
 
                         result = T.if_then_else(
