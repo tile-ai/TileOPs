@@ -66,28 +66,6 @@ def _flashinfer_fp8_blockscale_ref(test: GemmFp8Test, *inputs: torch.Tensor) -> 
     return fp8_blockscale_gemm_sm90(a, b, scale_a, scale_b, out_dtype=test.out_dtype)
 
 
-def _prepare_flashinfer_fp8_per_tensor(
-    test: GemmFp8Test, *inputs: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    import flashinfer
-
-    a, b, scale_a, scale_b = inputs[:4]
-    if len(inputs) == 5:
-        raise ValueError("FlashInfer FP8 per-tensor GEMM baseline does not support bias.")
-    if a.dtype != torch.float8_e4m3fn or b.dtype != torch.float8_e4m3fn:
-        raise ValueError("FlashInfer FP8 per-tensor GEMM baseline requires float8_e4m3fn.")
-    if test.out_dtype != torch.bfloat16:
-        raise ValueError("FlashInfer FP8 per-tensor GEMM baseline requires bfloat16 output.")
-    if scale_a.shape != (1, 1) or scale_b.shape != (1, 1):
-        raise ValueError(
-            "FlashInfer FP8 per-tensor GEMM baseline requires (1, 1) scales, "
-            f"got {tuple(scale_a.shape)} and {tuple(scale_b.shape)}"
-        )
-    prepared_b = flashinfer.prepare_low_latency_gemm_weights(b, {})
-    alpha = (scale_a * scale_b).reshape(())
-    return prepared_b, alpha
-
-
 class GemmFp8Benchmark(BenchmarkBase[GemmFp8Test]):
     _roofline_cache: Optional[tuple[float, float]] = None
 
@@ -173,22 +151,15 @@ def test_gemm_fp8_bench(
     result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-scaled-mm")
 
-    flashinfer = pytest.importorskip("flashinfer")
     if scale_mode == "per_tensor":
-        prepared_b, alpha = _prepare_flashinfer_fp8_per_tensor(test, *inputs)
-        try:
-            result_flashinfer = bm.profile(
-                lambda a: flashinfer.mm_fp8(a, prepared_b, alpha, out_dtype=out_dtype),
-                inputs[0],
-            )
-        except RuntimeError as exc:
-            reason = str(exc).splitlines()[0]
-            print(f"  [skip] flashinfer-mm-fp8: {reason}")
-            return
-        BenchmarkReport.record(op, locals(), result_flashinfer, tag="flashinfer-mm-fp8")
+        # FlashInfer's TRTLLM low-latency GEMM can retain invalid module
+        # cache after an unsupported per-tensor shape fails, causing a later
+        # benchmark case to segfault in cuModuleGetFunction (issue #1733).
+        print("  [skip] flashinfer-mm-fp8: disabled due to native cache corruption (issue #1733)")
         return
 
     if scale_mode == "block128":
+        pytest.importorskip("flashinfer")
         result_flashinfer = bm.profile(
             lambda *args: _flashinfer_fp8_blockscale_ref(test, *args), *inputs)
         BenchmarkReport.record(op, locals(), result_flashinfer, tag="flashinfer-fp8-blockscale-sm90")
