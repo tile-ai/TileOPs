@@ -1608,31 +1608,15 @@ class GemmKernel(Kernel):
             self.m, self.n, self.k, self.trans_a, self.trans_b, self.sm_count
         )
 
-    @property
-    def autotune_configs(self) -> list[dict]:
-        _MAX_ACCUM_REGS = 200
-        # SM90 per-CTA opt-in SMEM ceiling is 227 KB; budget 224 KB for the
-        # A/B ring plus the c_smem epilogue staging tile.
-        _MAX_SMEM_BYTES = 224 * 1024
-        configs = []
-        for bm in [64, 128]:
-            for bn in [64, 128, 256]:
-                for bk in [32, 64, 128]:
-                    for ns in [2, 3, 4]:
-                        accum_regs = (bm * bn) // 128
-                        smem_bytes = (ns * (bm * bk + bn * bk) + bm * bn) * 2
-                        if accum_regs <= _MAX_ACCUM_REGS and smem_bytes <= _MAX_SMEM_BYTES:
-                            for ps in [4, 10, 16]:
-                                configs.append(
-                                    {
-                                        "block_m": bm,
-                                        "block_n": bn,
-                                        "block_k": bk,
-                                        "num_stages": ns,
-                                        "panel_size": ps,
-                                    }
-                                )
-        return configs
+    # No ``autotune_configs``: the in-tree tuner wraps only ``self.kernel``
+    # (the basic mainloop builder) and times it event-only without an L2
+    # flush, so it can neither reach the structure-flagged paths (coop2 /
+    # coop2_splitk / simple / split-K run through other builders plus a
+    # reduce pass) nor time the small-M band honestly — a basic-grid sweep
+    # would silently lose to ``default_config`` on those shapes. ``tune=True``
+    # therefore falls back to ``default_config``; per-shape tuning runs the
+    # CUPTI kernel-only protocol offline and pins winners in
+    # ``_TUNED_CONFIGS`` (measurement note there).
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # Simple (non-warp-specialized) pipelined path for short-mainloop
@@ -1680,10 +1664,10 @@ class GemmKernel(Kernel):
             return _splitk_reduce_kernel(sk, self.m, self.n, self.dtype_str)()(w)
 
         # Split-K path: slice K across grid-z CTAs into an fp32 workspace,
-        # then reduce. Selected via config only (``split_k > 1``) — it is
-        # excluded from autotune_configs because the tuner times the mainloop
-        # kernel alone and would ignore the reduction cost. Worth trying when
-        # the natural grid underfills the GPU (< 132 CTAs on H100/H200).
+        # then reduce. Selected via config only (``split_k > 1``); the in-tree
+        # tuner cannot rank it (see the class-level ``autotune_configs`` note).
+        # Worth trying when the natural grid underfills the GPU (< 132 CTAs
+        # on H100/H200).
         split_k = self.config.get("split_k", 1)
         if split_k > 1:
             cfg = self.config
@@ -2059,9 +2043,11 @@ class SmallBatchGemmKernel(Kernel):
         # 2-stage ring is ~9% faster there (attn-family 4096x7168 at m=2).
         # tune=True refines per shape over autotune_configs.
         cfg = {"block_n": 1, "reduce_threads": 64, "num_stages": 4}
-        sm_count = (torch.cuda.get_device_properties(
-            torch.cuda.current_device()).multi_processor_count
-            if torch.cuda.is_available() else 132)
+        sm_count = (
+            torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+            if torch.cuda.is_available()
+            else 132
+        )
         k_iters = -(-self.k // (64 * 8))  # reduce_threads * tile_k(fp16/bf16)
         if self.n >= 28 * sm_count and k_iters >= 12:
             cfg["num_stages"] = 2

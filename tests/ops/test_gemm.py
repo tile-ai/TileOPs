@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.gemm import SmallBatchGemmKernel
+from tileops.kernels.gemm import GemmKernel, SmallBatchGemmKernel
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
 
@@ -561,6 +561,20 @@ def test_small_batch_dispatch() -> None:
     assert op._get_kernel(2, wide_n, 2048, torch.float16)[0] == "gemm"
     op_nn = GemmFwdOp(trans_a=False, trans_b=False)  # non-NT
     assert op_nn._get_kernel(2, 2112, 7168, torch.float16)[0] == "gemm"
+
+
+@pytest.mark.smoke
+def test_gemm_kernel_tune_falls_back_to_default() -> None:
+    """``GemmKernel`` defines no ``autotune_configs``: ``tune=True`` must warn
+    and fall back to ``default_config``.
+
+    The in-tree tuner sweeps only the basic mainloop builder, so a silent
+    basic-grid sweep would downgrade shapes whose default is a structure-
+    flagged config (coop2 / split-K). Construction only — no JIT compile.
+    """
+    with pytest.warns(UserWarning, match="does not define autotune_configs"):
+        kernel = GemmKernel(4096, 4096, 7168, torch.float16, tune=True, trans_a=False, trans_b=True)
+    assert kernel.config == kernel.default_config
 
 
 if __name__ == "__main__":
