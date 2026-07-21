@@ -46,17 +46,15 @@ def small_batch_region(call: GemmCall) -> bool:
     beats the best general config at ``m = 2`` on all three families and loses
     from ``m = 3`` up (gate-up 1.02x vs 1.05x, down 0.81x vs 0.92x).
 
-    The occupancy condition stands: the general grid is one M-tile wide, so
-    ~``ceil(n/128)`` CTAs, and with that at a full wave the streaming kernel
-    has no idle SMs to reclaim.
+    The occupancy condition stands, priced on the grid this kernel actually
+    competes with — the tiny-m generic band's ``block_n`` — because with that
+    grid at a full wave the streaming kernel has no idle SMs to reclaim.
 
     ``m == 1`` is the GEMV region. NT only: the reduction over ``K`` needs
     ``K`` contiguous.
     """
     if call.trans_a or not call.trans_b or call.m != 2:
         return False
-    sm_count = (
-        torch.cuda.get_device_properties(
-            torch.cuda.current_device()).multi_processor_count
-        if torch.cuda.is_available() else 132)
-    return -(-call.n // 128) < sm_count
+    from tileops.utils import get_sm_count
+    from .gemm_heuristics import TINY_M_BLOCK_N
+    return -(-call.n // TINY_M_BLOCK_N) < get_sm_count()
