@@ -11,6 +11,7 @@ from tileops.utils import get_sm_version, str2dtype
 
 from .gemm_call import gemv_region, small_batch_region
 from .gemm_heuristics import best_config as _heuristic_best_config
+from .gemm_heuristics import gemv_config, small_batch_config
 
 __all__ = [
     "GemmFp8BlockScaledKernel",
@@ -1916,28 +1917,10 @@ class GemvKernel(Kernel):
         sm_version = get_sm_version()
 
         if sm_version in {90}:
-            # GEMV is HBM-bandwidth bound; the lever is memory-level parallelism per
-            # output row via reduce_threads>32 (cross-warp SMEM tree reduction,
-            # auto-lowered from tvm_thread_allreduce). Measured on H200 these reach
-            # 90-102% of the per-shape read-BW ceiling and beat cuBLAS 1.1-2.4x,
-            # vs the old block_n=8/reduce_threads=32 default (0.57-0.87x cuBLAS).
-            # Two regimes (tune=True refines further from ``autotune_configs``):
-            if self.k >= 12288:
-                # Very deep rows (e.g. 7168x16384): 2 rows/block, 64 threads/row —
-                # a 128-way reduction tree over a long row costs more than the BW it
-                # buys, and 2 rows/block improves wave quantization.
-                return {"block_n": 2, "reduce_threads": 64, "num_stages": 5}
-            if self.k >= 6144:
-                # Mid-deep rows (decode gate-up / attn-proj, k ~= 7k): a 256-lane
-                # reduction still runs >= 3 pipeline iterations and the extra
-                # per-row memory-level parallelism beats rt=128 by 9-10% under
-                # the cold-read protocol (two independent 30-rep interleaved
-                # rounds, H200). Shorter rows degenerate to ~1 iteration and
-                # stay on rt=128 below.
-                return {"block_n": 1, "reduce_threads": 256, "num_stages": 4}
-            # Shorter decode projections: 1 row/block, 128 threads/row
-            # maximizes per-row MLP to saturate HBM.
-            return {"block_n": 1, "reduce_threads": 128, "num_stages": 4}
+            # Measured SM90 band rules live with the rest of the family's
+            # shape policy in ``gemm_heuristics.gemv_config``; ``tune=True``
+            # refines further from ``autotune_configs``.
+            return gemv_config(self.k)
 
         return {
             "block_n": 32,
@@ -2034,24 +2017,15 @@ class SmallBatchGemmKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Modal best across the dispatched band (H200 per-rep interleaved
-        # sweep): one output column per block, a 64-lane reduction over K,
-        # 4-deep cp.async ring. One measured exception: when the grid alone
-        # fills the device's CTA slots (block_n=1 → n CTAs vs the 32-per-SM
-        # cap) AND the per-thread K loop is long, resident warps already hide
-        # the load latency and the deep ring only adds sync overhead — the
-        # 2-stage ring is ~9% faster there (attn-family 4096x7168 at m=2).
-        # tune=True refines per shape over autotune_configs.
-        cfg = {"block_n": 1, "reduce_threads": 64, "num_stages": 4}
+        # Measured band rule lives with the rest of the family's shape policy
+        # in ``gemm_heuristics.small_batch_config``; ``tune=True`` refines
+        # per shape over ``autotune_configs``.
         sm_count = (
             torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
             if torch.cuda.is_available()
             else 132
         )
-        k_iters = -(-self.k // (64 * 8))  # reduce_threads * tile_k(fp16/bf16)
-        if self.n >= 28 * sm_count and k_iters >= 12:
-            cfg["num_stages"] = 2
-        return cfg
+        return small_batch_config(self.n, self.k, sm_count)
 
     @property
     def autotune_configs(self) -> list[dict]:

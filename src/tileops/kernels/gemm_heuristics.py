@@ -3,7 +3,11 @@
 Picks the kernel structure — single-consumer (``basic``), grid-z split-K
 (``splitk``), 2-consumer cooperative (``coop2``), or cooperative split-K
 (``coop2_splitk``) — and its tile configuration for an arbitrary GEMM shape
-in microseconds, without autotuning. The flow follows DeepGEMM's SM90
+in microseconds, without autotuning. The module also owns the measured
+config bands of the bandwidth-mode kernels (``gemv_config``,
+``small_batch_config``), so the family's per-shape configuration lives in one
+place; which kernel serves a call is a separate question, answered by each
+kernel's own region (``gemm_call.gemv_region`` / ``small_batch_region``). The scored path follows DeepGEMM's SM90
 heuristics (enumerate -> prune -> score -> derive, see
 ``csrc/jit_kernels/heuristics/sm90.hpp``), with three extensions the
 TileOPs kernel family needs:
@@ -36,7 +40,7 @@ import functools
 import math
 from dataclasses import dataclass
 
-__all__ = ["best_config"]
+__all__ = ["best_config", "gemv_config", "small_batch_config"]
 
 _SMEM_BUDGET = 227 * 1024  # SM90 per-CTA opt-in SMEM ceiling
 _MAX_ACCUM_REGS = 200
@@ -264,3 +268,47 @@ def best_config(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
     best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count),
                                      -c.block_k))
     return best.to_config()
+
+
+def gemv_config(k: int) -> dict:
+    """SM90 ``GemvKernel`` config band (single-row / single-column GEMV).
+
+    GEMV is HBM-bandwidth bound; the lever is memory-level parallelism per
+    output row via ``reduce_threads > 32`` (cross-warp SMEM tree reduction,
+    auto-lowered from ``tvm_thread_allreduce``). Measured on H200 these reach
+    90-102% of the per-shape read-BW ceiling and beat cuBLAS 1.1-2.4x, vs the
+    old ``block_n=8 / reduce_threads=32`` default (0.57-0.87x cuBLAS). Bands:
+
+    - very deep rows (k >= 12288, e.g. 7168x16384): 2 rows/block, 64
+      threads/row — a 128-way reduction tree over a long row costs more than
+      the bandwidth it buys, and 2 rows/block improves wave quantization;
+    - mid-deep rows (k >= 6144, decode gate-up / attn-proj): a 256-lane
+      reduction still runs >= 3 pipeline iterations and the extra per-row
+      memory-level parallelism beats rt=128 by 9-10% under the cold-read
+      protocol (two independent 30-rep interleaved rounds, H200);
+    - shorter rows degenerate to ~1 iteration at 256 lanes and stay on
+      rt=128, which maximizes per-row MLP to saturate HBM.
+    """
+    if k >= 12288:
+        return {"block_n": 2, "reduce_threads": 64, "num_stages": 5}
+    if k >= 6144:
+        return {"block_n": 1, "reduce_threads": 256, "num_stages": 4}
+    return {"block_n": 1, "reduce_threads": 128, "num_stages": 4}
+
+
+def small_batch_config(n: int, k: int, sm_count: int = 132) -> dict:
+    """``SmallBatchGemmKernel`` (m == 2 NT band) config rule.
+
+    Modal best across the dispatched band (H200 per-rep interleaved sweep):
+    one output column per block, a 64-lane reduction over K, 4-deep cp.async
+    ring. One measured exception: when the grid alone fills the device's CTA
+    slots (block_n=1 -> n CTAs vs the 32-per-SM cap) AND the per-thread K
+    loop is long, resident warps already hide the load latency and the deep
+    ring only adds sync overhead — the 2-stage ring is ~9% faster there
+    (attn-family 4096x7168 at m=2).
+    """
+    cfg = {"block_n": 1, "reduce_threads": 64, "num_stages": 4}
+    k_iters = math.ceil(k / (64 * 8))  # reduce_threads * tile_k (fp16/bf16)
+    if n >= 28 * sm_count and k_iters >= 12:
+        cfg["num_stages"] = 2
+    return cfg
