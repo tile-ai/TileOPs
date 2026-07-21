@@ -1977,7 +1977,15 @@ class GemvKernel(Kernel):
                 # a 128-way reduction tree over a long row costs more than the BW it
                 # buys, and 2 rows/block improves wave quantization.
                 return {"block_n": 2, "reduce_threads": 64, "num_stages": 5}
-            # Typical decode projections (k up to ~8k): 1 row/block, 128 threads/row
+            if self.k >= 6144:
+                # Mid-deep rows (decode gate-up / attn-proj, k ~= 7k): a 256-lane
+                # reduction still runs >= 3 pipeline iterations and the extra
+                # per-row memory-level parallelism beats rt=128 by 9-10% under
+                # the cold-read protocol (two independent 30-rep interleaved
+                # rounds, H200). Shorter rows degenerate to ~1 iteration and
+                # stay on rt=128 below.
+                return {"block_n": 1, "reduce_threads": 256, "num_stages": 4}
+            # Shorter decode projections: 1 row/block, 128 threads/row
             # maximizes per-row MLP to saturate HBM.
             return {"block_n": 1, "reduce_threads": 128, "num_stages": 4}
 
