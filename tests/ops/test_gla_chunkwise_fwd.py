@@ -106,8 +106,12 @@ def test_gla_fwd(
         assert cos > 0.99, f"FLA vs ref o cosine too low: {cos:.6f}"
 
     # --- TileOPs ---
-    fwd_op = GLAFwdOp(B, T, H, K, V, BC, scale=scale,
-                       output_final_state=False, dtype=dtype, tune=tune)
+    fwd_op = GLAFwdOp(
+        chunk_size=BC,
+        scale=scale,
+        output_final_state=False,
+        tune=tune,
+    )
     op_o, _ = fwd_op.forward(q, k, v, g)
 
     tols = get_tolerances(dtype)

@@ -61,59 +61,27 @@ class Mamba2FwdOp:
 
     def __init__(
         self,
-        batch: int,
-        seqlen: int,
-        n_heads: int,
-        d_head: int,
-        d_state: int,
-        n_groups: int,
-        dtype: torch.dtype,
         chunk_size: int = 256,
         dt_softplus: bool = True,
         has_initial_states: bool = False,
         tune: bool = False,
     ):
-        if seqlen % chunk_size != 0:
-            raise ValueError(f"seqlen ({seqlen}) must be divisible by chunk_size ({chunk_size})")
-        if n_heads % n_groups != 0:
-            raise ValueError(f"n_heads ({n_heads}) must be divisible by n_groups ({n_groups})")
-
-        self.batch = batch
-        self.seqlen = seqlen
+        self.batch = None
+        self.seqlen = None
         self.chunk_size = chunk_size
-        self.num_chunks = seqlen // chunk_size
-        self.n_heads = n_heads
-        self.d_head = d_head
-        self.d_state = d_state
-        self.n_groups = n_groups
-        self.dtype = dtype
+        self.num_chunks = None
+        self.n_heads = None
+        self.d_head = None
+        self.d_state = None
+        self.n_groups = None
+        self.dtype = None
         self.dt_softplus = dt_softplus
         self.has_initial_states = has_initial_states
-        self._heads_per_group = n_heads // n_groups
+        self._heads_per_group = None
+        self.tune = tune
 
-        num_chunks = self.num_chunks
-
-        self._da_cumsum_op = DaCumsumFwdOp(
-            batch=batch,
-            num_chunks=num_chunks,
-            chunk_len=chunk_size,
-            n_heads=n_heads,
-            seq_len=seqlen,
-            dtype=dtype,
-            dt_softplus=dt_softplus,
-            has_dt_bias=True,   # always pass dt_bias; caller passes zeros if unused
-            tune=tune,
-        )
-
+        self._da_cumsum_ops: dict[torch.dtype, DaCumsumFwdOp] = {}
         self._chunk_state_op = SSDChunkStateFwdOp(
-            batch=batch,
-            num_chunks=num_chunks,
-            chunk_len=chunk_size,
-            n_heads=n_heads,
-            d_head=d_head,
-            d_state=d_state,
-            n_groups=n_groups,
-            dtype=dtype,
             has_seq_idx=False,
             tune=tune,
         )
@@ -122,52 +90,51 @@ class Mamba2FwdOp:
         # Flatten P*N into a single state dim so SSDStatePassingFwdOp is used
         # instead of a Python loop, keeping everything on the GPU.
         self._state_passing_op = SSDStatePassingFwdOp(
-            batch=batch,
-            num_chunks=num_chunks,
-            n_heads=n_heads,
-            d_state=d_head * d_state,   # flat state: P*N
-            dtype=torch.float32,
             has_initial_states=has_initial_states,
             tune=tune,
         )
 
-        self._chunk_scan_op = SSDChunkScanFwdOp(
-            batch=batch,
-            num_chunks=num_chunks,
-            chunk_len=chunk_size,
-            n_heads=n_heads,
-            d_head=d_head,
-            d_state=d_state,
-            n_groups=n_groups,
-            dtype=dtype,
-            tune=tune,
-        )
-
-        # CB Producer Op - replaces torch.compile einsum
-        self._cb_producer_op = CBProducerOp(
-            batch=batch,
-            num_chunks=num_chunks,
-            n_groups=n_groups,
-            chunk_len=chunk_size,
-            d_state=d_state,
-            dtype=dtype,
-            tune=tune,
-        )
+        self._chunk_scan_op = SSDChunkScanFwdOp(tune=tune)
+        self._cb_producer_ops: dict[tuple, CBProducerOp] = {}
 
         # Pre-allocated zero tensors — avoids FillFunctor kernel launches on the
         # hot path for optional inputs that are commonly omitted.
-        # Allocated on CPU here; moved to the right CUDA device on first forward.
-        self._zero_dt_bias_cpu = torch.zeros(n_heads, dtype=torch.float32)
-        self._zero_init_flat_cpu = torch.zeros(
-            batch, n_heads, d_head * d_state, dtype=torch.float32,
-        )
-        # seq_idx placeholder for SSDChunkStateFwdOp (has_seq_idx=False path still
-        # passes the tensor; pre-allocating avoids a FillFunctor<int> each call).
-        self._zero_seq_idx_cpu = torch.zeros(batch, seqlen, dtype=torch.int32)
-
         self._zero_dt_bias: Optional[torch.Tensor]   = None
         self._zero_init_flat: Optional[torch.Tensor] = None
         self._zero_seq_idx: Optional[torch.Tensor]   = None
+
+    def _get_da_cumsum_op(self, dtype: torch.dtype) -> DaCumsumFwdOp:
+        if dtype not in self._da_cumsum_ops:
+            self._da_cumsum_ops[dtype] = DaCumsumFwdOp(
+                chunk_len=self.chunk_size,
+                dtype=dtype,
+                dt_softplus=self.dt_softplus,
+                has_dt_bias=True,
+                tune=self.tune,
+            )
+        return self._da_cumsum_ops[dtype]
+
+    def _get_cb_producer_op(
+        self,
+        batch: int,
+        num_chunks: int,
+        n_groups: int,
+        d_state: int,
+        dtype: torch.dtype,
+        device_index: int | None,
+    ) -> CBProducerOp:
+        key = (batch, num_chunks, n_groups, self.chunk_size, d_state, dtype, device_index, self.tune)
+        if key not in self._cb_producer_ops:
+            self._cb_producer_ops[key] = CBProducerOp(
+                batch=batch,
+                num_chunks=num_chunks,
+                n_groups=n_groups,
+                chunk_len=self.chunk_size,
+                d_state=d_state,
+                dtype=dtype,
+                tune=self.tune,
+            )
+        return self._cb_producer_ops[key]
 
     # ------------------------------------------------------------------
     # Forward
@@ -206,29 +173,72 @@ class Mamba2FwdOp:
                 "has_initial_states=False — the kernel ignores it, which would "
                 "silently produce wrong results.  Reconstruct with has_initial_states=True."
             )
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if x.ndim != 4:
+            raise ValueError("x must have shape [batch, seqlen, n_heads, d_head]")
         batch, seqlen, n_heads, d_head = x.shape
-        chunk_size   = self.chunk_size
-        num_chunks   = seqlen // chunk_size
-        d_state      = self.d_state
-        dev          = x.device
+        chunk_size = self.chunk_size
+        if seqlen % chunk_size != 0:
+            raise ValueError(f"seqlen ({seqlen}) must be divisible by chunk_size ({chunk_size})")
+        num_chunks = seqlen // chunk_size
+        if B.ndim != 4 or B.shape[0] != batch or B.shape[1] != seqlen:
+            raise ValueError("B must have shape [batch, seqlen, n_groups, d_state]")
+        n_groups, d_state = B.shape[2], B.shape[3]
+        if n_heads % n_groups != 0:
+            raise ValueError(f"n_heads ({n_heads}) must be divisible by n_groups ({n_groups})")
+        if C.shape != (batch, seqlen, n_groups, d_state):
+            raise ValueError("C must have shape [batch, seqlen, n_groups, d_state]")
+        if dt.shape != (batch, seqlen, n_heads):
+            raise ValueError("dt must have shape [batch, seqlen, n_heads]")
+        if A.shape != (n_heads,):
+            raise ValueError("A must have shape [n_heads]")
+        if dt_bias is not None and dt_bias.shape != (n_heads,):
+            raise ValueError("dt_bias must have shape [n_heads]")
+        if initial_states is not None and initial_states.shape != (batch, n_heads, d_head, d_state):
+            raise ValueError("initial_states must have shape [batch, n_heads, d_head, d_state]")
+        dev = x.device
 
-        # Ensure pre-allocated tensors live on the right device.
-        if self._zero_dt_bias is None or self._zero_dt_bias.device != dev:
-            self._zero_dt_bias    = self._zero_dt_bias_cpu.to(dev)
-            self._zero_init_flat  = self._zero_init_flat_cpu.to(dev)
-            self._zero_seq_idx    = self._zero_seq_idx_cpu.to(dev)
+        self.batch = batch
+        self.seqlen = seqlen
+        self.num_chunks = num_chunks
+        self.n_heads = n_heads
+        self.d_head = d_head
+        self.d_state = d_state
+        self.n_groups = n_groups
+        self.dtype = x.dtype
+        self._heads_per_group = n_heads // n_groups
+
+        if self._zero_dt_bias is None or self._zero_dt_bias.shape != (n_heads,) or self._zero_dt_bias.device != dev:
+            self._zero_dt_bias = torch.zeros(n_heads, dtype=torch.float32, device=dev)
+        init_shape = (batch, n_heads, d_head * d_state)
+        if (
+            self._zero_init_flat is None
+            or self._zero_init_flat.shape != init_shape
+            or self._zero_init_flat.device != dev
+        ):
+            self._zero_init_flat = torch.zeros(init_shape, dtype=torch.float32, device=dev)
+        seq_idx_shape = (batch, seqlen)
+        if (
+            self._zero_seq_idx is None
+            or self._zero_seq_idx.shape != seq_idx_shape
+            or self._zero_seq_idx.device != dev
+        ):
+            self._zero_seq_idx = torch.zeros(seq_idx_shape, dtype=torch.int32, device=dev)
         # ── 1. DaCumsum ──────────────────────────────────────────────────────
         if dt_bias is None:
             dt_bias = self._zero_dt_bias
 
-        dt_out, dA_cumsum = self._da_cumsum_op.forward(dt, A, dt_bias)
+        dt_out, dA_cumsum = self._get_da_cumsum_op(x.dtype).forward(dt, A, dt_bias)
         # dt_out:    (B, H, C, Q)  dtype
         # dA_cumsum: (B, H, C, Q)  float32
 
         # ── 2. CB matrix ─────────────────────────────────────────────────────
         # cb[b,c,g,l,s] = C[b,c*Q+l,g,:] @ B[b,c*Q+s,g,:]^T  for s <= l, else 0.
         # Pass contiguous C and B directly to avoid reshape/permute/contiguous overhead
-        cb = self._cb_producer_op.forward(C, B)  # (B, C, G, Q, Q)  dtype (direct output, no cast needed)
+        cb_producer_op = self._get_cb_producer_op(
+            batch, num_chunks, n_groups, d_state, x.dtype, x.device.index)
+        cb = cb_producer_op.forward(C, B)  # (B, C, G, Q, Q)  dtype (direct output, no cast needed)
 
         # ── 3. SSDChunkState ─────────────────────────────────────────────────
         # Pass pre-allocated seq_idx zeros; avoids a FillFunctor<int> per call.

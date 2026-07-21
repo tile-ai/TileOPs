@@ -106,9 +106,7 @@ class GroupedGemmFixture(FixtureBase):
 def test_grouped_gemm(batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
                       transpose_a: bool, transpose_b: bool, tune: bool) -> None:
     test = GroupedGemmTest(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
-    op = GroupedGemmOp(
-        batch_sum, batch_count, N, K, dtype, transpose_a=transpose_a, transpose_b=transpose_b,
-        tune=tune)
+    op = GroupedGemmOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=tune)
     test.check(op, *test.gen_inputs())
 
 

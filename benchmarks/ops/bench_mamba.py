@@ -114,8 +114,7 @@ def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, has_dt_bias,
     inputs = test.gen_inputs()  # (dt_raw, A, dt_bias)
 
     op = DaCumsumFwdOp(
-        batch, num_chunks, chunk_len, n_heads,
-        seq_len=num_chunks * chunk_len,
+        chunk_len=chunk_len,
         has_dt_bias=has_dt_bias,
         dt_softplus=dt_softplus,
         dtype=dtype,
@@ -321,9 +320,7 @@ def test_ssd_chunk_scan_fwd_bench(
     inputs = test.gen_inputs()  # x, cb, dA_cumsum, C, prev_states, dt
 
     # ── TileOPs kernel ──
-    op = SSDChunkScanFwdOp(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune=tune,
-    )
+    op = SSDChunkScanFwdOp(tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -461,10 +458,7 @@ def test_ssd_chunk_state_fwd_bench(
     bm = SSDChunkStateFwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SSDChunkStateFwdOp(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
-        has_seq_idx=has_seq_idx, tune=tune,
-    )
+    op = SSDChunkStateFwdOp(has_seq_idx=has_seq_idx, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -591,7 +585,7 @@ def test_ssd_state_passing_fwd_bench(
     inputs = test.gen_inputs()
     states, dA_chunk_cumsum, initial_states = inputs
 
-    op = SSDStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=tune)
+    op = SSDStatePassingFwdOp(tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -740,7 +734,7 @@ def test_ssd_decode_bench(
     state_for_op = state.clone()
     state_bl = state.clone()
 
-    op = SSDDecodeOp(batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune)
+    op = SSDDecodeOp(tune=tune)
     result = bm.profile(op, A, dt, x, B_in, C_in, state_for_op)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

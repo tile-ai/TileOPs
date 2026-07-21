@@ -42,45 +42,88 @@ class DeltaNetFwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        seq_len: int,
-        dim_k: int,
-        dim_v: int,
         chunk_size: int = 64,
-        dtype: torch.dtype = torch.float32,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.dim_k = dim_k
-        self.dim_v = dim_v
+        self.batch = None
+        self.heads = None
+        self.seq_len = None
+        self.dim_k = None
+        self.dim_v = None
         self.chunk_size = chunk_size
-        self.dtype = dtype
-
-        if seq_len % chunk_size != 0:
-            raise ValueError(
-                f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})"
-            )
+        self.dtype = None
+        self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-
-        fwd_kernel_cls = self.kernel_map["DeltaNetFwdKernel"]
-
-        kernel_dtype = Kernel.dtype_to_str(dtype)
-        self.kernel = fwd_kernel_cls(
-            batch, heads, seq_len, chunk_size, dim_k, dim_v,
-            dtype=kernel_dtype,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "DeltaNetFwdKernel": DeltaNetFwdKernel,
         }
+
+    def _get_kernel(
+        self,
+        batch: int,
+        heads: int,
+        seq_len: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: torch.dtype,
+        device_index: int | None,
+    ) -> Kernel:
+        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["DeltaNetFwdKernel"](
+                batch,
+                heads,
+                seq_len,
+                self.chunk_size,
+                dim_k,
+                dim_v,
+                dtype=Kernel.dtype_to_str(dtype),
+                tune=self.tune,
+            )
+        return self._kernel_cache[key]
+
+    def _bind_from_inputs(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> None:
+        if not all(tensor.is_cuda for tensor in (q, k, v, beta)):
+            raise ValueError("q, k, v, and beta must be CUDA tensors")
+        if q.ndim != 4:
+            raise ValueError("q must have shape [batch, heads, seq_len, dim_k]")
+        batch, heads, seq_len, dim_k = q.shape
+        if k.shape != (batch, heads, seq_len, dim_k):
+            raise ValueError("k must match q shape")
+        if v.ndim != 4 or v.shape[:3] != (batch, heads, seq_len):
+            raise ValueError("v must have shape [batch, heads, seq_len, dim_v]")
+        if beta.shape != (batch, heads, seq_len):
+            raise ValueError("beta must have shape [batch, heads, seq_len]")
+        dtype = q.dtype
+        for name, tensor in (("k", k), ("v", v), ("beta", beta)):
+            if tensor.dtype != dtype:
+                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
+        if seq_len % self.chunk_size != 0:
+            raise ValueError(
+                f"seq_len ({seq_len}) must be divisible by chunk_size ({self.chunk_size})"
+            )
+
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim_k = dim_k
+        self.dim_v = v.shape[-1]
+        self.dtype = dtype
+        self.kernel = self._get_kernel(
+            batch, heads, seq_len, dim_k, self.dim_v, dtype, q.device.index)
 
     def forward(
         self,
@@ -100,6 +143,7 @@ class DeltaNetFwdOp(Op):
         Returns:
             Tuple of (o, S, Aw, Au).
         """
+        self._bind_from_inputs(q, k, v, beta)
         o, S, Aw, Au, w, u = self.kernel(q, k, v, beta)
         return o, S, Aw, Au, w, u
 
@@ -123,43 +167,92 @@ class DeltaNetBwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        seq_len: int,
-        dim_k: int,
-        dim_v: int,
         chunk_size: int = 64,
-        dtype: torch.dtype = torch.float32,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.dim_k = dim_k
-        self.dim_v = dim_v
+        self.batch = None
+        self.heads = None
+        self.seq_len = None
+        self.dim_k = None
+        self.dim_v = None
         self.chunk_size = chunk_size
-        self.dtype = dtype
-
-        if seq_len % chunk_size != 0:
-            raise ValueError(f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})")
+        self.dtype = None
+        self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-
-        bwd_kernel_cls = self.kernel_map["DeltaNetBwdKernel"]
-
-        kernel_dtype = Kernel.dtype_to_str(dtype)
-        self.kernel = bwd_kernel_cls(
-            batch, heads, seq_len, chunk_size, dim_k, dim_v,
-            dtype=kernel_dtype,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "DeltaNetBwdKernel": DeltaNetBwdKernel,
         }
+
+    def _get_kernel(
+        self,
+        batch: int,
+        heads: int,
+        seq_len: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: torch.dtype,
+        device_index: int | None,
+    ) -> Kernel:
+        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["DeltaNetBwdKernel"](
+                batch,
+                heads,
+                seq_len,
+                self.chunk_size,
+                dim_k,
+                dim_v,
+                dtype=Kernel.dtype_to_str(dtype),
+                tune=self.tune,
+            )
+        return self._kernel_cache[key]
+
+    def _bind_from_inputs(
+        self,
+        do: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> None:
+        if not all(tensor.is_cuda for tensor in (do, q, k, v, beta)):
+            raise ValueError("do, q, k, v, and beta must be CUDA tensors")
+        if q.ndim != 4:
+            raise ValueError("q must have shape [batch, heads, seq_len, dim_k]")
+        batch, heads, seq_len, dim_k = q.shape
+        if k.shape != (batch, heads, seq_len, dim_k):
+            raise ValueError("k must match q shape")
+        if v.ndim != 4 or v.shape[:3] != (batch, heads, seq_len):
+            raise ValueError("v must have shape [batch, heads, seq_len, dim_v]")
+        dim_v = v.shape[-1]
+        if do.shape != (batch, heads, seq_len, dim_v):
+            raise ValueError("do must have shape [batch, heads, seq_len, dim_v]")
+        if beta.shape != (batch, heads, seq_len):
+            raise ValueError("beta must have shape [batch, heads, seq_len]")
+        dtype = q.dtype
+        for name, tensor in (("do", do), ("k", k), ("v", v), ("beta", beta)):
+            if tensor.dtype != dtype:
+                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
+        if seq_len % self.chunk_size != 0:
+            raise ValueError(
+                f"seq_len ({seq_len}) must be divisible by chunk_size ({self.chunk_size})"
+            )
+
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.dtype = dtype
+        self.kernel = self._get_kernel(
+            batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index)
 
     def forward(
         self,
@@ -191,6 +284,7 @@ class DeltaNetBwdOp(Op):
         Returns:
             Tuple of (dq, dk, dv, dbeta).
         """
+        self._bind_from_inputs(do, q, k, v, beta)
         dq, dk, dv, dbeta = self.kernel(do, q, k, v, beta, S, Aw, Au, w, u)
         return dq, dk, dv, dbeta
 
@@ -235,42 +329,24 @@ class DeltaNetOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        seq_len: int,
-        dim_k: int,
-        dim_v: int,
         chunk_size: int = 64,
-        dtype: torch.dtype = torch.float32,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.dim_k = dim_k
-        self.dim_v = dim_v
+        self.batch = None
+        self.heads = None
+        self.seq_len = None
+        self.dim_k = None
+        self.dim_v = None
         self.chunk_size = chunk_size
-        self.dtype = dtype
-
-        if seq_len % chunk_size != 0:
-            raise ValueError(
-                f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})"
-            )
+        self.dtype = None
+        self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-
-        kernel_dtype = Kernel.dtype_to_str(dtype)
-        fwd_cls = self.kernel_map["DeltaNetFwdKernel"]
-        bwd_cls = self.kernel_map["DeltaNetBwdKernel"]
-        self.fwd_kernel = fwd_cls(
-            batch, heads, seq_len, chunk_size, dim_k, dim_v,
-            dtype=kernel_dtype, tune=tune,
-        )
-        self.bwd_kernel = bwd_cls(
-            batch, heads, seq_len, chunk_size, dim_k, dim_v,
-            dtype=kernel_dtype, tune=tune,
-        )
+        self._fwd_kernel_cache: Dict[tuple, Kernel] = {}
+        self._bwd_kernel_cache: Dict[tuple, Kernel] = {}
+        self.fwd_kernel = None
+        self.bwd_kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -278,6 +354,56 @@ class DeltaNetOp(Op):
             "DeltaNetFwdKernel": DeltaNetFwdKernel,
             "DeltaNetBwdKernel": DeltaNetBwdKernel,
         }
+
+    def _bind_from_inputs(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> None:
+        if not all(tensor.is_cuda for tensor in (q, k, v, beta)):
+            raise ValueError("q, k, v, and beta must be CUDA tensors")
+        batch, heads, seq_len, dim_k = q.shape
+        if k.shape != (batch, heads, seq_len, dim_k):
+            raise ValueError("k must match q shape")
+        if v.ndim != 4 or v.shape[:3] != (batch, heads, seq_len):
+            raise ValueError("v must have shape [batch, heads, seq_len, dim_v]")
+        if beta.shape != (batch, heads, seq_len):
+            raise ValueError("beta must have shape [batch, heads, seq_len]")
+        dtype = q.dtype
+        if seq_len % self.chunk_size != 0:
+            raise ValueError(
+                f"seq_len ({seq_len}) must be divisible by chunk_size ({self.chunk_size})"
+            )
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim_k = dim_k
+        self.dim_v = v.shape[-1]
+        self.dtype = dtype
+
+        key = (
+            batch,
+            heads,
+            seq_len,
+            self.chunk_size,
+            dim_k,
+            self.dim_v,
+            dtype,
+            q.device.index,
+            self.tune,
+        )
+        if key not in self._fwd_kernel_cache:
+            kernel_dtype = Kernel.dtype_to_str(dtype)
+            self._fwd_kernel_cache[key] = self.kernel_map["DeltaNetFwdKernel"](
+                batch, heads, seq_len, self.chunk_size, dim_k, self.dim_v,
+                dtype=kernel_dtype, tune=self.tune)
+            self._bwd_kernel_cache[key] = self.kernel_map["DeltaNetBwdKernel"](
+                batch, heads, seq_len, self.chunk_size, dim_k, self.dim_v,
+                dtype=kernel_dtype, tune=self.tune)
+        self.fwd_kernel = self._fwd_kernel_cache[key]
+        self.bwd_kernel = self._bwd_kernel_cache[key]
 
     def forward(
         self,
@@ -297,6 +423,7 @@ class DeltaNetOp(Op):
         Returns:
             Output tensor o [B, H, S, DV] (supports .backward()).
         """
+        self._bind_from_inputs(q, k, v, beta)
         return _DeltaNetFunction.apply(
             q, k, v, beta, self.fwd_kernel, self.bwd_kernel,
         )

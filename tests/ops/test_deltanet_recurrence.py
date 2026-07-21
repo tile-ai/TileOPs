@@ -96,7 +96,7 @@ def test_deltanet_decode(
 ) -> None:
     torch.manual_seed(42)
     test = DeltaNetDecodeTest(batch, heads, dim_k, dim_v, dtype)
-    op = DeltaNetDecodeOp(batch, heads, dim_k, dim_v, dtype, tune=tune)
+    op = DeltaNetDecodeOp(tune=tune)
     tols = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), **tols)
 
@@ -115,7 +115,7 @@ def test_deltanet_decode_multi_step(
     num_steps = 8
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
-    op = DeltaNetDecodeOp(B, H, DK, DV, dtype, tune=tune)
+    op = DeltaNetDecodeOp(tune=tune)
     tols = _get_tolerances(dtype)
 
     state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
@@ -153,7 +153,7 @@ def test_deltanet_decode_rejects_manifest_shape_mismatch() -> None:
     beta = torch.empty(2, 3)
     state = torch.empty(2, 3, 4, 5)
 
-    with pytest.raises(ValueError, match="q must have shape"):
+    with pytest.raises(ValueError, match="k must have shape"):
         op.forward(q, k, v, beta, state)
 
 
@@ -178,10 +178,11 @@ def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None
 
     torch.manual_seed(42)
     test = DeltaNetDecodeTest(2, 4, 128, 128, dtype)
-    op = DeltaNetDecodeOp(2, 4, 128, 128, dtype, tune=False)
-
+    op = DeltaNetDecodeOp(tune=False)
+    inputs = test.gen_inputs()
+    op(*inputs)
     assert isinstance(op.kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
-    test.check(op, *test.gen_inputs(), **_get_tolerances(dtype))
+    test.check(op, *inputs, **_get_tolerances(dtype))
 
 
 @pytest.mark.smoke
@@ -195,10 +196,8 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
     torch.manual_seed(42)
     num_steps = 8
     B, H, DK, DV = 2, 4, 128, 128
-    op = DeltaNetDecodeOp(B, H, DK, DV, dtype, tune=False)
+    op = DeltaNetDecodeOp(tune=False)
     tols = _get_tolerances(dtype)
-
-    assert isinstance(op.kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
 
     state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
     state_ref = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
@@ -215,6 +214,8 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
 
         with torch.no_grad():
             o_op, state_op = op(q, k, v, beta, state_op)
+
+        assert isinstance(op.kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
 
         torch.testing.assert_close(o_op, o_ref, **tols)
         torch.testing.assert_close(state_op, state_ref, **tols)

@@ -116,7 +116,7 @@ def test_gla_decode_bench(
     inputs = test.gen_inputs()
 
     # --- TileOPs ---
-    op = GLADecodeOp(batch, heads, dim_k, dim_v, scale=scale, dtype=dtype, tune=tune)
+    op = GLADecodeOp(scale=scale, tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

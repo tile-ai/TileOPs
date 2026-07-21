@@ -84,16 +84,7 @@ def test_indexer(batch: int, seq_len: int, heads: int, index_dim: int, seq_len_k
                  kv_group: int, clean_logits: bool, config: Optional[dict], tune: bool) -> None:
     test = FP8LightningIndexerTest(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
                                   clean_logits, config)
-    op = FP8LightningIndexerOp(
-        batch=batch,
-        seq_len=seq_len,
-        heads=heads,
-        index_dim=index_dim,
-        seq_len_kv=seq_len_kv,
-        kv_group=kv_group,
-        clean_logits=clean_logits,
-        config=config,
-        tune=tune)
+    op = FP8LightningIndexerOp(clean_logits=clean_logits, config=config, tune=tune)
     test.check(op, *test.gen_inputs(), compare=FP8LightningIndexerTest._validate_tensor_match)
 
 
