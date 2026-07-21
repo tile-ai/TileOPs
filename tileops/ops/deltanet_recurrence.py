@@ -62,6 +62,7 @@ class DeltaNetDecodeOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, Kernel] = {}
+        self._active_sig: Optional[tuple] = None
         self.kernel = None
 
     @property
@@ -199,8 +200,28 @@ class DeltaNetDecodeOp(Op):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self._validate_dtypes(q, k, v, beta, state)
-        self._validate_shapes(q, k, v, beta, state)
+        sig = (
+            q.shape,
+            k.shape,
+            v.shape,
+            beta.shape,
+            state.shape,
+            q.dtype,
+            k.dtype,
+            v.dtype,
+            beta.dtype,
+            state.dtype,
+            q.device,
+            k.device,
+            v.device,
+            beta.device,
+            state.device,
+            getattr(self, "tune", None),
+        )
+        if sig != getattr(self, "_active_sig", None):
+            self._validate_dtypes(q, k, v, beta, state)
+            self._validate_shapes(q, k, v, beta, state)
+            self._active_sig = sig
         o, new_state = self.kernel(q, k, v, beta, state)
         self._validate_output_shapes(o, new_state)
         return o, new_state

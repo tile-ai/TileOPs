@@ -219,6 +219,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, Kernel] = {}
+        self._active_sig: Optional[tuple] = None
         self.kernel = None
 
     @property
@@ -388,8 +389,30 @@ class GatedDeltaNetPrefillFwdOp(Op):
         v = v.contiguous()
         g = g.contiguous()
         beta = beta.contiguous()
-        self._validate_dtypes(q, k, v, g, beta)
-        self._validate_shapes(q, k, v, g, beta)
+        sig = (
+            q.shape,
+            k.shape,
+            v.shape,
+            g.shape,
+            beta.shape,
+            q.dtype,
+            k.dtype,
+            v.dtype,
+            g.dtype,
+            beta.dtype,
+            q.device,
+            k.device,
+            v.device,
+            g.device,
+            beta.device,
+            self.layout,
+            self._requested_chunk_size,
+            getattr(self, "tune", None),
+        )
+        if sig != getattr(self, "_active_sig", None):
+            self._validate_dtypes(q, k, v, g, beta)
+            self._validate_shapes(q, k, v, g, beta)
+            self._active_sig = sig
         return self.kernel(q, k, v, g, beta)
 
 
@@ -680,6 +703,7 @@ class GatedDeltaNetDecodeOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, Kernel] = {}
+        self._active_sig: Optional[tuple] = None
         self.kernel = None
 
     @property
@@ -828,8 +852,31 @@ class GatedDeltaNetDecodeOp(Op):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self._validate_dtypes(q, k, v, g, beta, state)
-        self._validate_shapes(q, k, v, g, beta, state)
+        sig = (
+            q.shape,
+            k.shape,
+            v.shape,
+            g.shape,
+            beta.shape,
+            state.shape,
+            q.dtype,
+            k.dtype,
+            v.dtype,
+            g.dtype,
+            beta.dtype,
+            state.dtype,
+            q.device,
+            k.device,
+            v.device,
+            g.device,
+            beta.device,
+            state.device,
+            getattr(self, "tune", None),
+        )
+        if sig != getattr(self, "_active_sig", None):
+            self._validate_dtypes(q, k, v, g, beta, state)
+            self._validate_shapes(q, k, v, g, beta, state)
+            self._active_sig = sig
         o, new_state = self.kernel(q, k, v, g, beta, state)
         self._validate_output_shapes(o, new_state)
         return o, new_state
