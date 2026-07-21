@@ -552,7 +552,7 @@ ClampMaxFwdOp:
     kernel_map:
       clamp_tensor: ClampTensorFwdKernel
     op: tileops/ops/elementwise/clamp.py
-    test: tests/ops/test_special_elementwise.py
+    test: tests/ops/test_special_elementwise_conformance.py
     bench: benchmarks/ops/bench_independent_elementwise.py
     bench_manifest_driven: true
 
