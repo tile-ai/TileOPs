@@ -190,7 +190,7 @@ MaxPool1dFwdOp:
   ref_api: "torch.nn.functional.max_pool1d"
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=False)
   family: pool
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -236,17 +236,19 @@ MaxPool1dFwdOp:
     bytes: "(N * C * L_in + N * C * out_W) * elem_bytes"
 
   source:
-    # Spec-only: MaxPool Op/Kernel classes are not implemented yet.
-    kernel: null
-    op: null
-    test: null
-    bench: null
+    kernel: tileops/kernels/pool/max_pool1d.py
+    kernel_map:
+      max_pool1d_kernel: MaxPool1dKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: true
 
 MaxPool1dIndicesFwdOp:
   ref_api: "torch.nn.functional.max_pool1d"
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=True)
   family: pool
-  status: spec-only
+  status: implemented
   variant_of: MaxPool1dFwdOp
 
   signature:
@@ -292,11 +294,13 @@ MaxPool1dIndicesFwdOp:
     bytes: "(N * C * L_in + N * C * out_W) * elem_bytes + N * C * out_W * 8"
 
   source:
-    # Spec-only: shares the primary's future Op/Kernel source.
-    kernel: null
-    op: null
-    test: null
-    bench: null
+    kernel: tileops/kernels/pool/max_pool1d.py
+    kernel_map:
+      max_pool1d_with_indices_kernel: MaxPool1dWithIndicesKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: true
 
 MaxPool2dFwdOp:
   ref_api: "torch.nn.functional.max_pool2d"
@@ -441,7 +445,7 @@ MaxPool3dFwdOp:
   ref_api: "torch.nn.functional.max_pool3d"
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=False)
   family: pool
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -510,17 +514,19 @@ MaxPool3dFwdOp:
     bytes: "(N * C * D_in * H_in * W_in + N * C * out_D * out_H * out_W) * elem_bytes"
 
   source:
-    # Spec-only: MaxPool Op/Kernel classes are not implemented yet.
-    kernel: null
-    op: null
-    test: null
-    bench: null
+    kernel: tileops/kernels/pool/max_pool3d.py
+    kernel_map:
+      max_pool3d_kernel: MaxPool3dKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: true
 
 MaxPool3dIndicesFwdOp:
   ref_api: "torch.nn.functional.max_pool3d"
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=True)
   family: pool
-  status: spec-only
+  status: implemented
   variant_of: MaxPool3dFwdOp
 
   signature:
@@ -590,8 +596,10 @@ MaxPool3dIndicesFwdOp:
     bytes: "(N * C * D_in * H_in * W_in + N * C * out_D * out_H * out_W) * elem_bytes + N * C * out_D * out_H * out_W * 8"
 
   source:
-    # Spec-only: shares the primary's future Op/Kernel source.
-    kernel: null
-    op: null
-    test: null
-    bench: null
+    kernel: tileops/kernels/pool/max_pool3d.py
+    kernel_map:
+      max_pool3d_with_indices_kernel: MaxPool3dWithIndicesKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: true

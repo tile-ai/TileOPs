@@ -12,16 +12,24 @@ from tileops.kernels.pool import (
     AvgPool2dSpatialKernel,
     AvgPool3dKernel,
     AvgPool3dSpatialKernel,
+    MaxPool1dKernel,
+    MaxPool1dWithIndicesKernel,
     MaxPool2dKernel,
     MaxPool2dWithIndicesKernel,
+    MaxPool3dKernel,
+    MaxPool3dWithIndicesKernel,
 )
 from tileops.manifest import load_workloads
 from tileops.ops import (
     AvgPool1dFwdOp,
     AvgPool2dFwdOp,
     AvgPool3dFwdOp,
+    MaxPool1dFwdOp,
+    MaxPool1dIndicesFwdOp,
     MaxPool2dFwdOp,
     MaxPool2dIndicesFwdOp,
+    MaxPool3dFwdOp,
+    MaxPool3dIndicesFwdOp,
 )
 
 
@@ -857,6 +865,1132 @@ def test_avg_pool_dynamic_dtype_ignores_last_runtime_dtype(
     op.dtype = torch.float16
 
     op._validate_dtypes(torch.empty((), dtype=torch.bfloat16))
+
+
+_MAX_POOL1D_PARAMS = [
+    # Smoke: one config across all supported dtypes.
+    pytest.param(
+        2,
+        8,
+        64,
+        (3,),
+        (2,),
+        (1,),
+        (1,),
+        False,
+        torch.float16,
+        False,
+        True,
+        marks=[pytest.mark.smoke, pytest.mark.packaging],
+        id="smoke-k3-s2-p1-fp16",
+    ),
+    pytest.param(
+        2,
+        8,
+        64,
+        (3,),
+        (2,),
+        (1,),
+        (1,),
+        False,
+        torch.bfloat16,
+        False,
+        True,
+        marks=pytest.mark.smoke,
+        id="smoke-k3-s2-p1-bf16",
+    ),
+    pytest.param(
+        1,
+        8,
+        64,
+        (3,),
+        (2,),
+        (1,),
+        (1,),
+        False,
+        torch.float32,
+        False,
+        True,
+        marks=pytest.mark.smoke,
+        id="smoke-k3-s2-p1-fp32",
+    ),
+    # Full: distinct setting combinations.
+    pytest.param(
+        1,
+        4,
+        63,
+        (3,),
+        None,
+        (1,),
+        (2,),
+        False,
+        torch.float16,
+        False,
+        True,
+        marks=pytest.mark.full,
+        id="full-default-stride-dilation-fp16",
+    ),
+    pytest.param(
+        1,
+        4,
+        97,
+        (5,),
+        (3,),
+        (2,),
+        (1,),
+        True,
+        torch.float16,
+        False,
+        True,
+        marks=pytest.mark.full,
+        id="full-ceil-k5-s3-p2-fp16",
+    ),
+    pytest.param(
+        2,
+        8,
+        64,
+        (3,),
+        (2,),
+        (1,),
+        (1,),
+        False,
+        torch.float16,
+        False,
+        False,
+        marks=pytest.mark.full,
+        id="full-noncontiguous-k3-fp16",
+    ),
+    pytest.param(
+        1,
+        4,
+        97,
+        (5,),
+        (3,),
+        (2,),
+        (1,),
+        True,
+        torch.bfloat16,
+        False,
+        True,
+        marks=pytest.mark.full,
+        id="full-ceil-k5-s3-p2-bf16",
+    ),
+]
+
+
+def _max_pool1d_manifest_test_params() -> list:
+    """Build exact correctness cases from the MaxPool1d manifest workloads."""
+    params = []
+    for workload in load_workloads("MaxPool1dFwdOp"):
+        n, c_in, l_in = workload["input_shape"]
+        kernel_size = (
+            tuple(workload["kernel_size"])
+            if isinstance(workload["kernel_size"], list)
+            else (workload["kernel_size"],)
+        )
+        stride = workload.get("stride")
+        if stride is not None:
+            stride = tuple(stride) if isinstance(stride, list) else (stride,)
+        padding = workload.get("padding", 0)
+        padding = tuple(padding) if isinstance(padding, list) else (padding,)
+        dilation = workload.get("dilation", 1)
+        dilation = tuple(dilation) if isinstance(dilation, list) else (dilation,)
+        ceil_mode = workload.get("ceil_mode", False)
+        label = workload.get("label", f"{n}x{c_in}x{l_in}")
+        for dtype_str in workload["dtypes"]:
+            params.append(
+                pytest.param(
+                    n,
+                    c_in,
+                    l_in,
+                    kernel_size,
+                    stride,
+                    padding,
+                    dilation,
+                    ceil_mode,
+                    getattr(torch, dtype_str),
+                    False,
+                    True,
+                    marks=pytest.mark.full,
+                    id=f"manifest-{label}-{dtype_str}",
+                )
+            )
+    return params
+
+
+_MAX_POOL1D_PARAMS.extend(_max_pool1d_manifest_test_params())
+
+
+class MaxPool1dFixture(FixtureBase):
+    PARAMS = [
+        (
+            "n, c_in, l_in, kernel_size, stride, padding, dilation, ceil_mode, dtype, tune, contiguous",
+            _MAX_POOL1D_PARAMS,
+        ),
+    ]
+
+
+class MaxPool1dTest(TestBase):
+    def __init__(
+        self,
+        kernel_size: tuple[int],
+        stride: Optional[tuple[int]],
+        padding: tuple[int],
+        dilation: tuple[int],
+        ceil_mode: bool,
+        dtype: torch.dtype,
+        contiguous: bool = True,
+        return_indices: bool = False,
+    ) -> None:
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.ceil_mode = ceil_mode
+        self.dtype = dtype
+        self.contiguous = contiguous
+        self.return_indices = return_indices
+
+    def gen_inputs(
+        self,
+        n: int,
+        c_in: int,
+        l_in: int,
+    ) -> tuple[torch.Tensor]:
+        x = torch.randn(n, c_in, l_in, device="cuda", dtype=self.dtype)
+        if self.contiguous:
+            x = x.contiguous()
+        else:
+            # Non-contiguous NCL view: transpose twice so strides differ but
+            # shape semantics stay NCL.
+            x = x.transpose(1, 2).contiguous().transpose(1, 2)
+            assert not x.is_contiguous()
+        return (x,)
+
+    def ref_program(self, input: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        return F.max_pool1d(
+            input,
+            kernel_size=self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            ceil_mode=self.ceil_mode,
+            return_indices=self.return_indices,
+        )
+
+
+@MaxPool1dFixture
+def test_max_pool1d(
+    n: int,
+    c_in: int,
+    l_in: int,
+    kernel_size: tuple[int],
+    stride: Optional[tuple[int]],
+    padding: tuple[int],
+    dilation: tuple[int],
+    ceil_mode: bool,
+    dtype: torch.dtype,
+    tune: bool,
+    contiguous: bool,
+) -> None:
+    # Test return_indices=False path.
+    test = MaxPool1dTest(
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+        ceil_mode,
+        dtype,
+        contiguous=contiguous,
+        return_indices=False,
+    )
+    op = MaxPool1dFwdOp(
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        ceil_mode=ceil_mode,
+        tune=tune,
+    )
+    test.check(op, *test.gen_inputs(n, c_in, l_in), atol=0, rtol=0)
+
+    # Test return_indices=True path on the same inputs.
+    test_idx = MaxPool1dTest(
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+        ceil_mode,
+        dtype,
+        contiguous=contiguous,
+        return_indices=True,
+    )
+    op_idx = MaxPool1dIndicesFwdOp(
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        ceil_mode=ceil_mode,
+        tune=tune,
+    )
+    test_idx.check(op_idx, *test_idx.gen_inputs(n, c_in, l_in), atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("return_indices", [False, True])
+@pytest.mark.parametrize(
+    ("case_name", "input_builder"),
+    [
+        pytest.param(
+            "window_all_neg_inf",
+            lambda: torch.full((1, 1, 4), float("-inf"), device="cuda", dtype=torch.float16),
+            id="window-all-neg-inf",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            "window_with_nan",
+            lambda: torch.tensor(
+                [[[1.0, float("nan"), 3.0, 4.0]]], device="cuda", dtype=torch.float16
+            ),
+            id="window-with-nan",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "window_with_multiple_nans",
+            lambda: torch.tensor(
+                [[[float("nan"), 1.0, float("nan"), 0.0]]],
+                device="cuda",
+                dtype=torch.float16,
+            ),
+            id="window-with-multiple-nans",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "window_with_tied_maxima",
+            lambda: torch.tensor([[[5.0, 5.0, 4.0, 3.0]]], device="cuda", dtype=torch.float16),
+            id="window-with-tied-maxima",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "all_negative",
+            lambda: torch.tensor([[[-1.0, -2.0, -3.0, -4.0]]], device="cuda", dtype=torch.float16),
+            id="all-negative",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "padding_does_not_win_over_negative",
+            lambda: torch.full((1, 1, 4), -5.0, device="cuda", dtype=torch.float16),
+            id="padding-does-not-win",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_max_pool1d_special_values(
+    case_name: str,
+    input_builder: Callable[[], torch.Tensor],
+    return_indices: bool,
+) -> None:
+    _ = case_name
+    x = input_builder()
+    kwargs = {
+        "kernel_size": 3,
+        "stride": 1,
+        "padding": 1,
+        "return_indices": return_indices,
+    }
+    ref = F.max_pool1d(x, **kwargs)
+    if return_indices:
+        op = MaxPool1dIndicesFwdOp(kernel_size=3, stride=1, padding=1)
+        out, idx = op(x)
+        torch.testing.assert_close(out, ref[0], rtol=0, atol=0, equal_nan=True)
+        torch.testing.assert_close(idx, ref[1], rtol=0, atol=0)
+    else:
+        op = MaxPool1dFwdOp(kernel_size=3, stride=1, padding=1)
+        out = op(x)
+        torch.testing.assert_close(out, ref, rtol=0, atol=0, equal_nan=True)
+
+
+@pytest.mark.parametrize(
+    ("op_cls", "kernel_slot"),
+    [
+        pytest.param(MaxPool1dFwdOp, "max_pool1d_kernel", id="max-pool1d"),
+        pytest.param(
+            MaxPool1dIndicesFwdOp,
+            "max_pool1d_with_indices_kernel",
+            id="max-pool1d-indices",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("kwargs", "exc_type", "match"),
+    [
+        pytest.param(
+            {"kernel_size": True},
+            TypeError,
+            "kernel_size must be an int or a tuple of 1 ints",
+            id="kernel-size-type",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            {"kernel_size": 3, "stride": 0},
+            ValueError,
+            "stride must be greater than zero",
+            id="zero-stride",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            {"kernel_size": 3, "padding": 2},
+            ValueError,
+            "padding must be at most half",
+            id="padding-too-large",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            {"kernel_size": 3, "ceil_mode": "true"},
+            TypeError,
+            "ceil_mode must be a bool",
+            id="ceil-mode-type",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_max_pool1d_rejects_invalid_params(
+    op_cls: type,
+    kernel_slot: str,
+    kwargs: dict[str, object],
+    exc_type: type[Exception],
+    match: str,
+) -> None:
+    _ = kernel_slot
+    base_kwargs = {"kernel_size": 3}
+    base_kwargs.update(kwargs)
+    with pytest.raises(exc_type, match=match):
+        op_cls(**base_kwargs)
+
+
+_MAX_POOL1D_DUMMY_KERNELS: dict[type, type[Kernel]] = {
+    MaxPool1dFwdOp: MaxPool1dKernel,
+    MaxPool1dIndicesFwdOp: MaxPool1dWithIndicesKernel,
+}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    ("op_cls", "kernel_slot"),
+    [
+        pytest.param(MaxPool1dFwdOp, "max_pool1d_kernel", id="max-pool1d"),
+        pytest.param(
+            MaxPool1dIndicesFwdOp,
+            "max_pool1d_with_indices_kernel",
+            id="max-pool1d-indices",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("case_name", "extra_kwargs", "input_spec", "expected_match", "needs_dummy_kernel"),
+    [
+        pytest.param(
+            "non_3d_input",
+            {},
+            ((2, 8, 16, 16), None),
+            "expects input to be a 3D NCL tensor",
+            True,
+            id="non-3d-input",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            "cpu_input",
+            {},
+            ((1, 1, 8), None),
+            "input must be a CUDA tensor",
+            False,
+            id="cpu-input",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "unsupported_dtype",
+            {},
+            ((1, 1, 8), torch.float64),
+            "input.dtype must be float16, bfloat16, or float32",
+            False,
+            id="unsupported-dtype",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "non_positive_output_size",
+            {"kernel_size": 5, "stride": 1, "padding": 0},
+            ((1, 1, 2), torch.float16),
+            "output size must be greater than zero",
+            False,
+            id="non-positive-output-size",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_max_pool1d_rejects_invalid_input(
+    op_cls: type,
+    kernel_slot: str,
+    case_name: str,
+    extra_kwargs: dict[str, object],
+    input_spec: tuple[tuple[int, ...], torch.dtype | None],
+    expected_match: str,
+    needs_dummy_kernel: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = case_name
+    kwargs = {"kernel_size": 3}
+    kwargs.update(extra_kwargs)
+    if needs_dummy_kernel:
+        monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
+        kwargs["kernel_map"] = {kernel_slot: _MAX_POOL1D_DUMMY_KERNELS[op_cls]}
+    op = op_cls(**kwargs)
+
+    shape, dtype = input_spec
+    x = torch.randn(*shape) if dtype is None else torch.randn(*shape, device="cuda", dtype=dtype)
+    with pytest.raises(ValueError, match=expected_match):
+        op(x)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    ("op_cls", "return_indices"),
+    [
+        pytest.param(MaxPool1dFwdOp, False, id="max-pool1d"),
+        pytest.param(MaxPool1dIndicesFwdOp, True, id="max-pool1d-indices"),
+    ],
+)
+def test_max_pool1d_dynamic_shape_kernel_cache_and_roofline(
+    op_cls: type,
+    return_indices: bool,
+) -> None:
+    _ = return_indices
+    op = op_cls(kernel_size=3, stride=2, padding=1)
+    x1 = torch.randn(1, 4, 32, dtype=torch.float16, device="cuda")
+    x2 = torch.randn(2, 4, 32, dtype=torch.float16, device="cuda")
+
+    with pytest.raises(RuntimeError, match="requires a prior forward"):
+        op.eval_roofline()
+
+    op(x1)
+    assert len(op._kernel_cache) == 1
+    flops, nbytes = op.eval_roofline()
+    assert flops > 0
+    assert nbytes > 0
+
+    op(x1)
+    assert len(op._kernel_cache) == 1
+
+    op(x2)
+    assert len(op._kernel_cache) == 2
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    ("op_cls", "return_indices"),
+    [
+        pytest.param(MaxPool1dFwdOp, False, id="max-pool1d"),
+        pytest.param(MaxPool1dIndicesFwdOp, True, id="max-pool1d-indices"),
+    ],
+)
+def test_max_pool1d_compile_fullgraph(
+    op_cls: type,
+    return_indices: bool,
+) -> None:
+    op = op_cls(kernel_size=3, stride=2, padding=1)
+    x = torch.randn(2, 8, 32, device="cuda", dtype=torch.float16)
+    # Warm up the kernel cache so torch.compile traces only the custom-op call.
+    op(x)
+    compiled = torch.compile(op, fullgraph=True)
+    out = compiled(x)
+    ref = F.max_pool1d(
+        x,
+        kernel_size=3,
+        stride=2,
+        padding=1,
+        return_indices=return_indices,
+    )
+    if return_indices:
+        torch.testing.assert_close(out[0], ref[0], atol=0, rtol=0, equal_nan=True)
+        torch.testing.assert_close(out[1], ref[1], atol=0, rtol=0)
+    else:
+        torch.testing.assert_close(out, ref, atol=0, rtol=0)
+
+
+_MAX_POOL3D_PARAMS = [
+    # Smoke: one config across all supported dtypes.
+    pytest.param(
+        2,
+        4,
+        8,
+        16,
+        16,
+        (2, 2, 2),
+        (2, 2, 2),
+        (0, 0, 0),
+        (1, 1, 1),
+        False,
+        torch.float16,
+        False,
+        True,
+        marks=[pytest.mark.smoke, pytest.mark.packaging],
+        id="smoke-k2-s2-fp16",
+    ),
+    pytest.param(
+        2,
+        4,
+        8,
+        16,
+        16,
+        (2, 2, 2),
+        (2, 2, 2),
+        (0, 0, 0),
+        (1, 1, 1),
+        False,
+        torch.bfloat16,
+        False,
+        True,
+        marks=pytest.mark.smoke,
+        id="smoke-k2-s2-bf16",
+    ),
+    pytest.param(
+        1,
+        4,
+        8,
+        16,
+        16,
+        (2, 2, 2),
+        (2, 2, 2),
+        (0, 0, 0),
+        (1, 1, 1),
+        False,
+        torch.float32,
+        False,
+        True,
+        marks=pytest.mark.smoke,
+        id="smoke-k2-s2-fp32",
+    ),
+    # Full: distinct setting combinations.
+    pytest.param(
+        1,
+        4,
+        6,
+        14,
+        14,
+        (3, 3, 3),
+        None,
+        (1, 1, 1),
+        (2, 1, 1),
+        False,
+        torch.float16,
+        False,
+        True,
+        marks=pytest.mark.full,
+        id="full-default-stride-dilation-fp16",
+    ),
+    pytest.param(
+        1,
+        4,
+        7,
+        23,
+        27,
+        (1, 3, 5),
+        (1, 2, 3),
+        (0, 1, 2),
+        (1, 1, 1),
+        True,
+        torch.float16,
+        False,
+        True,
+        marks=pytest.mark.full,
+        id="full-noncube-ceil-fp16",
+    ),
+    pytest.param(
+        2,
+        4,
+        8,
+        16,
+        16,
+        (2, 2, 2),
+        (2, 2, 2),
+        (0, 0, 0),
+        (1, 1, 1),
+        False,
+        torch.float16,
+        False,
+        False,
+        marks=pytest.mark.full,
+        id="full-noncontiguous-k2-fp16",
+    ),
+    pytest.param(
+        1,
+        4,
+        7,
+        23,
+        27,
+        (1, 3, 5),
+        (1, 2, 3),
+        (0, 1, 2),
+        (1, 1, 1),
+        True,
+        torch.bfloat16,
+        False,
+        True,
+        marks=pytest.mark.full,
+        id="full-noncube-ceil-bf16",
+    ),
+]
+
+
+def _max_pool3d_manifest_test_params() -> list:
+    """Build exact correctness cases from the MaxPool3d manifest workloads."""
+    params = []
+    for workload in load_workloads("MaxPool3dFwdOp"):
+        n, c_in, d_in, h_in, w_in = workload["input_shape"]
+        kernel_size = (
+            tuple(workload["kernel_size"])
+            if isinstance(workload["kernel_size"], list)
+            else (workload["kernel_size"],) * 3
+        )
+        stride = workload.get("stride")
+        if stride is not None:
+            stride = tuple(stride) if isinstance(stride, list) else (stride,) * 3
+        padding = workload.get("padding", 0)
+        padding = tuple(padding) if isinstance(padding, list) else (padding,) * 3
+        dilation = workload.get("dilation", 1)
+        dilation = tuple(dilation) if isinstance(dilation, list) else (dilation,) * 3
+        ceil_mode = workload.get("ceil_mode", False)
+        label = workload.get("label", f"{n}x{c_in}x{d_in}x{h_in}x{w_in}")
+        for dtype_str in workload["dtypes"]:
+            params.append(
+                pytest.param(
+                    n,
+                    c_in,
+                    d_in,
+                    h_in,
+                    w_in,
+                    kernel_size,
+                    stride,
+                    padding,
+                    dilation,
+                    ceil_mode,
+                    getattr(torch, dtype_str),
+                    False,
+                    True,
+                    marks=pytest.mark.full,
+                    id=f"manifest-{label}-{dtype_str}",
+                )
+            )
+    return params
+
+
+_MAX_POOL3D_PARAMS.extend(_max_pool3d_manifest_test_params())
+
+
+class MaxPool3dFixture(FixtureBase):
+    PARAMS = [
+        (
+            "n, c_in, d_in, h_in, w_in, kernel_size, stride, padding, dilation, ceil_mode, dtype, tune, contiguous",
+            _MAX_POOL3D_PARAMS,
+        ),
+    ]
+
+
+class MaxPool3dTest(TestBase):
+    def __init__(
+        self,
+        kernel_size: tuple[int, int, int],
+        stride: Optional[tuple[int, int, int]],
+        padding: tuple[int, int, int],
+        dilation: tuple[int, int, int],
+        ceil_mode: bool,
+        dtype: torch.dtype,
+        contiguous: bool = True,
+        return_indices: bool = False,
+    ) -> None:
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.ceil_mode = ceil_mode
+        self.dtype = dtype
+        self.contiguous = contiguous
+        self.return_indices = return_indices
+
+    def gen_inputs(
+        self,
+        n: int,
+        c_in: int,
+        d_in: int,
+        h_in: int,
+        w_in: int,
+    ) -> tuple[torch.Tensor]:
+        x = torch.randn(n, c_in, d_in, h_in, w_in, device="cuda", dtype=self.dtype)
+        if self.contiguous:
+            x = x.contiguous()
+        else:
+            # Non-contiguous NCDHW view: transpose twice so strides differ but
+            # shape semantics stay NCDHW.
+            x = x.transpose(3, 4).contiguous().transpose(3, 4)
+            assert not x.is_contiguous()
+        return (x,)
+
+    def ref_program(self, input: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        return F.max_pool3d(
+            input,
+            kernel_size=self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            ceil_mode=self.ceil_mode,
+            return_indices=self.return_indices,
+        )
+
+
+@MaxPool3dFixture
+def test_max_pool3d(
+    n: int,
+    c_in: int,
+    d_in: int,
+    h_in: int,
+    w_in: int,
+    kernel_size: tuple[int, int, int],
+    stride: Optional[tuple[int, int, int]],
+    padding: tuple[int, int, int],
+    dilation: tuple[int, int, int],
+    ceil_mode: bool,
+    dtype: torch.dtype,
+    tune: bool,
+    contiguous: bool,
+) -> None:
+    # Test return_indices=False path.
+    test = MaxPool3dTest(
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+        ceil_mode,
+        dtype,
+        contiguous=contiguous,
+        return_indices=False,
+    )
+    op = MaxPool3dFwdOp(
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        ceil_mode=ceil_mode,
+        tune=tune,
+    )
+    test.check(op, *test.gen_inputs(n, c_in, d_in, h_in, w_in), atol=0, rtol=0)
+
+    # Test return_indices=True path on the same inputs.
+    test_idx = MaxPool3dTest(
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+        ceil_mode,
+        dtype,
+        contiguous=contiguous,
+        return_indices=True,
+    )
+    op_idx = MaxPool3dIndicesFwdOp(
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        ceil_mode=ceil_mode,
+        tune=tune,
+    )
+    test_idx.check(op_idx, *test_idx.gen_inputs(n, c_in, d_in, h_in, w_in), atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("return_indices", [False, True])
+@pytest.mark.parametrize(
+    ("case_name", "input_builder"),
+    [
+        pytest.param(
+            "window_all_neg_inf",
+            lambda: torch.full((1, 1, 3, 3, 3), float("-inf"), device="cuda", dtype=torch.float16),
+            id="window-all-neg-inf",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            "window_with_nan",
+            lambda: torch.tensor(
+                [[[[[1.0, float("nan")], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]]],
+                device="cuda",
+                dtype=torch.float16,
+            ),
+            id="window-with-nan",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "window_with_multiple_nans",
+            lambda: torch.tensor(
+                [[[[[float("nan"), 1.0], [float("nan"), 0.0]], [[2.0, 3.0], [4.0, 5.0]]]]],
+                device="cuda",
+                dtype=torch.float16,
+            ),
+            id="window-with-multiple-nans",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "window_with_tied_maxima",
+            lambda: torch.tensor(
+                [[[[[5.0, 5.0], [4.0, 3.0]], [[2.0, 1.0], [0.0, -1.0]]]]],
+                device="cuda",
+                dtype=torch.float16,
+            ),
+            id="window-with-tied-maxima",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "all_negative",
+            lambda: torch.full((1, 1, 2, 2, 2), -5.0, device="cuda", dtype=torch.float16),
+            id="all-negative",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "padding_does_not_win_over_negative",
+            lambda: torch.full((1, 1, 3, 3, 3), -5.0, device="cuda", dtype=torch.float16),
+            id="padding-does-not-win",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_max_pool3d_special_values(
+    case_name: str,
+    input_builder: Callable[[], torch.Tensor],
+    return_indices: bool,
+) -> None:
+    _ = case_name
+    x = input_builder()
+    kwargs = {
+        "kernel_size": 2,
+        "stride": 1,
+        "padding": 1,
+        "return_indices": return_indices,
+    }
+    ref = F.max_pool3d(x, **kwargs)
+    if return_indices:
+        op = MaxPool3dIndicesFwdOp(kernel_size=2, stride=1, padding=1)
+        out, idx = op(x)
+        torch.testing.assert_close(out, ref[0], rtol=0, atol=0, equal_nan=True)
+        torch.testing.assert_close(idx, ref[1], rtol=0, atol=0)
+    else:
+        op = MaxPool3dFwdOp(kernel_size=2, stride=1, padding=1)
+        out = op(x)
+        torch.testing.assert_close(out, ref, rtol=0, atol=0, equal_nan=True)
+
+
+@pytest.mark.parametrize(
+    ("op_cls", "kernel_slot"),
+    [
+        pytest.param(MaxPool3dFwdOp, "max_pool3d_kernel", id="max-pool3d"),
+        pytest.param(
+            MaxPool3dIndicesFwdOp,
+            "max_pool3d_with_indices_kernel",
+            id="max-pool3d-indices",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("kwargs", "exc_type", "match"),
+    [
+        pytest.param(
+            {"kernel_size": True},
+            TypeError,
+            "kernel_size must be an int or a tuple of 3 ints",
+            id="kernel-size-type",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            {"kernel_size": 3, "stride": (1, 0, 1)},
+            ValueError,
+            "stride must be greater than zero",
+            id="zero-stride",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            {"kernel_size": 3, "padding": (0, 2, 0)},
+            ValueError,
+            "padding must be at most half",
+            id="padding-too-large",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            {"kernel_size": 3, "ceil_mode": "true"},
+            TypeError,
+            "ceil_mode must be a bool",
+            id="ceil-mode-type",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_max_pool3d_rejects_invalid_params(
+    op_cls: type,
+    kernel_slot: str,
+    kwargs: dict[str, object],
+    exc_type: type[Exception],
+    match: str,
+) -> None:
+    _ = kernel_slot
+    base_kwargs = {"kernel_size": 3}
+    base_kwargs.update(kwargs)
+    with pytest.raises(exc_type, match=match):
+        op_cls(**base_kwargs)
+
+
+_MAX_POOL3D_DUMMY_KERNELS: dict[type, type[Kernel]] = {
+    MaxPool3dFwdOp: MaxPool3dKernel,
+    MaxPool3dIndicesFwdOp: MaxPool3dWithIndicesKernel,
+}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    ("op_cls", "kernel_slot"),
+    [
+        pytest.param(MaxPool3dFwdOp, "max_pool3d_kernel", id="max-pool3d"),
+        pytest.param(
+            MaxPool3dIndicesFwdOp,
+            "max_pool3d_with_indices_kernel",
+            id="max-pool3d-indices",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("case_name", "extra_kwargs", "input_spec", "expected_match", "needs_dummy_kernel"),
+    [
+        pytest.param(
+            "non_5d_input",
+            {},
+            ((2, 8, 16, 16), None),
+            "expects input to be a 5D NCDHW tensor",
+            True,
+            id="non-5d-input",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            "cpu_input",
+            {},
+            ((1, 1, 4, 8, 8), None),
+            "input must be a CUDA tensor",
+            False,
+            id="cpu-input",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "unsupported_dtype",
+            {},
+            ((1, 1, 4, 8, 8), torch.float64),
+            "input.dtype must be float16, bfloat16, or float32",
+            False,
+            id="unsupported-dtype",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            "non_positive_output_size",
+            {"kernel_size": 5, "stride": 1, "padding": 0},
+            ((1, 1, 2, 8, 8), torch.float16),
+            "output size must be greater than zero",
+            False,
+            id="non-positive-output-size",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_max_pool3d_rejects_invalid_input(
+    op_cls: type,
+    kernel_slot: str,
+    case_name: str,
+    extra_kwargs: dict[str, object],
+    input_spec: tuple[tuple[int, ...], torch.dtype | None],
+    expected_match: str,
+    needs_dummy_kernel: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = case_name
+    kwargs = {"kernel_size": 3}
+    kwargs.update(extra_kwargs)
+    if needs_dummy_kernel:
+        monkeypatch.setattr("tileops.ops.op_base.get_sm_version", lambda: 80)
+        kwargs["kernel_map"] = {kernel_slot: _MAX_POOL3D_DUMMY_KERNELS[op_cls]}
+    op = op_cls(**kwargs)
+
+    shape, dtype = input_spec
+    x = torch.randn(*shape) if dtype is None else torch.randn(*shape, device="cuda", dtype=dtype)
+    with pytest.raises(ValueError, match=expected_match):
+        op(x)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    ("op_cls", "return_indices"),
+    [
+        pytest.param(MaxPool3dFwdOp, False, id="max-pool3d"),
+        pytest.param(MaxPool3dIndicesFwdOp, True, id="max-pool3d-indices"),
+    ],
+)
+def test_max_pool3d_dynamic_shape_kernel_cache_and_roofline(
+    op_cls: type,
+    return_indices: bool,
+) -> None:
+    _ = return_indices
+    op = op_cls(kernel_size=3, stride=2, padding=1)
+    x1 = torch.randn(1, 4, 8, 16, 16, dtype=torch.float16, device="cuda")
+    x2 = torch.randn(2, 4, 8, 16, 16, dtype=torch.float16, device="cuda")
+
+    with pytest.raises(RuntimeError, match="requires a prior forward"):
+        op.eval_roofline()
+
+    op(x1)
+    assert len(op._kernel_cache) == 1
+    flops, nbytes = op.eval_roofline()
+    assert flops > 0
+    assert nbytes > 0
+
+    op(x1)
+    assert len(op._kernel_cache) == 1
+
+    op(x2)
+    assert len(op._kernel_cache) == 2
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    ("op_cls", "return_indices"),
+    [
+        pytest.param(MaxPool3dFwdOp, False, id="max-pool3d"),
+        pytest.param(MaxPool3dIndicesFwdOp, True, id="max-pool3d-indices"),
+    ],
+)
+def test_max_pool3d_compile_fullgraph(
+    op_cls: type,
+    return_indices: bool,
+) -> None:
+    op = op_cls(kernel_size=3, stride=2, padding=1)
+    x = torch.randn(1, 4, 8, 16, 16, device="cuda", dtype=torch.float16)
+    # Warm up the kernel cache so torch.compile traces only the custom-op call.
+    op(x)
+    compiled = torch.compile(op, fullgraph=True)
+    out = compiled(x)
+    ref = F.max_pool3d(
+        x,
+        kernel_size=3,
+        stride=2,
+        padding=1,
+        return_indices=return_indices,
+    )
+    if return_indices:
+        torch.testing.assert_close(out[0], ref[0], atol=0, rtol=0, equal_nan=True)
+        torch.testing.assert_close(out[1], ref[1], atol=0, rtol=0)
+    else:
+        torch.testing.assert_close(out, ref, atol=0, rtol=0)
 
 
 _MAX_POOL2D_PARAMS = [
