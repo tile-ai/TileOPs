@@ -10,7 +10,6 @@ from tileops.ops import GemmFp8Op, GemmOp
 
 _OP_NAME = "GemmOp"
 _FP8_OP_NAME = "GemmFp8Op"
-_FLASHINFER_FP8_PER_TENSOR_SKIP_SHAPES = {(4096, 2112, 7168)}
 
 _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
@@ -87,6 +86,16 @@ def _prepare_flashinfer_fp8_per_tensor(
     prepared_b = flashinfer.prepare_low_latency_gemm_weights(b, {})
     alpha = (scale_a * scale_b).reshape(())
     return prepared_b, alpha
+
+
+def _flashinfer_fp8_per_tensor_unsupported_reason(device: torch.device) -> Optional[str]:
+    major, minor = torch.cuda.get_device_capability(device)
+    if major < 10:
+        return (
+            "TRTLLM low-latency GEMM requires Blackwell (sm100+), "
+            f"but the current device is sm{major}{minor}"
+        )
+    return None
 
 
 class GemmFp8Benchmark(BenchmarkBase[GemmFp8Test]):
@@ -175,12 +184,10 @@ def test_gemm_fp8_bench(
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-scaled-mm")
 
     if scale_mode == "per_tensor":
-        if (m, n, k) in _FLASHINFER_FP8_PER_TENSOR_SKIP_SHAPES:
-            # FlashInfer 0.6.11.post2 leaves a native module-cache failure
-            # behind for this workload, which can segfault a later case.
+        unsupported_reason = _flashinfer_fp8_per_tensor_unsupported_reason(inputs[0].device)
+        if unsupported_reason is not None:
             print(
-                "  [skip] flashinfer-mm-fp8: known issue #1733 "
-                f"(shape={(m, n, k)})"
+                f"  [skip] flashinfer-mm-fp8: {unsupported_reason}"
             )
             return
         flashinfer = pytest.importorskip("flashinfer")
