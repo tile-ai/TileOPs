@@ -635,6 +635,8 @@ class RopeNeoxPositionIdsOp(Op):
             raise ValueError("RopeNeoxPositionIdsOp expects input shape [tokens, heads, head_dim]")
         self.num_tokens, self.num_heads, self.head_dim = x.shape
         rotary_dim = self.head_dim if self.rotary_dim is None else self.rotary_dim
+        if rotary_dim % 2 != 0:
+            raise ValueError("rotary_dim (or head_dim if rotary_dim is None) must be even")
         if rotary_dim > self.head_dim:
             raise ValueError("rotary_dim must not exceed head_dim")
         self.rotary_dim = rotary_dim

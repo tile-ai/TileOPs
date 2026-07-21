@@ -62,6 +62,8 @@ class TopkSelectorOp(Op):
             raise ValueError("TopkSelectorOp expects index_score shape [B, S, S_kv, G]")
         if starts.ndim != 2 or ends.ndim != 2:
             raise ValueError("TopkSelectorOp expects starts/ends shape [B, S]")
+        if not starts.is_cuda or not ends.is_cuda:
+            raise ValueError("starts and ends must be CUDA tensors")
         if starts.dtype != torch.int32 or ends.dtype != torch.int32:
             raise ValueError("TopkSelectorOp expects int32 starts/ends tensors")
 

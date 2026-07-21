@@ -197,6 +197,10 @@ class Mamba2FwdOp:
             raise ValueError("dt_bias must have shape [n_heads]")
         if initial_states is not None and initial_states.shape != (batch, n_heads, d_head, d_state):
             raise ValueError("initial_states must have shape [batch, n_heads, d_head, d_state]")
+        if B.dtype != x.dtype:
+            raise ValueError(f"B.dtype must be {x.dtype}, got {B.dtype}")
+        if C.dtype != x.dtype:
+            raise ValueError(f"C.dtype must be {x.dtype}, got {C.dtype}")
         dev = x.device
 
         self.batch = batch

@@ -372,6 +372,9 @@ class DeltaNetOp(Op):
         if beta.shape != (batch, heads, seq_len):
             raise ValueError("beta must have shape [batch, heads, seq_len]")
         dtype = q.dtype
+        for name, tensor in (("k", k), ("v", v), ("beta", beta)):
+            if tensor.dtype != dtype:
+                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
         if seq_len % self.chunk_size != 0:
             raise ValueError(
                 f"seq_len ({seq_len}) must be divisible by chunk_size ({self.chunk_size})"

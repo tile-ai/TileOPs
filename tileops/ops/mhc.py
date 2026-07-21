@@ -135,6 +135,10 @@ class MHCPostOp(Op):
             raise ValueError(
                 f"x_res.shape[1] must equal n_expand * c_x={n_expand * c_x}, got {x_res.shape[1]}"
             )
+        if x_res.dtype != x_layer_out.dtype:
+            raise ValueError(
+                f"x_res.dtype must match x_layer_out.dtype ({x_layer_out.dtype}), got {x_res.dtype}"
+            )
         self.batch = batch
         self.n_expand = n_expand
         self.c_x = c_x

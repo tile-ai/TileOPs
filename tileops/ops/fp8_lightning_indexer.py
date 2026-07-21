@@ -97,10 +97,17 @@ class FP8LightningIndexerOp(Op):
             raise ValueError("heads must be divisible by kv_group")
         if weights.shape != (seq_len, heads):
             raise ValueError("weights must have shape [seq_len, heads]")
+        if weights.dtype != torch.float32:
+            raise ValueError(f"weights must be float32, got {weights.dtype}")
         if cu_seqlen_ks.shape != (seq_len,) or cu_seqlen_ke.shape != (seq_len,):
             raise ValueError("cu_seqlen_ks/cu_seqlen_ke must have shape [seq_len]")
-        if index_k_scale is not None and index_k_scale.shape != (batch, seq_len_kv, kv_group):
-            raise ValueError("index_k_scale must have shape [batch, seq_len_kv, kv_group]")
+        if cu_seqlen_ks.dtype != torch.int32 or cu_seqlen_ke.dtype != torch.int32:
+            raise ValueError("cu_seqlen_ks and cu_seqlen_ke must be int32")
+        if index_k_scale is not None:
+            if index_k_scale.shape != (batch, seq_len_kv, kv_group):
+                raise ValueError("index_k_scale must have shape [batch, seq_len_kv, kv_group]")
+            if index_k_scale.dtype != torch.float32:
+                raise ValueError(f"index_k_scale must be float32, got {index_k_scale.dtype}")
 
         self.batch = batch
         self.seq_len = seq_len
