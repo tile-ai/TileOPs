@@ -10,6 +10,7 @@ from tileops.ops import GemmFp8Op, GemmOp
 
 _OP_NAME = "GemmOp"
 _FP8_OP_NAME = "GemmFp8Op"
+_FLASHINFER_FP8_PER_TENSOR_SKIP_SHAPES = {(4096, 2112, 7168)}
 
 _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
@@ -64,6 +65,28 @@ def _flashinfer_fp8_blockscale_ref(test: GemmFp8Test, *inputs: torch.Tensor) -> 
             f"got {tuple(scale_a.shape)} and {tuple(scale_b.shape)}"
         )
     return fp8_blockscale_gemm_sm90(a, b, scale_a, scale_b, out_dtype=test.out_dtype)
+
+
+def _prepare_flashinfer_fp8_per_tensor(
+    test: GemmFp8Test, *inputs: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    import flashinfer
+
+    a, b, scale_a, scale_b = inputs[:4]
+    if len(inputs) == 5:
+        raise ValueError("FlashInfer FP8 per-tensor GEMM baseline does not support bias.")
+    if a.dtype != torch.float8_e4m3fn or b.dtype != torch.float8_e4m3fn:
+        raise ValueError("FlashInfer FP8 per-tensor GEMM baseline requires float8_e4m3fn.")
+    if test.out_dtype != torch.bfloat16:
+        raise ValueError("FlashInfer FP8 per-tensor GEMM baseline requires bfloat16 output.")
+    if scale_a.shape != (1, 1) or scale_b.shape != (1, 1):
+        raise ValueError(
+            "FlashInfer FP8 per-tensor GEMM baseline requires (1, 1) scales, "
+            f"got {tuple(scale_a.shape)} and {tuple(scale_b.shape)}"
+        )
+    prepared_b = flashinfer.prepare_low_latency_gemm_weights(b, {})
+    alpha = (scale_a * scale_b).reshape(())
+    return prepared_b, alpha
 
 
 class GemmFp8Benchmark(BenchmarkBase[GemmFp8Test]):
@@ -152,10 +175,26 @@ def test_gemm_fp8_bench(
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-scaled-mm")
 
     if scale_mode == "per_tensor":
-        # FlashInfer's TRTLLM low-latency GEMM can retain invalid module
-        # cache after an unsupported per-tensor shape fails, causing a later
-        # benchmark case to segfault in cuModuleGetFunction (issue #1733).
-        print("  [skip] flashinfer-mm-fp8: disabled due to native cache corruption (issue #1733)")
+        if (m, n, k) in _FLASHINFER_FP8_PER_TENSOR_SKIP_SHAPES:
+            # FlashInfer 0.6.11.post2 leaves a native module-cache failure
+            # behind for this workload, which can segfault a later case.
+            print(
+                "  [skip] flashinfer-mm-fp8: known issue #1733 "
+                f"(shape={(m, n, k)})"
+            )
+            return
+        flashinfer = pytest.importorskip("flashinfer")
+        prepared_b, alpha = _prepare_flashinfer_fp8_per_tensor(test, *inputs)
+        try:
+            result_flashinfer = bm.profile(
+                lambda a: flashinfer.mm_fp8(a, prepared_b, alpha, out_dtype=out_dtype),
+                inputs[0],
+            )
+        except RuntimeError as exc:
+            reason = str(exc).splitlines()[0]
+            print(f"  [skip] flashinfer-mm-fp8: {reason}")
+            return
+        BenchmarkReport.record(op, locals(), result_flashinfer, tag="flashinfer-mm-fp8")
         return
 
     if scale_mode == "block128":
