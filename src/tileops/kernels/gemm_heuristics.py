@@ -44,6 +44,12 @@ __all__ = ["best_config", "gemv_config", "small_batch_config"]
 
 _SMEM_BUDGET = 227 * 1024  # SM90 per-CTA opt-in SMEM ceiling
 _MAX_ACCUM_REGS = 200
+_DEFAULT_SM_COUNT = 132  # H100/H200 SXM fallback when no device is bound
+
+# n-tile width of the tiny-m generic configs. ``select_kernel``'s underfill
+# gate prices the competing generic grid with the same width — retune them
+# together.
+TINY_M_BLOCK_N = 128
 
 # Validated num_stages ranges per structure in the shipped kernels.
 _NS_CAP = {"basic": 4, "splitk": 4, "coop2": 6, "coop2_splitk": 4}
@@ -232,15 +238,31 @@ def _tiny_m_config(k: int) -> dict:
     k_iters = math.ceil(k / 128)
     for sk in (4, 2):
         if k_iters % sk == 0 and k_iters // sk >= 12:
-            return {"block_m": 64, "block_n": 128, "block_k": 128,
+            return {"block_m": 64, "block_n": TINY_M_BLOCK_N, "block_k": 128,
                     "num_stages": 4, "panel_size": 16, "split_k": sk}
-    return {"block_m": 64, "block_n": 128, "block_k": 128,
+    return {"block_m": 64, "block_n": TINY_M_BLOCK_N, "block_k": 128,
             "num_stages": 4, "panel_size": 8, "split_k": 1}
 
 
 @functools.lru_cache(maxsize=512)
+def _best_config_cached(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
+                        sm_count: int) -> dict:
+    """Cached selection body of :func:`best_config` — do not mutate results."""
+    if m <= 8 and not trans_a and trans_b:
+        return _tiny_m_config(k)
+    cands = _enumerate(m, n, k, trans_a, trans_b, sm_count)
+    if not cands:  # degenerate shapes: fall back to the modal default
+        return {"block_m": 128, "block_n": 128, "block_k": 64,
+                "num_stages": 4, "panel_size": 16, "split_k": 1}
+    # Residual score ties break toward larger block_k (fewer K iterations,
+    # measured faster whenever the byte model cannot separate candidates).
+    best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count),
+                                     -c.block_k))
+    return best.to_config()
+
+
 def best_config(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
-                sm_count: int = 132) -> dict:
+                sm_count: int = _DEFAULT_SM_COUNT) -> dict:
     """Return the analytically selected ``GemmKernel`` config for a shape.
 
     Args:
@@ -255,19 +277,12 @@ def best_config(m: int, n: int, k: int, trans_a: bool, trans_b: bool,
         A config dict in ``GemmKernel`` schema — either the single-consumer
         form (``block_m/block_n/block_k/num_stages/panel_size/split_k``,
         optionally ``simple``) or a structure-flagged form (``coop2`` /
-        ``coop2_splitk``).
+        ``coop2_splitk``). A fresh dict per call: the selection itself is
+        cached, but callers hold (and may mutate) their own copy — sibling
+        kernel families mutate ``self.config`` in place, and a shared cached
+        dict would be poisoned by that idiom.
     """
-    if m <= 8 and not trans_a and trans_b:
-        return _tiny_m_config(k)
-    cands = _enumerate(m, n, k, trans_a, trans_b, sm_count)
-    if not cands:  # degenerate shapes: fall back to the modal default
-        return {"block_m": 128, "block_n": 128, "block_k": 64,
-                "num_stages": 4, "panel_size": 16, "split_k": 1}
-    # Residual score ties break toward larger block_k (fewer K iterations,
-    # measured faster whenever the byte model cannot separate candidates).
-    best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count),
-                                     -c.block_k))
-    return best.to_config()
+    return dict(_best_config_cached(m, n, k, trans_a, trans_b, sm_count))
 
 
 def gemv_config(k: int) -> dict:
@@ -296,7 +311,7 @@ def gemv_config(k: int) -> dict:
     return {"block_n": 1, "reduce_threads": 128, "num_stages": 4}
 
 
-def small_batch_config(n: int, k: int, sm_count: int = 132) -> dict:
+def small_batch_config(n: int, k: int, sm_count: int = _DEFAULT_SM_COUNT) -> dict:
     """``SmallBatchGemmKernel`` (m == 2 NT band) config rule.
 
     Modal best across the dispatched band (H200 per-rep interleaved sweep):
@@ -308,7 +323,8 @@ def small_batch_config(n: int, k: int, sm_count: int = 132) -> dict:
     (attn-family 4096x7168 at m=2).
     """
     cfg = {"block_n": 1, "reduce_threads": 64, "num_stages": 4}
-    k_iters = math.ceil(k / (64 * 8))  # reduce_threads * tile_k (fp16/bf16)
+    # per-thread K iterations: tile_k is 8 for fp16/bf16 128-bit loads
+    k_iters = math.ceil(k / (cfg["reduce_threads"] * 8))
     if n >= 28 * sm_count and k_iters >= 12:
         cfg["num_stages"] = 2
     return cfg

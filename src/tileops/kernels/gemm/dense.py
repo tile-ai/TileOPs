@@ -7,7 +7,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.trace import trace
-from tileops.utils import get_sm_version, str2dtype
+from tileops.utils import get_sm_count, get_sm_version, str2dtype
 
 from .call_spec import gemv_region
 from .call_spec import gemv_region, small_batch_region
@@ -1467,11 +1467,7 @@ class GemmKernel(Kernel):
         self.trans_b = trans_b
         # Persistent-grid width for the coop2 (2-consumer) kernel: the device SM
         # count. Fixed per device, so it is a build-time constant of that kernel.
-        self.sm_count = (
-            torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
-            if torch.cuda.is_available()
-            else 132
-        )
+        self.sm_count = get_sm_count()
 
         self.kernel = _gemm_kernel(m, n, k, trans_a, trans_b, self.dtype_str)
 
@@ -1925,6 +1921,27 @@ def _(
     return torch.empty((n,), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
+# Autotune-grid geometry shared by the cp.async B-ring kernels
+# (``_gemv_kernel`` / ``_gemm_small_m_kernel``): 128-bit fp16/bf16 loads give
+# 8 elements per thread per tile; the ring guard budgets 224 KB — headroom
+# under the 227 KB SM90 opt-in ceiling (``gemm_heuristics._SMEM_BUDGET``)
+# because it models only the B ring, not the reduction scratch.
+_TILE_K = 8
+_SMEM_CAP = 224 * 1024
+
+
+def _bandwidth_autotune_grid(rts: tuple, bns: tuple, nss: tuple) -> list[dict]:
+    """Config grid for the bandwidth-mode kernels, guarded by thread and SMEM caps."""
+    return [
+        {"block_n": bn, "reduce_threads": rt, "num_stages": ns}
+        for rt in rts
+        for bn in bns
+        if rt * bn <= 1024
+        for ns in nss
+        if bn * (rt * _TILE_K) * 2 * ns <= _SMEM_CAP
+    ]
+
+
 class GemvKernel(Kernel):
     """Matrix-vector product; serves the layouts a vector operand can take."""
 
@@ -1967,20 +1984,7 @@ class GemvKernel(Kernel):
         # reduce_threads>32 opens a cross-warp SMEM tree reduction: more threads
         # per output row raise memory-level parallelism (the lever on bandwidth-
         # bound GEMV). num_stages>=2 pipelines the B-tile cp.async prefetch.
-        # Guards: threads = reduce_threads*block_n <= 1024, and the B ring SMEM
-        # (block_n * block_k * 2 * num_stages, block_k = reduce_threads*8 for
-        # 128-bit fp16/bf16 loads) <= the 224 KB opt-in budget.
-        _TILE_K = 8
-        _SMEM_CAP = 224 * 1024
-        configs = []
-        for rt in [32, 64, 128, 256]:
-            for bn in [1, 2, 4, 8, 16]:
-                if rt * bn > 1024:
-                    continue
-                for ns in [1, 2, 3, 4, 5, 6]:
-                    if bn * (rt * _TILE_K) * 2 * ns <= _SMEM_CAP:
-                        configs.append({"block_n": bn, "reduce_threads": rt, "num_stages": ns})
-        return configs
+        return _bandwidth_autotune_grid((32, 64, 128, 256), (1, 2, 4, 8, 16), (1, 2, 3, 4, 5, 6))
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         a = a.flatten().contiguous()
@@ -2003,11 +2007,8 @@ class SmallBatchGemmKernel(Kernel):
     (:func:`_gemm_small_m_kernel`, the CUDA-core generalization of
     :class:`GemvKernel`). Its inner loop pays ``m`` FMAs + ``m`` converts per
     weight element on CUDA cores, so the lead over the tensor-core
-    ``GemmKernel`` shrinks as ``m`` grows. Measured on H200 (per-rep
-    interleaved, full config grid, vs the analytic small-m generic configs):
-    at ``m == 2`` it is the fastest option on all three decode families
-    (0.97-1.10x the best cuBLAS); from ``m == 3`` the split-K / simple generic
-    overtakes it (e.g. 7168x2048: 0.81x vs the generic's 0.92x).
+    ``GemmKernel`` shrinks as ``m`` grows; the measured crossover and the
+    dispatch band live in ``gemm_call.small_batch_region``.
 
     Scope: SM90, NT only (``B`` is ``[N,K]`` → K contiguous → coalesced reduction
     over K; NN/TN/TT do not have that layout and fall through to ``GemmKernel``).
@@ -2054,31 +2055,13 @@ class SmallBatchGemmKernel(Kernel):
         # Measured band rule lives with the rest of the family's shape policy
         # in ``heuristics.small_batch_config``; ``tune=True`` refines
         # per shape over ``autotune_configs``.
-        sm_count = (
-            torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
-            if torch.cuda.is_available()
-            else 132
-        )
-        return small_batch_config(self.n, self.k, sm_count)
+        return small_batch_config(self.n, self.k, get_sm_count())
 
     @property
     def autotune_configs(self) -> list[dict]:
         # reduce_threads splits K across lanes (>32 → cross-warp SMEM tree reduce);
         # block_n is output columns per block; num_stages pipelines the B cp.async.
-        # Guards: threads = reduce_threads*block_n <= 1024, and the B ring SMEM
-        # (block_n * reduce_threads * tile_k(=8) * itemsize(2) * num_stages) within
-        # the 224 KB opt-in budget.
-        _TILE_K = 8
-        _SMEM_CAP = 224 * 1024
-        configs = []
-        for rt in (32, 64, 128):
-            for bn in (1, 2, 4):
-                if rt * bn > 1024:
-                    continue
-                for ns in (2, 3, 4, 5):
-                    if bn * (rt * _TILE_K) * 2 * ns <= _SMEM_CAP:
-                        configs.append({"block_n": bn, "reduce_threads": rt, "num_stages": ns})
-        return configs
+        return _bandwidth_autotune_grid((32, 64, 128), (1, 2, 4), (2, 3, 4, 5))
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.kernel(

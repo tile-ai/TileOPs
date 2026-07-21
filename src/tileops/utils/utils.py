@@ -44,12 +44,16 @@ def get_sm_version(index: "int | None" = None) -> int:
     return _sm_version(torch.cuda.current_device() if index is None else index)
 
 
-def get_sm_count(index: "int | None" = None) -> int:
-    """Multiprocessors on the device; defaults to current.
+def get_sm_count(index: "int | None" = None, fallback: int = 132) -> int:
+    """Streaming-multiprocessor count of the device; defaults to current.
 
     Uncached: torch already caches device properties in C++, and the only
-    callers read this once per kernel construction.
+    callers read this once per kernel construction. Falls back to ``fallback``
+    (the H100/H200 SXM count) when CUDA is unavailable, so shape policy stays
+    computable off-device.
     """
+    if not torch.cuda.is_available():
+        return fallback
     device = torch.cuda.current_device() if index is None else index
     return torch.cuda.get_device_properties(device).multi_processor_count
 
