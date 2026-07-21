@@ -405,6 +405,28 @@ def test_rope_neox_position_ids_validates_range() -> None:
         op(x, torch.tensor([0, 8], device="cuda", dtype=torch.int32))
 
 
+@pytest.mark.smoke
+def test_rope_neox_position_ids_none_rotary_dim_reinfers_head_dim() -> None:
+    from tileops.ops.rope import RopeNeoxPositionIdsOp
+
+    max_position = 64
+    position_ids = torch.arange(8, device="cuda", dtype=torch.int32)
+    op = RopeNeoxPositionIdsOp(max_position=max_position, rotary_dim=None)
+
+    x1 = torch.randn(8, 2, 16, device="cuda", dtype=torch.float16)
+    cos1, sin1 = _compute_freqs_cis_base(16, max_position, dtype=x1.dtype, device="cuda")
+    ref1 = ref_rope_neox_position_ids(x1, cos1, sin1, position_ids.long(), rotary_dim=None)
+    torch.testing.assert_close(op(x1, position_ids), ref1, atol=5e-3, rtol=1e-5)
+    assert op.rotary_dim == 16
+
+    x2 = torch.randn(8, 2, 32, device="cuda", dtype=torch.float16)
+    cos2, sin2 = _compute_freqs_cis_base(32, max_position, dtype=x2.dtype, device="cuda")
+    ref2 = ref_rope_neox_position_ids(x2, cos2, sin2, position_ids.long(), rotary_dim=None)
+    torch.testing.assert_close(op(x2, position_ids), ref2, atol=5e-3, rtol=1e-5)
+    assert op.rotary_dim == 32
+    assert op._requested_rotary_dim is None
+
+
 # ---------------------------------------------------------------------------
 # Non-neox (RoFormer) RoPE tests
 # ---------------------------------------------------------------------------

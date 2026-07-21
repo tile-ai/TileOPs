@@ -12,14 +12,13 @@ FP8LightningIndexerOp:
       weights: {dtype: "float32", shape: "[seq_len, heads]"}
       cu_seqlen_ks: {dtype: "int32", shape: "[seq_len]"}
       cu_seqlen_ke: {dtype: "int32", shape: "[seq_len]"}
-      index_k_scale: {dtype: "float32", shape: "[batch, seq_len_kv, kv_group]"}
+      index_k_scale: {dtype: "float32", shape: "[batch, seq_len_kv, kv_group]", optional: true}
     outputs:
       logits: {dtype: "float32", shape: "[batch, seq_len, seq_len_kv, kv_group]"}
     params:
       clean_logits: {type: bool, default: true}
       config: {type: "dict | None", default: null}
     dtype_combos:
-    - {index_q: bfloat16, index_k: bfloat16, weights: float32, cu_seqlen_ks: int32, cu_seqlen_ke: int32, index_k_scale: float32}
     - {index_q: float8_e4m3fn, index_k: float8_e4m3fn, weights: float32, cu_seqlen_ks: int32, cu_seqlen_ke: int32, index_k_scale: float32}
     shape_rules:
     - "index_q.ndim == 4 and index_k.ndim == 4"

@@ -108,6 +108,10 @@ class FP8LightningIndexerOp(Op):
                 raise ValueError("index_k_scale must have shape [batch, seq_len_kv, kv_group]")
             if index_k_scale.dtype != torch.float32:
                 raise ValueError(f"index_k_scale must be float32, got {index_k_scale.dtype}")
+            if index_q.dtype != torch.float8_e4m3fn or index_k.dtype != torch.float8_e4m3fn:
+                raise ValueError(
+                    "index_q and index_k must be float8_e4m3fn when index_k_scale is provided"
+                )
 
         self.batch = batch
         self.seq_len = seq_len

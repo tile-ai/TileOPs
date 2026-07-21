@@ -555,6 +555,7 @@ class RopeNeoxPositionIdsOp(Op):
         self.num_tokens = None
         self.num_heads = None
         self.head_dim = None
+        self._requested_rotary_dim = rotary_dim
         self.rotary_dim = rotary_dim
         self.max_position = max_position
         self.dtype = None
@@ -634,7 +635,11 @@ class RopeNeoxPositionIdsOp(Op):
         if x.ndim != 3:
             raise ValueError("RopeNeoxPositionIdsOp expects input shape [tokens, heads, head_dim]")
         self.num_tokens, self.num_heads, self.head_dim = x.shape
-        rotary_dim = self.head_dim if self.rotary_dim is None else self.rotary_dim
+        rotary_dim = (
+            self.head_dim
+            if self._requested_rotary_dim is None
+            else self._requested_rotary_dim
+        )
         if rotary_dim % 2 != 0:
             raise ValueError("rotary_dim (or head_dim if rotary_dim is None) must be even")
         if rotary_dim > self.head_dim:
