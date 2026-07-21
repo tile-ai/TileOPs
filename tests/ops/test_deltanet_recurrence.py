@@ -268,18 +268,11 @@ def test_deltanet_decode_raw_cuda_dispatch_selects_raw_on_supported_sm90(
 ) -> None:
     _mock_dispatch_arch(monkeypatch, 90)
 
-    op = DeltaNetDecodeOp(
-        1,
-        32,
-        128,
-        128,
-        dtype=dtype,
-        kernel_map=_dispatch_kernel_map(),
-        tune=tune,
-    )
+    op = DeltaNetDecodeOp(kernel_map=_dispatch_kernel_map(), tune=tune)
+    kernel = op._get_kernel(1, 32, 128, 128, dtype, device_index=None)
 
-    assert isinstance(op.kernel, _RawDispatchKernel)
-    assert op.kernel.kwargs["tune"] is tune
+    assert isinstance(kernel, _RawDispatchKernel)
+    assert kernel.kwargs["tune"] is tune
 
 
 @pytest.mark.smoke
@@ -288,17 +281,10 @@ def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_unsupported_sm(
 ) -> None:
     _mock_dispatch_arch(monkeypatch, 80)
 
-    op = DeltaNetDecodeOp(
-        1,
-        32,
-        128,
-        128,
-        dtype=torch.bfloat16,
-        kernel_map=_dispatch_kernel_map(),
-        tune=False,
-    )
+    op = DeltaNetDecodeOp(kernel_map=_dispatch_kernel_map(), tune=False)
+    kernel = op._get_kernel(1, 32, 128, 128, torch.bfloat16, device_index=None)
 
-    assert isinstance(op.kernel, _DefaultDispatchKernel)
+    assert isinstance(kernel, _DefaultDispatchKernel)
 
 
 @pytest.mark.smoke
@@ -310,18 +296,11 @@ def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_non_128_shapes(
 ) -> None:
     _mock_dispatch_arch(monkeypatch, 90)
 
-    op = DeltaNetDecodeOp(
-        1,
-        32,
-        dim_k,
-        dim_v,
-        dtype=torch.bfloat16,
-        kernel_map=_dispatch_kernel_map(),
-        tune=False,
-    )
+    op = DeltaNetDecodeOp(kernel_map=_dispatch_kernel_map(), tune=False)
+    kernel = op._get_kernel(1, 32, dim_k, dim_v, torch.bfloat16, device_index=None)
 
-    assert isinstance(op.kernel, _DefaultDispatchKernel)
-    assert op.kernel.kwargs["tune"] is False
+    assert isinstance(kernel, _DefaultDispatchKernel)
+    assert kernel.kwargs["tune"] is False
 
 
 @pytest.mark.smoke
@@ -330,18 +309,11 @@ def test_deltanet_decode_raw_cuda_dispatch_uses_fp32_kernel_for_fp32(
 ) -> None:
     _mock_dispatch_arch(monkeypatch, 90)
 
-    op = DeltaNetDecodeOp(
-        1,
-        32,
-        128,
-        128,
-        dtype=torch.float32,
-        kernel_map=_dispatch_kernel_map(),
-        tune=False,
-    )
+    op = DeltaNetDecodeOp(kernel_map=_dispatch_kernel_map(), tune=False)
+    kernel = op._get_kernel(1, 32, 128, 128, torch.float32, device_index=None)
 
-    assert isinstance(op.kernel, _FP32DispatchKernel)
-    assert op.kernel.kwargs["tune"] is False
+    assert isinstance(kernel, _FP32DispatchKernel)
+    assert kernel.kwargs["tune"] is False
 
 
 @pytest.mark.smoke

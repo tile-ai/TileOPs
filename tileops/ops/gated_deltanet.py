@@ -211,6 +211,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
         self.seq_len = None
         self.dim_k = None
         self.dim_v = None
+        self._requested_chunk_size = chunk_size
         self.chunk_size = chunk_size
         self.dtype = None
         self.layout = layout

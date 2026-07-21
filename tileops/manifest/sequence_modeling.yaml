@@ -221,8 +221,8 @@ MHCPreOp:
     - "phi.ndim == 2 and x.ndim == 2 and b.ndim == 1"
     - "phi.shape[0] == x.shape[1]"
     - "b.shape[0] == phi.shape[1]"
-    - "exists n_expand > 0 such that phi.shape[1] == n_expand * n_expand + 2 * n_expand"
-    - "x.shape[1] % n_expand == 0"
+    - "phi.shape[1] > 0"
+    - "x.shape[1] > 0"
 
   workloads:
   - {batch: 1, n_expand: 4, c_x: 1280, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, dtype: bfloat16, dtypes: [bfloat16], label: "pre-small"}

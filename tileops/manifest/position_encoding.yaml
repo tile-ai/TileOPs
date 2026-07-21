@@ -18,8 +18,8 @@ RopeNeoxOp:
       layout: {type: str, default: "1d"}
       base: {type: float, default: 10000.0}
     shape_rules:
-    - "layout == '1d' implies x.ndim == 2"
-    - "layout == '2d' implies x.ndim == 4"
+    - "layout != '1d' or x.ndim == 2"
+    - "layout != '2d' or x.ndim == 4"
     - "x.shape[-1] % 2 == 0"
 
   workloads:
@@ -54,8 +54,8 @@ RopeNonNeoxOp:
       layout: {type: str, default: "1d"}
       base: {type: float, default: 10000.0}
     shape_rules:
-    - "layout == '1d' implies x.ndim == 2"
-    - "layout == '2d' implies x.ndim == 4"
+    - "layout != '1d' or x.ndim == 2"
+    - "layout != '2d' or x.ndim == 4"
     - "x.shape[-1] % 2 == 0"
 
   workloads:
@@ -93,8 +93,8 @@ RopeLlama31Op:
       high_freq_factor: {type: float, default: 4.0}
       original_max_position: {type: int, default: 8192}
     shape_rules:
-    - "layout == '1d' implies x.ndim == 2"
-    - "layout == '2d' implies x.ndim == 4"
+    - "layout != '1d' or x.ndim == 2"
+    - "layout != '2d' or x.ndim == 4"
     - "x.shape[-1] % 2 == 0"
 
   workloads:
@@ -133,8 +133,8 @@ RopeYarnOp:
       beta_slow: {type: float, default: 1.0}
       attn_factor: {type: float, default: 1.0}
     shape_rules:
-    - "layout == '1d' implies x.ndim == 2"
-    - "layout == '2d' implies x.ndim == 4"
+    - "layout != '1d' or x.ndim == 2"
+    - "layout != '2d' or x.ndim == 4"
     - "x.shape[-1] % 2 == 0"
 
   workloads:
@@ -171,8 +171,8 @@ RopeLongRopeOp:
       max_position_embeddings: {type: int, default: 4096}
       original_max_position_embeddings: {type: int, default: 4096}
     shape_rules:
-    - "layout == '1d' implies x.ndim == 2"
-    - "layout == '2d' implies x.ndim == 4"
+    - "layout != '1d' or x.ndim == 2"
+    - "layout != '2d' or x.ndim == 4"
     - "x.shape[-1] % 2 == 0"
 
   workloads:
