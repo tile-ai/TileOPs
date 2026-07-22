@@ -356,22 +356,22 @@ def test_cumsum_parallel_scan(M: int, N: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("N", [16384, 32768])
-def test_cumsum_parallel_scan_all_ones(N: int) -> None:
-    """Test carry propagation across multiple tiles with all-ones input."""
+@pytest.mark.parametrize("M, N", [(1, 32768), (127, 16384)])
+def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
+    """Test carry propagation and per-row ownership across multiple tiles."""
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
     device = torch.device("cuda")
-    M = 1
-    x = torch.ones(M, N, dtype=torch.float32, device=device)
+    row_values = torch.arange(1, M + 1, dtype=torch.float32, device=device).unsqueeze(1)
+    x = row_values.expand(-1, N).contiguous()
 
     op = CumsumFwdOp(dtype=torch.float32, dim=-1)
     y = op(x)
 
-    # All-ones cumsum should produce [1, 2, 3, ..., N]
-    expected = torch.arange(1, N + 1, dtype=torch.float32, device=device).unsqueeze(0)
+    # Row r contains the constant r + 1, so its cumsum is (r + 1) * [1, ..., N].
+    expected = row_values * torch.arange(1, N + 1, dtype=torch.float32, device=device)
     assert torch.allclose(y, expected, atol=1e-3, rtol=1e-3), \
-        f"Carry propagation failed: y[0,512]={y[0,512]}, expected=513; y[0,-1]={y[0,-1]}, expected={N}"
+        f"Carry propagation failed for shape ({M}, {N}), max_diff={torch.abs(y - expected).max()}"
 
 
 # ---------------------------------------------------------------------------

@@ -568,8 +568,13 @@ def _parallel_scan_carry_kernel(M: int, n_tiles: int):
             tile_sums: T.Tensor[(M, n_tiles), "float32"],  # noqa: F821
             tile_carries: T.Tensor[(M, n_tiles), "float32"],  # noqa: F821
         ):
-            with T.Kernel(M, threads=threads) as row:  # noqa: SIM117
-                # Each thread handles one complete row
+            with T.Kernel(T.ceildiv(M, threads), threads=threads) as pid:  # noqa: SIM117
+                tx = T.get_thread_binding()
+                row = pid * threads + tx
+
+                # Give every row a unique thread owner.  The block index alone
+                # cannot identify a thread, so using it as ``row`` would make
+                # every thread in the block race on the same output locations.
                 with T.If(row < M):
                     with T.Then():
                         # Exclusive scan: first element is 0
