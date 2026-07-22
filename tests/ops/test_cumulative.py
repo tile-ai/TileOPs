@@ -330,5 +330,87 @@ def test_cumprod_dim_axis1(
         f"cumprod dim=1 max err: {(y - ref).abs().max()}"
 
 
+# Test coverage for parallel scan path (N > 8192)
+@pytest.mark.parametrize(
+    "M, N, dtype",
+    [
+        pytest.param(64, 16384, torch.float32, marks=pytest.mark.smoke),   # block_n=128 path
+        pytest.param(64, 32768, torch.bfloat16, marks=pytest.mark.smoke),  # block_n=256 path
+        pytest.param(32, 16384, torch.float16, marks=pytest.mark.smoke),   # Different M
+    ],
+)
+def test_cumsum_parallel_scan(M: int, N: int, dtype: torch.dtype) -> None:
+    """Test parallel scan backend for small-M, large-N workloads."""
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
+
+    device = torch.device("cuda")
+    x = torch.randn(M, N, dtype=dtype, device=device)
+
+    op = CumsumFwdOp(dtype=dtype, dim=-1)
+    y = op(x)
+
+    # Verify correctness
+    ref = x.float().cumsum(dim=-1).to(dtype)
+    assert torch.allclose(y, ref, atol=1e-2, rtol=1e-2), \
+        f"Parallel scan failed for shape ({M}, {N}), max_diff={torch.abs(y - ref).max()}"
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("M, N", [(1, 32768), (127, 16384)])
+def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
+    """Test carry propagation and per-row ownership across multiple tiles."""
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
+
+    device = torch.device("cuda")
+    row_values = torch.arange(1, M + 1, dtype=torch.float32, device=device).unsqueeze(1)
+    x = row_values.expand(-1, N).contiguous()
+
+    op = CumsumFwdOp(dtype=torch.float32, dim=-1)
+    y = op(x)
+
+    # Row r contains the constant r + 1, so its cumsum is (r + 1) * [1, ..., N].
+    expected = row_values * torch.arange(1, N + 1, dtype=torch.float32, device=device)
+    assert torch.allclose(y, expected, atol=1e-3, rtol=1e-3), \
+        f"Carry propagation failed for shape ({M}, {N}), max_diff={torch.abs(y - expected).max()}"
+
+
+# ---------------------------------------------------------------------------
+# torch.compile regression: parallel scan branch must be compile-safe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "M, N, dtype",
+    [
+        pytest.param(64, 512, torch.float16),    # sequential branch — baseline
+        pytest.param(64, 16384, torch.float16),  # parallel branch — regression case
+    ],
+)
+def test_cumsum_torch_compile_fullgraph(M: int, N: int, dtype: torch.dtype) -> None:
+    """torch.compile(fullgraph=True) must succeed for both sequential and parallel branches.
+
+    N=512 exercises _cumulative_fwd_wrapped (sequential custom_op).
+    N=16384 exercises _cumulative_parallel_fwd_wrapped (parallel custom_op) —
+    this is the regression case: without the custom_op boundary, torch.compile
+    raises 'unsupported Function.call' when tracing the raw JIT callables.
+    """
+    from tileops.ops.reduction.cumsum import CumsumFwdOp
+
+    op = CumsumFwdOp(dtype=dtype, dim=-1)
+    x = torch.randn(M, N, dtype=dtype, device="cuda")
+
+    # Pre-warm the kernel cache before compiling so construction never
+    # happens inside the compiled region.
+    op(x)
+
+    compiled = torch.compile(op, fullgraph=True)
+    y = compiled(x)
+
+    ref = x.float().cumsum(dim=-1).to(dtype)
+    assert torch.allclose(y, ref, atol=1e-2, rtol=1e-2), \
+        f"Compiled output mismatch for shape ({M},{N}): max_diff={torch.abs(y - ref).max()}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

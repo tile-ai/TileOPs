@@ -90,7 +90,12 @@ class CumulativeOp(Op):
     def _get_kernel(
         self, M: int, N: int, dtype: torch.dtype, device_index: int | None,
     ) -> Kernel:
-        """Return a kernel built for (M, N, dtype), caching by specialization."""
+        """Return a kernel built for (M, N, dtype), caching by specialization.
+
+        Note: Not decorated with @torch.compiler.disable to allow torch.compile(fullgraph=True).
+        Pre-warming the cache before compilation ensures kernel construction happens outside
+        the compiled region.
+        """
         key = (M, N, dtype, device_index)
         if key not in self._kernel_cache:
             self._kernel_cache[key] = self.kernel_map["cumulative_fwd"](
