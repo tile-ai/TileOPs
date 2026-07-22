@@ -98,7 +98,7 @@ def test_deltanet_decode_bench(
     test = _DeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
     inputs = test.gen_inputs()
 
-    op = DeltaNetDecodeOp(batch, heads, dim_k, dim_v, dtype, tune=tune)
+    op = DeltaNetDecodeOp(tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

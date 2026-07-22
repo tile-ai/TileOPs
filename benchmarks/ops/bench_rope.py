@@ -93,7 +93,7 @@ def test_rope_bench(shape: tuple[int, int], dtype: torch.dtype) -> None:
     (x,) = test.gen_inputs()
 
     seq_len, head_dim = shape
-    op = RopeNeoxOp(seq_len=seq_len, head_dim=head_dim, dtype=dtype)
+    op = RopeNeoxOp()
     result = bm.profile(op, x)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

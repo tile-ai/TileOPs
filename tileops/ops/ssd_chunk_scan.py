@@ -32,6 +32,28 @@ class SSDChunkScanFwdOp(Op):
 
     def __init__(
         self,
+        tune: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+    ):
+        self.batch = None
+        self.num_chunks = None
+        self.chunk_len = None
+        self.n_heads = None
+        self.d_head = None
+        self.d_state = None
+        self.n_groups = None
+        self.dtype = None
+        self.tune = tune
+        self.dispatch_kernel(kernel_map)
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel = None
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {"ssd_chunk_scan_fwd": SSDChunkScanFwdKernel}
+
+    def _get_kernel(
+        self,
         batch: int,
         num_chunks: int,
         chunk_len: int,
@@ -40,29 +62,33 @@ class SSDChunkScanFwdOp(Op):
         d_state: int,
         n_groups: int,
         dtype: torch.dtype,
-        tune: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-    ):
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.chunk_len = chunk_len
-        self.n_heads = n_heads
-        self.d_head = d_head
-        self.d_state = d_state
-        self.n_groups = n_groups
-        if n_heads % n_groups != 0:
-            raise ValueError(
-                f"n_heads ({n_heads}) must be divisible by n_groups ({n_groups})"
-            )
-        self.dtype = dtype
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["ssd_chunk_scan_fwd"](
-            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune=tune,
+        device_index: int | None,
+    ) -> Kernel:
+        key = (
+            batch,
+            num_chunks,
+            chunk_len,
+            n_heads,
+            d_head,
+            d_state,
+            n_groups,
+            dtype,
+            device_index,
+            self.tune,
         )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ssd_chunk_scan_fwd": SSDChunkScanFwdKernel}
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["ssd_chunk_scan_fwd"](
+                batch,
+                num_chunks,
+                chunk_len,
+                n_heads,
+                d_head,
+                d_state,
+                n_groups,
+                dtype,
+                tune=self.tune,
+            )
+        return self._kernel_cache[key]
 
     def forward(
         self,
@@ -88,8 +114,39 @@ class SSDChunkScanFwdOp(Op):
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected dtype {self.dtype}, got {x.dtype}")
+        if x.ndim != 4:
+            raise ValueError("x must have shape [batch, seq_len, n_heads, d_head]")
+        batch, seq_len, n_heads, d_head = x.shape
+        if dA_cumsum.ndim != 4:
+            raise ValueError("dA_cumsum must have shape [batch, n_heads, num_chunks, chunk_len]")
+        if dA_cumsum.shape[0] != batch or dA_cumsum.shape[1] != n_heads:
+            raise ValueError("dA_cumsum must match x batch and n_heads")
+        num_chunks, chunk_len = dA_cumsum.shape[2], dA_cumsum.shape[3]
+        if seq_len != num_chunks * chunk_len:
+            raise ValueError("x seq_len must equal num_chunks * chunk_len")
+        if C.ndim != 4 or C.shape[0] != batch or C.shape[1] != seq_len:
+            raise ValueError("C must have shape [batch, seq_len, n_groups, d_state]")
+        n_groups, d_state = C.shape[2], C.shape[3]
+        if n_heads % n_groups != 0:
+            raise ValueError("n_heads must be divisible by n_groups")
+        if cb.shape != (batch, num_chunks, n_groups, chunk_len, chunk_len):
+            raise ValueError("cb must have shape [batch, num_chunks, n_groups, chunk_len, chunk_len]")
+        if prev_states.shape != (batch, num_chunks, n_heads, d_head, d_state):
+            raise ValueError("prev_states must have shape [batch, num_chunks, n_heads, d_head, d_state]")
+        if dt.shape != (batch, n_heads, num_chunks, chunk_len):
+            raise ValueError("dt must have shape [batch, n_heads, num_chunks, chunk_len]")
+
+        self.batch = batch
+        self.num_chunks = num_chunks
+        self.chunk_len = chunk_len
+        self.n_heads = n_heads
+        self.d_head = d_head
+        self.d_state = d_state
+        self.n_groups = n_groups
+        self.dtype = x.dtype
+        self.kernel = self._get_kernel(
+            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, x.dtype,
+            x.device.index)
 
         x = x.contiguous()
         cb = cb.contiguous()

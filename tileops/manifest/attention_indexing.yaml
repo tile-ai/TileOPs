@@ -12,28 +12,23 @@ FP8LightningIndexerOp:
       weights: {dtype: "float32", shape: "[seq_len, heads]"}
       cu_seqlen_ks: {dtype: "int32", shape: "[seq_len]"}
       cu_seqlen_ke: {dtype: "int32", shape: "[seq_len]"}
-      index_k_scale: {dtype: "float32", shape: "[batch, seq_len_kv, kv_group]"}
+      index_k_scale: {dtype: "float32", shape: "[batch, seq_len_kv, kv_group]", optional: true}
     outputs:
       logits: {dtype: "float32", shape: "[batch, seq_len, seq_len_kv, kv_group]"}
     params:
-      batch: {type: int}
-      seq_len: {type: int}
-      heads: {type: int}
-      index_dim: {type: int}
-      seq_len_kv: {type: int}
-      kv_group: {type: int}
       clean_logits: {type: bool, default: true}
       config: {type: "dict | None", default: null}
     dtype_combos:
-    - {index_q: bfloat16, index_k: bfloat16, weights: float32, cu_seqlen_ks: int32, cu_seqlen_ke: int32, index_k_scale: float32}
     - {index_q: float8_e4m3fn, index_k: float8_e4m3fn, weights: float32, cu_seqlen_ks: int32, cu_seqlen_ke: int32, index_k_scale: float32}
     shape_rules:
-    - "index_q.shape == (batch, seq_len, heads, index_dim)"
-    - "index_k.shape == (batch, seq_len_kv, kv_group, index_dim)"
-    - "weights.shape == (seq_len, heads)"
-    - "cu_seqlen_ks.shape == (seq_len,)"
-    - "cu_seqlen_ke.shape == (seq_len,)"
-    - "index_k_scale.shape == (batch, seq_len_kv, kv_group)"
+    - "index_q.ndim == 4 and index_k.ndim == 4"
+    - "index_q.shape[0] == index_k.shape[0]"
+    - "index_q.shape[3] == index_k.shape[3]"
+    - "index_q.shape[2] % index_k.shape[2] == 0"
+    - "weights.shape == (index_q.shape[1], index_q.shape[2])"
+    - "cu_seqlen_ks.shape == (index_q.shape[1],)"
+    - "cu_seqlen_ke.shape == (index_q.shape[1],)"
+    - "index_k_scale.shape == (index_q.shape[0], index_k.shape[1], index_k.shape[2])"
 
   workloads:
   - {batch: 1, seq_len: 8192, heads: 32, index_dim: 64, seq_len_kv: 8192, kv_group: 1, clean_logits: true, dtypes: [bfloat16], label: "lightning-indexer-bf16-s8k-h32-d64"}
@@ -64,18 +59,12 @@ TopkSelectorOp:
     outputs:
       indexes: {dtype: "int32", shape: "[batch, seq_len, kv_group, topk]"}
     params:
-      batch: {type: int}
-      seq_len: {type: int}
-      seq_len_kv: {type: int}
-      kv_group: {type: int}
       topk: {type: int}
-      in_dtype: {type: torch.dtype}
-      out_dtype: {type: torch.dtype}
     shape_rules:
-    - "index_score.shape == (batch, seq_len, seq_len_kv, kv_group)"
-    - "starts.shape == (batch, seq_len)"
-    - "ends.shape == (batch, seq_len)"
-    - "0 < topk <= seq_len_kv"
+    - "index_score.ndim == 4"
+    - "starts.shape == (index_score.shape[0], index_score.shape[1])"
+    - "ends.shape == (index_score.shape[0], index_score.shape[1])"
+    - "0 < topk <= index_score.shape[2]"
 
   workloads:
   - {batch: 1, seq_len: 32768, seq_len_kv: 65536, kv_group: 1, topk: 1024, in_dtype: float32, out_dtype: int32, dtypes: [float32], label: "topk1024-s32k-kv64k"}

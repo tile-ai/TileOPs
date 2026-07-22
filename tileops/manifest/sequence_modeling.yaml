@@ -177,17 +177,14 @@ FFTC2COp:
       x: {dtype: "complex64 | complex128", shape: "[..., n]"}
     outputs:
       output: {dtype: "same_as(x)", shape: "same_as(x)"}
-    params:
-      n: {type: int}
     shape_rules:
-    - "x.shape[-1] == n"
-    - "n > 0"
-    - "n & (n - 1) == 0"
+    - "x.shape[-1] > 0"
+    - "x.shape[-1] & (x.shape[-1] - 1) == 0"
 
   workloads:
-  - {n: 4096, dtype: complex64, batch_shape: [], dtypes: [complex64], label: "fft-4k-c64-unbatched"}
-  - {n: 4096, dtype: complex64, batch_shape: [64], dtypes: [complex64], label: "fft-4k-c64-b64"}
-  - {n: 4096, dtype: complex128, batch_shape: [64], dtypes: [complex128], label: "fft-4k-c128-b64"}
+  - {input_shape: [4096], dtypes: [complex64], label: "fft-4k-c64-unbatched"}
+  - {input_shape: [64, 4096], dtypes: [complex64], label: "fft-4k-c64-b64"}
+  - {input_shape: [64, 4096], dtypes: [complex128], label: "fft-4k-c128-b64"}
 
   roofline:
     func: "tileops.perf.formulas.fft_c2c_roofline"
@@ -199,7 +196,7 @@ FFTC2COp:
     op: tileops/ops/fft.py
     test: tests/ops/test_fft.py
     bench: benchmarks/ops/bench_fft.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 MHCPreOp:
   ref_api: "none"
@@ -215,18 +212,17 @@ MHCPreOp:
       x_res: {dtype: "bfloat16", shape: "[batch, n_expand * c_x]"}
       x_layer: {dtype: "bfloat16", shape: "[batch, c_x]"}
     params:
-      batch: {type: int}
-      n_expand: {type: int}
-      c_x: {type: int}
       alpha_pre: {type: float}
       alpha_post: {type: float}
       alpha_res: {type: float}
       sinkhorn_repeat: {type: int}
       sinkhorn_eps: {type: float, default: 0.02}
     shape_rules:
-    - "phi.shape == (n_expand * c_x, n_expand * n_expand + 2 * n_expand)"
-    - "x.shape == (batch, n_expand * c_x)"
-    - "b.shape == (n_expand * n_expand + 2 * n_expand,)"
+    - "phi.ndim == 2 and x.ndim == 2 and b.ndim == 1"
+    - "phi.shape[0] == x.shape[1]"
+    - "b.shape[0] == phi.shape[1]"
+    - "phi.shape[1] > 0"
+    - "x.shape[1] > 0"
 
   workloads:
   - {batch: 1, n_expand: 4, c_x: 1280, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, dtype: bfloat16, dtypes: [bfloat16], label: "pre-small"}
@@ -257,14 +253,11 @@ MHCPostOp:
       x_res: {dtype: "bfloat16", shape: "[batch, n_expand * c_x]"}
     outputs:
       x_out: {dtype: "bfloat16", shape: "[batch, n_expand * c_x]"}
-    params:
-      batch: {type: int}
-      n_expand: {type: int}
-      c_x: {type: int}
     shape_rules:
-    - "x_layer_out.shape == (batch, c_x)"
-    - "h_post.shape == (batch, n_expand)"
-    - "x_res.shape == (batch, n_expand * c_x)"
+    - "x_layer_out.ndim == 2 and h_post.ndim == 2 and x_res.ndim == 2"
+    - "h_post.shape[0] == x_layer_out.shape[0]"
+    - "x_res.shape[0] == x_layer_out.shape[0]"
+    - "x_res.shape[1] == h_post.shape[1] * x_layer_out.shape[1]"
 
   workloads:
   - {batch: 1, n_expand: 4, c_x: 1280, dtype: bfloat16, dtypes: [bfloat16], label: "post-small"}

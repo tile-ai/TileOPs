@@ -52,14 +52,7 @@ def test_topk_selector_op(batch: int,
     in_dtype = str2dtype[in_dtype_str]
     out_dtype = str2dtype[out_dtype_str]
     test = TopkSelectorTest(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)
-    op = TopkSelectorOp(batch=batch,
-                        seq_len=seq_len,
-                        seq_len_kv=seq_len_kv,
-                        kv_group=kv_group,
-                        topk=topk,
-                        in_dtype=in_dtype,
-                        out_dtype=out_dtype,
-                        tune=tune)
+    op = TopkSelectorOp(topk=topk, tune=tune)
     test.check(op, *test.gen_inputs(), compare=_set_compare)
 
 

@@ -92,13 +92,6 @@ def test_mamba2_fwd_bench(batch, seqlen, n_heads, d_head, d_state, n_groups,
 
     # ── TileOPs ──────────────────────────────────────────────────────────────
     op = Mamba2FwdOp(
-        batch=batch,
-        seqlen=seqlen,
-        n_heads=n_heads,
-        d_head=d_head,
-        d_state=d_state,
-        n_groups=n_groups,
-        dtype=dtype,
         chunk_size=chunk_size,
         dt_softplus=dt_softplus,
         has_initial_states=False,

@@ -93,7 +93,7 @@ def test_mhc_pre_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
     bm = MHCPreBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = MHCPreOp(batch, n_expand, c_x, dtype=dtype, tune=tune)
+    op = MHCPreOp(tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

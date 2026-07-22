@@ -50,39 +50,20 @@ class DeltaNetDecodeOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype = torch.float32,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.dtype = dtype
+        self.batch = None
+        self.heads = None
+        self.dim_k = None
+        self.dim_v = None
+        self.dtype = None
+        self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-
-        # Dispatch:
-        #   fp32 -> FP32 kernel (no TF32)
-        #   fp16/bf16 DK=DV=128 on Hopper -> raw CUDA warp-per-Vtile kernel
-        #   other fp16/bf16 shapes -> default TileLang kernel
-        use_raw_cuda_decode = self._should_use_raw_cuda_decode(dim_k, dim_v, dtype)
-        if dtype == torch.float32:
-            kernel_cls = self.kernel_map["DeltaNetDecodeFP32Kernel"]
-        elif use_raw_cuda_decode:
-            kernel_cls = self.kernel_map["DeltaNetDecodeRawCudaFlaStyleKernel"]
-        else:
-            kernel_cls = self.kernel_map["DeltaNetDecodeKernel"]
-        kernel_dtype = Kernel.dtype_to_str(dtype)
-        self.kernel = kernel_cls(
-            batch, heads, dim_k, dim_v,
-            dtype=kernel_dtype,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self._active_sig: Optional[tuple] = None
+        self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -95,6 +76,34 @@ class DeltaNetDecodeOp(Op):
                 DeltaNetDecodeRawCudaFlaStyleKernel
             )
         return kernels
+
+    def _get_kernel(
+        self,
+        batch: int,
+        heads: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: torch.dtype,
+        device_index: int | None,
+    ) -> Kernel:
+        key = (batch, heads, dim_k, dim_v, dtype, device_index, self.tune)
+        if key not in self._kernel_cache:
+            use_raw_cuda_decode = self._should_use_raw_cuda_decode(dim_k, dim_v, dtype)
+            if dtype == torch.float32:
+                kernel_cls = self.kernel_map["DeltaNetDecodeFP32Kernel"]
+            elif use_raw_cuda_decode:
+                kernel_cls = self.kernel_map["DeltaNetDecodeRawCudaFlaStyleKernel"]
+            else:
+                kernel_cls = self.kernel_map["DeltaNetDecodeKernel"]
+            self._kernel_cache[key] = kernel_cls(
+                batch,
+                heads,
+                dim_k,
+                dim_v,
+                dtype=Kernel.dtype_to_str(dtype),
+                tune=self.tune,
+            )
+        return self._kernel_cache[key]
 
     def _infer_output_shapes(
         self,
@@ -118,11 +127,12 @@ class DeltaNetDecodeOp(Op):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> None:
-        if self.dtype not in (torch.float32, torch.float16, torch.bfloat16):
-            raise ValueError(f"Unsupported dtype: {self.dtype}")
+        dtype = q.dtype
+        if dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            raise ValueError(f"Unsupported dtype: {dtype}")
         for name, tensor in (("q", q), ("k", k), ("v", v), ("beta", beta), ("state", state)):
-            if tensor.dtype != self.dtype:
-                raise ValueError(f"{name}.dtype must be {self.dtype}, got {tensor.dtype}")
+            if tensor.dtype != dtype:
+                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
 
     def _validate_shapes(
         self,
@@ -132,10 +142,16 @@ class DeltaNetDecodeOp(Op):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> None:
-        q_shape = (self.batch, self.heads, self.dim_k)
-        v_shape = (self.batch, self.heads, self.dim_v)
-        beta_shape = (self.batch, self.heads)
-        state_shape = (self.batch, self.heads, self.dim_k, self.dim_v)
+        if q.ndim != 3:
+            raise ValueError("q must have shape [batch, heads, dim_k]")
+        batch, heads, dim_k = q.shape
+        if v.ndim != 3 or v.shape[:2] != (batch, heads):
+            raise ValueError("v must have shape [batch, heads, dim_v]")
+        dim_v = v.shape[2]
+        q_shape = (batch, heads, dim_k)
+        v_shape = (batch, heads, dim_v)
+        beta_shape = (batch, heads)
+        state_shape = (batch, heads, dim_k, dim_v)
         expected_shapes = (
             ("q", q, q_shape),
             ("k", k, q_shape),
@@ -147,9 +163,15 @@ class DeltaNetDecodeOp(Op):
             if tuple(tensor.shape) != expected:
                 raise ValueError(
                     f"{name} must have shape {expected}, got {tuple(tensor.shape)}"
-                )
+        )
         if not all(tensor.is_cuda for tensor in (q, k, v, beta, state)):
             raise ValueError("q, k, v, beta, and state must be CUDA tensors")
+        self.batch = batch
+        self.heads = heads
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.dtype = q.dtype
+        self.kernel = self._get_kernel(batch, heads, dim_k, dim_v, q.dtype, q.device.index)
 
     def _validate_output_shapes(
         self,
@@ -178,8 +200,28 @@ class DeltaNetDecodeOp(Op):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self._validate_dtypes(q, k, v, beta, state)
-        self._validate_shapes(q, k, v, beta, state)
+        sig = (
+            q.shape,
+            k.shape,
+            v.shape,
+            beta.shape,
+            state.shape,
+            q.dtype,
+            k.dtype,
+            v.dtype,
+            beta.dtype,
+            state.dtype,
+            q.device,
+            k.device,
+            v.device,
+            beta.device,
+            state.device,
+            getattr(self, "tune", None),
+        )
+        if sig != getattr(self, "_active_sig", None):
+            self._validate_dtypes(q, k, v, beta, state)
+            self._validate_shapes(q, k, v, beta, state)
+            self._active_sig = sig
         o, new_state = self.kernel(q, k, v, beta, state)
         self._validate_output_shapes(o, new_state)
         return o, new_state

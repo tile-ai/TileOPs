@@ -165,13 +165,16 @@ def test_gla_bwd(
             assert cos > 0.99, f"FLA vs ref {name} cosine too low: {cos:.6f}"
 
     # --- TileOPs kernel backward ---
-    fwd_op = GLAFwdOp(B, T, H, K, V, BC, scale=scale,
-                       output_final_state=False, dtype=dtype)
+    fwd_op = GLAFwdOp(
+        chunk_size=BC,
+        scale=scale,
+        output_final_state=False,
+    )
     o_fwd, _ = fwd_op.forward(q, k, v, g)
     h = fwd_op.kernel._h_out  # [B, NT+1, H, K, V] in fp32
 
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
-    bwd_op = GLABwdOp(B, T, H, K, V, BC, scale=scale, dtype=dtype, tune=tune)
+    bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
     op_dq, op_dk, op_dv, op_dg = bwd_op.forward(q, k, v, g, h, do, dht)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 
