@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.norm.layer_norm import LayerNormKernel
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.layer_norm import LayerNormTest as _LayerNormTestWorkload
 
@@ -63,6 +64,23 @@ def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+def test_layer_norm_kernel_handles_unaligned_shape() -> None:
+    """The kernel, not the Op layer, owns non-aligned boundary handling."""
+    m, n = 16, 3000
+    dtype = torch.float16
+    test = LayerNormTest(m, n, dtype)
+    x, weight, bias = test.gen_inputs()
+
+    kernel = LayerNormKernel(m, n, test.eps, dtype)
+    y = kernel(x, weight, bias)
+    y_ref = test.ref_program(x, weight, bias)
+
+    assert y.shape == (m, n)
+    atol, rtol = _get_tolerances(dtype)
+    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
 
 
 class LayerNormNonContigFixture(FixtureBase):

@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.norm.ada_layer_norm import AdaLayerNormKernel
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from workloads.ada_layer_norm import AdaLayerNormTest as _AdaLayerNormTestWorkload
 
@@ -59,6 +60,22 @@ def test_ada_layer_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     op = AdaLayerNormFwdOp(dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_ada_layer_norm_kernel_handles_natural_unaligned_shape(
+    dtype: torch.dtype,
+) -> None:
+    m, n = 16, 1152
+    test = AdaLayerNormTest(m, n, dtype)
+    inputs = test.gen_inputs()
+    kernel = AdaLayerNormKernel(m, n, test.eps, dtype, has_gate=False)
+    actual = kernel(*inputs)
+    expected = test.ref_program(*inputs)
+    assert actual.shape == (m, n)
+    atol, rtol = _get_tolerances(dtype)
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
 
 class AdaLayerNorm3DFixture(FixtureBase):
