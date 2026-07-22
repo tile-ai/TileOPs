@@ -575,16 +575,15 @@ def _parallel_scan_carry_kernel(M: int, n_tiles: int):
                 # Give every row a unique thread owner.  The block index alone
                 # cannot identify a thread, so using it as ``row`` would make
                 # every thread in the block race on the same output locations.
-                with T.If(row < M):
-                    with T.Then():
-                        # Exclusive scan: first element is 0
-                        tile_carries[row, 0] = T.float32(0.0)
-                        # Mutable accumulator for loop-carried state
-                        running_sum = T.alloc_var("float32", init=0.0)
-                        # Sequential loop over tiles
-                        for j in T.Serial(n_tiles - 1):
-                            running_sum = running_sum + tile_sums[row, j]
-                            tile_carries[row, j + 1] = running_sum
+                with T.If(row < M), T.Then():
+                    # Exclusive scan: first element is 0
+                    tile_carries[row, 0] = T.float32(0.0)
+                    # Mutable accumulator for loop-carried state
+                    running_sum = T.alloc_var("float32", init=0.0)
+                    # Sequential loop over tiles
+                    for j in T.Serial(n_tiles - 1):
+                        running_sum = running_sum + tile_sums[row, j]
+                        tile_carries[row, j + 1] = running_sum
 
         return main
 
