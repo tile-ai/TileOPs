@@ -1,7 +1,6 @@
 from typing import Dict, Optional, Sequence
 
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import LayerNormKernel
@@ -31,10 +30,12 @@ class LayerNormFwdOp(Op):
 
     Note:
         Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
-        Handles non-contiguous inputs and non-power-of-two hidden dims by
-        padding to 256-element alignment. The leading-dims product ``M``
-        is bound on the first forward call; if a subsequent call uses a
-        different ``M``, the kernel is rebuilt for the new value.
+        Handles non-contiguous inputs and non-power-of-two hidden dims. For
+        non-aligned hidden dims, boundary handling is performed inside the
+        kernel rather than by allocating padded tensors in the Op layer. The
+        leading-dims product ``M`` is bound on the first forward call; if a
+        subsequent call uses a different ``M``, the kernel is rebuilt for the
+        new value.
 
     Args:
         normalized_shape: Trailing-axis shape tuple over which the
@@ -149,16 +150,6 @@ class LayerNormFwdOp(Op):
             )
         self._last_m = m_actual
 
-        # Pad hidden dim to 256-element alignment if needed
-        if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N))
-            weight = F.pad(weight, (0, self.N_padded - self.N))
-            bias = F.pad(bias, (0, self.N_padded - self.N))
-
         y = self.kernel(x, weight, bias)
-
-        # Trim padding
-        if self.N_padded != self.N:
-            y = y[:, :self.N]
 
         return y.reshape(orig_shape)
