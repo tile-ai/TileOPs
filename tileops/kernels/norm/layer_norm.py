@@ -2,10 +2,12 @@
 
 y = (x - mean(x)) / sqrt(var(x) + eps) * weight + bias
 
-256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared memory
-instructions. Padding zeros contribute 0 to sum; the centered two-pass variance
-computation subtracts the exact padding bias to keep results numerically stable
-even for large-offset inputs.
+256-element alignment (512 bytes for fp16/bf16) is required by T.copy() shared
+memory instructions. Boundary handling for non-aligned N is performed inside
+the kernel, eliminating host-side padding allocations and copies. Padding zeros
+contribute 0 to the mean reduction; the centered two-pass variance computation
+subtracts their exact contribution to remain numerically stable for large-offset
+inputs.
 """
 
 import functools
@@ -31,6 +33,7 @@ def _align_up(n: int, alignment: int) -> int:
 @functools.lru_cache(maxsize=32)
 def _layer_norm_kernel(M, N, eps, dtype):
     N_padded = _align_up(N, ALIGNMENT)
+    needs_pad = N_padded != N
     pad_count = N_padded - N  # number of zero-padded elements per row
 
     @tilelang.jit(out_idx=[3])
@@ -38,10 +41,10 @@ def _layer_norm_kernel(M, N, eps, dtype):
 
         @T.prim_func
         def main(
-            x: T.Tensor[(M, N_padded), dtype],
-            weight: T.Tensor[(N_padded,), dtype],
-            bias: T.Tensor[(N_padded,), dtype],
-            y: T.Tensor[(M, N_padded), dtype],
+            x: T.Tensor[(M, N), dtype],
+            weight: T.Tensor[(N,), dtype],
+            bias: T.Tensor[(N,), dtype],
+            y: T.Tensor[(M, N), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, N_padded), dtype)
@@ -51,13 +54,22 @@ def _layer_norm_kernel(M, N, eps, dtype):
                 mean_val = T.alloc_fragment((block_m,), "float32")
                 rstd = T.alloc_fragment((block_m,), "float32")
 
-                # Load input row block via shared memory
-                T.copy(x[pid_m * block_m, 0], shared_buf)
-                T.copy(shared_buf, x_local)
-
-                # Cast to fp32 once — reused across all passes
-                for i, j in T.Parallel(block_m, N_padded):
-                    x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                if needs_pad:
+                    # Retain the original values in shared memory for the
+                    # output pass while the fp32 fragment is reduced below.
+                    for i, j in T.Parallel(block_m, N_padded):
+                        shared_buf[i, j] = T.if_then_else(
+                            T.And(pid_m * block_m + i < M, j < N),
+                            x[pid_m * block_m + i, j],
+                            T.cast(0.0, dtype),
+                        )
+                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                else:
+                    # Preserve the vectorized copy fast path for aligned N.
+                    T.copy(x[pid_m * block_m, 0], shared_buf)
+                    T.copy(shared_buf, x_local)
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
                 # --- Mean reduction ---
                 T.reduce_sum(x_f32, acc, dim=1)
@@ -79,18 +91,30 @@ def _layer_norm_kernel(M, N, eps, dtype):
                     )
 
                 # --- Output: y = (x - mean) * rstd * weight + bias ---
-                # Re-cast from x_local (original dtype) to avoid a second fp32 buffer
-                for i, j in T.Parallel(block_m, N_padded):
-                    x_local[i, j] = (
-                        (T.cast(x_local[i, j], "float32") - mean_val[i])
-                        * rstd[i]
-                        * T.cast(weight[j], "float32")
-                        + T.cast(bias[j], "float32")
-                    )
-
-                # Write output via shared memory
-                T.copy(x_local, shared_buf)
-                T.copy(shared_buf, y[pid_m * block_m, 0])
+                if needs_pad:
+                    # Store only real columns.  Returning the natural shape
+                    # avoids allocating and writing an M x N_padded output
+                    # merely to slice it in the Op layer.
+                    for i, j in T.Parallel(block_m, N_padded):
+                        if T.And(pid_m * block_m + i < M, j < N):
+                            y[pid_m * block_m + i, j] = (
+                                (T.cast(shared_buf[i, j], "float32") - mean_val[i])
+                                * rstd[i]
+                                * T.cast(weight[j], "float32")
+                                + T.cast(bias[j], "float32")
+                            )
+                else:
+                    # Re-cast from x_local (original dtype) to avoid a second
+                    # fp32 buffer, then retain the vectorized copy fast path.
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_local[i, j] = (
+                            (T.cast(x_local[i, j], "float32") - mean_val[i])
+                            * rstd[i]
+                            * T.cast(weight[j], "float32")
+                            + T.cast(bias[j], "float32")
+                        )
+                    T.copy(x_local, shared_buf)
+                    T.copy(shared_buf, y[pid_m * block_m, 0])
 
         return main
 
@@ -114,8 +138,7 @@ def _layer_norm_wrapped(
 
 @_layer_norm_wrapped.register_fake
 def _(M, N, eps, dtype_str, block_m, threads, x, weight, bias):
-    N_padded = _align_up(N, ALIGNMENT)
-    return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
+    return torch.empty((M, N), dtype=x.dtype, device=x.device)
 
 
 class LayerNormKernel(Kernel):

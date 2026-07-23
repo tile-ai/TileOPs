@@ -37,8 +37,9 @@ def _align_up(n: int, alignment: int) -> int:
 
 
 @functools.lru_cache(maxsize=32)
-def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False):
+def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False):
     N_padded = _align_up(N, ALIGNMENT)
+    needs_pad = N_padded != N
     pad_count = N_padded - N  # number of zero-padded elements per row
 
     @tilelang.jit(out_idx=[4] if not has_gate else [5])
@@ -48,14 +49,14 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False):
 
             @T.prim_func
             def main(
-                x: T.Tensor[(M, N_padded), dtype],
-                scale: T.Tensor[(M, N_padded), dtype],
-                shift: T.Tensor[(M, N_padded), dtype],
+                x: T.Tensor[(M, N), dtype],
+                scale: T.Tensor[(M, N), dtype],
+                shift: T.Tensor[(M, N), dtype],
                 # _dummy keeps the output tensor at index 4 so that out_idx=[4]
                 # is consistent between the non-gated (4 inputs) and gated (5
                 # inputs) variants, matching the tilelang.jit contract.
                 _dummy: T.Tensor[(1,), dtype],
-                y: T.Tensor[(M, N_padded), dtype],
+                y: T.Tensor[(M, N), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                     shared_buf = T.alloc_shared((block_m, N_padded), dtype)
@@ -66,14 +67,32 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False):
                     rstd = T.alloc_fragment((block_m,), "float32")
                     scale_local = T.alloc_fragment((block_m, N_padded), dtype)
                     shift_local = T.alloc_fragment((block_m, N_padded), dtype)
+                    if use_cp_async:
+                        scale_shared = T.alloc_shared((block_m, N_padded), dtype)
+                        shift_shared = T.alloc_shared((block_m, N_padded), dtype)
 
-                    # Load input row block via shared memory
-                    T.copy(x[pid_m * block_m, 0], shared_buf)
-                    T.copy(shared_buf, x_local)
-
-                    # Cast to fp32 once — reused across all passes
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                    if needs_pad:
+                        for i, j in T.Parallel(block_m, N_padded):
+                            shared_buf[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < N),
+                                x[pid_m * block_m + i, j],
+                                T.cast(0.0, dtype),
+                            )
+                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                        if use_cp_async:
+                            # Prefetch modulation tensors while reducing x.
+                            # Predication zero-fills the padded tail.
+                            T.async_copy(
+                                scale[pid_m * block_m, 0:N_padded], scale_shared
+                            )
+                            T.async_copy(
+                                shift[pid_m * block_m, 0:N_padded], shift_shared
+                            )
+                    else:
+                        T.copy(x[pid_m * block_m, 0], shared_buf)
+                        T.copy(shared_buf, x_local)
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
                     # --- Mean reduction ---
                     T.reduce_sum(x_f32, acc, dim=1)
@@ -92,24 +111,40 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False):
                             + eps
                         )
 
-                    # Load scale and shift via shared memory
-                    T.copy(scale[pid_m * block_m, 0], shared_buf)
-                    T.copy(shared_buf, scale_local)
-                    T.copy(shift[pid_m * block_m, 0], shared_buf)
-                    T.copy(shared_buf, shift_local)
-
-                    # --- Output: y = scale * (x - mean) * rstd + shift ---
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_local[i, j] = (
-                            T.cast(scale_local[i, j], "float32")
-                            * (T.cast(x_local[i, j], "float32") - mean_val[i])
-                            * rstd[i]
-                            + T.cast(shift_local[i, j], "float32")
-                        )
-
-                    # Write output via shared memory
-                    T.copy(x_local, shared_buf)
-                    T.copy(shared_buf, y[pid_m * block_m, 0])
+                    if needs_pad:
+                        if use_cp_async:
+                            T.ptx_wait_group(0)
+                            T.sync_threads()
+                        for i, j in T.Parallel(block_m, N_padded):
+                            if T.And(pid_m * block_m + i < M, j < N):
+                                if use_cp_async:
+                                    y[pid_m * block_m + i, j] = (
+                                        T.cast(scale_shared[i, j], "float32")
+                                        * (T.cast(shared_buf[i, j], "float32") - mean_val[i])
+                                        * rstd[i]
+                                        + T.cast(shift_shared[i, j], "float32")
+                                    )
+                                else:
+                                    y[pid_m * block_m + i, j] = (
+                                        T.cast(scale[pid_m * block_m + i, j], "float32")
+                                        * (T.cast(shared_buf[i, j], "float32") - mean_val[i])
+                                        * rstd[i]
+                                        + T.cast(shift[pid_m * block_m + i, j], "float32")
+                                    )
+                    else:
+                        T.copy(scale[pid_m * block_m, 0], shared_buf)
+                        T.copy(shared_buf, scale_local)
+                        T.copy(shift[pid_m * block_m, 0], shared_buf)
+                        T.copy(shared_buf, shift_local)
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_local[i, j] = (
+                                T.cast(scale_local[i, j], "float32")
+                                * (T.cast(x_local[i, j], "float32") - mean_val[i])
+                                * rstd[i]
+                                + T.cast(shift_local[i, j], "float32")
+                            )
+                        T.copy(x_local, shared_buf)
+                        T.copy(shared_buf, y[pid_m * block_m, 0])
 
             return main
 
@@ -117,12 +152,12 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False):
 
             @T.prim_func
             def main_gated(
-                x: T.Tensor[(M, N_padded), dtype],
-                scale: T.Tensor[(M, N_padded), dtype],
-                shift: T.Tensor[(M, N_padded), dtype],
-                gate: T.Tensor[(M, N_padded), dtype],
+                x: T.Tensor[(M, N), dtype],
+                scale: T.Tensor[(M, N), dtype],
+                shift: T.Tensor[(M, N), dtype],
+                gate: T.Tensor[(M, N), dtype],
                 _dummy: T.Tensor[(1,), dtype],
-                y: T.Tensor[(M, N_padded), dtype],
+                y: T.Tensor[(M, N), dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                     shared_buf = T.alloc_shared((block_m, N_padded), dtype)
@@ -134,14 +169,34 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False):
                     scale_local = T.alloc_fragment((block_m, N_padded), dtype)
                     shift_local = T.alloc_fragment((block_m, N_padded), dtype)
                     gate_local = T.alloc_fragment((block_m, N_padded), dtype)
+                    if use_cp_async:
+                        scale_shared = T.alloc_shared((block_m, N_padded), dtype)
+                        shift_shared = T.alloc_shared((block_m, N_padded), dtype)
+                        gate_shared = T.alloc_shared((block_m, N_padded), dtype)
 
-                    # Load input row block via shared memory
-                    T.copy(x[pid_m * block_m, 0], shared_buf)
-                    T.copy(shared_buf, x_local)
-
-                    # Cast to fp32 once
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                    if needs_pad:
+                        for i, j in T.Parallel(block_m, N_padded):
+                            shared_buf[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < N),
+                                x[pid_m * block_m + i, j],
+                                T.cast(0.0, dtype),
+                            )
+                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                        if use_cp_async:
+                            T.async_copy(
+                                scale[pid_m * block_m, 0:N_padded], scale_shared
+                            )
+                            T.async_copy(
+                                shift[pid_m * block_m, 0:N_padded], shift_shared
+                            )
+                            T.async_copy(
+                                gate[pid_m * block_m, 0:N_padded], gate_shared
+                            )
+                    else:
+                        T.copy(x[pid_m * block_m, 0], shared_buf)
+                        T.copy(shared_buf, x_local)
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
                     # --- Mean reduction ---
                     T.reduce_sum(x_f32, acc, dim=1)
@@ -160,29 +215,46 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False):
                             + eps
                         )
 
-                    # Load scale, shift, and gate via shared memory
-                    T.copy(scale[pid_m * block_m, 0], shared_buf)
-                    T.copy(shared_buf, scale_local)
-                    T.copy(shift[pid_m * block_m, 0], shared_buf)
-                    T.copy(shared_buf, shift_local)
-                    T.copy(gate[pid_m * block_m, 0], shared_buf)
-                    T.copy(shared_buf, gate_local)
-
-                    # --- Output: y = gate * (scale * (x - mean) * rstd + shift) ---
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_local[i, j] = (
-                            T.cast(gate_local[i, j], "float32")
-                            * (
+                    if needs_pad:
+                        if use_cp_async:
+                            T.ptx_wait_group(0)
+                            T.sync_threads()
+                        for i, j in T.Parallel(block_m, N_padded):
+                            if T.And(pid_m * block_m + i < M, j < N):
+                                if use_cp_async:
+                                    y[pid_m * block_m + i, j] = T.cast(
+                                        gate_shared[i, j], "float32"
+                                    ) * (
+                                        T.cast(scale_shared[i, j], "float32")
+                                        * (T.cast(shared_buf[i, j], "float32") - mean_val[i])
+                                        * rstd[i]
+                                        + T.cast(shift_shared[i, j], "float32")
+                                    )
+                                else:
+                                    y[pid_m * block_m + i, j] = T.cast(
+                                        gate[pid_m * block_m + i, j], "float32"
+                                    ) * (
+                                        T.cast(scale[pid_m * block_m + i, j], "float32")
+                                        * (T.cast(shared_buf[i, j], "float32") - mean_val[i])
+                                        * rstd[i]
+                                        + T.cast(shift[pid_m * block_m + i, j], "float32")
+                                    )
+                    else:
+                        T.copy(scale[pid_m * block_m, 0], shared_buf)
+                        T.copy(shared_buf, scale_local)
+                        T.copy(shift[pid_m * block_m, 0], shared_buf)
+                        T.copy(shared_buf, shift_local)
+                        T.copy(gate[pid_m * block_m, 0], shared_buf)
+                        T.copy(shared_buf, gate_local)
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_local[i, j] = T.cast(gate_local[i, j], "float32") * (
                                 T.cast(scale_local[i, j], "float32")
                                 * (T.cast(x_local[i, j], "float32") - mean_val[i])
                                 * rstd[i]
                                 + T.cast(shift_local[i, j], "float32")
                             )
-                        )
-
-                    # Write output via shared memory
-                    T.copy(x_local, shared_buf)
-                    T.copy(shared_buf, y[pid_m * block_m, 0])
+                        T.copy(x_local, shared_buf)
+                        T.copy(shared_buf, y[pid_m * block_m, 0])
 
             return main_gated
 
@@ -197,20 +269,25 @@ def _ada_layer_norm_wrapped(
     dtype_str: str,
     block_m: int,
     threads: int,
+    use_cp_async: bool,
     x: torch.Tensor,
     scale: torch.Tensor,
     shift: torch.Tensor,
 ) -> torch.Tensor:
     dummy = torch.empty(1, dtype=x.dtype, device=x.device)
-    return _ada_layer_norm_kernel(M, N, eps, dtype_str, has_gate=False)(block_m, threads)(
-        x, scale, shift, dummy
-    )
+    return _ada_layer_norm_kernel(
+        M,
+        N,
+        eps,
+        dtype_str,
+        has_gate=False,
+        use_cp_async=use_cp_async,
+    )(block_m, threads)(x, scale, shift, dummy)
 
 
 @_ada_layer_norm_wrapped.register_fake
-def _(M, N, eps, dtype_str, block_m, threads, x, scale, shift):
-    N_padded = _align_up(N, ALIGNMENT)
-    return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
+def _(M, N, eps, dtype_str, block_m, threads, use_cp_async, x, scale, shift):
+    return torch.empty((M, N), dtype=x.dtype, device=x.device)
 
 
 @torch.library.custom_op("top::ada_layer_norm_zero_fwd", mutates_args=())
@@ -221,21 +298,38 @@ def _ada_layer_norm_zero_wrapped(
     dtype_str: str,
     block_m: int,
     threads: int,
+    use_cp_async: bool,
     x: torch.Tensor,
     scale: torch.Tensor,
     shift: torch.Tensor,
     gate: torch.Tensor,
 ) -> torch.Tensor:
     dummy = torch.empty(1, dtype=x.dtype, device=x.device)
-    return _ada_layer_norm_kernel(M, N, eps, dtype_str, has_gate=True)(block_m, threads)(
-        x, scale, shift, gate, dummy
-    )
+    return _ada_layer_norm_kernel(
+        M,
+        N,
+        eps,
+        dtype_str,
+        has_gate=True,
+        use_cp_async=use_cp_async,
+    )(block_m, threads)(x, scale, shift, gate, dummy)
 
 
 @_ada_layer_norm_zero_wrapped.register_fake
-def _(M, N, eps, dtype_str, block_m, threads, x, scale, shift, gate):
-    N_padded = _align_up(N, ALIGNMENT)
-    return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
+def _(
+    M,
+    N,
+    eps,
+    dtype_str,
+    block_m,
+    threads,
+    use_cp_async,
+    x,
+    scale,
+    shift,
+    gate,
+):
+    return torch.empty((M, N), dtype=x.dtype, device=x.device)
 
 
 class AdaLayerNormKernel(Kernel):
@@ -273,8 +367,16 @@ class AdaLayerNormKernel(Kernel):
         self.dtype = dtype
         self.has_gate = has_gate
         self.N_padded = _align_up(N, ALIGNMENT)
+        # Async modulation prefetch pays off for medium unaligned rows. Wider
+        # rows stay on the direct-load path to avoid shared-memory pressure.
+        self.use_cp_async = self.N_padded != N and 512 <= N < 1920
         self.kernel = _ada_layer_norm_kernel(
-            self.M, self.N, self.eps, self.dtype_str, has_gate=self.has_gate
+            self.M,
+            self.N,
+            self.eps,
+            self.dtype_str,
+            has_gate=self.has_gate,
+            use_cp_async=self.use_cp_async,
         )
         self.init_config(config, tune)
 
@@ -284,7 +386,10 @@ class AdaLayerNormKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return select_row_configs(self.N_padded, self.dtype)
+        num_buffers = (4 if self.has_gate else 3) if self.use_cp_async else 1
+        return select_row_configs(
+            self.N_padded, self.dtype, num_buffers=num_buffers
+        )
 
     def forward(
         self,
@@ -303,6 +408,7 @@ class AdaLayerNormKernel(Kernel):
                 self.dtype_str,
                 self.config["block_m"],
                 self.config["threads"],
+                self.use_cp_async,
                 x,
                 scale,
                 shift,
@@ -316,6 +422,7 @@ class AdaLayerNormKernel(Kernel):
                 self.dtype_str,
                 self.config["block_m"],
                 self.config["threads"],
+                self.use_cp_async,
                 x,
                 scale,
                 shift,
