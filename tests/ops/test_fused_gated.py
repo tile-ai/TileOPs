@@ -88,6 +88,41 @@ def test_silu_and_mul_lazy_op_rebinds_shape() -> None:
         assert (op.M, op.N, op.dtype) == (m, n, torch.float16)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("strategy", ["direct", "explicit_parallel"])
+def test_silu_and_mul_supports_more_than_65535_rows(strategy: str) -> None:
+    """Large dispatched batches must not exceed CUDA's grid.y limit."""
+    m, n, dtype = 65_536, 128, torch.bfloat16
+    test = SiluAndMulTest(m, n, dtype)
+    op = SiluAndMulFwdOp(M=m, N=n, dtype=dtype, strategy=strategy)
+    atol, rtol = _get_tolerances(dtype)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("strategy", ["direct", "explicit_parallel"])
+def test_silu_and_mul_device_bounded_rows(strategy: str) -> None:
+    """A CUDA scalar bounds work while the compiled capacity stays fixed."""
+    m, n, valid = 32, 128, 11
+    x = torch.randn(m, 2 * n, device="cuda", dtype=torch.bfloat16)
+    x[valid:].fill_(float("nan"))
+    valid_rows = torch.tensor(valid, device="cuda", dtype=torch.int32)
+    kernel = SiluAndMulFwdKernel(
+        M=m,
+        N=n,
+        dtype=torch.bfloat16,
+        strategy=strategy,
+    )
+
+    output = kernel.forward_rows(x, valid_rows)
+    reference = F.silu(x[:valid, :n].float()) * x[:valid, n:].float()
+
+    assert torch.isfinite(output[:valid]).all()
+    assert torch.allclose(
+        output[:valid].float(), reference, atol=1.6e-2, rtol=1.6e-2
+    )
+
+
 # ---------------------------------------------------------------------------
 # GeluAndMul
 # ---------------------------------------------------------------------------
