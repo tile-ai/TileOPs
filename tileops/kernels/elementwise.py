@@ -596,12 +596,23 @@ def _make_fused_gated_direct(M, N, dtype, op_func, threads=256, output_dtype=Non
     def kernel(threads_arg):
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
-            with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg) as (bx, by):
-                for i in T.Parallel(threads_arg):
-                    col = bx * threads_arg + i
-                    gate = x[by, col]
-                    value = x[by, N + col]
-                    y[by, col] = op_func(gate, value)
+            if M <= 65535:
+                with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg) as (bx, by):
+                    for i in T.Parallel(threads_arg):
+                        col = bx * threads_arg + i
+                        gate = x[by, col]
+                        value = x[by, N + col]
+                        y[by, col] = op_func(gate, value)
+            else:
+                col_blocks = T.ceildiv(N, threads_arg)
+                with T.Kernel(M * col_blocks, threads=threads_arg) as bx:
+                    row = bx // col_blocks
+                    col_block = bx % col_blocks
+                    for i in T.Parallel(threads_arg):
+                        col = col_block * threads_arg + i
+                        gate = x[row, col]
+                        value = x[row, N + col]
+                        y[row, col] = op_func(gate, value)
 
         return main
 
@@ -628,12 +639,23 @@ def _make_fused_gated_explicit(M, N, dtype, op_func, threads=256, num_per_thread
     def kernel(threads_arg, npt_arg):
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    col = (bx * threads_arg + i) * npt_arg + j
-                    gate = x[by, col]
-                    value = x[by, N + col]
-                    y[by, col] = op_func(gate, value)
+            if M <= 65535:
+                with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = (bx * threads_arg + i) * npt_arg + j
+                        gate = x[by, col]
+                        value = x[by, N + col]
+                        y[by, col] = op_func(gate, value)
+            else:
+                col_blocks = T.ceildiv(N, block_N)
+                with T.Kernel(M * col_blocks, threads=threads_arg) as bx:
+                    row = bx // col_blocks
+                    col_block = bx % col_blocks
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = (col_block * threads_arg + i) * npt_arg + j
+                        gate = x[row, col]
+                        value = x[row, N + col]
+                        y[row, col] = op_func(gate, value)
 
         return main
 

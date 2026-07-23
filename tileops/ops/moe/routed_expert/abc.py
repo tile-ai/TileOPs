@@ -11,6 +11,8 @@ from torch import Tensor
 from tileops.ops.op_base import Op
 
 __all__ = [
+    "ExpertBatch",
+    "ExpertBatchOutput",
     "FusedMoEExperts",
     "FusedMoEExpertsModular",
     "FusedMoEPrepareAndFinalize",
@@ -18,6 +20,65 @@ __all__ = [
     "WeightedReduce",
     "WeightedReduceNoOp",
 ]
+
+
+@dataclass(frozen=True)
+class ExpertBatch:
+    """Canonical communication-to-compute contract for routed expert rows.
+
+    ``hidden`` uses a tight expert-major layout. Expert ``e`` owns rows
+    ``expert_offsets[e]:expert_offsets[e + 1]``; adjacent equal offsets encode
+    an empty expert. TileOps borrows all input buffers for the duration of the
+    call and does not mutate them.
+    """
+
+    hidden: Tensor
+    expert_offsets: Tensor
+    valid_rows: Tensor | None = None
+    layout: str = "tight"
+
+    def __post_init__(self) -> None:
+        if self.hidden.ndim != 2:
+            raise ValueError(
+                f"hidden must be rank 2 [capacity, H], got {self.hidden.shape}"
+            )
+        if self.expert_offsets.ndim != 1:
+            raise ValueError(
+                "expert_offsets must be rank 1 [E_local + 1], got "
+                f"{self.expert_offsets.shape}"
+            )
+        if self.expert_offsets.dtype != torch.int32:
+            raise ValueError(
+                "expert_offsets must use torch.int32, got "
+                f"{self.expert_offsets.dtype}"
+            )
+        if self.hidden.device != self.expert_offsets.device:
+            raise ValueError("hidden and expert_offsets must be on the same device")
+        if self.layout != "tight":
+            raise ValueError(
+                f"only layout='tight' is supported, got {self.layout!r}"
+            )
+        if self.valid_rows is not None:
+            if self.valid_rows.numel() != 1:
+                raise ValueError("valid_rows must be a scalar tensor")
+            if self.valid_rows.device != self.hidden.device:
+                raise ValueError(
+                    "valid_rows and hidden must be on the same device"
+                )
+
+    @property
+    def capacity(self) -> int:
+        return self.hidden.shape[0]
+
+
+@dataclass(frozen=True)
+class ExpertBatchOutput:
+    """Expert MLP output; routing weights have not been applied."""
+
+    hidden: Tensor
+    valid_rows: Tensor | None = None
+    row_order_preserved: bool = True
+    routing_weights_applied: bool = False
 
 
 def _validate_fused_moe_experts_dtypes(

@@ -88,6 +88,17 @@ def test_silu_and_mul_lazy_op_rebinds_shape() -> None:
         assert (op.M, op.N, op.dtype) == (m, n, torch.float16)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("strategy", ["direct", "explicit_parallel"])
+def test_silu_and_mul_supports_more_than_65535_rows(strategy: str) -> None:
+    """Large dispatched batches must not exceed CUDA's grid.y limit."""
+    m, n, dtype = 65_536, 128, torch.bfloat16
+    test = SiluAndMulTest(m, n, dtype)
+    op = SiluAndMulFwdOp(M=m, N=n, dtype=dtype, strategy=strategy)
+    atol, rtol = _get_tolerances(dtype)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
 # ---------------------------------------------------------------------------
 # GeluAndMul
 # ---------------------------------------------------------------------------
