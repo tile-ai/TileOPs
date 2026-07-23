@@ -3,15 +3,16 @@
 import argparse
 import time
 
+import deep_gemm
 import torch
 import torch.nn.functional as F
-
-import deep_gemm
 
 from tileops.ops.moe import DispatchedExpertMLPFwdOp
 
 DTYPE = torch.bfloat16
 WARMUP, ITERS = 10, 50
+MAX_RANGE_REL_TOL = 0.02
+RELATIVE_L2_TOL = 0.01
 
 
 def _time_ms(fn) -> float:
@@ -59,9 +60,8 @@ def _make_sizes(
         hot_experts = max(1, num_experts // 8)
         probabilities = torch.full((num_experts,), 0.2 / num_experts)
         probabilities[:hot_experts] += 0.8 / hot_experts
-    elif distribution == "router":
-        # Deterministic router-like trace: correlated expert logits produce
-        # a reproducible non-uniform assignment with naturally empty experts.
+    elif distribution == "router-like":
+        # Deterministic synthetic categorical routing distribution.
         probabilities = torch.softmax(
             torch.randn(num_experts, generator=generator) * 1.5, dim=0
         )
@@ -74,6 +74,64 @@ def _make_sizes(
         generator=generator,
     )
     return torch.bincount(assignments, minlength=num_experts).tolist()
+
+
+def _fp32_reference(
+    hidden: torch.Tensor,
+    w_gate_up: torch.Tensor,
+    w_down: torch.Tensor,
+    sizes: list[int],
+) -> torch.Tensor:
+    """Independent per-expert FP32 reference in tight row order."""
+    output = torch.empty(
+        hidden.shape[0],
+        hidden.shape[1],
+        device=hidden.device,
+        dtype=torch.float32,
+    )
+    ffn_size = w_down.shape[-1]
+    start = 0
+    for expert, size in enumerate(sizes):
+        if size == 0:
+            continue
+        rows = hidden[start : start + size].float()
+        gate_up = rows @ w_gate_up[expert].float().t()
+        activated = F.silu(gate_up[:, :ffn_size]) * gate_up[:, ffn_size:]
+        output[start : start + size] = (
+            activated @ w_down[expert].float().t()
+        )
+        start += size
+    return output
+
+
+def _check_output(
+    name: str,
+    actual: torch.Tensor,
+    reference: torch.Tensor,
+) -> tuple[float, float, float, float]:
+    actual_fp32 = actual.float()
+    if not torch.isfinite(actual_fp32).all():
+        raise AssertionError(f"{name}: output contains NaN or Inf")
+    error = actual_fp32 - reference
+    max_abs = error.abs().max().item()
+    rmse = error.square().mean().sqrt().item()
+    relative_l2 = (
+        torch.linalg.vector_norm(error)
+        / torch.linalg.vector_norm(reference).clamp_min(1e-12)
+    ).item()
+    max_range_relative = (
+        max_abs / reference.abs().max().clamp_min(1e-12).item()
+    )
+    if (
+        max_range_relative > MAX_RANGE_REL_TOL
+        or relative_l2 > RELATIVE_L2_TOL
+    ):
+        raise AssertionError(
+            f"{name}: max_abs={max_abs}, rmse={rmse}, "
+            f"relative_l2={relative_l2}, "
+            f"max_range_relative={max_range_relative}"
+        )
+    return max_abs, rmse, relative_l2, max_range_relative
 
 
 def _run(
@@ -116,7 +174,7 @@ def _run(
         aligned.zero_()
         tight_start = physical_start = 0
         for expert, (size, aligned_size) in enumerate(
-            zip(sizes, aligned_sizes)
+            zip(sizes, aligned_sizes, strict=True)
         ):
             aligned[physical_start : physical_start + size].copy_(
                 tight[tight_start : tight_start + size]
@@ -141,6 +199,10 @@ def _run(
     tileops_fused = DispatchedExpertMLPFwdOp(
         num_pairs, E, H, F_DIM, DTYPE, use_fused_activation=True
     )
+    if not tileops_fused.use_fused_activation:
+        raise RuntimeError(
+            f"{case_name}: requested TileOps fused activation is not eligible"
+        )
 
     def run_tileops_unfused():
         return tileops_unfused(
@@ -152,65 +214,77 @@ def _run(
             tight, w_gate_up, w_down, true_sizes, true_offsets
         )
 
-    def run_gemm1():
+    def run_gemm1_into(destination):
         deep_gemm.m_grouped_bf16_gemm_nt_contiguous(
             aligned,
             w_gate_up,
-            gate_up,
+            destination,
             psum,
             use_psum_layout=True,
             expected_m_for_psum_layout=max(1, num_pairs // E),
         )
+
+    def run_activation_into(gate_up_input, destination):
+        torch.mul(
+            F.silu(gate_up_input[:, :F_DIM]),
+            gate_up_input[:, F_DIM:],
+            out=destination,
+        )
+
+    def run_gemm2_into(activation_input, destination):
+        deep_gemm.m_grouped_bf16_gemm_nt_contiguous(
+            activation_input,
+            w_down,
+            destination,
+            psum,
+            use_psum_layout=True,
+            expected_m_for_psum_layout=max(1, num_pairs // E),
+        )
+
+    def run_gemm1():
+        run_gemm1_into(gate_up)
 
     def run_activation():
-        torch.mul(
-            F.silu(gate_up[:, :F_DIM]),
-            gate_up[:, F_DIM:],
-            out=activated,
-        )
+        run_activation_into(gate_up, activated)
 
     def run_gemm2():
-        deep_gemm.m_grouped_bf16_gemm_nt_contiguous(
-            activated,
-            w_down,
-            output,
-            psum,
-            use_psum_layout=True,
-            expected_m_for_psum_layout=max(1, num_pairs // E),
-        )
+        run_gemm2_into(activated, output)
 
     def run_deepgemm_pipeline():
         run_gemm1()
         run_activation()
         run_gemm2()
 
-    # Correctness compares only valid logical rows; aligned padding is omitted.
-    tileops_reference = run_tileops_unfused()
+    def run_deepgemm_allocating_pipeline():
+        local_gate_up = torch.empty_like(gate_up)
+        local_activated = torch.empty_like(activated)
+        local_output = torch.empty_like(output)
+        run_gemm1_into(local_gate_up)
+        run_activation_into(local_gate_up, local_activated)
+        run_gemm2_into(local_activated, local_output)
+        return local_output
+
+    # Validate every reported backend against an independent FP32 reference.
+    reference = _fp32_reference(tight, w_gate_up, w_down, sizes)
+    tileops_unfused_output = run_tileops_unfused()
+    tileops_fused_output = run_tileops_fused()
     run_deepgemm_pipeline()
-    deepgemm_valid = torch.empty_like(tileops_reference)
+    deepgemm_valid = torch.empty_like(tileops_unfused_output)
     tight_start = physical_start = 0
-    for size, aligned_size in zip(sizes, aligned_sizes):
+    for size, aligned_size in zip(sizes, aligned_sizes, strict=True):
         deepgemm_valid[tight_start : tight_start + size].copy_(
             output[physical_start : physical_start + size]
         )
         tight_start += size
         physical_start += aligned_size
     torch.cuda.synchronize()
-    abs_diff = (tileops_reference.float() - deepgemm_valid.float()).abs()
-    max_diff = abs_diff.max().item()
-    relative_diff = max_diff / max(
-        tileops_reference.float().abs().max().item(), 1e-12
+    tileops_unfused_error = _check_output(
+        "TileOps unfused", tileops_unfused_output, reference
     )
-    if not torch.allclose(
-        tileops_reference.float(),
-        deepgemm_valid.float(),
-        atol=8e-2,
-        rtol=8e-2,
-    ):
-        raise AssertionError(
-            f"{case_name}/{distribution}: TileOps and DeepGEMM disagree; "
-            f"max_diff={max_diff}, relative_diff={relative_diff}"
-        )
+    tileops_fused_error = _check_output(
+        "TileOps fused", tileops_fused_output, reference
+    )
+    deepgemm_error = _check_output("DeepGEMM", deepgemm_valid, reference)
 
     pack_ms = _host_time_ms(pack_aligned)
     tileops_unfused_ms = _time_ms(run_tileops_unfused)
@@ -218,7 +292,8 @@ def _run(
     gemm1_ms = _time_ms(run_gemm1)
     activation_ms = _time_ms(run_activation)
     gemm2_ms = _time_ms(run_gemm2)
-    deepgemm_total_ms = _time_ms(run_deepgemm_pipeline)
+    deepgemm_preallocated_ms = _time_ms(run_deepgemm_pipeline)
+    deepgemm_allocating_ms = _time_ms(run_deepgemm_allocating_pipeline)
 
     logical_flops = 6 * num_pairs * H * F_DIM
     physical_flops = 6 * physical_rows * H * F_DIM
@@ -232,11 +307,23 @@ def _run(
         f"{pack_ms:.4f},"
         f"{tileops_unfused_ms:.4f},{tileops_fused_ms:.4f},"
         f"{gemm1_ms:.4f},{activation_ms:.4f},{gemm2_ms:.4f},"
-        f"{deepgemm_total_ms:.4f},"
+        f"{deepgemm_preallocated_ms:.4f},{deepgemm_allocating_ms:.4f},"
+        f"{logical_flops / (tileops_unfused_ms / 1e3) / 1e12:.2f},"
         f"{logical_flops / (tileops_fused_ms / 1e3) / 1e12:.2f},"
-        f"{logical_flops / (deepgemm_total_ms / 1e3) / 1e12:.2f},"
-        f"{physical_flops / (deepgemm_total_ms / 1e3) / 1e12:.2f},"
-        f"{max_diff:.6f},{relative_diff:.6f},{num_pairs}",
+        f"{logical_flops / (deepgemm_preallocated_ms / 1e3) / 1e12:.2f},"
+        f"{logical_flops / (deepgemm_allocating_ms / 1e3) / 1e12:.2f},"
+        f"{physical_flops / (deepgemm_preallocated_ms / 1e3) / 1e12:.2f},"
+        f"{tileops_unfused_error[0]:.6f},"
+        f"{tileops_unfused_error[1]:.6f},"
+        f"{tileops_unfused_error[2]:.6f},"
+        f"{tileops_unfused_error[3]:.6f},"
+        f"{tileops_fused_error[0]:.6f},"
+        f"{tileops_fused_error[1]:.6f},"
+        f"{tileops_fused_error[2]:.6f},"
+        f"{tileops_fused_error[3]:.6f},"
+        f"{deepgemm_error[0]:.6f},{deepgemm_error[1]:.6f},"
+        f"{deepgemm_error[2]:.6f},{deepgemm_error[3]:.6f},"
+        f"{num_pairs}",
         flush=True,
     )
 
@@ -268,7 +355,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--distribution",
-        choices=("uniform", "longtail", "hotspot", "router"),
+        choices=("uniform", "longtail", "hotspot", "router-like"),
         nargs="+",
         default=("uniform",),
     )
@@ -278,6 +365,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     assert torch.cuda.is_available()
     torch.manual_seed(42)
+    torch.set_float32_matmul_precision("highest")
     torch.set_grad_enabled(False)
     args = _parse_args()
     if args.model == "glm5":
@@ -305,9 +393,19 @@ def main() -> None:
         "logical_rows,physical_rows,empty_experts,padding_ratio,pack_ms,"
         "tileops_unfused_ms,tileops_fused_ms,"
         "deepgemm_gemm1_ms,activation_ms,deepgemm_gemm2_ms,"
-        "deepgemm_total_ms,tileops_effective_TFLOPS,"
-        "deepgemm_effective_TFLOPS,deepgemm_physical_TFLOPS,"
-        "max_diff,relative_diff,valid_rows_checked"
+        "deepgemm_preallocated_ms,deepgemm_allocating_ms,"
+        "tileops_unfused_effective_TFLOPS,"
+        "tileops_fused_effective_TFLOPS,"
+        "deepgemm_preallocated_effective_TFLOPS,"
+        "deepgemm_allocating_effective_TFLOPS,"
+        "deepgemm_physical_TFLOPS,"
+        "tileops_unfused_max_abs,tileops_unfused_rmse,"
+        "tileops_unfused_relative_l2,tileops_unfused_max_range_relative,"
+        "tileops_fused_max_abs,tileops_fused_rmse,"
+        "tileops_fused_relative_l2,tileops_fused_max_range_relative,"
+        "deepgemm_max_abs,deepgemm_rmse,deepgemm_relative_l2,"
+        "deepgemm_max_range_relative,"
+        "valid_rows_checked"
     )
     cases = (
         [(f"M={m}", m * num_experts) for m in args.m]

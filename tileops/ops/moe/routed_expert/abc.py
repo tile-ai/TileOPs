@@ -28,15 +28,15 @@ class ExpertBatch:
 
     ``hidden`` uses a tight expert-major layout. Expert ``e`` owns rows
     ``expert_offsets[e]:expert_offsets[e + 1]``; adjacent equal offsets encode
-    an empty expert. When supplied, ``valid_rows`` is a device scalar equal to
-    ``expert_offsets[-1]``; both may change between CUDA Graph replays while
-    capacity and tensor addresses stay fixed. TileOps borrows all input buffers
-    for the duration of the call and does not mutate them.
+    an empty expert. ``valid_rows`` is the device-side
+    ``expert_offsets[-1:]`` view, making offsets the single source of truth.
+    Offsets may change between CUDA Graph replays while capacity and tensor
+    addresses stay fixed. TileOps borrows all input buffers for the duration
+    of the call and does not mutate them.
     """
 
     hidden: Tensor
     expert_offsets: Tensor
-    valid_rows: Tensor | None = None
     layout: str = "tight"
 
     def __post_init__(self) -> None:
@@ -60,22 +60,14 @@ class ExpertBatch:
             raise ValueError(
                 f"only layout='tight' is supported, got {self.layout!r}"
             )
-        if self.valid_rows is not None:
-            if self.valid_rows.numel() != 1:
-                raise ValueError("valid_rows must contain one element")
-            if self.valid_rows.dtype != torch.int32:
-                raise ValueError(
-                    "valid_rows must use torch.int32, got "
-                    f"{self.valid_rows.dtype}"
-                )
-            if self.valid_rows.device != self.hidden.device:
-                raise ValueError(
-                    "valid_rows and hidden must be on the same device"
-                )
-
     @property
     def capacity(self) -> int:
         return self.hidden.shape[0]
+
+    @property
+    def valid_rows(self) -> Tensor:
+        """One-element device view of the valid tight-row count."""
+        return self.expert_offsets[-1:]
 
 
 @dataclass(frozen=True)

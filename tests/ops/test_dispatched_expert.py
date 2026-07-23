@@ -66,21 +66,15 @@ def test_expert_batch_output_contract_defaults():
 
 
 @pytest.mark.smoke
-def test_expert_batch_valid_rows_contract():
+def test_expert_batch_valid_rows_is_offsets_view():
     hidden = torch.empty(4, 8)
     offsets = torch.tensor([0, 2, 4], dtype=torch.int32)
-    with pytest.raises(ValueError, match="one element"):
-        ExpertBatch(
-            hidden=hidden,
-            expert_offsets=offsets,
-            valid_rows=torch.tensor([3, 4], dtype=torch.int32),
-        )
-    with pytest.raises(ValueError, match="torch.int32"):
-        ExpertBatch(
-            hidden=hidden,
-            expert_offsets=offsets,
-            valid_rows=torch.tensor(4, dtype=torch.int64),
-        )
+    batch = ExpertBatch(hidden=hidden, expert_offsets=offsets)
+
+    assert batch.valid_rows.shape == (1,)
+    assert batch.valid_rows.data_ptr() == offsets[-1:].data_ptr()
+    offsets[-1] = 3
+    assert batch.valid_rows.item() == 3
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
@@ -272,10 +266,7 @@ def test_expert_batch_capacity_processes_only_device_valid_rows(
     offsets = torch.tensor(
         host_offsets, device="cuda", dtype=torch.int32
     )
-    valid_rows = torch.tensor(
-        valid_count, device="cuda", dtype=torch.int32
-    )
-    batch = ExpertBatch(hidden, offsets, valid_rows=valid_rows)
+    batch = ExpertBatch(hidden, offsets)
     op = DispatchedExpertMLPFwdOp(
         num_pairs=capacity,
         num_experts=num_experts,
@@ -291,7 +282,7 @@ def test_expert_batch_capacity_processes_only_device_valid_rows(
     )
 
     assert output.hidden.shape == (capacity, hidden_size)
-    assert output.valid_rows is valid_rows
+    assert output.valid_rows.data_ptr() == offsets[-1:].data_ptr()
     assert torch.isfinite(output.hidden[:valid_count]).all()
     assert torch.allclose(
         output.hidden[:valid_count].float(),
@@ -302,12 +293,17 @@ def test_expert_batch_capacity_processes_only_device_valid_rows(
 
 
 @pytest.mark.smoke
-def test_expert_batch_cuda_graph_replays_different_valid_rows():
+@pytest.mark.parametrize("use_fused_activation", [False, True])
+def test_expert_batch_cuda_graph_replays_different_valid_rows(
+    use_fused_activation,
+):
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
+    if use_fused_activation and torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("fused activation requires SM90")
 
     torch.manual_seed(3)
-    capacity, hidden_size, ffn_size, num_experts = 24, 128, 96, 4
+    capacity, hidden_size, ffn_size, num_experts = 24, 256, 128, 4
     dtype = torch.bfloat16
     hidden = torch.empty(
         capacity, hidden_size, device="cuda", dtype=dtype
@@ -315,7 +311,6 @@ def test_expert_batch_cuda_graph_replays_different_valid_rows():
     offsets = torch.empty(
         num_experts + 1, device="cuda", dtype=torch.int32
     )
-    valid_rows = torch.empty((), device="cuda", dtype=torch.int32)
     w_gate_up = torch.randn(
         num_experts,
         2 * ffn_size,
@@ -330,13 +325,14 @@ def test_expert_batch_cuda_graph_replays_different_valid_rows():
         device="cuda",
         dtype=dtype,
     ) * 0.02
-    batch = ExpertBatch(hidden, offsets, valid_rows=valid_rows)
+    batch = ExpertBatch(hidden, offsets)
     op = DispatchedExpertMLPFwdOp(
         num_pairs=capacity,
         num_experts=num_experts,
         hidden_size=hidden_size,
         ffn_size=ffn_size,
         dtype=dtype,
+        use_fused_activation=use_fused_activation,
     )
 
     def set_batch(sizes):
@@ -353,7 +349,6 @@ def test_expert_batch_cuda_graph_replays_different_valid_rows():
         offsets.copy_(
             torch.tensor(host_offsets, device="cuda", dtype=torch.int32)
         )
-        valid_rows.fill_(count)
         return count
 
     first_sizes = [2, 0, 3, 2]

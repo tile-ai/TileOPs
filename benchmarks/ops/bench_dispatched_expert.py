@@ -4,8 +4,10 @@ import torch
 
 from tileops.ops.moe import (
     DispatchedExpertMLPFwdOp,
+    ExpertBatch,
     FusedMoEExpertsNopadPersistent3WGFwdOp,
 )
+from tileops.ops.moe.routed_expert import MoePermuteNopadFwdOp
 
 DTYPE = torch.bfloat16
 E, TOP_K, H, F = 128, 8, 2048, 1024
@@ -29,23 +31,28 @@ def _time_ms(fn) -> float:
 def _run_shape(num_tokens: int) -> tuple[float, ...]:
     num_pairs = num_tokens * TOP_K
     hidden = torch.randn(num_tokens, H, device="cuda", dtype=DTYPE)
-    expert_input = torch.randn(num_pairs, H, device="cuda", dtype=DTYPE)
     w_gate_up = (
         torch.randn(E, 2 * F, H, device="cuda", dtype=DTYPE) * 0.02
     )
     w_down = torch.randn(E, H, F, device="cuda", dtype=DTYPE) * 0.02
-    true_sizes = torch.full(
-        (E,), num_pairs // E, device="cuda", dtype=torch.int32
-    )
-    true_sizes[: num_pairs % E] += 1
-    true_offsets = torch.empty(E, device="cuda", dtype=torch.int32)
-    true_offsets[0] = 0
-    true_offsets[1:] = torch.cumsum(true_sizes[:-1], dim=0)
-    topk_ids = torch.randint(
-        0, E, (num_tokens, TOP_K), device="cuda", dtype=torch.int32
-    )
+    # Select unique experts per token and materialize the exact expert-major
+    # batch used by the full path. Pure/full timings therefore differ only by
+    # routing work, not by expert-size distribution.
+    topk_ids = torch.rand(
+        num_tokens, E, device="cuda"
+    ).topk(TOP_K, dim=-1).indices.to(torch.int32)
     topk_weights = torch.softmax(
         torch.randn(num_tokens, TOP_K, device="cuda"), dim=-1
+    )
+    permute = MoePermuteNopadFwdOp(
+        total_tokens=num_tokens,
+        top_k=TOP_K,
+        num_experts=E,
+        hidden_size=H,
+        dtype=DTYPE,
+    )
+    expert_input, true_offsets, true_sizes, _, _ = permute(
+        hidden, topk_ids
     )
     output_unfused = torch.empty(
         num_tokens, H, device="cuda", dtype=DTYPE
@@ -114,9 +121,62 @@ def _run_shape(num_tokens: int) -> tuple[float, ...]:
         )
     )
     logical_flops = 6 * num_pairs * H * F
-    pure_tflops = logical_flops / (timings[1] / 1e3) / 1e12
-    full_tflops = logical_flops / (timings[3] / 1e3) / 1e12
-    return (*timings, pure_tflops, full_tflops)
+    tflops = tuple(
+        logical_flops / (timing / 1e3) / 1e12
+        for timing in timings
+    )
+    return (*timings, *tflops)
+
+
+def _run_capacity_sweep(capacity: int = 16_384) -> None:
+    hidden = torch.randn(capacity, H, device="cuda", dtype=DTYPE)
+    w_gate_up = (
+        torch.randn(E, 2 * F, H, device="cuda", dtype=DTYPE) * 0.02
+    )
+    w_down = torch.randn(E, H, F, device="cuda", dtype=DTYPE) * 0.02
+    unfused = DispatchedExpertMLPFwdOp(
+        capacity, E, H, F, DTYPE, use_fused_activation=False
+    )
+    fused = DispatchedExpertMLPFwdOp(
+        capacity, E, H, F, DTYPE, use_fused_activation=True
+    )
+    print(
+        "capacity,valid_rows,utilization,"
+        "capacity_unfused_ms,capacity_fused_ms,"
+        "unfused_effective_TFLOPS,fused_effective_TFLOPS"
+    )
+    for valid_rows in (0, capacity // 64, capacity // 8, capacity):
+        sizes = [
+            valid_rows // E + (expert < valid_rows % E)
+            for expert in range(E)
+        ]
+        offsets = [0]
+        for size in sizes:
+            offsets.append(offsets[-1] + size)
+        batch = ExpertBatch(
+            hidden=hidden,
+            expert_offsets=torch.tensor(
+                offsets, device="cuda", dtype=torch.int32
+            ),
+        )
+        unfused_ms = _time_ms(
+            lambda batch=batch: unfused.forward_batch(
+                batch, w_gate_up, w_down
+            )
+        )
+        fused_ms = _time_ms(
+            lambda batch=batch: fused.forward_batch(
+                batch, w_gate_up, w_down
+            )
+        )
+        logical_flops = 6 * valid_rows * H * F
+        print(
+            f"{capacity},{valid_rows},{valid_rows / capacity:.6f},"
+            f"{unfused_ms:.4f},{fused_ms:.4f},"
+            f"{logical_flops / (unfused_ms / 1e3) / 1e12:.2f},"
+            f"{logical_flops / (fused_ms / 1e3) / 1e12:.2f}",
+            flush=True,
+        )
 
 
 def main() -> None:
@@ -130,13 +190,15 @@ def main() -> None:
     print(
         "T,M,pure_unfused_ms,pure_fused_ms,"
         "full_unfused_ms,full_fused_ms,"
-        "pure_fused_effective_TFLOPS,full_fused_effective_TFLOPS"
+        "pure_unfused_effective_TFLOPS,pure_fused_effective_TFLOPS,"
+        "full_unfused_effective_TFLOPS,full_fused_effective_TFLOPS"
     )
     for num_tokens in (128, 1024):
         values = _run_shape(num_tokens)
         formatted = ",".join(f"{value:.4f}" for value in values)
         print(f"{num_tokens},{num_tokens * TOP_K},{formatted}", flush=True)
         torch.cuda.empty_cache()
+    _run_capacity_sweep()
 
 
 if __name__ == "__main__":

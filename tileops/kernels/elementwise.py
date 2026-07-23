@@ -664,9 +664,9 @@ def _make_fused_gated_explicit(M, N, dtype, op_func, threads=256, num_per_thread
 
 @functools.lru_cache(maxsize=32)
 def _make_fused_gated_direct_bounded(
-    M, N, dtype, op_func, threads=256, output_dtype=None,
+    M, N, dtype, op_func, grid_rows, threads=256, output_dtype=None,
 ):
-    """FusedGated direct with a device-side valid row count."""
+    """Persistent FusedGated direct with a device-side valid row count."""
     out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[2])
@@ -678,15 +678,17 @@ def _make_fused_gated_direct_bounded(
             y: T.Tensor((M, N), out_dtype),
         ):
             col_blocks = T.ceildiv(N, threads_arg)
-            with T.Kernel(M * col_blocks, threads=threads_arg) as bx:
-                row = bx // col_blocks
+            with T.Kernel(grid_rows * col_blocks, threads=threads_arg) as bx:
+                worker_row = bx // col_blocks
                 col_block = bx % col_blocks
-                for i in T.Parallel(threads_arg):
-                    col = col_block * threads_arg + i
-                    if row < valid_rows[0]:
-                        gate = x[row, col]
-                        value = x[row, N + col]
-                        y[row, col] = op_func(gate, value)
+                for row_iter in T.serial(T.ceildiv(M, grid_rows)):
+                    row = worker_row + row_iter * grid_rows
+                    for i in T.Parallel(threads_arg):
+                        col = col_block * threads_arg + i
+                        if row < valid_rows[0]:
+                            gate = x[row, col]
+                            value = x[row, N + col]
+                            y[row, col] = op_func(gate, value)
 
         return main
 
@@ -695,10 +697,10 @@ def _make_fused_gated_direct_bounded(
 
 @functools.lru_cache(maxsize=32)
 def _make_fused_gated_explicit_bounded(
-    M, N, dtype, op_func, threads=256, num_per_thread=8,
+    M, N, dtype, op_func, grid_rows, threads=256, num_per_thread=8,
     output_dtype=None,
 ):
-    """FusedGated explicit_parallel with a device-side valid row count."""
+    """Persistent FusedGated explicit_parallel with a device row count."""
     block_N = threads * num_per_thread
     out_dtype = output_dtype or dtype
 
@@ -711,15 +713,17 @@ def _make_fused_gated_explicit_bounded(
             y: T.Tensor((M, N), out_dtype),
         ):
             col_blocks = T.ceildiv(N, block_N)
-            with T.Kernel(M * col_blocks, threads=threads_arg) as bx:
-                row = bx // col_blocks
+            with T.Kernel(grid_rows * col_blocks, threads=threads_arg) as bx:
+                worker_row = bx // col_blocks
                 col_block = bx % col_blocks
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    col = (col_block * threads_arg + i) * npt_arg + j
-                    if row < valid_rows[0]:
-                        gate = x[row, col]
-                        value = x[row, N + col]
-                        y[row, col] = op_func(gate, value)
+                for row_iter in T.serial(T.ceildiv(M, grid_rows)):
+                    row = worker_row + row_iter * grid_rows
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = (col_block * threads_arg + i) * npt_arg + j
+                        if row < valid_rows[0]:
+                            gate = x[row, col]
+                            value = x[row, N + col]
+                            y[row, col] = op_func(gate, value)
 
         return main
 
@@ -1331,12 +1335,17 @@ class FusedGatedKernel(Kernel):
         if self._bounded_compiled_fn is None:
             cfg = self.config
             effective_op = self._get_effective_op_func()
+            sm_count = torch.cuda.get_device_properties(
+                x.device
+            ).multi_processor_count
+            grid_rows = min(self.M, 16 * sm_count)
             if self.strategy == "direct":
                 bounded_kernel = _make_fused_gated_direct_bounded(
                     self.M,
                     self.N,
                     self.dtype_str,
                     effective_op,
+                    grid_rows,
                     threads=cfg["threads"],
                     output_dtype=self._kernel_output_dtype,
                 )
@@ -1347,6 +1356,7 @@ class FusedGatedKernel(Kernel):
                     self.N,
                     self.dtype_str,
                     effective_op,
+                    grid_rows,
                     cfg["threads"],
                     cfg["num_per_thread"],
                     output_dtype=self._kernel_output_dtype,

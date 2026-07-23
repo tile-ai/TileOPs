@@ -225,11 +225,7 @@ class DispatchedExpertMLPFwdOp(Op):
             )
         true_offsets = batch.expert_offsets[:-1]
         true_sizes = batch.expert_offsets[1:] - true_offsets
-        valid_rows = (
-            batch.valid_rows
-            if batch.valid_rows is not None
-            else batch.expert_offsets[-1:]
-        )
+        valid_rows = batch.valid_rows
         hidden = self._forward(
             batch.hidden,
             w_gate_up,
