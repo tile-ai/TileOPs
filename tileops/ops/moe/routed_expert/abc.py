@@ -28,8 +28,10 @@ class ExpertBatch:
 
     ``hidden`` uses a tight expert-major layout. Expert ``e`` owns rows
     ``expert_offsets[e]:expert_offsets[e + 1]``; adjacent equal offsets encode
-    an empty expert. TileOps borrows all input buffers for the duration of the
-    call and does not mutate them.
+    an empty expert. When supplied, ``valid_rows`` is a device scalar equal to
+    ``expert_offsets[-1]``; both may change between CUDA Graph replays while
+    capacity and tensor addresses stay fixed. TileOps borrows all input buffers
+    for the duration of the call and does not mutate them.
     """
 
     hidden: Tensor
@@ -60,7 +62,12 @@ class ExpertBatch:
             )
         if self.valid_rows is not None:
             if self.valid_rows.numel() != 1:
-                raise ValueError("valid_rows must be a scalar tensor")
+                raise ValueError("valid_rows must contain one element")
+            if self.valid_rows.dtype != torch.int32:
+                raise ValueError(
+                    "valid_rows must use torch.int32, got "
+                    f"{self.valid_rows.dtype}"
+                )
             if self.valid_rows.device != self.hidden.device:
                 raise ValueError(
                     "valid_rows and hidden must be on the same device"

@@ -161,13 +161,37 @@ class DispatchedExpertMLPFwdOp(Op):
         true_offsets: Tensor,
     ) -> Tensor:
         """Return ``[num_pairs, hidden_size]`` without changing row order."""
+        return self._forward(
+            expert_input,
+            w_gate_up,
+            w_down,
+            true_sizes,
+            true_offsets,
+            valid_rows=None,
+        )
+
+    def _forward(
+        self,
+        expert_input: Tensor,
+        w_gate_up: Tensor,
+        w_down: Tensor,
+        true_sizes: Tensor,
+        true_offsets: Tensor,
+        valid_rows: Tensor | None,
+    ) -> Tensor:
         gate_up = self._gemm_gate_up(
             expert_input, w_gate_up, true_sizes, true_offsets
         )
         act = (
             gate_up
             if self.use_fused_activation
-            else self._activation_op(gate_up)
+            else (
+                self._activation_op(gate_up)
+                if valid_rows is None
+                else self._activation_op.kernel.forward_rows(
+                    gate_up, valid_rows
+                )
+            )
         )
         return self._gemm_down(act, w_down, true_sizes, true_offsets)
 
@@ -179,8 +203,9 @@ class DispatchedExpertMLPFwdOp(Op):
     ) -> ExpertBatchOutput:
         """Run the MLP from canonical ``expert_offsets[E_local + 1]``.
 
-        Offset differencing stays on the input device. ``valid_rows`` is
-        carried through as metadata; current kernels still process capacity.
+        Offset differencing and the received row count stay on the input
+        device. Grouped GEMMs schedule only expert tiles described by the
+        offsets; the standalone activation is bounded by ``valid_rows``.
         """
         if batch.capacity != self.num_pairs:
             raise ValueError(
@@ -200,11 +225,17 @@ class DispatchedExpertMLPFwdOp(Op):
             )
         true_offsets = batch.expert_offsets[:-1]
         true_sizes = batch.expert_offsets[1:] - true_offsets
-        hidden = self.forward(
+        valid_rows = (
+            batch.valid_rows
+            if batch.valid_rows is not None
+            else batch.expert_offsets[-1:]
+        )
+        hidden = self._forward(
             batch.hidden,
             w_gate_up,
             w_down,
             true_sizes,
             true_offsets,
+            valid_rows,
         )
-        return ExpertBatchOutput(hidden=hidden, valid_rows=batch.valid_rows)
+        return ExpertBatchOutput(hidden=hidden, valid_rows=valid_rows)

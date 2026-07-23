@@ -65,6 +65,24 @@ def test_expert_batch_output_contract_defaults():
     assert not output.routing_weights_applied
 
 
+@pytest.mark.smoke
+def test_expert_batch_valid_rows_contract():
+    hidden = torch.empty(4, 8)
+    offsets = torch.tensor([0, 2, 4], dtype=torch.int32)
+    with pytest.raises(ValueError, match="one element"):
+        ExpertBatch(
+            hidden=hidden,
+            expert_offsets=offsets,
+            valid_rows=torch.tensor([3, 4], dtype=torch.int32),
+        )
+    with pytest.raises(ValueError, match="torch.int32"):
+        ExpertBatch(
+            hidden=hidden,
+            expert_offsets=offsets,
+            valid_rows=torch.tensor(4, dtype=torch.int64),
+        )
+
+
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("sizes", [[4, 4, 4, 4], [0, 2, 13, 1]])
 @pytest.mark.smoke
@@ -212,3 +230,167 @@ def test_expert_batch_mock_dispatch_combine_applies_weights_once():
         reverse_handle["source_ranks"].unique().cpu(), torch.tensor([0, 1])
     )
     assert torch.allclose(combined, combined_reference, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("use_fused_activation", [False, True])
+@pytest.mark.parametrize("sizes", [[0, 3, 5, 2], [0, 0, 0, 0]])
+def test_expert_batch_capacity_processes_only_device_valid_rows(
+    use_fused_activation, sizes,
+):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    if use_fused_activation and torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("fused activation requires SM90")
+
+    torch.manual_seed(2)
+    capacity, hidden_size, ffn_size, num_experts = 24, 256, 128, 4
+    valid_count = sum(sizes)
+    dtype = torch.bfloat16
+    hidden = torch.randn(
+        capacity, hidden_size, device="cuda", dtype=dtype
+    ) * 0.1
+    # An invalid tail must not affect valid rows.
+    hidden[valid_count:].fill_(float("nan"))
+    w_gate_up = torch.randn(
+        num_experts,
+        2 * ffn_size,
+        hidden_size,
+        device="cuda",
+        dtype=dtype,
+    ) * 0.02
+    w_down = torch.randn(
+        num_experts,
+        hidden_size,
+        ffn_size,
+        device="cuda",
+        dtype=dtype,
+    ) * 0.02
+    host_offsets = [0]
+    for size in sizes:
+        host_offsets.append(host_offsets[-1] + size)
+    offsets = torch.tensor(
+        host_offsets, device="cuda", dtype=torch.int32
+    )
+    valid_rows = torch.tensor(
+        valid_count, device="cuda", dtype=torch.int32
+    )
+    batch = ExpertBatch(hidden, offsets, valid_rows=valid_rows)
+    op = DispatchedExpertMLPFwdOp(
+        num_pairs=capacity,
+        num_experts=num_experts,
+        hidden_size=hidden_size,
+        ffn_size=ffn_size,
+        dtype=dtype,
+        use_fused_activation=use_fused_activation,
+    )
+
+    output = op.forward_batch(batch, w_gate_up, w_down)
+    reference = _reference(
+        hidden[:valid_count], w_gate_up, w_down, sizes
+    )
+
+    assert output.hidden.shape == (capacity, hidden_size)
+    assert output.valid_rows is valid_rows
+    assert torch.isfinite(output.hidden[:valid_count]).all()
+    assert torch.allclose(
+        output.hidden[:valid_count].float(),
+        reference.float(),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+
+@pytest.mark.smoke
+def test_expert_batch_cuda_graph_replays_different_valid_rows():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+
+    torch.manual_seed(3)
+    capacity, hidden_size, ffn_size, num_experts = 24, 128, 96, 4
+    dtype = torch.bfloat16
+    hidden = torch.empty(
+        capacity, hidden_size, device="cuda", dtype=dtype
+    )
+    offsets = torch.empty(
+        num_experts + 1, device="cuda", dtype=torch.int32
+    )
+    valid_rows = torch.empty((), device="cuda", dtype=torch.int32)
+    w_gate_up = torch.randn(
+        num_experts,
+        2 * ffn_size,
+        hidden_size,
+        device="cuda",
+        dtype=dtype,
+    ) * 0.02
+    w_down = torch.randn(
+        num_experts,
+        hidden_size,
+        ffn_size,
+        device="cuda",
+        dtype=dtype,
+    ) * 0.02
+    batch = ExpertBatch(hidden, offsets, valid_rows=valid_rows)
+    op = DispatchedExpertMLPFwdOp(
+        num_pairs=capacity,
+        num_experts=num_experts,
+        hidden_size=hidden_size,
+        ffn_size=ffn_size,
+        dtype=dtype,
+    )
+
+    def set_batch(sizes):
+        count = sum(sizes)
+        hidden[:count].copy_(
+            torch.randn(
+                count, hidden_size, device="cuda", dtype=dtype
+            ) * 0.1
+        )
+        hidden[count:].fill_(float("nan"))
+        host_offsets = [0]
+        for size in sizes:
+            host_offsets.append(host_offsets[-1] + size)
+        offsets.copy_(
+            torch.tensor(host_offsets, device="cuda", dtype=torch.int32)
+        )
+        valid_rows.fill_(count)
+        return count
+
+    first_sizes = [2, 0, 3, 2]
+    first_count = set_batch(first_sizes)
+    # Compile and warm allocator state before capture.
+    op.forward_batch(batch, w_gate_up, w_down)
+    side_stream = torch.cuda.Stream()
+    side_stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side_stream):
+        for _ in range(2):
+            op.forward_batch(batch, w_gate_up, w_down)
+    torch.cuda.current_stream().wait_stream(side_stream)
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = op.forward_batch(batch, w_gate_up, w_down).hidden
+    graph.replay()
+    first_reference = _reference(
+        hidden[:first_count], w_gate_up, w_down, first_sizes
+    )
+    assert torch.allclose(
+        captured[:first_count].float(),
+        first_reference.float(),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+    second_sizes = [0, 4, 1, 6]
+    second_count = set_batch(second_sizes)
+    graph.replay()
+    second_reference = _reference(
+        hidden[:second_count], w_gate_up, w_down, second_sizes
+    )
+    assert torch.isfinite(captured[:second_count]).all()
+    assert torch.allclose(
+        captured[:second_count].float(),
+        second_reference.float(),
+        atol=1e-2,
+        rtol=1e-2,
+    )
