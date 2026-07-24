@@ -1,0 +1,254 @@
+{
+  "by_status": {
+    "implemented": 165,
+    "spec-only": 6
+  },
+  "conformance_gaps": {
+    "implemented_with_fewer_than_two_workloads": [],
+    "implemented_without_bench_manifest_driven": [
+      "AlibiFwdOp",
+      "ArgmaxFwdOp",
+      "ArgminFwdOp",
+      "Conv1dBiasFwdOp",
+      "Conv1dFwdOp",
+      "Conv2dBiasFwdOp",
+      "Conv2dFwdOp",
+      "Conv3dBiasFwdOp",
+      "Conv3dFwdOp",
+      "DropoutOp",
+      "EngramDecodeOp",
+      "EngramGateConvBwdOp",
+      "EngramGateConvFwdOp",
+      "FFTC2COp",
+      "FP8LightningIndexerOp",
+      "FP8QuantOp",
+      "FusedAddRMSNormFwdOp",
+      "GeluAndMulFwdOp",
+      "GeluTanhAndMulFwdOp",
+      "GroupedGemmOp",
+      "MHCPostOp",
+      "MHCPreOp",
+      "RopeLlama31Op",
+      "RopeLongRopeOp",
+      "RopeNeoxOp",
+      "RopeNeoxPositionIdsOp",
+      "RopeNonNeoxOp",
+      "RopeYarnOp",
+      "SiluAndMulFwdOp",
+      "SinusoidalFwdOp",
+      "TopkSelectorOp"
+    ],
+    "implemented_without_kernel_map": [
+      "AddFwdOp",
+      "BitwiseAndFwdOp",
+      "BitwiseOrFwdOp",
+      "BitwiseXorFwdOp",
+      "DivFwdOp",
+      "EluFwdOp",
+      "EqFwdOp",
+      "FloorDivideFwdOp",
+      "GeFwdOp",
+      "GeluFwdOp",
+      "GtFwdOp",
+      "HardsigmoidFwdOp",
+      "HardswishFwdOp",
+      "HardtanhFwdOp",
+      "LeFwdOp",
+      "LeakyReluFwdOp",
+      "LerpFwdOp",
+      "LogicalAndFwdOp",
+      "LogicalOrFwdOp",
+      "LtFwdOp",
+      "MaximumFwdOp",
+      "MinimumFwdOp",
+      "MishFwdOp",
+      "MulFwdOp",
+      "NanToNumFwdOp",
+      "NeFwdOp",
+      "PowFwdOp",
+      "PreluFwdOp",
+      "ReluFwdOp",
+      "RemainderFwdOp",
+      "SeluFwdOp",
+      "SiluFwdOp",
+      "SoftplusFwdOp",
+      "SubFwdOp"
+    ],
+    "implemented_without_roofline": [],
+    "spec_only_ops": [
+      "DeltaNetBwdOp",
+      "DeltaNetFwdOp",
+      "GLABwdOp",
+      "GLAFwdOp",
+      "GatedDeltaNetBwdOp",
+      "GatedDeltaNetFwdOp"
+    ]
+  },
+  "coverage": {
+    "bench_manifest_driven": 134,
+    "kernel_map": 131,
+    "ref_api": 171,
+    "roofline": 171,
+    "variant_of": 18
+  },
+  "families": [
+    {
+      "deprecated": 0,
+      "family": "attention",
+      "implemented": 14,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 14,
+      "workloads": 78
+    },
+    {
+      "deprecated": 0,
+      "family": "attention_indexing",
+      "implemented": 2,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 2,
+      "workloads": 4
+    },
+    {
+      "deprecated": 0,
+      "family": "bmm",
+      "implemented": 2,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 2,
+      "workloads": 14
+    },
+    {
+      "deprecated": 0,
+      "family": "convolution",
+      "implemented": 6,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 6,
+      "workloads": 40
+    },
+    {
+      "deprecated": 0,
+      "family": "elementwise",
+      "implemented": 71,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 71,
+      "workloads": 146
+    },
+    {
+      "deprecated": 0,
+      "family": "gemm",
+      "implemented": 3,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 3,
+      "workloads": 30
+    },
+    {
+      "deprecated": 0,
+      "family": "linear_attention",
+      "implemented": 4,
+      "pct_implemented": 0.4,
+      "spec_only": 6,
+      "total": 10,
+      "workloads": 22
+    },
+    {
+      "deprecated": 0,
+      "family": "moe",
+      "implemented": 7,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 7,
+      "workloads": 50
+    },
+    {
+      "deprecated": 0,
+      "family": "normalization",
+      "implemented": 12,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 12,
+      "workloads": 50
+    },
+    {
+      "deprecated": 0,
+      "family": "pool",
+      "implemented": 9,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 9,
+      "workloads": 27
+    },
+    {
+      "deprecated": 0,
+      "family": "position_encoding",
+      "implemented": 6,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 6,
+      "workloads": 13
+    },
+    {
+      "deprecated": 0,
+      "family": "quantization",
+      "implemented": 1,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 1,
+      "workloads": 3
+    },
+    {
+      "deprecated": 0,
+      "family": "reduction",
+      "implemented": 19,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 19,
+      "workloads": 47
+    },
+    {
+      "deprecated": 0,
+      "family": "regularization",
+      "implemented": 1,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 1,
+      "workloads": 3
+    },
+    {
+      "deprecated": 0,
+      "family": "scan",
+      "implemented": 2,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 2,
+      "workloads": 4
+    },
+    {
+      "deprecated": 0,
+      "family": "sequence_modeling",
+      "implemented": 5,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 5,
+      "workloads": 15
+    },
+    {
+      "deprecated": 0,
+      "family": "spectral",
+      "implemented": 1,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 1,
+      "workloads": 3
+    }
+  ],
+  "pct_implemented": 0.9649122807017544,
+  "total_ops": 171,
+  "workloads_avg_per_implemented": 3.327272727272727,
+  "workloads_implemented_total": 549,
+  "workloads_total": 549
+}
