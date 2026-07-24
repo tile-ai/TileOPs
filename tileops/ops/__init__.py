@@ -44,7 +44,7 @@ from .gated_deltanet import (
     GatedDeltaNetPrefillFwdOp,
 )
 from .gated_linear_attn import GLADecodeOp
-from .gemm import GemmFp8Op, GemmOp
+from .gemm import GemmFp8Op, GemmOp, GemmW4A16Op
 from .gla import GLABwdOp, GLAFwdOp
 from .grouped_gemm import GroupedGemmOp
 from .mamba2_fwd import Mamba2FwdOp
@@ -155,6 +155,7 @@ __all__ = [
     "GLAFwdOp",
     "GemmFp8Op",
     "GemmOp",
+    "GemmW4A16Op",
     "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "GroupedQueryAttentionBwdOp",

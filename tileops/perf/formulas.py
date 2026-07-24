@@ -44,6 +44,7 @@ __all__ = [
     "gated_deltanet_prefill_fwd_roofline",
     "ge_fwd_roofline",
     "gemm_fwd_roofline",
+    "gemm_w4a16_fwd_roofline",
     "gla_decode_roofline",
     "gqa_bwd_roofline",
     "gqa_decode_paged_roofline",
@@ -255,9 +256,7 @@ def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) ->
         else:
             raise ValueError(f"Unsupported GDN prefill layout: {layout}")
         if v_seq_len != seq_len or v_heads != heads:
-            raise ValueError(
-                "GDN prefill q_shape and v_shape must share seq_len and heads"
-            )
+            raise ValueError("GDN prefill q_shape and v_shape must share seq_len and heads")
         chunk_size = data.get("chunk_size", 64) or 64
     else:
         batch, heads, seq_len, dim_k, dim_v, chunk_size = (
@@ -272,9 +271,7 @@ def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) ->
 
     num_chunks = seq_len // chunk_size
     state_flops = 4 * batch * heads * num_chunks * chunk_size * dim_k * dim_v
-    intra_flops = 4 * batch * heads * num_chunks * chunk_size * chunk_size * (
-        dim_k + dim_v
-    )
+    intra_flops = 4 * batch * heads * num_chunks * chunk_size * chunk_size * (dim_k + dim_v)
     flops = state_flops + intra_flops
 
     input_elems = (
@@ -1148,6 +1145,25 @@ def gemm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
     return int(flops), int(nbytes)
 
 
+def gemm_w4a16_fwd_roofline(op: "Op") -> tuple[int, int]:
+    """Roofline for dense W4A16 ``GemmW4A16Op``."""
+    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
+        raise RuntimeError(
+            "GemmW4A16Op.eval_roofline() is valid only after the first forward(); "
+            "m/n/k and dtype are inferred from the inputs."
+        )
+    m, n, k = op.m, op.n, op.k
+    elem_bytes = op.dtype.itemsize
+    group_size = int(getattr(op, "group_size", 128))
+    groups = k // group_size
+    flops = 2 * m * n * k
+    activation_bytes = m * k * elem_bytes
+    packed_weight_bytes = n * k // 2
+    metadata_bytes = n * groups * (4 + 1)
+    output_bytes = m * n * elem_bytes
+    return int(flops), int(activation_bytes + packed_weight_bytes + metadata_bytes + output_bytes)
+
+
 def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
     batch_sum = int(op.batch_sum)
     batch_count = int(op.batch_count)
@@ -1286,11 +1302,7 @@ def engram_decode_roofline(op: "Op") -> tuple[int, int]:
     max_conv_len = int(op.max_conv_len)
     conv_kernel_size = int(op.conv_kernel_size)
     elem = _engram_elem_bytes(op)
-    flops = (
-        4 * batch * d_mem * d
-        + batch * (16 * d + conv_kernel_size * 2 * d)
-        + 20 * batch
-    )
+    flops = 4 * batch * d_mem * d + batch * (16 * d + conv_kernel_size * 2 * d) + 20 * batch
     nbytes = (
         batch * d_mem
         + batch * d
@@ -1347,6 +1359,7 @@ def mhc_post_roofline(op: "Op") -> tuple[int, int]:
     x_out_bytes = batch * n_expand * c_x * x_elem
     nbytes = x_layer_out_bytes + h_post_bytes + x_res_bytes + x_out_bytes
     return int(flops), int(nbytes)
+
 
 def bmm_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for batched GEMM ``BmmFwdOp`` (``d[i] = a[i] @ b[i]``).
