@@ -4,12 +4,17 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
-from tests.ops.test_gemm import GemmFp8Test, GemmTest
+from benchmarks.ops.gemm_w4a16_benchmark_utils import (
+    StaticGemmW4A16Benchmark,
+    dense_a16_memory_bytes,
+)
+from tests.ops.test_gemm import GemmFp8Test, GemmTest, GemmW4A16Test
 from tileops.manifest import load_workloads
-from tileops.ops import GemmFp8Op, GemmOp
+from tileops.ops import GemmFp8Op, GemmOp, GemmW4A16Op
 
 _OP_NAME = "GemmOp"
 _FP8_OP_NAME = "GemmFp8Op"
+_W4A16_OP_NAME = "GemmW4A16Op"
 
 _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
@@ -80,10 +85,17 @@ def _manifest_params() -> list:
         trans_a = bool(w.get("trans_a", False))
         trans_b = bool(w.get("trans_b", True))
         for dtype_str in w["dtypes"]:
-            params.append(pytest.param(
-                w["m"], w["n"], w["k"], trans_a, trans_b, dtype_str,
-                id=f"{label}-{dtype_str}",
-            ))
+            params.append(
+                pytest.param(
+                    w["m"],
+                    w["n"],
+                    w["k"],
+                    trans_a,
+                    trans_b,
+                    dtype_str,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
     return params
 
 
@@ -92,16 +104,46 @@ def _manifest_fp8_params() -> list:
     for w in load_workloads(_FP8_OP_NAME):
         label = w.get("label", "unlabeled")
         for dtype_str in w["dtypes"]:
-            params.append(pytest.param(
-                w["m"], w["n"], w["k"], w["scale_mode"], dtype_str,
-                id=f"{label}-{dtype_str}",
-            ))
+            params.append(
+                pytest.param(
+                    w["m"],
+                    w["n"],
+                    w["k"],
+                    w["scale_mode"],
+                    dtype_str,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
+    return params
+
+
+def _manifest_w4a16_params() -> list:
+    params = []
+    for w in load_workloads(_W4A16_OP_NAME):
+        label = w.get("label", "unlabeled")
+        group_size = int(w.get("group_size", 128))
+        for dtype_str in w["dtypes"]:
+            params.append(
+                pytest.param(
+                    w["m"],
+                    w["n"],
+                    w["k"],
+                    group_size,
+                    dtype_str,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
     return params
 
 
 @pytest.mark.parametrize("m, n, k, trans_a, trans_b, dtype_str", _manifest_params())
 def test_gemm_bench(
-    m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype_str: str,
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype_str: str,
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
     test = GemmTest(m, n, k, dtype, trans_a, trans_b)
@@ -121,7 +163,11 @@ def test_gemm_bench(
 
 @pytest.mark.parametrize("m, n, k, scale_mode, dtype_str", _manifest_fp8_params())
 def test_gemm_fp8_bench(
-    m: int, n: int, k: int, scale_mode: str, dtype_str: str,
+    m: int,
+    n: int,
+    k: int,
+    scale_mode: str,
+    dtype_str: str,
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
     out_dtype = torch.bfloat16
@@ -140,9 +186,7 @@ def test_gemm_fp8_bench(
     if scale_mode == "per_tensor":
         unsupported_reason = _flashinfer_fp8_per_tensor_unsupported_reason(inputs[0].device)
         if unsupported_reason is not None:
-            print(
-                f"  [skip] flashinfer-mm-fp8: {unsupported_reason}"
-            )
+            print(f"  [skip] flashinfer-mm-fp8: {unsupported_reason}")
             return
         flashinfer = pytest.importorskip("flashinfer")
         prepared_b, alpha = _prepare_flashinfer_fp8_per_tensor(test, *inputs)
@@ -161,11 +205,37 @@ def test_gemm_fp8_bench(
     if scale_mode == "block128":
         pytest.importorskip("flashinfer")
         result_flashinfer = bm.profile(
-            lambda *args: _flashinfer_fp8_blockscale_ref(test, *args), *inputs)
-        BenchmarkReport.record(op, locals(), result_flashinfer, tag="flashinfer-fp8-blockscale-sm90")
+            lambda *args: _flashinfer_fp8_blockscale_ref(test, *args), *inputs
+        )
+        BenchmarkReport.record(
+            op, locals(), result_flashinfer, tag="flashinfer-fp8-blockscale-sm90"
+        )
         return
 
     raise ValueError(f"unsupported FP8 GEMM scale_mode for benchmark: {scale_mode!r}")
+
+
+@pytest.mark.parametrize("m, n, k, group_size, dtype_str", _manifest_w4a16_params())
+def test_gemm_w4a16_bench(
+    m: int,
+    n: int,
+    k: int,
+    group_size: int,
+    dtype_str: str,
+) -> None:
+    dtype = _DTYPE_MAP[dtype_str]
+    test = GemmW4A16Test(m, n, k, dtype, group_size=group_size)
+    inputs = test.gen_inputs()
+
+    op = GemmW4A16Op(group_size=group_size)
+    bm = ManifestBenchmark(_W4A16_OP_NAME, op, test)
+
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    dense_bm = StaticGemmW4A16Benchmark(test, dense_a16_memory_bytes(m, n, k, dtype=dtype))
+    result_bl = dense_bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-dequantized-matmul")
 
 
 if __name__ == "__main__":
