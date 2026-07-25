@@ -93,7 +93,7 @@ class ActivationEdgeFixture(FixtureBase):
 
 
 class UnaryActivationTest(TestBase):
-    """Generic test harness for a single-input, single-output unary op."""
+    """Generic test fixture for a single-input, single-output unary op."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None, ref_fn=None):
         self.n_total = n_total

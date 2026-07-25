@@ -248,12 +248,12 @@ def _compute_longrope_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
 
 
 # ---------------------------------------------------------------------------
-# Test harness
+# Test fixtures
 # ---------------------------------------------------------------------------
 
 
 class RopeTest(TestBase):
-    """Generic test harness for RoPE ops.
+    """Generic test fixture for RoPE ops.
 
     The op computes cos/sin internally; the test generates only x as input
     and computes the reference rotation using independently generated

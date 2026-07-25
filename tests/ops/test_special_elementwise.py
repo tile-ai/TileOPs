@@ -33,7 +33,7 @@ class SpecialEdgeFixture(FixtureBase):
 
 
 class SpecialTest(TestBase):
-    """Generic test harness for special predicate ops."""
+    """Generic test fixture for special predicate ops."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, ref_fn, gen_fn=None):
         self.n_total = n_total

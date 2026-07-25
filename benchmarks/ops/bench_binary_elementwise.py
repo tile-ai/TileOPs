@@ -40,12 +40,12 @@ _SHAPES = ((1024, 4096), (1024, 10240), (1024, 11008))
 
 
 # ---------------------------------------------------------------------------
-# Benchmark harness
+# Workloads
 # ---------------------------------------------------------------------------
 
 
 class BinaryBenchCase:
-    """Minimal test harness for binary ops."""
+    """Minimal workload for binary ops."""
 
     def __init__(
         self,
@@ -78,7 +78,7 @@ class BinaryBenchmark(BenchmarkBase[BinaryBenchCase]):
 
 
 class FusedGatedBenchCase:
-    """Minimal test harness for fused gated ops."""
+    """Minimal workload for fused gated ops."""
 
     def __init__(self, M: int, N: int, dtype: torch.dtype):
         self.M = M
@@ -446,7 +446,7 @@ _BROADCAST_SHAPES = [
 
 
 class BroadcastBenchCase:
-    """Test harness for broadcast binary ops with asymmetric shapes."""
+    """Workload for broadcast binary ops with asymmetric shapes."""
 
     def __init__(
         self,

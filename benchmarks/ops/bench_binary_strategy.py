@@ -33,12 +33,12 @@ _BINARY_STRATEGIES = ("direct", "explicit_parallel")
 
 
 # ---------------------------------------------------------------------------
-# Benchmark harness
+# Workloads
 # ---------------------------------------------------------------------------
 
 
 class BinaryStrategyBenchCase:
-    """Minimal test harness for binary strategy benchmarks."""
+    """Minimal workload for binary strategy benchmarks."""
 
     def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
         self.shape = shape

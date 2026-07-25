@@ -4,7 +4,7 @@ Load `.claude/domain-rules/benchmark.md` before reviewing.
 
 Two non-negotiable principles cut across every event:
 
-- **Independent baselines.** Every benchmark must record at least one non-`"tileops"` baseline (PyTorch, vendor, third-party kernel). A benchmark that only times TileOps against TileOps is a regression harness, not a benchmark — reject it.
+- **Independent baselines.** Every benchmark must record at least one non-`"tileops"` baseline (PyTorch, vendor, third-party kernel). A benchmark that only times TileOps against TileOps is a self-comparison, not a benchmark — reject it.
 - **No correctness assertions.** Benchmarks measure performance; they do not gate behavior. `assert torch.allclose(...)` and equivalents belong in `tests/`. A correctness check inside `benchmarks/` is a trust-layer violation regardless of how convenient it is.
 
 #### Checklist

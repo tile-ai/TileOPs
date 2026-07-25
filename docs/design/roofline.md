@@ -111,7 +111,7 @@ Validator holds no callables, no sample bindings, no `__builtins__` sandbox. Add
 Contract:
 
 - Instantiate the Op for each workload and call `op.eval_roofline()` to obtain `(flops, bytes)`. No manifest-level helper exists — roofline evaluation lives only inside each Op's generated method.
-- `ManifestBenchmark` and `workloads_to_params(..., include_extra=True)` are the canonical harnesses; non-reserved workload keys forward as op-call params passed to the Op's `__init__`.
+- `ManifestBenchmark` and `workloads_to_params(..., include_extra=True)` are the canonical consumers; non-reserved workload keys forward as op-call params passed to the Op's `__init__`.
 - A benchmark file that computes FLOPs or bytes locally is a CI failure.
 - Benchmark output must record the `(flops, bytes)` returned by `op.eval_roofline()` so downstream consumers (M5) can read the numbers without re-instantiating ops.
 
