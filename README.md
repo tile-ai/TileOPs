@@ -41,7 +41,7 @@ This separation keeps user-facing behavior independent of GPU strategy, allowing
 
 ## Installation
 
-TileOPs is installed from source. A CUDA-capable GPU is required.
+TileOPs is under active development and is installed from source; PyPI releases will begin with the first stable release. A CUDA-capable GPU is required.
 
 ### Prerequisites
 
