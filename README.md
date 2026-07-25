@@ -78,12 +78,12 @@ from tileops.ops import GemmOp
 M, N, K = 1024, 1024, 512
 dtype = torch.float16
 
-gemm = GemmOp(M, N, K, dtype=dtype)
+gemm = GemmOp()  # shapes and dtype are inferred at call time
 
-A = torch.randn(M, K, device="cuda", dtype=dtype)
-B = torch.randn(K, N, device="cuda", dtype=dtype)
+a = torch.randn(M, K, device="cuda", dtype=dtype)
+b = torch.randn(N, K, device="cuda", dtype=dtype)  # trans_b=True by default
 
-C = gemm(A, B)
+d = gemm(a, b)  # equals a @ b.T
 ```
 
 ## Documentation
