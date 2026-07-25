@@ -594,6 +594,55 @@ class TestSingleInputWorkloadKeys:
 
 
 # ---------------------------------------------------------------------------
+# torch_compile_fullgraph: capability flag schema
+# ---------------------------------------------------------------------------
+
+class TestTorchCompileFullgraph:
+    """torch_compile_fullgraph accepts only literal true on implemented ops."""
+
+    def test_absent_passes(self, validator):
+        """Absence is the only spelling of 'no promise' — no error."""
+        entry = _make_entry(status="implemented")
+        errors = validator.check_l0("test_op", entry)
+        assert not any("torch_compile_fullgraph" in e for e in errors), (
+            f"Unexpected torch_compile_fullgraph errors: {errors}"
+        )
+
+    def test_true_on_implemented_passes(self, validator):
+        """Literal true on an implemented op passes schema check."""
+        entry = _make_entry(status="implemented", torch_compile_fullgraph=True)
+        errors = validator.check_l0("test_op", entry)
+        assert not any("torch_compile_fullgraph" in e for e in errors), (
+            f"Unexpected torch_compile_fullgraph errors: {errors}"
+        )
+
+    def test_false_fails(self, validator):
+        """false is rejected — absence is the only 'no promise' spelling."""
+        entry = _make_entry(status="implemented", torch_compile_fullgraph=False)
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "torch_compile_fullgraph" in e and "true" in e for e in errors
+        ), f"Expected literal-true error, got: {errors}"
+
+    @pytest.mark.parametrize("value", ["true", 1, None])
+    def test_non_bool_fails(self, validator, value):
+        """String, int, and null values are all rejected."""
+        entry = _make_entry(status="implemented", torch_compile_fullgraph=value)
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "torch_compile_fullgraph" in e and "true" in e for e in errors
+        ), f"Expected literal-true error for {value!r}, got: {errors}"
+
+    def test_true_on_spec_only_fails(self, validator):
+        """The field is invalid on status: spec-only entries."""
+        entry = _make_entry(status="spec-only", torch_compile_fullgraph=True)
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "torch_compile_fullgraph" in e and "spec-only" in e for e in errors
+        ), f"Expected spec-only rejection, got: {errors}"
+
+
+# ---------------------------------------------------------------------------
 # variant_of: cross-entry consistency (R16)
 # ---------------------------------------------------------------------------
 
