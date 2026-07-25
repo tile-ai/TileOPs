@@ -191,17 +191,7 @@ def test_gated_deltanet_prefill_fwd_bench(
     )
     inputs = test.gen_inputs()
 
-    op = GatedDeltaNetPrefillFwdOp(
-        batch,
-        heads,
-        seq_len,
-        dim_k,
-        dim_v,
-        chunk_size,
-        dtype,
-        tune=tune,
-        layout=layout,
-    )
+    op = GatedDeltaNetPrefillFwdOp(chunk_size=chunk_size, tune=tune, layout=layout)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
 

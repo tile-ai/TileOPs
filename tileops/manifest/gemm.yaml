@@ -123,21 +123,18 @@ GroupedGemmOp:
     outputs:
       output: {dtype: "same_as(a)", shape: "[batch_sum, N] | [batch_count, N, K]"}
     params:
-      batch_sum: {type: int}
-      batch_count: {type: int}
-      n: {type: int}
-      k: {type: int}
       transpose_a: {type: bool, default: false}
       transpose_b: {type: bool, default: true}
     shape_rules:
-    - "batch_sizes.shape == (batch_count,)"
-    - "batch_offsets.shape == (batch_count,)"
-    - "batch_padded_offsets.shape == (batch_count,)"
-    - "a.shape == (batch_sum, k) if not transpose_a else a.shape == (batch_sum, n)"
-    - "b.shape == (batch_count, n, k) if (not transpose_a and transpose_b) else True"
-    - "b.shape == (batch_count, k, n) if (not transpose_a and not transpose_b) else True"
-    - "b.shape == (k, batch_sum) if (transpose_a and transpose_b) else True"
-    - "b.shape == (batch_sum, k) if (transpose_a and not transpose_b) else True"
+    - "batch_sizes.ndim == 1"
+    - "batch_offsets.shape == batch_sizes.shape"
+    - "batch_padded_offsets.shape == batch_sizes.shape"
+    - "a.ndim == 2"
+    - "b.ndim == (2 if transpose_a else 3)"
+    - "a.shape[0] > 0 and a.shape[1] > 0"
+    - "b.shape[0] == batch_sizes.shape[0] if (not transpose_a) else True"
+    - "b.shape[2 if transpose_b else 1] == a.shape[1] if (not transpose_a) else True"
+    - "b.shape[1 if transpose_b else 0] == a.shape[0] if transpose_a else True"
 
   workloads:
   - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: true, dtypes: [float16], label: "nt-batch16-m4096-n4096-k4096-fp16"}

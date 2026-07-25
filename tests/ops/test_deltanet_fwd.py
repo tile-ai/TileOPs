@@ -138,7 +138,7 @@ def test_deltanet_fwd(
 ) -> None:
     torch.manual_seed(42)
     test = DeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
-    op = DeltaNetFwdOp(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune=tune)
+    op = DeltaNetFwdOp(chunk_size=chunk_size, tune=tune)
     tols = _get_tolerances(dtype)
     inputs = test.gen_inputs()
     ref_o = test.ref_program(*inputs)

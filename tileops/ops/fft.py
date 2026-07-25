@@ -25,38 +25,42 @@ class FFTC2COp(Op):
     for optimal GPU performance.
 
     Args:
-        n: FFT size (number of complex samples, must be a power of 2)
-        dtype: Data type for computation (default: torch.complex64)
         tune: Whether to enable autotuning (default: False)
         kernel_map: Optional custom kernel mapping for testing
     """
 
     def __init__(self,
-                 n: int,
-                 dtype: torch.dtype = torch.complex64,
                  tune: bool = False,
                  kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
-        self.n = n
-        self.dtype = dtype
+        self.n = None
+        self.dtype = None
         self._tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[int, Kernel] = {}
-        # Default kernel for Op base class compatibility
-        self.kernel = self._get_kernel(1)
+        self._kernel_cache: Dict[tuple[int, int, torch.dtype, int | None], Kernel] = {}
+        self._twiddle_cache: Dict[tuple[int, torch.dtype, int | None], tuple[torch.Tensor, torch.Tensor]] = {}
+        self.kernel = None
 
-        # Pre-compute twiddle LUT on CPU and move to GPU once (shared across batch sizes)
-        self.twiddle_real, self.twiddle_imag = self._build_lut(n, dtype)
-
-    def _get_kernel(self, batch_size: int) -> Kernel:
-        if batch_size not in self._kernel_cache:
-            self._kernel_cache[batch_size] = self.kernel_map["fft_c2c_kernel"](
-                self.n, batch_size, self.dtype, tune=self._tune,
+    def _get_kernel(
+        self,
+        n: int,
+        batch_size: int,
+        dtype: torch.dtype,
+        device_index: int | None,
+    ) -> Kernel:
+        key = (n, batch_size, dtype, device_index)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["fft_c2c_kernel"](
+                n, batch_size, dtype, tune=self._tune,
             )
-        return self._kernel_cache[batch_size]
+        return self._kernel_cache[key]
 
     @staticmethod
-    def _build_lut(n: int, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+    def _build_lut(
+        n: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Pre-compute the full twiddle factor LUT for all butterfly stages.
 
@@ -77,9 +81,15 @@ class FFTC2COp(Op):
             k_vals = torch.arange(half_m, dtype=torch.float64)
             angles[half_m - 1:2 * half_m - 1] = -2.0 * math.pi * k_vals / m
 
-        lut_real = torch.cos(angles).to(real_dtype).cuda()
-        lut_imag = torch.sin(angles).to(real_dtype).cuda()
+        lut_real = torch.cos(angles).to(real_dtype).to(device)
+        lut_imag = torch.sin(angles).to(real_dtype).to(device)
         return lut_real, lut_imag
+
+    def _get_lut(self, n: int, dtype: torch.dtype, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        key = (n, dtype, device.index)
+        if key not in self._twiddle_cache:
+            self._twiddle_cache[key] = self._build_lut(n, dtype, device)
+        return self._twiddle_cache[key]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -95,16 +105,30 @@ class FFTC2COp(Op):
         Returns:
             Output tensor of same shape as input with FFT applied along last dimension
         """
+        if not x.is_cuda:
+            raise ValueError("x must be a CUDA tensor")
+        if x.dtype not in (torch.complex64, torch.complex128):
+            raise ValueError(f"x.dtype must be complex64 or complex128, got {x.dtype}")
+        if x.ndim == 0:
+            raise ValueError("x must be at least 1D")
+        n = x.shape[-1]
+        if n <= 0 or n & (n - 1) != 0:
+            raise ValueError(f"FFT size must be a positive power of 2, got {n}")
+
         x_real = x.real.contiguous()
         x_imag = x.imag.contiguous()
         original_shape = x.shape
 
         # Flatten all batch dimensions into a single batch dimension
         batch_size = x_real[..., 0].numel() if x.ndim > 1 else 1
-        x_real = x_real.reshape(batch_size, self.n)
-        x_imag = x_imag.reshape(batch_size, self.n)
+        x_real = x_real.reshape(batch_size, n)
+        x_imag = x_imag.reshape(batch_size, n)
 
-        kernel = self._get_kernel(batch_size)
+        self.n = n
+        self.dtype = x.dtype
+        self.twiddle_real, self.twiddle_imag = self._get_lut(n, x.dtype, x.device)
+        kernel = self._get_kernel(n, batch_size, x.dtype, x.device.index)
+        self.kernel = kernel
         y_real, y_imag = kernel(x_real, x_imag,
                                 self.twiddle_real, self.twiddle_imag)
 

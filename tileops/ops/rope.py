@@ -354,32 +354,23 @@ class _RopeOpBase(Op):
 
     def __init__(
         self,
-        seq_len: int,
-        head_dim: int,
-        dtype: torch.dtype,
         layout: str = "1d",
-        batch: int = 1,
-        num_heads: int = 1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.seq_len = seq_len
-        self.head_dim = head_dim
-        self.dtype = dtype
+        self.seq_len = None
+        self.head_dim = None
+        self.dtype = None
         self.layout = layout
-        self.batch = batch
-        self.num_heads = num_heads
+        self.batch = None
+        self.num_heads = None
+        self.tune = tune
 
-        # Lazy cos/sin cache: computed on first forward call per device
-        self._cos_cache: Optional[torch.Tensor] = None
-        self._sin_cache: Optional[torch.Tensor] = None
-        self._cache_device: Optional[torch.device] = None
+        self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            seq_len=seq_len, head_dim=head_dim, dtype=dtype,
-            layout=layout, batch=batch, num_heads=num_heads, tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel = None
 
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
@@ -387,10 +378,10 @@ class _RopeOpBase(Op):
 
     def _get_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         """Return cached cos/sin tables, recomputing if device changed."""
-        if self._cos_cache is None or self._cache_device != device:
-            self._cos_cache, self._sin_cache = self._compute_cos_sin(device=device)
-            self._cache_device = device
-        return self._cos_cache, self._sin_cache
+        key = (self.seq_len, self.head_dim, self.dtype, device)
+        if key not in self._freq_cache:
+            self._freq_cache[key] = self._compute_cos_sin(device=device)
+        return self._freq_cache[key]
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute variant-specific cos/sin frequency tables.
@@ -415,6 +406,8 @@ class _RopeOpBase(Op):
     @property
     def total_memory(self) -> float:
         """Read x + cos + sin + write y."""
+        if self.seq_len is None or self.head_dim is None or self.dtype is None:
+            raise RuntimeError("RoPE memory stats are available after the first forward()")
         half = self.head_dim // 2
         elem = self.dtype.itemsize
         cos_sin_elems = self.seq_len * half * 2
@@ -424,6 +417,29 @@ class _RopeOpBase(Op):
             x_elems = self.batch * self.seq_len * self.num_heads * self.head_dim
         return (2 * x_elems + cos_sin_elems) * elem
 
+    def _get_kernel(self, device_index: int | None) -> Kernel:
+        key = (
+            self.seq_len,
+            self.head_dim,
+            self.dtype,
+            self.layout,
+            self.batch,
+            self.num_heads,
+            device_index,
+            self.tune,
+        )
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map[self._op_name](
+                seq_len=self.seq_len,
+                head_dim=self.head_dim,
+                dtype=self.dtype,
+                layout=self.layout,
+                batch=self.batch,
+                num_heads=self.num_heads,
+                tune=self.tune,
+            )
+        return self._kernel_cache[key]
+
     def _validate_and_prepare(self, x: torch.Tensor) -> torch.Tensor:
         """Validate input shape/dtype/device and return a contiguous tensor.
 
@@ -432,17 +448,24 @@ class _RopeOpBase(Op):
         """
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
         if self.layout == "1d":
-            expected = (self.seq_len, self.head_dim)
+            if x.ndim != 2:
+                raise ValueError("RoPE 1d layout expects input shape [seq_len, head_dim]")
+            self.seq_len, self.head_dim = x.shape
+            self.batch = 1
+            self.num_heads = 1
         else:
-            expected = (self.batch, self.seq_len, self.num_heads, self.head_dim)
-        if tuple(x.shape) != expected:
-            raise ValueError(
-                f"Expected input shape {expected} for layout "
-                f"'{self.layout}', got {tuple(x.shape)}"
-            )
+            if self.layout != "2d":
+                raise ValueError(f"Unsupported RoPE layout {self.layout!r}")
+            if x.ndim != 4:
+                raise ValueError(
+                    "RoPE 2d layout expects input shape [batch, seq_len, num_heads, head_dim]"
+                )
+            self.batch, self.seq_len, self.num_heads, self.head_dim = x.shape
+        if self.head_dim <= 0 or self.head_dim % 2 != 0:
+            raise ValueError("head_dim must be positive and even")
+        self.dtype = x.dtype
+        self.kernel = self._get_kernel(x.device.index)
         return x.contiguous()
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -499,14 +522,12 @@ class RopeNeoxOp(_RopeOpBase):
     _op_name = "rope_neox"
     kernel_cls = RopeNeoxKernel
 
-    def __init__(self, seq_len: int, head_dim: int, dtype: torch.dtype,
-                 layout: str = "1d", batch: int = 1, num_heads: int = 1,
+    def __init__(self, layout: str = "1d",
                  base: float = 10000.0,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False):
         self.base = base
-        super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
-                         kernel_map, tune)
+        super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _base_freqs(self.head_dim, self.seq_len, base=self.base,
@@ -521,44 +542,30 @@ class RopeNeoxPositionIdsOp(Op):
 
     def __init__(
         self,
-        num_tokens: int,
-        num_heads: int,
-        head_dim: int,
         max_position: int,
-        dtype: torch.dtype,
         base: float = 10000.0,
         rotary_dim: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        rotary_dim = head_dim if rotary_dim is None else rotary_dim
-        if rotary_dim <= 0:
+        if rotary_dim is not None and rotary_dim <= 0:
             raise ValueError("rotary_dim must be positive")
-        if rotary_dim % 2 != 0:
+        if rotary_dim is not None and rotary_dim % 2 != 0:
             raise ValueError("rotary_dim must be even")
-        if rotary_dim > head_dim:
-            raise ValueError("rotary_dim must not exceed head_dim")
-        self.num_tokens = num_tokens
-        self.num_heads = num_heads
-        self.head_dim = head_dim
+        self.num_tokens = None
+        self.num_heads = None
+        self.head_dim = None
+        self._requested_rotary_dim = rotary_dim
         self.rotary_dim = rotary_dim
         self.max_position = max_position
-        self.dtype = dtype
+        self.dtype = None
         self.base = base
-        self._cos_cache: Optional[torch.Tensor] = None
-        self._sin_cache: Optional[torch.Tensor] = None
-        self._cache_device: Optional[torch.device] = None
+        self.tune = tune
+        self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            num_tokens=num_tokens,
-            num_heads=num_heads,
-            head_dim=head_dim,
-            rotary_dim=rotary_dim,
-            max_position=max_position,
-            dtype=dtype,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel = None
 
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
@@ -569,6 +576,13 @@ class RopeNeoxPositionIdsOp(Op):
 
     @property
     def total_memory(self) -> float:
+        if (
+            self.num_tokens is None
+            or self.num_heads is None
+            or self.head_dim is None
+            or self.dtype is None
+        ):
+            raise RuntimeError("RoPE memory stats are available after the first forward()")
         half = self.rotary_dim // 2
         elem = self.dtype.itemsize
         x_elems = self.num_tokens * self.num_heads * self.head_dim
@@ -577,16 +591,39 @@ class RopeNeoxPositionIdsOp(Op):
         return (2 * x_elems + cos_sin_elems) * elem + pos_elems * torch.int32.itemsize
 
     def _get_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-        if self._cos_cache is None or self._cache_device != device:
-            self._cos_cache, self._sin_cache = _base_freqs(
+        key = (self.rotary_dim, self.max_position, self.dtype, device)
+        if key not in self._freq_cache:
+            self._freq_cache[key] = _base_freqs(
                 self.rotary_dim,
                 self.max_position,
                 base=self.base,
                 dtype=self.dtype,
                 device=device,
             )
-            self._cache_device = device
-        return self._cos_cache, self._sin_cache
+        return self._freq_cache[key]
+
+    def _get_kernel(self, device_index: int | None) -> Kernel:
+        key = (
+            self.num_tokens,
+            self.num_heads,
+            self.head_dim,
+            self.rotary_dim,
+            self.max_position,
+            self.dtype,
+            device_index,
+            self.tune,
+        )
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map[self._op_name](
+                num_tokens=self.num_tokens,
+                num_heads=self.num_heads,
+                head_dim=self.head_dim,
+                rotary_dim=self.rotary_dim,
+                max_position=self.max_position,
+                dtype=self.dtype,
+                tune=self.tune,
+            )
+        return self._kernel_cache[key]
 
     def _validate_and_prepare(
         self,
@@ -595,11 +632,20 @@ class RopeNeoxPositionIdsOp(Op):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if not x.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        expected = (self.num_tokens, self.num_heads, self.head_dim)
-        if tuple(x.shape) != expected:
-            raise ValueError(f"Expected input shape {expected}, got {tuple(x.shape)}")
+        if x.ndim != 3:
+            raise ValueError("RopeNeoxPositionIdsOp expects input shape [tokens, heads, head_dim]")
+        self.num_tokens, self.num_heads, self.head_dim = x.shape
+        rotary_dim = (
+            self.head_dim
+            if self._requested_rotary_dim is None
+            else self._requested_rotary_dim
+        )
+        if rotary_dim % 2 != 0:
+            raise ValueError("rotary_dim (or head_dim if rotary_dim is None) must be even")
+        if rotary_dim > self.head_dim:
+            raise ValueError("rotary_dim must not exceed head_dim")
+        self.rotary_dim = rotary_dim
+        self.dtype = x.dtype
         if not position_ids.is_cuda:
             raise ValueError("position_ids must be a CUDA tensor")
         if tuple(position_ids.shape) != (self.num_tokens,):
@@ -616,6 +662,7 @@ class RopeNeoxPositionIdsOp(Op):
             or bool(torch.any(position_ids >= self.max_position).item())
         ):
             raise ValueError("position_ids must be in [0, max_position)")
+        self.kernel = self._get_kernel(x.device.index)
         return x.contiguous(), position_ids.to(torch.int32).contiguous()
 
     def _eager_forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
@@ -652,14 +699,12 @@ class RopeNonNeoxOp(_RopeOpBase):
     _op_name = "rope_non_neox"
     kernel_cls = RopeNonNeoxKernel
 
-    def __init__(self, seq_len: int, head_dim: int, dtype: torch.dtype,
-                 layout: str = "1d", batch: int = 1, num_heads: int = 1,
+    def __init__(self, layout: str = "1d",
                  base: float = 10000.0,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False):
         self.base = base
-        super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
-                         kernel_map, tune)
+        super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _base_freqs(self.head_dim, self.seq_len, base=self.base,
@@ -693,8 +738,7 @@ class RopeLlama31Op(_RopeOpBase):
     _op_name = "rope_llama31"
     kernel_cls = RopeLlama31Kernel
 
-    def __init__(self, seq_len: int, head_dim: int, dtype: torch.dtype,
-                 layout: str = "1d", batch: int = 1, num_heads: int = 1,
+    def __init__(self, layout: str = "1d",
                  base: float = 10000.0, scale_factor: float = 8.0,
                  low_freq_factor: float = 1.0, high_freq_factor: float = 4.0,
                  original_max_position: int = 8192,
@@ -705,8 +749,7 @@ class RopeLlama31Op(_RopeOpBase):
         self.low_freq_factor = low_freq_factor
         self.high_freq_factor = high_freq_factor
         self.original_max_position = original_max_position
-        super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
-                         kernel_map, tune)
+        super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _llama31_freqs(
@@ -747,8 +790,7 @@ class RopeYarnOp(_RopeOpBase):
     _op_name = "rope_yarn"
     kernel_cls = RopeYarnKernel
 
-    def __init__(self, seq_len: int, head_dim: int, dtype: torch.dtype,
-                 layout: str = "1d", batch: int = 1, num_heads: int = 1,
+    def __init__(self, layout: str = "1d",
                  base: float = 10000.0, scale: float = 16.0,
                  original_max_position: int = 4096,
                  beta_fast: float = 32.0, beta_slow: float = 1.0,
@@ -761,8 +803,7 @@ class RopeYarnOp(_RopeOpBase):
         self.beta_fast = beta_fast
         self.beta_slow = beta_slow
         self.attn_factor = attn_factor
-        super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
-                         kernel_map, tune)
+        super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _yarn_freqs(
@@ -803,8 +844,7 @@ class RopeLongRopeOp(_RopeOpBase):
     _op_name = "rope_longrope"
     kernel_cls = RopeLongRopeKernel
 
-    def __init__(self, seq_len: int, head_dim: int, dtype: torch.dtype,
-                 layout: str = "1d", batch: int = 1, num_heads: int = 1,
+    def __init__(self, layout: str = "1d",
                  base: float = 10000.0,
                  rescale_factors: Optional[torch.Tensor] = None,
                  max_position_embeddings: int = 4096,
@@ -815,8 +855,7 @@ class RopeLongRopeOp(_RopeOpBase):
         self.rescale_factors = rescale_factors
         self.max_position_embeddings = max_position_embeddings
         self.original_max_position_embeddings = original_max_position_embeddings
-        super().__init__(seq_len, head_dim, dtype, layout, batch, num_heads,
-                         kernel_map, tune)
+        super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         return _longrope_freqs(

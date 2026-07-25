@@ -163,8 +163,7 @@ def test_gla_fwd_bench(
 
     # --- TileOPs ---
     scale = dim_k ** -0.5
-    op = GLAFwdOp(batch, seq_len, heads, dim_k, dim_v, chunk_size,
-                   scale=scale, dtype=dtype, tune=tune)
+    op = GLAFwdOp(chunk_size=chunk_size, scale=scale, tune=tune)
     result = bm.profile(op.forward, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -240,12 +239,12 @@ def test_gla_bwd_bench(
     do = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
 
     # --- TileOPs: fwd to get h, then profile bwd only ---
-    fwd_op = GLAFwdOp(B, T, H, K, V, BC, scale=scale, dtype=dtype)
+    fwd_op = GLAFwdOp(chunk_size=BC, scale=scale)
     fwd_op.forward(q, k, v, g)
     h = fwd_op.kernel._h_out
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
 
-    bwd_op = GLABwdOp(B, T, H, K, V, BC, scale=scale, dtype=dtype, tune=tune)
+    bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
     result = bm.profile(bwd_op.forward, q, k, v, g, h, do, dht)
     BenchmarkReport.record(bwd_op, locals(), result, tag="tileops")
 
@@ -333,8 +332,8 @@ def test_gla_fwdbwd_bench(
     do = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
 
     # --- TileOPs: fwd + bwd ---
-    fwd_op = GLAFwdOp(B, T, H, K, V, BC, scale=scale, dtype=dtype)
-    bwd_op = GLABwdOp(B, T, H, K, V, BC, scale=scale, dtype=dtype, tune=tune)
+    fwd_op = GLAFwdOp(chunk_size=BC, scale=scale)
+    bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
 
     def tileops_fwdbwd():
         fwd_op.forward(q, k, v, g)

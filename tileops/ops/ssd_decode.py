@@ -37,33 +37,39 @@ class SSDDecodeOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        n_heads: int,
-        d_head: int,
-        d_state: int,
-        n_groups: int = 1,
-        dtype: torch.dtype = torch.float16,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
-        self.batch = batch
-        self.n_heads = n_heads
-        self.d_head = d_head
-        self.d_state = d_state
-        self.n_groups = n_groups
-        if n_heads % n_groups != 0:
-            raise ValueError(
-                f"n_heads ({n_heads}) must be divisible by n_groups ({n_groups})"
-            )
-        self.dtype = dtype
+        self.batch = None
+        self.n_heads = None
+        self.d_head = None
+        self.d_state = None
+        self.n_groups = None
+        self.dtype = None
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["ssd_decode"](
-            batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"ssd_decode": SSDDecodeKernel}
+
+    def _get_kernel(
+        self,
+        batch: int,
+        n_heads: int,
+        d_head: int,
+        d_state: int,
+        n_groups: int,
+        dtype: torch.dtype,
+        device_index: int | None,
+    ) -> Kernel:
+        key = (batch, n_heads, d_head, d_state, n_groups, dtype, device_index, self.tune)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["ssd_decode"](
+                batch, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune)
+        return self._kernel_cache[key]
 
     def forward(
         self,
@@ -89,14 +95,40 @@ class SSDDecodeOp(Op):
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x dtype {self.dtype}, got {x.dtype}")
+        if x.ndim != 3:
+            raise ValueError("x must have shape [batch, n_heads, d_head]")
+        batch, n_heads, d_head = x.shape
+        if state.ndim != 4:
+            raise ValueError("state must have shape [batch, n_heads, d_head, d_state]")
+        if state.shape[:3] != (batch, n_heads, d_head):
+            raise ValueError("state must match x batch, n_heads, and d_head")
+        d_state = state.shape[3]
+        if B_in.ndim != 3 or B_in.shape[0] != batch or B_in.shape[2] != d_state:
+            raise ValueError("B_in must have shape [batch, n_groups, d_state]")
+        n_groups = B_in.shape[1]
+        if n_heads % n_groups != 0:
+            raise ValueError("n_heads must be divisible by n_groups")
+        if C_in.shape != (batch, n_groups, d_state):
+            raise ValueError("C_in must have shape [batch, n_groups, d_state]")
+        if A.shape != (n_heads, d_head, d_state):
+            raise ValueError("A must have shape [n_heads, d_head, d_state]")
+        if dt.shape != (batch, n_heads, d_head):
+            raise ValueError("dt must have shape [batch, n_heads, d_head]")
         if dt.dtype != torch.float32:
             raise ValueError(f"Expected float32 dt, got {dt.dtype}")
         if state.dtype != torch.float32:
             raise ValueError(f"Expected float32 state, got {state.dtype}")
         if not state.is_contiguous():
             raise ValueError("state must be contiguous for in-place update")
+
+        self.batch = batch
+        self.n_heads = n_heads
+        self.d_head = d_head
+        self.d_state = d_state
+        self.n_groups = n_groups
+        self.dtype = x.dtype
+        self.kernel = self._get_kernel(
+            batch, n_heads, d_head, d_state, n_groups, x.dtype, x.device.index)
 
         A = A.contiguous()
         dt = dt.contiguous()

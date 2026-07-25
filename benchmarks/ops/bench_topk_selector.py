@@ -53,15 +53,7 @@ def test_topk_selector_bench(batch: int, seq_len: int, seq_len_kv: int, kv_group
     bm = TopkSelectorBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = TopkSelectorOp(
-        batch=batch,
-        seq_len=seq_len,
-        seq_len_kv=seq_len_kv,
-        kv_group=kv_group,
-        topk=topk,
-        in_dtype=in_dtype,
-        out_dtype=out_dtype,
-        tune=tune)
+    op = TopkSelectorOp(topk=topk, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

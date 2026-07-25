@@ -48,12 +48,7 @@ def test_fp8_quant_bench(batch: int, seq_len_kv: int, kv_group: int, index_dim: 
     bm = FP8QuantBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = FP8QuantOp(batch=batch,
-                    seq_len_kv=seq_len_kv,
-                    kv_group=kv_group,
-                    index_dim=index_dim,
-                    in_dtype=in_dtype,
-                    tune=tune)
+    op = FP8QuantOp(tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

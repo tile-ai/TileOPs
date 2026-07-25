@@ -10,6 +10,39 @@ from .op_base import Op
 __all__ = ["GLABwdOp", "GLAFwdOp"]
 
 
+def _resolve_gla_bthd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    chunk_size: int,
+    do: Optional[torch.Tensor] = None,
+) -> tuple[int, int, int, int, int, torch.dtype]:
+    if not all(tensor.is_cuda for tensor in (q, k, v, g)):
+        raise ValueError("q, k, v, and g must be CUDA tensors")
+    if q.ndim != 4:
+        raise ValueError("q must have shape [batch, seq_len, heads, dim_k]")
+    batch, seq_len, heads, dim_k = q.shape
+    if k.shape != (batch, seq_len, heads, dim_k):
+        raise ValueError("k must match q shape")
+    if v.ndim != 4 or v.shape[:3] != (batch, seq_len, heads):
+        raise ValueError("v must have shape [batch, seq_len, heads, dim_v]")
+    dim_v = v.shape[-1]
+    if g.shape != (batch, seq_len, heads, dim_k):
+        raise ValueError("g must match q shape")
+    if do is not None and do.shape != (batch, seq_len, heads, dim_v):
+        raise ValueError("do must have shape [batch, seq_len, heads, dim_v]")
+    dtype = q.dtype
+    for name, tensor in (("k", k), ("v", v), ("g", g)):
+        if tensor.dtype != dtype:
+            raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
+    if do is not None and do.dtype != dtype:
+        raise ValueError(f"do.dtype must be {dtype}, got {do.dtype}")
+    if seq_len % chunk_size != 0:
+        raise ValueError(f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})")
+    return batch, seq_len, heads, dim_k, dim_v, dtype
+
+
 class GLAFwdOp(Op):
     """GLA (Gated Linear Attention) forward operator.
 
@@ -33,48 +66,70 @@ class GLAFwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        seq_len: int,
-        heads: int,
-        dim_k: int,
-        dim_v: int,
         chunk_size: int = 64,
         scale: float = -1.0,
         output_final_state: bool = False,
-        dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.batch = batch
-        self.seq_len = seq_len
-        self.heads = heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
+        self.batch = None
+        self.seq_len = None
+        self.heads = None
+        self.dim_k = None
+        self.dim_v = None
         self.chunk_size = chunk_size
         self.scale = scale
         self.output_final_state = output_final_state
-        self.dtype = dtype
-
-        assert seq_len % chunk_size == 0, (
-            f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})"
-        )
+        self.dtype = None
+        self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-
-        fwd_kernel_cls = self.kernel_map["GLAFwdKernel"]
-        self.kernel = fwd_kernel_cls(
-            batch, seq_len, heads, dim_k, dim_v, chunk_size,
-            scale=scale,
-            output_final_state=output_final_state,
-            dtype=dtype,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "GLAFwdKernel": GLAFwdKernel,
         }
+
+    def _get_kernel(
+        self,
+        batch: int,
+        seq_len: int,
+        heads: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: torch.dtype,
+        device_index: int | None,
+    ) -> Kernel:
+        key = (
+            batch,
+            seq_len,
+            heads,
+            dim_k,
+            dim_v,
+            self.chunk_size,
+            self.scale,
+            self.output_final_state,
+            dtype,
+            device_index,
+            self.tune,
+        )
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["GLAFwdKernel"](
+                batch,
+                seq_len,
+                heads,
+                dim_k,
+                dim_v,
+                self.chunk_size,
+                scale=self.scale,
+                output_final_state=self.output_final_state,
+                dtype=dtype,
+                tune=self.tune,
+            )
+        return self._kernel_cache[key]
 
     def forward(
         self,
@@ -96,6 +151,16 @@ class GLAFwdOp(Op):
         Returns:
             Tuple of (o, final_state). final_state is None if output_final_state=False.
         """
+        batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(
+            q, k, v, g, self.chunk_size)
+        self.batch = batch
+        self.seq_len = seq_len
+        self.heads = heads
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.dtype = dtype
+        self.kernel = self._get_kernel(
+            batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index)
         return self.kernel(q, k, v, g, initial_state)
 
 
@@ -123,45 +188,66 @@ class GLABwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        seq_len: int,
-        heads: int,
-        dim_k: int,
-        dim_v: int,
         chunk_size: int = 64,
         scale: float = -1.0,
-        dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.batch = batch
-        self.seq_len = seq_len
-        self.heads = heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
+        self.batch = None
+        self.seq_len = None
+        self.heads = None
+        self.dim_k = None
+        self.dim_v = None
         self.chunk_size = chunk_size
         self.scale = scale
-        self.dtype = dtype
-
-        assert seq_len % chunk_size == 0, (
-            f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})"
-        )
+        self.dtype = None
+        self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-
-        bwd_kernel_cls = self.kernel_map["GLABwdKernel"]
-        self.kernel = bwd_kernel_cls(
-            batch, seq_len, heads, dim_k, dim_v, chunk_size,
-            scale=scale,
-            dtype=dtype,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "GLABwdKernel": GLABwdKernel,
         }
+
+    def _get_kernel(
+        self,
+        batch: int,
+        seq_len: int,
+        heads: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: torch.dtype,
+        device_index: int | None,
+    ) -> Kernel:
+        key = (
+            batch,
+            seq_len,
+            heads,
+            dim_k,
+            dim_v,
+            self.chunk_size,
+            self.scale,
+            dtype,
+            device_index,
+            self.tune,
+        )
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["GLABwdKernel"](
+                batch,
+                seq_len,
+                heads,
+                dim_k,
+                dim_v,
+                self.chunk_size,
+                scale=self.scale,
+                dtype=dtype,
+                tune=self.tune,
+            )
+        return self._kernel_cache[key]
 
     def forward(
         self,
@@ -189,4 +275,14 @@ class GLABwdOp(Op):
         Returns:
             Tuple of (dq, dk, dv, dg).
         """
+        batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(
+            q, k, v, g, self.chunk_size, do=do)
+        self.batch = batch
+        self.seq_len = seq_len
+        self.heads = heads
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.dtype = dtype
+        self.kernel = self._get_kernel(
+            batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index)
         return self.kernel(q, k, v, g, h, do, dht, has_initial_state)

@@ -103,7 +103,7 @@ def test_gated_deltanet_decode(
 ) -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetDecodeTest(batch, heads, dim_k, dim_v, dtype)
-    op = GatedDeltaNetDecodeOp(batch, heads, dim_k, dim_v, dtype, tune=tune)
+    op = GatedDeltaNetDecodeOp(tune=tune)
     tols = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), **tols)
 
@@ -122,7 +122,7 @@ def test_gated_deltanet_decode_multi_step(
     num_steps = 8
     B, H, DK, DV = batch, heads, dim_k, dim_v
 
-    op = GatedDeltaNetDecodeOp(B, H, DK, DV, dtype, tune=tune)
+    op = GatedDeltaNetDecodeOp(tune=tune)
     tols = _get_tolerances(dtype)
 
     state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)

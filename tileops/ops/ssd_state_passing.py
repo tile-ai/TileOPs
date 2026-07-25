@@ -31,30 +31,55 @@ class SSDStatePassingFwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        num_chunks: int,
-        n_heads: int,
-        d_state: int,
         has_initial_states: bool = True,
-        dtype: torch.dtype = torch.float16,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.n_heads = n_heads
-        self.d_state = d_state
+        self.batch = None
+        self.num_chunks = None
+        self.n_heads = None
+        self.d_state = None
         self.has_initial_states = has_initial_states
-        self.dtype = dtype
+        self.dtype = None
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["ssd_state_passing_fwd"](
-            batch, num_chunks, n_heads, d_state,
-            has_initial_states=has_initial_states, dtype=dtype, tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"ssd_state_passing_fwd": SSDStatePassingFwdKernel}
+
+    def _get_kernel(
+        self,
+        batch: int,
+        num_chunks: int,
+        n_heads: int,
+        d_state: int,
+        dtype: torch.dtype,
+        device_index: int | None,
+    ) -> Kernel:
+        key = (
+            batch,
+            num_chunks,
+            n_heads,
+            d_state,
+            self.has_initial_states,
+            dtype,
+            device_index,
+            self.tune,
+        )
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["ssd_state_passing_fwd"](
+                batch,
+                num_chunks,
+                n_heads,
+                d_state,
+                has_initial_states=self.has_initial_states,
+                dtype=dtype,
+                tune=self.tune,
+            )
+        return self._kernel_cache[key]
 
     def forward(
         self,
@@ -75,8 +100,21 @@ class SSDStatePassingFwdOp(Op):
         """
         if not states.is_cuda:
             raise ValueError("states must be a CUDA tensor")
-        if states.dtype != self.dtype:
-            raise ValueError(f"Expected dtype {self.dtype}, got {states.dtype}")
+        if states.ndim != 4:
+            raise ValueError("states must have shape [batch, num_chunks, n_heads, d_state]")
+        batch, num_chunks, n_heads, d_state = states.shape
+        if dA_chunk_cumsum.shape != (batch, n_heads, num_chunks):
+            raise ValueError("dA_chunk_cumsum must have shape [batch, n_heads, num_chunks]")
+        if initial_states.shape != (batch, n_heads, d_state):
+            raise ValueError("initial_states must have shape [batch, n_heads, d_state]")
+
+        self.batch = batch
+        self.num_chunks = num_chunks
+        self.n_heads = n_heads
+        self.d_state = d_state
+        self.dtype = states.dtype
+        self.kernel = self._get_kernel(
+            batch, num_chunks, n_heads, d_state, states.dtype, states.device.index)
 
         states = states.contiguous()
         dA_chunk_cumsum = dA_chunk_cumsum.contiguous()

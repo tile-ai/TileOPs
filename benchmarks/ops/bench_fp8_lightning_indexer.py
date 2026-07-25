@@ -81,15 +81,7 @@ def test_fp8_lightning_indexer_bench(batch: int, seq_len: int, heads: int, index
     bm = FP8LightningIndexerBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = FP8LightningIndexerOp(batch=batch,
-                              seq_len=seq_len,
-                              heads=heads,
-                              index_dim=index_dim,
-                              seq_len_kv=seq_len_kv,
-                              kv_group=kv_group,
-                              clean_logits=clean_logits,
-                              config=config,
-                              tune=tune)
+    op = FP8LightningIndexerOp(clean_logits=clean_logits, config=config, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
