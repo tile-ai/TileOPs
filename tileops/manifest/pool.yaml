@@ -191,6 +191,7 @@ MaxPool1dFwdOp:
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=False)
   family: pool
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -249,6 +250,7 @@ MaxPool1dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=True)
   family: pool
   status: implemented
+  torch_compile_fullgraph: true
   variant_of: MaxPool1dFwdOp
 
   signature:
@@ -307,6 +309,7 @@ MaxPool2dFwdOp:
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=False)
   family: pool
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -376,6 +379,7 @@ MaxPool2dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=True)
   family: pool
   status: implemented
+  torch_compile_fullgraph: true
   variant_of: MaxPool2dFwdOp
 
   signature:
@@ -446,6 +450,7 @@ MaxPool3dFwdOp:
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=False)
   family: pool
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -527,6 +532,7 @@ MaxPool3dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=True)
   family: pool
   status: implemented
+  torch_compile_fullgraph: true
   variant_of: MaxPool3dFwdOp
 
   signature:

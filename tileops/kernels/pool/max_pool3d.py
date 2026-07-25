@@ -231,6 +231,9 @@ class MaxPool3dKernel(Kernel):
         self.out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
         self.out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
         self.out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
+        # Built only for autotuning: eager launch goes through the
+        # custom op (which rebuilds via the lru_cached builder), and a
+        # traced forward must not touch the tilelang JIT machinery.
         self.kernel = _max_pool3d_kernel(
             n,
             c_in,
@@ -251,7 +254,7 @@ class MaxPool3dKernel(Kernel):
             dilation_w,
             ceil_mode,
             self.dtype_str,
-        )
+        ) if tune else None
         self.init_config(config, tune)
 
     @property
@@ -540,6 +543,9 @@ class MaxPool3dWithIndicesKernel(Kernel):
         self.out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
         self.out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
         self.out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
+        # Built only for autotuning: eager launch goes through the
+        # custom op (which rebuilds via the lru_cached builder), and a
+        # traced forward must not touch the tilelang JIT machinery.
         self.kernel = _max_pool3d_with_indices_kernel(
             n,
             c_in,
@@ -560,7 +566,7 @@ class MaxPool3dWithIndicesKernel(Kernel):
             dilation_w,
             ceil_mode,
             self.dtype_str,
-        )
+        ) if tune else None
         self.init_config(config, tune)
 
     @property

@@ -43,7 +43,10 @@ class Kernel(ABC):
             else:
                 self.config = self.default_config
 
-        print(f"{self.__class__.__name__} initialized with config: {self.config}")
+        # Guarded so dynamo can trace kernel construction inside a compiled
+        # forward: print() is a graph break under fullgraph=True.
+        if not torch.compiler.is_compiling():
+            print(f"{self.__class__.__name__} initialized with config: {self.config}")
 
     @property
     def dtype_str(self) -> str:

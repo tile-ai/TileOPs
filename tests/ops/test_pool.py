@@ -4,6 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from tests.compile_contract import register_compile_contract
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import (
@@ -1384,15 +1385,20 @@ def test_max_pool1d_dynamic_shape_kernel_cache_and_roofline(
     assert len(op._kernel_cache) == 2
 
 
+_MAX_POOL1D_COMPILE_CASES = [
+    pytest.param(MaxPool1dFwdOp, False, id="max-pool1d"),
+    pytest.param(MaxPool1dIndicesFwdOp, True, id="max-pool1d-indices"),
+]
+for _case in _MAX_POOL1D_COMPILE_CASES:
+    register_compile_contract(_case.values[0])
+
+
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.usefixtures("isolated_dynamo")
 @pytest.mark.parametrize(
     ("op_cls", "return_indices"),
-    [
-        pytest.param(MaxPool1dFwdOp, False, id="max-pool1d"),
-        pytest.param(MaxPool1dIndicesFwdOp, True, id="max-pool1d-indices"),
-    ],
+    _MAX_POOL1D_COMPILE_CASES,
 )
 def test_max_pool1d_compile_fullgraph(
     op_cls: type,
@@ -1400,8 +1406,6 @@ def test_max_pool1d_compile_fullgraph(
 ) -> None:
     op = op_cls(kernel_size=3, stride=2, padding=1)
     x = torch.randn(2, 8, 32, device="cuda", dtype=torch.float16)
-    # Warm up the kernel cache so torch.compile traces only the custom-op call.
-    op(x)
     compiled = torch.compile(op, fullgraph=True)
     out = compiled(x)
     ref = F.max_pool1d(
@@ -1961,15 +1965,20 @@ def test_max_pool3d_dynamic_shape_kernel_cache_and_roofline(
     assert len(op._kernel_cache) == 2
 
 
+_MAX_POOL3D_COMPILE_CASES = [
+    pytest.param(MaxPool3dFwdOp, False, id="max-pool3d"),
+    pytest.param(MaxPool3dIndicesFwdOp, True, id="max-pool3d-indices"),
+]
+for _case in _MAX_POOL3D_COMPILE_CASES:
+    register_compile_contract(_case.values[0])
+
+
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.usefixtures("isolated_dynamo")
 @pytest.mark.parametrize(
     ("op_cls", "return_indices"),
-    [
-        pytest.param(MaxPool3dFwdOp, False, id="max-pool3d"),
-        pytest.param(MaxPool3dIndicesFwdOp, True, id="max-pool3d-indices"),
-    ],
+    _MAX_POOL3D_COMPILE_CASES,
 )
 def test_max_pool3d_compile_fullgraph(
     op_cls: type,
@@ -1977,8 +1986,6 @@ def test_max_pool3d_compile_fullgraph(
 ) -> None:
     op = op_cls(kernel_size=3, stride=2, padding=1)
     x = torch.randn(1, 4, 8, 16, 16, device="cuda", dtype=torch.float16)
-    # Warm up the kernel cache so torch.compile traces only the custom-op call.
-    op(x)
     compiled = torch.compile(op, fullgraph=True)
     out = compiled(x)
     ref = F.max_pool3d(
@@ -2559,15 +2566,20 @@ def test_max_pool2d_dynamic_shape_kernel_cache_and_roofline(
     assert len(op._kernel_cache) == 2
 
 
+_MAX_POOL2D_COMPILE_CASES = [
+    pytest.param(MaxPool2dFwdOp, False, id="max-pool2d"),
+    pytest.param(MaxPool2dIndicesFwdOp, True, id="max-pool2d-indices"),
+]
+for _case in _MAX_POOL2D_COMPILE_CASES:
+    register_compile_contract(_case.values[0])
+
+
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.usefixtures("isolated_dynamo")
 @pytest.mark.parametrize(
     ("op_cls", "return_indices"),
-    [
-        pytest.param(MaxPool2dFwdOp, False, id="max-pool2d"),
-        pytest.param(MaxPool2dIndicesFwdOp, True, id="max-pool2d-indices"),
-    ],
+    _MAX_POOL2D_COMPILE_CASES,
 )
 def test_max_pool2d_compile_fullgraph(
     op_cls: type,
@@ -2575,8 +2587,6 @@ def test_max_pool2d_compile_fullgraph(
 ) -> None:
     op = op_cls(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
     x = torch.randn(2, 8, 16, 16, device="cuda", dtype=torch.float16)
-    # Warm up the kernel cache so torch.compile traces only the custom-op call.
-    op(x)
     compiled = torch.compile(op, fullgraph=True)
     out = compiled(x)
     ref = F.max_pool2d(
