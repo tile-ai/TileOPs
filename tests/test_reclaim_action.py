@@ -2,7 +2,8 @@
 
 Covers the sentinel-repair + atomic-trim primitives that protect caches
 whose consumers assume "directory exists => contents complete" (the
-tilelang autotuner cache in particular).
+tilelang autotuner cache in particular), plus the gpu-smoke
+trust-routing contract, whose failure mode has no CI signal.
 
 Required cases:
   - half_dead       : atomic subdir with files but no sentinel is removed
@@ -276,3 +277,41 @@ def test_trim_files_removes_old_files_but_leaves_atomic_roots_alone(
 
 def test_trim_files_tolerates_missing_root(tmp_path: Path) -> None:
     _run("trim-files", "7", str(tmp_path / "nope"))
+
+
+# ---------------------------------------------------------------------------
+# gpu-smoke security trust routing
+# ---------------------------------------------------------------------------
+
+GPU_SMOKE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "gpu-smoke.yml"
+
+
+def test_security_policy_routes_trust_by_collaborator_permission() -> None:
+    """is_fork must derive from the PR author's collaborator permission
+    (write/maintain/admin -> trusted), fail closed to the fork pool, and
+    drive both runs-on and the trusted-action ref."""
+    import yaml
+
+    wf = yaml.safe_load(GPU_SMOKE_WORKFLOW.read_text())
+    policy_job = wf["jobs"]["security-policy"]
+    run_steps = [s for s in policy_job["steps"] if "run" in s and s.get("id") == "policy"]
+    assert run_steps, "expected a 'policy' step in security-policy job"
+    step = run_steps[0]
+    script = step["run"]
+    env = step["env"]
+
+    assert "AUTHOR_ASSOC" not in env, "author_association must no longer drive trust"
+    assert "AUTHOR_ASSOC" not in script
+    assert "collaborators/${PR_AUTHOR}/permission" in script
+    assert "admin|maintain|write" in script
+    assert 'is_fork="false"' in script  # trusted branch
+    assert 'is_fork="true"' in script  # fail-closed / external branch
+    assert "PR_AUTHOR" in env, "PR_AUTHOR must be plumbed via env:"
+    assert "pull_request.user.login" in env["PR_AUTHOR"]
+
+    gpu_job = wf["jobs"]["gpu-smoke"]
+    assert "needs.security-policy.outputs.is_fork" in str(gpu_job["runs-on"])
+    ref_step = next(
+        s for s in gpu_job["steps"] if (s.get("name") or "").startswith("Checkout trusted actions")
+    )
+    assert "needs.security-policy.outputs.is_fork" in str(ref_step["with"]["ref"])
