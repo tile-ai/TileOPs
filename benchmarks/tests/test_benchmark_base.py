@@ -1,4 +1,4 @@
-"""Unit tests for benchmark capability protocols.
+"""Unit tests for benchmarks.benchmark_base.
 
 Verifies that ``ShapeDtypeWorkload``, ``InputGeneratingWorkload``, and
 ``BenchmarkWorkload`` protocols accept duck-typed objects, and that the
@@ -14,6 +14,9 @@ from benchmarks.benchmark_base import (
     InputGeneratingWorkload,
     ManifestBenchmark,
     ShapeDtypeWorkload,
+    _bench_meta,
+    bench_kernel,
+    workloads_to_params,
 )
 
 # ---------------------------------------------------------------------------
@@ -192,8 +195,6 @@ def test_workloads_to_params_include_extra_propagates_dim():
     """When a workload entry carries ``dim``, ``include_extra=True`` should
     surface it in the pytest param triple.
     """
-    from benchmarks.benchmark_base import workloads_to_params
-
     # End-to-end with the manifest: include_extra=True must still yield
     # well-formed triples with the (shape, dtype, extra) mapping. The
     # contract being asserted is per-triple shape/dtype/extra typing; it
@@ -224,3 +225,42 @@ def test_manifest_benchmark_propagates_op_eval_error():
     bm = ManifestBenchmark("SumFwdOp", _BrokenOp(), w)
     with pytest.raises(RuntimeError, match="shape not bound"):
         bm.calculate_flops()
+
+
+def test_single_input_ops_are_supported():
+    params = workloads_to_params("SumFwdOp")
+    assert params, "SumFwdOp must yield at least one workload"
+
+
+def test_single_input_with_extra_params():
+    params = workloads_to_params("SumFwdOp", include_extra=True)
+    # Each pytest.param carries (shape, dtype, extra) with extra a dict.
+    for p in params:
+        assert len(p.values) == 3
+        shape, _, extra = p.values
+        assert isinstance(shape, tuple)
+        assert isinstance(extra, dict)
+
+
+def test_multi_input_op_raises_keyerror():
+    """Multi-input ops (q/k/v) raise instead of binding a wrong tensor."""
+    with pytest.raises(KeyError, match="exactly one manifest tensor input"):
+        workloads_to_params("GroupedQueryAttentionFwdOp")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_projection_failure_falls_back_to_cuda_events():
+    """A callable launching no CUDA kernel projects no annotation windows;
+    bench_kernel must fall back and mark the deviating timing method."""
+    latency = bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2, n_trials=1)
+    assert latency >= 0.0
+    assert _bench_meta.timing == "cuda-events"
+
+
+def test_kernel_runtime_error_propagates():
+    """Genuine RuntimeErrors must reach the caller, not the fallback path."""
+    def boom():
+        raise RuntimeError("kernel failure")
+
+    with pytest.raises(RuntimeError, match="kernel failure"):
+        bench_kernel(boom, n_warmup=0, n_repeat=1, n_trials=1)
