@@ -201,6 +201,9 @@ def test_workloads_to_params_include_extra_propagates_dim():
     # curated and may be reordered without regressing the helper).
     triples = workloads_to_params("SumFwdOp", include_extra=True)
     assert len(triples) > 0
+    assert any("dim" in p.values[2] for p in triples), (
+        "at least one SumFwdOp workload must propagate a dim param"
+    )
     for p in triples:
         shape, dtype, extra = p.values
         assert isinstance(shape, tuple)

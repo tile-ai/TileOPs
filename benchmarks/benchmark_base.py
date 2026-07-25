@@ -460,7 +460,7 @@ def _workload_extra_params(w: dict, shape_key: str) -> dict[str, Any]:
     return {
         k: v
         for k, v in w.items()
-        if k not in reserved and not k.startswith("__")
+        if isinstance(k, str) and k not in reserved and not k.startswith("__")
     }
 
 
@@ -486,7 +486,10 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
                 f"workload {w.get('label', w)!r} of {op_name!r} is missing "
                 f"{shape_key!r} (derived from the signature's input name)."
             )
-        unknown = sorted(k for k in w if k not in allowed and not k.startswith("__"))
+        unknown = sorted(
+            repr(k) for k in w
+            if not isinstance(k, str) or (k not in allowed and not k.startswith("__"))
+        )
         if unknown:
             raise KeyError(
                 f"workload {w.get('label', w)!r} of {op_name!r} has unknown "
