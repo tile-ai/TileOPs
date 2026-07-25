@@ -102,6 +102,8 @@ dtype_combos:
 
 **R20. `static_dims`.** For arbitrary-rank ops (no `shape` declaration), `static_dims` declares values the user commits to at Op construction time. Each entry maps an `__init__` keyword name to a single-axis shape expression `<tensor>.shape[<const_or_param>]`. See [`static_dims`](#static_dims) for full semantics, rules, and examples.
 
+**R21. Workload keys derive from the signature.** For single-tensor-input ops whose workloads carry a shape, the shape key is exactly `{input}_shape` for the `signature.inputs` name, and every other workload key is a declared `signature.params` name (plus reserved `dtypes` / `label`). See [Workload entry schema](#workload-entry-schema).
+
 ## `static_dims`
 
 `static_dims` declares what becomes statically known at the moment the user constructs the Op instance. It is **per-op**, not per-family.
@@ -478,10 +480,18 @@ consumption.
 ### Workload entry schema
 
 Each entry under `workloads:` is a mapping. Shape keys take the form
-`<tensor_name>_shape` (e.g. `x_shape`, `q_shape`, `kv_shape`) — one per
-tensor input in the workload. `dtypes` and `label` are also reserved.
-Any other key becomes an **op-call parameter** forwarded to the op's
-`__init__`.
+`<tensor_name>_shape`, where `<tensor_name>` MUST be a `signature.inputs`
+key — the workload shape key is derived from the signature, never chosen
+independently. `dtypes` and `label` are also reserved. Any other key
+becomes an **op-call parameter** forwarded to the op's `__init__` and MUST
+be a declared `signature.params` name.
+
+For single-tensor-input ops this contract is enforced by the validator and
+by the generic benchmark harness (`workloads_to_params`): the workload
+declares exactly `{input}_shape`, and unknown keys are rejected. Multi-input
+families whose workloads use aggregate conventions (e.g. attention's
+`kv_shape` covering `k` and `v`) are consumed by family-specific bench
+harnesses and are outside the generic contract.
 
 | Key                   | Required | Meaning                                                                                                  |
 | --------------------- | -------- | -------------------------------------------------------------------------------------------------------- |

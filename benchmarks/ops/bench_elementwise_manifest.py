@@ -494,7 +494,7 @@ def test_softplus_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> 
     _record_unary(op, bm, inputs, lambda x: F.softplus(x, 1.0, 20.0))
 
 
-@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_SIGMOID_OP), "x_shape"))
+@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_SIGMOID_OP)))
 def test_sigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = UnaryManifestWorkload(shape, dtype)
     inputs = test.gen_inputs()
@@ -503,7 +503,7 @@ def test_sigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> N
     _record_unary(op, bm, inputs, torch.sigmoid)
 
 
-@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_TANH_OP), "x_shape"))
+@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_TANH_OP)))
 def test_tanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = UnaryManifestWorkload(shape, dtype)
     inputs = test.gen_inputs()

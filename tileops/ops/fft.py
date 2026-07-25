@@ -95,22 +95,22 @@ class FFTC2COp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"fft_c2c_kernel": FFTC2CKernel}
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Compute 1D FFT of complex input.
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+        """Compute 1D FFT of complex input.
 
         Args:
-            x: Input tensor of shape (..., n) with complex dtype
+            input: Input tensor of shape (..., n) with complex dtype
 
         Returns:
             Output tensor of same shape as input with FFT applied along last dimension
         """
+        x = input
         if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
+            raise ValueError("input must be a CUDA tensor")
         if x.dtype not in (torch.complex64, torch.complex128):
-            raise ValueError(f"x.dtype must be complex64 or complex128, got {x.dtype}")
+            raise ValueError(f"input.dtype must be complex64 or complex128, got {x.dtype}")
         if x.ndim == 0:
-            raise ValueError("x must be at least 1D")
+            raise ValueError("input must be at least 1D")
         n = x.shape[-1]
         if n <= 0 or n & (n - 1) != 0:
             raise ValueError(f"FFT size must be a positive power of 2, got {n}")

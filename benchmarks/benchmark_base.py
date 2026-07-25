@@ -19,28 +19,37 @@ import pytest
 import torch
 from torch.autograd.profiler import DeviceType
 
-from tileops.manifest import load_workloads
+from tileops.manifest import load_manifest, load_workloads
 
-# Shape keys accepted for the harness's single tensor input. ``x_shape``
-# is the generic name; ``input_shape`` matches ops whose PyTorch functional
-# signature names the tensor ``input`` (e.g. ``F.dropout(input, ...)``),
-# which the manifest mirrors verbatim. A workload must declare exactly one.
-_WORKLOAD_SHAPE_KEYS: tuple[str, ...] = ("x_shape", "input_shape")
+# Workload dict keys owned by the benchmark harness itself, independent of
+# any op signature: ``dtypes`` expands the pytest parametrization; ``label``
+# names the test id. The per-op shape key (``{input}_shape``, derived from
+# the manifest ``signature.inputs``) is computed in
+# :func:`_single_input_shape_key` — the harness hardcodes no input names.
+_WORKLOAD_HARNESS_KEYS: frozenset[str] = frozenset({"dtypes", "label"})
 
-# Workload dict keys reserved by the benchmark harness. Everything else on
-# a workload entry (e.g. ``dim``, ``keepdim``, ``correction``) is treated
-# as an op-call parameter.
-#
-# The current harness is explicitly scoped to **single-tensor-input ops**
-# (input named ``x`` or ``input``; see :data:`_WORKLOAD_SHAPE_KEYS`).
-# Multi-input ops (e.g. attention families that declare ``q_shape`` /
-# ``kv_shape``) are not supported: :func:`workloads_to_params` will raise
-# ``KeyError`` if no accepted shape key is present. Extending to
-# signature-aware tensor binding is tracked as a follow-up and must also
-# update ``docs/design/manifest.md``.
-_WORKLOAD_META_KEYS: frozenset[str] = frozenset(
-    {*_WORKLOAD_SHAPE_KEYS, "dtypes", "label"}
-)
+
+def _single_input_shape_key(op_name: str) -> str:
+    """Return the workload shape key for *op_name*'s single tensor input.
+
+    The manifest ``signature.inputs`` is the authority on tensor-input
+    names; the workload entry must carry ``{input}_shape`` for that one
+    input. Multi-input ops (attention families with ``q_shape`` /
+    ``kv_shape`` conventions) are served by family-specific bench harnesses
+    and are rejected here.
+    """
+    entry = load_manifest().get(op_name)
+    if entry is None:
+        raise KeyError(f"op {op_name!r} not found in the manifest")
+    inputs = list(((entry.get("signature") or {}).get("inputs") or {}))
+    if len(inputs) != 1:
+        raise KeyError(
+            f"workloads_to_params({op_name!r}) only supports ops whose "
+            f"manifest signature declares exactly one tensor input; found "
+            f"{inputs or 'none'}. Multi-input ops need a family-specific "
+            "bench harness."
+        )
+    return f"{inputs[0]}_shape"
 
 # ---------------------------------------------------------------------------
 # Benchmark capability protocols
@@ -451,25 +460,20 @@ class BenchmarkBase(Generic[W], ABC):
 # ---------------------------------------------------------------------------
 
 
-def _workload_extra_params(w: dict) -> dict[str, Any]:
+def _workload_extra_params(w: dict, shape_key: str) -> dict[str, Any]:
     """Return op-specific params attached to a manifest workload entry.
 
-    A workload entry may carry optional op-call parameter values beyond
-    ``x_shape`` / ``dtypes`` / ``label`` (e.g. ``dim``, ``keepdim``,
+    A workload entry may carry op-call parameter values beyond the shape
+    key / ``dtypes`` / ``label`` (e.g. ``dim``, ``keepdim``,
     ``correction``). These are forwarded to the op constructor by benchmark
-    files that opt into ``include_extra=True``.
-
-    Only the reserved meta keys (the accepted shape keys, ``dtypes``,
-    ``label``) and dunder-style metadata keys are stripped; everything else
-    — including any other ``*_shape`` keys — is surfaced as an op param.
-    This matches the single-tensor-input harness contract documented in
-    :data:`_WORKLOAD_META_KEYS`; multi-input ops with ``q_shape`` /
-    ``kv_shape`` are out of scope and would need a dedicated harness.
+    files that opt into ``include_extra=True``. Dunder-style metadata keys
+    are stripped alongside the harness-owned keys.
     """
+    reserved = _WORKLOAD_HARNESS_KEYS | {shape_key}
     return {
         k: v
         for k, v in w.items()
-        if k not in _WORKLOAD_META_KEYS and not k.startswith("__")
+        if k not in reserved and not k.startswith("__")
     }
 
 
@@ -487,20 +491,32 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     benchmark needs to drive op calls from manifest-declared workload params.
     """
     workloads = load_workloads(op_name)
+    shape_key = _single_input_shape_key(op_name)
+    declared_params = frozenset(
+        (load_manifest()[op_name].get("signature") or {}).get("params") or {}
+    )
+    allowed = declared_params | _WORKLOAD_HARNESS_KEYS | {shape_key}
     params = []
     for w in workloads:
-        shape_keys = [k for k in _WORKLOAD_SHAPE_KEYS if k in w]
-        if len(shape_keys) != 1:
+        if shape_key not in w:
             raise KeyError(
-                f"workloads_to_params({op_name!r}) only supports "
-                "single-tensor-input ops; the workload must declare exactly "
-                f"one of {'/'.join(_WORKLOAD_SHAPE_KEYS)} (found "
-                f"{shape_keys or 'none'}). Multi-input ops with "
-                "q_shape/kv_shape/... are out of scope for this harness."
+                f"workload {w.get('label', w)!r} of {op_name!r} does not "
+                f"declare {shape_key!r} (derived from the manifest "
+                "signature's tensor input name)."
             )
-        shape = tuple(w[shape_keys[0]])
+        unknown = sorted(
+            k for k in w if k not in allowed and not k.startswith("__")
+        )
+        if unknown:
+            raise KeyError(
+                f"workload {w.get('label', w)!r} of {op_name!r} has keys "
+                f"{unknown} that are neither harness keys "
+                f"({sorted(_WORKLOAD_HARNESS_KEYS | {shape_key})}) nor "
+                f"declared signature params ({sorted(declared_params)})."
+            )
+        shape = tuple(w[shape_key])
         label = w.get("label", "x".join(str(s) for s in shape))
-        extra = _workload_extra_params(w) if include_extra else {}
+        extra = _workload_extra_params(w, shape_key) if include_extra else {}
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
             # Copy ``extra`` per parametrization so accidental mutation in

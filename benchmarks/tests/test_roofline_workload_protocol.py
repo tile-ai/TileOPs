@@ -200,7 +200,8 @@ def test_workloads_to_params_include_extra_propagates_dim():
     # Direct unit test on the helper (no manifest mutation required).
     assert _workload_extra_params(
         {"x_shape": [4, 4], "dtypes": ["float16"], "label": "t",
-         "dim": 0, "keepdim": True}
+         "dim": 0, "keepdim": True},
+        "x_shape",
     ) == {"dim": 0, "keepdim": True}
 
     # End-to-end with the manifest: include_extra=True must still yield

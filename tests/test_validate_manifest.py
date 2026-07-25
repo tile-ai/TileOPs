@@ -586,6 +586,61 @@ class TestSchema:
         )
 
 
+class TestSingleInputWorkloadKeys:
+    """Workload shape keys derive from signature.inputs; unknown keys fail."""
+
+    @staticmethod
+    def _sig(input_name="input", params=("dim",)):
+        return {
+            "inputs": {input_name: {"dtype": "float16"}},
+            "outputs": {"output": {"dtype": f"same_as({input_name})"}},
+            "params": {p: {"type": "int"} for p in params},
+        }
+
+    def test_matching_shape_key_passes(self, validator):
+        errors = validator._check_single_input_workload_keys(
+            "op", self._sig(), [
+                {"input_shape": [8, 16], "dtypes": ["float16"],
+                 "label": "w", "dim": 0},
+            ],
+        )
+        assert errors == []
+
+    def test_wrong_shape_key_fails(self, validator):
+        errors = validator._check_single_input_workload_keys(
+            "op", self._sig(), [
+                {"x_shape": [8, 16], "dtypes": ["float16"]},
+            ],
+        )
+        assert any("input_shape" in e for e in errors), errors
+
+    def test_unknown_param_key_fails(self, validator):
+        errors = validator._check_single_input_workload_keys(
+            "op", self._sig(), [
+                {"input_shape": [8], "dtypes": ["float16"], "dmi": 0},
+            ],
+        )
+        assert any("dmi" in e and "unknown" in e for e in errors), errors
+
+    def test_multi_input_signature_out_of_scope(self, validator):
+        sig = {
+            "inputs": {"q": {"dtype": "float16"}, "k": {"dtype": "float16"}},
+            "params": {},
+        }
+        errors = validator._check_single_input_workload_keys(
+            "op", sig, [{"q_shape": [8], "kv_shape": [8], "dtypes": ["float16"]}],
+        )
+        assert errors == []
+
+    def test_shapeless_workloads_out_of_scope(self, validator):
+        errors = validator._check_single_input_workload_keys(
+            "op", self._sig(params=("num_tokens",)), [
+                {"num_tokens": 4096, "dtypes": ["float16"]},
+            ],
+        )
+        assert errors == []
+
+
 # ---------------------------------------------------------------------------
 # variant_of: cross-entry consistency (R16)
 # ---------------------------------------------------------------------------
