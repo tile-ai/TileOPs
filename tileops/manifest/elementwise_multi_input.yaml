@@ -10,6 +10,7 @@ WhereFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       condition: {dtype: "bool"}
@@ -51,6 +52,7 @@ LerpTensorFwdOp:
   # dispatch.
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
   variant_of: LerpFwdOp
 
   signature:

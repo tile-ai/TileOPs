@@ -39,6 +39,8 @@ ______________________________________________________________________
 
 - `status` is required: `implemented` or `spec-only`.
 
+- `torch_compile_fullgraph`: literal `true` only; omit for no promise; invalid on `spec-only`. Declare only ops with a registered cold `fullgraph=True` compile test. Semantics: [manifest.md](../../docs/design/manifest.md#torch_compile_fullgraph).
+
 - No `Optional[Tensor]` in manifest. Conditional inputs split into variant entries linked by `variant_of` (single-level, no chaining). Variants share `source.kernel` and `source.op`; each carries its own `signature`, `workloads`, `roofline`.
 
 - Tensor layout defaults to contiguous row-major. Non-default needs an explicit `layout` field; `shape` dim names reflect memory order.

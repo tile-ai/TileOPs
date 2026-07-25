@@ -12,6 +12,7 @@ ReluFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -49,6 +50,7 @@ GeluFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -85,6 +87,7 @@ SiluFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -120,6 +123,7 @@ HardswishFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -155,6 +159,7 @@ HardsigmoidFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -190,6 +195,7 @@ MishFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -225,6 +231,7 @@ SeluFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -414,6 +421,7 @@ ClampFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -451,6 +459,7 @@ ClampScalarFwdOp:
   # rule, this is split from the Tensor-bound primary entry above.
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
   variant_of: ClampFwdOp
 
   signature:
@@ -492,6 +501,7 @@ ClampMinFwdOp:
   # equivalent to torch.clamp with only the lower bound provided.
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
   variant_of: ClampFwdOp
 
   signature:
@@ -527,6 +537,7 @@ ClampMaxFwdOp:
   # equivalent to torch.clamp with only the upper bound provided.
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
   variant_of: ClampFwdOp
 
   signature:

@@ -62,6 +62,7 @@ MaskedFillFwdOp:
   # "No Optional[Tensor]" manifest rule for variant splits.
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -99,6 +100,7 @@ MaskedFillScalarFwdOp:
   # 0-dim-Tensor-value primary entry above.
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
   variant_of: MaskedFillFwdOp
 
   signature:
@@ -138,6 +140,7 @@ AddFwdOp:
   ref_api: "torch.add"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -168,6 +171,7 @@ SubFwdOp:
   ref_api: "torch.sub"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -197,6 +201,7 @@ MulFwdOp:
   ref_api: "torch.mul"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -224,6 +229,7 @@ DivFwdOp:
   ref_api: "torch.div"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -254,6 +260,7 @@ RemainderFwdOp:
   ref_api: "torch.remainder"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -281,6 +288,7 @@ PowFwdOp:
   ref_api: "torch.pow"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -308,6 +316,7 @@ FloorDivideFwdOp:
   ref_api: "torch.floor_divide"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -338,6 +347,7 @@ LerpFwdOp:
   # slice that the existing kernel implements.
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -367,6 +377,7 @@ MaximumFwdOp:
   ref_api: "torch.maximum"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -394,6 +405,7 @@ MinimumFwdOp:
   ref_api: "torch.minimum"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -425,6 +437,7 @@ EqFwdOp:
   ref_api: "torch.eq"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -452,6 +465,7 @@ NeFwdOp:
   ref_api: "torch.ne"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -479,6 +493,7 @@ GtFwdOp:
   ref_api: "torch.gt"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -506,6 +521,7 @@ LtFwdOp:
   ref_api: "torch.lt"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -533,6 +549,7 @@ GeFwdOp:
   ref_api: "torch.ge"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -560,6 +577,7 @@ LeFwdOp:
   ref_api: "torch.le"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -591,6 +609,7 @@ LogicalAndFwdOp:
   ref_api: "torch.logical_and"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -618,6 +637,7 @@ LogicalOrFwdOp:
   ref_api: "torch.logical_or"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -649,6 +669,7 @@ BitwiseAndFwdOp:
   ref_api: "torch.bitwise_and"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -676,6 +697,7 @@ BitwiseOrFwdOp:
   ref_api: "torch.bitwise_or"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -703,6 +725,7 @@ BitwiseXorFwdOp:
   ref_api: "torch.bitwise_xor"
   family: elementwise
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:

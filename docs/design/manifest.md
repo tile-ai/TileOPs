@@ -237,19 +237,28 @@ Validator enforces `cls.__name__ == manifest_key` exactly — no heuristic resol
 
 ## Entry Structure
 
-| Field       | Required | Description                                                   |
-| ----------- | -------- | ------------------------------------------------------------- |
-| `family`    | yes      | Op family. See [below](#family).                              |
-| `ref_api`   | yes      | External API reference, or `"none"` if no direct counterpart. |
-| `status`    | yes      | `spec-only` or `implemented`.                                 |
-| `signature` | yes      | Op interface. See [Signature](#signature).                    |
-| `workloads` | yes      | Benchmark shapes/dtypes.                                      |
-| `roofline`  | yes      | Performance model.                                            |
-| `source`    | yes      | Implementation paths.                                         |
+| Field                     | Required | Description                                                   |
+| ------------------------- | -------- | ------------------------------------------------------------- |
+| `family`                  | yes      | Op family. See [below](#family).                              |
+| `ref_api`                 | yes      | External API reference, or `"none"` if no direct counterpart. |
+| `status`                  | yes      | `spec-only` or `implemented`.                                 |
+| `torch_compile_fullgraph` | no       | Literal `true` only. See [below](#torch_compile_fullgraph).   |
+| `signature`               | yes      | Op interface. See [Signature](#signature).                    |
+| `workloads`               | yes      | Benchmark shapes/dtypes.                                      |
+| `roofline`                | yes      | Performance model.                                            |
+| `source`                  | yes      | Implementation paths.                                         |
 
 ### `family`
 
 Closed set: `elementwise`, `reduction`, `normalization`, `convolution`, `gemm`, `quantize`, `sampling`, `attention`, `moe`, `linear_attention`, `ssm`, `scan`.
+
+### `torch_compile_fullgraph`
+
+Optional; literal `true` only. Omit for "no promise" — `false` is invalid. Invalid on `status: spec-only`.
+
+`true` declares: for each manifest-supported configuration, the first call through `torch.compile(op, fullgraph=True)` succeeds with no prior eager call and is correct under the op's tolerance policy. Not promised: dynamic shapes, `dynamic=True`, absence of recompilation. Warm-up-dependent capture does not qualify.
+
+Every declared op MUST have a compile test registered in `tests/compile_contract.py`; CI holds declarations and registered evidence in exact set equality.
 
 ### `ref_api`
 
