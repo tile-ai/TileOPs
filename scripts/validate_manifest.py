@@ -80,6 +80,7 @@ _PROMOTE_TARGET_DTYPE: str = "float32"
 
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
+_VALID_TOP_KEYS = _REQUIRED_TOP | {"ref_api", "variant_of"}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
 _VALID_SIGNATURE_KEYS = {
     "inputs", "outputs", "params", "shape_rules", "dtype_combos",
@@ -488,14 +489,13 @@ def check_l0(
     elif "source" in entry:
         errors.append(f"[schema] {op_name}: source must be a mapping")
 
-    # parity_opt_out: removed. Manifest entries must not declare it.
-    # Demote the op to ``status: spec-only`` instead of opting out of parity.
-    if _has_parity_opt_out_field(entry):
+    # Unknown top-level keys are ignored by every later level, so reject
+    # them here (covers removed fields like parity_opt_out).
+    unknown_top = sorted(set(entry) - _VALID_TOP_KEYS)
+    if unknown_top:
         errors.append(
-            f"[schema] {op_name}: 'parity_opt_out' is no longer a valid "
-            f"manifest field. Demote the op to 'status: spec-only' if its "
-            f"manifest-derived methods cannot be exercised by the CPU "
-            f"validator."
+            f"[schema] {op_name}: unknown entry keys {unknown_top}; "
+            f"valid keys are {sorted(_VALID_TOP_KEYS)}"
         )
 
     # variant_of: must be a string if present (R16); cross-entry checks in
@@ -1668,17 +1668,6 @@ def _static_dim_values(
         except (IndexError, TypeError, ValueError):
             continue
     return out
-
-
-def _has_parity_opt_out_field(entry: dict) -> bool:
-    """Return True when the (now-removed) ``parity_opt_out`` field is set.
-
-    The field has been removed from the validator and schema. This
-    helper exists so the schema check can surface a hard error pointing
-    reviewers at the migration: demote the op to ``status: spec-only``
-    instead of opting out of parity.
-    """
-    return "parity_opt_out" in entry
 
 
 def _class_overrides_method(cls: type, name: str) -> bool:

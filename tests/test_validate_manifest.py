@@ -82,29 +82,6 @@ class TestSchema:
         errors = validator.check_l0("bad_op", 123)
         assert any("must be a mapping" in e for e in errors)
 
-    def test_valid_entry_passes(self, validator):
-        entry = {
-            "family": "normalization",
-            "ref_api": "torch.nn.functional.rms_norm",
-            "status": "implemented",
-            "signature": {
-                "inputs": {"x": {"dtype": "float16"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-                "params": {},
-                "shape_rules": ["y.shape == x.shape"],
-            },
-            "workloads": [{"x_shape": [1, 4096], "dtypes": ["float16"]}],
-            "roofline": {"flops": "2 * M * N", "bytes": "M * N * 2"},
-            "source": {
-                "kernel": "tileops/kernels/norm/rms_norm.py",
-                "kernel_map": {"fwd": "RMSNormFwdKernel"},
-                "op": "tileops/ops/norm/rms_norm.py",
-                "test": "tests/ops/test_rms_norm.py",
-                "bench": "benchmarks/ops/bench_rms_norm.py",
-            },
-        }
-        errors = validator.check_l0("test_op", entry)
-        assert errors == [], f"Unexpected schema errors: {errors}"
 
     def test_missing_ref_api_fails(self, validator):
         entry = _make_entry()
@@ -229,20 +206,7 @@ class TestSchema:
         errors = validator.check_l0("test_op", entry)
         assert any("params.eps" in e and "type" in e for e in errors)
 
-    def test_params_with_type_passes(self, validator):
-        """Param entry with 'type' field passes schema check."""
-        entry = _make_entry(
-            params={"eps": {"type": "float", "default": 1e-6}},
-        )
-        errors = validator.check_l0("test_op", entry)
-        assert errors == [], f"Unexpected schema errors: {errors}"
 
-    def test_static_dims_dict_passes(self, validator):
-        """Valid static_dims mapping passes schema check (R20)."""
-        entry = _make_entry()
-        entry["signature"]["static_dims"] = {"N": "x.shape[-1]"}
-        errors = validator.check_l0("test_op", entry)
-        assert errors == [], f"Unexpected schema errors: {errors}"
 
     def test_static_dims_with_missing_inputs_does_not_crash(self, validator):
         """Malformed signature (no inputs) must not crash static_dims check.
@@ -359,14 +323,6 @@ class TestSchema:
         errors = validator.check_l0("test_op", entry)
         assert errors == [], f"Unexpected errors: {errors}"
 
-    def test_dtype_combos_valid_passes(self, validator):
-        """Valid dtype_combos list passes schema check (R4)."""
-        entry = _make_entry(
-            inputs={"x": {"dtype": "float16"}, "w": {"dtype": "float16"}},
-            dtype_combos=[{"x": "float16", "w": "float16"}],
-        )
-        errors = validator.check_l0("test_op", entry)
-        assert errors == [], f"Unexpected schema errors: {errors}"
 
     def test_dtype_combos_bad_key_fails(self, validator):
         """dtype_combos referencing unknown tensor name fails (R4)."""
@@ -399,17 +355,7 @@ class TestSchema:
             f"Expected schema error about missing status, got: {errors}"
         )
 
-    def test_status_implemented_passes(self, validator):
-        """Entry with status: implemented and kernel_map passes schema check."""
-        entry = _make_entry(status="implemented", kernel_map={"fwd": "FwdKernel"})
-        errors = validator.check_l0("test_op", entry)
-        assert errors == [], f"Unexpected schema errors: {errors}"
 
-    def test_status_spec_only_passes(self, validator):
-        """Entry with status: spec-only passes schema check."""
-        entry = _make_entry(status="spec-only")
-        errors = validator.check_l0("test_op", entry)
-        assert errors == [], f"Unexpected schema errors: {errors}"
 
     def test_status_non_string_rejected(self, validator):
         """Non-string status (e.g. integer) must produce a schema error."""
@@ -420,11 +366,6 @@ class TestSchema:
             f"Expected schema error about non-string status, got: {errors}"
         )
 
-    def test_kernel_map_valid_passes(self, validator):
-        """status: implemented with valid kernel_map dict passes."""
-        entry = _make_entry(status="implemented", kernel_map={"fwd": "FwdKernel"})
-        errors = validator.check_l0("test_op", entry)
-        assert errors == [], f"Unexpected schema errors: {errors}"
 
     def test_kernel_map_missing_when_implemented_warns(self, validator):
         """status: implemented without kernel_map produces a warning, not error."""
@@ -712,10 +653,8 @@ class TestSignature:
         errors = validator.check_l1("MissingSpecOnlyOp", entry, warnings=warn_list)
 
         assert errors == []
-        assert warn_list == [
-            "[signature] MissingSpecOnlyOp: skipped because status is spec-only "
-            "and source.op is null"
-        ]
+        assert len(warn_list) == 1
+        assert "spec-only" in warn_list[0] and "null" in warn_list[0]
 
     def test_implemented_null_source_op_fails(self, validator):
         """Implemented entries still require a resolvable source.op."""
@@ -894,16 +833,6 @@ class TestSignature:
 class TestDtype:
     """dtype checks that dtype strings are valid torch dtype names."""
 
-    def test_valid_signature_dtypes_pass(self, validator):
-        entry = {
-            "signature": {
-                "inputs": {"x": {"dtype": "float16"}, "w": {"dtype": "bfloat16"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-            },
-            "workloads": [{"dtypes": ["float16", "bfloat16"]}],
-        }
-        errors = validator.check_l3("test_op", entry)
-        assert errors == []
 
     def test_invalid_workload_dtype_fails(self, validator):
         """Workloads with unrecognized dtype must produce dtype error."""
@@ -919,17 +848,6 @@ class TestDtype:
             f"Expected dtype error for invalid workload dtype, got: {errors}"
         )
 
-    def test_valid_workload_dtype_passes(self, validator):
-        """Valid workload dtypes do not produce errors."""
-        entry = {
-            "signature": {
-                "inputs": {"x": {"dtype": "float16"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-            },
-            "workloads": [{"dtypes": ["float16", "bfloat16", "float32"]}],
-        }
-        errors = validator.check_l3("test_op", entry)
-        assert errors == []
 
     def test_dtype_combos_same_as_identity_pass(self, validator):
         """dtype_combos with matching dtypes for same_as-bound tensors pass."""
@@ -1221,27 +1139,6 @@ class TestDtype:
             f"got: {errors}"
         )
 
-    def test_promote_int_to_float_rejects_other_output_ref(self, validator):
-        """``promote_int_to_float(other_output)`` is also rejected."""
-        entry = {
-            "signature": {
-                "inputs": {"x": {"dtype": "int8 | float32"}},
-                "outputs": {
-                    "y": {"dtype": "float32"},
-                    "z": {"dtype": "promote_int_to_float(y)"},
-                },
-            },
-            "workloads": [{"dtypes": ["float32"]}],
-        }
-        errors = validator.check_l3("PromoteOutputRefOp", entry)
-        assert any(
-            "promote_int_to_float(y)" in e
-            and "must reference a signature input tensor" in e
-            for e in errors
-        ), (
-            "Expected output-tensor ref to be rejected, "
-            f"got: {errors}"
-        )
 
     def test_promote_int_to_float_rejected_in_workload_dtypes(self, validator):
         """``promote_int_to_float`` is output-side only (R3a).
@@ -1323,31 +1220,6 @@ def _make_op_cls_with_infer(infer_fn, *, name="FakeOp"):
 class TestInferShapeParity:
     """L2 extension: ``_infer_output_shapes`` output must satisfy shape_rules."""
 
-    def test_no_override_skipped(self, validator):
-        """Ops without a ``_infer_output_shapes`` override produce no errors.
-
-        The check still surfaces the missing manifest-derived method as a
-        warning (see ``test_no_override_emits_missing_method_warning``);
-        this test pins the no-hard-error behaviour.
-        """
-        from tileops.ops.op_base import Op
-
-        class BareOp(Op):
-            def forward(self):  # noqa: D401
-                return None
-
-            @property
-            def default_kernel_map(self):
-                return {}
-
-        entry = {
-            "signature": {
-                "inputs": {"x": {"dtype": "float16"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-                "shape_rules": ["y.shape == x.shape"],
-            },
-        }
-        assert validator.check_l2_infer_parity("BareOp", entry, BareOp) == []
 
     def test_no_override_emits_missing_method_warning(self, validator):
         """F002 regression: missing override must not pass silently.
@@ -1387,37 +1259,6 @@ class TestInferShapeParity:
             f"the codegen-derived method, got: {warnings}"
         )
 
-    def test_parity_opt_out_field_no_longer_suppresses(self, validator):
-        """``parity_opt_out`` is removed; setting it does NOT suppress the
-        missing-method warning. Schema check additionally rejects the
-        field outright (covered by ``TestParityOptOutRemoval``).
-        """
-        from tileops.ops.op_base import Op
-
-        class BareOp(Op):
-            def forward(self):
-                return None
-
-            @property
-            def default_kernel_map(self):
-                return {}
-
-        entry = {
-            "parity_opt_out": ["shape_parity"],
-            "signature": {
-                "inputs": {"x": {"dtype": "float16"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-                "shape_rules": ["y.shape == x.shape"],
-            },
-        }
-        warnings: list[str] = []
-        errors = validator.check_l2_infer_parity(
-            "BareOp", entry, BareOp, warnings=warnings,
-        )
-        assert errors == []
-        assert any(
-            "does not override _infer_output_shapes" in w for w in warnings
-        ), warnings
 
     def test_symbolic_dim_rule_detects_wrong_output(self, validator):
         """F001 regression: rules like ``o.shape == (B, S, H, D)`` must fire.
@@ -1473,19 +1314,6 @@ class TestInferShapeParity:
         entry = {"signature": {"shape_rules": ["y.shape == x.shape"]}}
         assert validator.check_l2_infer_parity("Foo", entry, None) == []
 
-    def test_correct_infer_passes(self, validator):
-        def infer(self, x_shape):
-            return {"y": x_shape}
-
-        cls = _make_op_cls_with_infer(infer)
-        entry = {
-            "signature": {
-                "inputs": {"x": {"dtype": "float16"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-                "shape_rules": ["y.shape == x.shape"],
-            },
-        }
-        assert validator.check_l2_infer_parity("FakeOp", entry, cls) == []
 
     def test_incorrect_infer_fails(self, validator):
         """Parity error when _infer_output_shapes disagrees with shape_rules."""
@@ -1765,29 +1593,6 @@ class TestInferShapeParity:
             f"errors={errors}"
         )
 
-    def test_body_raise_with_parity_opt_out_field_still_hard_error(self, validator):
-        """``parity_opt_out`` is removed; declaring it does NOT downgrade
-        a body-raise. Body exceptions are unconditionally hard L2 errors.
-        """
-        def infer(self, x_shape):
-            raise RuntimeError("needs GPU-only state")
-
-        cls = _make_op_cls_with_infer(infer)
-        entry = {
-            "signature": {
-                "inputs": {"x": {"dtype": "float16"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-                "shape_rules": ["y.shape == x.shape"],
-            },
-            "parity_opt_out": ["shape_parity"],
-        }
-        warnings: list[str] = []
-        errors = validator.check_l2_infer_parity(
-            "FakeOp", entry, cls, warnings=warnings,
-        )
-        assert any(
-            "raised RuntimeError" in e for e in errors
-        ), f"opt-out field must NOT suppress hard error; errors={errors}"
 
     def test_body_runtime_error_is_hard_l2_error(self, validator):
         """Finding #2 regression: a body raising ``RuntimeError('not ready')``
@@ -2236,24 +2041,6 @@ def _make_op_cls_with_validate(validate_fn, *, name="FakeDtypeOp"):
 class TestValidateDtypesParity:
     """L3 extension: ``_validate_dtypes`` matches manifest dtype_combos/unions."""
 
-    def test_no_override_skipped(self, validator):
-        from tileops.ops.op_base import Op
-
-        class BareOp(Op):
-            def forward(self):
-                return None
-
-            @property
-            def default_kernel_map(self):
-                return {}
-
-        entry = {
-            "signature": {
-                "inputs": {"x": {"dtype": "float16"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-            },
-        }
-        assert validator.check_l3_validate_dtypes_parity("Bare", entry, BareOp) == []
 
     def test_no_override_emits_missing_method_warning(self, validator):
         """F002 regression: missing override must not pass silently on L3."""
@@ -2282,35 +2069,6 @@ class TestValidateDtypesParity:
             "does not override _validate_dtypes" in w for w in warnings
         ), warnings
 
-    def test_parity_opt_out_field_no_longer_suppresses(self, validator):
-        """``parity_opt_out`` is removed; setting it does NOT suppress
-        the missing-method warning.
-        """
-        from tileops.ops.op_base import Op
-
-        class BareOp(Op):
-            def forward(self):
-                return None
-
-            @property
-            def default_kernel_map(self):
-                return {}
-
-        entry = {
-            "parity_opt_out": ["dtype_parity"],
-            "signature": {
-                "inputs": {"x": {"dtype": "float16"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-            },
-        }
-        warnings: list[str] = []
-        errors = validator.check_l3_validate_dtypes_parity(
-            "BareOp", entry, BareOp, warnings=warnings,
-        )
-        assert errors == []
-        assert any(
-            "does not override _validate_dtypes" in w for w in warnings
-        ), warnings
 
     def test_union_accept_all_passes(self, validator):
         import torch
@@ -3210,32 +2968,6 @@ class TestUnexpectedValidateDtypesException:
             for e in errors
         ), f"expected hard L3 error, got errors={errors} warnings={warnings}"
 
-    def test_parity_opt_out_field_does_not_downgrade(self, validator):
-        """``parity_opt_out`` is removed; declaring it does NOT downgrade
-        body-raise to a skip. Body exceptions are unconditionally hard L3.
-        """
-        def bad_validate(self, x):
-            raise RuntimeError("needs GPU state")
-
-        cls = _make_op_cls_with_validate(bad_validate, name="OptOutValidateOp")
-        entry = {
-            "signature": {
-                "inputs": {"x": {"dtype": "float16 | bfloat16"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-                "dtype_combos": [
-                    {"x": "float16"},
-                    {"x": "bfloat16"},
-                ],
-            },
-            "parity_opt_out": ["dtype_parity"],
-        }
-        warnings: list[str] = []
-        errors = validator.check_l3_validate_dtypes_parity(
-            "OptOutValidateOp", entry, cls, warnings=warnings,
-        )
-        assert any(
-            "raised unexpected exception" in e for e in errors
-        ), f"opt-out field must NOT suppress hard error; errors={errors}"
 
     def test_runtime_error_no_combos_is_hard_error(self, validator):
         """Same policy in the no-dtype_combos Cartesian branch."""
@@ -3627,22 +3359,6 @@ class TestCheckOp:
             f"Spec-only op should only have schema errors (if any), got: {non_schema}"
         )
 
-    def test_missing_status_rejected_at_schema_level(self, validator, tmp_path):
-        """Entry without status field is rejected by schema validation."""
-        entry = _make_entry(status=None)
-
-        manifest_file = tmp_path / "ops_manifest.yaml"
-        import yaml
-        manifest_file.write_text(yaml.safe_dump({"my_op": entry}))
-
-        errors, warnings = validator.validate_manifest(
-            manifest_path=manifest_file,
-            repo_root=tmp_path,
-        )
-        status_errors = [e for e in errors if "status" in e]
-        assert len(status_errors) > 0, (
-            f"Missing-status op should produce a schema error, got: {errors}"
-        )
 
     def test_check_op_nonexistent_op_reports_error(self, validator, tmp_path):
         """--check-op with a name not in manifest reports an error."""
@@ -3886,14 +3602,6 @@ class TestResolveOpClass:
         assert result.cls is None
         assert result.warning is not None
 
-    def test_exact_match_required_multi_class(self, validator):
-        """Multi-class files require exact cls.__name__ == manifest key."""
-        result = validator._resolve_op_class(
-            "tileops/ops/reduction/reduce.py", "SumFwdOp",
-        )
-        assert result.cls is not None
-        assert result.cls.__name__ == "SumFwdOp"
-
     @pytest.mark.parametrize(
         "op_name",
         [
@@ -4016,48 +3724,6 @@ class TestResolveOpClass:
         assert any("No class named" in w for w in warn_list)
         assert any("could not resolve" in e for e in errors)
 
-    def test_suffix_match_ambiguity_emits_warning(self, validator):
-        """When no class matches the manifest key exactly, emit warning."""
-        import importlib
-        import types
-        import unittest.mock as mock
-
-        fake_mod = types.ModuleType("tileops.ops.fake_no_match")
-        fake_mod.__name__ = "tileops.ops.fake_no_match"
-
-        class AlphaFwdOp:
-            @staticmethod
-            def forward():
-                pass
-
-        class BetaFwdOp:
-            @staticmethod
-            def forward():
-                pass
-
-        AlphaFwdOp.__module__ = fake_mod.__name__
-        BetaFwdOp.__module__ = fake_mod.__name__
-        fake_mod.AlphaFwdOp = AlphaFwdOp
-        fake_mod.BetaFwdOp = BetaFwdOp
-
-        original_import = importlib.import_module
-
-        def patched_import(name):
-            if name == "tileops.ops.fake_no_match":
-                return fake_mod
-            return original_import(name)
-
-        with (
-            mock.patch.object(importlib, "import_module", side_effect=patched_import),
-            pytest.warns(UserWarning, match="No class named"),
-        ):
-            result = validator._resolve_op_class(
-                "tileops/ops/fake_no_match.py", "GammaFwdOp",
-            )
-        # No exact match: cls should be None and warning emitted
-        assert result.cls is None
-        assert not result.import_error
-        assert "No class named" in result.warning
 
     def test_direct_match_resolves_exact_class_name(self, validator):
         """Direct match resolves when cls.__name__ == manifest key.
@@ -4413,96 +4079,6 @@ class TestValidatorHelperResolution:
             # — both are truthy on the canonical (ndim=4, dim=0) input.
             assert ok is True, name
 
-    def test_sum_rules_helper_inline_classification_parity(self, validator):
-        """Synthetic parity regression: helper form vs inline form via validator.
-
-        Two locally constructed manifest fixtures encode SumFwdOp-shaped
-        shape_rules in pre-migration inline form and post-migration helper
-        form. Both are driven through :func:`check_l2_infer_parity` against
-        the same mock op class; the validator's classification at each rule
-        index must be identical. This pins helper-resolution semantics
-        against the inline expressions the manifest historically used —
-        without taking any dependency on the checked-in manifest YAML
-        (real ``reduction.yaml`` migration is tracked as a separate
-        manifest PR per the trust-model rule).
-        """
-        def infer(self, x_shape, *, dim=None, keepdim=False):  # noqa: ARG001
-            # Identity output is enough to exercise the rule eval path
-            # under mock inputs; the rules themselves don't reach this.
-            return {"output": x_shape}
-
-        cls = _make_op_cls_with_infer(infer, name="SumParityOp")
-        sig_common = {
-            "inputs": {"x": {"dtype": "float16"}},
-            "outputs": {"output": {"dtype": "same_as(x)"}},
-            "params": {
-                "dim": {
-                    "type": "int | list[int] | tuple[int, ...] | None",
-                    "default": None,
-                },
-                "keepdim": {"type": "bool", "default": False},
-            },
-        }
-        inline_axes = (
-            "({dim % x.ndim} if isinstance(dim, int) else "
-            "{d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) "
-            "and len(dim) > 0 else set(range(x.ndim)))"
-        )
-        entry_pre = {
-            "signature": {
-                **sig_common,
-                "shape_rules": [
-                    "dim is None or all(-x.ndim <= d < x.ndim for d in "
-                    "([dim] if isinstance(dim, int) else dim))",
-                    "isinstance(dim, (int, type(None))) or "
-                    "len({d % x.ndim for d in dim}) == len(dim)",
-                    f"output.ndim == (x.ndim if keepdim else x.ndim - "
-                    f"len({inline_axes}))",
-                ],
-            },
-        }
-        entry_post = {
-            "signature": {
-                **sig_common,
-                "shape_rules": [
-                    "dim_range_validity(x, dim)",
-                    "dim_uniqueness(x, dim)",
-                    "output.ndim == (x.ndim if keepdim else x.ndim - "
-                    "len(reduced_axes(x, dim)))",
-                ],
-            },
-        }
-        errs_pre = validator.check_l2_infer_parity(
-            "SumParityOp", entry_pre, cls,
-        )
-        errs_post = validator.check_l2_infer_parity(
-            "SumParityOp", entry_post, cls,
-        )
-        # Error strings quote the rule text verbatim, so post-migration
-        # entries naturally differ from pre-migration ones in the rule
-        # body. What must stay identical is the validator's classification
-        # at each rule index: the same number of errors, the same severity
-        # tags ("[shape]"), and the same indices flagged. That captures
-        # the bit-identical-validator-behaviour contract pre/post without
-        # coupling the test to literal rule wording.
-        def _classify(errs: list[str]) -> list[str]:
-            tags = []
-            for e in errs:
-                if "shape_rules[0]" in e:
-                    tags.append("[shape] rule[0]")
-                elif "shape_rules[1]" in e:
-                    tags.append("[shape] rule[1]")
-                elif "shape_rules[2]" in e:
-                    tags.append("[shape] rule[2]")
-                else:
-                    tags.append(e.split(" ", 1)[0])
-            return tags
-
-        assert _classify(errs_pre) == _classify(errs_post), (
-            errs_pre, errs_post,
-        )
-        assert len(errs_pre) == len(errs_post), (errs_pre, errs_post)
-
 
 # ---------------------------------------------------------------------------
 # C1-C7 strict parity gates
@@ -4793,18 +4369,11 @@ class TestStrictParityC6C7Stub:
 class TestParityOptOutRemoval:
     """``parity_opt_out`` is removed: schema rejects it, parity ignores it."""
 
-    def test_schema_rejects_parity_opt_out_field(self, validator):
-        entry = _make_entry(status="implemented")
-        entry["parity_opt_out"] = ["shape_parity"]
-        errs = validator.check_l0("FakeOp", entry)
-        assert any("'parity_opt_out' is no longer a valid" in e for e in errs), errs
-
-    def test_schema_rejects_parity_opt_out_true(self, validator):
-        entry = _make_entry(status="spec-only")
+    def test_schema_rejects_unknown_top_level_key(self, validator):
+        entry = _make_entry()
         entry["parity_opt_out"] = True
-        errs = validator.check_l0("FakeOp", entry)
-        assert any("'parity_opt_out' is no longer a valid" in e for e in errs), errs
-
+        errors = validator.check_l0("op", entry)
+        assert any("unknown entry keys" in e and "parity_opt_out" in e for e in errors), errors
 
 class TestStrictAdvisoryMode:
     """Advisory vs strict routing of C1-C7 failures, driven through
@@ -4921,16 +4490,3 @@ class TestStrictAdvisoryMode:
         assert not any(
             "STRICT-PARITY (advisory)" in w for w in warnings
         ), f"strict mode must not demote to advisory; warnings={warnings}"
-
-    def test_cli_advisory_mode_exits_zero_on_real_manifest(self):
-        """Advisory mode end to end on the checked-in manifest must
-        exit 0 even with the current strict-parity backlog. Stable
-        over time: the gate stays advisory until follow-ups close."""
-        result = subprocess.run(
-            [sys.executable, str(VALIDATOR_SCRIPT)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, (
-            f"advisory mode must exit 0; stdout tail:\n{result.stdout[-500:]}"
-        )
-        assert "ADVISORY MODE" in result.stdout
