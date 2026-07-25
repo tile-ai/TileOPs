@@ -98,6 +98,15 @@ _logger = logging.getLogger("tileops.bench")
 # A single test function may call record() multiple times (tileops + baseline).
 _bench_results = threading.local()
 
+# Per-call measurement metadata from the latest bench_kernel run. Deviations
+# from the default protocol (CUPTI timing, cloned inputs) are surfaced in the
+# result dict by BenchmarkBase._build_result.
+_bench_meta = threading.local()
+
+
+class _CuptiProjectionError(Exception):
+    """CUPTI trace lacked a projected annotation window for every repeat."""
+
 
 # Name of the ``record_function`` annotation wrapping the timed call. Kineto
 # projects this scope onto the device timeline. The L2-flush ``cache.zero_()``
@@ -160,7 +169,11 @@ def _get_l2_flush_cache() -> torch.Tensor:
     if _l2_flush_cache is None:
         l2_bytes = torch.cuda.get_device_properties(0).L2_cache_size
         if l2_bytes <= 0:
-            l2_bytes = int(256e6)  # fallback
+            _logger.warning(
+                "L2 cache size query returned %d; flushing a 256 MB buffer "
+                "instead", l2_bytes,
+            )
+            l2_bytes = int(256e6)
         _l2_flush_cache = torch.empty(l2_bytes // 4, dtype=torch.int, device="cuda")
     return _l2_flush_cache
 
@@ -251,6 +264,11 @@ def bench_kernel(
             def _run(i):
                 return fn(*arg_pool[i % _N_CLONES])
         else:
+            _logger.warning(
+                "bench_kernel: inputs total %.2f GiB; skipping per-iteration "
+                "cloning (kernel sees identical addresses)",
+                total_bytes / (1 << 30),
+            )
             arg_pool = None
             def _run(i):
                 return fn(*args)
@@ -258,11 +276,12 @@ def bench_kernel(
         arg_pool = None
         def _run(i):
             return fn()
+    _bench_meta.inputs_cloned = arg_pool is not None or not has_args
 
     # Warmup (no profiling)
     for i in range(n_warmup):
         cache.zero_()
-        _run(i % n_repeat)
+        _run(i)
     torch.cuda.synchronize()
 
     # Timed trials with CUPTI.  Each trial opens its own torch.profiler context
@@ -307,16 +326,25 @@ def bench_kernel(
                             _run(i)
                         torch.cuda.synchronize()  # kernel recorded in isolation
                 total_us, n_regions = _sum_kernel_time_us(profiler.profiler.kineto_results)
-                # Scope failed to project on some iteration → trace untrustworthy,
-                # fall back to CUDA events.
+                # Scope failed to project on some iteration → trace
+                # untrustworthy, fall back to CUDA events. Genuine kernel
+                # failures (CUDA errors, OOM) propagate to the caller.
                 if n_regions != n_repeat:
-                    raise RuntimeError
+                    raise _CuptiProjectionError(
+                        f"{n_regions}/{n_repeat} annotation windows projected"
+                    )
                 trial_means.append((total_us / n_repeat) * 1e-3)
-    except RuntimeError:
+        _bench_meta.timing = "cupti"
+    except _CuptiProjectionError as exc:
+        _logger.warning(
+            "CUPTI projection failed (%s); falling back to CUDA-events "
+            "timing, which includes launch overhead", exc,
+        )
         trial_means = []
 
     # Fallback to CUDA events if CUPTI failed
     if not trial_means:
+        _bench_meta.timing = "cuda-events"
         for _ in range(n_trials):
             start_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
             end_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
@@ -437,6 +465,13 @@ class BenchmarkBase(Generic[W], ABC):
 
     def _build_result(self, latency: float) -> dict:
         result = {"latency_ms": latency}
+        # Surface deviations from the default protocol (CUPTI timing,
+        # cloned inputs) so reports never mask a methodology change.
+        timing = getattr(_bench_meta, "timing", None)
+        if timing is not None and timing != "cupti":
+            result["timing"] = timing
+        if getattr(_bench_meta, "inputs_cloned", True) is False:
+            result["inputs_cloned"] = False
         flops = self.calculate_flops()
         if flops is not None:
             result["tflops"] = flops / latency * 1e-9
@@ -712,7 +747,12 @@ class BenchmarkReport:
                     row = [str(entry["params"].get(k, "")) for k in param_keys]
                     for rk in result_keys:
                         val = entry["result"].get(rk)
-                        row.append(f"{val:.4f}" if val is not None else "N/A")
+                        if val is None:
+                            row.append("N/A")
+                        elif isinstance(val, (int, float)):
+                            row.append(f"{val:.4f}")
+                        else:
+                            row.append(str(val))
                     if has_config:
                         cfg = entry.get("config")
                         row.append(str(cfg) if cfg else "")
