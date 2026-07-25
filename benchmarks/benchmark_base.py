@@ -176,14 +176,15 @@ def _get_l2_flush_cache() -> torch.Tensor:
 
 
 def _native_output_suppressor():
-    """Return an output suppressor that cannot clobber a redirected stream.
+    """Return an fd-level output suppressor that is safe under pytest capture.
 
-    tilelang's ``suppress_stdout_stderr`` silences C++ profiler chatter by ``dup2``-ing
-    ``/dev/null`` over ``sys.stdout.fileno()``. Under pytest's fd capture that
-    fileno is the capture tmpfile, so the redirect corrupts the capture stream
-    (later reads fail with ``EBADF``, losing timeout stack dumps and results).
-    Under capture a no-op context is returned; capture already hides the
-    chatter.
+    tilelang's ``suppress_stdout_stderr`` silences C++ profiler chatter by
+    ``dup2``-ing ``/dev/null`` over ``sys.stdout.fileno()``. Under pytest's fd
+    capture that fileno is the capture tmpfile, so the redirect corrupts the
+    capture stream (later reads fail with ``EBADF``, losing timeout stack
+    dumps and results). The suppressor is applied only when stdout/stderr are
+    the process-level fds 1/2 (including OS-level ``> file`` redirection,
+    where silencing is intended); under capture a no-op context is returned.
     """
     try:
         native = sys.stdout.fileno() == 1 and sys.stderr.fileno() == 2
@@ -737,7 +738,7 @@ class BenchmarkReport:
                         val = entry["result"].get(rk)
                         if val is None:
                             row.append("N/A")
-                        elif isinstance(val, (int, float)):
+                        elif isinstance(val, (int, float)) and not isinstance(val, bool):
                             row.append(f"{val:.4f}")
                         else:
                             row.append(str(val))

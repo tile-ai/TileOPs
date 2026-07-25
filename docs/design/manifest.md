@@ -479,12 +479,12 @@ consumption.
 
 ### Workload entry schema
 
-Each entry under `workloads:` is a mapping. Shape keys take the form
-`<tensor_name>_shape`, where `<tensor_name>` MUST be a `signature.inputs`
-key — the workload shape key is derived from the signature, never chosen
-independently. `dtypes` and `label` are also reserved. Any other key
-becomes an **op-call parameter** forwarded to the op's `__init__` and MUST
-be a declared `signature.params` name.
+Each entry under `workloads:` is a mapping. `dtypes` and `label` are
+reserved. For single-tensor-input ops (R21), the shape key MUST be
+`{input}_shape` for the one `signature.inputs` name, and any other key
+MUST be a declared `signature.params` name (forwarded to the op's
+`__init__`). Multi-input families may use aggregate shape conventions —
+see below.
 
 For single-tensor-input ops this contract is enforced by the validator and
 by `workloads_to_params`: the workload declares exactly `{input}_shape`,
