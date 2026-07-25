@@ -16,6 +16,7 @@ SiluAndMulFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
@@ -58,6 +59,7 @@ GeluAndMulFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
@@ -98,6 +100,7 @@ GeluTanhAndMulFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}

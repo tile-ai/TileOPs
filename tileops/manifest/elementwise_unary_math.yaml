@@ -14,6 +14,7 @@ ExpFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -46,6 +47,7 @@ LogFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -78,6 +80,7 @@ SqrtFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -110,6 +113,7 @@ RsqrtFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -142,6 +146,7 @@ AbsFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
@@ -174,6 +179,7 @@ NegFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
@@ -206,6 +212,7 @@ ReciprocalFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
@@ -240,6 +247,7 @@ SignFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
@@ -273,6 +281,7 @@ SinFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -305,6 +314,7 @@ CosFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -337,6 +347,7 @@ FloorFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -369,6 +380,7 @@ CeilFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -401,6 +413,7 @@ RoundFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -435,6 +448,7 @@ TruncFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -467,6 +481,7 @@ ErfFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -499,6 +514,7 @@ Log1pFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -532,6 +548,7 @@ Expm1FwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -565,6 +582,7 @@ SigmoidFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -599,6 +617,7 @@ TanhFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -633,6 +652,7 @@ LogicalNotFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -666,6 +686,7 @@ BitwiseNotFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
@@ -698,6 +719,7 @@ IsnanFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -731,6 +753,7 @@ IsinfFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -764,6 +787,7 @@ IsfiniteFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}

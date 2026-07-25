@@ -20,12 +20,12 @@ Reads are not policed; the trust model controls writes and import-level coupling
 
 Source of truth for op interfaces. Human-reviewed, separate PR.
 
-- **OWNS**: op signatures, dtypes, workload shapes, roofline formulas, status, kernel_map (dispatch registration table)
+- **OWNS**: op signatures, dtypes, workload shapes, roofline formulas, status, kernel_map (dispatch registration table), user-visible capability declarations (`torch_compile_fullgraph`)
 - **MUST NOT WRITE**: kernel internals, dispatch strategy, or test logic
 
 ### Status flip carve-out
 
-An implementation PR may edit only `status`, `source.kernel_map`, `source.test`, `source.bench`, and (only when promoting `spec-only → implemented`) `workloads` on the aligned op; every other contractual field needs a separate manifest-only PR.
+An implementation PR may edit only `status`, `source.kernel_map`, `source.test`, `source.bench`, and (only when promoting `spec-only → implemented`) `workloads` on the aligned op; every other contractual field — including `torch_compile_fullgraph` — needs a separate manifest-only PR.
 
 Full enumeration: [.claude/rules/manifest-trust-model.md](../../.claude/rules/manifest-trust-model.md) §Status flip carve-out.
 
