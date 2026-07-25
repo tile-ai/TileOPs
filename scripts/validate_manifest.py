@@ -212,10 +212,8 @@ def _check_single_input_workload_keys(
 ) -> list[str]:
     """Check R21: workload keys must derive from the signature.
 
-    Single-tensor-input workloads key their shape as ``{input}_shape`` and
-    carry only declared signature params besides ``dtypes``/``label``. Out
-    of scope: multi-input signatures (``q_shape``/``kv_shape`` family
-    conventions) and workloads with no ``*_shape`` key.
+    Out of scope: multi-input signatures and workloads with no ``*_shape``
+    key.
     """
     inputs = sig.get("inputs")
     if not isinstance(inputs, dict) or len(inputs) != 1:
@@ -235,7 +233,7 @@ def _check_single_input_workload_keys(
     if collisions:
         errors.append(
             f"[schema] {op_name}: signature params {collisions} collide "
-            "with harness-reserved workload keys"
+            "with reserved workload keys"
         )
     for i, w in enumerate(workloads):
         if not isinstance(w, dict):

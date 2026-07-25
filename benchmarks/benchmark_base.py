@@ -21,19 +21,16 @@ from torch.autograd.profiler import DeviceType
 
 from tileops.manifest import load_manifest, load_workloads
 
-# Workload keys owned by the harness: ``dtypes`` expands the pytest
-# parametrization, ``label`` names the test id. The shape key is derived
-# per op from the manifest signature (see ``_workload_contract``).
-_WORKLOAD_HARNESS_KEYS: frozenset[str] = frozenset({"dtypes", "label"})
+# Workload keys consumed by ``workloads_to_params`` itself: ``dtypes``
+# expands the pytest parametrization, ``label`` names the test id.
+_WORKLOAD_RESERVED_KEYS: frozenset[str] = frozenset({"dtypes", "label"})
 
 
 def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
     """Return ``(shape_key, allowed_keys)`` for a single-tensor-input op.
 
-    ``signature.inputs`` is the authority on the tensor-input name: the
-    workload declares ``{input}_shape``, and every other key must be a
-    declared ``signature.params`` name. Multi-input ops (``q_shape`` /
-    ``kv_shape`` family conventions) use family-specific bench harnesses.
+    The workload declares ``{input}_shape`` for the one ``signature.inputs``
+    name; every other key must be a declared ``signature.params`` name.
     """
     entry = load_manifest().get(op_name)
     if entry is None:
@@ -44,10 +41,10 @@ def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
         raise KeyError(
             f"workloads_to_params({op_name!r}) needs exactly one manifest "
             f"tensor input, found {inputs or 'none'}; multi-input ops use "
-            "family-specific bench harnesses."
+            "their own bench files."
         )
     shape_key = f"{inputs[0]}_shape"
-    allowed = frozenset(sig.get("params") or {}) | _WORKLOAD_HARNESS_KEYS | {shape_key}
+    allowed = frozenset(sig.get("params") or {}) | _WORKLOAD_RESERVED_KEYS | {shape_key}
     return shape_key, allowed
 
 
@@ -487,11 +484,8 @@ class BenchmarkBase(Generic[W], ABC):
 
 
 def _workload_extra_params(w: dict, shape_key: str) -> dict[str, Any]:
-    """Return op-call params on a workload entry (e.g. ``dim``, ``keepdim``).
-
-    Strips the shape key, the harness keys, and dunder metadata.
-    """
-    reserved = _WORKLOAD_HARNESS_KEYS | {shape_key}
+    """Return op-call params on a workload entry, stripping reserved keys."""
+    reserved = _WORKLOAD_RESERVED_KEYS | {shape_key}
     return {
         k: v
         for k, v in w.items()
@@ -502,15 +496,9 @@ def _workload_extra_params(w: dict, shape_key: str) -> dict[str, Any]:
 def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     """Convert manifest workload dicts for *op_name* to pytest params.
 
-    By default (``include_extra=False``) each entry becomes
-    ``pytest.param(shape, dtype, id=...)`` for
-    ``@pytest.mark.parametrize("shape, dtype", ...)``.
-
-    With ``include_extra=True`` each entry becomes
-    ``pytest.param(shape, dtype, extra_params, id=...)`` where
-    ``extra_params`` is a dict of op-call params declared on the workload
-    entry (e.g. ``{"dim": 0, "keepdim": False}``). Use this when the
-    benchmark needs to drive op calls from manifest-declared workload params.
+    Each entry becomes ``pytest.param(shape, dtype, id=...)``; with
+    ``include_extra=True`` a third element carries the op-call params
+    declared on the workload entry (e.g. ``{"dim": 0}``).
     """
     workloads = load_workloads(op_name)
     shape_key, allowed = _workload_contract(op_name)

@@ -209,8 +209,7 @@ def test_workloads_to_params_include_extra_propagates_dim():
         assert isinstance(shape, tuple)
         assert isinstance(dtype, torch.dtype)
         assert isinstance(extra, dict)
-    # At least one workload intentionally carries no extras; the harness
-    # must expose that as an empty dict rather than omitting the slot.
+    # A workload with no extras must yield an empty dict, not a missing slot.
     assert any(p.values[2] == {} for p in triples)
 
 

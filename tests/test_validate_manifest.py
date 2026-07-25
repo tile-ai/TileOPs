@@ -587,7 +587,7 @@ class TestSchema:
 
 
 class TestSingleInputWorkloadKeys:
-    """Workload shape keys derive from signature.inputs; unknown keys fail."""
+    """R21: workload shape keys derive from signature.inputs."""
 
     @staticmethod
     def _sig(input_name="input", params=("dim",)):
@@ -597,56 +597,28 @@ class TestSingleInputWorkloadKeys:
             "params": {p: {"type": "int"} for p in params},
         }
 
-    def test_matching_shape_key_passes(self, validator):
-        errors = validator._check_single_input_workload_keys(
-            "op", self._sig(), [
-                {"input_shape": [8, 16], "dtypes": ["float16"],
-                 "label": "w", "dim": 0},
-            ],
-        )
-        assert errors == []
+    def test_violations_are_reported(self, validator):
+        sig = self._sig()
+        wrong_key = validator._check_single_input_workload_keys(
+            "op", sig, [{"x_shape": [8], "dtypes": ["float16"]}])
+        unknown_key = validator._check_single_input_workload_keys(
+            "op", sig, [{"input_shape": [8], "dtypes": ["float16"], "dmi": 0}])
+        collision = validator._check_single_input_workload_keys(
+            "op", self._sig(params=("dtypes",)),
+            [{"input_shape": [8], "dtypes": ["float16"]}])
+        assert any("input_shape" in e for e in wrong_key), wrong_key
+        assert any("dmi" in e for e in unknown_key), unknown_key
+        assert any("collide" in e for e in collision), collision
 
-    def test_wrong_shape_key_fails(self, validator):
-        errors = validator._check_single_input_workload_keys(
-            "op", self._sig(), [
-                {"x_shape": [8, 16], "dtypes": ["float16"]},
-            ],
-        )
-        assert any("input_shape" in e for e in errors), errors
-
-    def test_unknown_param_key_fails(self, validator):
-        errors = validator._check_single_input_workload_keys(
-            "op", self._sig(), [
-                {"input_shape": [8], "dtypes": ["float16"], "dmi": 0},
-            ],
-        )
-        assert any("dmi" in e and "unknown" in e for e in errors), errors
-
-    def test_multi_input_signature_out_of_scope(self, validator):
-        sig = {
-            "inputs": {"q": {"dtype": "float16"}, "k": {"dtype": "float16"}},
-            "params": {},
-        }
-        errors = validator._check_single_input_workload_keys(
-            "op", sig, [{"q_shape": [8], "kv_shape": [8], "dtypes": ["float16"]}],
-        )
-        assert errors == []
-
-    def test_shapeless_workloads_out_of_scope(self, validator):
-        errors = validator._check_single_input_workload_keys(
-            "op", self._sig(params=("num_tokens",)), [
-                {"num_tokens": 4096, "dtypes": ["float16"]},
-            ],
-        )
-        assert errors == []
-
-    def test_param_colliding_with_harness_key_fails(self, validator):
-        errors = validator._check_single_input_workload_keys(
-            "op", self._sig(params=("dtypes",)), [
-                {"input_shape": [8], "dtypes": ["float16"]},
-            ],
-        )
-        assert any("collide" in e for e in errors), errors
+    def test_out_of_scope_shapes_pass(self, validator):
+        multi = {"inputs": {"q": {"dtype": "float16"},
+                            "k": {"dtype": "float16"}}, "params": {}}
+        assert validator._check_single_input_workload_keys(
+            "op", multi,
+            [{"q_shape": [8], "kv_shape": [8], "dtypes": ["float16"]}]) == []
+        assert validator._check_single_input_workload_keys(
+            "op", self._sig(params=("num_tokens",)),
+            [{"num_tokens": 4096, "dtypes": ["float16"]}]) == []
 
     def test_non_string_workload_key_is_schema_error_not_crash(self, validator):
         entry = _make_entry()

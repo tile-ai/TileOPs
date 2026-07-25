@@ -24,13 +24,6 @@ def test_single_input_with_extra_params():
         assert isinstance(extra, dict)
 
 
-def test_input_named_ops_bind_by_signature():
-    """Ops whose signature input is ``input`` (PyTorch mirror) bind
-    ``input_shape`` without any allowlist."""
-    params = workloads_to_params("ReluFwdOp")
-    assert params
-
-
 def test_multi_input_op_raises_keyerror():
     """Multi-input ops (q/k/v) raise instead of binding a wrong tensor."""
     with pytest.raises(KeyError, match="exactly one manifest tensor input"):

@@ -487,11 +487,10 @@ becomes an **op-call parameter** forwarded to the op's `__init__` and MUST
 be a declared `signature.params` name.
 
 For single-tensor-input ops this contract is enforced by the validator and
-by the generic benchmark harness (`workloads_to_params`): the workload
-declares exactly `{input}_shape`, and unknown keys are rejected. Multi-input
-families whose workloads use aggregate conventions (e.g. attention's
-`kv_shape` covering `k` and `v`) are consumed by family-specific bench
-harnesses and are outside the generic contract.
+by `workloads_to_params`: the workload declares exactly `{input}_shape`,
+and unknown keys are rejected. Multi-input families whose workloads use
+aggregate conventions (e.g. attention's `kv_shape` covering `k` and `v`)
+are consumed by their own bench files and are outside this contract.
 
 | Key                   | Required | Meaning                                                                                                  |
 | --------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
