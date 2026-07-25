@@ -192,16 +192,7 @@ def test_workloads_to_params_include_extra_propagates_dim():
     """When a workload entry carries ``dim``, ``include_extra=True`` should
     surface it in the pytest param triple.
     """
-    from benchmarks.benchmark_base import (
-        _workload_extra_params,
-        workloads_to_params,
-    )
-
-    # Direct unit test on the helper (no manifest mutation required).
-    assert _workload_extra_params(
-        {"x_shape": [4, 4], "dtypes": ["float16"], "label": "t",
-         "dim": 0, "keepdim": True}
-    ) == {"dim": 0, "keepdim": True}
+    from benchmarks.benchmark_base import workloads_to_params
 
     # End-to-end with the manifest: include_extra=True must still yield
     # well-formed triples with the (shape, dtype, extra) mapping. The

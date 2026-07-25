@@ -7,15 +7,15 @@ DropoutOp:
 
   signature:
     inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32"}
     outputs:
-      output: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(input)"}
     params:
       p: {type: float, default: 0.5}
       seed: {type: int, default: 0}
       training: {type: bool, default: true}
     shape_rules:
-    - "x.numel() > 0"
+    - "input.numel() > 0"
     - "0.0 <= p <= 1.0"
 
   workloads:

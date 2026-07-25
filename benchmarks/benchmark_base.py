@@ -1,5 +1,7 @@
+import contextlib
 import logging
 import subprocess
+import sys
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -17,21 +19,37 @@ import pytest
 import torch
 from torch.autograd.profiler import DeviceType
 
-from tileops.manifest import load_workloads
+from tileops.manifest import load_manifest, load_workloads
 
-# Workload dict keys reserved by the benchmark harness. Everything else on
-# a workload entry (e.g. ``dim``, ``keepdim``, ``correction``) is treated
-# as an op-call parameter.
-#
-# The current harness is explicitly scoped to **single-input ops whose
-# sole tensor input is named ``x``**. Multi-input ops (e.g. attention
-# families that declare ``q_shape`` / ``kv_shape``) are not supported:
-# :func:`workloads_to_params` will raise ``KeyError`` if ``x_shape`` is
-# absent. Extending to signature-aware tensor binding is tracked as a
-# follow-up and must also update ``docs/design/manifest.md``.
-_WORKLOAD_META_KEYS: frozenset[str] = frozenset(
-    {"x_shape", "dtypes", "label"}
-)
+# Workload keys owned by the harness: ``dtypes`` expands the pytest
+# parametrization, ``label`` names the test id. The shape key is derived
+# per op from the manifest signature (see ``_workload_contract``).
+_WORKLOAD_HARNESS_KEYS: frozenset[str] = frozenset({"dtypes", "label"})
+
+
+def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
+    """Return ``(shape_key, allowed_keys)`` for a single-tensor-input op.
+
+    ``signature.inputs`` is the authority on the tensor-input name: the
+    workload declares ``{input}_shape``, and every other key must be a
+    declared ``signature.params`` name. Multi-input ops (``q_shape`` /
+    ``kv_shape`` family conventions) use family-specific bench harnesses.
+    """
+    entry = load_manifest().get(op_name)
+    if entry is None:
+        raise KeyError(f"op {op_name!r} not found in the manifest")
+    sig = entry.get("signature") or {}
+    inputs = list(sig.get("inputs") or {})
+    if len(inputs) != 1:
+        raise KeyError(
+            f"workloads_to_params({op_name!r}) needs exactly one manifest "
+            f"tensor input, found {inputs or 'none'}; multi-input ops use "
+            "family-specific bench harnesses."
+        )
+    shape_key = f"{inputs[0]}_shape"
+    allowed = frozenset(sig.get("params") or {}) | _WORKLOAD_HARNESS_KEYS | {shape_key}
+    return shape_key, allowed
+
 
 # ---------------------------------------------------------------------------
 # Benchmark capability protocols
@@ -70,9 +88,6 @@ class BenchmarkWorkload(ShapeDtypeWorkload, InputGeneratingWorkload, Protocol):
 
     ...
 
-
-# Backward-compatible alias
-RooflineWorkload = ShapeDtypeWorkload
 
 W = TypeVar("W")
 
@@ -150,6 +165,28 @@ def _get_l2_flush_cache() -> torch.Tensor:
     return _l2_flush_cache
 
 
+def _native_output_suppressor():
+    """Return an output suppressor that cannot clobber a redirected stream.
+
+    tilelang's ``suppress_stdout_stderr`` silences C++ profiler chatter by ``dup2``-ing
+    ``/dev/null`` over ``sys.stdout.fileno()``. Under pytest's fd capture that
+    fileno is the capture tmpfile, so the redirect corrupts the capture stream
+    (later reads fail with ``EBADF``, losing timeout stack dumps and results).
+    Under capture a no-op context is returned; capture already hides the
+    chatter.
+    """
+    try:
+        native = sys.stdout.fileno() == 1 and sys.stderr.fileno() == 2
+    except (AttributeError, OSError, ValueError):
+        # Streams without a real descriptor (io.StringIO, capsys) or with
+        # fileno() unsupported: fd-level suppression is impossible.
+        native = False
+    if not native:
+        return contextlib.nullcontext()
+    from tilelang.profiler.bench import suppress_stdout_stderr
+    return suppress_stdout_stderr()
+
+
 # ---------------------------------------------------------------------------
 # NVIDIA SOL-ExecBench–style benchmark
 # ---------------------------------------------------------------------------
@@ -193,8 +230,6 @@ def bench_kernel(
             f"bench_kernel expects a tuple of args, got {type(args).__name__}. "
             "Check that gen_inputs() returns a tuple."
         )
-
-    from tilelang.profiler.bench import suppress_stdout_stderr
 
     cache = _get_l2_flush_cache()
     has_args = len(args) > 0
@@ -251,7 +286,7 @@ def bench_kernel(
     # keeps the measured kernels recorded before the next flush.
     trial_means: list[float] = []
     try:
-        with suppress_stdout_stderr():
+        with _native_output_suppressor():
             for _ in range(n_trials):
                 with torch.profiler.profile(
                     # CPU activity is required for Kineto to project the
@@ -416,25 +451,16 @@ class BenchmarkBase(Generic[W], ABC):
 # ---------------------------------------------------------------------------
 
 
-def _workload_extra_params(w: dict) -> dict[str, Any]:
-    """Return op-specific params attached to a manifest workload entry.
+def _workload_extra_params(w: dict, shape_key: str) -> dict[str, Any]:
+    """Return op-call params on a workload entry (e.g. ``dim``, ``keepdim``).
 
-    A workload entry may carry optional op-call parameter values beyond
-    ``x_shape`` / ``dtypes`` / ``label`` (e.g. ``dim``, ``keepdim``,
-    ``correction``). These are forwarded to the op constructor by benchmark
-    files that opt into ``include_extra=True``.
-
-    Only the reserved meta keys (``x_shape``, ``dtypes``, ``label``) and
-    dunder-style metadata keys are stripped; everything else — including
-    any other ``*_shape`` keys — is surfaced as an op param. This matches
-    the single-input ``x_shape``-only harness contract documented in
-    :data:`_WORKLOAD_META_KEYS`; multi-input ops with ``q_shape`` /
-    ``kv_shape`` are out of scope and would need a dedicated harness.
+    Strips the shape key, the harness keys, and dunder metadata.
     """
+    reserved = _WORKLOAD_HARNESS_KEYS | {shape_key}
     return {
         k: v
         for k, v in w.items()
-        if k not in _WORKLOAD_META_KEYS and not k.startswith("__")
+        if k not in reserved and not k.startswith("__")
     }
 
 
@@ -452,23 +478,27 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     benchmark needs to drive op calls from manifest-declared workload params.
     """
     workloads = load_workloads(op_name)
+    shape_key, allowed = _workload_contract(op_name)
     params = []
     for w in workloads:
-        if "x_shape" not in w:
+        if shape_key not in w:
             raise KeyError(
-                f"workloads_to_params({op_name!r}) only supports single-input "
-                "ops whose tensor input is named 'x' (workload must declare "
-                "'x_shape'); multi-input ops with q_shape/kv_shape/... are "
-                "out of scope for this harness."
+                f"workload {w.get('label', w)!r} of {op_name!r} is missing "
+                f"{shape_key!r} (derived from the signature's input name)."
             )
-        shape = tuple(w["x_shape"])
+        unknown = sorted(k for k in w if k not in allowed and not k.startswith("__"))
+        if unknown:
+            raise KeyError(
+                f"workload {w.get('label', w)!r} of {op_name!r} has unknown "
+                f"keys {unknown}; allowed: {sorted(allowed)}."
+            )
+        shape = tuple(w[shape_key])
         label = w.get("label", "x".join(str(s) for s in shape))
-        extra = _workload_extra_params(w) if include_extra else {}
+        extra = _workload_extra_params(w, shape_key) if include_extra else {}
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            # Copy ``extra`` per parametrization so accidental mutation in
-            # one test case cannot leak into later parametrized cases that
-            # share the same workload entry.
+            # Copy ``extra`` per parametrization so mutation in one test case
+            # cannot leak into later cases sharing the workload entry.
             param_args = (
                 (shape, dtype, dict(extra))
                 if include_extra

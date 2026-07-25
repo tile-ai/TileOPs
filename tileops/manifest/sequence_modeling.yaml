@@ -174,12 +174,12 @@ FFTC2COp:
 
   signature:
     inputs:
-      x: {dtype: "complex64 | complex128", shape: "[..., n]"}
+      input: {dtype: "complex64 | complex128", shape: "[..., n]"}
     outputs:
-      output: {dtype: "same_as(x)", shape: "same_as(x)"}
+      output: {dtype: "same_as(input)", shape: "same_as(input)"}
     shape_rules:
-    - "x.shape[-1] > 0"
-    - "x.shape[-1] & (x.shape[-1] - 1) == 0"
+    - "input.shape[-1] > 0"
+    - "input.shape[-1] & (input.shape[-1] - 1) == 0"
 
   workloads:
   - {input_shape: [4096], dtypes: [complex64], label: "fft-4k-c64-unbatched"}

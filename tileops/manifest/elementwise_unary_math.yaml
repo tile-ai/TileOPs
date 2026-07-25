@@ -23,8 +23,8 @@ ExpFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -55,8 +55,8 @@ LogFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -87,8 +87,8 @@ SqrtFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -119,8 +119,8 @@ RsqrtFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -151,8 +151,8 @@ AbsFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -183,8 +183,8 @@ NegFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -217,8 +217,8 @@ ReciprocalFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -249,8 +249,8 @@ SignFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -282,8 +282,8 @@ SinFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -314,8 +314,8 @@ CosFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -346,8 +346,8 @@ FloorFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -378,8 +378,8 @@ CeilFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -412,8 +412,8 @@ RoundFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -444,8 +444,8 @@ TruncFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -476,8 +476,8 @@ ErfFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -508,8 +508,8 @@ Log1pFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -541,8 +541,8 @@ Expm1FwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -574,8 +574,8 @@ SigmoidFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -608,8 +608,8 @@ TanhFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -642,8 +642,8 @@ LogicalNotFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [bool, float16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [bool], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [bool, float16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [bool], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -675,8 +675,8 @@ BitwiseNotFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [int32, int64], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [int32], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [int32, int64], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [int32], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -707,8 +707,8 @@ IsnanFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -740,8 +740,8 @@ IsinfFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -773,8 +773,8 @@ IsfiniteFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:

@@ -207,6 +207,54 @@ def _check_shape_rule_callables(
     return errors
 
 
+def _check_single_input_workload_keys(
+    op_name: str, sig: dict, workloads: list,
+) -> list[str]:
+    """Check R21: workload keys must derive from the signature.
+
+    Single-tensor-input workloads key their shape as ``{input}_shape`` and
+    carry only declared signature params besides ``dtypes``/``label``. Out
+    of scope: multi-input signatures (``q_shape``/``kv_shape`` family
+    conventions) and workloads with no ``*_shape`` key.
+    """
+    inputs = sig.get("inputs")
+    if not isinstance(inputs, dict) or len(inputs) != 1:
+        return []
+    if not any(
+        isinstance(w, dict)
+        and any(isinstance(k, str) and k.endswith("_shape") for k in w)
+        for w in workloads
+    ):
+        return []
+    shape_key = f"{next(iter(inputs))}_shape"
+    params = sig.get("params")
+    allowed = (
+        {shape_key, "dtypes", "label"}
+        | (set(params) if isinstance(params, dict) else set())
+    )
+    errors: list[str] = []
+    for i, w in enumerate(workloads):
+        if not isinstance(w, dict):
+            continue
+        if shape_key not in w:
+            errors.append(
+                f"[schema] {op_name}: workloads[{i}] missing {shape_key!r} "
+                "(shape key is derived from the signature's tensor input "
+                "name)"
+            )
+        unknown = sorted(
+            k for k in w
+            if isinstance(k, str) and k not in allowed and not k.startswith("__")
+        )
+        if unknown:
+            errors.append(
+                f"[schema] {op_name}: workloads[{i}] has unknown keys "
+                f"{unknown}; allowed are {shape_key!r}, 'dtypes', 'label', "
+                "and declared signature params"
+            )
+    return errors
+
+
 def check_l0(
     op_name: str, entry: dict, *, warnings: list[str] | None = None,
 ) -> list[str]:
@@ -376,6 +424,18 @@ def check_l0(
                 errors.append(
                     f"[schema] {op_name}: workloads[{i}] missing 'dtypes'"
                 )
+            non_str = [k for k in w if not isinstance(k, str)]
+            if non_str:
+                errors.append(
+                    f"[schema] {op_name}: workloads[{i}] has non-string "
+                    f"keys {non_str}"
+                )
+        if isinstance(entry.get("signature"), dict):
+            errors.extend(
+                _check_single_input_workload_keys(
+                    op_name, entry["signature"], workloads
+                )
+            )
     elif "workloads" in entry:
         errors.append(f"[schema] {op_name}: workloads must be a list")
 
