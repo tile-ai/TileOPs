@@ -80,7 +80,7 @@ _PROMOTE_TARGET_DTYPE: str = "float32"
 
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
-_VALID_TOP_KEYS = _REQUIRED_TOP | {"ref_api", "variant_of"}
+_VALID_TOP_KEYS = _REQUIRED_TOP | {"ref_api", "variant_of", "torch_compile_fullgraph"}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
 _VALID_SIGNATURE_KEYS = {
     "inputs", "outputs", "params", "shape_rules", "dtype_combos",
@@ -541,6 +541,26 @@ def check_l0(
             f"[schema] {op_name}: status must be 'implemented' or 'spec-only', "
             f"got '{status}'"
         )
+
+    # torch_compile_fullgraph: optional capability flag. Declares that
+    # torch.compile(op, fullgraph=True) succeeds cold-call. Only literal
+    # `true` is accepted; absence is the only spelling of "no promise"
+    # (`false` is rejected). Invalid on `status: spec-only` entries — a
+    # spec without an implementation cannot promise graph capture.
+    if "torch_compile_fullgraph" in entry:
+        tcf = entry["torch_compile_fullgraph"]
+        if tcf is not True:
+            errors.append(
+                f"[schema] {op_name}: torch_compile_fullgraph must be "
+                f"literal true when present (omit the field to make no "
+                f"promise), got {tcf!r}"
+            )
+        elif status == "spec-only":
+            errors.append(
+                f"[schema] {op_name}: torch_compile_fullgraph is invalid "
+                f"on 'status: spec-only' entries — the promise requires "
+                f"an implementation"
+            )
 
     # kernel_map: lives under source (source.kernel_map per manifest spec)
     source = entry.get("source", {})
