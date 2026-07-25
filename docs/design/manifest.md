@@ -487,7 +487,7 @@ reserved. Key rules: R21.
 | `{input}_shape` | yes\*    | Shape for the single tensor input (list of ints), named per R21. \*Multi-input families define their own aggregate shape keys (e.g. `q_shape`/`kv_shape`) in their family bench files. |
 | `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                                                                                                     |
 | `label`         | no       | Human-readable id used in the pytest param id and report tables.                                                                                                                       |
-| *any other key* | no       | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default.                                                                               |
+| *any other key* | no       | Op param value (`dim`, `keepdim`, …). MUST be a declared `signature.params` name (R21); overrides its default.                                                                         |
 
 Example — parametrizing a reduction workload over a non-last `dim`:
 

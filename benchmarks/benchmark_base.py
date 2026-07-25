@@ -471,8 +471,8 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     ``include_extra=True`` a third element carries the op-call params
     declared on the workload entry (e.g. ``{"dim": 0}``).
     """
-    workloads = load_workloads(op_name)
     shape_key, allowed = _workload_contract(op_name)
+    workloads = load_workloads(op_name)
     params = []
     for w in workloads:
         if shape_key not in w:

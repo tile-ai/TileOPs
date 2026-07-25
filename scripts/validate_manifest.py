@@ -285,6 +285,18 @@ def check_l0(
         if missing_sig:
             errors.append(f"[schema] {op_name}: signature missing: {missing_sig}")
 
+        # Check inputs/outputs/params are dicts with string names
+        for field in ("inputs", "outputs", "params"):
+            names = sig.get(field)
+            if not isinstance(names, dict):
+                continue
+            non_str = sorted(repr(k) for k in names if not isinstance(k, str))
+            if non_str:
+                errors.append(
+                    f"[schema] {op_name}: signature.{field} has non-string "
+                    f"names [{', '.join(non_str)}]"
+                )
+
         # Check inputs/outputs are dicts with dtype
         for direction in ("inputs", "outputs"):
             tensors = sig.get(direction)

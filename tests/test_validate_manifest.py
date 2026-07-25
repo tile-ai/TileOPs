@@ -577,6 +577,12 @@ class TestSingleInputWorkloadKeys:
         entry = _make_entry(inputs=7)
         assert validator.check_l0("op", entry)
 
+        entry = _make_entry(inputs={1: {"dtype": "float16"}})
+        assert any("non-string" in e for e in validator.check_l0("op", entry))
+
+        entry = _make_entry(params={3: {"type": "int"}})
+        assert any("non-string" in e for e in validator.check_l0("op", entry))
+
         entry = _make_entry()
         entry["signature"][1] = "junk"
         entry["signature"]["zzz"] = "junk"
