@@ -28,11 +28,9 @@ from tileops.manifest import (
 
 
 def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
-    """Resolve the shared workload contract, raising for unsupported ops."""
-    entry = load_manifest().get(op_name)
-    if entry is None:
-        raise KeyError(f"op {op_name!r} not found in the manifest")
-    contract = single_input_workload_contract(entry.get("signature") or {})
+    """Resolve the shared workload contract for an op known to exist."""
+    sig = load_manifest()[op_name].get("signature") or {}
+    contract = single_input_workload_contract(sig)
     if contract is None:
         raise KeyError(
             f"workloads_to_params({op_name!r}) needs exactly one manifest "
@@ -471,8 +469,8 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     ``include_extra=True`` a third element carries the op-call params
     declared on the workload entry (e.g. ``{"dim": 0}``).
     """
+    workloads = load_workloads(op_name)  # canonical not-found error
     shape_key, allowed = _workload_contract(op_name)
-    workloads = load_workloads(op_name)
     params = []
     for w in workloads:
         if shape_key not in w:
