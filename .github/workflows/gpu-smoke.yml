@@ -566,6 +566,11 @@ jobs:
             fi
           fi
 
+          # Expose the marker the baseline pass actually executes so the
+          # report step labels the tier correctly (a targeted PR diff
+          # promotes this pass to "smoke or full").
+          echo "EXECUTED_MARK_EXPR=${TEST_MARK_EXPR}" >> "$GITHUB_ENV"
+
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
           python3 -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" \
             --timeout=600 --timeout-method=thread \
@@ -578,9 +583,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          REPORT_TARGET="smoke, full"
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            REPORT_TARGET="smoke"
+          # EXECUTED_MARK_EXPR is exported by the Run tests step once the
+          # tier is resolved (a targeted PR diff promotes the baseline pass
+          # to "smoke or full"). Fall back to the event default only when
+          # Run tests died before resolving it.
+          if [[ -n "${EXECUTED_MARK_EXPR:-}" ]]; then
+            REPORT_TARGET="${EXECUTED_MARK_EXPR// or /, }"
+          else
+            REPORT_TARGET="smoke, full"
+            if [[ "$EVENT_NAME" == "pull_request" ]]; then
+              REPORT_TARGET="smoke"
+            fi
           fi
 
           if [[ -f gpu_smoke_results.xml ]]; then

@@ -14,6 +14,8 @@ YAML and assert the contract:
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -156,6 +158,267 @@ def test_push_tier_selection_unchanged() -> None:
     script = _run_tests_step(_load(GPU_SMOKE))["run"]
     assert 'TEST_MARK_EXPR="smoke or full"' in script
     assert 'TEST_MARK_EXPR="smoke"' in script
+
+
+# ---------------------------------------------------------------------------
+# Diff-scoped full-tier PR gate: runtime behaviour
+#
+# These tests EXECUTE the workflow's "Run tests" shell block with a stubbed
+# python3 on PATH (logging every invocation), so they verify what actually
+# runs — not just what the YAML text contains.
+# ---------------------------------------------------------------------------
+
+_PY3_STUB = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$CALL_LOG"
+cat > /dev/null
+case "$*" in
+  *gpu_smoke_full_results.xml*) exit "${FULL_PASS_EXIT:-0}" ;;
+esac
+exit 0
+"""
+
+
+def _simulate_run_tests(
+    tmp_path: Path,
+    *,
+    event: str,
+    scope: str,
+    pytest_targets: str = "tests",
+    full_targets: str = "",
+    full_pass_exit: str = "0",
+) -> tuple[subprocess.CompletedProcess, list[str], str]:
+    """Run the gpu-smoke "Run tests" script with python3 stubbed out.
+
+    Returns (completed process, logged python3 invocations, GITHUB_ENV text).
+    """
+    script = _run_tests_step(_load(GPU_SMOKE))["run"]
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "python3"
+    stub.write_text(_PY3_STUB)
+    stub.chmod(0o755)
+    call_log = tmp_path / "calls.log"
+    github_env = tmp_path / "github_env"
+    github_env.touch()
+    env = {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "HOME": os.environ.get("HOME", str(tmp_path)),
+        "CALL_LOG": str(call_log),
+        "GITHUB_ENV": str(github_env),
+        "FULL_PASS_EXIT": full_pass_exit,
+        "EVENT_NAME": event,
+        "TEST_SCOPE": scope,
+        "PYTEST_TARGETS": pytest_targets,
+        "FULL_TIER_TARGETS": full_targets,
+    }
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        cwd=workdir,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    calls = call_log.read_text().splitlines() if call_log.exists() else []
+    pytest_calls = [c for c in calls if "-m pytest" in c]
+    return proc, pytest_calls, github_env.read_text()
+
+
+def test_run_tests_executes_full_tier_for_changed_test_file(tmp_path: Path) -> None:
+    """PR + full-smoke scope + a changed test file: the script must actually run
+    a diff-scoped `-m "smoke or full"` pass on that file, then exclude it from
+    the smoke pass. The baseline pass stays smoke (and is reported as such)."""
+    proc, pytest_calls, github_env = _simulate_run_tests(
+        tmp_path,
+        event="pull_request",
+        scope="full-smoke",
+        full_targets="tests/test_changed.py",
+    )
+    assert proc.returncode == 0, proc.stderr
+    full_passes = [c for c in pytest_calls if "gpu_smoke_full_results.xml" in c]
+    assert len(full_passes) == 1
+    assert "tests/test_changed.py" in full_passes[0]
+    assert '-m smoke or full' in full_passes[0]
+    baseline = [c for c in pytest_calls if "gpu_smoke_results.xml" in c]
+    assert len(baseline) == 1
+    assert "--ignore=tests/test_changed.py" in baseline[0]
+    assert "smoke or full" not in baseline[0]
+    assert "EXECUTED_MARK_EXPR=smoke\n" in github_env
+
+
+def test_run_tests_targeted_scope_promotes_single_pass(tmp_path: Path) -> None:
+    """PR + targeted scope (targets == the changed test files): one pass only,
+    promoted to `-m "smoke or full"`, and the report label follows it."""
+    proc, pytest_calls, github_env = _simulate_run_tests(
+        tmp_path,
+        event="pull_request",
+        scope="targeted",
+        pytest_targets="tests/test_changed.py",
+        full_targets="tests/test_changed.py",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert len(pytest_calls) == 1
+    assert "-m smoke or full" in pytest_calls[0]
+    assert "gpu_smoke_full_results.xml" not in pytest_calls[0]
+    assert "EXECUTED_MARK_EXPR=smoke or full\n" in github_env
+
+
+def test_run_tests_push_tier_runtime_unchanged(tmp_path: Path) -> None:
+    """Push events run one `-m "smoke or full"` pass; the diff-scoped PR
+    machinery must not trigger even if full_tier_targets leaked non-empty."""
+    proc, pytest_calls, _ = _simulate_run_tests(
+        tmp_path,
+        event="push",
+        scope="full-smoke",
+        full_targets="tests/test_changed.py",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert len(pytest_calls) == 1
+    assert "-m smoke or full" in pytest_calls[0]
+    assert "gpu_smoke_full_results.xml" not in pytest_calls[0]
+
+
+def test_run_tests_diff_pass_tolerates_nothing_collected(tmp_path: Path) -> None:
+    """pytest exit 5 (nothing collected) from the diff-scoped pass — e.g. the
+    changed file holds only nightly cases — must not fail the gate; the smoke
+    pass still runs."""
+    proc, pytest_calls, _ = _simulate_run_tests(
+        tmp_path,
+        event="pull_request",
+        scope="full-smoke",
+        full_targets="tests/test_changed.py",
+        full_pass_exit="5",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert any("gpu_smoke_results.xml" in c for c in pytest_calls)
+
+
+_GH_STUB = """#!/usr/bin/env bash
+printf 'gh %s\\n' "$*" >> "$CALL_LOG"
+case "$*" in
+  */files*) printf '%s\\n' ${CHANGED_FILES} ;;
+  */permission*) echo "write" ;;
+esac
+exit 0
+"""
+
+
+def test_policy_script_selects_changed_full_tier_files(tmp_path: Path) -> None:
+    """Execute the actual security-policy shell block for a simulated PR diff:
+    changed test files that exist at head must land in full_tier_targets;
+    helper modules and deleted files must not; a shared tileops/ path keeps
+    scope=full-smoke."""
+    script = _policy_step(_load(GPU_SMOKE))["run"]
+    workdir = tmp_path / "work"
+    for rel in (
+        "tests/ops/test_full_case.py",
+        "tests/ops/attention_test_utils.py",
+        "tests/conftest.py",
+    ):
+        path = workdir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    gh_stub = bindir / "gh"
+    gh_stub.write_text(_GH_STUB)
+    gh_stub.chmod(0o755)
+    call_log = tmp_path / "calls.log"
+    github_output = tmp_path / "github_output"
+    github_output.touch()
+    changed = (
+        "tileops/foo.py tests/ops/test_full_case.py tests/ops/test_deleted.py "
+        "tests/ops/attention_test_utils.py tests/conftest.py"
+    )
+    env = {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "HOME": os.environ.get("HOME", str(tmp_path)),
+        "CALL_LOG": str(call_log),
+        "GITHUB_OUTPUT": str(github_output),
+        "CHANGED_FILES": changed,
+        "GH_TOKEN": "stub",
+        "EVENT_NAME": "pull_request",
+        "PR_NUMBER": "1",
+        "HEAD_REPO": "owner/repo",
+        "BASE_REPO": "owner/repo",
+        "PR_AUTHOR": "dev",
+    }
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        cwd=workdir,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    outputs = dict(
+        line.split("=", 1) for line in github_output.read_text().splitlines() if "=" in line
+    )
+    assert outputs["scope"] == "full-smoke"
+    assert outputs["skip_gpu_smoke"] == "false"
+    assert outputs["full_tier_targets"] == "tests/ops/test_full_case.py"
+
+
+def _simulate_report(
+    tmp_path: Path, *, event: str, executed_mark: str | None
+) -> list[str]:
+    """Run the report step script with python3 stubbed; return its invocations."""
+    wf = _load(GPU_SMOKE)
+    steps = wf["jobs"]["gpu-smoke"]["steps"]
+    report = next(s for s in steps if s.get("name") == "Generate gpu-smoke report")
+    workdir = tmp_path / "report_work"
+    workdir.mkdir()
+    (workdir / "gpu_smoke_results.xml").touch()
+    bindir = tmp_path / "report_bin"
+    bindir.mkdir()
+    stub = bindir / "python3"
+    stub.write_text(_PY3_STUB)
+    stub.chmod(0o755)
+    call_log = tmp_path / "report_calls.log"
+    env = {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "HOME": os.environ.get("HOME", str(tmp_path)),
+        "CALL_LOG": str(call_log),
+        "EVENT_NAME": event,
+    }
+    if executed_mark is not None:
+        env["EXECUTED_MARK_EXPR"] = executed_mark
+    proc = subprocess.run(
+        ["bash", "-c", report["run"]],
+        cwd=workdir,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return call_log.read_text().splitlines() if call_log.exists() else []
+
+
+def test_report_target_derived_from_executed_marker(tmp_path: Path) -> None:
+    """The report step must label the tier from the marker the Run tests step
+    actually executed (EXECUTED_MARK_EXPR via GITHUB_ENV), not re-derive it
+    from the event name alone — a targeted PR promoted to "smoke or full"
+    would otherwise be reported as plain smoke."""
+    calls = _simulate_report(tmp_path, event="pull_request", executed_mark="smoke or full")
+    report_calls = [c for c in calls if "gpu_smoke_report.py" in c]
+    assert len(report_calls) == 1
+    assert "--target smoke, full --output" in report_calls[0]
+
+
+def test_report_target_falls_back_to_event_default(tmp_path: Path) -> None:
+    """If Run tests died before resolving the tier, the report label falls back
+    to the event default (smoke for PRs)."""
+    calls = _simulate_report(tmp_path, event="pull_request", executed_mark=None)
+    report_calls = [c for c in calls if "gpu_smoke_report.py" in c]
+    assert len(report_calls) == 1
+    assert "--target smoke --output" in report_calls[0]
 
 
 # ---------------------------------------------------------------------------
