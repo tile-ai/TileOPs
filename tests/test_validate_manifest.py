@@ -207,6 +207,32 @@ class TestSchema:
         assert any("params.eps" in e and "type" in e for e in errors)
 
 
+    def test_static_dims_with_missing_inputs_does_not_crash(self, validator):
+        """Malformed signature (no inputs) must not crash static_dims check.
+
+        Other schema layers report the missing-inputs error; static_dims
+        validation should treat absent or non-mapping inputs as empty and
+        emit a regular schema diagnostic rather than raise AttributeError.
+        """
+        entry = {
+            "signature": {
+                "outputs": {"y": {"dtype": "float32"}},
+                "static_dims": {"N": "x.shape[0]"},
+            },
+        }
+        errors = validator.check_l0("BadOp", entry)
+        assert isinstance(errors, list)
+
+        entry_non_dict = {
+            "signature": {
+                "inputs": "not a mapping",
+                "outputs": {"y": {"dtype": "float32"}},
+                "static_dims": {"N": "x.shape[0]"},
+            },
+        }
+        errors = validator.check_l0("BadOp", entry_non_dict)
+        assert isinstance(errors, list)
+
     def test_static_dims_list_fails(self, validator):
         """Non-dict static_dims (e.g. list) is rejected at L0 (R20)."""
         entry = _make_entry()
@@ -620,6 +646,12 @@ class TestVariantOf:
         assert any("nonexistent" in e and "does not exist" in e for e in errors)
 
 
+    def test_malformed_entry_does_not_crash(self, validator):
+        """Non-dict entry must not crash variant_of check."""
+        ops = {"bad": 123, "ok": _make_entry()}
+        errors = validator.check_variant_of_consistency(ops)
+        assert errors == []
+
     def test_variant_chaining_fails(self, validator):
         """Chained variant_of fails (R16 single-level)."""
         ops = {
@@ -699,6 +731,16 @@ class TestSignature:
         )
         assert any("do not match" in e for e in errors)
 
+
+    def test_malformed_params_does_not_crash(self, validator):
+        """signature check must return errors, not crash, when params is not a dict."""
+        manifest_inputs = {"x": {"dtype": "float16"}}
+        manifest_params = ["training"]  # list, not dict
+        forward_params = ["x", "training"]
+        errors = validator.check_l1_signature(
+            "test_op", manifest_inputs, manifest_params, forward_params,
+        )
+        assert any("signature" in e and "params" in e.lower() for e in errors)
 
     def test_params_in_forward_accepted(self, validator):
         """Manifest params that appear as forward() args are valid."""
@@ -787,6 +829,24 @@ class TestSignature:
 # ---------------------------------------------------------------------------
 # dtype: dtype string conformance
 # ---------------------------------------------------------------------------
+    def test_static_dims_non_dict_fails(self, validator):
+        """static_dims must be a mapping; non-dict values are reported."""
+        manifest_inputs = {"x": {"dtype": "float16"}}
+        manifest_params = {}
+        forward_params = ["x"]
+        init_params = ["dtype"]
+        errors = validator.check_l1_signature(
+            "test_op", manifest_inputs, manifest_params, forward_params,
+            init_params=init_params,
+            manifest_static_dims=["N"],  # list, not dict
+        )
+        assert any("static_dims" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# dtype: dtype string conformance
+# ---------------------------------------------------------------------------
+
 
 class TestDtype:
     """dtype checks that dtype strings are valid torch dtype names."""
@@ -992,6 +1052,35 @@ class TestDtype:
         ), (
             f"Expected malformed-token error, got: {errors}"
         )
+
+    def test_check_l3_with_non_dict_signature_does_not_crash(self, validator):
+        """check_l3 must tolerate malformed signature.inputs/outputs.
+
+        A list or string in place of the expected dict triggered an
+        unguarded ``.update()`` / ``.keys()`` crash; treat as empty so
+        the schema layer's own diagnostics surface unmasked.
+        """
+        for inputs_val in ([{"x": {}}], "not a mapping", None):
+            for outputs_val in ([{"y": {}}], "nope", None):
+                entry = {
+                    "signature": {
+                        "inputs": inputs_val,
+                        "outputs": outputs_val,
+                    },
+                }
+                errors = validator.check_l3("BadOp", entry)
+                assert isinstance(errors, list)
+
+        # Non-dict entry value inside an otherwise-well-formed inputs/outputs
+        # mapping (e.g. ``inputs: {x: "float16"}``) must also be tolerated.
+        entry = {
+            "signature": {
+                "inputs": {"x": "float16"},
+                "outputs": {"y": ["float16"]},
+            },
+        }
+        errors = validator.check_l3("BadOp", entry)
+        assert isinstance(errors, list)
 
     def test_promote_int_to_float_rejected_on_input_tensor(self, validator):
         """``promote_int_to_float`` is output-side only (R3a).
@@ -3651,6 +3740,23 @@ class TestValidatorHelperResolution:
             f"duplicate name in _SHAPE_RULE_BUILTIN_PAIRS: {names}"
         )
 
+
+    def test_input_bound_symbols_tolerates_non_dict_inputs(self, validator):
+        """``_input_bound_symbols`` must treat malformed inputs as empty.
+
+        Schema-independent shape-rule extraction must not crash when
+        ``signature.inputs`` is missing or non-mapping; the schema layer
+        owns the structural error message. Regression for a list value.
+        """
+        result = validator._input_bound_symbols({
+            "inputs": [{"x": {"shape": "[N]"}}],
+            "shape_rules": ["x.shape == (N)"],
+        })
+        assert isinstance(result, set)
+        result = validator._input_bound_symbols({
+            "shape_rules": ["x.shape == (N)"],
+        })
+        assert isinstance(result, set)
 
     def test_shape_rules_helpers_callable_by_bare_name(self, validator):
         """Reduction-dim helpers from shape_rules.py are in the eval scope.
