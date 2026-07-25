@@ -27,6 +27,8 @@ def test_compile_contract_ops_aggregates_all_evidence_modules():
     """COMPILE_CONTRACT_OPS contains evidence from every registered module."""
     from tests.compile_contract import COMPILE_CONTRACT_OPS
 
+    assert isinstance(COMPILE_CONTRACT_OPS, frozenset)
+    assert COMPILE_CONTRACT_OPS
     # One representative per evidence module: elementwise + attention.
     assert "ReluFwdOp" in COMPILE_CONTRACT_OPS
     assert "MultiHeadAttentionFwdOp" in COMPILE_CONTRACT_OPS

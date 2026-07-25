@@ -94,7 +94,8 @@ def _register_table(table):
     the tests consume: call immediately after each table definition.
     """
     for case in table:
-        compile_contract(case.values[0])
+        values = case.values if hasattr(case, "values") else case
+        compile_contract(values[0])
 
 
 # ---------------------------------------------------------------------------
