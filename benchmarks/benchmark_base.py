@@ -95,9 +95,8 @@ _logger = logging.getLogger("tileops.bench")
 # A single test function may call record() multiple times (tileops + baseline).
 _bench_results = threading.local()
 
-# Per-call measurement metadata from the latest bench_kernel run. Deviations
-# from the default protocol (CUPTI timing, cloned inputs) are surfaced in the
-# result dict by BenchmarkBase._build_result.
+# Latest bench_kernel measurement metadata; deviations from the default
+# protocol are surfaced in results by BenchmarkBase._build_result.
 _bench_meta = threading.local()
 
 
@@ -178,13 +177,10 @@ def _get_l2_flush_cache() -> torch.Tensor:
 def _native_output_suppressor():
     """Return an fd-level output suppressor that is safe under pytest capture.
 
-    tilelang's ``suppress_stdout_stderr`` silences C++ profiler chatter by
-    ``dup2``-ing ``/dev/null`` over ``sys.stdout.fileno()``. Under pytest's fd
-    capture that fileno is the capture tmpfile, so the redirect corrupts the
-    capture stream (later reads fail with ``EBADF``, losing timeout stack
-    dumps and results). The suppressor is applied only when stdout/stderr are
-    the process-level fds 1/2 (including OS-level ``> file`` redirection,
-    where silencing is intended); under capture a no-op context is returned.
+    tilelang's ``suppress_stdout_stderr`` dup2's ``/dev/null`` over
+    ``sys.stdout.fileno()``; under pytest fd capture that fileno is the
+    capture tmpfile and the redirect corrupts it (``EBADF`` on later reads).
+    Suppress only when stdout/stderr are the process fds 1/2.
     """
     try:
         native = sys.stdout.fileno() == 1 and sys.stderr.fileno() == 2
@@ -282,33 +278,19 @@ def bench_kernel(
         _run(i)
     torch.cuda.synchronize()
 
-    # Timed trials with CUPTI.  Each trial opens its own torch.profiler context
-    # around exactly n_repeat iterations and reads the trace after the context
-    # closes; summed device kernel time / n_repeat is the mean per-call kernel
-    # time.  We deliberately do NOT use torch.profiler.schedule: that mechanism
-    # is for sampling a window out of a long step()-driven loop, and forcing
-    # n_repeat calls into a single "step" let queued, un-synchronized launches
-    # leak across the warmup/active boundary.  A plain per-trial context records
-    # exactly the calls we want — no schedule, no on_trace_ready callback.
-    #
-    # Only the timed call is wrapped in record_function(_KERNEL_REGION).  The
-    # parser attributes device events purely by timestamp interval, and Kineto's
-    # projection of the annotation window onto the device timeline is not
-    # guaranteed to exclude a flush merely enqueued before the window (issue
-    # #1723: under cold TileLang cache + autotune the flush event was observed
-    # inside the window, adding one flush duration per measured repeat).  We
-    # therefore synchronize after cache.zero_() so the flush completes before
-    # the window opens; L2 is still cold for the measured call, and the extra
-    # sync only adds host-side latency, never device time.  The post-call sync
-    # keeps the measured kernels recorded before the next flush.
+    # One plain profiler context per trial; torch.profiler.schedule is avoided
+    # because queued launches leak across its warmup/active boundary.
+    # Kineto's window projection may include a flush merely enqueued before
+    # the window, so the flush is drained (sync) before the timed call and
+    # the call is drained before the next flush; the syncs add host-side
+    # latency only.
     trial_means: list[float] = []
     try:
         with _native_output_suppressor():
             for _ in range(n_trials):
                 with torch.profiler.profile(
                     # CPU activity is required for Kineto to project the
-                    # annotation onto the device timeline (CUDA-only emits no
-                    # window); it adds only host-side overhead, not kernel time.
+                    # annotation window; it never adds device time.
                     activities=[
                         torch.profiler.ProfilerActivity.CPU,
                         torch.profiler.ProfilerActivity.CUDA,
@@ -316,17 +298,13 @@ def bench_kernel(
                 ) as profiler:
                     for i in range(n_repeat):
                         cache.zero_()
-                        # Drain the flush so its device event ends before the
-                        # timed window opens; without this, projection quirks
-                        # can place it inside the window (see comment above).
                         torch.cuda.synchronize()
                         with torch.profiler.record_function(_KERNEL_REGION):
                             _run(i)
-                        torch.cuda.synchronize()  # kernel recorded in isolation
+                        torch.cuda.synchronize()
                 total_us, n_regions = _sum_kernel_time_us(profiler.profiler.kineto_results)
-                # Scope failed to project on some iteration → trace
-                # untrustworthy, fall back to CUDA events. Genuine kernel
-                # failures (CUDA errors, OOM) propagate to the caller.
+                # Untrustworthy trace → CUDA-events fallback; genuine CUDA
+                # errors and OOM propagate.
                 if n_regions != n_repeat:
                     raise _CuptiProjectionError(
                         f"{n_regions}/{n_repeat} annotation windows projected"
@@ -463,8 +441,7 @@ class BenchmarkBase(Generic[W], ABC):
 
     def _build_result(self, latency: float) -> dict:
         result = {"latency_ms": latency}
-        # Surface deviations from the default protocol (CUPTI timing,
-        # cloned inputs) so reports never mask a methodology change.
+        # Deviations from the default protocol must be visible in reports.
         timing = getattr(_bench_meta, "timing", None)
         if timing is not None and timing != "cupti":
             result["timing"] = timing
