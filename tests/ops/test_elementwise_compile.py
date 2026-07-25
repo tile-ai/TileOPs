@@ -81,11 +81,9 @@ from tileops.ops.elementwise import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_dynamo():
-    """Reset torch._dynamo before each test to avoid recompile limit."""
-    torch._dynamo.reset()
+def _reset_dynamo(isolated_dynamo):
+    """Isolate dynamo state for every compile test in this module."""
     yield
-    torch._dynamo.reset()
 
 
 # ---------------------------------------------------------------------------

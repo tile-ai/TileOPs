@@ -57,8 +57,7 @@ class TestBatchNormFwdValidation:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.smoke
-
-
+@pytest.mark.usefixtures("isolated_dynamo")
 class TestBatchNormCustomOp:
 
     def test_fwd_torch_compile_smoke(self):
