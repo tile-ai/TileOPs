@@ -405,11 +405,12 @@ def check_l0(
 
         # Unknown signature keys are silently ignored by L1+, so reject
         # anything outside the schema here.
-        unknown_sig = sorted(set(sig) - _VALID_SIGNATURE_KEYS)
+        unknown_sig = sorted(repr(k) for k in set(sig) - _VALID_SIGNATURE_KEYS)
         if unknown_sig:
             errors.append(
-                f"[schema] {op_name}: unknown signature keys {unknown_sig}; "
-                f"valid keys are {sorted(_VALID_SIGNATURE_KEYS)}"
+                f"[schema] {op_name}: unknown signature keys "
+                f"[{', '.join(unknown_sig)}]; valid keys are "
+                f"{sorted(_VALID_SIGNATURE_KEYS)}"
             )
 
         # static_dims must be a mapping of str -> str expression (R20)
@@ -491,10 +492,10 @@ def check_l0(
 
     # Unknown top-level keys are ignored by every later level, so reject
     # them here (covers removed fields like parity_opt_out).
-    unknown_top = sorted(set(entry) - _VALID_TOP_KEYS)
+    unknown_top = sorted(repr(k) for k in set(entry) - _VALID_TOP_KEYS)
     if unknown_top:
         errors.append(
-            f"[schema] {op_name}: unknown entry keys {unknown_top}; "
+            f"[schema] {op_name}: unknown entry keys [{', '.join(unknown_top)}]; "
             f"valid keys are {sorted(_VALID_TOP_KEYS)}"
         )
 

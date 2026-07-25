@@ -482,12 +482,12 @@ consumption.
 Each entry under `workloads:` is a mapping. `dtypes` and `label` are
 reserved. Key rules: R21.
 
-| Key                   | Required | Meaning                                                                                                  |
-| --------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
-| `<tensor_name>_shape` | yes      | Shape for a tensor input (list of ints). Include one key per tensor input the workload exercises.        |
-| `dtypes`              | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                       |
-| `label`               | no       | Human-readable id used in the pytest param id and report tables.                                         |
-| *any other key*       | no       | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default. |
+| Key             | Required | Meaning                                                                                                                                                                                |
+| --------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{input}_shape` | yes\*    | Shape for the single tensor input (list of ints), named per R21. \*Multi-input families define their own aggregate shape keys (e.g. `q_shape`/`kv_shape`) in their family bench files. |
+| `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                                                                                                     |
+| `label`         | no       | Human-readable id used in the pytest param id and report tables.                                                                                                                       |
+| *any other key* | no       | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default.                                                                               |
 
 Example — parametrizing a reduction workload over a non-last `dim`:
 

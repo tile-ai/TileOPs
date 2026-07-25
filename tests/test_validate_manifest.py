@@ -567,6 +567,25 @@ class TestSingleInputWorkloadKeys:
         errors = validator.check_l0("op", entry)
         assert any("non-string" in e for e in errors), errors
 
+    def test_malformed_signature_fields_report_not_crash(self, validator):
+        """check_l0 stays total on garbage YAML: scalar params, non-dict
+        inputs, and mixed-type unknown keys all report schema errors."""
+        entry = _make_entry()
+        entry["signature"]["params"] = 7
+        assert validator.check_l0("op", entry)
+
+        entry = _make_entry(inputs=7)
+        assert validator.check_l0("op", entry)
+
+        entry = _make_entry()
+        entry["signature"][1] = "junk"
+        entry["signature"]["zzz"] = "junk"
+        entry[2] = "junk"
+        entry["yyy"] = "junk"
+        errors = validator.check_l0("op", entry)
+        assert any("unknown signature keys" in e for e in errors), errors
+        assert any("unknown entry keys" in e for e in errors), errors
+
 
 # ---------------------------------------------------------------------------
 # variant_of: cross-entry consistency (R16)

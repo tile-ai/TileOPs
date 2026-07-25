@@ -91,12 +91,20 @@ def single_input_workload_contract(
     The shape key is ``{input}_shape``; allowed keys are the shape key,
     :data:`WORKLOAD_RESERVED_KEYS`, and the declared ``params`` names.
     """
-    inputs = list((signature or {}).get("inputs") or {})
-    if len(inputs) != 1:
+    sig = signature if isinstance(signature, dict) else {}
+    inputs = sig.get("inputs")
+    if not isinstance(inputs, dict) or len(inputs) != 1:
         return None
-    shape_key = f"{inputs[0]}_shape"
-    params = (signature or {}).get("params") or {}
-    allowed = frozenset(params) | WORKLOAD_RESERVED_KEYS | {shape_key}
+    (input_name,) = inputs
+    if not isinstance(input_name, str):
+        return None
+    shape_key = f"{input_name}_shape"
+    params = sig.get("params")
+    param_names = (
+        frozenset(k for k in params if isinstance(k, str))
+        if isinstance(params, dict) else frozenset()
+    )
+    allowed = param_names | WORKLOAD_RESERVED_KEYS | {shape_key}
     return shape_key, allowed
 
 
