@@ -640,6 +640,14 @@ class TestSingleInputWorkloadKeys:
         )
         assert errors == []
 
+    def test_param_colliding_with_harness_key_fails(self, validator):
+        errors = validator._check_single_input_workload_keys(
+            "op", self._sig(params=("dtypes",)), [
+                {"input_shape": [8], "dtypes": ["float16"]},
+            ],
+        )
+        assert any("collide" in e for e in errors), errors
+
     def test_non_string_workload_key_is_schema_error_not_crash(self, validator):
         entry = _make_entry()
         entry["workloads"] = [{"x_shape": [8], 1: "bad", "dtypes": ["float16"]}]

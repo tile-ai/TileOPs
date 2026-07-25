@@ -468,8 +468,8 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     """Convert manifest workload dicts for *op_name* to pytest params.
 
     By default (``include_extra=False``) each entry becomes
-    ``pytest.param(shape, dtype, id=...)`` — compatible with existing bench
-    files that use ``@pytest.mark.parametrize("shape, dtype", ...)``.
+    ``pytest.param(shape, dtype, id=...)`` for
+    ``@pytest.mark.parametrize("shape, dtype", ...)``.
 
     With ``include_extra=True`` each entry becomes
     ``pytest.param(shape, dtype, extra_params, id=...)`` where

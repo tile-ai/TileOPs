@@ -228,11 +228,15 @@ def _check_single_input_workload_keys(
         return []
     shape_key = f"{next(iter(inputs))}_shape"
     params = sig.get("params")
-    allowed = (
-        {shape_key, "dtypes", "label"}
-        | (set(params) if isinstance(params, dict) else set())
-    )
+    param_names = set(params) if isinstance(params, dict) else set()
+    allowed = {shape_key, "dtypes", "label"} | param_names
     errors: list[str] = []
+    collisions = sorted(param_names & {shape_key, "dtypes", "label"})
+    if collisions:
+        errors.append(
+            f"[schema] {op_name}: signature params {collisions} collide "
+            "with harness-reserved workload keys"
+        )
     for i, w in enumerate(workloads):
         if not isinstance(w, dict):
             continue

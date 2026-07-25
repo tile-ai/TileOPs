@@ -67,10 +67,10 @@ def _mark(idx: int, dtype: torch.dtype):
     return pytest.mark.smoke if idx == 0 and dtype is torch.float16 else pytest.mark.full
 
 
-def _shape_dtype_params(workloads: list[dict], shape_key: str = "input_shape") -> list:
+def _shape_dtype_params(workloads: list[dict]) -> list:
     params = []
     for idx, w in enumerate(workloads):
-        shape = tuple(w[shape_key])
+        shape = tuple(w["input_shape"])
         label = w.get("label", "x".join(str(dim) for dim in shape))
         for dtype_name in w["dtypes"]:
             dtype = _dtype(dtype_name)
