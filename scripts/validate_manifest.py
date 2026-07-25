@@ -316,6 +316,32 @@ def check_l0(
                     errors.append(
                         f"[schema] {op_name}: {direction}.{tname} missing 'dtype'"
                     )
+                # constraints keys must name dims of the declared shape
+                if "constraints" in attrs:
+                    constraints = attrs["constraints"]
+                    if not isinstance(constraints, dict):
+                        errors.append(
+                            f"[schema] {op_name}: {direction}.{tname}."
+                            f"constraints must be a mapping"
+                        )
+                    elif not isinstance(attrs.get("shape"), str):
+                        errors.append(
+                            f"[schema] {op_name}: {direction}.{tname} has "
+                            f"constraints but no shape"
+                        )
+                    else:
+                        dims = {
+                            d.strip()
+                            for d in attrs["shape"].strip("[]").split(",")
+                            if d.strip()
+                        }
+                        for ckey in constraints:
+                            if ckey not in dims:
+                                errors.append(
+                                    f"[schema] {op_name}: {direction}.{tname} "
+                                    f"constraints key '{ckey}' is not in "
+                                    f"shape dims {sorted(dims)}"
+                                )
                 # layout validation (R19)
                 if "layout" in attrs:
                     layout = attrs["layout"]
@@ -372,6 +398,18 @@ def check_l0(
                 f"[schema] {op_name}: signature must declare at least one "
                 f"input tensor or one param (both are empty)"
             )
+
+        # Every output must declare a shape, or the signature must carry
+        # shape_rules that pin the output shapes.
+        raw_rules = sig.get("shape_rules")
+        has_shape_rules = isinstance(raw_rules, list) and len(raw_rules) > 0
+        if isinstance(raw_outputs, dict) and not has_shape_rules:
+            for tname, attrs in raw_outputs.items():
+                if isinstance(attrs, dict) and "shape" not in attrs:
+                    errors.append(
+                        f"[schema] {op_name}: output '{tname}' must declare "
+                        f"'shape' or the signature must have shape_rules"
+                    )
 
         # dtype_combos must be a list of dicts if present (R4)
         if "dtype_combos" in sig:
@@ -436,6 +474,22 @@ def check_l0(
     # Workloads
     workloads = entry.get("workloads")
     if isinstance(workloads, list):
+        # Implemented ops need benchmarkable coverage: at least 2 workloads.
+        if entry.get("status") == "implemented" and len(workloads) < 2:
+            errors.append(
+                f"[schema] {op_name}: implemented op must have at least 2 "
+                f"workloads, got {len(workloads)}"
+            )
+        # Params without a default must be pinned by every workload.
+        sig_params = entry.get("signature", {})
+        sig_params = sig_params.get("params") if isinstance(sig_params, dict) else None
+        required_params = {
+            pname
+            for pname, pattrs in (sig_params or {}).items()
+            if isinstance(pname, str)
+            and isinstance(pattrs, dict)
+            and "default" not in pattrs
+        } if isinstance(sig_params, dict) else set()
         for i, w in enumerate(workloads):
             if not isinstance(w, dict):
                 errors.append(f"[schema] {op_name}: workloads[{i}] must be a dict")
@@ -449,6 +503,12 @@ def check_l0(
                 errors.append(
                     f"[schema] {op_name}: workloads[{i}] has non-string "
                     f"keys {non_str}"
+                )
+            missing_params = required_params - set(w.keys())
+            if missing_params:
+                errors.append(
+                    f"[schema] {op_name}: workloads[{i}] missing required "
+                    f"param(s): {sorted(missing_params)}"
                 )
         if isinstance(entry.get("signature"), dict):
             errors.extend(
@@ -584,6 +644,30 @@ def check_l0(
             f"kernel_map is missing (should be a mapping of str -> str)"
         )
 
+    return errors
+
+
+def check_source_paths(op_name: str, entry: dict, repo_root: Path) -> list[str]:
+    """Check that string ``source`` values of non-spec-only ops are real files.
+
+    Spec-only entries are skipped — their source paths are placeholders
+    until implementation. Non-string values (e.g. ``kernel_map`` mappings,
+    ``source.kernel`` lists, nulls) are out of scope here; their structure
+    is validated by :func:`check_l0`.
+    """
+    if not isinstance(entry, dict) or _is_spec_only(entry):
+        return []
+    source = entry.get("source")
+    if not isinstance(source, dict):
+        return []
+    errors: list[str] = []
+    for key, rel_path in source.items():
+        if not isinstance(rel_path, str):
+            continue
+        if not (repo_root / rel_path).is_file():
+            errors.append(
+                f"[schema] {op_name}: source.{key} is not a file: {rel_path}"
+            )
     return errors
 
 
@@ -3747,6 +3831,7 @@ def validate_manifest(
         # schema: YAML structure validation
         if "schema" in levels:
             schema_errors = check_l0(op_name, entry, warnings=all_warnings)
+            schema_errors.extend(check_source_paths(op_name, entry, repo_root))
             all_errors.extend(schema_errors)
             if schema_errors:
                 continue

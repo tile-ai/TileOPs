@@ -49,6 +49,7 @@ def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
     sig = {
         "inputs": inputs if inputs is not None else {"x": {"dtype": "float16"}},
         "outputs": outputs if outputs is not None else {"y": {"dtype": "same_as(x)"}},
+        "shape_rules": ["y.shape == x.shape"],
     }
     if params is not None:
         sig["params"] = params
@@ -64,7 +65,10 @@ def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
         "family": "test",
         "ref_api": "none",
         "signature": sig,
-        "workloads": [{"x_shape": [1, 4096], "dtypes": ["float16"]}],
+        "workloads": [
+            {"x_shape": [1, 4096], "dtypes": ["float16"]},
+            {"x_shape": [8, 8192], "dtypes": ["float16"]},
+        ],
         "roofline": {"flops": "2 * M", "bytes": "M * 2"},
         "source": source,
     }
@@ -462,6 +466,10 @@ class TestSchema:
                 "dtype": {"type": "torch.dtype"},
             },
         )
+        entry["workloads"] = [
+            {"seq_len": 4096, "dtype": "float16", "dtypes": ["float16"]},
+            {"seq_len": 8192, "dtype": "float16", "dtypes": ["float16"]},
+        ]
         errors = validator.check_l0("inputs_empty_op", entry)
         assert errors == [], (
             f"signature.inputs == {{}} with non-empty params must pass schema, "
@@ -498,6 +506,145 @@ class TestSchema:
             f"Expected schema error when signature.outputs is empty, "
             f"got: {errors}"
         )
+
+
+class TestWorkloadPolicy:
+    """Workload-count and required-param coverage rules."""
+
+    def test_implemented_needs_two_workloads(self, validator):
+        """Implemented ops need >= 2 workloads; spec-only ops are exempt."""
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["workloads"] = entry["workloads"][:1]
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "at least 2 workloads" in e for e in errors
+        ), f"Expected workload-count error, got: {errors}"
+
+        entry = _make_entry(status="spec-only")
+        entry["workloads"] = entry["workloads"][:1]
+        errors = validator.check_l0("test_op", entry)
+        assert not any("at least 2 workloads" in e for e in errors), errors
+
+    def test_workload_missing_required_param_fails(self, validator):
+        """Params without a default must appear in every workload."""
+        entry = _make_entry(params={"dim": {"type": "int"}})
+        entry["workloads"] = [
+            {"x_shape": [1, 4096], "dtypes": ["float16"], "dim": -1},
+            {"x_shape": [8, 8192], "dtypes": ["float16"]},  # dim missing
+        ]
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "workloads[1]" in e and "required param" in e and "dim" in e
+            for e in errors
+        ), f"Expected required-param error, got: {errors}"
+
+    def test_workload_defaulted_param_may_be_omitted(self, validator):
+        """Params with a default are not required in workloads."""
+        entry = _make_entry(params={"dim": {"type": "int", "default": -1}})
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+
+class TestOutputShapeDeclaration:
+    """Every output declares a shape, or the signature has shape_rules."""
+
+    def test_output_without_shape_or_rules_fails(self, validator):
+        entry = _make_entry()
+        del entry["signature"]["shape_rules"]
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "output" in e and "'y'" in e and "shape" in e for e in errors
+        ), f"Expected output-shape error, got: {errors}"
+
+    def test_output_with_declared_shape_passes(self, validator):
+        entry = _make_entry(
+            outputs={"y": {"dtype": "same_as(x)", "shape": "[M, N]"}},
+        )
+        del entry["signature"]["shape_rules"]
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+
+class TestTensorConstraints:
+    """Tensor ``constraints`` keys must name dims of the declared shape."""
+
+    def test_constraint_key_outside_shape_dims_fails(self, validator):
+        entry = _make_entry(
+            inputs={"x": {"dtype": "float16", "shape": "[M, N]",
+                          "constraints": {"K": "K % 2 == 0"}}},
+        )
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "constraints" in e and "'K'" in e for e in errors
+        ), f"Expected constraint-key error, got: {errors}"
+
+    def test_constraints_without_shape_fails(self, validator):
+        entry = _make_entry(
+            inputs={"x": {"dtype": "float16",
+                          "constraints": {"N": "N % 2 == 0"}}},
+        )
+        errors = validator.check_l0("test_op", entry)
+        assert any(
+            "constraints" in e and "shape" in e for e in errors
+        ), f"Expected constraints-without-shape error, got: {errors}"
+
+    def test_constraint_keys_matching_shape_dims_pass(self, validator):
+        entry = _make_entry(
+            inputs={"x": {"dtype": "float16", "shape": "[M, N]",
+                          "constraints": {"N": "N % 2 == 0"}}},
+        )
+        errors = validator.check_l0("test_op", entry)
+        assert errors == [], f"Unexpected schema errors: {errors}"
+
+
+class TestSourcePathExistence:
+    """source path values of non-spec-only ops must point at real files."""
+
+    def test_missing_source_file_fails_for_implemented(self, validator, tmp_path):
+        import yaml
+
+        entry = _make_entry(status="implemented", kernel_map={})
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump({"my_op": entry}))
+
+        errors, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            levels=frozenset({"schema"}),
+        )
+        assert any(
+            "source." in e and "not a file" in e for e in errors
+        ), f"Expected source-path error, got: {errors}"
+
+    def test_spec_only_source_paths_are_placeholders(self, validator, tmp_path):
+        import yaml
+
+        entry = _make_entry(status="spec-only")
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump({"my_op": entry}))
+
+        errors, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            levels=frozenset({"schema"}),
+        )
+        assert not any("not a file" in e for e in errors), errors
+
+    def test_existing_source_files_pass(self, validator, tmp_path):
+        import yaml
+
+        for name in ("k.py", "o.py", "t.py", "b.py"):
+            (tmp_path / name).write_text("# placeholder\n")
+        entry = _make_entry(status="implemented", kernel_map={})
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump({"my_op": entry}))
+
+        errors, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            levels=frozenset({"schema"}),
+        )
+        assert errors == [], f"Unexpected errors: {errors}"
 
 
 class TestSingleInputWorkloadKeys:

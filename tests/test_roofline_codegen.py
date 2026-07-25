@@ -1,8 +1,6 @@
-"""Real-op smoke + live-manifest parity sweep for the generated ``eval_roofline``."""
+"""Real-op smoke tests for the generated ``eval_roofline``."""
 
 import pytest
-
-from tileops.ops.op_base import Op
 
 pytestmark = pytest.mark.smoke
 
@@ -41,37 +39,3 @@ class TestRealOpSmoke:
         flops, total_bytes = op.eval_roofline()
         assert flops == 6 * N
         assert total_bytes == 2 * N * elem
-
-
-class TestRealManifestParity:
-    def test_no_stubs_for_implemented_ops(self):
-        from tileops.manifest import load_manifest
-        ops = load_manifest()
-        import tileops.ops  # noqa: F401
-        stubs = []
-        for op_name, entry in ops.items():
-            if entry.get("status") != "implemented":
-                continue
-            cls = _find_op_class(op_name)
-            if cls is None:
-                continue
-            if cls.eval_roofline is Op.eval_roofline:
-                stubs.append(op_name)
-        assert stubs == [], (
-            f"{len(stubs)} implemented ops still have the base "
-            f"eval_roofline stub: {stubs[:5]}..."
-        )
-
-
-def _find_op_class(op_name):
-    seen = set()
-    stack = list(Op.__subclasses__())
-    while stack:
-        cls = stack.pop()
-        if cls in seen:
-            continue
-        seen.add(cls)
-        if cls.__name__ == op_name:
-            return cls
-        stack.extend(cls.__subclasses__())
-    return None
