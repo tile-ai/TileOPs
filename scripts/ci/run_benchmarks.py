@@ -35,17 +35,17 @@ PY_SPY_TIMEOUT_S = 120
 COLLECT_TIMEOUT_S = 1800
 TEARDOWN_TIMEOUT_S = 120
 
-# Child preamble: sys.argv[1] is the status pipe fd, sys.argv[2:] the pytest
-# arguments ("-q", bench file, "--junit-xml=..."). The prctl call
-# (PR_SET_PTRACER, allow the parent and its descendants to attach) lets the
-# parent's py-spy dump this process under yama ptrace_scope=1. The
-# collect-only pass pays the bench file's import cost and the torch import
-# pays CUDA context creation while the previous file still owns the GPU (an
-# idle context executes nothing and cannot skew its measurements); the
-# parent sends one line when the GPU is free. The exit code goes through
-# the status pipe as soon as the junit fragment is written, so interpreter
-# teardown (several seconds of torch/tilelang atexit work) never blocks the
-# next file.
+# Child preamble; sys.argv[1] is the status pipe fd, sys.argv[2:] the pytest
+# arguments, sys.argv[3] the bench file. Constraints the code cannot show:
+# - prctl(PR_SET_PTRACER, parent): without it, yama ptrace_scope=1 blocks
+#   the parent's py-spy.
+# - The collect-only pass runs while another file's benchmark owns the GPU;
+#   it must stay GPU-silent (imports only — no CUDA context, no
+#   allocations, no kernel launches). CUDA initialization happens in the
+#   real pytest run, after the stdin line grants GPU ownership.
+# - The exit code goes through the status pipe as soon as the junit
+#   fragment is written; interpreter teardown (seconds of torch/tilelang
+#   atexit work) stays off the critical path.
 _CHILD = """\
 import ctypes, os, sys
 
@@ -54,22 +54,12 @@ ctypes.CDLL(None).prctl(0x59616D61, os.getppid(), 0, 0, 0)
 import pytest
 
 pytest.main(["--collect-only", "-q", sys.argv[3]])
-# Prewarm is best-effort: without a GPU the real pytest run reports the
-# failure in full.
-try:
-    import torch
-
-    torch.zeros(1, device="cuda")
-except Exception:
-    pass
 sys.stdin.readline()
 rc = int(pytest.main(sys.argv[2:]))
 os.write(int(sys.argv[1]), str(rc).encode())
 sys.exit(rc)
 """
 
-# Collection child: writes the collected bench file paths (deduplicated, in
-# collection order) to sys.argv[2]; sys.argv[3:] are the pytest targets.
 _COLLECT = """\
 import os, sys
 

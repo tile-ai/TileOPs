@@ -89,8 +89,8 @@ def test_hung_file_is_killed_dumped_and_reported(tmp_path):
             "bench_ok.py": "def test_ok():\n    pass\n",
         },
     )
-    # Above the child's prewarm time (imports + CUDA context), far below the sleep.
-    proc, out_xml, dump_dir = _run_runner(tmp_path, bench_dir, timeout_per_file="20")
+    # Above the child's post-release startup, far below the sleep.
+    proc, out_xml, dump_dir = _run_runner(tmp_path, bench_dir, timeout_per_file="10")
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
     cases = _cases(out_xml)
