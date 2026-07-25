@@ -1,8 +1,9 @@
 """Contract tests for :func:`benchmarks.benchmark_base.workloads_to_params`.
 
-The helper is scoped to single-input ops whose tensor input is named
-``x``. Multi-input ops (e.g. attention families declaring ``q_shape`` /
-``kv_shape``) are out of scope and must surface a clear ``KeyError``.
+The helper is scoped to single-tensor-input ops whose input is named
+``x`` or (matching the PyTorch functional signature) ``input``. Multi-input
+ops (e.g. attention families declaring ``q_shape`` / ``kv_shape``) are out
+of scope and must surface a clear ``KeyError``.
 """
 
 from __future__ import annotations
@@ -27,6 +28,38 @@ def test_single_input_with_extra_params():
         assert len(p.values) == 3
         _, _, extra = p.values
         assert isinstance(extra, dict)
+
+
+def test_input_named_tensor_ops_are_supported(monkeypatch):
+    """Ops whose PyTorch signature names the tensor ``input`` (e.g.
+    ``F.dropout(input, ...)``) declare ``input_shape`` in the manifest and
+    must be accepted by the single-tensor-input harness."""
+    synthetic = [
+        {"input_shape": [1024, 4096], "p": 0.5, "dtypes": ["float16"], "label": "drp"},
+    ]
+    import benchmarks.benchmark_base as bb
+
+    monkeypatch.setattr(bb, "load_workloads", lambda op: synthetic)
+
+    params = workloads_to_params("FakeInputOp", include_extra=True)
+    assert len(params) == 1
+    shape, dtype, extra = params[0].values
+    assert shape == (1024, 4096)
+    assert extra == {"p": 0.5}, "input_shape must be stripped from extras"
+
+
+def test_ambiguous_shape_keys_raise_keyerror(monkeypatch):
+    """A workload declaring both ``x_shape`` and ``input_shape`` is
+    ambiguous and must be rejected."""
+    synthetic = [
+        {"x_shape": [8], "input_shape": [8], "dtypes": ["float16"], "label": "amb"},
+    ]
+    import benchmarks.benchmark_base as bb
+
+    monkeypatch.setattr(bb, "load_workloads", lambda op: synthetic)
+
+    with pytest.raises(KeyError, match="exactly one"):
+        workloads_to_params("FakeAmbiguousOp")
 
 
 def test_multi_input_op_raises_keyerror():

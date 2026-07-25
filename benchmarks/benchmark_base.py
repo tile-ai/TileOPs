@@ -1,5 +1,7 @@
+import contextlib
 import logging
 import subprocess
+import sys
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -19,18 +21,25 @@ from torch.autograd.profiler import DeviceType
 
 from tileops.manifest import load_workloads
 
+# Shape keys accepted for the harness's single tensor input. ``x_shape``
+# is the generic name; ``input_shape`` matches ops whose PyTorch functional
+# signature names the tensor ``input`` (e.g. ``F.dropout(input, ...)``),
+# which the manifest mirrors verbatim. A workload must declare exactly one.
+_WORKLOAD_SHAPE_KEYS: tuple[str, ...] = ("x_shape", "input_shape")
+
 # Workload dict keys reserved by the benchmark harness. Everything else on
 # a workload entry (e.g. ``dim``, ``keepdim``, ``correction``) is treated
 # as an op-call parameter.
 #
-# The current harness is explicitly scoped to **single-input ops whose
-# sole tensor input is named ``x``**. Multi-input ops (e.g. attention
-# families that declare ``q_shape`` / ``kv_shape``) are not supported:
-# :func:`workloads_to_params` will raise ``KeyError`` if ``x_shape`` is
-# absent. Extending to signature-aware tensor binding is tracked as a
-# follow-up and must also update ``docs/design/manifest.md``.
+# The current harness is explicitly scoped to **single-tensor-input ops**
+# (input named ``x`` or ``input``; see :data:`_WORKLOAD_SHAPE_KEYS`).
+# Multi-input ops (e.g. attention families that declare ``q_shape`` /
+# ``kv_shape``) are not supported: :func:`workloads_to_params` will raise
+# ``KeyError`` if no accepted shape key is present. Extending to
+# signature-aware tensor binding is tracked as a follow-up and must also
+# update ``docs/design/manifest.md``.
 _WORKLOAD_META_KEYS: frozenset[str] = frozenset(
-    {"x_shape", "dtypes", "label"}
+    {*_WORKLOAD_SHAPE_KEYS, "dtypes", "label"}
 )
 
 # ---------------------------------------------------------------------------
@@ -150,6 +159,34 @@ def _get_l2_flush_cache() -> torch.Tensor:
     return _l2_flush_cache
 
 
+def _native_output_suppressor():
+    """Return an fd-level output suppressor only when it cannot clobber a
+    redirected stream.
+
+    tilelang's ``suppress_stdout_stderr`` silences C++-level profiler chatter
+    by ``dup2``-ing ``os.devnull`` over ``sys.stdout.fileno()`` /
+    ``sys.stderr.fileno()``. Under pytest's default fd capture those filenos
+    are the capture tmpfiles, so the redirect corrupts pytest's capture
+    stream: any later read of the capture (e.g. a timeout plugin's watchdog
+    thread snapshotting output before dumping stacks) fails with ``EBADF``,
+    and the diagnostic — plus the run's collected results — is lost.
+
+    Returns the fd-level suppressor only when stdout/stderr still point at
+    the process-level descriptors 1 and 2 (standalone runs, ``pytest -s``).
+    Under capture, a no-op context is returned; the capture already hides
+    the chatter.
+    """
+    try:
+        if sys.stdout.fileno() == 1 and sys.stderr.fileno() == 2:
+            from tilelang.profiler.bench import suppress_stdout_stderr
+            return suppress_stdout_stderr()
+    except (AttributeError, OSError, ValueError):
+        # Streams without a real descriptor (io.StringIO, capsys) or with
+        # fileno() unsupported: fd-level suppression is impossible.
+        pass
+    return contextlib.nullcontext()
+
+
 # ---------------------------------------------------------------------------
 # NVIDIA SOL-ExecBench–style benchmark
 # ---------------------------------------------------------------------------
@@ -193,8 +230,6 @@ def bench_kernel(
             f"bench_kernel expects a tuple of args, got {type(args).__name__}. "
             "Check that gen_inputs() returns a tuple."
         )
-
-    from tilelang.profiler.bench import suppress_stdout_stderr
 
     cache = _get_l2_flush_cache()
     has_args = len(args) > 0
@@ -251,7 +286,7 @@ def bench_kernel(
     # keeps the measured kernels recorded before the next flush.
     trial_means: list[float] = []
     try:
-        with suppress_stdout_stderr():
+        with _native_output_suppressor():
             for _ in range(n_trials):
                 with torch.profiler.profile(
                     # CPU activity is required for Kineto to project the
@@ -424,10 +459,10 @@ def _workload_extra_params(w: dict) -> dict[str, Any]:
     ``correction``). These are forwarded to the op constructor by benchmark
     files that opt into ``include_extra=True``.
 
-    Only the reserved meta keys (``x_shape``, ``dtypes``, ``label``) and
-    dunder-style metadata keys are stripped; everything else — including
-    any other ``*_shape`` keys — is surfaced as an op param. This matches
-    the single-input ``x_shape``-only harness contract documented in
+    Only the reserved meta keys (the accepted shape keys, ``dtypes``,
+    ``label``) and dunder-style metadata keys are stripped; everything else
+    — including any other ``*_shape`` keys — is surfaced as an op param.
+    This matches the single-tensor-input harness contract documented in
     :data:`_WORKLOAD_META_KEYS`; multi-input ops with ``q_shape`` /
     ``kv_shape`` are out of scope and would need a dedicated harness.
     """
@@ -454,14 +489,16 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     workloads = load_workloads(op_name)
     params = []
     for w in workloads:
-        if "x_shape" not in w:
+        shape_keys = [k for k in _WORKLOAD_SHAPE_KEYS if k in w]
+        if len(shape_keys) != 1:
             raise KeyError(
-                f"workloads_to_params({op_name!r}) only supports single-input "
-                "ops whose tensor input is named 'x' (workload must declare "
-                "'x_shape'); multi-input ops with q_shape/kv_shape/... are "
-                "out of scope for this harness."
+                f"workloads_to_params({op_name!r}) only supports "
+                "single-tensor-input ops; the workload must declare exactly "
+                f"one of {'/'.join(_WORKLOAD_SHAPE_KEYS)} (found "
+                f"{shape_keys or 'none'}). Multi-input ops with "
+                "q_shape/kv_shape/... are out of scope for this harness."
             )
-        shape = tuple(w["x_shape"])
+        shape = tuple(w[shape_keys[0]])
         label = w.get("label", "x".join(str(s) for s in shape))
         extra = _workload_extra_params(w) if include_extra else {}
         for dtype_str in w["dtypes"]:
