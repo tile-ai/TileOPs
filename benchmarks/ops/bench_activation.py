@@ -59,7 +59,7 @@ _UNARY_STRATEGIES = ("direct", "explicit_parallel", "register_copy")
 
 
 # ---------------------------------------------------------------------------
-# Benchmark harness
+# Workloads
 # ---------------------------------------------------------------------------
 
 
@@ -74,7 +74,7 @@ class _UnaryWorkload(Protocol):
 
 
 class UnaryBenchCase:
-    """Minimal test harness for unary benchmarks.
+    """Minimal workload for unary benchmarks.
 
     Accepts either a shape tuple or a scalar element count. The tuple form
     is preferred so the original input geometry survives into the report.
@@ -558,7 +558,7 @@ _RELU_BENCH_PARAMS = [
 def test_relu_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     n_total = prod(shape)
     # ``ReluTest`` (workloads) accepts a flat element count; the bench
-    # harness still records the original shape tuple via ``record(...)``.
+    # report still records the original shape tuple via ``record(...)``.
     test = ReluTest(n_total, dtype)
     inputs = test.gen_inputs()
 
@@ -617,7 +617,7 @@ def test_param_free_unary_bench(
     # Pass ``op=`` so UnaryBenchmark reads ``op.eval_roofline()`` /
     # ``FLOPS_PER_ELEM`` and reports manifest-aligned TFLOPs (e.g. SiLU
     # 4*N, Mish 7*N, SELU 5*N) rather than the bandwidth-only 1*N
-    # default. The torch baseline is profiled with the same harness so
+    # default. The torch baseline is profiled the same way so
     # both rows share the same FLOP normalization.
     bm = UnaryBenchmark(test, op=op)
     result = bm.profile(op, *inputs)

@@ -67,10 +67,10 @@ def _mark(idx: int, dtype: torch.dtype):
     return pytest.mark.smoke if idx == 0 and dtype is torch.float16 else pytest.mark.full
 
 
-def _shape_dtype_params(workloads: list[dict], shape_key: str = "input_shape") -> list:
+def _shape_dtype_params(workloads: list[dict]) -> list:
     params = []
     for idx, w in enumerate(workloads):
-        shape = tuple(w[shape_key])
+        shape = tuple(w["input_shape"])
         label = w.get("label", "x".join(str(dim) for dim in shape))
         for dtype_name in w["dtypes"]:
             dtype = _dtype(dtype_name)
@@ -494,7 +494,7 @@ def test_softplus_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> 
     _record_unary(op, bm, inputs, lambda x: F.softplus(x, 1.0, 20.0))
 
 
-@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_SIGMOID_OP), "x_shape"))
+@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_SIGMOID_OP)))
 def test_sigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = UnaryManifestWorkload(shape, dtype)
     inputs = test.gen_inputs()
@@ -503,7 +503,7 @@ def test_sigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> N
     _record_unary(op, bm, inputs, torch.sigmoid)
 
 
-@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_TANH_OP), "x_shape"))
+@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_TANH_OP)))
 def test_tanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = UnaryManifestWorkload(shape, dtype)
     inputs = test.gen_inputs()

@@ -38,6 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest.shape_rules import (  # noqa: E402
     dim_range_validity,
     dim_uniqueness,
@@ -79,7 +80,12 @@ _PROMOTE_TARGET_DTYPE: str = "float32"
 
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
+_VALID_TOP_KEYS = _REQUIRED_TOP | {"ref_api", "variant_of"}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
+_VALID_SIGNATURE_KEYS = {
+    "inputs", "outputs", "params", "shape_rules", "dtype_combos",
+    "static_dims",
+}
 _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 
 # Valid tensor layout values (R19)
@@ -207,6 +213,56 @@ def _check_shape_rule_callables(
     return errors
 
 
+def _check_single_input_workload_keys(
+    op_name: str, sig: dict, workloads: list,
+) -> list[str]:
+    """Check R21: workload keys must derive from the signature.
+
+    Out of scope: multi-input signatures and workloads with no ``*_shape``
+    key.
+    """
+    contract = manifest_pkg.single_input_workload_contract(sig)
+    if contract is None:
+        return []
+    if not any(
+        isinstance(w, dict)
+        and any(isinstance(k, str) and k.endswith("_shape") for k in w)
+        for w in workloads
+    ):
+        return []
+    shape_key, allowed = contract
+    params = sig.get("params")
+    param_names = set(params) if isinstance(params, dict) else set()
+    reserved = manifest_pkg.WORKLOAD_RESERVED_KEYS | {shape_key}
+    errors: list[str] = []
+    collisions = sorted(param_names & reserved)
+    if collisions:
+        errors.append(
+            f"[schema] {op_name}: signature params {collisions} collide "
+            "with reserved workload keys"
+        )
+    for i, w in enumerate(workloads):
+        if not isinstance(w, dict):
+            continue
+        if shape_key not in w:
+            errors.append(
+                f"[schema] {op_name}: workloads[{i}] missing {shape_key!r} "
+                "(shape key is derived from the signature's tensor input "
+                "name)"
+            )
+        unknown = sorted(
+            k for k in w
+            if isinstance(k, str) and k not in allowed and not k.startswith("__")
+        )
+        if unknown:
+            errors.append(
+                f"[schema] {op_name}: workloads[{i}] has unknown keys "
+                f"{unknown}; allowed are {shape_key!r}, 'dtypes', 'label', "
+                "and declared signature params"
+            )
+    return errors
+
+
 def check_l0(
     op_name: str, entry: dict, *, warnings: list[str] | None = None,
 ) -> list[str]:
@@ -228,6 +284,18 @@ def check_l0(
         missing_sig = _REQUIRED_SIGNATURE - set(sig.keys())
         if missing_sig:
             errors.append(f"[schema] {op_name}: signature missing: {missing_sig}")
+
+        # Check inputs/outputs/params are dicts with string names
+        for field in ("inputs", "outputs", "params"):
+            names = sig.get(field)
+            if not isinstance(names, dict):
+                continue
+            non_str = sorted(repr(k) for k in names if not isinstance(k, str))
+            if non_str:
+                errors.append(
+                    f"[schema] {op_name}: signature.{field} has non-string "
+                    f"names [{', '.join(non_str)}]"
+                )
 
         # Check inputs/outputs are dicts with dtype
         for direction in ("inputs", "outputs"):
@@ -347,14 +415,14 @@ def check_l0(
                         _check_shape_rule_callables(op_name, i, rule)
                     )
 
-        # Reject the deprecated `init_dims` key explicitly (R20 rename).
-        # L0 doesn't flag unknown signature keys, so without this check an
-        # accidental reintroduction would silently pass and be ignored by L1.
-        if "init_dims" in sig:
+        # Unknown signature keys are silently ignored by L1+, so reject
+        # anything outside the schema here.
+        unknown_sig = sorted(repr(k) for k in set(sig) - _VALID_SIGNATURE_KEYS)
+        if unknown_sig:
             errors.append(
-                f"[schema] {op_name}: `signature.init_dims` is deprecated — "
-                f"use `signature.static_dims` with flat `<name>: \"<tensor>.shape[<axis>]\"` "
-                f"entries per R20"
+                f"[schema] {op_name}: unknown signature keys "
+                f"[{', '.join(unknown_sig)}]; valid keys are "
+                f"{sorted(_VALID_SIGNATURE_KEYS)}"
             )
 
         # static_dims must be a mapping of str -> str expression (R20)
@@ -376,6 +444,18 @@ def check_l0(
                 errors.append(
                     f"[schema] {op_name}: workloads[{i}] missing 'dtypes'"
                 )
+            non_str = [k for k in w if not isinstance(k, str)]
+            if non_str:
+                errors.append(
+                    f"[schema] {op_name}: workloads[{i}] has non-string "
+                    f"keys {non_str}"
+                )
+        if isinstance(entry.get("signature"), dict):
+            errors.extend(
+                _check_single_input_workload_keys(
+                    op_name, entry["signature"], workloads
+                )
+            )
     elif "workloads" in entry:
         errors.append(f"[schema] {op_name}: workloads must be a list")
 
@@ -422,14 +502,13 @@ def check_l0(
     elif "source" in entry:
         errors.append(f"[schema] {op_name}: source must be a mapping")
 
-    # parity_opt_out: removed. Manifest entries must not declare it.
-    # Demote the op to ``status: spec-only`` instead of opting out of parity.
-    if _has_parity_opt_out_field(entry):
+    # Unknown top-level keys are ignored by every later level, so reject
+    # them here (covers removed fields like parity_opt_out).
+    unknown_top = sorted(repr(k) for k in set(entry) - _VALID_TOP_KEYS)
+    if unknown_top:
         errors.append(
-            f"[schema] {op_name}: 'parity_opt_out' is no longer a valid "
-            f"manifest field. Demote the op to 'status: spec-only' if its "
-            f"manifest-derived methods cannot be exercised by the CPU "
-            f"validator."
+            f"[schema] {op_name}: unknown entry keys [{', '.join(unknown_top)}]; "
+            f"valid keys are {sorted(_VALID_TOP_KEYS)}"
         )
 
     # variant_of: must be a string if present (R16); cross-entry checks in
@@ -1602,17 +1681,6 @@ def _static_dim_values(
         except (IndexError, TypeError, ValueError):
             continue
     return out
-
-
-def _has_parity_opt_out_field(entry: dict) -> bool:
-    """Return True when the (now-removed) ``parity_opt_out`` field is set.
-
-    The field has been removed from the validator and schema. This
-    helper exists so the schema check can surface a hard error pointing
-    reviewers at the migration: demote the op to ``status: spec-only``
-    instead of opting out of parity.
-    """
-    return "parity_opt_out" in entry
 
 
 def _class_overrides_method(cls: type, name: str) -> bool:

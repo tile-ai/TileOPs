@@ -39,12 +39,12 @@ _UNARY_STRATEGIES = ("direct", "explicit_parallel", "register_copy")
 
 
 # ---------------------------------------------------------------------------
-# Benchmark harness
+# Workloads
 # ---------------------------------------------------------------------------
 
 
 class UnaryStrategyBenchCase:
-    """Minimal test harness for unary strategy benchmarks."""
+    """Minimal workload for unary strategy benchmarks."""
 
     def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
         self.shape = shape

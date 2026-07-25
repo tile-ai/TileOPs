@@ -98,7 +98,7 @@ def _special_floats(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
 
 
 # ---------------------------------------------------------------------------
-# Shared bench harness
+# Shared workload and profiling helpers
 # ---------------------------------------------------------------------------
 
 

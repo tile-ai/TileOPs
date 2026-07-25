@@ -204,7 +204,7 @@ class BitwiseFixture(FixtureBase):
 
 
 class BitwiseNotTest(TestBase):
-    """Test harness for bitwise_not."""
+    """Test fixture for bitwise_not."""
 
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total

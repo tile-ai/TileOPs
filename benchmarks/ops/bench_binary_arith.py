@@ -65,7 +65,7 @@ _BROADCAST_PATTERNS = {
 
 
 # ---------------------------------------------------------------------------
-# Benchmark harness
+# Workloads
 # ---------------------------------------------------------------------------
 
 
@@ -84,7 +84,7 @@ class BinaryWorkload(Protocol):
 
 
 class BinaryBenchCase:
-    """Minimal test harness for binary benchmarks."""
+    """Minimal workload for binary benchmarks."""
 
     def __init__(
         self, a_shape: tuple, b_shape: tuple, dtype: torch.dtype,
@@ -116,7 +116,7 @@ class BinaryBenchmark(BenchmarkBase[BinaryWorkload]):
 
 
 class WhereBenchCase:
-    """Test harness for where op benchmarks."""
+    """Workload for where op benchmarks."""
 
     def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
         self.shape = shape
@@ -402,7 +402,7 @@ _ADD_BENCH_PARAMS = [
 def test_add_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     n_total = prod(shape)
     # ``AddSameShapeTest`` (workloads) accepts a flat element count; the
-    # bench harness still records the original shape tuple via
+    # report still records the original shape tuple via
     # ``record(...)`` so the report carries the input geometry verbatim.
     test = AddSameShapeTest(n_total, dtype)
     bm = BinaryBenchmark(test)
@@ -481,7 +481,7 @@ def test_lerp_tensor_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     op = LerpTensorFwdOp(
         input=tuple(shape), end=tuple(shape), weight=tuple(shape), dtype=dtype,
     )
-    # Cross-check the bench harness' inline flop/byte counts against the
+    # Cross-check this bench file's inline flop/byte counts against the
     # manifest-bound roofline formula so a drift in either direction
     # surfaces as a bench failure rather than silent perf misreporting.
     formula_flops, formula_bytes = lerp_tensor_fwd_roofline(op)

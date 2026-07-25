@@ -1,4 +1,4 @@
-"""Unit tests for benchmark capability protocols.
+"""Unit tests for benchmarks.benchmark_base.
 
 Verifies that ``ShapeDtypeWorkload``, ``InputGeneratingWorkload``, and
 ``BenchmarkWorkload`` protocols accept duck-typed objects, and that the
@@ -10,10 +10,14 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import (
+    BenchmarkReport,
     BenchmarkWorkload,
     InputGeneratingWorkload,
     ManifestBenchmark,
     ShapeDtypeWorkload,
+    _bench_meta,
+    bench_kernel,
+    workloads_to_params,
 )
 
 # ---------------------------------------------------------------------------
@@ -192,17 +196,6 @@ def test_workloads_to_params_include_extra_propagates_dim():
     """When a workload entry carries ``dim``, ``include_extra=True`` should
     surface it in the pytest param triple.
     """
-    from benchmarks.benchmark_base import (
-        _workload_extra_params,
-        workloads_to_params,
-    )
-
-    # Direct unit test on the helper (no manifest mutation required).
-    assert _workload_extra_params(
-        {"x_shape": [4, 4], "dtypes": ["float16"], "label": "t",
-         "dim": 0, "keepdim": True}
-    ) == {"dim": 0, "keepdim": True}
-
     # End-to-end with the manifest: include_extra=True must still yield
     # well-formed triples with the (shape, dtype, extra) mapping. The
     # contract being asserted is per-triple shape/dtype/extra typing; it
@@ -210,13 +203,15 @@ def test_workloads_to_params_include_extra_propagates_dim():
     # curated and may be reordered without regressing the helper).
     triples = workloads_to_params("SumFwdOp", include_extra=True)
     assert len(triples) > 0
+    assert any("dim" in p.values[2] for p in triples), (
+        "at least one SumFwdOp workload must propagate a dim param"
+    )
     for p in triples:
         shape, dtype, extra = p.values
         assert isinstance(shape, tuple)
         assert isinstance(dtype, torch.dtype)
         assert isinstance(extra, dict)
-    # At least one workload intentionally carries no extras; the harness
-    # must expose that as an empty dict rather than omitting the slot.
+    # A workload with no extras must yield an empty dict, not a missing slot.
     assert any(p.values[2] == {} for p in triples)
 
 
@@ -231,3 +226,132 @@ def test_manifest_benchmark_propagates_op_eval_error():
     bm = ManifestBenchmark("SumFwdOp", _BrokenOp(), w)
     with pytest.raises(RuntimeError, match="shape not bound"):
         bm.calculate_flops()
+
+
+def test_multi_input_op_raises_keyerror():
+    """Multi-input ops (q/k/v) raise instead of binding a wrong tensor."""
+    with pytest.raises(KeyError, match="exactly one manifest tensor input"):
+        workloads_to_params("GroupedQueryAttentionFwdOp")
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_projection_failure_falls_back_to_cuda_events():
+    """A callable launching no CUDA kernel projects no annotation windows;
+    bench_kernel must fall back and mark the deviating timing method."""
+    latency = bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2, n_trials=1)
+    assert latency >= 0.0
+    assert _bench_meta.timing == "cuda-events"
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_kernel_runtime_error_propagates():
+    """Genuine RuntimeErrors must reach the caller, not the fallback path."""
+    def boom():
+        raise RuntimeError("kernel failure")
+
+    with pytest.raises(RuntimeError, match="kernel failure"):
+        bench_kernel(boom, n_warmup=0, n_repeat=1, n_trials=1)
+
+
+@pytest.fixture
+def _reset_records():
+    """Snapshot and clear ``BenchmarkReport._records`` around each test."""
+    saved = BenchmarkReport._records
+    BenchmarkReport._records = {}
+    try:
+        yield
+    finally:
+        BenchmarkReport._records = saved
+
+
+class _FakeKernel:
+    """Stand-in for ``tileops.kernels.kernel_base.Kernel`` with just a config dict."""
+
+    def __init__(self, config: dict):
+        self.config = config
+
+
+def _result() -> dict:
+    return {"latency_ms": 0.01, "tflops": 1.0, "bandwidth_tbs": 0.5}
+
+
+@pytest.mark.full
+@pytest.mark.usefixtures('_reset_records')
+def test_record_eager_init_op_keeps_kernel_config():
+    """Pattern 1: ``op.kernel`` set in ``__init__`` (GemmOp-style)."""
+
+    class _EagerOp:
+        def __init__(self):
+            self.kernel = _FakeKernel({"block_m": 128, "block_n": 256})
+
+    BenchmarkReport.record(_EagerOp(), params={}, result=_result(), tag="t")
+    records = BenchmarkReport._records["_EagerOp"]
+    assert records[0].get("config") == {"block_m": 128, "block_n": 256}
+
+
+@pytest.mark.full
+@pytest.mark.usefixtures('_reset_records')
+def test_record_lazy_with_dummy_kernel_keeps_kernel_config():
+    """Pattern 2: dummy ``op.kernel`` plus a populated ``_kernel_cache``."""
+
+    class _LazyDummyOp:
+        def __init__(self):
+            self.kernel = _FakeKernel({"block_m": 8})
+            self._kernel_cache = {1: self.kernel}
+
+    BenchmarkReport.record(_LazyDummyOp(), params={}, result=_result(), tag="t")
+    records = BenchmarkReport._records["_LazyDummyOp"]
+    assert records[0].get("config") == {"block_m": 8}
+
+
+@pytest.mark.full
+@pytest.mark.usefixtures('_reset_records')
+def test_record_pure_lazy_cache_op_keeps_kernel_config():
+    """Pattern 3: only ``_kernel_cache`` is populated."""
+
+    class _PureLazyOp:
+        def __init__(self):
+            self._kernel_cache = {(32, 256): _FakeKernel({"block_m": 4, "tile_n": 0})}
+
+    BenchmarkReport.record(_PureLazyOp(), params={}, result=_result(), tag="t")
+    records = BenchmarkReport._records["_PureLazyOp"]
+    assert records[0].get("config") == {"block_m": 4, "tile_n": 0}
+
+
+@pytest.mark.full
+@pytest.mark.usefixtures('_reset_records')
+def test_record_op_with_explicit_config_takes_precedence():
+    """A direct ``op.config`` wins over kernel introspection."""
+
+    class _ConfigOp:
+        config = {"explicit": True}
+        kernel = _FakeKernel({"explicit": False})
+
+    BenchmarkReport.record(_ConfigOp(), params={}, result=_result(), tag="t")
+    records = BenchmarkReport._records["_ConfigOp"]
+    assert records[0].get("config") == {"explicit": True}
+
+
+@pytest.mark.full
+@pytest.mark.usefixtures('_reset_records')
+def test_record_op_without_any_config_omits_field():
+    """Ops with no config sources should not produce a ``config`` field."""
+
+    class _BareOp:
+        pass
+
+    BenchmarkReport.record(_BareOp(), params={}, result=_result(), tag="t")
+    records = BenchmarkReport._records["_BareOp"]
+    assert "config" not in records[0]
+
+
+@pytest.mark.full
+@pytest.mark.usefixtures('_reset_records')
+def test_record_string_name_omits_config_field():
+    """When called with a benchmark group name, no config is recorded."""
+
+    BenchmarkReport.record("FA3Baseline", params={}, result=_result(), tag="FA3")
+    records = BenchmarkReport._records["FA3Baseline"]
+    assert "config" not in records[0]

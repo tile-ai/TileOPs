@@ -102,6 +102,8 @@ dtype_combos:
 
 **R20. `static_dims`.** For arbitrary-rank ops (no `shape` declaration), `static_dims` declares values the user commits to at Op construction time. Each entry maps an `__init__` keyword name to a single-axis shape expression `<tensor>.shape[<const_or_param>]`. See [`static_dims`](#static_dims) for full semantics, rules, and examples.
 
+**R21. Workload keys derive from the signature.** Single-tensor-input ops whose workloads carry a `*_shape` key: the shape key MUST be `{input}_shape`; every other key MUST be a `signature.params` name or reserved `dtypes` / `label`. Enforced by the validator and `workloads_to_params`. Multi-input aggregate keys (`kv_shape`) are family bench-file conventions, out of scope.
+
 ## `static_dims`
 
 `static_dims` declares what becomes statically known at the moment the user constructs the Op instance. It is **per-op**, not per-family.
@@ -477,18 +479,15 @@ consumption.
 
 ### Workload entry schema
 
-Each entry under `workloads:` is a mapping. Shape keys take the form
-`<tensor_name>_shape` (e.g. `x_shape`, `q_shape`, `kv_shape`) — one per
-tensor input in the workload. `dtypes` and `label` are also reserved.
-Any other key becomes an **op-call parameter** forwarded to the op's
-`__init__`.
+Each entry under `workloads:` is a mapping. `dtypes` and `label` are
+reserved. Key rules: R21.
 
-| Key                   | Required | Meaning                                                                                                  |
-| --------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
-| `<tensor_name>_shape` | yes      | Shape for a tensor input (list of ints). Include one key per tensor input the workload exercises.        |
-| `dtypes`              | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                       |
-| `label`               | no       | Human-readable id used in the pytest param id and report tables.                                         |
-| *any other key*       | no       | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default. |
+| Key             | Required | Meaning                                                                                                                                                                                |
+| --------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{input}_shape` | yes\*    | Shape for the single tensor input (list of ints), named per R21. \*Multi-input families define their own aggregate shape keys (e.g. `q_shape`/`kv_shape`) in their family bench files. |
+| `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                                                                                                     |
+| `label`         | no       | Human-readable id used in the pytest param id and report tables.                                                                                                                       |
+| *any other key* | no       | Op param value (`dim`, `keepdim`, …). MUST be a declared `signature.params` name (R21); overrides its default.                                                                         |
 
 Example — parametrizing a reduction workload over a non-last `dim`:
 

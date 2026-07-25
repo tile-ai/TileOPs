@@ -1,5 +1,7 @@
+import contextlib
 import logging
 import subprocess
+import sys
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -17,21 +19,25 @@ import pytest
 import torch
 from torch.autograd.profiler import DeviceType
 
-from tileops.manifest import load_workloads
-
-# Workload dict keys reserved by the benchmark harness. Everything else on
-# a workload entry (e.g. ``dim``, ``keepdim``, ``correction``) is treated
-# as an op-call parameter.
-#
-# The current harness is explicitly scoped to **single-input ops whose
-# sole tensor input is named ``x``**. Multi-input ops (e.g. attention
-# families that declare ``q_shape`` / ``kv_shape``) are not supported:
-# :func:`workloads_to_params` will raise ``KeyError`` if ``x_shape`` is
-# absent. Extending to signature-aware tensor binding is tracked as a
-# follow-up and must also update ``docs/design/manifest.md``.
-_WORKLOAD_META_KEYS: frozenset[str] = frozenset(
-    {"x_shape", "dtypes", "label"}
+from tileops.manifest import (
+    WORKLOAD_RESERVED_KEYS,
+    load_manifest,
+    load_workloads,
+    single_input_workload_contract,
 )
+
+
+def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
+    """Resolve the shared workload contract for an op known to exist."""
+    sig = load_manifest()[op_name].get("signature") or {}
+    contract = single_input_workload_contract(sig)
+    if contract is None:
+        raise KeyError(
+            f"workloads_to_params({op_name!r}) needs exactly one manifest "
+            "tensor input; multi-input ops use their own bench files."
+        )
+    return contract
+
 
 # ---------------------------------------------------------------------------
 # Benchmark capability protocols
@@ -71,9 +77,6 @@ class BenchmarkWorkload(ShapeDtypeWorkload, InputGeneratingWorkload, Protocol):
     ...
 
 
-# Backward-compatible alias
-RooflineWorkload = ShapeDtypeWorkload
-
 W = TypeVar("W")
 
 
@@ -82,6 +85,14 @@ _logger = logging.getLogger("tileops.bench")
 # Thread-local storage for conftest hook to pick up per-test bench results.
 # A single test function may call record() multiple times (tileops + baseline).
 _bench_results = threading.local()
+
+# Latest bench_kernel measurement metadata; deviations from the default
+# protocol are surfaced in results by BenchmarkBase._build_result.
+_bench_meta = threading.local()
+
+
+class _CuptiProjectionError(Exception):
+    """CUPTI trace lacked a projected annotation window for every repeat."""
 
 
 # Name of the ``record_function`` annotation wrapping the timed call. Kineto
@@ -145,9 +156,33 @@ def _get_l2_flush_cache() -> torch.Tensor:
     if _l2_flush_cache is None:
         l2_bytes = torch.cuda.get_device_properties(0).L2_cache_size
         if l2_bytes <= 0:
-            l2_bytes = int(256e6)  # fallback
+            _logger.warning(
+                "L2 cache size query returned %d; flushing a 256 MB buffer "
+                "instead", l2_bytes,
+            )
+            l2_bytes = int(256e6)
         _l2_flush_cache = torch.empty(l2_bytes // 4, dtype=torch.int, device="cuda")
     return _l2_flush_cache
+
+
+def _native_output_suppressor():
+    """Return an fd-level output suppressor that is safe under pytest capture.
+
+    tilelang's ``suppress_stdout_stderr`` dup2's ``/dev/null`` over
+    ``sys.stdout.fileno()``; under pytest fd capture that fileno is the
+    capture tmpfile and the redirect corrupts it (``EBADF`` on later reads).
+    Suppress only when stdout/stderr are the process fds 1/2.
+    """
+    try:
+        native = sys.stdout.fileno() == 1 and sys.stderr.fileno() == 2
+    except (AttributeError, OSError, ValueError):
+        # Streams without a real descriptor (io.StringIO, capsys) or with
+        # fileno() unsupported: fd-level suppression is impossible.
+        native = False
+    if not native:
+        return contextlib.nullcontext()
+    from tilelang.profiler.bench import suppress_stdout_stderr
+    return suppress_stdout_stderr()
 
 
 # ---------------------------------------------------------------------------
@@ -194,8 +229,6 @@ def bench_kernel(
             "Check that gen_inputs() returns a tuple."
         )
 
-    from tilelang.profiler.bench import suppress_stdout_stderr
-
     cache = _get_l2_flush_cache()
     has_args = len(args) > 0
 
@@ -216,6 +249,11 @@ def bench_kernel(
             def _run(i):
                 return fn(*arg_pool[i % _N_CLONES])
         else:
+            _logger.warning(
+                "bench_kernel: inputs total %.2f GiB; skipping per-iteration "
+                "cloning (kernel sees identical addresses)",
+                total_bytes / (1 << 30),
+            )
             arg_pool = None
             def _run(i):
                 return fn(*args)
@@ -223,40 +261,27 @@ def bench_kernel(
         arg_pool = None
         def _run(i):
             return fn()
+    _bench_meta.inputs_cloned = arg_pool is not None or not has_args
 
     # Warmup (no profiling)
     for i in range(n_warmup):
         cache.zero_()
-        _run(i % n_repeat)
+        _run(i)
     torch.cuda.synchronize()
 
-    # Timed trials with CUPTI.  Each trial opens its own torch.profiler context
-    # around exactly n_repeat iterations and reads the trace after the context
-    # closes; summed device kernel time / n_repeat is the mean per-call kernel
-    # time.  We deliberately do NOT use torch.profiler.schedule: that mechanism
-    # is for sampling a window out of a long step()-driven loop, and forcing
-    # n_repeat calls into a single "step" let queued, un-synchronized launches
-    # leak across the warmup/active boundary.  A plain per-trial context records
-    # exactly the calls we want — no schedule, no on_trace_ready callback.
-    #
-    # Only the timed call is wrapped in record_function(_KERNEL_REGION).  The
-    # parser attributes device events purely by timestamp interval, and Kineto's
-    # projection of the annotation window onto the device timeline is not
-    # guaranteed to exclude a flush merely enqueued before the window (issue
-    # #1723: under cold TileLang cache + autotune the flush event was observed
-    # inside the window, adding one flush duration per measured repeat).  We
-    # therefore synchronize after cache.zero_() so the flush completes before
-    # the window opens; L2 is still cold for the measured call, and the extra
-    # sync only adds host-side latency, never device time.  The post-call sync
-    # keeps the measured kernels recorded before the next flush.
+    # One plain profiler context per trial; torch.profiler.schedule is avoided
+    # because queued launches leak across its warmup/active boundary.
+    # Kineto's window projection may include a flush merely enqueued before
+    # the window, so the flush is drained (sync) before the timed call and
+    # the call is drained before the next flush; the syncs add host-side
+    # latency only.
     trial_means: list[float] = []
     try:
-        with suppress_stdout_stderr():
+        with _native_output_suppressor():
             for _ in range(n_trials):
                 with torch.profiler.profile(
                     # CPU activity is required for Kineto to project the
-                    # annotation onto the device timeline (CUDA-only emits no
-                    # window); it adds only host-side overhead, not kernel time.
+                    # annotation window; it never adds device time.
                     activities=[
                         torch.profiler.ProfilerActivity.CPU,
                         torch.profiler.ProfilerActivity.CUDA,
@@ -264,24 +289,29 @@ def bench_kernel(
                 ) as profiler:
                     for i in range(n_repeat):
                         cache.zero_()
-                        # Drain the flush so its device event ends before the
-                        # timed window opens; without this, projection quirks
-                        # can place it inside the window (see comment above).
                         torch.cuda.synchronize()
                         with torch.profiler.record_function(_KERNEL_REGION):
                             _run(i)
-                        torch.cuda.synchronize()  # kernel recorded in isolation
+                        torch.cuda.synchronize()
                 total_us, n_regions = _sum_kernel_time_us(profiler.profiler.kineto_results)
-                # Scope failed to project on some iteration → trace untrustworthy,
-                # fall back to CUDA events.
+                # Untrustworthy trace → CUDA-events fallback; genuine CUDA
+                # errors and OOM propagate.
                 if n_regions != n_repeat:
-                    raise RuntimeError
+                    raise _CuptiProjectionError(
+                        f"{n_regions}/{n_repeat} annotation windows projected"
+                    )
                 trial_means.append((total_us / n_repeat) * 1e-3)
-    except RuntimeError:
+        _bench_meta.timing = "cupti"
+    except _CuptiProjectionError as exc:
+        _logger.warning(
+            "CUPTI projection failed (%s); falling back to CUDA-events "
+            "timing, which includes launch overhead", exc,
+        )
         trial_means = []
 
     # Fallback to CUDA events if CUPTI failed
     if not trial_means:
+        _bench_meta.timing = "cuda-events"
         for _ in range(n_trials):
             start_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
             end_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
@@ -402,6 +432,12 @@ class BenchmarkBase(Generic[W], ABC):
 
     def _build_result(self, latency: float) -> dict:
         result = {"latency_ms": latency}
+        # Deviations from the default protocol must be visible in reports.
+        timing = getattr(_bench_meta, "timing", None)
+        if timing is not None and timing != "cupti":
+            result["timing"] = timing
+        if getattr(_bench_meta, "inputs_cloned", True) is False:
+            result["inputs_cloned"] = False
         flops = self.calculate_flops()
         if flops is not None:
             result["tflops"] = flops / latency * 1e-9
@@ -416,59 +452,48 @@ class BenchmarkBase(Generic[W], ABC):
 # ---------------------------------------------------------------------------
 
 
-def _workload_extra_params(w: dict) -> dict[str, Any]:
-    """Return op-specific params attached to a manifest workload entry.
-
-    A workload entry may carry optional op-call parameter values beyond
-    ``x_shape`` / ``dtypes`` / ``label`` (e.g. ``dim``, ``keepdim``,
-    ``correction``). These are forwarded to the op constructor by benchmark
-    files that opt into ``include_extra=True``.
-
-    Only the reserved meta keys (``x_shape``, ``dtypes``, ``label``) and
-    dunder-style metadata keys are stripped; everything else — including
-    any other ``*_shape`` keys — is surfaced as an op param. This matches
-    the single-input ``x_shape``-only harness contract documented in
-    :data:`_WORKLOAD_META_KEYS`; multi-input ops with ``q_shape`` /
-    ``kv_shape`` are out of scope and would need a dedicated harness.
-    """
+def _workload_extra_params(w: dict, shape_key: str) -> dict[str, Any]:
+    """Return op-call params on a workload entry, stripping reserved keys."""
+    reserved = WORKLOAD_RESERVED_KEYS | {shape_key}
     return {
         k: v
         for k, v in w.items()
-        if k not in _WORKLOAD_META_KEYS and not k.startswith("__")
+        if isinstance(k, str) and k not in reserved and not k.startswith("__")
     }
 
 
 def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     """Convert manifest workload dicts for *op_name* to pytest params.
 
-    By default (``include_extra=False``) each entry becomes
-    ``pytest.param(shape, dtype, id=...)`` — compatible with existing bench
-    files that use ``@pytest.mark.parametrize("shape, dtype", ...)``.
-
-    With ``include_extra=True`` each entry becomes
-    ``pytest.param(shape, dtype, extra_params, id=...)`` where
-    ``extra_params`` is a dict of op-call params declared on the workload
-    entry (e.g. ``{"dim": 0, "keepdim": False}``). Use this when the
-    benchmark needs to drive op calls from manifest-declared workload params.
+    Each entry becomes ``pytest.param(shape, dtype, id=...)``; with
+    ``include_extra=True`` a third element carries the op-call params
+    declared on the workload entry (e.g. ``{"dim": 0}``).
     """
-    workloads = load_workloads(op_name)
+    workloads = load_workloads(op_name)  # canonical not-found error
+    shape_key, allowed = _workload_contract(op_name)
     params = []
     for w in workloads:
-        if "x_shape" not in w:
+        if shape_key not in w:
             raise KeyError(
-                f"workloads_to_params({op_name!r}) only supports single-input "
-                "ops whose tensor input is named 'x' (workload must declare "
-                "'x_shape'); multi-input ops with q_shape/kv_shape/... are "
-                "out of scope for this harness."
+                f"workload {w.get('label', w)!r} of {op_name!r} is missing "
+                f"{shape_key!r} (derived from the signature's input name)."
             )
-        shape = tuple(w["x_shape"])
+        unknown = sorted(
+            repr(k) for k in w
+            if not isinstance(k, str) or (k not in allowed and not k.startswith("__"))
+        )
+        if unknown:
+            raise KeyError(
+                f"workload {w.get('label', w)!r} of {op_name!r} has unknown "
+                f"keys {unknown}; allowed: {sorted(allowed)}."
+            )
+        shape = tuple(w[shape_key])
         label = w.get("label", "x".join(str(s) for s in shape))
-        extra = _workload_extra_params(w) if include_extra else {}
+        extra = _workload_extra_params(w, shape_key) if include_extra else {}
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            # Copy ``extra`` per parametrization so accidental mutation in
-            # one test case cannot leak into later parametrized cases that
-            # share the same workload entry.
+            # Copy ``extra`` per parametrization so mutation in one test case
+            # cannot leak into later cases sharing the workload entry.
             param_args = (
                 (shape, dtype, dict(extra))
                 if include_extra
@@ -679,7 +704,12 @@ class BenchmarkReport:
                     row = [str(entry["params"].get(k, "")) for k in param_keys]
                     for rk in result_keys:
                         val = entry["result"].get(rk)
-                        row.append(f"{val:.4f}" if val is not None else "N/A")
+                        if val is None:
+                            row.append("N/A")
+                        elif isinstance(val, (int, float)) and not isinstance(val, bool):
+                            row.append(f"{val:.4f}")
+                        else:
+                            row.append(str(val))
                     if has_config:
                         cfg = entry.get("config")
                         row.append(str(cfg) if cfg else "")

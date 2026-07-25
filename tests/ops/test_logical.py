@@ -169,7 +169,7 @@ class LogicalFixture(FixtureBase):
 
 
 class LogicalNotTest(TestBase):
-    """Test harness for logical_not."""
+    """Test fixture for logical_not."""
 
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total
