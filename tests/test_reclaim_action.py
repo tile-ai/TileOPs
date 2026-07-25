@@ -2,9 +2,8 @@
 
 Covers the sentinel-repair + atomic-trim primitives that protect caches
 whose consumers assume "directory exists => contents complete" (the
-tilelang autotuner cache in particular), plus the gpu-smoke security
-trust-routing contract (a misroute there fails silently — no CI signal —
-so a structural assertion is the only automated guard).
+tilelang autotuner cache in particular), plus the gpu-smoke
+trust-routing contract, whose failure mode has no CI signal.
 
 Required cases:
   - half_dead       : atomic subdir with files but no sentinel is removed
@@ -288,10 +287,9 @@ GPU_SMOKE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "gpu-smoke.yml"
 
 
 def test_security_policy_routes_trust_by_collaborator_permission() -> None:
-    """The security-policy step must derive is_fork from the PR author's collaborator
-    permission (write/maintain/admin -> trusted), NOT author_association, and fail closed
-    to the fork pool on any lookup failure. The same is_fork drives runs-on and the
-    trusted-action ref selection."""
+    """is_fork must derive from the PR author's collaborator permission
+    (write/maintain/admin -> trusted), fail closed to the fork pool, and
+    drive both runs-on and the trusted-action ref."""
     import yaml
 
     wf = yaml.safe_load(GPU_SMOKE_WORKFLOW.read_text())
@@ -302,21 +300,15 @@ def test_security_policy_routes_trust_by_collaborator_permission() -> None:
     script = step["run"]
     env = step["env"]
 
-    # Trust is keyed off the collaborator-permission endpoint, not author_association.
     assert "AUTHOR_ASSOC" not in env, "author_association must no longer drive trust"
     assert "AUTHOR_ASSOC" not in script
-    assert "collaborators/${PR_AUTHOR}/permission" in script, (
-        "is_fork must be derived from the collaborator-permission endpoint"
-    )
-    # Only write/maintain/admin are trusted; the catch-all fails closed to the fork pool.
+    assert "collaborators/${PR_AUTHOR}/permission" in script
     assert "admin|maintain|write" in script
     assert 'is_fork="false"' in script  # trusted branch
     assert 'is_fork="true"' in script  # fail-closed / external branch
-    # PR_AUTHOR must be plumbed from the PR author login.
     assert "PR_AUTHOR" in env, "PR_AUTHOR must be plumbed via env:"
     assert "pull_request.user.login" in env["PR_AUTHOR"]
 
-    # runs-on and the trusted-action ref must both consume the same is_fork output.
     gpu_job = wf["jobs"]["gpu-smoke"]
     assert "needs.security-policy.outputs.is_fork" in str(gpu_job["runs-on"])
     ref_step = next(

@@ -154,8 +154,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           fetch-depth: 1
-          # Whole tests/ tree: the policy step existence-checks changed test
-          # files anywhere under tests/ before selecting them.
+          # Whole tests/ tree: the policy step existence-checks changed
+          # test files before selecting them.
           sparse-checkout: |
             tests
 
@@ -222,11 +222,8 @@ jobs:
             echo "Changed files (${#changed_files[@]}):"
             printf ' - %s\n' "${changed_files[@]}"
 
-            # Diff-scoped full-tier gate: collect every changed test file
-            # (basename test_*.py, any depth under tests/) that still exists
-            # at head. The gpu-smoke job runs these under -m "smoke or full"
-            # so a PR touching a full-tier test executes those cases before
-            # merge instead of first failing on the post-merge push run.
+            # Changed test files (basename test_*.py, existing at head);
+            # the PR gate runs these under -m "smoke or full".
             declare -A seen_full_targets=()
             full_targets_list=()
             for path in "${changed_files[@]}"; do
@@ -527,23 +524,16 @@ jobs:
           read -r -a TARGETS <<< "${PYTEST_TARGETS}"
           read -r -a FULL_TARGETS <<< "${FULL_TIER_TARGETS:-}"
 
-          # Diff-scoped full-tier PR gate. The PR baseline runs -m smoke for
-          # latency, so a PR touching only full-tier cases would otherwise
-          # merge without ever executing them (they would first run on the
-          # post-merge push, failing main with no offending PR blocked).
-          # Changed test files therefore run -m "smoke or full" in the PR
-          # gate; everything else stays smoke-only.
-          #
-          # Residual gap (accepted): cross-file cross-tier interactions — a
-          # PR whose smoke-tier tests break full-tier cases in files it does
-          # not touch — are still only caught by the push-to-main
-          # "smoke or full" run. Closing that gap would require the full
-          # suite on every PR. Triage for a push-tier failure: bisect the
+          # Diff-scoped full-tier PR gate: changed test files run
+          # -m "smoke or full"; everything else stays smoke-only for latency.
+          # Residual gap (accepted): a PR breaking full-tier cases in files it
+          # does not touch is only caught by the push-to-main run — closing it
+          # would cost a full suite per PR. Push-tier failure triage: bisect
           # PRs merged since the last green push run.
           if [[ "$EVENT_NAME" == "pull_request" && "${#FULL_TARGETS[@]}" -gt 0 ]]; then
             if [[ "$TEST_SCOPE" == "targeted" ]]; then
-              # Targeted scope selects exactly the changed test files, so
-              # promote the single pass instead of running twice.
+              # Targeted scope already selects exactly these files; promote
+              # the single pass instead of running twice.
               TEST_MARK_EXPR="smoke or full"
               FULL_TARGETS=()
             else
@@ -553,22 +543,19 @@ jobs:
                 --timeout=600 --timeout-method=thread \
                 --junit-xml=gpu_smoke_full_results.xml | tee gpu_smoke_full.log \
                 || diff_status=$?
-              # Exit 5 = no tests collected (e.g. the changed file is a
-              # test helper or holds only nightly cases); not a failure.
+              # Exit 5 = no tests collected; not a failure.
               if [[ "$diff_status" -ne 0 && "$diff_status" -ne 5 ]]; then
                 exit "$diff_status"
               fi
-              # The changed files already ran their smoke cases above;
-              # exclude them from the smoke pass below.
+              # Already ran above; exclude from the smoke pass.
               for full_target in "${FULL_TARGETS[@]}"; do
                 TARGETS+=("--ignore=${full_target}")
               done
             fi
           fi
 
-          # Expose the marker the baseline pass actually executes so the
-          # report step labels the tier correctly (a targeted PR diff
-          # promotes this pass to "smoke or full").
+          # Marker the baseline pass actually executes; the report step
+          # labels the tier from it.
           echo "EXECUTED_MARK_EXPR=${TEST_MARK_EXPR}" >> "$GITHUB_ENV"
 
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
@@ -583,10 +570,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # EXECUTED_MARK_EXPR is exported by the Run tests step once the
-          # tier is resolved (a targeted PR diff promotes the baseline pass
-          # to "smoke or full"). Fall back to the event default only when
-          # Run tests died before resolving it.
+          # Set by Run tests once the tier is resolved; fall back to the
+          # event default only if Run tests died before resolving it.
           if [[ -n "${EXECUTED_MARK_EXPR:-}" ]]; then
             REPORT_TARGET="${EXECUTED_MARK_EXPR// or /, }"
           else
