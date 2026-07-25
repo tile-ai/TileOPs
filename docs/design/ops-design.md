@@ -260,6 +260,7 @@ This playbook emits exactly the 17 slots above. The following are **not** produc
 - **`_cache_key` override.** The default projection via `_static_axes` is correct but sometimes over-fragmenting. Override logic depends on what subset of the input shape the kernel actually depends on — kernel-math-specific.
 - **Family-base (T1) subclassing.** See [Family-Base Refactoring (Future Work)](#family-base-refactoring-future-work).
 - **Kernel implementations themselves.** The playbook's scope is the Op (host) layer. See [Implementing a Kernel](#implementing-a-kernel) for the kernel-side interface surface.
+- **`torch_compile_fullgraph` declaration.** Requires registered compile-test evidence; CI holds declarations and evidence in exact equality. `torch.compile` registration goes through the shared factories — bespoke per-op `custom_op` code needs design review. Semantics: [manifest.md](manifest.md#torch_compile_fullgraph).
 
 ## Implementing a Kernel
 

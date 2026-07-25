@@ -4244,51 +4244,24 @@ class TestStrictAdvisoryMode:
 
 
 class TestCompileContractRegistry:
-    """Structural guards for the torch.compile contract-coverage registry.
+    """Enforcement point for the torch_compile_fullgraph contract."""
 
-    The registry (tests/compile_contract.py) aggregates the op classes the
-    curated compile tests exercise cold with ``fullgraph=True`` via
-    ``compile_contract_ops()``. The strict declaration/evidence equality
-    gate lands here once the manifest carries ``torch_compile_fullgraph``
-    declarations.
-    """
+    def test_declarations_match_registered_evidence(self):
+        """Manifest declarations == registered compile-test evidence, exactly.
 
-    def test_register_compile_contract_records_class_name(self):
-        """register_compile_contract records the class name (side effect only)."""
-        from tests import compile_contract as registry
-        from tileops.ops.elementwise import ReluFwdOp
-
-        # ReluFwdOp is already contract evidence; re-registering is
-        # idempotent and avoids polluting the registry with synthetic names.
-        assert registry.register_compile_contract(ReluFwdOp) is None
-        assert "ReluFwdOp" in registry.compile_contract_ops()
-
-    def test_compile_contract_ops_aggregates_all_evidence_modules(self):
-        """compile_contract_ops() covers evidence from every registered module."""
-        from tests.compile_contract import compile_contract_ops
-
-        ops = compile_contract_ops()
-        assert isinstance(ops, frozenset)
-        assert ops
-        # One representative per evidence module: elementwise + attention.
-        assert "ReluFwdOp" in ops
-        assert "MultiHeadAttentionFwdOp" in ops
-        # Stable across calls: the registry only grows at import time.
-        assert compile_contract_ops() == ops
-
-    def test_compile_contract_ops_are_exact_manifest_keys(self):
-        """Every registered evidence name is an exact manifest op key.
-
-        Guards registration typos: the structural equality gate compares
-        op-name identity against manifest keys, so a registered name that
-        is not a manifest key can never reconcile.
+        Subsumes registration, aggregation, and manifest-key checks: a
+        broken helper, a missing evidence module, or a typo'd name all
+        surface as a set difference here.
         """
         from tests.compile_contract import compile_contract_ops
         from tileops.manifest import load_manifest
 
-        manifest_keys = set(load_manifest())
-        unknown = compile_contract_ops() - manifest_keys
-        assert not unknown, (
-            f"Registered compile-contract ops missing from manifest: "
-            f"{sorted(unknown)}"
+        declared = {
+            name for name, entry in load_manifest().items()
+            if entry.get("torch_compile_fullgraph") is True
+        }
+        registered = compile_contract_ops()
+        assert declared == registered, (
+            f"evidence without declaration: {sorted(registered - declared)}; "
+            f"declaration without evidence: {sorted(declared - registered)}"
         )
