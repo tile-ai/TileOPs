@@ -234,6 +234,7 @@ def test_multi_input_op_raises_keyerror():
         workloads_to_params("GroupedQueryAttentionFwdOp")
 
 
+@pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_projection_failure_falls_back_to_cuda_events():
     """A callable launching no CUDA kernel projects no annotation windows;
@@ -243,6 +244,8 @@ def test_projection_failure_falls_back_to_cuda_events():
     assert _bench_meta.timing == "cuda-events"
 
 
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_kernel_runtime_error_propagates():
     """Genuine RuntimeErrors must reach the caller, not the fallback path."""
     def boom():

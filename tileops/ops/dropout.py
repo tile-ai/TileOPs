@@ -114,7 +114,7 @@ class DropoutOp(Op):
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
         if not input.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
+            raise ValueError("input must be a CUDA tensor")
         if input.dtype not in (torch.float16, torch.bfloat16, torch.float32):
             raise ValueError(f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}")
         wrapped = type(self)._wrapped
