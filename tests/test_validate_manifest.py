@@ -3148,6 +3148,23 @@ class TestBench:
 # ---------------------------------------------------------------------------
 # --check-op: force all levels on a specific op, ignoring status
 # ---------------------------------------------------------------------------
+    def test_bench_indirect_wrong_op_fails(self, validator, tmp_path):
+        """Indirect helpers called with wrong op name must still fail."""
+        bench_file = tmp_path / "bench_test.py"
+        bench_file.write_text(textwrap.dedent("""\
+            from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
+            params = workloads_to_params('wrong_op')
+            ManifestBenchmark('wrong_op', op, params[0])
+        """))
+        errors = validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+        assert any("load_workloads" in e for e in errors)
+        assert any("eval_roofline" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# --check-op: force all levels on a specific op, ignoring status
+# ---------------------------------------------------------------------------
+
 
 class TestCheckOp:
     """--check-op forces all validation levels on a named op, ignoring spec-only."""
@@ -3367,6 +3384,44 @@ class TestCheckOp:
             f"good_variant should pass R16, got: {good_r16}"
         )
 
+
+    def test_check_op_variant_family_runs_schema_on_variants(self, validator, tmp_path):
+        """--check-op on primary runs per-op schema checks on variants too."""
+        import yaml
+
+        primary = _make_entry(source_kernel="shared.py")
+        # Variant with broken source (missing required fields)
+        broken_variant = {
+            "family": "test",
+            "signature": {
+                "inputs": {"x": {"dtype": "float16"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+            "workloads": [{"x_shape": [1, 4096], "dtypes": ["float16"]}],
+            "roofline": {"flops": "2 * M", "bytes": "M * 2"},
+            "source": {
+                "kernel": "shared.py",
+                # missing "op", "test", "bench" fields
+            },
+            "variant_of": "primary_op",
+        }
+
+        manifest_file = tmp_path / "ops_manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump({
+            "primary_op": primary,
+            "broken_var": broken_variant,
+        }))
+
+        errors, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            check_op="primary_op",
+        )
+        schema_errors = [e for e in errors if "broken_var" in e and "source" in e]
+        assert len(schema_errors) > 0, (
+            f"--check-op on primary must run schema checks on variants, "
+            f"got errors: {errors}"
+        )
 
     def test_check_op_cli_parsing(self, validator):
         """_parse_check_op extracts the op name from argv."""
