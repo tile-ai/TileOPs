@@ -4,12 +4,12 @@
 import pytest
 import torch
 
-from tests.compile_contract import compile_contract
+from tests.compile_contract import register_compile_contract
 from tests.ops.attention.test_mha import MhaFwdTest
 from tests.test_base import FixtureBase
 from tileops.ops import MultiHeadAttentionFwdOp
 
-compile_contract(MultiHeadAttentionFwdOp)
+register_compile_contract(MultiHeadAttentionFwdOp)
 
 
 class MhaCompileFixture(FixtureBase):

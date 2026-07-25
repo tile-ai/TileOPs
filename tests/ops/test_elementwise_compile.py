@@ -12,7 +12,7 @@ Validates that torch.compile(op, fullgraph=True) produces correct output.
 import pytest
 import torch
 
-from tests.compile_contract import compile_contract
+from tests.compile_contract import register_compile_contract
 from tests.test_base import FixtureBase, TestBase, exact_compare
 from tileops.ops.elementwise import (
     AbsFwdOp,
@@ -95,7 +95,7 @@ def _register_table(table):
     """
     for case in table:
         values = case.values if hasattr(case, "values") else case
-        compile_contract(values[0])
+        register_compile_contract(values[0])
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ class ReluCompileTest(TestBase):
         return torch.relu(x.float()).to(x.dtype)
 
 
-compile_contract(ReluFwdOp)
+register_compile_contract(ReluFwdOp)
 
 
 @ReluCompileFixture
@@ -165,7 +165,7 @@ class AddCompileTest(TestBase):
         return (a.float() + b.float()).to(a.dtype)
 
 
-compile_contract(AddFwdOp)
+register_compile_contract(AddFwdOp)
 
 
 @AddCompileFixture
@@ -207,7 +207,7 @@ class EqCompileTest(TestBase):
         return a == b
 
 
-compile_contract(EqFwdOp)
+register_compile_contract(EqFwdOp)
 
 
 @EqCompileFixture
@@ -248,7 +248,7 @@ class SiluAndMulCompileTest(TestBase):
         return (torch.nn.functional.silu(gate) * value).to(x.dtype)
 
 
-compile_contract(SiluAndMulFwdOp)
+register_compile_contract(SiluAndMulFwdOp)
 
 
 @SiluAndMulCompileFixture
@@ -285,7 +285,7 @@ class AbsCompileTest(TestBase):
         return torch.abs(x.float()).to(x.dtype)
 
 
-compile_contract(AbsFwdOp)
+register_compile_contract(AbsFwdOp)
 
 
 @AbsCompileFixture
@@ -317,7 +317,7 @@ class SignCompileTest(TestBase):
         return torch.sign(x.float()).to(x.dtype)
 
 
-compile_contract(SignFwdOp)
+register_compile_contract(SignFwdOp)
 
 
 @SignCompileFixture
@@ -485,7 +485,7 @@ def test_unary_bool_compile(op_cls, ref_fn, dtype, name):
 
 # --- Unary bitwise op ---
 
-compile_contract(BitwiseNotFwdOp)
+register_compile_contract(BitwiseNotFwdOp)
 
 
 @pytest.mark.full
@@ -529,7 +529,7 @@ def test_binary_arith_compile(op_cls, ref_fn, name):
     torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
 
 
-compile_contract(PowFwdOp)
+register_compile_contract(PowFwdOp)
 
 
 @pytest.mark.full
@@ -548,7 +548,7 @@ def test_pow_compile():
 
 # --- Lerp (special binary with weight) ---
 
-compile_contract(LerpFwdOp)
+register_compile_contract(LerpFwdOp)
 
 
 @pytest.mark.full
@@ -564,7 +564,7 @@ def test_lerp_compile():
     torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
 
 
-compile_contract(LerpTensorFwdOp)
+register_compile_contract(LerpTensorFwdOp)
 
 
 @pytest.mark.full
@@ -701,7 +701,7 @@ def test_fused_gated_compile(op_cls, name):
 
 # --- Where op (cond, x, y -> out): same-shape and broadcasting ---
 
-compile_contract(WhereFwdOp)
+register_compile_contract(WhereFwdOp)
 
 
 @pytest.mark.full
@@ -743,7 +743,7 @@ def test_where_compile_broadcast():
 
 # --- ClampScalarFwdOp (input -> out, scalar min/max baked) ---
 
-compile_contract(ClampScalarFwdOp)
+register_compile_contract(ClampScalarFwdOp)
 
 
 @pytest.mark.full
@@ -760,7 +760,7 @@ def test_clamp_scalar_compile():
 
 # --- Tensor-bound ClampFwdOp (input, min?, max? -> out) ---
 
-compile_contract(ClampFwdOp)
+register_compile_contract(ClampFwdOp)
 
 
 @pytest.mark.full
@@ -801,7 +801,7 @@ def test_clamp_tensor_compile_broadcast():
 
 # --- Single-bound Tensor clamp variants ---
 
-compile_contract(ClampMinFwdOp)
+register_compile_contract(ClampMinFwdOp)
 
 
 @pytest.mark.full
@@ -832,7 +832,7 @@ def test_clamp_min_compile_broadcast():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-compile_contract(ClampMaxFwdOp)
+register_compile_contract(ClampMaxFwdOp)
 
 
 @pytest.mark.full
@@ -865,7 +865,7 @@ def test_clamp_max_compile_broadcast():
 
 # --- MaskedFillFwdOp (Tensor value) ---
 
-compile_contract(MaskedFillFwdOp)
+register_compile_contract(MaskedFillFwdOp)
 
 
 @pytest.mark.full
@@ -907,7 +907,7 @@ def test_masked_fill_tensor_compile_broadcast():
 
 # --- MaskedFillScalarFwdOp (broadcast path now uses custom_op) ---
 
-compile_contract(MaskedFillScalarFwdOp)
+register_compile_contract(MaskedFillScalarFwdOp)
 
 
 @pytest.mark.full
