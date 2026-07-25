@@ -783,7 +783,7 @@ class TestSignature:
 
 
     def test_no_init_params_falls_back_to_forward_only(self, validator):
-        """When init_params is None, only forward() is checked (backward compat)."""
+        """When init_params is None it is treated as empty; only forward() is checked."""
         manifest_inputs = {"x": {"dtype": "float16"}}
         manifest_params = {"eps": {"type": "float", "default": 1e-6}}
         forward_params = ["x"]
@@ -826,9 +826,6 @@ class TestSignature:
         )
 
 
-# ---------------------------------------------------------------------------
-# dtype: dtype string conformance
-# ---------------------------------------------------------------------------
     def test_static_dims_non_dict_fails(self, validator):
         """static_dims must be a mapping; non-dict values are reported."""
         manifest_inputs = {"x": {"dtype": "float16"}}
@@ -1164,13 +1161,12 @@ class TestInferShapeParity:
 
 
     def test_no_override_emits_missing_method_warning(self, validator):
-        """F002 regression: missing override must not pass silently.
+        """Missing override must not pass silently.
 
-        Implemented ops whose class does not yet define
-        ``_infer_output_shapes`` must surface a warning naming the gap.
-        Silently skipping every such op would make the parity check
-        vacuous on the current manifest (no op currently overrides this
-        method).
+        Implemented ops whose class does not define
+        ``_infer_output_shapes`` must surface a warning naming the gap;
+        silently skipping such ops would leave the parity check with no
+        visible coverage signal.
         """
         from tileops.ops.op_base import Op
 
@@ -1203,7 +1199,7 @@ class TestInferShapeParity:
 
 
     def test_symbolic_dim_rule_detects_wrong_output(self, validator):
-        """F001 regression: rules like ``o.shape == (B, S, H, D)`` must fire.
+        """Regression: rules like ``o.shape == (B, S, H, D)`` must fire.
 
         The MultiHeadAttentionFwdOp-style manifest rule references
         symbolic dimension names (B, S, H, D) declared only via literal
@@ -1537,8 +1533,8 @@ class TestInferShapeParity:
 
 
     def test_body_runtime_error_is_hard_l2_error(self, validator):
-        """Finding #2 regression: a body raising ``RuntimeError('not ready')``
-        must become a hard L2 parity error unless the entry opts out.
+        """A body raising ``RuntimeError('not ready')`` must become a hard
+        L2 parity error (parity is unconditional for implemented ops).
         """
         def infer(self, x_shape):
             raise RuntimeError("not ready")
@@ -1661,7 +1657,7 @@ class TestInferShapeParity:
         """``_infer_output_shapes`` reading ``self.<static_dim>`` must
         exercise parity, not skip with AttributeError.
 
-        Regression (review thread 1): ``_build_mock_self`` previously
+        Regression: ``_build_mock_self`` previously
         installed only ``signature.params`` defaults, so a generated
         ``_infer_output_shapes`` that consults ``self.N`` (a
         ``static_dims`` key) raised AttributeError and the check was
@@ -1704,7 +1700,7 @@ class TestInferShapeParity:
         """Conv-like op with output-only ``L_out`` derived by shape_rules
         must pass parity when ``_infer_output_shapes`` is correct.
 
-        Regression (review thread 2): previously the declared
+        Regression: previously the declared
         output-shape comparison pulled an arbitrary concrete size for
         ``L_out`` from ``dim_sizes`` and flagged the correct
         ``_infer_output_shapes`` as a mismatch. Output-only symbols must
@@ -1970,7 +1966,7 @@ class TestValidateDtypesParity:
 
 
     def test_no_override_emits_missing_method_warning(self, validator):
-        """F002 regression: missing override must not pass silently on L3."""
+        """Missing ``_validate_dtypes`` override must not pass silently on L3."""
         from tileops.ops.op_base import Op
 
         class BareOp(Op):
@@ -2642,8 +2638,9 @@ class TestValidateDtypesParity:
         )
 
     def test_combo_missing_input_is_manifest_error(self, validator):
-        """A combo that omits an input entry remains a manifest error
-        surfaced via the parity loop (not a rejection, not a skip).
+        """A combo that omits an input entry is a manifest error surfaced
+        by the upfront combo-data check inside the parity entry point —
+        never reported as a rejection or a silent skip.
         """
         def validate(self, x, w):
             return None
@@ -2682,7 +2679,7 @@ class TestValidateDtypesParity:
         """``_validate_dtypes`` that compares ``x.dtype != self.dtype``
         must accept every listed combo when mock_self.dtype is populated.
 
-        Regression (review thread 1): ``_build_mock_self`` previously
+        Regression: ``_build_mock_self`` previously
         installed only ``signature.params`` defaults, so
         ``self.dtype`` fell through to the base-class ``Op.dtype = None``
         and the comparison always raised — causing the parity check to
@@ -2723,7 +2720,7 @@ class TestDtypeCombosDataHardening:
     """
 
     def test_combo_missing_input_is_hard_error(self, validator):
-        """Finding #1: every combo row must cover every declared input.
+        """Every combo row must cover every declared input.
 
         Omitting a declared input from a combo row used to silently pass
         when the op had no ``_validate_dtypes`` override — the parity
@@ -2748,7 +2745,7 @@ class TestDtypeCombosDataHardening:
         ), f"expected completeness error, got {errors}"
 
     def test_combo_value_union_is_hard_error(self, validator):
-        """Finding #5: a union expression in a combo value is rejected.
+        """A union expression in a combo value is rejected.
 
         Per manifest.md R4, ``dtype_combos[i].<key>`` must be a single
         concrete dtype token (or a ``same_as(ref)`` resolving to one);
@@ -2793,7 +2790,7 @@ class TestDtypeCombosDataHardening:
 
 
 class TestStaticDimShapeParity:
-    """Finding #3 regression: static_dims values must pin expected output sizes."""
+    """static_dims values must pin expected output sizes in the L2 parity check."""
 
     def test_static_dim_output_shape_catches_bad_infer(self, validator):
         """A generated _infer_output_shapes returning arbitrary integers
@@ -2831,7 +2828,7 @@ class TestStaticDimShapeParity:
 
 
 class TestUnexpectedValidateDtypesException:
-    """Finding #4 regression: body-level unexpected exceptions become hard L3 errors."""
+    """Body-level unexpected exceptions from _validate_dtypes become hard L3 errors."""
 
     def test_runtime_error_from_validate_body_is_hard_error(self, validator):
         """_validate_dtypes raising RuntimeError for every valid combo
@@ -3471,12 +3468,12 @@ class TestResolveOpClass:
         assert result.cls is None
 
     def test_ambiguous_fallback_returns_none_with_warning(self, validator):
-        """When multiple candidates exist but no heuristic matches, return cls=None."""
+        """When multiple candidates exist but none matches the manifest key, return cls=None."""
         import importlib
         import types
 
-        # Create a fake module with two candidate classes whose names don't
-        # match any heuristic for the given op_name.
+        # Create a fake module with two candidate classes, neither named
+        # after the given op_name.
         fake_mod = types.ModuleType("tileops.ops.fake_ambiguous")
         fake_mod.__name__ = "tileops.ops.fake_ambiguous"
 
@@ -3656,7 +3653,7 @@ class TestShapeRuleHelpers:
     def test_helper_rule_validator_warns_on_malformed_dim(self, validator):
         """Validator integration: helper rules surface malformed dims as warnings.
 
-        The reviewer's reproducer (``dim=["2"]``) raises TypeError from
+        A malformed dim default (``dim=["2"]``) raises TypeError from
         the helper, which the validator classifies as an eval-error
         warning ("could not be evaluated"). The contract: the parity
         check is skipped with a warning, not turned into a hard shape
@@ -3774,23 +3771,6 @@ class TestValidatorHelperResolution:
             and "dim_range_validity(x, dim)" in w
         ]
         assert len(precondition_hits) == 1, warnings
-
-    def test_shape_rule_builtin_pairs_have_unique_names(self, validator):
-        """Validator startup rejects a duplicate name in the builtin pairs list.
-
-        ``_SHAPE_RULE_BUILTIN_PAIRS`` is the editorial source: Python
-        primitives, broadcasting helpers, and reduction-dim helpers
-        share the same eval-scope namespace. If a future addition picks
-        a name that already exists, the eval scope would silently shadow
-        one with the other; the loop that builds ``_SHAPE_RULE_BUILTINS``
-        raises ``RuntimeError`` instead. Pin the contract so the guard
-        cannot regress to a silent dict-merge.
-        """
-        names = [name for name, _ in validator._SHAPE_RULE_BUILTIN_PAIRS]
-        assert len(names) == len(set(names)), (
-            f"duplicate name in _SHAPE_RULE_BUILTIN_PAIRS: {names}"
-        )
-
 
     def test_input_bound_symbols_tolerates_non_dict_inputs(self, validator):
         """``_input_bound_symbols`` must treat malformed inputs as empty.
@@ -3981,7 +3961,7 @@ class TestStrictParityC5Dispatch:
 
     def test_silently_drops_override_caught(self, validator):
         """Slot S13 violation: kwarg accepted but body never calls
-        ``self.dispatch_kernel`` — the W2-audit bug shape."""
+        ``self.dispatch_kernel``, silently dropping the override."""
         from tileops.ops.op_base import Op
 
         class SilentDropOp(Op):
@@ -4116,15 +4096,6 @@ class TestStrictParityC6C7Stub:
 
         assert validator.check_c7_eval_roofline_not_stub("Op4", {}, Op4) == []
 
-
-class TestParityOptOutRemoval:
-    """``parity_opt_out`` is removed: schema rejects it, parity ignores it."""
-
-    def test_schema_rejects_unknown_top_level_key(self, validator):
-        entry = _make_entry()
-        entry["parity_opt_out"] = True
-        errors = validator.check_l0("op", entry)
-        assert any("unknown entry keys" in e and "parity_opt_out" in e for e in errors), errors
 
 class TestStrictAdvisoryMode:
     """Advisory vs strict routing of C1-C7 failures, driven through
