@@ -80,6 +80,85 @@ def test_security_policy_routes_trust_by_collaborator_permission() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Diff-scoped full-tier PR gate
+# ---------------------------------------------------------------------------
+
+
+def _policy_step(wf: dict) -> dict:
+    policy_job = wf["jobs"]["security-policy"]
+    return next(s for s in policy_job["steps"] if s.get("id") == "policy")
+
+
+def _run_tests_step(wf: dict) -> dict:
+    steps = wf["jobs"]["gpu-smoke"]["steps"]
+    return next(s for s in steps if s.get("name") == "Run tests")
+
+
+def test_security_policy_exports_full_tier_targets() -> None:
+    """security-policy must compute the changed test files (any tests/**/test_*.py
+    in the PR diff) and export them as the full_tier_targets job output so the
+    gpu-smoke job can run them under `-m "smoke or full"`."""
+    wf = _load(GPU_SMOKE)
+    outputs = wf["jobs"]["security-policy"]["outputs"]
+    assert "full_tier_targets" in outputs
+    assert "steps.policy.outputs.full_tier_targets" in outputs["full_tier_targets"]
+
+    script = _policy_step(wf)["run"]
+    # Matches test files at any depth under tests/, by basename prefix, so
+    # helper modules (e.g. *_test_utils.py) are not selected.
+    assert "tests/*/test_*.py|tests/test_*.py" in script
+    assert "full_tier_targets=" in script
+
+
+def test_security_policy_sparse_checkout_covers_tests_tree() -> None:
+    """The policy job existence-checks changed test files before selecting them;
+    the sparse checkout must therefore cover the whole tests/ tree, not just
+    tests/ops."""
+    wf = _load(GPU_SMOKE)
+    policy_job = wf["jobs"]["security-policy"]
+    checkout = next(s for s in policy_job["steps"] if "checkout" in (s.get("uses") or ""))
+    sparse = checkout["with"]["sparse-checkout"]
+    assert "tests" in sparse.split()
+    assert "tests/ops" not in sparse.split()
+
+
+def test_pr_gate_runs_full_tier_on_changed_test_files() -> None:
+    """A PR touching a test file must execute that file's full-tier cases:
+    targeted scope promotes the single pass to `-m "smoke or full"`; full-smoke
+    scope runs a dedicated diff-scoped pass and excludes those files from the
+    smoke pass."""
+    wf = _load(GPU_SMOKE)
+    step = _run_tests_step(wf)
+    env = step["env"]
+    assert "FULL_TIER_TARGETS" in env
+    assert "needs.security-policy.outputs.full_tier_targets" in env["FULL_TIER_TARGETS"]
+
+    script = step["run"]
+    # Diff-scoped pass over the changed test files.
+    assert 'pytest -q "${FULL_TARGETS[@]}" -m "smoke or full"' in script
+    assert "--junit-xml=gpu_smoke_full_results.xml" in script
+    # Changed files are excluded from the smoke pass (no double execution).
+    assert '--ignore=${full_target}' in script
+    # Targeted scope (targets == changed test files) promotes in place.
+    assert '"$TEST_SCOPE" == "targeted"' in script
+
+
+def test_pr_gate_residual_gap_documented() -> None:
+    """The accepted residual gap (cross-file cross-tier interactions still only
+    caught on push-to-main) must be documented in the workflow itself."""
+    script = _run_tests_step(_load(GPU_SMOKE))["run"]
+    assert "Residual gap" in script
+
+
+def test_push_tier_selection_unchanged() -> None:
+    """Push-to-main keeps `-m "smoke or full"`; only pull_request downgrades the
+    baseline pass to smoke."""
+    script = _run_tests_step(_load(GPU_SMOKE))["run"]
+    assert 'TEST_MARK_EXPR="smoke or full"' in script
+    assert 'TEST_MARK_EXPR="smoke"' in script
+
+
+# ---------------------------------------------------------------------------
 # gpu-smoke opts out of atomic age-trim
 # ---------------------------------------------------------------------------
 
