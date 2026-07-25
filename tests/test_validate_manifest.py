@@ -620,6 +620,25 @@ class TestVariantOf:
 # signature: Op.forward() consistency
 # ---------------------------------------------------------------------------
 
+
+def _run_check_l1(validator, monkeypatch, cls, signature):
+    """Drive the public ``check_l1`` entry point with a synthetic Op class.
+
+    ``_resolve_op_class`` is monkeypatched to hand back *cls*, so the
+    synthetic entry needs no importable module; ``__init__``/``forward``
+    parameters are read off the class by ``check_l1`` itself.
+    """
+    monkeypatch.setattr(
+        validator, "_resolve_op_class",
+        lambda op_file, op_name: validator._ResolveResult(cls=cls),
+    )
+    entry = {
+        "signature": signature,
+        "source": {"op": "tileops/ops/synthetic.py"},
+    }
+    return validator.check_l1(cls.__name__, entry, warnings=[])
+
+
 class TestSignature:
     """signature checks that Op.forward() params match manifest inputs."""
 
@@ -644,85 +663,106 @@ class TestSignature:
 
         assert errors == ["[signature] MissingImplementedOp: missing source.op"]
 
-    def test_signature_parity_accepted_forms(self, validator):
+    def test_signature_parity_accepted_forms(self, validator, monkeypatch):
         """Case table: inputs / params / static_dims placements the L1
-        signature check accepts."""
+        signature check accepts, driven through the public ``check_l1``
+        entry point with synthetic Op classes."""
+        class FwdMatchOp:
+            def __init__(self): pass
+            def forward(self, x, weight): return None
+
+        class FwdParamOp:
+            def __init__(self): pass
+            def forward(self, x, weight, training=True): return None
+
+        class InitParamOp:
+            def __init__(self, M, N, dtype, eps=1e-6): pass
+            def forward(self, x): return None
+
+        class StaticDimInitOp:
+            def __init__(self, N, dtype, dim=-1): pass
+            def forward(self, x): return None
+
         cases = [
-            # (description, kwargs for check_l1_signature)
-            ("forward params match manifest inputs", dict(
-                manifest_inputs={"x": {"dtype": "float16"},
-                                 "weight": {"dtype": "same_as(x)"}},
-                manifest_params={},
-                forward_params=["x", "weight"],
-            )),
-            ("manifest param appears as forward() arg", dict(
-                manifest_inputs={"x": {"dtype": "float16"},
-                                 "weight": {"dtype": "float32"}},
-                manifest_params={"training": {"type": "bool", "default": True}},
-                forward_params=["x", "weight", "training"],
-            )),
-            ("manifest param appears only in __init__()", dict(
-                manifest_inputs={"x": {"dtype": "float16"}},
-                manifest_params={"eps": {"type": "float", "default": 1e-6}},
-                forward_params=["x"],
-                init_params=["M", "N", "dtype", "eps"],
-            )),
-            ("static_dims key appears in __init__() (R20)", dict(
-                manifest_inputs={"x": {"dtype": "float16"}},
-                manifest_params={"dim": {"type": "int", "default": -1}},
-                forward_params=["x"],
-                init_params=["N", "dtype", "dim"],
-                manifest_static_dims={"N": "x.shape[dim]"},
-            )),
+            # (description, Op class, manifest signature)
+            ("forward params match manifest inputs", FwdMatchOp, {
+                "inputs": {"x": {"dtype": "float16"},
+                           "weight": {"dtype": "same_as(x)"}},
+                "params": {},
+            }),
+            ("manifest param appears as forward() arg", FwdParamOp, {
+                "inputs": {"x": {"dtype": "float16"},
+                           "weight": {"dtype": "float32"}},
+                "params": {"training": {"type": "bool", "default": True}},
+            }),
+            ("manifest param appears only in __init__()", InitParamOp, {
+                "inputs": {"x": {"dtype": "float16"}},
+                "params": {"eps": {"type": "float", "default": 1e-6}},
+            }),
+            ("static_dims key appears in __init__() (R20)", StaticDimInitOp, {
+                "inputs": {"x": {"dtype": "float16"}},
+                "params": {"dim": {"type": "int", "default": -1}},
+                "static_dims": {"N": "x.shape[dim]"},
+            }),
         ]
-        for desc, kwargs in cases:
-            errors = validator.check_l1_signature("test_op", **kwargs)
+        for desc, cls, signature in cases:
+            errors = _run_check_l1(validator, monkeypatch, cls, signature)
             assert errors == [], f"{desc}: unexpected errors: {errors}"
 
-    def test_signature_parity_rejected_forms(self, validator):
+    def test_signature_parity_rejected_forms(self, validator, monkeypatch):
         """Case table: mismatches and malformed fields the L1 signature
-        check reports (never crashes on)."""
+        check reports (never crashes on), driven through the public
+        ``check_l1`` entry point with synthetic Op classes."""
+        class ForwardOnlyOp:
+            def __init__(self): pass
+            def forward(self, x): return None
+
+        class ForwardWithParamOp:
+            def __init__(self): pass
+            def forward(self, x, training=True): return None
+
+        class InitWithoutDimOp:
+            def __init__(self, M, N, dtype, eps=1e-6): pass
+            def forward(self, x): return None
+
+        class InitWithoutStaticDimOp:
+            def __init__(self, dtype, dim=-1): pass
+            def forward(self, x): return None
+
         cases = [
-            # (description, kwargs, substrings expected in one error)
-            ("forward() missing a manifest input", dict(
-                manifest_inputs={"x": {"dtype": "float16"},
-                                 "weight": {"dtype": "same_as(x)"}},
-                manifest_params={},
-                forward_params=["x"],
-            ), ["do not match"]),
-            ("params as list reported, not crash", dict(
-                manifest_inputs={"x": {"dtype": "float16"}},
-                manifest_params=["training"],
-                forward_params=["x", "training"],
-            ), ["signature", "params"]),
-            ("param missing from both __init__ and forward", dict(
-                manifest_inputs={"x": {"dtype": "float16"}},
-                manifest_params={"dim": {"type": "int", "default": -1}},
-                forward_params=["x"],
-                init_params=["M", "N", "dtype", "eps"],
-            ), ["dim"]),
-            ("no init_params falls back to forward-only", dict(
-                manifest_inputs={"x": {"dtype": "float16"}},
-                manifest_params={"eps": {"type": "float", "default": 1e-6}},
-                forward_params=["x"],
-            ), ["eps"]),
-            ("static_dims key missing from __init__ (R20)", dict(
-                manifest_inputs={"x": {"dtype": "float16"}},
-                manifest_params={"dim": {"type": "int", "default": -1}},
-                forward_params=["x"],
-                init_params=["dtype", "dim"],
-                manifest_static_dims={"N": "x.shape[dim]"},
-            ), ["static_dims", "'N'"]),
-            ("non-dict static_dims reported", dict(
-                manifest_inputs={"x": {"dtype": "float16"}},
-                manifest_params={},
-                forward_params=["x"],
-                init_params=["dtype"],
-                manifest_static_dims=["N"],
-            ), ["static_dims"]),
+            # (description, Op class, manifest signature,
+            #  substrings expected in one error)
+            ("forward() missing a manifest input", ForwardOnlyOp, {
+                "inputs": {"x": {"dtype": "float16"},
+                           "weight": {"dtype": "same_as(x)"}},
+                "params": {},
+            }, ["do not match"]),
+            ("params as list reported, not crash", ForwardWithParamOp, {
+                "inputs": {"x": {"dtype": "float16"}},
+                "params": ["training"],
+            }, ["signature", "params"]),
+            ("param missing from both __init__ and forward", InitWithoutDimOp, {
+                "inputs": {"x": {"dtype": "float16"}},
+                "params": {"dim": {"type": "int", "default": -1}},
+            }, ["dim"]),
+            ("param-less __init__ leaves only forward()", ForwardOnlyOp, {
+                "inputs": {"x": {"dtype": "float16"}},
+                "params": {"eps": {"type": "float", "default": 1e-6}},
+            }, ["eps"]),
+            ("static_dims key missing from __init__ (R20)",
+             InitWithoutStaticDimOp, {
+                "inputs": {"x": {"dtype": "float16"}},
+                "params": {"dim": {"type": "int", "default": -1}},
+                "static_dims": {"N": "x.shape[dim]"},
+            }, ["static_dims", "'N'"]),
+            ("non-dict static_dims reported", InitWithoutStaticDimOp, {
+                "inputs": {"x": {"dtype": "float16"}},
+                "params": {},
+                "static_dims": ["N"],
+            }, ["static_dims"]),
         ]
-        for desc, kwargs, substrings in cases:
-            errors = validator.check_l1_signature("test_op", **kwargs)
+        for desc, cls, signature, substrings in cases:
+            errors = _run_check_l1(validator, monkeypatch, cls, signature)
             lowered = [e.lower() for e in errors]
             assert any(
                 all(s.lower() in e for s in substrings) for e in lowered
@@ -1979,14 +2019,13 @@ class TestValidateDtypesParity:
             )
 
     def test_wide_union_probe_pool_derived_from_torch_dtypes(self, validator):
-        """The out-of-union probe pool must not be engulfed by wide unions.
+        """The out-of-union probe pool is ``sorted(_TORCH_DTYPES - declared)``.
 
-        A prior implementation used a fixed 8-dtype sentinel pool. An op
-        declaring exactly those 8 dtypes left the probe with no candidate,
-        so an over-permissive ``_validate_dtypes`` accepting e.g. ``uint8``
-        went undetected. The probe now derives candidates from
-        ``sorted(_TORCH_DTYPES - declared)``, guaranteeing a non-empty pool
-        whenever declared does not cover the entire torch dtype universe.
+        The pool must stay non-empty for every union that does not cover
+        the entire torch dtype universe: an op declaring a wide 8-dtype
+        union still leaves ``uint8`` as a probe candidate, so an
+        over-permissive ``_validate_dtypes`` that accepts it surfaces a
+        hard L3 error.
         """
         def accept_all(self, x):
             return True  # over-permissive: accepts any dtype
