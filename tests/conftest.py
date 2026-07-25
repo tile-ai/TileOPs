@@ -47,6 +47,24 @@ def setup() -> None:
         torch.cuda.manual_seed_all(1235)
 
 
+@pytest.fixture
+def isolated_dynamo():
+    """Reset torch._dynamo state around a test that calls ``torch.compile``.
+
+    Dynamo's recompile cache is keyed per code object, and every
+    ``torch.compile``-d plain callable (any non-``nn.Module``, e.g. a TileOps
+    ``Op`` instance) shares torch's single wrapper frame. Each compiled op
+    instance therefore consumes one slot of that frame's shared
+    ``cache_size_limit`` (default 8) for the whole pytest process, so compile
+    tests pollute each other's cache and later ``fullgraph=True`` tests fail
+    with ``FailOnRecompileLimitHit``. Request this fixture from every test
+    that calls ``torch.compile``.
+    """
+    torch._dynamo.reset()
+    yield
+    torch._dynamo.reset()
+
+
 NON_RUNTIME_OPS_TIER_FILES = {
     "tests/ops/test_elementwise_caching_autotune.py",
     "tests/ops/test_elementwise_compile.py",

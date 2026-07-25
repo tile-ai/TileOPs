@@ -1386,6 +1386,7 @@ def test_max_pool1d_dynamic_shape_kernel_cache_and_roofline(
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.usefixtures("isolated_dynamo")
 @pytest.mark.parametrize(
     ("op_cls", "return_indices"),
     [
@@ -1962,6 +1963,7 @@ def test_max_pool3d_dynamic_shape_kernel_cache_and_roofline(
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.usefixtures("isolated_dynamo")
 @pytest.mark.parametrize(
     ("op_cls", "return_indices"),
     [
@@ -2559,6 +2561,7 @@ def test_max_pool2d_dynamic_shape_kernel_cache_and_roofline(
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.usefixtures("isolated_dynamo")
 @pytest.mark.parametrize(
     ("op_cls", "return_indices"),
     [
