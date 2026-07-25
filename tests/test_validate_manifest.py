@@ -4221,6 +4221,9 @@ class TestCompileContractRegistry:
         # One representative per evidence module: elementwise + attention.
         assert "ReluFwdOp" in COMPILE_CONTRACT_OPS
         assert "MultiHeadAttentionFwdOp" in COMPILE_CONTRACT_OPS
+        # Stable across accesses: the lazy aggregation freezes once.
+        from tests import compile_contract as registry
+        assert registry.COMPILE_CONTRACT_OPS == COMPILE_CONTRACT_OPS
 
     def test_compile_contract_ops_are_exact_manifest_keys(self):
         """Every registered evidence name is an exact manifest op key.
