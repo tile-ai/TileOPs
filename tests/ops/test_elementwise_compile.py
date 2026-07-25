@@ -83,6 +83,7 @@ from tileops.ops.elementwise import (
 @pytest.fixture(autouse=True)
 def _reset_dynamo(isolated_dynamo):
     """Isolate dynamo state for every compile test in this module."""
+    yield
 
 
 # ---------------------------------------------------------------------------
