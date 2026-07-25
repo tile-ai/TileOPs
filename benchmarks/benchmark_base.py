@@ -19,33 +19,26 @@ import pytest
 import torch
 from torch.autograd.profiler import DeviceType
 
-from tileops.manifest import load_manifest, load_workloads
-
-# Workload keys consumed by ``workloads_to_params`` itself: ``dtypes``
-# expands the pytest parametrization, ``label`` names the test id.
-_WORKLOAD_RESERVED_KEYS: frozenset[str] = frozenset({"dtypes", "label"})
+from tileops.manifest import (
+    WORKLOAD_RESERVED_KEYS,
+    load_manifest,
+    load_workloads,
+    single_input_workload_contract,
+)
 
 
 def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
-    """Return ``(shape_key, allowed_keys)`` for a single-tensor-input op.
-
-    The workload declares ``{input}_shape`` for the one ``signature.inputs``
-    name; every other key must be a declared ``signature.params`` name.
-    """
+    """Resolve the shared workload contract, raising for unsupported ops."""
     entry = load_manifest().get(op_name)
     if entry is None:
         raise KeyError(f"op {op_name!r} not found in the manifest")
-    sig = entry.get("signature") or {}
-    inputs = list(sig.get("inputs") or {})
-    if len(inputs) != 1:
+    contract = single_input_workload_contract(entry.get("signature") or {})
+    if contract is None:
         raise KeyError(
             f"workloads_to_params({op_name!r}) needs exactly one manifest "
-            f"tensor input, found {inputs or 'none'}; multi-input ops use "
-            "their own bench files."
+            "tensor input; multi-input ops use their own bench files."
         )
-    shape_key = f"{inputs[0]}_shape"
-    allowed = frozenset(sig.get("params") or {}) | _WORKLOAD_RESERVED_KEYS | {shape_key}
-    return shape_key, allowed
+    return contract
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +456,7 @@ class BenchmarkBase(Generic[W], ABC):
 
 def _workload_extra_params(w: dict, shape_key: str) -> dict[str, Any]:
     """Return op-call params on a workload entry, stripping reserved keys."""
-    reserved = _WORKLOAD_RESERVED_KEYS | {shape_key}
+    reserved = WORKLOAD_RESERVED_KEYS | {shape_key}
     return {
         k: v
         for k, v in w.items()

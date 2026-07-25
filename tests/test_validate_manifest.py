@@ -333,13 +333,13 @@ class TestSchema:
             for e in errors
         ), f"Expected unknown-param error, got: {errors}"
 
-    def test_init_dims_deprecated_key_fails(self, validator):
-        """Deprecated `init_dims` key must be flagged with a migration error (R20)."""
+    def test_unknown_signature_key_fails(self, validator):
+        """Signature keys outside the schema are rejected, not ignored."""
         entry = _make_entry()
         entry["signature"]["init_dims"] = {"N": {"from": "x.shape[-1]"}}
         errors = validator.check_l0("test_op", entry)
         assert any(
-            "init_dims" in e and "deprecated" in e and "static_dims" in e
+            "init_dims" in e and "unknown signature keys" in e
             for e in errors
         ), f"Expected init_dims deprecation error, got: {errors}"
 

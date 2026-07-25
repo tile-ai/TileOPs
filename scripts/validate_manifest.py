@@ -38,6 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest.shape_rules import (  # noqa: E402
     dim_range_validity,
     dim_uniqueness,
@@ -80,6 +81,10 @@ _PROMOTE_TARGET_DTYPE: str = "float32"
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
+_VALID_SIGNATURE_KEYS = {
+    "inputs", "outputs", "params", "shape_rules", "dtype_combos",
+    "static_dims",
+}
 _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 
 # Valid tensor layout values (R19)
@@ -215,8 +220,8 @@ def _check_single_input_workload_keys(
     Out of scope: multi-input signatures and workloads with no ``*_shape``
     key.
     """
-    inputs = sig.get("inputs")
-    if not isinstance(inputs, dict) or len(inputs) != 1:
+    contract = manifest_pkg.single_input_workload_contract(sig)
+    if contract is None:
         return []
     if not any(
         isinstance(w, dict)
@@ -224,12 +229,12 @@ def _check_single_input_workload_keys(
         for w in workloads
     ):
         return []
-    shape_key = f"{next(iter(inputs))}_shape"
+    shape_key, allowed = contract
     params = sig.get("params")
     param_names = set(params) if isinstance(params, dict) else set()
-    allowed = {shape_key, "dtypes", "label"} | param_names
+    reserved = manifest_pkg.WORKLOAD_RESERVED_KEYS | {shape_key}
     errors: list[str] = []
-    collisions = sorted(param_names & {shape_key, "dtypes", "label"})
+    collisions = sorted(param_names & reserved)
     if collisions:
         errors.append(
             f"[schema] {op_name}: signature params {collisions} collide "
@@ -397,14 +402,13 @@ def check_l0(
                         _check_shape_rule_callables(op_name, i, rule)
                     )
 
-        # Reject the deprecated `init_dims` key explicitly (R20 rename).
-        # L0 doesn't flag unknown signature keys, so without this check an
-        # accidental reintroduction would silently pass and be ignored by L1.
-        if "init_dims" in sig:
+        # Unknown signature keys are silently ignored by L1+, so reject
+        # anything outside the schema here.
+        unknown_sig = sorted(set(sig) - _VALID_SIGNATURE_KEYS)
+        if unknown_sig:
             errors.append(
-                f"[schema] {op_name}: `signature.init_dims` is deprecated — "
-                f"use `signature.static_dims` with flat `<name>: \"<tensor>.shape[<axis>]\"` "
-                f"entries per R20"
+                f"[schema] {op_name}: unknown signature keys {unknown_sig}; "
+                f"valid keys are {sorted(_VALID_SIGNATURE_KEYS)}"
             )
 
         # static_dims must be a mapping of str -> str expression (R20)
