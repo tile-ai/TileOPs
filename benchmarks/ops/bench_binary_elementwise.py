@@ -389,17 +389,25 @@ _STRATEGY_KERNELS = [
 
 
 def _strategy_params():
-    """3 ops × 3 shapes × 3 dtypes × 2 strategies = 54 rows."""
+    """Default-strategy sentinel: both strategies across the shape axis and the
+    dtype axis on one kernel.
+
+    The direct/explicit_parallel trade-off is a property of the shared fused-gated
+    kernel body, so sweeping all three ops re-measures one conclusion three times.
+    """
+    op_name, kernel_cls = _STRATEGY_KERNELS[0]
+    ref_shape, ref_dtype = _STRATEGY_SHAPES[0], torch.float16
     params = []
-    for op_name, kernel_cls in _STRATEGY_KERNELS:
+    for strategy in ("direct", "explicit_parallel"):
         for M, N in _STRATEGY_SHAPES:
-            for dtype in _STRATEGY_DTYPES:
-                for strategy in ("direct", "explicit_parallel"):
-                    is_smoke = _STRATEGY_SHAPES[0] == (M, N) and dtype == torch.float16
-                    mark = pytest.mark.smoke if is_smoke else pytest.mark.full
-                    params.append(
-                        pytest.param(op_name, M, N, dtype, kernel_cls, strategy, marks=mark)
-                    )
+            mark = (pytest.mark.smoke if ref_shape == (M, N)
+                    else pytest.mark.full)
+            params.append(
+                pytest.param(op_name, M, N, ref_dtype, kernel_cls, strategy, marks=mark))
+        for dtype in _STRATEGY_DTYPES[1:]:
+            params.append(pytest.param(
+                op_name, *ref_shape, dtype, kernel_cls, strategy,
+                marks=pytest.mark.full))
     return params
 
 
