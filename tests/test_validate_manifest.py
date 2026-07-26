@@ -513,15 +513,16 @@ class TestSingleInputWorkloadKeys:
 # ---------------------------------------------------------------------------
 
 class TestRooflineStructuralRules:
-    """L0 roofline rules: mode exclusivity, field types, func resolution."""
+    """L0 roofline reject branches, one guard each.
+
+    Accept paths are owned by TestIntegration: the shipped manifest
+    exercises inline and func modes through the same checks.
+    """
 
     def _entry(self, validator, roofline):
         entry = _make_entry()
         entry["roofline"] = roofline
         return validator.check_l0("my_op", entry)
-
-    def test_inline_mode_passes(self, validator):
-        assert self._entry(validator, {"flops": "2*M*N", "bytes": "M*N"}) == []
 
     def test_mixed_modes_fail(self, validator):
         errors = self._entry(
@@ -553,12 +554,9 @@ class TestRooflineStructuralRules:
         assert any("does not resolve" in e for e in errors)
 
     def test_non_callable_func_fails(self, validator):
+        """Distinguishes the callable() predicate from a hasattr regression."""
         errors = self._entry(validator, {"func": "tileops.perf.formulas.__doc__"})
         assert any("does not resolve" in e for e in errors)
-
-    def test_resolvable_func_passes(self, validator):
-        errors = self._entry(validator, {"func": "tileops.manifest.load_manifest"})
-        assert not any("roofline" in e for e in errors)
 
 
 class TestTorchCompileFullgraph:
