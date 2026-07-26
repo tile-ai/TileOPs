@@ -31,7 +31,7 @@ Op                          ← L1: thin base, shared by all ops
 
 ## Scaffolding an Op from a Manifest Entry
 
-The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). Examples show `CumsumFwdOp` scaffolded in T2 (L1-direct) form directly from its manifest entry; they illustrate scaffold output, not current source (a shipped op may since have been refactored onto an L2 family base).
+The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). Examples scaffold the fictional `ExampleCumsumFwdOp` (cumulative-sum semantics) in T2 (L1-direct) form from an equally fictional manifest entry; nothing in them mirrors a shipped file.
 
 ### Step 1: File header + imports
 
@@ -43,7 +43,7 @@ The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step h
 """Cumulative sum operator (host-side Op layer).
 
 Provides:
-  - CumsumFwdOp: y = cumsum(x, dim=-1)
+  - ExampleCumsumFwdOp: y = cumsum(x, dim=-1)
 """
 
 import math
@@ -53,7 +53,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
-from tileops.kernels.reduction.cumulative import CumulativeKernel
+from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel
 
 from ..op_base import Op
 ```
@@ -69,10 +69,10 @@ from ..op_base import Op
 **Output.**
 
 ```python
-__all__ = ["CumsumFwdOp"]
+__all__ = ["ExampleCumsumFwdOp"]
 
 
-class CumsumFwdOp(Op):
+class ExampleCumsumFwdOp(Op):
     """Cumulative sum operator: y = cumsum(x, dim=-1).
 
     Output has the same shape and dtype as input.
@@ -87,7 +87,7 @@ class CumsumFwdOp(Op):
     """
 ```
 
-**Validation.** Class name ≡ manifest entry key, byte-exact (`CumsumFwdOp`). Every `Args:` entry appears as an `__init__` kwarg in Step 3; no extras.
+**Validation.** Class name ≡ manifest entry key, byte-exact (`ExampleCumsumFwdOp`). Every `Args:` entry appears as an `__init__` kwarg in Step 3; no extras.
 
 **Reference.** [Slot S5](ops-design-reference.md#slot-s5), [S6](ops-design-reference.md#slot-s6), [S7](ops-design-reference.md#slot-s7).
 
@@ -125,7 +125,7 @@ class CumsumFwdOp(Op):
         self._kernel_cache: Dict[tuple, Kernel] = {}
 ```
 
-**Validation.** Every `__init__` kwarg has a manifest source (`static_dims` or `signature.params` or `dtype`); no extras except `kernel_map` / `tune`. In particular, `M` is NOT a ctor kwarg — `CumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Keyword-only via `*`, no defaults on `static_dims` entries. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
+**Validation.** Every `__init__` kwarg has a manifest source (`static_dims` or `signature.params` or `dtype`); no extras except `kernel_map` / `tune`. In particular, `M` is NOT a ctor kwarg — `ExampleCumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Keyword-only via `*`, no defaults on `static_dims` entries. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
 
 **Reference.** [Slot S21](ops-design-reference.md#slot-s21), [S12](ops-design-reference.md#slot-s12), [S13](ops-design-reference.md#slot-s13).
 
@@ -138,7 +138,7 @@ class CumsumFwdOp(Op):
 ```python
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"cumulative_fwd": CumulativeKernel}
+        return {"example_cumsum_fwd": ExampleCumsumKernel}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._validate_dtypes(x)
@@ -162,7 +162,7 @@ class CumsumFwdOp(Op):
         self.M = M  # stored for eval_roofline
         key = (M,)
         if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["cumulative_fwd"](
+            self._kernel_cache[key] = self.kernel_map["example_cumsum_fwd"](
                 M, self.N, "sum", self.dtype, tune=self.tune)
         kernel = self._kernel_cache[key]
         # Move reduction axis to last, reshape to (M, N), compute, restore.
@@ -186,7 +186,7 @@ class CumsumFwdOp(Op):
 **Output.**
 
 ```python
-class CumsumFwdOp(Op):
+class ExampleCumsumFwdOp(Op):
     ...
 
     def _infer_output_shapes(self, x_shape: tuple) -> Dict[str, tuple]:
@@ -208,7 +208,7 @@ class CumsumFwdOp(Op):
 **Output.**
 
 ```python
-class CumsumFwdOp(Op):
+class ExampleCumsumFwdOp(Op):
     ...
 
     def eval_roofline(self) -> tuple[int, int]:
@@ -228,8 +228,8 @@ class CumsumFwdOp(Op):
 **Output (append to `tileops/ops/reduction/__init__.py`):**
 
 ```python
-# --- CumulativeKernel ops ---
-from .cumsum import CumsumFwdOp
+# --- ExampleCumsumKernel ops ---
+from .example_cumsum import ExampleCumsumFwdOp
 ```
 
 …with a matching entry added to the module's `__all__` list.

@@ -1,6 +1,6 @@
 # Op Interface Design — Reference
 
-Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) and the `scaffold-op` skill. Each `### Slot S{N}` entry states the authoritative **Rule**, its manifest **Derivation**, a concrete **Example** modelled on [`tileops/ops/reduction/cumsum.py`](../../tileops/ops/reduction/cumsum.py), and **Common mistakes**. Non-slot content lives in the appendices. Slot IDs S8–S11 are intentionally absent (reserved during iteration for T1 thin-wrapper slots later declared out of scope).
+Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) and the `scaffold-op` skill. Each `### Slot S{N}` entry states the authoritative **Rule**, its manifest **Derivation**, a concrete **Example** (the fictional `ExampleCumsumFwdOp`, a cumulative-sum T2 op; nothing in it mirrors a shipped file), and **Common mistakes**. Non-slot content lives in the appendices. Slot IDs S8–S11 are intentionally absent (reserved during iteration for T1 thin-wrapper slots later declared out of scope).
 
 ## Slot Rules
 
@@ -13,7 +13,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   """Cumulative sum operator (L2 Op layer).
 
   Provides:
-    - CumsumFwdOp: y = cumsum(x, dim=-1)
+    - ExampleCumsumFwdOp: y = cumsum(x, dim=-1)
   """
   ```
 - **Common mistakes.** Referencing tile sizes or kernel-internals in the module docstring; omitting the one-line purpose.
@@ -34,7 +34,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 - **Derivation.** Manifest `kernel_map` values.
 - **Example.**
   ```python
-  from tileops.kernels.reduction.cumulative import CumulativeKernel
+  from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel
   ```
 - **Common mistakes.** Relative cross-package import; importing a kernel not in `kernel_map`.
 
@@ -54,7 +54,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 - **Derivation.** `[<ClassName>]`.
 - **Example.**
   ```python
-  __all__ = ["CumsumFwdOp"]
+  __all__ = ["ExampleCumsumFwdOp"]
   ```
 - **Common mistakes.** Re-exporting the `Kernel` class; omitting `__all__`.
 
@@ -64,7 +64,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 - **Derivation.** Manifest entry key.
 - **Example.**
   ```python
-  class CumsumFwdOp(Op):
+  class ExampleCumsumFwdOp(Op):
   ```
 - **Common mistakes.** Direction suffix missing; abbreviation mis-casing (see [Naming Conventions (Appendix)](#naming-conventions-appendix)).
 
@@ -74,7 +74,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 - **Derivation.** `Args` block from manifest `signature.params` + `static_dims` + `dtype`.
 - **Example.**
   ```python
-  class CumsumFwdOp(Op):
+  class ExampleCumsumFwdOp(Op):
       """Cumulative sum operator: y = cumsum(x, dim=-1).
 
       Output has the same shape and dtype as input.
@@ -115,7 +115,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   - **Fully-static op** (all non-static axes committed at ctor): (c-static) `self.kernel = self.kernel_map[<key>](...)` — kernel built once at init; (d-static) optionally precompute `self._infer_output_shapes(<input>_shape=(...))` eagerly if a caller needs the output shapes before `forward()`. The `Op` base class does not currently consume an `_output_shapes` attribute — do not introduce one unless a concrete consumer requires it.
   - **Arbitrary-rank op** (at least one axis unknown until forward): (c-dyn) initialise `self._kernel_cache: Dict[Hashable, Kernel] = {}` (the cache key follows `Op._cache_key`'s `Hashable` return type — often a tuple, but overrides may return `int` or other hashables) and defer kernel construction to `forward()` keyed by `self._cache_key(*input_shapes)`; (d-dyn) defer `_infer_output_shapes` to `forward()` per unique input shape.
 - **Derivation.** Each `self.*` assignment mirrors one S12 kwarg. Kernel-build positional args follow the kernel class's ctor (kernel author's API). "Fully-static" iff every `signature.inputs` shape axis is either a manifest `shape` dim name or a `static_dims` key resolvable at ctor; otherwise arbitrary-rank and the deferred branch applies.
-- **Example (arbitrary-rank; `CumsumFwdOp`).**
+- **Example (arbitrary-rank).**
   ```python
   self.N = N
   self.dtype = dtype
@@ -137,7 +137,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   ```python
   @property
   def default_kernel_map(self) -> Dict[str, Kernel]:
-      return {"cumulative_fwd": CumulativeKernel}
+      return {"example_cumsum_fwd": ExampleCumsumKernel}
   ```
 - **Common mistakes.** Class-level dict (not a property); keys that duplicate the class name instead of being dispatch strings.
 
@@ -155,7 +155,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 - **Rule.** Body sequence: (a) `self._validate_dtypes(...)`; (b) validate `shape_rules` (e.g. `-x.ndim <= dim < x.ndim`) and normalise parameter-dependent axes via modulo (e.g. `dim = self.dim % x.ndim`); (c) validate each `static_dims` commitment (`x.shape[<resolved_axis>] == self.<kwarg>`); (d) for arbitrary-rank ops, bind `self._static_axes = frozenset({(input_index, resolved_axis)})` and look up / lazily build the kernel in `self._kernel_cache` keyed by `self._cache_key(*input_shapes)`; (e) `.contiguous()` + reshape to the kernel's expected 2D layout; (f) call the kernel; (g) trim alignment padding (if any) and restore the original shape. Fully-static ops skip the cache-lookup part of (d) since `self.kernel` was built at init.
 - **Derivation.** Validation expressions come from each `static_dims` entry's `<tensor>.shape[<axis>]` RHS; axis normalisation mirrors the param evaluation in `static_dims` + `shape_rules`; kernel cache key is whatever `_cache_key` projects (default: tuple of non-static-axis sizes). Padding trim applies when the kernel operates on `align_up(N, DEFAULT_ALIGNMENT)` (`self.N_padded != self.N`).
-- **Example (arbitrary-rank; `CumsumFwdOp`).**
+- **Example (arbitrary-rank).**
   ```python
   self._validate_dtypes(x)
   if not x.is_cuda:
@@ -175,7 +175,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   # keying when kernel math permits (see Optional Hooks appendix).
   key = self._cache_key(x.shape)
   if key not in self._kernel_cache:
-      self._kernel_cache[key] = self.kernel_map["cumulative_fwd"](
+      self._kernel_cache[key] = self.kernel_map["example_cumsum_fwd"](
           M, self.N, "sum", self.dtype, tune=self.tune
       )
   kernel = self._kernel_cache[key]
@@ -191,7 +191,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 ### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes` method body
 
-- **Rule.** Signature takes `<input>_shape: tuple` per manifest `signature.inputs`, returns `Dict[str, tuple]` keyed by output name. The L1 base raises `NotImplementedError` as a `FIXME(staged-rollout)` stub; each concrete op supplies a complete body. PR #1005's validator exercises the method with mock inputs at CI and reports disagreement with `shape_rules` as a hard L2 error.
+- **Rule.** Signature takes `<input>_shape: tuple` per manifest `signature.inputs`, returns `Dict[str, tuple]` keyed by output name. The L1 base raises `NotImplementedError` as a `FIXME(staged-rollout)` stub; each concrete op supplies a complete body. The manifest validator exercises the method with mock inputs at CI and reports disagreement with `shape_rules` as a hard L2 error.
 - **Derivation.** Manifest `shape_rules` (see [manifest.md § Rules](manifest.md#rules)).
 - **Example.**
   ```python
@@ -202,7 +202,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 ### Slot S18: <a id="slot-s18"></a> `_validate_dtypes` method body
 
-- **Rule.** Positional parameters match `signature.inputs`; raises `ValueError` on invalid dtype combinations. L1 stub raises `NotImplementedError` (FIXME staged-rollout). PR #1005's validator exhaustively probes `dtype_combos` / declared unions + out-of-union negatives and reports divergence as hard L3 error.
+- **Rule.** Positional parameters match `signature.inputs`; raises `ValueError` on invalid dtype combinations. L1 stub raises `NotImplementedError` (FIXME staged-rollout). The manifest validator exhaustively probes `dtype_combos` / declared unions + out-of-union negatives and reports divergence as hard L3 error.
 - **Derivation.** Manifest `dtype` (union) and `dtype_combos`.
 - **Example.**
   ```python
@@ -231,8 +231,8 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 - **Derivation.** Class name (S6) and the op's source filename.
 - **Example.**
   ```python
-  # --- CumulativeKernel ops ---
-  from .cumsum import CumsumFwdOp
+  # --- ExampleCumsumKernel ops ---
+  from .example_cumsum import ExampleCumsumFwdOp
   ```
 - **Common mistakes.** Import outside its family grouping comment; missing `__all__` entry (silently breaks `import *`).
 
@@ -255,7 +255,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 - **Example.**
 
   ```python
-  class CumsumFwdOp(Op):
+  class ExampleCumsumFwdOp(Op):
       # static_dims: N: "x.shape[dim]" — axis is parameter-dependent
       # (and dim may be negative), so the concrete (input_index, axis)
       # pair is resolved at forward() time after dim % x.ndim
@@ -269,14 +269,14 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
-| Variable                  | Family          | Purpose                                                                                                          |
-| ------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `_kernel_key`             | norm, reduction | Kernel-map lookup key                                                                                            |
-| `_kernel_cls`             | norm, reduction | Kernel class reference                                                                                           |
-| `_op_kind`                | reduction, scan | Kernel-dispatch op-kind string (`"sum"` / `"prod"` for `CumulativeOp`; `"sum"`, `"mean"`, … for `_ReduceOpBase`) |
-| `_kernel_handles_padding` | reduction       | `True` → kernel uses masked loads, skip host-side padding                                                        |
-| `_op_name`                | elementwise     | `torch.library.custom_op` registration key                                                                       |
-| `kernel_cls`              | elementwise     | Kernel class reference                                                                                           |
+| Variable                  | Family      | Purpose                                                                                                          |
+| ------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------- |
+| `_kernel_key`             | reduction   | Kernel-map lookup key                                                                                            |
+| `_kernel_cls`             | reduction   | Kernel class reference                                                                                           |
+| `_op_kind`                | reduction   | Kernel-dispatch op-kind string (`"sum"` / `"prod"` for `CumulativeOp`; `"sum"`, `"mean"`, … for `_ReduceOpBase`) |
+| `_kernel_handles_padding` | reduction   | `True` → kernel uses masked loads, skip host-side padding                                                        |
+| `_op_name`                | elementwise | `torch.library.custom_op` registration key                                                                       |
+| `kernel_cls`              | elementwise | Kernel class reference                                                                                           |
 
 **The `scaffold-op` skill does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); filled in during family-specific refactoring (future skill). Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
 
@@ -309,12 +309,12 @@ Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `auto
 
 Hooks family bases expose for op-specific semantics. The `scaffold-op` skill does NOT emit these.
 
-| Hook              | Family    | Default                     | Override example                                                       |
-| ----------------- | --------- | --------------------------- | ---------------------------------------------------------------------- |
-| `_pad_value()`    | reduction | `0.0` (neutral for sum)     | `ArgmaxFwdOp._pad_value → -inf` (`tileops/ops/reduction/argmax.py:61`) |
-| `_validate_dim()` | reduction | accept `int` or `list[int]` | `ArgmaxFwdOp._validate_dim` restricts to scalar `int`                  |
-| `_pre_kernel()`   | reduction | identity                    | `AllFwdOp._pre_kernel` converts unsupported storage dtypes to fp32     |
-| `_post_kernel()`  | reduction | identity                    | Convert kernel output dtype to the manifest-declared output dtype      |
+| Hook              | Family    | Default                     | Override example                                                   |
+| ----------------- | --------- | --------------------------- | ------------------------------------------------------------------ |
+| `_pad_value()`    | reduction | `0.0` (neutral for sum)     | `ArgmaxFwdOp._pad_value → -inf`                                    |
+| `_validate_dim()` | reduction | accept `int` or `list[int]` | `ArgmaxFwdOp._validate_dim` restricts to scalar `int`              |
+| `_pre_kernel()`   | reduction | identity                    | `AllFwdOp._pre_kernel` converts unsupported storage dtypes to fp32 |
+| `_post_kernel()`  | reduction | identity                    | Convert kernel output dtype to the manifest-declared output dtype  |
 
 ### `_cache_key` override (L1-level, not family-specific)
 
@@ -370,16 +370,16 @@ Three time points: (1) manifest — constraint structure; (2) `__init__` — use
 
 ### Consistency enforcement
 
-| Check                                                    | Mechanism                                   |
-| -------------------------------------------------------- | ------------------------------------------- |
-| Manifest schema and declared fields are well-formed      | Validator (CI), L0 checks                   |
-| `__init__` params match manifest `params`                | Validator signature check (L1)              |
-| `static_dims` keys are `__init__` parameters             | Validator signature check (L1)              |
-| `shape_rules` syntax is valid                            | Validator `shape_rules` parsing (L2)        |
-| `_infer_output_shapes` output satisfies `shape_rules`    | Validator infer-shape parity (L2; PR #1005) |
-| `dtype`/`dtype_combos` strings are valid                 | Validator dtype conformance (L3)            |
-| `_validate_dtypes` matches `dtype_combos` / dtype unions | Validator dtype parity (L3; PR #1005)       |
-| Empty `static_dims` without `_cache_key` override        | `Op` base class runtime warning             |
+| Check                                                    | Mechanism                            |
+| -------------------------------------------------------- | ------------------------------------ |
+| Manifest schema and declared fields are well-formed      | Validator (CI), L0 checks            |
+| `__init__` params match manifest `params`                | Validator signature check (L1)       |
+| `static_dims` keys are `__init__` parameters             | Validator signature check (L1)       |
+| `shape_rules` syntax is valid                            | Validator `shape_rules` parsing (L2) |
+| `_infer_output_shapes` output satisfies `shape_rules`    | Validator infer-shape parity (L2)    |
+| `dtype`/`dtype_combos` strings are valid                 | Validator dtype conformance (L3)     |
+| `_validate_dtypes` matches `dtype_combos` / dtype unions | Validator dtype parity (L3)          |
+| Empty `static_dims` without `_cache_key` override        | `Op` base class runtime warning      |
 
 Checks beyond this table are tracked as separate issues, not as spec status.
 
