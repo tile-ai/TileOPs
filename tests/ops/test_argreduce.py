@@ -440,10 +440,10 @@ def test_argmin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_cls_path, dim", [
-    ("tileops.ops.reduction.argmax.ArgmaxFwdOp", [0, 1]),
-    ("tileops.ops.reduction.argmin.ArgminFwdOp", [0, 1]),
-    ("tileops.ops.reduction.argmax.ArgmaxFwdOp", (0, 1)),
-    ("tileops.ops.reduction.argmin.ArgminFwdOp", (0, 1)),
+    ("tileops.ops.reduction.argreduce.ArgmaxFwdOp", [0, 1]),
+    ("tileops.ops.reduction.argreduce.ArgminFwdOp", [0, 1]),
+    ("tileops.ops.reduction.argreduce.ArgmaxFwdOp", (0, 1)),
+    ("tileops.ops.reduction.argreduce.ArgminFwdOp", (0, 1)),
 ])
 def test_argreduce_rejects_multidim(op_cls_path: str, dim) -> None:
     """Argreduce ops only support scalar dim or None; list/tuple must raise."""

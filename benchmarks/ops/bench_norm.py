@@ -57,10 +57,6 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
-
-
 _FUSED_RMS_OP_NAME = "FusedAddRMSNormFwdOp"
 
 
@@ -105,10 +101,6 @@ def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
-
-
 _LN_OP_NAME = "LayerNormFwdOp"
 
 
@@ -140,10 +132,6 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
 
 
 _FUSED_LN_OP_NAME = "FusedAddLayerNormFwdOp"

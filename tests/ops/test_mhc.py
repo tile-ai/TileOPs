@@ -90,10 +90,6 @@ def test_mhc_pre_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
-
-
 class MHCPostTest(_MHCPostTestWorkload, TestBase):
     def ref_program(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
                     x_res: torch.Tensor) -> torch.Tensor:

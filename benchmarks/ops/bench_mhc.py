@@ -103,10 +103,6 @@ def test_mhc_pre_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-vvs"])
-
-
 class _MHCPostTestBaseline(MHCPostTest):
     """Adds baseline ref_program for benchmark profiling."""
 
