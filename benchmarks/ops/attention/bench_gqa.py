@@ -28,13 +28,11 @@ from tileops.ops import (
     GroupedQueryAttentionPrefillVarlenFwdOp,
 )
 from workloads.attention.gqa import (
-    GroupedQueryAttentionBwdTest,
-    GroupedQueryAttentionFwdTest,
-)
-from workloads.attention.gqa_prefill import (
     GQAPrefillFwdTest,
     GQAPrefillPagedWithKVCacheFwdTest,
     GQAPrefillVarlenFwdTest,
+    GroupedQueryAttentionBwdTest,
+    GroupedQueryAttentionFwdTest,
 )
 
 _GQA_FWD_OP = "GroupedQueryAttentionFwdOp"

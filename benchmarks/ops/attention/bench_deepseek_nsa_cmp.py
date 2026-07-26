@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import NSACmpFwdVarlenOp
-from workloads.attention.deepseek_nsa_cmp import NsaCmpFwdTest
+from workloads.attention.deepseek import NsaCmpFwdTest
 from workloads.nsa_utils import prepare_chunk_offsets
 
 

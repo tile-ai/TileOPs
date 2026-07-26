@@ -5,7 +5,7 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import dsa_decode_args, manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.deepseek_dsa_decode import DsaDecodeTest
+from workloads.attention.deepseek import DsaDecodeTest
 
 _OP_NAME = "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp"
 

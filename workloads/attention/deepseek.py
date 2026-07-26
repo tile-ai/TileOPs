@@ -1,9 +1,11 @@
+"""Workload definitions for the DeepSeek attention ops."""
+
 from typing import Optional, Union
 
 import torch
 from einops import rearrange, repeat
 
-from workloads.nsa_utils import prepare_token_indices
+from workloads.nsa_utils import prepare_chunk_offsets, prepare_token_indices
 from workloads.workload_base import WorkloadBase
 
 
@@ -213,3 +215,197 @@ class NsaFwdTest(WorkloadBase):
             o_swa = rearrange(o_swa, "b t h d -> b h t d")
 
         return o_slc.to(dtype) + o_swa.to(dtype) if o_swa is not None else o_slc.to(dtype)
+
+
+class NsaCmpFwdTest(WorkloadBase):
+
+    def __init__(self, seq_num: int, c_seq_len: int, heads: int, dim_k: int, dim_v: int,
+                 group: int, scale: float, bc: int, bs: int, bk: int, bv: int,
+                 dtype: torch.dtype, accum_dtype: torch.dtype) -> None:
+        self.seq_num = seq_num
+        self.c_seq_len = c_seq_len
+        self.heads = heads
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.group = group
+        self.scale = scale
+        self.bc = bc
+        self.bs = bs
+        self.bk = bk
+        self.bv = bv
+        self.dtype = dtype
+        self.accum_dtype = accum_dtype
+
+        self.head_kv = self.heads // self.group
+        # chunk_num is computed during gen_inputs and stored for later use
+        self.chunk_num = None
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        valid_range = self.c_seq_len - self.bs
+        rand_indices = torch.randperm(valid_range)[:self.seq_num - 1]
+        offsets = torch.cat([
+            torch.tensor([0]),
+            torch.arange(self.bs, self.c_seq_len)[rand_indices],
+            torch.tensor([self.c_seq_len])
+        ], 0).cuda().sort()[0].to(torch.int32)
+
+        chunk_offsets = prepare_chunk_offsets(offsets, self.bs).to(torch.int32)
+        token_indices = prepare_token_indices(offsets).to(torch.int32)
+        chunk_num = chunk_offsets[-1].item()
+
+        # float16, data Tie-breaking
+        q = torch.randn((self.c_seq_len, self.heads, self.dim_k), dtype=self.dtype, device="cuda")
+        k = torch.randn((chunk_num, self.head_kv, self.dim_k), dtype=self.dtype, device="cuda")
+        v = torch.randn((chunk_num, self.head_kv, self.dim_v), dtype=self.dtype, device="cuda")
+
+        self.chunk_num = chunk_offsets[-1].item()
+        return (
+            q,
+            k,
+            v,
+            offsets.to(torch.int32),
+            chunk_offsets.to(torch.int32),
+            token_indices.to(torch.int32),
+        )
+
+
+class NsaTopkTest(WorkloadBase):
+
+    def __init__(self, seq_num: int, c_seq_len: int, heads: int, dim: int, group: int,
+                 scale: float, selected_block_num: int, bc: int, bs: int, bk: int,
+                 dtype: torch.dtype, accum_dtype: torch.dtype) -> None:
+        self.seq_num = seq_num
+        self.c_seq_len = c_seq_len
+        self.heads = heads
+        self.dim = dim
+        self.group = group
+        self.scale = scale
+        self.selected_block_num = selected_block_num
+        self.bc = bc
+        self.bs = bs
+        self.bk = bk
+        self.dtype = dtype
+        self.accum_dtype = accum_dtype
+
+        self.head_kv = self.heads // self.group
+        # chunk_num is computed during gen_inputs and stored for later use
+        self.chunk_num = None
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        possible_split_points = torch.arange(16, self.c_seq_len)
+        num_splits = self.seq_num - 1
+        offsets = (
+            torch.cat(
+                [
+                    torch.tensor([0], dtype=torch.long),
+                    possible_split_points[torch.randperm(len(possible_split_points))[:num_splits]],
+                    torch.tensor([self.c_seq_len], dtype=torch.long),
+                ],
+                0,
+            ).cuda().sort()[0])
+
+        chunk_offsets = prepare_chunk_offsets(offsets, self.bs)
+        token_indices = prepare_token_indices(offsets)
+        chunk_num = chunk_offsets[-1].item()
+
+        # float16, data Tie-breaking
+        q = torch.randn(
+            (self.c_seq_len, self.heads, self.dim), dtype=self.dtype, device="cuda") * 0.1
+        k = torch.randn((chunk_num, self.head_kv, self.dim), dtype=self.dtype, device="cuda") * 0.1
+
+        q.requires_grad_(True)
+        k.requires_grad_(True)
+
+        lse = torch.zeros((self.c_seq_len, self.heads), dtype=self.dtype, device="cuda")
+
+        self.chunk_num = chunk_offsets[-1].item()
+        return (
+            q,
+            k,
+            lse,
+            offsets.to(torch.int32),
+            chunk_offsets.to(torch.int32),
+            token_indices.to(torch.int32),
+        )
+
+
+class MlaDecodeTest(WorkloadBase):
+
+    def __init__(self, batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
+                 dim_pe: int, dtype: torch.dtype) -> None:
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len_kv = seq_len_kv
+        self.dim = dim
+        self.dim_pe = dim_pe
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        Q = torch.randn(self.batch, self.heads, self.dim, device='cuda', dtype=self.dtype)
+        Q_pe = torch.randn(self.batch, self.heads, self.dim_pe, device='cuda', dtype=self.dtype)
+        K = torch.randn(
+            self.batch,
+            self.seq_len_kv,
+            self.heads_kv,
+            self.dim,
+            device='cuda',
+            dtype=self.dtype)
+        K_pe = torch.randn(
+            self.batch,
+            self.seq_len_kv,
+            self.heads_kv,
+            self.dim_pe,
+            device='cuda',
+            dtype=self.dtype)
+        return Q, Q_pe, K, K_pe
+
+
+class DsaDecodeTest(WorkloadBase):
+
+    def __init__(self, batch: int, heads: int, seq_len: int, seq_len_kv: int, dim: int,
+                 dim_tail: int, topk: int, stride_kv: int, heads_kv: int, q_start_index_s: int,
+                 sm_scale: float = None, is_causal: bool = True,
+                 dtype: torch.dtype = torch.float16) -> None:
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.seq_len_kv = seq_len_kv
+        self.dim = dim
+        self.dim_tail = dim_tail
+        self.topk = topk
+        self.stride_kv = stride_kv
+        self.heads_kv = heads_kv
+        self.sm_scale = sm_scale
+        self.is_causal = is_causal
+        self.dtype = dtype
+        self.q_start_index_s = q_start_index_s
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q = torch.randn(
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.dim + self.dim_tail,
+            device='cuda',
+            dtype=self.dtype)
+        kv = torch.randn(
+            self.batch,
+            self.seq_len_kv,
+            self.heads_kv,
+            self.dim + self.dim_tail,
+            device='cuda',
+            dtype=self.dtype)
+        indices = torch.full((self.batch, self.seq_len, self.heads_kv, self.topk),
+                             self.seq_len_kv,
+                             dtype=torch.int32,
+                             device='cuda')
+        for b in range(self.batch):
+            for t in range(self.seq_len):
+                for h in range(self.heads_kv):
+                    i_i = torch.randperm(
+                        min(
+                            max(1, ((t + int(self.q_start_index_s)) // self.stride_kv)),
+                            self.seq_len_kv))[:self.topk]
+                    indices[b, t, h, :len(i_i)] = i_i
+        return q, kv, indices

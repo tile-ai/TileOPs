@@ -11,7 +11,7 @@ from benchmarks.ops.attention.manifest_params import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionSlidingWindowFwdOp
-from workloads.attention.gqa_sliding_window import GroupedQueryAttentionSlidingWindowFwdTest
+from workloads.attention.gqa import GroupedQueryAttentionSlidingWindowFwdTest
 
 _OP_NAME = "GroupedQueryAttentionSlidingWindowFwdOp"
 

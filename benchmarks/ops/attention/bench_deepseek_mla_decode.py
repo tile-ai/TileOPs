@@ -7,7 +7,7 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params, mla_decode_args
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.deepseek_mla_decode import MlaDecodeTest
+from workloads.attention.deepseek import MlaDecodeTest
 
 _OP_NAME = "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp"
 

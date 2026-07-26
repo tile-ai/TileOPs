@@ -9,7 +9,7 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import gqa_decode_paged_args, manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.gqa_decode_paged import GroupedQueryAttentionDecodePagedTest
+from workloads.attention.gqa import GroupedQueryAttentionDecodePagedTest
 
 _OP_NAME = "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp"
 

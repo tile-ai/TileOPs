@@ -11,7 +11,7 @@ from benchmarks.ops.attention.manifest_params import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionSlidingWindowVarlenFwdOp
-from workloads.attention.gqa_sliding_window_varlen import (
+from workloads.attention.gqa import (
     GroupedQueryAttentionSlidingWindowVarlenFwdTest,
 )
 

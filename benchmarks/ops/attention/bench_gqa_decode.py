@@ -6,7 +6,7 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import gqa_decode_args, manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.gqa_decode import GroupedQueryAttentionDecodeTest
+from workloads.attention.gqa import GroupedQueryAttentionDecodeTest
 
 _OP_NAME = "GroupedQueryAttentionDecodeWithKVCacheFwdOp"
 
