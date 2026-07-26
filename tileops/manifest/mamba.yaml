@@ -6,9 +6,10 @@
 #
 # Reference: Dao & Gu, "Transformers are SSMs: Generalized Models and
 # Efficient Algorithms Through Structured State Space Duality" (Mamba-2),
-# arXiv:2405.21060. Signatures mirror the staged decomposition of
+# arXiv:2405.21060. Signatures derive from the staged decomposition of
 # mamba_ssm.ops.triton.ssd_combined.mamba_chunk_scan_combined; no single
-# torch.* public API covers these stages, hence ref_api "none".
+# torch.* public API covers these stages, hence ref_api "none" and any
+# deviation from the upstream form is declared on the owning entry.
 #
 # Dim-name conventions shared across this family:
 #   B  batch          S  seq_len (= NC * Q)   H  n_heads
@@ -390,8 +391,12 @@ SSDDecodeOp:
 
 Mamba2FwdOp:
   # End-to-end Mamba-2 SSD forward: DaCumsum -> CBProducer -> SSDChunkState ->
-  # SSDStatePassing -> SSDChunkScan. Interface mirrors
-  # mamba_ssm.ops.triton.ssd_combined.mamba_chunk_scan_combined.
+  # SSDStatePassing -> SSDChunkScan. Interface derives from
+  # mamba_ssm.ops.triton.ssd_combined.mamba_chunk_scan_combined with one
+  # declared deviation: final_states is always returned (fixed output
+  # arity; the Op protocol has no conditional-output mechanism, and
+  # chunked prefill consumes the carried state), so the upstream
+  # return_final_states switch does not exist here.
   # Primary entry: no dt_bias, no initial_states. The optional tensors land
   # as the Bias / InitStates / BiasInitStates variants below.
   #
