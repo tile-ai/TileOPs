@@ -330,6 +330,11 @@ class FusedGatedBenchFixture(FixtureBase):
     ]
 
 
+def _silu_and_mul_baseline(x: torch.Tensor) -> torch.Tensor:
+    half = x.shape[-1] // 2
+    return F.silu(x[..., :half]) * x[..., half:]
+
+
 def _gelu_and_mul_baseline(x: torch.Tensor) -> torch.Tensor:
     half = x.shape[-1] // 2
     return F.gelu(x[..., :half]) * x[..., half:]
@@ -341,6 +346,7 @@ def _gelu_tanh_and_mul_baseline(x: torch.Tensor) -> torch.Tensor:
 
 
 _FUSED_BASELINES = {
+    "silu_and_mul": _silu_and_mul_baseline,
     "gelu_and_mul": _gelu_and_mul_baseline,
     "gelu_tanh_and_mul": _gelu_tanh_and_mul_baseline,
 }
@@ -418,9 +424,11 @@ def test_fused_gated_strategy_bench(
     shape = (M, N)
     kernel = kernel_cls(M=M, N=N, dtype=dtype, config={"strategy": strategy})
     result = bm.profile(kernel, *inputs)
-    BenchmarkReport.record(
-        f"{op_name}_strategy", locals(), result, tag=f"tileops-{strategy}",
-    )
+    BenchmarkReport.record(kernel, locals(), result, tag=f"tileops-{strategy}")
+
+    baseline_fn = _FUSED_BASELINES[op_name]
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(kernel, locals(), result_bl, tag="torch")
 
 
 # Broadcast benchmark (bias-add pattern)
