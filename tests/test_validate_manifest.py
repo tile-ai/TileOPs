@@ -512,6 +512,41 @@ class TestSingleInputWorkloadKeys:
 # torch_compile_fullgraph: capability flag schema
 # ---------------------------------------------------------------------------
 
+class TestRooflineStructuralRules:
+    """L0 roofline rules: mode exclusivity, field types, func resolution."""
+
+    def _entry(self, validator, roofline):
+        entry = _make_entry()
+        entry["roofline"] = roofline
+        return validator.check_l0("my_op", entry)
+
+    def test_inline_mode_passes(self, validator):
+        assert self._entry(validator, {"flops": "2*M*N", "bytes": "M*N"}) == []
+
+    def test_mixed_modes_fail(self, validator):
+        errors = self._entry(
+            validator, {"flops": "2*M*N", "bytes": "M*N", "func": "tileops.perf.formulas.gemm"})
+        assert any("exclusive" in e for e in errors)
+
+    @pytest.mark.parametrize("value", [0, "", "   ", None])
+    def test_non_string_or_empty_field_fails(self, validator, value):
+        errors = self._entry(validator, {"flops": value, "bytes": "M*N"})
+        assert any("non-empty string" in e for e in errors)
+
+    def test_vars_non_string_value_fails(self, validator):
+        errors = self._entry(
+            validator, {"flops": "2*M*N", "bytes": "M*N", "vars": {"M": 4}})
+        assert any("vars" in e and "non-empty string" in e for e in errors)
+
+    def test_unresolvable_func_fails(self, validator):
+        errors = self._entry(validator, {"func": "tileops.perf.formulas.no_such_formula"})
+        assert any("does not resolve" in e for e in errors)
+
+    def test_resolvable_func_passes(self, validator):
+        errors = self._entry(validator, {"func": "tileops.manifest.load_manifest"})
+        assert not any("roofline" in e for e in errors)
+
+
 class TestTorchCompileFullgraph:
     """torch_compile_fullgraph accepts only literal true on implemented ops."""
 

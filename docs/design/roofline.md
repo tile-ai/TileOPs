@@ -98,7 +98,7 @@ Every roofline entry MUST satisfy:
 - Field types: `flops`/`bytes`/`func` are non-empty strings; `vars` is a mapping of str → non-empty str.
 - `func` dotted path resolves at import time.
 
-These rules bind manifest authors; the validator owns their enforcement.
+The validator enforces these rules.
 
 Out of the validator's scope:
 

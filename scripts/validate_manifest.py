@@ -519,7 +519,7 @@ def check_l0(
     elif "workloads" in entry:
         errors.append(f"[schema] {op_name}: workloads must be a list")
 
-    # Roofline
+    # Roofline (structural rules per docs/design/roofline.md §4.1)
     roofline = entry.get("roofline")
     if isinstance(roofline, dict):
         has_inline = "flops" in roofline and "bytes" in roofline
@@ -528,6 +528,44 @@ def check_l0(
             errors.append(
                 f"[schema] {op_name}: roofline must have (flops + bytes) or func"
             )
+        if has_func and ({"flops", "bytes", "vars"} & set(roofline)):
+            errors.append(
+                f"[schema] {op_name}: roofline modes are exclusive — "
+                f"func must not coexist with flops/bytes/vars"
+            )
+        for field in ("flops", "bytes", "func"):
+            if field in roofline and not (
+                isinstance(roofline[field], str) and roofline[field].strip()
+            ):
+                errors.append(
+                    f"[schema] {op_name}: roofline.{field} must be a "
+                    f"non-empty string"
+                )
+        rl_vars = roofline.get("vars")
+        if rl_vars is not None:
+            if not isinstance(rl_vars, dict):
+                errors.append(
+                    f"[schema] {op_name}: roofline.vars must be a mapping"
+                )
+            else:
+                for k, v in rl_vars.items():
+                    if not (isinstance(v, str) and v.strip()):
+                        errors.append(
+                            f"[schema] {op_name}: roofline.vars[{k!r}] must "
+                            f"be a non-empty string"
+                        )
+        if has_func and isinstance(roofline.get("func"), str):
+            mod, _, attr = roofline["func"].rpartition(".")
+            try:
+                target = importlib.import_module(mod) if mod else None
+            except ImportError:
+                target = None
+            if target is None or not hasattr(target, attr):
+                errors.append(
+                    f"[schema] {op_name}: roofline.func "
+                    f"{roofline['func']!r} does not resolve to an importable "
+                    f"attribute"
+                )
     elif "roofline" in entry:
         errors.append(f"[schema] {op_name}: roofline must be a mapping")
 
