@@ -14,4 +14,6 @@ An implementation PR may edit the aligned op's manifest entry only at:
 
 Every other field — `family`, `ref_api`, `signature`, `roofline.*`, `params`, `output-dtype`, `shape_rules`, `source.kernel`, `source.op`, `source.bench_manifest_driven`, and any other `workloads` edit — needs a separate manifest-only PR with human review.
 
+Exception: `torch_compile_fullgraph` lands atomically with its registered test evidence in one human-reviewed PR (the equality gate forbids split landing).
+
 The carve-out narrows the prohibition; it does not relax the trust boundary.

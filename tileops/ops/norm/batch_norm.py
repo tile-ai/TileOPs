@@ -479,7 +479,7 @@ def _batch_norm_fwd_wrapped(
     running_var: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor,
-    instance_key: int,
+    instance_key: str,
 ) -> torch.Tensor:
     instance = get_instance(instance_key)
     return instance._eager_forward(
@@ -493,7 +493,7 @@ def _batch_norm_fwd_fake(
     running_var: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor,
-    instance_key: int,
+    instance_key: str,
 ) -> torch.Tensor:
     return torch.empty_like(x)
 
@@ -539,7 +539,7 @@ def _batch_norm_bwd_wrapped(
     weight: torch.Tensor,
     mean: torch.Tensor,
     rstd: torch.Tensor,
-    instance_key: int,
+    instance_key: str,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     instance = get_instance(instance_key)
     return instance._eager_forward(grad_out, x, weight, mean, rstd)
@@ -552,7 +552,7 @@ def _batch_norm_bwd_fake(
     weight: torch.Tensor,
     mean: torch.Tensor,
     rstd: torch.Tensor,
-    instance_key: int,
+    instance_key: str,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     C = weight.shape[0]
     return (

@@ -2672,6 +2672,25 @@ if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
 
 
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_pool_compile_two_instances_one_frame() -> None:
+    """Second instance through the same frame must not degrade the dispatch key.
+
+    Dynamo generalizes non-static scalar arguments across recompilations;
+    an int instance key becomes an unhashable SymInt on the second cold
+    compile of the same class.
+    """
+    x = torch.randn(2, 8, 32, device="cuda", dtype=torch.float16)
+    a = MaxPool1dFwdOp(kernel_size=3, stride=2, padding=1)
+    b = MaxPool1dFwdOp(kernel_size=3, stride=1, padding=1)
+    torch.testing.assert_close(
+        torch.compile(a, fullgraph=True)(x), F.max_pool1d(x, 3, 2, 1), atol=0, rtol=0)
+    torch.testing.assert_close(
+        torch.compile(b, fullgraph=True)(x), F.max_pool1d(x, 3, 1, 1), atol=0, rtol=0)
+
+
 _AVG_POOL_COMPILE_CASES = [
     pytest.param(AvgPool1dFwdOp, (2, 8, 32), id="avg-pool1d"),
     pytest.param(AvgPool2dFwdOp, (2, 4, 16, 16), id="avg-pool2d"),

@@ -1403,12 +1403,12 @@ class AvgPool3dFwdOp(Op):
 
 
 @torch.library.custom_op("top::pool_fwd", mutates_args=())
-def _pool_fwd(input: torch.Tensor, instance_key: int) -> torch.Tensor:
+def _pool_fwd(input: torch.Tensor, instance_key: str) -> torch.Tensor:
     return get_instance(instance_key)._eager_forward(input)
 
 
 @_pool_fwd.register_fake
-def _pool_fwd_fake(input: torch.Tensor, instance_key: int) -> torch.Tensor:
+def _pool_fwd_fake(input: torch.Tensor, instance_key: str) -> torch.Tensor:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(input.shape))
     return input.new_empty(shapes["output"])
@@ -1416,14 +1416,14 @@ def _pool_fwd_fake(input: torch.Tensor, instance_key: int) -> torch.Tensor:
 
 @torch.library.custom_op("top::pool_fwd_with_indices", mutates_args=())
 def _pool_fwd_with_indices(
-    input: torch.Tensor, instance_key: int,
+    input: torch.Tensor, instance_key: str,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     return get_instance(instance_key)._eager_forward(input)
 
 
 @_pool_fwd_with_indices.register_fake
 def _pool_fwd_with_indices_fake(
-    input: torch.Tensor, instance_key: int,
+    input: torch.Tensor, instance_key: str,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     op = get_instance(instance_key)
     shapes = op._infer_output_shapes(tuple(input.shape))

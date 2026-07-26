@@ -294,10 +294,12 @@ satisfy the cold-call contract.
 
 **Constraints.**
 
-- Instance-key safety relies on dynamo's ID_MATCH guard holding a weak
-  reference to the compiled callable: a dead instance fails the guard and
-  forces recompilation, so a reused `id()` cannot resolve against a stale
-  graph.
+- The instance key is a **string**: dynamo bakes string custom-op
+  arguments as static constants, while an `int` key is generalized to an
+  unhashable `SymInt` once a second instance compiles through the same
+  frame. Stale-graph safety comes from dynamo's ID_MATCH guard holding a
+  weak reference to the compiled callable: a dead instance forces
+  recompilation, so a reused `id()` cannot resolve against a stale graph.
 - The boundary covers forward-only compilation. Declaring
   `torch_compile_fullgraph` on an op whose compiled graph must
   backpropagate additionally requires registering an autograd formula for
