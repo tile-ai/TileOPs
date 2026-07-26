@@ -46,9 +46,6 @@ DaCumsumFwdOp:
       chunk_len: {type: int}
       dtype: {type: torch.dtype}
       dt_softplus: {type: bool, default: false}
-      # has_dt_bias stays false for this entry; the true form is the
-      # DaCumsumBiasFwdOp variant.
-      has_dt_bias: {type: bool, default: false}
       dt_min: {type: float, default: 0.0}
       dt_max: {type: float, default: .inf}
     shape_rules:
@@ -91,8 +88,6 @@ DaCumsumBiasFwdOp:
       chunk_len: {type: int}
       dtype: {type: torch.dtype}
       dt_softplus: {type: bool, default: false}
-      # has_dt_bias is true for this entry by construction.
-      has_dt_bias: {type: bool, default: false}
       dt_min: {type: float, default: 0.0}
       dt_max: {type: float, default: .inf}
     shape_rules:
@@ -100,12 +95,12 @@ DaCumsumBiasFwdOp:
     - "NC == S // chunk_len"
 
   workloads:
-  - {dt_shape: [1, 4096, 48], A_shape: [48], dt_bias_shape: [48], chunk_len: 256, dtype: float16, dt_softplus: true, has_dt_bias: true, dtypes: [float16], label: "mamba2-780m-b1-s4k"}
-  - {dt_shape: [8, 2048, 64], A_shape: [64], dt_bias_shape: [64], chunk_len: 256, dtype: bfloat16, dt_softplus: true, has_dt_bias: true, dtypes: [bfloat16], label: "mamba2-1p3b-b8-s2k"}
-  - {dt_shape: [2, 32768, 80], A_shape: [80], dt_bias_shape: [80], chunk_len: 256, dtype: float16, dt_softplus: true, has_dt_bias: true, dtypes: [float16], label: "mamba2-2p7b-b2-s32k"}
+  - {dt_shape: [1, 4096, 48], A_shape: [48], dt_bias_shape: [48], chunk_len: 256, dtype: float16, dt_softplus: true, dtypes: [float16], label: "mamba2-780m-b1-s4k"}
+  - {dt_shape: [8, 2048, 64], A_shape: [64], dt_bias_shape: [64], chunk_len: 256, dtype: bfloat16, dt_softplus: true, dtypes: [bfloat16], label: "mamba2-1p3b-b8-s2k"}
+  - {dt_shape: [2, 32768, 80], A_shape: [80], dt_bias_shape: [80], chunk_len: 256, dtype: float16, dt_softplus: true, dtypes: [float16], label: "mamba2-2p7b-b2-s32k"}
 
   roofline:
-    func: "tileops.perf.formulas.da_cumsum_fwd_roofline"
+    func: "tileops.perf.formulas.da_cumsum_bias_fwd_roofline"
 
   source:
     kernel: tileops/kernels/mamba/da_cumsum.py
@@ -182,10 +177,7 @@ SSDChunkStateFwdOp:
       dA_cumsum: {dtype: "float32", shape: "[B, H, NC, Q]"}
     outputs:
       states: {dtype: "float32", shape: "[B, NC, H, P, N]"}
-    params:
-      # has_seq_idx stays false for this entry; the true form is the
-      # SSDChunkStateSeqIdxFwdOp variant.
-      has_seq_idx: {type: bool, default: false}
+    params: {}
     shape_rules:
     - "S == NC * Q"
     - "H % G == 0"
@@ -223,19 +215,17 @@ SSDChunkStateSeqIdxFwdOp:
       seq_idx: {dtype: "int32", shape: "[B, S]"}
     outputs:
       states: {dtype: "float32", shape: "[B, NC, H, P, N]"}
-    params:
-      # has_seq_idx is true for this entry by construction.
-      has_seq_idx: {type: bool, default: false}
+    params: {}
     shape_rules:
     - "S == NC * Q"
     - "H % G == 0"
 
   workloads:
-  - {x_shape: [1, 4096, 48, 64], Bmat_shape: [1, 4096, 1, 128], dt_shape: [1, 48, 16, 256], dA_cumsum_shape: [1, 48, 16, 256], seq_idx_shape: [1, 4096], has_seq_idx: true, dtypes: [float16, bfloat16], label: "mamba2-780m-b1-s4k"}
-  - {x_shape: [2, 32768, 64, 64], Bmat_shape: [2, 32768, 1, 128], dt_shape: [2, 64, 128, 256], dA_cumsum_shape: [2, 64, 128, 256], seq_idx_shape: [2, 32768], has_seq_idx: true, dtypes: [float16], label: "mamba2-1p3b-b2-s32k"}
+  - {x_shape: [1, 4096, 48, 64], Bmat_shape: [1, 4096, 1, 128], dt_shape: [1, 48, 16, 256], dA_cumsum_shape: [1, 48, 16, 256], seq_idx_shape: [1, 4096], dtypes: [float16, bfloat16], label: "mamba2-780m-b1-s4k"}
+  - {x_shape: [2, 32768, 64, 64], Bmat_shape: [2, 32768, 1, 128], dt_shape: [2, 64, 128, 256], dA_cumsum_shape: [2, 64, 128, 256], seq_idx_shape: [2, 32768], dtypes: [float16], label: "mamba2-1p3b-b2-s32k"}
 
   roofline:
-    func: "tileops.perf.formulas.ssd_chunk_state_fwd_roofline"
+    func: "tileops.perf.formulas.ssd_chunk_state_seq_idx_fwd_roofline"
 
   source:
     kernel: tileops/kernels/mamba/ssd_chunk_state.py
@@ -267,14 +257,11 @@ SSDStatePassingFwdOp:
     outputs:
       out: {dtype: "float32", shape: "[B, NC, H, N]"}
       final_states: {dtype: "float32", shape: "[B, H, N]"}
-    params:
-      # has_initial_states stays false for this entry; the true form is the
-      # SSDStatePassingInitStatesFwdOp variant.
-      has_initial_states: {type: bool, default: true}
+    params: {}
 
   workloads:
-  - {states_shape: [1, 16, 64, 128], dA_chunk_cumsum_shape: [1, 64, 16], has_initial_states: false, dtypes: [float16, bfloat16], label: "mamba2-1p3b-b1-s4k-dstate"}
-  - {states_shape: [2, 128, 80, 128], dA_chunk_cumsum_shape: [2, 80, 128], has_initial_states: false, dtypes: [float16], label: "mamba2-2p7b-b2-s32k-dstate"}
+  - {states_shape: [1, 16, 64, 128], dA_chunk_cumsum_shape: [1, 64, 16], dtypes: [float16, bfloat16], label: "mamba2-1p3b-b1-s4k-dstate"}
+  - {states_shape: [2, 128, 80, 128], dA_chunk_cumsum_shape: [2, 80, 128], dtypes: [float16], label: "mamba2-2p7b-b2-s32k-dstate"}
 
   roofline:
     func: "tileops.perf.formulas.ssd_state_passing_fwd_roofline"
@@ -304,9 +291,7 @@ SSDStatePassingInitStatesFwdOp:
     outputs:
       out: {dtype: "float32", shape: "[B, NC, H, N]"}
       final_states: {dtype: "float32", shape: "[B, H, N]"}
-    params:
-      # has_initial_states is true for this entry by construction.
-      has_initial_states: {type: bool, default: true}
+    params: {}
 
   workloads:
   - {states_shape: [1, 16, 64, 128], dA_chunk_cumsum_shape: [1, 64, 16], initial_states_shape: [1, 64, 128], dtypes: [float16, bfloat16], label: "mamba2-1p3b-b1-s4k-dstate"}
@@ -314,7 +299,7 @@ SSDStatePassingInitStatesFwdOp:
   - {states_shape: [1, 16, 64, 8192], dA_chunk_cumsum_shape: [1, 64, 16], initial_states_shape: [1, 64, 8192], dtypes: [float32], label: "mamba2-1p3b-b1-s4k-flat"}
 
   roofline:
-    func: "tileops.perf.formulas.ssd_state_passing_fwd_roofline"
+    func: "tileops.perf.formulas.ssd_state_passing_init_states_fwd_roofline"
 
   source:
     kernel: tileops/kernels/mamba/ssd_state_passing.py
@@ -431,8 +416,6 @@ Mamba2FwdOp:
     params:
       chunk_size: {type: int, default: 256}
       dt_softplus: {type: bool, default: true}
-      has_initial_states: {type: bool, default: false}
-      return_final_states: {type: bool, default: false}
     shape_rules:
     - "S % chunk_size == 0"
     - "H % G == 0"
@@ -473,8 +456,6 @@ Mamba2BiasFwdOp:
     params:
       chunk_size: {type: int, default: 256}
       dt_softplus: {type: bool, default: true}
-      has_initial_states: {type: bool, default: false}
-      return_final_states: {type: bool, default: false}
     shape_rules:
     - "S % chunk_size == 0"
     - "H % G == 0"
@@ -484,7 +465,7 @@ Mamba2BiasFwdOp:
   - {x_shape: [1, 8192, 64, 64], dt_shape: [1, 8192, 64], A_shape: [64], B_shape: [1, 8192, 1, 128], C_shape: [1, 8192, 1, 128], dt_bias_shape: [64], dtypes: [float16], label: "mamba2-1p3b-b1-s8k"}
 
   roofline:
-    func: "tileops.perf.formulas.mamba2_fwd_roofline"
+    func: "tileops.perf.formulas.mamba2_bias_fwd_roofline"
 
   source:
     kernel: tileops/ops/mamba2_fwd.py
@@ -515,19 +496,16 @@ Mamba2InitStatesFwdOp:
     params:
       chunk_size: {type: int, default: 256}
       dt_softplus: {type: bool, default: true}
-      # has_initial_states is true for this entry by construction.
-      has_initial_states: {type: bool, default: false}
-      return_final_states: {type: bool, default: false}
     shape_rules:
     - "S % chunk_size == 0"
     - "H % G == 0"
 
   workloads:
-  - {x_shape: [1, 2048, 80, 64], dt_shape: [1, 2048, 80], A_shape: [80], B_shape: [1, 2048, 1, 128], C_shape: [1, 2048, 1, 128], initial_states_shape: [1, 80, 64, 128], has_initial_states: true, dtypes: [bfloat16], label: "mamba2-2p7b-b1-s2k"}
-  - {x_shape: [1, 8192, 64, 64], dt_shape: [1, 8192, 64], A_shape: [64], B_shape: [1, 8192, 1, 128], C_shape: [1, 8192, 1, 128], initial_states_shape: [1, 64, 64, 128], has_initial_states: true, dtypes: [float16], label: "mamba2-1p3b-b1-s8k"}
+  - {x_shape: [1, 2048, 80, 64], dt_shape: [1, 2048, 80], A_shape: [80], B_shape: [1, 2048, 1, 128], C_shape: [1, 2048, 1, 128], initial_states_shape: [1, 80, 64, 128], dtypes: [bfloat16], label: "mamba2-2p7b-b1-s2k"}
+  - {x_shape: [1, 8192, 64, 64], dt_shape: [1, 8192, 64], A_shape: [64], B_shape: [1, 8192, 1, 128], C_shape: [1, 8192, 1, 128], initial_states_shape: [1, 64, 64, 128], dtypes: [float16], label: "mamba2-1p3b-b1-s8k"}
 
   roofline:
-    func: "tileops.perf.formulas.mamba2_fwd_roofline"
+    func: "tileops.perf.formulas.mamba2_init_states_fwd_roofline"
 
   source:
     kernel: tileops/ops/mamba2_fwd.py
@@ -560,19 +538,16 @@ Mamba2BiasInitStatesFwdOp:
     params:
       chunk_size: {type: int, default: 256}
       dt_softplus: {type: bool, default: true}
-      # has_initial_states is true for this entry by construction.
-      has_initial_states: {type: bool, default: false}
-      return_final_states: {type: bool, default: false}
     shape_rules:
     - "S % chunk_size == 0"
     - "H % G == 0"
 
   workloads:
-  - {x_shape: [1, 2048, 80, 64], dt_shape: [1, 2048, 80], A_shape: [80], B_shape: [1, 2048, 1, 128], C_shape: [1, 2048, 1, 128], dt_bias_shape: [80], initial_states_shape: [1, 80, 64, 128], has_initial_states: true, dtypes: [bfloat16], label: "mamba2-2p7b-b1-s2k"}
-  - {x_shape: [1, 8192, 64, 64], dt_shape: [1, 8192, 64], A_shape: [64], B_shape: [1, 8192, 1, 128], C_shape: [1, 8192, 1, 128], dt_bias_shape: [64], initial_states_shape: [1, 64, 64, 128], has_initial_states: true, dtypes: [float16], label: "mamba2-1p3b-b1-s8k"}
+  - {x_shape: [1, 2048, 80, 64], dt_shape: [1, 2048, 80], A_shape: [80], B_shape: [1, 2048, 1, 128], C_shape: [1, 2048, 1, 128], dt_bias_shape: [80], initial_states_shape: [1, 80, 64, 128], dtypes: [bfloat16], label: "mamba2-2p7b-b1-s2k"}
+  - {x_shape: [1, 8192, 64, 64], dt_shape: [1, 8192, 64], A_shape: [64], B_shape: [1, 8192, 1, 128], C_shape: [1, 8192, 1, 128], dt_bias_shape: [64], initial_states_shape: [1, 64, 64, 128], dtypes: [float16], label: "mamba2-1p3b-b1-s8k"}
 
   roofline:
-    func: "tileops.perf.formulas.mamba2_fwd_roofline"
+    func: "tileops.perf.formulas.mamba2_bias_init_states_fwd_roofline"
 
   source:
     kernel: tileops/ops/mamba2_fwd.py
