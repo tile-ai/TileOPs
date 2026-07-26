@@ -18,19 +18,13 @@
 # Workload shapes follow the public Mamba-2 model family sizes
 # (780M: H=48, 1.3B: H=64, 2.7B: H=80; P=64, N=128, Q=256, G=1).
 #
-# All entries land spec-only; promotion to implemented is a separate
-# status-flip change after conformance review. Conditional tensor inputs
-# (dt_bias, seq_idx, initial_states) are modeled as variant_of entries per
-# the "No Optional[Tensor]" manifest rule.
+# Conditional tensor inputs (dt_bias, seq_idx, initial_states) are modeled
+# as variant_of entries per the "No Optional[Tensor]" manifest rule.
 
 DaCumsumFwdOp:
   # Mamba-2 dt preprocessing + chunk-local inclusive prefix sum of dA = dt * A.
   # Primary entry: no per-head dt bias (has_dt_bias=false construction).
   # The bias-consuming form is the DaCumsumBiasFwdOp variant below.
-  #
-  # Code drift blocking promotion: the constructor carries a legacy `dtype`
-  # default (torch.float32) that the spec does not advertise, failing strict
-  # ctor parity; dtype is spec-required.
   ref_api: "none"
   family: mamba
   status: spec-only
@@ -115,10 +109,6 @@ DaCumsumBiasFwdOp:
 CBProducerOp:
   # Causal C@B coupling-matrix producer:
   #   cb[b, c, g, l, s] = sum_n C[b, c*Q+l, g, n] * B[b, c*Q+s, g, n], s <= l.
-  #
-  # Code drift blocking promotion: the constructor carries a legacy `dtype`
-  # default (torch.float16) that the spec does not advertise, failing strict
-  # ctor parity; dtype is spec-required.
   ref_api: "none"
   family: mamba
   status: spec-only
@@ -158,7 +148,7 @@ CBProducerOp:
     op: tileops/ops/cb_producer.py
     test: tests/ops/test_mamba.py
     # Exercised through the Mamba-2 end-to-end benchmark (CB stage of
-    # Mamba2FwdOp); no standalone bench file exists yet.
+    # Mamba2FwdOp).
     bench: benchmarks/ops/bench_mamba2_e2e.py
     bench_manifest_driven: false
 
@@ -243,10 +233,6 @@ SSDStatePassingFwdOp:
   # In the Mamba-2 pipeline N here is the flattened d_head * d_state.
   # Primary entry: scan starts from a zero state (has_initial_states=false).
   # The seeded form is the SSDStatePassingInitStatesFwdOp variant.
-  #
-  # Code drift blocking promotion: forward() currently requires the
-  # initial_states argument unconditionally; the spec models absence as
-  # this entry, so the argument must become variant-selected in code.
   ref_api: "none"
   family: mamba
   status: spec-only
@@ -399,11 +385,6 @@ Mamba2FwdOp:
   # return_final_states switch does not exist here.
   # Primary entry: no dt_bias, no initial_states. The optional tensors land
   # as the Bias / InitStates / BiasInitStates variants below.
-  #
-  # Code drift blocking promotion: the composite class does not conform to
-  # the Op protocol (not an Op subclass; no kernel_map ctor param /
-  # dispatch_kernel slot), so it cannot pass the implemented-status
-  # validator gates.
   ref_api: "none"
   family: mamba
   status: spec-only

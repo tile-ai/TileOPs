@@ -27,6 +27,7 @@ __all__ = [
     "clamp_fwd_roofline",
     "clamp_max_fwd_roofline",
     "clamp_min_fwd_roofline",
+    "da_cumsum_bias_fwd_roofline",
     "da_cumsum_fwd_roofline",
     "deepseek_dsa_decode_roofline",
     "deepseek_mla_decode_roofline",
@@ -63,7 +64,10 @@ __all__ = [
     "logical_and_fwd_roofline",
     "logical_or_fwd_roofline",
     "lt_fwd_roofline",
+    "mamba2_bias_fwd_roofline",
+    "mamba2_bias_init_states_fwd_roofline",
     "mamba2_fwd_roofline",
+    "mamba2_init_states_fwd_roofline",
     "masked_fill_fwd_roofline",
     "maximum_fwd_roofline",
     "mha_bwd_roofline",
@@ -81,8 +85,10 @@ __all__ = [
     "rope_roofline",
     "ssd_chunk_scan_fwd_roofline",
     "ssd_chunk_state_fwd_roofline",
+    "ssd_chunk_state_seq_idx_fwd_roofline",
     "ssd_decode_roofline",
     "ssd_state_passing_fwd_roofline",
+    "ssd_state_passing_init_states_fwd_roofline",
     "sub_fwd_roofline",
     "topk_selector_roofline",
     "where_fwd_roofline",
@@ -1272,14 +1278,8 @@ def bmm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
     return int(flops), int(nbytes)
 
 
-
-
-# Mamba-2 / State-Space Dual (SSD) family
-#
-# Conditional tensor presence (dt_bias / seq_idx / initial_states) is modeled
-# as variant_of manifest entries, so each variant binds its own public
-# roofline function with the presence hard-wired; the shared arithmetic lives
-# in private per-stage cost helpers.
+# Mamba-2 / State-Space Dual (SSD) family. Each variant_of entry binds its own
+# public function; all helpers are valid only after the first ``forward()``.
 
 
 def _da_cumsum_fwd_cost(batch: int, seq_len: int, n_heads: int,
@@ -1300,12 +1300,7 @@ def _da_cumsum_fwd_cost(batch: int, seq_len: int, n_heads: int,
 
 
 def da_cumsum_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for the Mamba-2 dA_cumsum forward stage (no dt bias).
-
-    Elementwise dt preprocessing (softplus, clamp, dt * A) plus a chunk-local
-    inclusive prefix sum. Valid only after the first ``forward()`` (batch /
-    seq_len / n_heads are inferred from the inputs then).
-    """
+    """Roofline for the Mamba-2 dA_cumsum forward stage (no dt bias)."""
     return _da_cumsum_fwd_cost(
         int(op.batch), int(op.seq_len), int(op.n_heads),
         _dtype_itemsize(getattr(op, "dtype", "float32")),
@@ -1525,13 +1520,8 @@ def _mamba2_fwd_cost(op: Any, *, has_dt_bias: bool,
 
 
 def mamba2_fwd_roofline(op: Any) -> tuple[int, int]:
-    """Roofline for the end-to-end Mamba-2 SSD forward (no dt_bias, zero
-    initial state).
-
-    Sums the DaCumsum, CB-producer, chunk-state, state-passing (over the
-    flattened ``d_head * d_state`` dimension), and chunk-scan stage costs.
-    Valid only after the first ``forward()``.
-    """
+    """End-to-end Mamba-2 SSD forward: sums the five stage costs (state
+    passing runs over the flattened ``d_head * d_state`` dimension)."""
     return _mamba2_fwd_cost(op, has_dt_bias=False, has_initial_states=False)
 
 
@@ -1546,6 +1536,5 @@ def mamba2_init_states_fwd_roofline(op: Any) -> tuple[int, int]:
 
 
 def mamba2_bias_init_states_fwd_roofline(op: Any) -> tuple[int, int]:
-    """Roofline for the Mamba-2 forward variant with dt_bias and
-    initial_states both present."""
+    """Roofline for the Mamba-2 forward variant with dt_bias + initial_states."""
     return _mamba2_fwd_cost(op, has_dt_bias=True, has_initial_states=True)
