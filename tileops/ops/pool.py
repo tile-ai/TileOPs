@@ -374,13 +374,6 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
         return flops, bytes_
 
 
-_MAX_POOL_PARAM_SUFFIXES: Dict[int, Tuple[str, ...]] = {
-    1: ("w",),
-    2: ("h", "w"),
-    3: ("d", "h", "w"),
-}
-
-
 def _max_pool_roofline(op: "_MaxPoolFwdOpBase", *, indices: bool) -> tuple[int, int]:
     """Shared max-pool roofline: flops = out_elems * prod(kernel); bytes in+out."""
     if op._last_roofline_spec is None:
