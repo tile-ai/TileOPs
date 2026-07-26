@@ -33,15 +33,6 @@ from ..op_base import Op
 
 _OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
-_FP8_NONSAT_OUTPUT_DTYPES = {
-    torch.float8_e5m2: torch.float16,
-}
-
-def _effective_scalar_kernel_dtype(dtype: torch.dtype) -> torch.dtype:
-    """Return the dtype used when scalar literals are materialized in kernels."""
-    return _FP8_NONSAT_OUTPUT_DTYPES.get(dtype, dtype)
-
-
 _MANIFEST_INT_SCALAR_DTYPES = (
     torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
 )
@@ -54,7 +45,7 @@ def _validate_scalar_param_repr(
     """Reject scalar params that cannot be represented in the user dtype.
 
     Validation targets the *user-facing* ``dtype`` rather than the
-    intermediate ``_effective_scalar_kernel_dtype(dtype)``.  For fp8
+    kernel's fp16 intermediate.  For fp8
     dtypes the kernel runs in fp16 to preserve Inf/NaN, but a value that
     only fits in fp16 would surface as ``+/-Inf`` after the final fp8
     post-cast. Validating against the user dtype keeps explicit

@@ -173,14 +173,9 @@ def _combine_results(bm: GroupedGemmCompleteBenchmark, *results: dict) -> dict:
     return combined
 
 
-_GROUPED_GEMM_COMPLETE_BENCH_PARAMS = [
-    pytest.param(16384, 4, 4864, 4096, torch.float16, True, id="complete-fp16"),
-]
-
-
 @pytest.mark.parametrize(
     "batch_sum, batch_count, N, K, dtype, tune",
-    _GROUPED_GEMM_COMPLETE_BENCH_PARAMS,
+    [pytest.param(16384, 4, 4864, 4096, torch.float16, True, id="complete-fp16")],
 )
 def test_grouped_gemm_complete_bench(batch_sum: int, batch_count: int, N: int, K: int,
                                      dtype: torch.dtype, tune: bool) -> None:
