@@ -8,12 +8,12 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import load_workloads
 from tileops.ops.norm.instance_norm import (
     InstanceNormFwdOp,
-    InstanceNormFwdOpNoAffine,
+    InstanceNormNoAffineFwdOp,
 )
 from workloads.instance_norm import InstanceNormTest
 
 _OP_NAME = "InstanceNormFwdOp"
-_OP_NAME_NO_AFFINE = "InstanceNormFwdOpNoAffine"
+_OP_NAME_NO_AFFINE = "InstanceNormNoAffineFwdOp"
 
 
 class InstanceNormBenchmark(BenchmarkBase[InstanceNormTest]):
@@ -78,7 +78,7 @@ def test_instance_norm_no_affine_bench(n: int, c: int, spatial: tuple,
     test = InstanceNormTest(n, c, spatial, dtype)
     x, _, _ = test.gen_inputs()
 
-    op = InstanceNormFwdOpNoAffine(tune=tune)
+    op = InstanceNormNoAffineFwdOp(tune=tune)
     bm = InstanceNormBenchmark(test, op)
     # Running stats are required positional args (R16) but ignored on the
     # use_input_stats=True path; pass placeholders.

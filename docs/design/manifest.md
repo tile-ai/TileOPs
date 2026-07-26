@@ -221,17 +221,17 @@ The base class emits a once-per-type runtime warning when the default `_cache_ke
 
 ## Manifest Key Format
 
-Each top-level entry is keyed by the **Python class name** of the Op — PascalCase with a mandatory direction suffix and `Op` suffix:
+Each top-level entry is keyed by the **Python class name** of the Op — PascalCase with an `Op` suffix and an optional direction suffix:
 
 ```
-{PascalCaseName}{Direction}Op
+{PascalCaseName}[{Direction}]Op
 ```
 
-- **PascalCaseName** — descriptive name in PascalCase (`RMSNorm`, `BatchNorm`, `Softmax`). Author chooses; no abbreviation rules.
-- **Direction** — mandatory: `Fwd` or `Bwd`.
+- **PascalCaseName** — descriptive name in PascalCase (`RMSNorm`, `BatchNorm`, `Softmax`). Author chooses; no abbreviation rules. Variant words are part of this name and always precede `{Direction}Op` (`GroupNormNoAffineFwdOp`, never `GroupNormFwdOpNoAffine`).
+- **Direction** — `Fwd` or `Bwd`. REQUIRED when the manifest carries both directions of the same op (a direction sibling exists); single-direction ops MAY omit it.
 - **Op** — literal suffix.
 
-Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`.
+Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `DropoutOp`.
 
 Validator enforces `cls.__name__ == manifest_key` exactly — no heuristic resolution or case conversion.
 

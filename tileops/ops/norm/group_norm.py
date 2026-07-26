@@ -24,7 +24,7 @@ from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
 from ..op_base import Op
 from .norm_base import ALIGNMENT, align_up
 
-__all__ = ["GroupNormFwdOp", "GroupNormFwdOpNoAffine"]
+__all__ = ["GroupNormFwdOp", "GroupNormNoAffineFwdOp"]
 
 # Largest candidate block_m in GroupNormNoAffineKernel.autotune_configs.
 # The op pads M to a multiple of this value so the kernel's full-tile
@@ -183,9 +183,9 @@ class GroupNormFwdOp(Op):
         Args:
             x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
             weight: Affine scale of shape ``(C,)`` on CUDA. Required; the
-                affine-free path is :class:`GroupNormFwdOpNoAffine`.
+                affine-free path is :class:`GroupNormNoAffineFwdOp`.
             bias: Affine shift of shape ``(C,)`` on CUDA. Required; the
-                affine-free path is :class:`GroupNormFwdOpNoAffine`.
+                affine-free path is :class:`GroupNormNoAffineFwdOp`.
 
         Returns:
             Normalized tensor of the same shape as *x*.
@@ -207,12 +207,12 @@ class GroupNormFwdOp(Op):
         ) = self._resolve_spec(x)
         if not isinstance(weight, torch.Tensor):
             raise ValueError(
-                "weight is required; use GroupNormFwdOpNoAffine for the "
+                "weight is required; use GroupNormNoAffineFwdOp for the "
                 "affine-free path"
             )
         if not isinstance(bias, torch.Tensor):
             raise ValueError(
-                "bias is required; use GroupNormFwdOpNoAffine for the "
+                "bias is required; use GroupNormNoAffineFwdOp for the "
                 "affine-free path"
             )
         if not weight.is_cuda:
@@ -274,7 +274,7 @@ class GroupNormFwdOp(Op):
         return y
 
 
-class GroupNormFwdOpNoAffine(Op):
+class GroupNormNoAffineFwdOp(Op):
     """Group Normalization forward without affine scale/shift.
 
     Computes group normalization without the trailing weight/bias affine:
@@ -331,7 +331,7 @@ class GroupNormFwdOpNoAffine(Op):
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
             raise RuntimeError(
-                "GroupNormFwdOpNoAffine.eval_roofline() requires a prior forward() call"
+                "GroupNormNoAffineFwdOp.eval_roofline() requires a prior forward() call"
             )
         N, C, spatial_size, dtype = self._last_roofline_spec
         elem_bytes = dtype.itemsize

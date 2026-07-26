@@ -8,12 +8,12 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import load_workloads
 from tileops.ops.norm.group_norm import (
     GroupNormFwdOp,
-    GroupNormFwdOpNoAffine,
+    GroupNormNoAffineFwdOp,
 )
 from workloads.group_norm import GroupNormTest
 
 _OP_NAME = "GroupNormFwdOp"
-_OP_NAME_NO_AFFINE = "GroupNormFwdOpNoAffine"
+_OP_NAME_NO_AFFINE = "GroupNormNoAffineFwdOp"
 
 
 class GroupNormBenchmark(BenchmarkBase[GroupNormTest]):
@@ -86,7 +86,7 @@ def test_group_norm_no_affine_bench(n: int, c: int, spatial: tuple,
     test = GroupNormTest(n, c, spatial, num_groups, dtype)
     x, _, _ = test.gen_inputs()
 
-    op = GroupNormFwdOpNoAffine(num_groups=num_groups, tune=tune)
+    op = GroupNormNoAffineFwdOp(num_groups=num_groups, tune=tune)
     bm = GroupNormBenchmark(test, op)
     result = bm.profile(op, x)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

@@ -30,6 +30,7 @@ import sys
 import textwrap
 import types
 import warnings as _warnings
+from collections.abc import Collection
 from pathlib import Path
 
 import yaml
@@ -265,6 +266,7 @@ def _check_single_input_workload_keys(
 
 def check_l0(
     op_name: str, entry: dict, *, warnings: list[str] | None = None,
+    all_op_names: Collection[str] = (),
 ) -> list[str]:
     """Validate structural schema of a manifest entry. Returns error strings."""
     errors: list[str] = []
@@ -272,6 +274,28 @@ def check_l0(
     if not isinstance(entry, dict):
         errors.append(f"[schema] {op_name}: entry must be a mapping, got {type(entry).__name__}")
         return errors
+
+    # Key format: variant words precede the direction suffix; the direction
+    # suffix itself is required only when the manifest carries a direction
+    # sibling of the same op.
+    key_match = re.match(r"^(.*)(Fwd|Bwd)Op(.+)$", op_name)
+    if key_match:
+        stem, direction, trailing = key_match.groups()
+        errors.append(
+            f"[schema] {op_name}: variant word '{trailing}' follows "
+            f"'{direction}Op'; variant words must precede the direction "
+            f"suffix (expected '{stem}{trailing}{direction}Op')"
+        )
+    elif op_name.endswith("Op") and not op_name.endswith(("FwdOp", "BwdOp")):
+        stem = op_name[:-2]
+        siblings = [
+            s for s in (f"{stem}FwdOp", f"{stem}BwdOp") if s in all_op_names
+        ]
+        if siblings:
+            errors.append(
+                f"[schema] {op_name}: missing direction suffix; direction "
+                f"sibling '{siblings[0]}' exists in the manifest"
+            )
 
     # Top-level required fields
     missing_top = _REQUIRED_TOP - set(entry.keys())
@@ -3872,7 +3896,9 @@ def validate_manifest(
 
         # schema: YAML structure validation
         if "schema" in levels:
-            schema_errors = check_l0(op_name, entry, warnings=all_warnings)
+            schema_errors = check_l0(
+                op_name, entry, warnings=all_warnings, all_op_names=ops.keys(),
+            )
             schema_errors.extend(check_source_paths(op_name, entry, repo_root))
             all_errors.extend(schema_errors)
             if schema_errors:
