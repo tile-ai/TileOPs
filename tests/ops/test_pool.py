@@ -1,3 +1,4 @@
+import inspect
 from typing import Callable, Optional
 
 import pytest
@@ -1462,6 +1463,249 @@ def test_avg_pool_compile_fullgraph(op_cls: type, x_shape: tuple) -> None:
     out = compiled(x)
     ref = getattr(F, f"avg_pool{dims}d")(x, 2, 2, 0)
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Cross-family contract snapshots
+# ---------------------------------------------------------------------------
+
+_EMPTY = inspect.Parameter.empty
+
+_AVG_POOL_CTOR_PARAMS_1D = (
+    ("kernel_size", _EMPTY),
+    ("stride", None),
+    ("padding", 0),
+    ("ceil_mode", False),
+    ("count_include_pad", True),
+    ("kernel_map", None),
+    ("tune", False),
+)
+
+_AVG_POOL_CTOR_PARAMS_ND = (
+    ("kernel_size", _EMPTY),
+    ("stride", None),
+    ("padding", 0),
+    ("ceil_mode", False),
+    ("count_include_pad", True),
+    ("divisor_override", None),
+    ("kernel_map", None),
+    ("tune", False),
+)
+
+_MAX_POOL_CTOR_PARAMS = (
+    ("kernel_size", _EMPTY),
+    ("stride", None),
+    ("padding", 0),
+    ("dilation", 1),
+    ("ceil_mode", False),
+    ("kernel_map", None),
+    ("tune", False),
+)
+
+# Manifest-pinned constructor contract: parameter names, order, and defaults.
+_POOL_CTOR_SNAPSHOTS: list = [
+    pytest.param(AvgPool1dFwdOp, _AVG_POOL_CTOR_PARAMS_1D, id="avg-pool1d"),
+    pytest.param(AvgPool2dFwdOp, _AVG_POOL_CTOR_PARAMS_ND, id="avg-pool2d"),
+    pytest.param(AvgPool3dFwdOp, _AVG_POOL_CTOR_PARAMS_ND, id="avg-pool3d"),
+    pytest.param(MaxPool1dFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool1d"),
+    pytest.param(MaxPool1dIndicesFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool1d-indices"),
+    pytest.param(MaxPool2dFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool2d"),
+    pytest.param(MaxPool2dIndicesFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool2d-indices"),
+    pytest.param(MaxPool3dFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool3d"),
+    pytest.param(MaxPool3dIndicesFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool3d-indices"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(("op_cls", "expected"), _POOL_CTOR_SNAPSHOTS)
+def test_pool_ctor_signature_snapshot(
+    op_cls: type,
+    expected: tuple[tuple[str, object], ...],
+) -> None:
+    params = inspect.signature(op_cls.__init__).parameters
+    got = tuple((name, p.default) for name, p in params.items() if name != "self")
+    assert got == expected
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls",
+    [
+        AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp,
+        MaxPool1dFwdOp, MaxPool1dIndicesFwdOp,
+        MaxPool2dFwdOp, MaxPool2dIndicesFwdOp,
+        MaxPool3dFwdOp, MaxPool3dIndicesFwdOp,
+    ],
+)
+def test_pool_codegen_slots_are_class_local(op_cls: type) -> None:
+    """eval_roofline / _validate_dtypes must live in each concrete class __dict__.
+
+    Manifest codegen (``maybe_install_validator`` / ``maybe_install_eval_roofline``)
+    keys off the concrete class definition; a definition inherited only from an
+    intermediate base either gets silently shadowed by generated code or
+    silently bypasses per-op generation.
+    """
+    assert "eval_roofline" in op_cls.__dict__
+    assert "_validate_dtypes" in op_cls.__dict__
+
+
+class _PassthroughGenericKernel(Kernel):
+    supported_archs = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # clone(): custom-op outputs must not alias custom-op inputs.
+        return x.clone()
+
+
+class _PassthroughSpatialKernel(Kernel):
+    supported_archs = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # clone(): custom-op outputs must not alias custom-op inputs.
+        return x.clone()
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("ndim", [1, 3], ids=["1d", "3d"])
+def test_avg_pool_explicit_generic_kernel_map_disables_fast_path(ndim: int) -> None:
+    """1d/3d policy: an explicit generic override alone opts out of the fast path."""
+    generic_slot = f"avg_pool{ndim}d_kernel"
+    spatial_slot = f"avg_pool{ndim}d_spatial_kernel"
+    shape = (1, 2) + (8,) * ndim
+    x = torch.randn(*shape, device="cuda", dtype=torch.float16)
+
+    op = _AVG_POOL_OPS[ndim](kernel_size=2, kernel_map={generic_slot: _PassthroughGenericKernel})
+    op(x)
+    assert isinstance(op.kernel, _PassthroughGenericKernel)
+
+    op_both = _AVG_POOL_OPS[ndim](
+        kernel_size=2,
+        kernel_map={
+            generic_slot: _PassthroughGenericKernel,
+            spatial_slot: _PassthroughSpatialKernel,
+        },
+    )
+    op_both(x)
+    assert isinstance(op_both.kernel, _PassthroughSpatialKernel)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_avg_pool2d_explicit_generic_kernel_map_keeps_fast_path() -> None:
+    """2d policy asymmetry: an explicit generic override does NOT opt out."""
+    op = AvgPool2dFwdOp(kernel_size=2, kernel_map={"avg_pool2d_kernel": _PassthroughGenericKernel})
+    x = torch.randn(1, 2, 8, 8, device="cuda", dtype=torch.float16)
+    op(x)
+    assert isinstance(op.kernel, AvgPool2dSpatialKernel)
+
+
+# _infer_output_shapes snapshot: (op_cls, ctor kwargs, input shape, expected shapes).
+_POOL_INFER_SHAPE_SNAPSHOTS: list = [
+    pytest.param(
+        AvgPool1dFwdOp, {"kernel_size": 3, "stride": 2, "padding": 1},
+        (2, 4, 32), {"output": (2, 4, 16)}, id="avg-pool1d"),
+    pytest.param(
+        AvgPool2dFwdOp, {"kernel_size": (3, 3), "stride": (2, 2), "padding": (1, 1)},
+        (2, 4, 16, 16), {"output": (2, 4, 8, 8)}, id="avg-pool2d"),
+    pytest.param(
+        AvgPool3dFwdOp, {"kernel_size": (3, 3, 3), "stride": (2, 2, 2), "padding": (1, 1, 1)},
+        (2, 4, 8, 16, 16), {"output": (2, 4, 4, 8, 8)}, id="avg-pool3d"),
+    pytest.param(
+        MaxPool1dFwdOp, {"kernel_size": 3, "stride": 2, "padding": 1},
+        (2, 4, 32), {"output": (2, 4, 16)}, id="max-pool1d"),
+    pytest.param(
+        MaxPool1dIndicesFwdOp, {"kernel_size": 3, "stride": 2, "padding": 1},
+        (2, 4, 32), {"output": (2, 4, 16), "indices": (2, 4, 16)}, id="max-pool1d-indices"),
+    pytest.param(
+        MaxPool2dFwdOp, {"kernel_size": (3, 3), "stride": (2, 2), "padding": (1, 1)},
+        (2, 4, 16, 16), {"output": (2, 4, 8, 8)}, id="max-pool2d"),
+    pytest.param(
+        MaxPool2dIndicesFwdOp, {"kernel_size": (3, 3), "stride": (2, 2), "padding": (1, 1)},
+        (2, 4, 16, 16), {"output": (2, 4, 8, 8), "indices": (2, 4, 8, 8)},
+        id="max-pool2d-indices"),
+    pytest.param(
+        MaxPool3dFwdOp, {"kernel_size": 3, "stride": 2, "padding": 1},
+        (2, 4, 8, 16, 16), {"output": (2, 4, 4, 8, 8)}, id="max-pool3d"),
+    pytest.param(
+        MaxPool3dIndicesFwdOp, {"kernel_size": 3, "stride": 2, "padding": 1},
+        (2, 4, 8, 16, 16), {"output": (2, 4, 4, 8, 8), "indices": (2, 4, 4, 8, 8)},
+        id="max-pool3d-indices"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("op_cls", "ctor_kwargs", "input_shape", "expected"),
+    _POOL_INFER_SHAPE_SNAPSHOTS,
+)
+def test_pool_infer_output_shapes_snapshot(
+    op_cls: type,
+    ctor_kwargs: dict[str, object],
+    input_shape: tuple[int, ...],
+    expected: dict[str, tuple[int, ...]],
+) -> None:
+    op = op_cls(**ctor_kwargs)
+    assert op._infer_output_shapes(input_shape) == expected
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_pool_fake_indices_shapes_and_int64_dtype() -> None:
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    op = MaxPool2dIndicesFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+    with FakeTensorMode():
+        x = torch.empty(2, 4, 16, 16, device="cuda", dtype=torch.float16)
+        out, idx = op(x)
+    assert tuple(out.shape) == (2, 4, 8, 8)
+    assert out.dtype == torch.float16
+    assert tuple(idx.shape) == (2, 4, 8, 8)
+    assert idx.dtype == torch.int64
+
+
+# eval_roofline snapshot over n=1, c=2, 8-per-spatial-dim, k=2, s=2, p=0, fp16.
+# Expected values are the hand-expanded flops/bytes formulas:
+#   flops = n*c*prod(out)*prod(k); bytes = (n*c*prod(in) + n*c*prod(out))*2 [+ n*c*prod(out)*8].
+_POOL_ROOFLINE_SNAPSHOTS: list = [
+    pytest.param(AvgPool1dFwdOp, (1, 2, 8), 16, 48, id="avg-pool1d"),
+    pytest.param(AvgPool2dFwdOp, (1, 2, 8, 8), 128, 320, id="avg-pool2d"),
+    pytest.param(AvgPool3dFwdOp, (1, 2, 8, 8, 8), 1024, 2304, id="avg-pool3d"),
+    pytest.param(MaxPool1dFwdOp, (1, 2, 8), 16, 48, id="max-pool1d"),
+    pytest.param(MaxPool1dIndicesFwdOp, (1, 2, 8), 16, 112, id="max-pool1d-indices"),
+    pytest.param(MaxPool2dFwdOp, (1, 2, 8, 8), 128, 320, id="max-pool2d"),
+    pytest.param(MaxPool2dIndicesFwdOp, (1, 2, 8, 8), 128, 576, id="max-pool2d-indices"),
+    pytest.param(MaxPool3dFwdOp, (1, 2, 8, 8, 8), 1024, 2304, id="max-pool3d"),
+    pytest.param(MaxPool3dIndicesFwdOp, (1, 2, 8, 8, 8), 1024, 3328, id="max-pool3d-indices"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    ("op_cls", "shape", "expected_flops", "expected_bytes"),
+    _POOL_ROOFLINE_SNAPSHOTS,
+)
+def test_pool_eval_roofline_snapshot(
+    op_cls: type,
+    shape: tuple[int, ...],
+    expected_flops: int,
+    expected_bytes: int,
+) -> None:
+    op = op_cls(kernel_size=2, stride=2, padding=0)
+    x = torch.randn(*shape, device="cuda", dtype=torch.float16)
+    op(x)
+    assert op.eval_roofline() == (expected_flops, expected_bytes)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_avg_pool2d_kernel_cache_separates_dtypes() -> None:
+    op = AvgPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+    shape = (1, 4, 16, 16)
+    op(torch.randn(*shape, dtype=torch.float16, device="cuda"))
+    op(torch.randn(*shape, dtype=torch.float32, device="cuda"))
+    assert len(op._kernel_cache) == 2
 
 
 if __name__ == "__main__":
