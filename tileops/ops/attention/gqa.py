@@ -11,6 +11,7 @@ from tileops.kernels.attention import (
     GQABwdWgmmaPipelinedKernel,
     GQADecodeBs1Kernel,
     GQADecodeKernel,
+    GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
     GQAFwdKernel,
@@ -1469,7 +1470,7 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.softcap = _score_softcap(softcap)
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_decode_paged_kernel"](
+        self.kernel = self.kernel_map[self._select_decode_kernel_key()](
             batch,
             heads,
             heads_kv,
@@ -1484,7 +1485,27 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_decode_paged_kernel": GQADecodePagedKernel}
+        kernel_map: Dict[str, Kernel] = {"gqa_decode_paged_kernel": GQADecodePagedKernel}
+        if is_hopper():
+            kernel_map["gqa_decode_paged_bs1_kernel"] = GQADecodePagedBs1Kernel
+        return kernel_map
+
+    def _uses_bs1_fast_path(self) -> bool:
+        if not (self.batch == 1 and is_hopper() and self.dtype == torch.float16
+                and self.dim == 128 and self.softcap == 0.0):
+            return False
+        if self.heads % self.heads_kv != 0:
+            return False
+        # The TMA producer must load a complete WGMMA N tile without crossing
+        # a potentially non-contiguous page boundary.
+        if self.page_size < 64 or self.page_size % 64 != 0:
+            return False
+        return 1 <= self.heads // self.heads_kv <= 64
+
+    def _select_decode_kernel_key(self) -> str:
+        if self._uses_bs1_fast_path():
+            return "gqa_decode_paged_bs1_kernel"
+        return "gqa_decode_paged_kernel"
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:

@@ -518,6 +518,9 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
       - "H % H_kv == 0"
 
   workloads:
+    # Qwen3-30B-A3B batch=1 Hopper fast path.
+    - {q_shape: [1, 32, 128], kv_shape: [4096, 4, 128], page_size: 256, dtypes: [float16], label: "qwen3-30b-a3b-bs1-4k-p256"}
+    - {q_shape: [1, 32, 128], kv_shape: [32768, 4, 128], page_size: 256, dtypes: [float16], label: "qwen3-30b-a3b-bs1-32k-p256"}
     - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 64, dtypes: [float16], label: "serving-8b-p64"}
     - {q_shape: [8, 32, 128], kv_shape: [32768, 8, 128], page_size: 64, dtypes: [float16], label: "serving-8b-long-p64"}
     - {q_shape: [64, 32, 128], kv_shape: [2048, 8, 128], page_size: 64, dtypes: [float16], label: "throughput-8b-p64"}
@@ -537,6 +540,7 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
     kernel: tileops/kernels/attention/gqa_decode_paged.py
     kernel_map:
       gqa_decode_paged_kernel: GQADecodePagedKernel
+      gqa_decode_paged_bs1_kernel: GQADecodePagedBs1Kernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_decode_paged.py
     bench: benchmarks/ops/attention/bench_gqa_decode_paged.py

@@ -431,6 +431,16 @@ class GQADecodePagedKernel(Kernel):
                 raise ValueError(
                     f"block_N={block_n} is not supported for page_size={page_size}"
                 )
+        if self.groups <= 0:
+            raise ValueError("groups must be positive")
+        if self.heads % self.groups != 0:
+            raise ValueError("heads must be divisible by groups")
+        if self.seqlen_kv <= 0:
+            raise ValueError("seqlen_kv must be positive")
+        if self.page_size <= 0:
+            raise ValueError("page_size must be positive")
+        if self.seqlen_kv % self.page_size != 0:
+            raise ValueError("seqlen_kv must be divisible by page_size")
 
         self.no_split_jit = _gqa_decode_no_split_paged_kernel(
             self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.page_size,
