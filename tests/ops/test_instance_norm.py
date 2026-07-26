@@ -10,7 +10,7 @@ from tileops.ops.norm.instance_norm import (
     InstanceNormFwdOp,
     InstanceNormNoAffineFwdOp,
 )
-from workloads.instance_norm import InstanceNormTest as _InstanceNormTestWorkload
+from workloads.normalization import InstanceNormTest as _InstanceNormTestWorkload
 
 
 class InstanceNormTest(_InstanceNormTestWorkload, TestBase):

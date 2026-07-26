@@ -11,7 +11,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
-from workloads.logical_reduce import AnyTest as _AnyWorkload
+from workloads.reduction import AnyTest as _AnyWorkload
 
 # Fixtures
 

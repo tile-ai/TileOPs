@@ -10,7 +10,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
-from workloads.vector_norm import L1NormTest as _L1NormWorkload
+from workloads.reduction import L1NormTest as _L1NormWorkload
 
 # Fixtures
 

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
-from workloads.fused_add_layer_norm import FusedAddLayerNormTest
+from workloads.normalization import FusedAddLayerNormTest
 
 _OP_NAME = "FusedAddLayerNormFwdOp"
 

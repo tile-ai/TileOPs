@@ -4,7 +4,7 @@ import torch
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from workloads.rms_norm import RMSNormTest
+from workloads.normalization import RMSNormTest
 
 
 class _RMSNormTestBaseline(RMSNormTest):

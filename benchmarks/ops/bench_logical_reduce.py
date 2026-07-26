@@ -11,7 +11,7 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, worklo
 from tileops.ops.reduction.all_op import AllFwdOp
 from tileops.ops.reduction.any_op import AnyFwdOp
 from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
-from workloads.logical_reduce import AllTest, AnyTest, CountNonzeroTest
+from workloads.reduction import AllTest, AnyTest, CountNonzeroTest
 
 # Op name constants
 

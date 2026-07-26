@@ -8,7 +8,7 @@ from tileops.ops.norm.instance_norm import (
     InstanceNormFwdOp,
     InstanceNormNoAffineFwdOp,
 )
-from workloads.instance_norm import InstanceNormTest
+from workloads.normalization import InstanceNormTest
 
 _OP_NAME = "InstanceNormFwdOp"
 _OP_NAME_NO_AFFINE = "InstanceNormNoAffineFwdOp"

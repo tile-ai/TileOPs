@@ -25,7 +25,7 @@ from tileops.ops.elementwise import (
     coalesce_broadcast_dims,
 )
 from tileops.ops.elementwise.arithmetic import _DIV_KERNEL_BY_ROUNDING_MODE
-from workloads.binary_arith import AddSameShapeTest as _AddSameShapeTestWorkload
+from workloads.elementwise import AddSameShapeTest as _AddSameShapeTestWorkload
 
 
 class AddSameShapeTest(_AddSameShapeTestWorkload, TestBase):

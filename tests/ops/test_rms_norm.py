@@ -3,7 +3,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from workloads.rms_norm import RMSNormTest as _RMSNormTestWorkload
+from workloads.normalization import RMSNormTest as _RMSNormTestWorkload
 
 
 class RMSNormTest(_RMSNormTestWorkload, TestBase):

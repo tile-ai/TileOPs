@@ -6,8 +6,7 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
-from workloads.ada_layer_norm import AdaLayerNormTest
-from workloads.ada_layer_norm_zero import AdaLayerNormZeroTest
+from workloads.normalization import AdaLayerNormTest, AdaLayerNormZeroTest
 
 _ADA_OP_NAME = "AdaLayerNormFwdOp"
 _ADA_ZERO_OP_NAME = "AdaLayerNormZeroFwdOp"

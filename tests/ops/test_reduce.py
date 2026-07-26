@@ -8,13 +8,13 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from workloads.reduce import (
+from workloads.reduction import (
     ProdTest as _ProdTest,
 )
-from workloads.reduce import (
+from workloads.reduction import (
     StdTest as _StdTest,
 )
-from workloads.reduce import (
+from workloads.reduction import (
     SumTest as _SumTest,
 )
 

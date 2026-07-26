@@ -8,7 +8,7 @@ from tileops.ops.norm.group_norm import (
     GroupNormFwdOp,
     GroupNormNoAffineFwdOp,
 )
-from workloads.group_norm import GroupNormTest
+from workloads.normalization import GroupNormTest
 
 _OP_NAME = "GroupNormFwdOp"
 _OP_NAME_NO_AFFINE = "GroupNormNoAffineFwdOp"

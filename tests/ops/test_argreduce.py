@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from workloads.argreduce import ArgmaxTest as _ArgmaxWorkload
+from workloads.reduction import ArgmaxTest as _ArgmaxWorkload
 
 
 def _call(op, x: torch.Tensor) -> torch.Tensor:

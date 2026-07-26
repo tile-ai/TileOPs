@@ -13,10 +13,10 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
-from workloads.batch_norm import (
+from workloads.normalization import (
     BatchNormBwdTest as _BatchNormBwdTestWorkload,
 )
-from workloads.batch_norm import (
+from workloads.normalization import (
     BatchNormFwdTest as _BatchNormFwdTestWorkload,
 )
 
