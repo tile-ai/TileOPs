@@ -14,9 +14,9 @@ Op                          ← L1: thin base, shared by all ops
         └── ConcreteOp      ← L3: leaf class emitted by the scaffold
 ```
 
-- **L1 (`Op`, [`tileops/ops/op_base.py`](../../tileops/ops/op_base.py)):** provides `__call__`, `dispatch_kernel()`, `autotune()`, the default `_cache_key()`, and `NotImplementedError` stubs for the three codegen methods (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline` — `FIXME(staged-rollout)`, per PR #1012).
-- **L2 (`FamilyBase`):** per-family shared `forward()` pipeline (one per family). **Not produced by this playbook** — see [Family-Base Refactoring (Future Work)](#family-base-refactoring-future-work).
-- **L3 (`ConcreteOp`):** this playbook's target. New ops start by inheriting L1 directly (T2 shape). Once 2-3 ops accumulate in a family with identical `forward()` flow, extract an L2 base via refactoring.
+- **L1 (`Op`):** shared host-side plumbing (dispatch, kernel caching, autotune) plus the contracts for the three codegen methods (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`).
+- **L2 (`FamilyBase`):** per-family shared `forward()` pipeline (one per family). **Not produced by this playbook** — see [Family-Base Refactoring](#family-base-refactoring).
+- **L3 (`ConcreteOp`):** this playbook's target. New ops start by inheriting L1 directly (T2 shape); see [Family-Base Refactoring](#family-base-refactoring) for when a family graduates to L2.
 
 ### Execution timing
 
@@ -31,7 +31,7 @@ Op                          ← L1: thin base, shared by all ops
 
 ## Scaffolding an Op from a Manifest Entry
 
-The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). All examples are for `CumsumFwdOp` ([`tileops/manifest/`](../../tileops/manifest/), [`tileops/ops/reduction/cumsum.py`](../../tileops/ops/reduction/cumsum.py)).
+The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). Examples show `CumsumFwdOp` scaffolded in T2 (L1-direct) form directly from its manifest entry; they illustrate scaffold output, not current source (a shipped op may since have been refactored onto an L2 family base).
 
 ### Step 1: File header + imports
 
@@ -258,25 +258,14 @@ This playbook emits exactly the 17 slots above. The following are **not** produc
 - **Family-specific protocol variables.** `_op_kind` (reduction), `_kernel_key`, `_kernel_cls` (norm + reduction T1 wrappers), `_kernel_handles_padding`, `_op_name`, `kernel_cls`. Kernel-dispatch-convention-dependent; cannot be mechanically derived from the manifest. See [Family-Base Protocol (Appendix)](ops-design-reference.md#base-class-protocol).
 - **Optional hooks.** `_pad_value`, `_validate_dim`, `_pre_kernel`, `_post_kernel`. Op-specific business logic (e.g., `ArgmaxFwdOp._pad_value = -inf`). See [Optional Hooks (Appendix)](ops-design-reference.md#optional-hooks-appendix).
 - **`_cache_key` override.** The default projection via `_static_axes` is correct but sometimes over-fragmenting. Override logic depends on what subset of the input shape the kernel actually depends on — kernel-math-specific.
-- **Family-base (T1) subclassing.** See [Family-Base Refactoring (Future Work)](#family-base-refactoring-future-work).
+- **Family-base (T1) subclassing.** See [Family-Base Refactoring](#family-base-refactoring).
 - **Kernel implementations themselves.** The playbook's scope is the Op (host) layer. See [Implementing a Kernel](#implementing-a-kernel) for the kernel-side interface surface.
 - **`torch_compile_fullgraph` declaration.** Requires registered compile-test evidence; CI holds declarations and evidence in exact equality. Semantics: [manifest.md](manifest.md#torch_compile_fullgraph).
 - **Compile dispatch boundary.** See [Compile Dispatch Boundary](#compile-dispatch-boundary).
 
 ## Implementing a Kernel
 
-Brief reference surface for the device-side class that a scaffolded Op depends on. Kernel implementation is not covered by the scaffold-op skill.
-
-| Interface             | Required | Description                                                   |
-| --------------------- | -------- | ------------------------------------------------------------- |
-| `__init__(self, ...)` | yes      | Receives shape params and dtype; builds the TileLang program. |
-| `forward(self, ...)`  | yes      | Launches the compiled kernel; called by Op's `forward()`.     |
-| `kernel`              | yes      | Attribute. The TileLang program builder (JIT-compiled).       |
-| `default_config`      | no       | Property. Default tile configuration dict.                    |
-| `autotune_configs`    | no       | Class variable. Search space for autotuning.                  |
-| `supported_archs`     | no       | Class variable. List of supported GPU SM versions.            |
-
-See [Kernel base class attributes](ops-design-reference.md#base-class-protocol) for the full attribute table.
+Kernel implementation is not covered by the scaffold-op skill. The device-side interface a scaffolded Op depends on — required `__init__` / `forward` / `kernel`, optional `default_config` / `autotune_configs` / `supported_archs` — is specified in [Kernel base class attributes](ops-design-reference.md#base-class-protocol).
 
 ## Compile Dispatch Boundary
 
@@ -317,9 +306,9 @@ satisfy the cold-call contract.
   do not need the boundary; the invariant still applies to their
   `forward`.
 
-## Family-Base Refactoring (Future Work)
+## Family-Base Refactoring
 
-The scaffold emits T2 (L1-direct) ops only. Once a family accumulates 2-3 ops sharing an identical `forward()` flow, extract an L2 family base via refactoring; concrete ops then become T1 thin wrappers declaring family protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, …). This transformation is driven by a separate family-specific skill, not the scaffold-op. See [Development Path](ops-design-reference.md#development-path) for when to extract an L2 base and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the step-by-step process.
+The scaffold emits T2 (L1-direct) ops only; once a family accumulates 2-3 ops sharing an identical `forward()` flow, a separate family-specific refactoring (not scaffold-op) extracts an L2 base and rewrites the concrete ops as T1 thin wrappers — see [Development Path](ops-design-reference.md#development-path) for when to extract and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the process.
 
 ## Further Reference
 

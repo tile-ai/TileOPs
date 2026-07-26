@@ -217,7 +217,7 @@ class SumFwdOp(Op):
         )  # all full-reductions with same numel share a kernel
 ```
 
-The base class emits a once-per-type runtime warning when the default `_cache_key` is invoked with empty `static_dims` and no subclass override. See [ops-design.md § Implementing an Op](ops-design.md#implementing-an-op).
+The base class emits a once-per-type runtime warning when the default `_cache_key` is invoked with empty `static_dims` and no subclass override. See [ops-design-reference.md § `_cache_key` override](ops-design-reference.md#optional-hooks-appendix).
 
 ## Manifest Key Format
 
