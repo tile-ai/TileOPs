@@ -5,10 +5,8 @@ are loaded from the ops manifest (``tileops/manifest/convolution.yaml``);
 FLOP/byte counts come from each op's ``eval_roofline()`` via
 :class:`ManifestBenchmark`.
 
-Each op gets its own ``test_*_bench`` function so the manifest validator's
-per-op AST check (``scripts/validate_manifest.py`` → ``check_l4_benchmark``)
-can tie ``load_workloads("<OpName>")`` / ``ManifestBenchmark("<OpName>", ...)``
-calls one-to-one to the manifest entry.
+One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
+``load_workloads("<OpName>")`` call to its manifest entry.
 """
 
 from typing import Callable, Optional

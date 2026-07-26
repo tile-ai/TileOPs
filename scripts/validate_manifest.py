@@ -59,11 +59,8 @@ _TORCH_DTYPES = {
 }
 
 _SAME_AS_RE = re.compile(r"^same_as\(\s*(\w+)\s*\)$")
-# ``promote_int_to_float(ref)``: output dtype is ``float32`` when ``ref``'s
-# dtype is integral (uint8 / int8 / int16 / int32 / int64), else
-# ``same_as(ref)``. Models PyTorch-style int-input promotion for ops like
-# ``torch.reciprocal`` whose float32 result cannot be expressed by
-# ``same_as(input)`` alone.
+# ``promote_int_to_float(ref)``: ``float32`` for integral ``ref``, else
+# ``same_as(ref)``. Models PyTorch int-input promotion (``torch.reciprocal``).
 _PROMOTE_INT_TO_FLOAT_RE = re.compile(
     r"^promote_int_to_float\(\s*(\w+)\s*\)$"
 )
@@ -650,11 +647,8 @@ def check_l0(
             f"got '{status}'"
         )
 
-    # torch_compile_fullgraph: optional capability flag declaring that
-    # torch.compile(op, fullgraph=True) succeeds cold-call. Only literal
-    # `true` is accepted; absence is the only spelling of "no promise".
-    # Invalid on `status: spec-only` entries — a spec without an
-    # implementation cannot promise graph capture.
+    # Only literal `true` is accepted; absence is the only spelling of "no
+    # promise". Invalid on spec-only — no implementation to capture.
     if "torch_compile_fullgraph" in entry:
         tcf = entry["torch_compile_fullgraph"]
         if tcf is not True:
@@ -1360,11 +1354,8 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
         return errors
     dtype_options = _resolve_tensor_dtype_options(sig)
     if dtype_options is None:
-        # Unresolvable signature. A pure ``same_as`` cycle satisfies
-        # per-token validation *and* the R3 identity check, so returning
-        # silently here would let invalid combo data pass. Emit a hard
-        # L3 error with a specific diagnosis (cycle / dangling
-        # reference) when possible.
+        # A pure ``same_as`` cycle passes per-token validation and the R3
+        # identity check, so returning silently would let it through.
         errors.extend(_diagnose_unresolvable_signature(op_name, sig))
         return errors
     inputs = sig.get("inputs") or {}
@@ -1442,11 +1433,9 @@ _MOCK_DIM_SIZE = 4
 # validation output stays reproducible.
 _MAX_DTYPE_COMBOS = 4096
 
-# Sentinel pool used only by the same_as-identity negative probe, where
-# the goal is a dtype *different from the ref's baseline*. The
-# out-of-union probes derive their candidate pool from
-# ``sorted(_TORCH_DTYPES - declared)`` instead, guaranteeing a non-empty
-# probe whenever declared does not cover the entire torch dtype universe.
+# Used only by the same_as-identity negative probe, which needs a dtype
+# differing from the ref's baseline. Out-of-union probes derive their pool
+# from ``_TORCH_DTYPES - declared`` instead.
 _DTYPE_SENTINELS: tuple[str, ...] = (
     "float16", "bfloat16", "float32", "float64",
     "int8", "int16", "int32", "int64",
@@ -1793,17 +1782,10 @@ def _is_broadcastable_to(src: object, dst: object) -> bool:
     return True
 
 
-# Safe builtins allowed in shape_rules eval — matches the R11 / R11a
-# documented helper set (see docs/design/ops-design-reference.md); keep
-# aligned with the manifest spec, since widening it changes the rule
-# language. Python primitives, the pure-Python broadcasting helpers
-# (validator stays torch-free), and the reduction-dim helpers from
-# ``tileops.manifest.shape_rules`` all share one flat eval namespace,
-# callable by bare name from any rule body.
-#
-# Built from an explicit (name, callable) list so a name collision
-# raises at validator import time instead of silently shadowing a
-# primitive via dict merge.
+# Safe builtins for shape_rules eval — the R11 / R11a helper set. Widening
+# it widens the rule language, so keep it aligned with the manifest spec.
+# An explicit pair list (not a dict merge) makes a name collision raise at
+# import time instead of silently shadowing a primitive.
 _SHAPE_RULE_BUILTIN_PAIRS = [
     ("len", len),
     ("isinstance", isinstance),
@@ -1988,21 +1970,14 @@ def check_l2_infer_parity(
     params = sig.get("params") or {}
     param_defaults = _param_defaults(params)
 
-    # Build a mock ``self`` via ``cls.__new__(cls)`` (see
-    # ``_build_mock_self``) enriched with static_dims values resolved
-    # against the synthetic mock inputs, so generated implementations
-    # consulting ``self.<dim>`` (e.g. ``self.N`` for
-    # ``static_dims: {N: x.shape[-1]}``) do not raise a spurious
-    # AttributeError and skip the check.
+    # Resolve static_dims against the mock inputs so implementations reading
+    # ``self.<dim>`` do not AttributeError and silently skip the check.
     extra_attrs = _static_dim_values(sig, mock_shapes, param_defaults)
     mock_self = _build_mock_self(cls, param_defaults, extra_attrs)
 
     shape_kwargs = {f"{name}_shape": tuple(shape) for name, shape in mock_shapes.items()}
-    # First, validate the callable signature independently of the body: a
-    # TypeError from inspect.signature().bind is a genuine signature mismatch
-    # between the expected ``<input>_shape=`` kwargs and _infer_output_shapes.
-    # TypeErrors raised inside the body (e.g. arithmetic on None) must not be
-    # misreported as signature mismatch.
+    # Bind before calling: only a TypeError from ``bind`` is a signature
+    # mismatch. TypeErrors from the body must not be reported as one.
     try:
         inspect.signature(infer_fn).bind(mock_self, **shape_kwargs)
     except TypeError as exc:
@@ -2056,14 +2031,10 @@ def check_l2_infer_parity(
     ctx.update(param_defaults)
     for name, shape in mock_shapes.items():
         ctx[name] = _MockShape(shape)
-    # Output-only symbols (appearing only in declared output shapes) get
-    # their concrete sizes from ``_infer_output_shapes`` (possibly via a
-    # ``shape_rules`` formula like ``L_out == L_in - kW + 1``). Rebind
-    # them from the inferred ``result`` so a rule defining them checks
-    # the computed value, not a synthetic mock size — otherwise a wrong
-    # implementation would be misclassified as an input-only
-    # precondition and skipped. On conflicting rebindings prefer the
-    # first; the consistency check below flags the mismatch.
+    # Rebind output-only symbols from the inferred ``result`` so their rules
+    # check the computed value, not a synthetic mock size — otherwise a wrong
+    # implementation looks like an input-only precondition and gets skipped.
+    # First binding wins; the consistency check below flags conflicts.
     input_bound = _input_bound_symbols(sig)
     output_only_symbols: set[str] = set()
     output_only_rebindings: dict[str, int] = {}
@@ -2088,13 +2059,9 @@ def check_l2_infer_parity(
                 output_only_rebindings[p] = got
     for p, v in output_only_rebindings.items():
         ctx[p] = v
-    # Input-only context (no inferred outputs, no output-only symbols)
-    # detects rules that already fail on the mock inputs themselves —
-    # such rules encode input-only preconditions (e.g.
-    # ``weight.shape == (x.shape[dim],)``) that mock inputs may violate;
-    # a correct ``_infer_output_shapes`` must not be blamed for those.
-    # Output-only symbols are stripped so an output-dependent rule like
-    # ``L_out == L_in - kW + 1`` is never reachable via this path.
+    # Rules failing on the mock inputs alone encode input-only preconditions
+    # that mock shapes may violate; ``_infer_output_shapes`` is not to blame.
+    # Output-only symbols are stripped so output-dependent rules can't land here.
     input_only_ctx: dict = {
         k: v for k, v in ctx.items() if k not in output_only_symbols
     }
@@ -2121,12 +2088,8 @@ def check_l2_infer_parity(
             )
             continue
         if not ok:
-            # Distinguish a genuine parity mismatch from a mock-input
-            # precondition violation: if the rule already fails with
-            # inputs only (and does not reference any declared output
-            # tensor name *or* any output-only symbol), the mock input
-            # shapes themselves violate the rule — skip with a warning
-            # instead of blaming _infer_output_shapes.
+            # Fails with inputs only and references no output → the mock
+            # shapes violate a precondition, not a parity mismatch.
             mentions_output = any(
                 re.search(rf"\b{re.escape(o)}\b", rule) for o in output_names
             ) or any(
@@ -2149,22 +2112,15 @@ def check_l2_infer_parity(
                 f"{rule!r} under mock inputs {shape_kwargs} -> {result}"
             )
 
-    # Compare inferred outputs against per-tensor declared shapes in
-    # signature.outputs[*].shape, independently of shape_rules (catches
-    # ops specified only via declared shape fields). Input-bound symbols
-    # carry a concrete mock size to echo back exactly; output-only
-    # symbols get rank + per-symbol consistency enforcement instead.
-    # Static-dim symbols resolve to concrete integers against the mock
-    # inputs (``extra_attrs`` above) and pin expected sizes exactly.
+    # Independent of shape_rules, so ops specified only via declared shapes
+    # are still covered. Input-bound and static-dim symbols pin exact sizes;
+    # output-only symbols get rank plus per-symbol consistency instead.
     static_expected: dict[str, int] = {
         name: int(val) for name, val in extra_attrs.items()
         if isinstance(val, int) and not isinstance(val, bool)
     }
-    # Params with a concrete integer ``default`` are also compile-time
-    # known and pin declared-output-shape dims with the same authority as
-    # ``static_dims``. Params without a default (supplied at op
-    # construction, unknown to the validator) are skipped; non-int
-    # defaults (e.g. ``list[int]``) cannot pin a scalar dim position.
+    # An int ``default`` is compile-time known, so it pins a dim with the same
+    # authority as ``static_dims``. No default or non-int → cannot pin.
     for pname, pdefault in param_defaults.items():
         if pname in static_expected:
             continue  # static_dims wins — it is the declared source of truth.
@@ -2205,11 +2161,8 @@ def check_l2_infer_parity(
                         f"{shape_kwargs} -> {inferred}"
                     )
             else:
-                # Output-only symbol: value is derived by
-                # _infer_output_shapes (and possibly a shape_rules
-                # formula). Only enforce consistency — the same symbol
-                # must resolve to the same concrete size everywhere it
-                # appears across all declared outputs.
+                # Derived by _infer_output_shapes — only enforce that the
+                # symbol resolves to one size across all declared outputs.
                 prev = output_only_seen.get(p)
                 if prev is None:
                     output_only_seen[p] = got
@@ -2427,14 +2380,10 @@ def _combo_accepted(
             extra_attrs.update(
                 _static_dim_values(sig, mock_shapes, param_defaults)
             )
-        # Install self.dtype mirroring the manifest convention: the op's
-        # dtype attribute tracks the candidate's primary dtype (first
-        # non-same_as-bound input by default) unless an explicit
-        # ``self_dtype_name`` override is supplied (out-of-union probes
-        # pin the baseline valid dtype so only the input tensor's dtype
-        # deviates). A manifest-derived _validate_dtypes that compares
-        # ``x.dtype != self.dtype`` then sees a real torch.dtype instead
-        # of the base-class ``None``.
+        # self.dtype tracks the candidate's primary dtype (first non-same_as
+        # input, or ``self_dtype_name``) so a derived _validate_dtypes comparing
+        # ``x.dtype != self.dtype`` sees a real dtype, not the base-class None.
+        # Out-of-union probes override it so only the input tensor deviates.
         if self_dtype_name is not None:
             override_t = _make_mock_tensor(self_dtype_name)
             if override_t is not None:
@@ -2467,12 +2416,8 @@ def _combo_accepted(
         # rejections once the signature has been validated above.
         return False, None
     except Exception as exc:
-        # Body raised a non-ValueError/TypeError exception. This is a
-        # genuine implementation bug (a correct manifest-derived
-        # ``_validate_dtypes`` must either accept or raise
-        # ValueError/TypeError, never e.g. RuntimeError). Callers
-        # enforce this as a hard L3 parity error unless the entry opts
-        # without opt-out (parity is unconditional for implemented ops).
+        # A correct ``_validate_dtypes`` either accepts or raises
+        # ValueError/TypeError; anything else is an implementation bug.
         return False, f"unexpected {exc.__class__.__name__}: {exc}"
     return True, None
 
@@ -2650,11 +2595,8 @@ def check_l3_validate_dtypes_parity(
             errors.extend(combo_validation_errors)
             return errors
 
-        # Expand ``same_as(ref)`` in combo values to a concrete dtype
-        # before parity probing: ``_combo_accepted`` expects literal
-        # torch dtype names. Per R3 + R4 identity is already enforced
-        # (``_check_dtype_combos_same_as_identity``), so each
-        # ``same_as(ref)`` resolves to the ref's dtype in the same row.
+        # ``_combo_accepted`` expects literal dtype names. R3 + R4 identity is
+        # already enforced, so ``same_as(ref)`` is the ref's dtype in this row.
         expanded_combos: list[dict[str, str]] = []
         for combo in dtype_combos:
             if not isinstance(combo, dict):
@@ -2871,11 +2813,9 @@ def check_l3_validate_dtypes_parity(
                 dtype_options, param_defaults, errors, warnings,
             )
 
-        # --- same_as identity negative probe (R3 rejection side) -------
-        # For each same_as(ref) input, build a candidate where that
-        # tensor's dtype differs from its ref and assert rejection.
-        # Complements (does not replace) the ``_honours_same_as`` skip
-        # in the union-iteration loop above.
+        # same_as identity negative probe (R3 rejection side): each
+        # same_as(ref) input gets a candidate deviating from its ref, which
+        # must be rejected. Complements the ``_honours_same_as`` skip above.
         if baseline is not None:
             same_as_refs = _same_as_refs(sig)
             probed_same_as = 0
@@ -3100,21 +3040,14 @@ def check_l4_benchmark(
 
 
 # ---------------------------------------------------------------------------
-# Strict parity checks (C1-C7) for status: implemented ops
+# Strict parity checks for status: implemented ops
 # ---------------------------------------------------------------------------
-#
-# C1 (shape parity)  and C2 (dtype parity) are implemented by
-# ``check_l2_infer_parity`` and ``check_l3_validate_dtypes_parity``
-# respectively; the orchestrator wires those in directly.
-#
-# This block adds the four remaining contracts:
-#
-#   C3 — ctor signature parity   (defaults + kw-only beyond L1 names)
-#   C4 — forward signature parity (positional names match
-#        ``signature.inputs`` order; complements L1)
-#   C5 — ``dispatch_kernel`` invariant (sentinel kernel pass-through)
-#   C6 — ``_validate_dtypes`` is not the ``Op`` base stub
-#   C7 — ``eval_roofline``     is not the ``Op`` base stub
+# C1 shape parity and C2 dtype parity live in ``check_l2_infer_parity`` /
+# ``check_l3_validate_dtypes_parity``. This block adds:
+#   C3 ctor signature parity (defaults + kw-only beyond L1 names)
+#   C4 forward positional names match ``signature.inputs`` order
+#   C5 ``dispatch_kernel`` sentinel pass-through
+#   C6 / C7 ``_validate_dtypes`` / ``eval_roofline`` are not the base stubs
 
 # Infrastructure params that the validator filters out of ctor parity:
 # they never appear in manifest ``signature.params`` but are part of the
@@ -3233,12 +3166,9 @@ def check_c3_ctor_signature_parity(
             continue
         code_p = code_params[pname]
 
-        # Default-value parity: when the manifest declares a default the
-        # ctor default must match it value-for-value. Manifest sentinel
-        # ``REQUIRED`` (or absent ``default``) means the param has no
-        # manifest default. A narrow ``compat_default`` escape hatch lets
-        # legacy ctor signatures keep a Python default without advertising
-        # that value to manifest-driven callers.
+        # A declared default must match the ctor default value-for-value;
+        # ``REQUIRED`` or absent means no manifest default. ``compat_default``
+        # keeps a ctor default without advertising it to manifest callers.
         manifest_default = pattrs.get("default", _MISSING)
         manifest_has_default = (
             manifest_default is not _MISSING and manifest_default != "REQUIRED"
@@ -3439,12 +3369,9 @@ def check_c7_eval_roofline_not_stub(
     return []
 
 
-# Tag prefixes that strict-parity checks (C1-C7) emit. Routing is
-# structural, not tag-based (the orchestrator extends ``strict_errors``
-# with each strict check's return); tags are triage aids only.
-# ``[shape]`` / ``[dtype]`` are also emitted by the non-strict L2 / L3
-# checks and may legitimately appear in ``errors`` regardless of mode —
-# use ``STRICT_ONLY_TAGS`` for leakage assertions.
+# Triage aids only — routing is structural (the orchestrator extends
+# ``strict_errors`` with each check's return). ``[shape]`` / ``[dtype]`` also
+# come from non-strict L2 / L3, so assert leakage via ``STRICT_ONLY_TAGS``.
 STRICT_TAGS: tuple[str, ...] = (
     "[shape]", "[dtype]", "[ctor]", "[forward]", "[dispatch]", "[stub]",
 )

@@ -688,37 +688,13 @@ def deepseek_dsa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[
 def where_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for ``torch.where`` forward (bool condition + float input/other).
 
-    Func-mode is required because the byte accounting mixes a 1-byte bool
-    condition with the float input/other dtype (see manifest comment on
-    ``WhereFwdOp.roofline``). Inline mode binds ``elem_bytes`` to a single
-    dtype and cannot express that.
+    Func mode: the byte accounting mixes a 1-byte bool condition with the
+    float input/other dtype, which inline mode cannot express (it binds
+    ``elem_bytes`` to a single dtype).
 
-    ``N_total`` follows the post-broadcast convention used by
-    ``WhereFwdOp.shape_rules``:
-    ``N_total = product(broadcast_shapes(condition.shape, input.shape,
-    other.shape))``. The function reads ``op.N_total`` directly when the
-    bound Op exposes it (current ``WhereFwdOp`` stores the flattened
-    element count there); when the conformed Op grows
-    ``condition``/``input``/``other`` shape attributes per the spec, the
-    same value can be derived as ``op.condition.shape`` /
-    ``op.input.shape`` / ``op.other.shape`` broadcast together, and a
-    ``static_dims``-driven update will flow in via codegen.
-
-    Byte traffic is approximated as
-    ``N_total + 3 * N_total * elem_bytes`` — a 1-byte condition read
-    (logical bytes; the bool is broadcast to ``N_total``) plus input,
-    other, and out at the float ``elem_bytes`` each. This matches the
-    "logical bytes, post-broadcast" convention used elsewhere in the
-    elementwise manifest entries.
-
-    Args:
-        op: The bound ``WhereFwdOp`` instance. Must expose ``N_total``
-            (int) and ``dtype`` (``torch.dtype``).
-
-    Returns:
-        ``(flops, bytes)`` as ints, with ``flops == N_total`` (one
-        predicated select per output element) and
-        ``bytes == N_total + 3 * N_total * elem_bytes``.
+    ``flops = N_total`` (one predicated select per element).
+    ``bytes = N_total + 3 * N_total * elem_bytes`` — logical, post-broadcast:
+    a 1-byte condition read broadcast to ``N_total``, plus input, other, out.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
@@ -729,33 +705,18 @@ def where_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 # Clamp family (Tensor-bound variants)
 #
-# Func mode is required for the broadcasted Tensor-bound clamp variants
-# because ``N_total`` follows the post-broadcast convention
-# ``product(broadcast_shapes(input.shape, ...))`` and ``broadcast_shapes``
-# is not in the inline-roofline vars-layer namespace
-# (``docs/design/roofline.md`` §4.4.4). Codegen would fail to bind it.
-# ``ClampScalarFwdOp`` keeps inline mode because its ``N_total`` reduces
-# to ``product(input.shape)`` (no broadcasting).
+# Func mode: ``N_total`` is post-broadcast, and ``broadcast_shapes`` is not in
+# the inline vars-layer namespace (docs/design/roofline.md §4.4.4), so inline
+# codegen cannot bind it. ``ClampScalarFwdOp`` stays inline — no broadcasting.
 
 
 def clamp_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for ``ClampFwdOp`` (Tensor-bound double-sided clamp).
 
-    Models ``torch.clamp(input, min: Tensor, max: Tensor)`` with
-    broadcasting across all three operands. Reads ``op.N_total`` (the
-    post-broadcast element count) and ``op.dtype.itemsize``.
-
-    Per ``docs/design/roofline.md`` §1.3, two-sided clamp collapses to
-    one fused compare-and-select = ``flops = N_total``. Bytes: read
-    input + read min + read max + write out, all post-broadcast at
-    ``elem_bytes`` each → ``bytes = 4 * N_total * elem_bytes``.
-
-    Args:
-        op: bound ``ClampFwdOp`` instance exposing ``N_total`` and
-            ``dtype``.
-
-    Returns:
-        ``(flops, bytes)`` ints.
+    ``torch.clamp(input, min: Tensor, max: Tensor)``, broadcasting across all
+    three operands. Per docs/design/roofline.md §1.3 two-sided clamp collapses
+    to one fused compare-and-select, so ``flops = N_total``; bytes read input,
+    min, max and write out → ``4 * N_total * elem_bytes``.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
@@ -815,38 +776,21 @@ def lerp_tensor_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 # MaskedFill family
 #
-# Func mode is required because ``N_total`` follows the post-broadcast
-# convention ``product(broadcast_shapes(input.shape, mask.shape))`` —
-# out-of-place ``Tensor.masked_fill`` returns a tensor whose shape is the
-# bidirectional broadcast of ``input`` and ``mask`` (verified empirically:
-# ``torch.zeros((2,1)).masked_fill(mask=(2,3), 1.0)`` → shape ``(2,3)``).
-# ``broadcast_shapes`` is not in the inline-roofline vars-layer namespace
-# (``docs/design/roofline.md`` §4.4.4). One function serves both the
-# Tensor-value primary and the Scalar-value variant — the 0-dim value
-# read is negligible vs ``N_total`` and is folded into the per-element
-# write cost.
+# Func mode: out-of-place ``masked_fill`` broadcasts ``input`` against ``mask``
+# bidirectionally, and ``broadcast_shapes`` is not in the inline vars-layer
+# namespace (docs/design/roofline.md §4.4.4). One function serves both the
+# Tensor-value and Scalar-value variants — the 0-dim read folds into the
+# per-element write cost.
 
 
 def masked_fill_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for ``MaskedFillFwdOp`` and ``MaskedFillScalarFwdOp``.
 
-    Models out-of-place ``Tensor.masked_fill`` whose output shape is the
-    bidirectional broadcast of ``input`` and ``mask``. Reads
-    ``op.N_total`` (post-broadcast element count) and ``op.dtype.itemsize``.
-
-    Per output element: one predicated select → ``flops = N_total``.
-    Bytes: 1-byte mask read (broadcast to ``N_total``) + input read at
-    ``elem_bytes`` + out write at ``elem_bytes`` →
-    ``bytes = N_total + 2 * N_total * elem_bytes``. The 0-dim ``value``
-    Tensor read (Tensor-value variant only) is one ``elem_bytes`` and is
-    negligible vs ``N_total``.
-
-    Args:
-        op: bound ``MaskedFillFwdOp`` or ``MaskedFillScalarFwdOp``
-            instance exposing ``N_total`` and ``dtype``.
-
-    Returns:
-        ``(flops, bytes)`` ints.
+    Out-of-place ``Tensor.masked_fill``; output shape is the bidirectional
+    broadcast of ``input`` and ``mask``. One predicated select per element →
+    ``flops = N_total``; ``bytes = N_total + 2 * N_total * elem_bytes`` for the
+    1-byte mask read plus input read and out write. The 0-dim ``value`` read
+    (Tensor-value variant) is negligible.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
@@ -1249,21 +1193,12 @@ def bmm_fwd_roofline(op: "Op") -> tuple[int, int]:
 def bmm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for batched FP8 GEMM ``BmmFp8Op``.
 
-    Broadcast-free 3D-3D semantics scaled by the batch factor; matches
-    the fp16 ``bmm_fwd_roofline`` layout of ``a: [B, M, K]`` and
-    ``b: [B, K, N]``. The op is per-tensor-only and doesn't fuse a
-    bias, so the ``nbytes`` accounting has exactly three terms:
+    Layout matches the fp16 ``bmm_fwd_roofline``: ``a: [B, M, K]``,
+    ``b: [B, K, N]``. Per-tensor scales only and no fused bias, so bytes are
+    ``B*M*K`` (A, fp8) + ``B*K*N`` (B, fp8) + ``B*M*N`` (C, ``out_dtype``)
+    + 8 for the two batch-independent fp32 scales.
 
-      * ``B * M * K``  fp8 input bytes (A)
-      * ``B * K * N``  fp8 input bytes (B)
-      * ``B * M * N``  ``out_dtype`` bytes (C)
-      * ``+ 8``        two fp32 per-tensor scalars (A_scale, B_scale),
-                       batch-independent -- a single global scale per
-                       operand shared across the whole batch, matching
-                       ``flashinfer.bmm_fp8``'s ``A_scale`` / ``B_scale``.
-
-    Valid only after the first ``forward()`` (dims/dtype are inferred
-    from the inputs then).
+    Valid only after the first ``forward()`` binds dims and dtype.
     """
     if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
         raise RuntimeError(

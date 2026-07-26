@@ -5,26 +5,6 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, _bench_results
 
-# Skip NSA benchmarks until the underlying op failures are resolved.
-collect_ignore_glob = [
-    "ops/attention/bench_deepseek_nsa*.py",
-]
-
-def _normalized_benchmark_nodeid(item: pytest.Item) -> str:
-    nodeid = item.nodeid
-    if nodeid.startswith("benchmarks/"):
-        return nodeid
-    if nodeid.startswith("ops/"):
-        return f"benchmarks/{nodeid}"
-    return nodeid
-
-
-def _is_fp8_e4m3_benchmark(item: pytest.Item) -> bool:
-    callspec = getattr(item, "callspec", None)
-    if callspec is None:
-        return False
-    return callspec.params.get("dtype") == torch.float8_e4m3fn
-
 
 def _release_cuda_cache_after_case() -> None:
     """Drop per-case Python references and cached CUDA blocks between benchmarks."""
@@ -46,26 +26,6 @@ def pytest_sessionstart(session):
 
 def pytest_sessionfinish(session, exitstatus):
     BenchmarkReport.dump("profile_run.log")
-
-
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    fp8_e4m3_skip = pytest.mark.skip(
-        reason=(
-            "Skipped under tilelang 0.1.9: fp8 e4m3 benchmark fails due to "
-            "lowering regression; re-enable when fp8 e4m3 benchmarks run "
-            "cleanly against current tilelang."
-        )
-    )
-
-    for item in items:
-        nodeid = _normalized_benchmark_nodeid(item)
-        path = nodeid.split("::", 1)[0]
-
-        if (
-            path == "benchmarks/ops/bench_elementwise_fp8.py"
-            and _is_fp8_e4m3_benchmark(item)
-        ):
-            item.add_marker(fp8_e4m3_skip)
 
 
 @pytest.hookimpl(hookwrapper=True)

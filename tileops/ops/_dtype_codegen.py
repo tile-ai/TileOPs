@@ -1,16 +1,11 @@
 """Synthesize ``_validate_dtypes`` bodies from manifest signatures.
 
-The L1 ``Op`` base declares ``_validate_dtypes`` as a staged-rollout stub
-that raises ``NotImplementedError``. Per ``docs/design/ops-design.md``
-§Step 5, every concrete op with ``status: implemented`` must override
-the stub with a body derived from its manifest ``signature.inputs``
-dtype unions and ``same_as`` references.
-
-This module provides a single codegen entry point — ``synthesize_validate_dtypes``
-— that emits an equivalent function from the manifest signature, and an
-``Op.__init_subclass__`` hook (installed in ``tileops.ops.op_base``) that
-auto-applies the generated method to subclasses that do not supply their
-own override.
+The L1 ``Op`` base declares ``_validate_dtypes`` as a stub; per
+docs/design/ops-design.md §Step 5 every ``status: implemented`` op must
+override it from its manifest ``signature.inputs``.
+``synthesize_validate_dtypes`` emits that body, and an
+``Op.__init_subclass__`` hook (in ``tileops.ops.op_base``) installs it on
+subclasses that supply no override.
 
 Manifest constructs handled:
 
@@ -220,11 +215,8 @@ def synthesize_validate_dtypes(
     combos = _parse_dtype_combos(
         op_name, sig.get("dtype_combos"), input_names,
     )
-    # When dtype_combos is present, every row enumerates every declared
-    # input (manifest validator R6, scripts/validate_manifest.py R6
-    # combo-row completeness check). The observed combo key is built
-    # over the full input_names tuple, with same_as-bound inputs included
-    # at their resolved concrete dtype.
+    # R6 guarantees every combo row enumerates every declared input, so the
+    # observed key spans all of input_names, same_as-bound ones resolved.
     combo_keys: set[tuple] | None = None
     if combos is not None:
         input_names_set = set(input_names)
@@ -250,12 +242,9 @@ def synthesize_validate_dtypes(
             tuple(row[n] for n in input_names) for row in combos
         }
 
-    # Generate the validator with explicit named parameters via ``exec``
-    # so its native ``inspect.signature`` reports the manifest inputs and
-    # no per-call ``inspect.Signature.bind`` is paid on the hot path.
-    # ``_validate_dtypes`` is invoked on every ``forward()``; using a
-    # ``**kwargs`` body with a wrapper that calls ``Signature.bind`` per
-    # call adds measurable overhead.
+    # ``exec`` with explicit named params so ``inspect.signature`` reports the
+    # manifest inputs natively. A ``**kwargs`` body would need a per-call
+    # ``Signature.bind``, which is measurable on this ``forward()`` hot path.
     closure: dict[str, Any] = {
         "per_input": per_input,
         "input_names": input_names,

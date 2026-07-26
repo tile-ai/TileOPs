@@ -2,9 +2,10 @@
 
 Workload shapes and dtypes come from the ops manifest; roofline FLOP and
 byte counts come from each op's ``eval_roofline()`` via
-:class:`ManifestBenchmark`. Each op gets its own test function so the
-manifest validator's per-op AST check can tie
-``load_workloads("<OpName>")`` to the op it benchmarks.
+:class:`ManifestBenchmark`.
+
+One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
+``load_workloads("<OpName>")`` call to its manifest entry.
 """
 
 import pytest

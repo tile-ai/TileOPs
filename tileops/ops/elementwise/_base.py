@@ -44,35 +44,21 @@ def _validate_scalar_param_repr(
 ) -> None:
     """Reject scalar params that cannot be represented in the user dtype.
 
-    Validation targets the *user-facing* ``dtype`` rather than the
-    kernel's fp16 intermediate.  For fp8
-    dtypes the kernel runs in fp16 to preserve Inf/NaN, but a value that
-    only fits in fp16 would surface as ``+/-Inf`` after the final fp8
-    post-cast. Validating against the user dtype keeps explicit
-    replacements finite end-to-end.
+    Validates against the *user-facing* ``dtype``, not the kernel's fp16
+    intermediate: an fp8 kernel computes in fp16, so a value that only fits in
+    fp16 would surface as ``+/-Inf`` after the fp8 post-cast.
 
-    Integer and bool ``dtype`` mirror PyTorch's ``Tensor.masked_fill``
-    coercion:
+    Integer and bool mirror PyTorch ``Tensor.masked_fill`` coercion:
 
-    - bool accepts any int/float and reduces to ``{0, 1}``.
-    - Signed integer dtypes accept any int/float whose real value lies in
-      ``[iinfo.min, iinfo.max]``; floats are then truncated toward zero
-      (``1.5 -> 1``, ``-1.5 -> -1``). NaN/Inf and out-of-range values
-      raise, matching PyTorch.
-    - ``torch.uint8`` additionally accepts Python ints in
-      ``[-255, 255]``; negative ints wrap via ``value & 0xFF`` (PyTorch
-      ``Tensor.masked_fill(mask, -1) -> 255``). Float scalars must still
-      lie in ``[0, 255]`` (PyTorch rejects ``-1.0``).
+    - bool: any int/float, reduced to ``{0, 1}``.
+    - Signed int: any value in ``[iinfo.min, iinfo.max]``, truncated toward
+      zero. NaN/Inf and out-of-range raise.
+    - ``uint8``: ints in ``[-255, 255]``, negatives wrapping via ``& 0xFF``;
+      float scalars must be in ``[0, 255]``.
 
-    Floating-point dtypes always accept ``NaN``; finite values must lie
-    in ``[finfo.min, finfo.max]``. ``+/-Inf`` is gated on
-    ``allow_nonfinite_float``:
-
-    - default (``False``): reject ``+/-Inf``. Used by ops whose scalar
-      must be finite (elu ``alpha``, softplus ``beta``, clamp bounds).
-    - opt-in (``True``): pass ``+/-Inf`` through. Used by
-      ``MaskedFillScalarFwdOp``, which writes the scalar directly into
-      tensor storage and must mirror PyTorch's Inf-preservation.
+    Floats always accept ``NaN`` and require finite values in ``finfo`` range.
+    ``+/-Inf`` passes only under ``allow_nonfinite_float`` — used by
+    ``MaskedFillScalarFwdOp``, which writes the scalar into tensor storage.
     """
     if isinstance(value, bool):
         # ``bool`` is a subclass of ``int``; treat explicitly so the int
@@ -123,11 +109,9 @@ def _validate_scalar_param_repr(
     if math.isnan(value_f64):
         return
     if math.isinf(value_f64):
-        # PyTorch preserves +/-Inf for fp16/bf16/fp32 tensor scalars.
-        # Ops whose scalar must be finite (elu alpha, softplus beta,
-        # etc.) leave ``allow_nonfinite_float=False`` and reject here;
-        # masked_fill (writes the scalar directly into tensor storage)
-        # opts in via ``allow_nonfinite_float=True``.
+        # PyTorch preserves +/-Inf for float tensor scalars. Ops needing a
+        # finite scalar (elu alpha, softplus beta) reject here; masked_fill
+        # writes the scalar into storage and opts in.
         if allow_nonfinite_float:
             return
         raise ValueError(
@@ -974,23 +958,13 @@ class FusedGatedOp(Op):
 class _UnaryActivationMixin:
     """Shared ``forward`` / inplace dispatch for unary activation Ops.
 
-    The ten unary activation Ops (six param-free: ReLU, SiLU, HardSwish,
-    HardSigmoid, Mish, SELU; four parametric: LeakyReLU, ELU, Hardtanh,
-    Softplus) share an identical ``forward`` template:
+    The inplace path dispatches through ``_wrapped_inplace`` (registered
+    ``mutates_args=("x",)`` so ``torch.compile`` traces the mutation) and
+    returns the original ``input``, so callers see ``y is x``.
 
-    1. validate ``input`` against the op's ``dtype`` / ``N_total`` contract,
-    2. when ``self.inplace`` is true, dispatch through ``_wrapped_inplace``
-       (registered with ``mutates_args=("x",)`` so ``torch.compile`` traces
-       the mutation correctly) and return the original ``input`` so callers
-       see ``y is x``,
-    3. otherwise dispatch through the standard ``_wrapped`` custom op or
-       fall back to ``_eager_forward``.
-
-    Concrete classes provide ``_validate_input`` and ``_eager_forward``
-    (both inherited from ``UnaryOp``) plus ``self.inplace`` /
-    ``self._instance_key`` state. Leaves that do not expose ``inplace``
-    in their signature (e.g. Softplus) simply default ``self.inplace`` to
-    ``False`` via ``_finalize_init``.
+    Concrete classes supply ``_validate_input`` / ``_eager_forward`` from
+    ``UnaryOp`` plus ``self.inplace`` and ``self._instance_key``. Leaves
+    without ``inplace`` in their signature default it to ``False``.
     """
 
     # Set by ``_register_unary_inplace_custom_op`` for leaves that
@@ -1077,10 +1051,9 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
         self.dtype = dtype
         self.inplace = inplace
         self.kernel = kernel
-        # Mirror ``UnaryOp.__init__``: surface ``output_dtype`` so callers
-        # and ``total_memory`` can reason about FP8 post-casts. Parametric
-        # activations do not currently declare an FP8 path, so the common
-        # branch returns ``self.dtype``; the lookup is kept for parity.
+        # Surface ``output_dtype`` for FP8 post-cast accounting in
+        # ``total_memory``, as ``UnaryOp.__init__`` does. No parametric
+        # activation declares an FP8 path yet, so this resolves to self.dtype.
         fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
         self.output_dtype = fp8_out or getattr(self.kernel, "output_dtype", dtype)
         self._instance_key = id(self)
@@ -1195,21 +1168,13 @@ class _IntIdentityUnaryOp(UnaryOp):
     """Base for unary ops whose manifest declares integer dtypes but whose
     kernel is float-only.
 
-    Several manifest entries (floor / ceil / round / trunc, abs / neg / sign,
-    isnan / isinf / isfinite) declare both integer and floating-point input
-    dtypes, while the underlying ``*FwdKernel`` classes are float-only
-    (``FloatUnaryKernel``). For integer inputs we short-circuit at the op
-    layer: skip kernel construction in ``__init__`` and route through
-    ``_int_handler`` in ``_eager_forward``.
+    Integer inputs short-circuit at the op layer: no kernel is constructed and
+    ``_eager_forward`` routes through ``_int_handler``. Subclasses override
+    ``_int_handler`` (default ``input.clone()``) and ``_int_output_dtype``
+    (default: same as input) for the op's integer semantics.
 
-    Subclasses override ``_int_handler`` (default = identity = ``input.clone()``)
-    and ``_int_output_dtype`` (default = same as input) to express the
-    appropriate integer semantics — e.g. ``torch.abs`` for ``AbsFwdOp``,
-    constant-False ``torch.bool`` for ``IsnanFwdOp``.
-
-    The short-circuit is restricted to the integer dtypes declared in the
-    manifest. Other non-float dtypes (bool, complex) are not in the
-    contract and fall through to ``UnaryOp.__init__``, which raises via the
+    Only the integer dtypes declared in the manifest short-circuit. Other
+    non-float dtypes fall through to ``UnaryOp.__init__``, which raises via the
     kernel's dtype check.
     """
 
@@ -1231,11 +1196,9 @@ class _IntIdentityUnaryOp(UnaryOp):
         if dtype in type(self)._fallback_dtypes:
             self.N_total = N_total
             self.dtype = dtype
-            # The float-only kernel cannot be instantiated for an integer
-            # dtype, so the kernel itself stays unconstructed. The kernel_map
-            # is still installed through the shared validate-and-install path
-            # so a user-supplied override is arch-checked identically to the
-            # auto-discovered map on the float path.
+            # No kernel is constructed — it is float-only. The kernel_map still
+            # goes through the shared install path so an override is arch-checked
+            # the same way as on the float path.
             self._install_kernel_map(kernel_map)
             self.kernel = None
             self.output_dtype = (

@@ -58,10 +58,8 @@ class UnaryBenchmark(BenchmarkBase[UnaryBenchCase]):
         return self.workload.n_total * self.workload.dtype.itemsize * 2
 
 
-# Tensor-bound clamp ops (manifest-driven): ClampFwdOp, ClampMinFwdOp,
-# ClampMaxFwdOp. Workload shapes are loaded from tileops/manifest/ so the
-# bench coverage stays aligned with the spec (post-broadcast N_total ==
-# product(out_shape)). FLOP/byte counts come from each op's eval_roofline().
+# Tensor-bound clamp ops: ClampFwdOp, ClampMinFwdOp, ClampMaxFwdOp.
+# N_total is post-broadcast, i.e. product(out_shape).
 
 _CLAMP_FWD_OP = "ClampFwdOp"
 _CLAMP_MIN_OP = "ClampMinFwdOp"
@@ -471,10 +469,8 @@ def test_fp8_selection_bench(
     n_total = prod(shape)
 
     if op_name == "where":
-        # WhereFwdOp manifest does not declare fp8 dtype support, so this
-        # branch records only the torch.where baseline. Instantiating
-        # WhereFwdOp with an fp8 dtype here would violate the manifest
-        # contract; the manifest is the spec, not the code.
+        # WhereFwdOp declares no fp8 support, so record only the torch
+        # baseline — instantiating it with an fp8 dtype would break the spec.
         test = Fp8WhereBenchCase(shape, dtype)
         bm = Fp8WhereBenchmark(test)
         cond, x, y = test.gen_inputs()

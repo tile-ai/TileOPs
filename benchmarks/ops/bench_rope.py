@@ -4,14 +4,11 @@ Workload shapes, dtypes, layouts, and roofline formulas are loaded from the
 ops manifest (``tileops/manifest/position_encoding.yaml``); nothing about a
 workload is hard-coded here.
 
-Each op gets its own ``test_*_bench`` function so the manifest validator's
-per-op AST check (``scripts/validate_manifest.py`` → ``check_l4_benchmark``)
-can tie ``load_workloads("<OpName>")`` / ``ManifestBenchmark("<OpName>", ...)``
-calls one-to-one to the manifest entry.
+One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
+``load_workloads("<OpName>")`` call to its manifest entry.
 
-Baselines are bench-local PyTorch rotations applied to pre-computed cos/sin
-tables. The tables are built outside the timed window, so the timed baseline
-measures only the rotation itself.
+Baselines build their cos/sin tables outside the timed window, so only the
+rotation itself is measured.
 """
 
 import pytest
