@@ -288,83 +288,7 @@ class BinaryPositiveTest(TestBase):
         return self.ref_fn(a.float(), b.float()).to(a.dtype)
 
 
-# Sub op
-
-
-class SubFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
-        ]),
-    ]
-
-
-@SubFixture
-def test_sub_op(n_total: int, dtype: torch.dtype) -> None:
-    test = BinarySameShapeTest(n_total, dtype, lambda a, b: a - b)
-    shape = (n_total,)
-    op = SubFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-# Mul op
-
-
-class MulFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
-        ]),
-    ]
-
-
-@MulFixture
-def test_mul_op(n_total: int, dtype: torch.dtype) -> None:
-    test = BinarySameShapeTest(n_total, dtype, lambda a, b: a * b)
-    shape = (n_total,)
-    op = MulFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-# Div op
-
-
-class DivFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
-        ]),
-    ]
-
-
-@DivFixture
-def test_div_op(n_total: int, dtype: torch.dtype) -> None:
-    test = BinaryPositiveTest(n_total, dtype, lambda a, b: a / b)
-    shape = (n_total,)
-    op = DivFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-# Remainder op
-
-
-class RemainderFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
-        ]),
-    ]
+# Same-shape correctness for simple binary arith ops
 
 
 class RemainderTest(TestBase):
@@ -385,28 +309,6 @@ class RemainderTest(TestBase):
         return a - floored * b
 
 
-@RemainderFixture
-def test_remainder_op(n_total: int, dtype: torch.dtype) -> None:
-    test = RemainderTest(n_total, dtype)
-    shape = (n_total,)
-    op = RemainderFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-# Pow op
-
-
-class PowFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
-        ]),
-    ]
-
-
 class PowPositiveTest(TestBase):
     """Pow needs positive base and small exponent to avoid overflow in fp16."""
 
@@ -423,16 +325,47 @@ class PowPositiveTest(TestBase):
         return torch.pow(a.float(), b.float()).to(a.dtype)
 
 
-@PowFixture
-def test_pow_op(n_total: int, dtype: torch.dtype) -> None:
-    test = PowPositiveTest(n_total, dtype)
+class BinaryArithOpFixture(FixtureBase):
+    PARAMS = [
+        ("op_cls, make_test", [
+            pytest.param(
+                SubFwdOp,
+                lambda n, d: BinarySameShapeTest(n, d, lambda a, b: a - b),
+                id="sub"),
+            pytest.param(
+                MulFwdOp,
+                lambda n, d: BinarySameShapeTest(n, d, lambda a, b: a * b),
+                id="mul"),
+            pytest.param(
+                DivFwdOp,
+                lambda n, d: BinaryPositiveTest(n, d, lambda a, b: a / b),
+                id="div"),
+            pytest.param(RemainderFwdOp, RemainderTest, id="remainder"),
+            pytest.param(PowFwdOp, PowPositiveTest, id="pow"),
+            pytest.param(
+                MaximumFwdOp,
+                lambda n, d: BinarySameShapeTest(n, d, torch.maximum),
+                id="maximum"),
+            pytest.param(
+                MinimumFwdOp,
+                lambda n, d: BinarySameShapeTest(n, d, torch.minimum),
+                id="minimum"),
+        ]),
+        ("n_total, dtype", [
+            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
+            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
+        ]),
+    ]
+
+
+@BinaryArithOpFixture
+def test_binary_arith_op(op_cls, make_test, n_total: int, dtype: torch.dtype) -> None:
+    test = make_test(n_total, dtype)
     shape = (n_total,)
-    op = PowFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-# FloorDivide op
 
 
 class FloorDivideFixture(FixtureBase):
@@ -519,55 +452,15 @@ def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
         test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# Maximum op
-
-
-class MaximumFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
-        ]),
-    ]
-
-
-@MaximumFixture
-def test_maximum_op(n_total: int, dtype: torch.dtype) -> None:
-    test = BinarySameShapeTest(n_total, dtype, lambda a, b: torch.maximum(a, b))
-    shape = (n_total,)
-    op = MaximumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
-# Minimum op
-
-
-class MinimumFixture(FixtureBase):
-    PARAMS = [
-        ("n_total, dtype", [
-            pytest.param(4_096, torch.float16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.bfloat16, marks=pytest.mark.smoke),
-            pytest.param(4_096, torch.float32, marks=pytest.mark.smoke),
-        ]),
-    ]
-
-
-@MinimumFixture
-def test_minimum_op(n_total: int, dtype: torch.dtype) -> None:
-    test = BinarySameShapeTest(n_total, dtype, lambda a, b: torch.minimum(a, b))
-    shape = (n_total,)
-    op = MinimumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-
-
 # Maximum/Minimum NaN propagation tests
 
 
 class MaxMinNanFixture(FixtureBase):
     PARAMS = [
+        ("op_cls, torch_ref", [
+            pytest.param(MaximumFwdOp, torch.maximum, id="maximum"),
+            pytest.param(MinimumFwdOp, torch.minimum, id="minimum"),
+        ]),
         ("dtype", [
             pytest.param(torch.float16, marks=pytest.mark.smoke),
             pytest.param(torch.bfloat16, marks=pytest.mark.smoke),
@@ -577,39 +470,17 @@ class MaxMinNanFixture(FixtureBase):
 
 
 @MaxMinNanFixture
-def test_maximum_nan_propagation(dtype: torch.dtype) -> None:
-    """Verify maximum propagates NaN when either operand is NaN."""
+def test_max_min_nan_propagation(op_cls, torch_ref, dtype: torch.dtype) -> None:
+    """Verify maximum/minimum propagate NaN when either operand is NaN."""
     nan = float("nan")
     a = torch.tensor([nan, 1.0, nan, 2.0], dtype=dtype, device="cuda")
     b = torch.tensor([3.0, nan, nan, 1.0], dtype=dtype, device="cuda")
     shape = (4,)
-    op = MaximumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    ref = torch.maximum(a, b)
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch_ref(a, b)
     with torch.no_grad():
         out = op(a, b)
     # NaN positions must match: both output and ref should be NaN at same indices
-    assert torch.equal(torch.isnan(out), torch.isnan(ref)), (
-        f"NaN positions differ: out={out}, ref={ref}"
-    )
-    # Non-NaN values must match exactly
-    mask = ~torch.isnan(ref)
-    assert torch.equal(out[mask], ref[mask]), (
-        f"Non-NaN values differ: out={out[mask]}, ref={ref[mask]}"
-    )
-
-
-@MaxMinNanFixture
-def test_minimum_nan_propagation(dtype: torch.dtype) -> None:
-    """Verify minimum propagates NaN when either operand is NaN."""
-    nan = float("nan")
-    a = torch.tensor([nan, 1.0, nan, 2.0], dtype=dtype, device="cuda")
-    b = torch.tensor([3.0, nan, nan, 1.0], dtype=dtype, device="cuda")
-    shape = (4,)
-    op = MinimumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    ref = torch.minimum(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    # NaN positions must match
     assert torch.equal(torch.isnan(out), torch.isnan(ref)), (
         f"NaN positions differ: out={out}, ref={ref}"
     )
@@ -884,6 +755,10 @@ def test_binary_kernel_autotune_configs_distinct() -> None:
 
 class OptimizedMaxMinFixture(FixtureBase):
     PARAMS = [
+        ("op_cls, torch_ref", [
+            pytest.param(MaximumFwdOp, torch.maximum, id="maximum"),
+            pytest.param(MinimumFwdOp, torch.minimum, id="minimum"),
+        ]),
         ("n_total, dtype", [
             pytest.param(1024 * 4096, torch.float16, marks=pytest.mark.smoke),
             pytest.param(1024 * 4096, torch.bfloat16, marks=pytest.mark.smoke),
@@ -893,26 +768,13 @@ class OptimizedMaxMinFixture(FixtureBase):
 
 
 @OptimizedMaxMinFixture
-def test_maximum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
-    """Optimized maximum matches torch.maximum on large DNN-realistic shapes."""
+def test_max_min_optimized_large(op_cls, torch_ref, n_total: int, dtype: torch.dtype) -> None:
+    """Optimized maximum/minimum match torch on large DNN-realistic shapes."""
     shape = (n_total,)
     a = torch.randn(*shape, device="cuda", dtype=dtype)
     b = torch.randn(*shape, device="cuda", dtype=dtype)
-    op = MaximumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    ref = torch.maximum(a, b)
-    with torch.no_grad():
-        out = op(a, b)
-    torch.testing.assert_close(out, ref, atol=0, rtol=0)
-
-
-@OptimizedMaxMinFixture
-def test_minimum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
-    """Optimized minimum matches torch.minimum on large DNN-realistic shapes."""
-    shape = (n_total,)
-    a = torch.randn(*shape, device="cuda", dtype=dtype)
-    b = torch.randn(*shape, device="cuda", dtype=dtype)
-    op = MinimumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
-    ref = torch.minimum(a, b)
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
+    ref = torch_ref(a, b)
     with torch.no_grad():
         out = op(a, b)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)

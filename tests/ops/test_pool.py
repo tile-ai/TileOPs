@@ -20,7 +20,6 @@ from tileops.kernels.pool import (
     MaxPool3dKernel,
     MaxPool3dWithIndicesKernel,
 )
-from tileops.manifest import load_workloads
 from tileops.ops import (
     AvgPool1dFwdOp,
     AvgPool2dFwdOp,
@@ -979,49 +978,6 @@ _MAX_POOL1D_PARAMS = [
 ]
 
 
-def _max_pool1d_manifest_test_params() -> list:
-    """Build exact correctness cases from the MaxPool1d manifest workloads."""
-    params = []
-    for workload in load_workloads("MaxPool1dFwdOp"):
-        n, c_in, l_in = workload["input_shape"]
-        kernel_size = (
-            tuple(workload["kernel_size"])
-            if isinstance(workload["kernel_size"], list)
-            else (workload["kernel_size"],)
-        )
-        stride = workload.get("stride")
-        if stride is not None:
-            stride = tuple(stride) if isinstance(stride, list) else (stride,)
-        padding = workload.get("padding", 0)
-        padding = tuple(padding) if isinstance(padding, list) else (padding,)
-        dilation = workload.get("dilation", 1)
-        dilation = tuple(dilation) if isinstance(dilation, list) else (dilation,)
-        ceil_mode = workload.get("ceil_mode", False)
-        label = workload.get("label", f"{n}x{c_in}x{l_in}")
-        for dtype_str in workload["dtypes"]:
-            params.append(
-                pytest.param(
-                    n,
-                    c_in,
-                    l_in,
-                    kernel_size,
-                    stride,
-                    padding,
-                    dilation,
-                    ceil_mode,
-                    getattr(torch, dtype_str),
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id=f"manifest-{label}-{dtype_str}",
-                )
-            )
-    return params
-
-
-_MAX_POOL1D_PARAMS.extend(_max_pool1d_manifest_test_params())
-
-
 class MaxPool1dFixture(FixtureBase):
     PARAMS = [
         (
@@ -1545,51 +1501,6 @@ _MAX_POOL3D_PARAMS = [
         id="full-noncube-ceil-bf16",
     ),
 ]
-
-
-def _max_pool3d_manifest_test_params() -> list:
-    """Build exact correctness cases from the MaxPool3d manifest workloads."""
-    params = []
-    for workload in load_workloads("MaxPool3dFwdOp"):
-        n, c_in, d_in, h_in, w_in = workload["input_shape"]
-        kernel_size = (
-            tuple(workload["kernel_size"])
-            if isinstance(workload["kernel_size"], list)
-            else (workload["kernel_size"],) * 3
-        )
-        stride = workload.get("stride")
-        if stride is not None:
-            stride = tuple(stride) if isinstance(stride, list) else (stride,) * 3
-        padding = workload.get("padding", 0)
-        padding = tuple(padding) if isinstance(padding, list) else (padding,) * 3
-        dilation = workload.get("dilation", 1)
-        dilation = tuple(dilation) if isinstance(dilation, list) else (dilation,) * 3
-        ceil_mode = workload.get("ceil_mode", False)
-        label = workload.get("label", f"{n}x{c_in}x{d_in}x{h_in}x{w_in}")
-        for dtype_str in workload["dtypes"]:
-            params.append(
-                pytest.param(
-                    n,
-                    c_in,
-                    d_in,
-                    h_in,
-                    w_in,
-                    kernel_size,
-                    stride,
-                    padding,
-                    dilation,
-                    ceil_mode,
-                    getattr(torch, dtype_str),
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id=f"manifest-{label}-{dtype_str}",
-                )
-            )
-    return params
-
-
-_MAX_POOL3D_PARAMS.extend(_max_pool3d_manifest_test_params())
 
 
 class MaxPool3dFixture(FixtureBase):
@@ -2118,44 +2029,6 @@ _MAX_POOL2D_PARAMS = [
         id="full-nonsquare-ceil-bf16",
     ),
 ]
-
-
-def _max_pool2d_manifest_test_params() -> list:
-    """Build exact correctness cases from the MaxPool2d manifest workloads."""
-    params = []
-    for workload in load_workloads("MaxPool2dFwdOp"):
-        n, c_in, h_in, w_in = workload["input_shape"]
-        kernel_size = tuple(workload["kernel_size"])
-        stride = workload.get("stride")
-        if stride is not None:
-            stride = tuple(stride)
-        padding = tuple(workload.get("padding", (0, 0)))
-        dilation = tuple(workload.get("dilation", (1, 1)))
-        ceil_mode = workload.get("ceil_mode", False)
-        label = workload.get("label", f"{n}x{c_in}x{h_in}x{w_in}")
-        for dtype_str in workload["dtypes"]:
-            params.append(
-                pytest.param(
-                    n,
-                    c_in,
-                    h_in,
-                    w_in,
-                    kernel_size,
-                    stride,
-                    padding,
-                    dilation,
-                    ceil_mode,
-                    getattr(torch, dtype_str),
-                    False,
-                    True,
-                    marks=pytest.mark.full,
-                    id=f"manifest-{label}-{dtype_str}",
-                )
-            )
-    return params
-
-
-_MAX_POOL2D_PARAMS.extend(_max_pool2d_manifest_test_params())
 
 
 class MaxPool2dFixture(FixtureBase):

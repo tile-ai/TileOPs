@@ -7,7 +7,15 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, exact_compare
-from tileops.ops.elementwise import IsfiniteFwdOp, IsinfFwdOp, IsnanFwdOp
+from tileops.ops.elementwise import (
+    ClampScalarFwdOp,
+    EluFwdOp,
+    HardtanhFwdOp,
+    IsfiniteFwdOp,
+    IsinfFwdOp,
+    IsnanFwdOp,
+    SoftplusFwdOp,
+)
 
 
 class SpecialFixture(FixtureBase):
@@ -537,59 +545,26 @@ def test_masked_fill_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> N
 
 
 @pytest.mark.smoke
-def test_elu_rejects_unrepresentable_alpha() -> None:
-    """EluFwdOp must reject alpha that overflows the kernel dtype."""
-    from tileops.ops.elementwise import EluFwdOp
+@pytest.mark.parametrize("make_op", [
+    pytest.param(lambda: EluFwdOp(N_total=1024, dtype=torch.float16, alpha=1e6),
+                 id="elu-alpha"),
+    pytest.param(lambda: HardtanhFwdOp(N_total=1024, dtype=torch.float16, min_val=1e6),
+                 id="hardtanh-min_val"),
+    pytest.param(lambda: HardtanhFwdOp(N_total=1024, dtype=torch.float16, max_val=1e6),
+                 id="hardtanh-max_val"),
+    pytest.param(lambda: SoftplusFwdOp(N_total=1024, dtype=torch.float16, beta=1e6),
+                 id="softplus-beta"),
+    pytest.param(lambda: SoftplusFwdOp(N_total=1024, dtype=torch.float16, threshold=1e6),
+                 id="softplus-threshold"),
+    pytest.param(lambda: ClampScalarFwdOp(input=(1024,), min=1e6, dtype=torch.float16),
+                 id="clamp-min"),
+    pytest.param(lambda: ClampScalarFwdOp(input=(1024,), max=1e6, dtype=torch.float16),
+                 id="clamp-max"),
+])
+def test_scalar_param_rejects_unrepresentable(make_op) -> None:
+    """__init__ must reject scalar params that overflow the kernel dtype."""
     with pytest.raises((ValueError, TypeError)):
-        EluFwdOp(N_total=1024, dtype=torch.float16, alpha=1e6)
-
-
-@pytest.mark.smoke
-def test_hardtanh_rejects_unrepresentable_min_val() -> None:
-    """HardtanhFwdOp must reject min_val that overflows the kernel dtype."""
-    from tileops.ops.elementwise import HardtanhFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        HardtanhFwdOp(N_total=1024, dtype=torch.float16, min_val=1e6)
-
-
-@pytest.mark.smoke
-def test_hardtanh_rejects_unrepresentable_max_val() -> None:
-    """HardtanhFwdOp must reject max_val that overflows the kernel dtype."""
-    from tileops.ops.elementwise import HardtanhFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        HardtanhFwdOp(N_total=1024, dtype=torch.float16, max_val=1e6)
-
-
-@pytest.mark.smoke
-def test_softplus_rejects_unrepresentable_beta() -> None:
-    """SoftplusFwdOp must reject beta that overflows the kernel dtype."""
-    from tileops.ops.elementwise import SoftplusFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        SoftplusFwdOp(N_total=1024, dtype=torch.float16, beta=1e6)
-
-
-@pytest.mark.smoke
-def test_softplus_rejects_unrepresentable_threshold() -> None:
-    """SoftplusFwdOp must reject threshold that overflows the kernel dtype."""
-    from tileops.ops.elementwise import SoftplusFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        SoftplusFwdOp(N_total=1024, dtype=torch.float16, threshold=1e6)
-
-
-@pytest.mark.smoke
-def test_clamp_rejects_unrepresentable_min_val() -> None:
-    """ClampFwdOp must reject min_val that overflows the kernel dtype."""
-    from tileops.ops.elementwise import ClampScalarFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        ClampScalarFwdOp(input=(1024,), min=1e6, dtype=torch.float16)
-
-
-@pytest.mark.smoke
-def test_clamp_rejects_unrepresentable_max_val() -> None:
-    """ClampFwdOp must reject max_val that overflows the kernel dtype."""
-    from tileops.ops.elementwise import ClampScalarFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        ClampScalarFwdOp(input=(1024,), max=1e6, dtype=torch.float16)
+        make_op()
 
 
 @pytest.mark.smoke
