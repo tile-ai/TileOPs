@@ -50,7 +50,7 @@ RMSNormFwdOp:
       rms_norm: RMSNormKernel
     op: tileops/ops/norm/rms_norm.py
     test: tests/ops/test_rms_norm.py
-    bench: benchmarks/ops/bench_rms_norm.py
+    bench: benchmarks/ops/bench_norm.py
     bench_manifest_driven: true
 
 LayerNormFwdOp:
@@ -101,7 +101,7 @@ LayerNormFwdOp:
       layer_norm: LayerNormKernel
     op: tileops/ops/norm/layer_norm.py
     test: tests/ops/test_layer_norm.py
-    bench: benchmarks/ops/bench_layer_norm.py
+    bench: benchmarks/ops/bench_norm.py
     bench_manifest_driven: true
 
 AdaLayerNormFwdOp:
@@ -240,7 +240,7 @@ FusedAddLayerNormFwdOp:
       fused_add_layer_norm: FusedAddLayerNormKernel
     op: tileops/ops/norm/fused_add_layer_norm.py
     test: tests/ops/test_fused_add_layer_norm.py
-    bench: benchmarks/ops/bench_fused_add_layer_norm.py
+    bench: benchmarks/ops/bench_norm.py
     bench_manifest_driven: true
 
 FusedAddRMSNormFwdOp:
@@ -290,7 +290,7 @@ FusedAddRMSNormFwdOp:
       fused_add_rms_norm: FusedAddRMSNormKernel
     op: tileops/ops/norm/fused_add_rms_norm.py
     test: tests/ops/test_fused_add_rms_norm.py
-    bench: benchmarks/ops/bench_fused_add_rms_norm.py
+    bench: benchmarks/ops/bench_norm.py
 
 # ---------------------------------------------------------------------------
 # norm — spatial-norm ops (operate over spatial/channel dims, shape: [N, C, *spatial])

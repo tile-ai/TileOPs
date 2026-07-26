@@ -36,7 +36,9 @@ from ._base import (
 )
 from .activations import (
     EluFwdOp,
+    GeluAndMulFwdOp,
     GeluFwdOp,
+    GeluTanhAndMulFwdOp,
     HardsigmoidFwdOp,
     HardswishFwdOp,
     HardtanhFwdOp,
@@ -45,6 +47,7 @@ from .activations import (
     ReluFwdOp,
     SeluFwdOp,
     SigmoidFwdOp,
+    SiluAndMulFwdOp,
     SiluFwdOp,
     SoftplusFwdOp,
     TanhFwdOp,
@@ -70,8 +73,17 @@ from .bitwise import (
     BitwiseXorFwdOp,
 )
 from .clamp import ClampFwdOp, ClampMaxFwdOp, ClampMinFwdOp, ClampScalarFwdOp
-from .comparison import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
-from .fused_gated import GeluAndMulFwdOp, GeluTanhAndMulFwdOp, SiluAndMulFwdOp
+from .comparison import (
+    EqFwdOp,
+    GeFwdOp,
+    GtFwdOp,
+    IsfiniteFwdOp,
+    IsinfFwdOp,
+    IsnanFwdOp,
+    LeFwdOp,
+    LtFwdOp,
+    NeFwdOp,
+)
 from .logical import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
 from .masked_fill import MaskedFillFwdOp, MaskedFillScalarFwdOp
 from .math_unary import (
@@ -94,7 +106,6 @@ from .math_unary import (
     TruncFwdOp,
 )
 from .nan_to_num import NanToNumFwdOp
-from .predicates import IsfiniteFwdOp, IsinfFwdOp, IsnanFwdOp
 from .prelu import PreluFwdOp
 from .sinusoidal import SinusoidalFwdOp
 from .where import WhereFwdOp

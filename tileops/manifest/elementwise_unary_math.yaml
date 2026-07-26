@@ -743,7 +743,7 @@ IsnanFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       isnan: IsnanFwdKernel
-    op: tileops/ops/elementwise/predicates.py
+    op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
     bench_manifest_driven: true
@@ -777,7 +777,7 @@ IsinfFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       isinf: IsinfFwdKernel
-    op: tileops/ops/elementwise/predicates.py
+    op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
     bench_manifest_driven: true
@@ -811,7 +811,7 @@ IsfiniteFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       isfinite: IsfiniteFwdKernel
-    op: tileops/ops/elementwise/predicates.py
+    op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
     bench_manifest_driven: true
