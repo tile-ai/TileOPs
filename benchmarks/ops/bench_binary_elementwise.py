@@ -11,12 +11,17 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import (
+    BenchmarkBase,
+    BenchmarkReport,
+    ManifestBenchmark,
+)
 from tileops.kernels.elementwise import (
     GeluAndMulFwdKernel,
     GeluTanhAndMulFwdKernel,
     SiluAndMulFwdKernel,
 )
+from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
     BitwiseAndFwdOp,
     BitwiseOrFwdOp,
@@ -317,17 +322,35 @@ def test_bitwise_bench(
 # Fused gated ops (2)
 
 
-class FusedGatedBenchFixture(FixtureBase):
-    PARAMS = [
-        ("op_name, M, N, dtype, op_cls", [
-            pytest.param("gelu_and_mul", 1024, 4096, torch.float16, GeluAndMulFwdOp, marks=pytest.mark.smoke),
-            pytest.param("gelu_and_mul", 1024, 10240, torch.float16, GeluAndMulFwdOp, marks=pytest.mark.full),
-            pytest.param("gelu_and_mul", 1024, 11008, torch.float16, GeluAndMulFwdOp, marks=pytest.mark.full),
-            pytest.param("gelu_tanh_and_mul", 1024, 4096, torch.float16, GeluTanhAndMulFwdOp, marks=pytest.mark.smoke),
-            pytest.param("gelu_tanh_and_mul", 1024, 10240, torch.float16, GeluTanhAndMulFwdOp, marks=pytest.mark.full),
-            pytest.param("gelu_tanh_and_mul", 1024, 11008, torch.float16, GeluTanhAndMulFwdOp, marks=pytest.mark.full),
-        ]),
-    ]
+_SILU_AND_MUL_OP = "SiluAndMulFwdOp"
+_GELU_AND_MUL_OP = "GeluAndMulFwdOp"
+_GELU_TANH_AND_MUL_OP = "GeluTanhAndMulFwdOp"
+
+
+def _fused_gated_params(workloads: list) -> list:
+    """Manifest workloads -> (M, N, dtype) params; x_shape trailing axis is 2*N."""
+    params = []
+    for i, w in enumerate(workloads):
+        m, two_n = w["x_shape"]
+        for dtype_name in w["dtypes"]:
+            mark = pytest.mark.smoke if i == 0 else pytest.mark.full
+            params.append(pytest.param(
+                m, two_n // 2, getattr(torch, dtype_name), marks=mark,
+                id=f"{w.get('label', f'w{i}')}-{dtype_name}"))
+    return params
+
+
+class SiluAndMulBenchFixture(FixtureBase):
+    PARAMS = [("M, N, dtype", _fused_gated_params(load_workloads(_SILU_AND_MUL_OP)))]
+
+
+class GeluAndMulBenchFixture(FixtureBase):
+    PARAMS = [("M, N, dtype", _fused_gated_params(load_workloads(_GELU_AND_MUL_OP)))]
+
+
+class GeluTanhAndMulBenchFixture(FixtureBase):
+    PARAMS = [("M, N, dtype",
+               _fused_gated_params(load_workloads(_GELU_TANH_AND_MUL_OP)))]
 
 
 def _silu_and_mul_baseline(x: torch.Tensor) -> torch.Tensor:
@@ -352,28 +375,36 @@ _FUSED_BASELINES = {
 }
 
 
-@FusedGatedBenchFixture
-def test_fused_gated_bench(
-    op_name: str,
-    M: int,
-    N: int,
-    dtype: torch.dtype,
-    op_cls,
-) -> None:
-    test = FusedGatedBenchCase(M, N, dtype)
-    bm = FusedGatedBenchmark(test)
+def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str) -> None:
     inputs = test.gen_inputs()
-
-    # The output shape (M, N) is the model-relevant geometry; the input
-    # carries the gate/value-concatenated trailing axis (2*N).
-    shape = (M, N)
-    op = op_cls(M=M, N=N, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op_name, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    result_bl = bm.profile(_FUSED_BASELINES[baseline_key], *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
-    baseline_fn = _FUSED_BASELINES[op_name]
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch-ref")
+
+@SiluAndMulBenchFixture
+def test_silu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
+    test = FusedGatedBenchCase(M, N, dtype)
+    op = SiluAndMulFwdOp(M=M, N=N, dtype=dtype)
+    bm = ManifestBenchmark(_SILU_AND_MUL_OP, op, test)
+    _profile_fused_gated(bm, op, test, "silu_and_mul")
+
+
+@GeluAndMulBenchFixture
+def test_gelu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
+    test = FusedGatedBenchCase(M, N, dtype)
+    op = GeluAndMulFwdOp(M=M, N=N, dtype=dtype)
+    bm = ManifestBenchmark(_GELU_AND_MUL_OP, op, test)
+    _profile_fused_gated(bm, op, test, "gelu_and_mul")
+
+
+@GeluTanhAndMulBenchFixture
+def test_gelu_tanh_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
+    test = FusedGatedBenchCase(M, N, dtype)
+    op = GeluTanhAndMulFwdOp(M=M, N=N, dtype=dtype)
+    bm = ManifestBenchmark(_GELU_TANH_AND_MUL_OP, op, test)
+    _profile_fused_gated(bm, op, test, "gelu_tanh_and_mul")
 
 
 # Fused gated strategy benchmark (direct vs explicit_parallel)

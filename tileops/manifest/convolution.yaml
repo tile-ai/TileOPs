@@ -66,7 +66,7 @@ Conv1dFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Conv1dBiasFwdOp:
   ref_api: "torch.nn.functional.conv1d"
@@ -119,7 +119,7 @@ Conv1dBiasFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Conv2dFwdOp:
   ref_api: "torch.nn.functional.conv2d"
@@ -183,7 +183,7 @@ Conv2dFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Conv2dBiasFwdOp:
   ref_api: "torch.nn.functional.conv2d"
@@ -250,7 +250,7 @@ Conv2dBiasFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Conv3dFwdOp:
   ref_api: "torch.nn.functional.conv3d"
@@ -309,7 +309,7 @@ Conv3dFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Conv3dBiasFwdOp:
   ref_api: "torch.nn.functional.conv3d"
@@ -371,4 +371,4 @@ Conv3dBiasFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

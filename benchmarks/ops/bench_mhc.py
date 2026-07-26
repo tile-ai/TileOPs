@@ -1,14 +1,46 @@
-"""Benchmarks for the MHC pre/post ops."""
+"""Benchmarks for the MHC pre/post ops.
+
+Workload shapes, dtypes, and the pre-op scaling params come from the ops
+manifest; roofline FLOP and byte counts come from each op's
+``eval_roofline()`` via :class:`ManifestBenchmark`.
+"""
 
 import math
-from typing import Optional
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from tileops.manifest import load_workloads
 from tileops.ops import MHCPostOp, MHCPreOp
 from workloads.mhc import MHCPostTest, MHCPreTest
+
+# Autotuning is a bench-run policy, not a workload property; manifest
+# workloads do not carry it.
+_TUNE = True
+
+# Sinkhorn epsilon is not part of any manifest workload; use the manifest
+# signature default.
+_SINKHORN_EPS = 0.02
+
+
+def _workload_params(workloads: list, keys: tuple) -> list:
+    """Turn manifest workload dicts into pytest params.
+
+    First workload is marked ``smoke``, the rest ``full``. Keys ending in
+    ``dtype`` are resolved to ``torch.dtype`` values.
+    """
+    params = []
+    for i, w in enumerate(workloads):
+        args = [getattr(torch, w[k]) if k.endswith("dtype") else w[k] for k in keys]
+        params.append(
+            pytest.param(
+                *args,
+                marks=pytest.mark.smoke if i == 0 else pytest.mark.full,
+                id=w["label"],
+            )
+        )
+    return params
 
 
 class _MHCPreTestBaseline(MHCPreTest):
@@ -66,36 +98,29 @@ class _MHCPreTestBaseline(MHCPreTest):
         return x_res_ref, x_layer_ref
 
 
-class MHCPreBenchmark(BenchmarkBase[MHCPreTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        flops = 2 * t.batch * (
-            (t.n_expand * t.n_expand * t.c_x * t.c_x) *
-            (t.n_expand * t.n_expand + 2 * t.n_expand) + t.n_expand * t.c_x)
-        return flops
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        return (t.n_expand * 3 + 1) * t.c_x + (t.n_expand * t.c_x) * (
-            t.n_expand * t.n_expand + 2 * t.n_expand)
+_MHC_PRE_OP = "MHCPreOp"
+_MHC_PRE_PARAMS = _workload_params(
+    load_workloads(_MHC_PRE_OP),
+    ("batch", "n_expand", "c_x", "dtype", "alpha_pre", "alpha_post", "alpha_res",
+     "sinkhorn_repeat"),
+)
 
 
-_MHC_PRE_BENCH_PARAMS = [
-    pytest.param(1, 4, 1280, torch.bfloat16, True, id="small"),
-    pytest.param(2, 4, 1920, torch.bfloat16, True, id="medium"),
-    pytest.param(4, 4, 2560, torch.bfloat16, True, id="large"),
-]
-
-
-@pytest.mark.parametrize("batch, n_expand, c_x, dtype, tune", _MHC_PRE_BENCH_PARAMS)
+@pytest.mark.parametrize(
+    "batch, n_expand, c_x, dtype, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat",
+    _MHC_PRE_PARAMS,
+)
 def test_mhc_pre_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
-                       tune: bool) -> None:
+                       alpha_pre: float, alpha_post: float, alpha_res: float,
+                       sinkhorn_repeat: int) -> None:
     test = _MHCPreTestBaseline(batch, n_expand, c_x, dtype)
-    bm = MHCPreBenchmark(test)
-    inputs = test.gen_inputs()
+    phi, x, b = test.gen_inputs()[:3]
+    # The shared workload generator draws its own scaling params; the
+    # manifest workload is the authority for them.
+    inputs = (phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, _SINKHORN_EPS)
 
-    op = MHCPreOp(tune=tune)
+    op = MHCPreOp(tune=_TUNE)
+    bm = ManifestBenchmark(_MHC_PRE_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -118,34 +143,19 @@ class _MHCPostTestBaseline(MHCPostTest):
         return x_out_ref
 
 
-class MHCPostBenchmark(BenchmarkBase[MHCPostTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        flops = 2 * t.batch * (
-            t.n_expand * t.n_expand * t.c_x * t.c_x + t.n_expand * t.c_x)
-        return flops
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        return (t.n_expand * 2 + 1) * t.c_x
+_MHC_POST_OP = "MHCPostOp"
+_MHC_POST_PARAMS = _workload_params(
+    load_workloads(_MHC_POST_OP), ("batch", "n_expand", "c_x", "dtype"),
+)
 
 
-_MHC_POST_BENCH_PARAMS = [
-    pytest.param(1, 4, 1280, torch.bfloat16, True, id="small"),
-    pytest.param(2, 4, 1920, torch.bfloat16, True, id="medium"),
-    pytest.param(4, 4, 2560, torch.bfloat16, True, id="large"),
-]
-
-
-@pytest.mark.parametrize("batch, n_expand, c_x, dtype, tune", _MHC_POST_BENCH_PARAMS)
-def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
-                         tune: bool) -> None:
+@pytest.mark.parametrize("batch, n_expand, c_x, dtype", _MHC_POST_PARAMS)
+def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype) -> None:
     test = _MHCPostTestBaseline(batch, n_expand, c_x, dtype)
-    bm = MHCPostBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = MHCPostOp(tune=tune)
+    op = MHCPostOp(tune=_TUNE)
+    bm = ManifestBenchmark(_MHC_POST_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

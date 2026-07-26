@@ -33,4 +33,4 @@ FP8QuantOp:
     op: tileops/ops/fp8_quant.py
     test: tests/ops/test_fp8_quant.py
     bench: benchmarks/ops/bench_fp8_quant.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

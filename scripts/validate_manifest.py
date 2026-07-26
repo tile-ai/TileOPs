@@ -549,10 +549,10 @@ def _l0_source(op_name: str, entry: dict, source: dict) -> list[str]:
 def _l0_kernel_map(
     op_name: str, entry: dict, warnings: list[str] | None,
 ) -> list[str]:
-    """kernel_map (under source): mapping of str -> str.
+    """kernel_map (under source): mapping of str -> str, required when implemented.
 
-    Missing kernel_map on an implemented op is advisory (warning), not
-    an error.
+    An implemented op dispatches through ``default_kernel_map``; omitting the
+    declaration hides that dispatch table from the spec.
     """
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)
@@ -571,10 +571,10 @@ def _l0_kernel_map(
                         f"kernel_map entries must be str -> str, "
                         f"got {k!r}: {v!r}"
                     )
-    elif entry.get("status") == "implemented" and warnings is not None:
-        warnings.append(
-            f"[schema] {op_name}: status is 'implemented' but "
-            f"kernel_map is missing (should be a mapping of str -> str)"
+    elif entry.get("status") == "implemented":
+        err(
+            "status is 'implemented' but kernel_map is missing "
+            "(must be a mapping of str -> str)"
         )
     return errors
 
@@ -3473,8 +3473,29 @@ def _is_spec_only(entry: dict) -> bool:
 
 
 def _is_bench_manifest_driven(entry: dict) -> bool:
-    """Bench strictness is opt-in until all legacy benchmarks are migrated."""
+    """Whether the entry claims its benchmark reads manifest workloads."""
     return bool(entry.get("source", {}).get("bench_manifest_driven", False))
+
+
+def check_bench_declaration(op_name: str, entry: dict) -> list[str]:
+    """Require every implemented op with a bench to declare the L4 contract.
+
+    Omitting ``source.bench_manifest_driven`` downgrades the L4 AST check to a
+    warning, so leaving it unset is an opt-out from the benchmark contract
+    rather than a neutral default. Implemented ops must declare it.
+    """
+    if entry.get("status") != "implemented":
+        return []
+    source = entry.get("source") or {}
+    if not source.get("bench"):
+        return []
+    if _is_bench_manifest_driven(entry):
+        return []
+    return [
+        f"[bench] {op_name}: source.bench_manifest_driven must be declared "
+        f"true — implemented ops may not opt out of the manifest-driven "
+        f"benchmark contract"
+    ]
 
 
 ALL_LEVELS = frozenset({"schema", "signature", "shape", "dtype", "bench"})
@@ -3626,6 +3647,7 @@ def validate_manifest(
 
         # bench: benchmark uses manifest workloads
         if "bench" in levels:
+            all_errors.extend(check_bench_declaration(op_name, entry))
             bench_path = entry.get("source", {}).get("bench", "")
             if bench_path:
                 bench_errors = check_l4_benchmark(op_name, bench_path, repo_root)

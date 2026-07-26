@@ -372,15 +372,13 @@ class TestSchema:
             assert isinstance(errors, list)
 
     def test_kernel_map_status_gating(self, validator):
-        """kernel_map is advisory-missing on implemented, optional on
-        spec-only, and an empty mapping is valid."""
-        # status: implemented without kernel_map -> warning, not error.
+        """kernel_map is required on implemented, optional on spec-only,
+        and an empty mapping is valid."""
+        # status: implemented without kernel_map -> hard error.
         entry = _make_entry(status="implemented")
         entry["source"].pop("kernel_map", None)
-        warnings = []
-        errors = validator.check_l0("test_op", entry, warnings=warnings)
-        assert not any("kernel_map" in e for e in errors), errors
-        assert any("kernel_map" in w for w in warnings), warnings
+        errors = validator.check_l0("test_op", entry)
+        assert any("kernel_map is missing" in e for e in errors), errors
 
         # status: spec-only without kernel_map -> no kernel_map diagnostics.
         entry = _make_entry(status="spec-only")
@@ -2093,6 +2091,25 @@ class TestBench:
 
 
 # --check-op: force all levels on a specific op, ignoring status
+
+
+    def test_bench_declaration_required_for_implemented_ops(self, validator):
+        """Implemented ops may not opt out of the manifest-driven bench contract."""
+        entry = {
+            "status": "implemented",
+            "source": {"bench": "benchmarks/ops/bench_x.py"},
+        }
+        errs = validator.check_bench_declaration("XFwdOp", entry)
+        assert any("bench_manifest_driven must be declared" in e for e in errs), errs
+
+        entry["source"]["bench_manifest_driven"] = True
+        assert validator.check_bench_declaration("XFwdOp", entry) == []
+
+        # spec-only ops and ops without a bench pointer are exempt.
+        assert validator.check_bench_declaration(
+            "XFwdOp", {"status": "spec-only", "source": {"bench": "b.py"}}) == []
+        assert validator.check_bench_declaration(
+            "XFwdOp", {"status": "implemented", "source": {}}) == []
 
 
 class TestCheckOp:

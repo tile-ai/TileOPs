@@ -220,47 +220,32 @@ def test_clamp_max_bench(
 
 # alibi & sinusoidal (generative: no input tensors)
 
-class GenerativeBenchCase:
-    def __init__(self, seq_len: int, dim: int, dtype: torch.dtype):
-        self.n_total = seq_len * dim
-        self.seq_len = seq_len
-        self.dim = dim
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple:
-        return ()
+_ALIBI_OP = "AlibiFwdOp"
+_SINUSOIDAL_OP = "SinusoidalFwdOp"
 
 
-class GenerativeBenchmark(BenchmarkBase[GenerativeBenchCase]):
-    def calculate_flops(self) -> Optional[float]:
-        return self.workload.n_total
-
-    def calculate_memory(self) -> Optional[float]:
-        return self.workload.n_total * self.workload.dtype.itemsize
-
-
-def _generative_params():
-    """Shape sweep per op at fp16 (seq_len / dim drive the generated pattern),
-    plus the remaining dtypes on one representative shape."""
-    alibi_shapes = [(512, 64), (2048, 64), (4096, 128)]
-    sinusoidal_shapes = [(512, 256), (2048, 300), (4096, 512)]
+def _generative_params(workloads: list, keys: tuple) -> list:
+    """Manifest workloads -> params; first workload smoke, rest full."""
     params = []
-    for op_name, shapes in [("alibi", alibi_shapes), ("sinusoidal", sinusoidal_shapes)]:
-        for seq_len, dim in shapes:
-            mark = (pytest.mark.smoke if seq_len == shapes[0][0]
-                    else pytest.mark.full)
-            params.append(pytest.param(op_name, seq_len, dim, torch.float16,
-                                       marks=mark))
-    seq_len, dim = sinusoidal_shapes[0]
-    params += [
-        pytest.param("sinusoidal", seq_len, dim, dtype, marks=pytest.mark.full)
-        for dtype in _DTYPES[1:]
-    ]
+    for i, w in enumerate(workloads):
+        values = [w[k] for k in keys]
+        dtype = getattr(torch, w["dtypes"][0])
+        mark = pytest.mark.smoke if i == 0 else pytest.mark.full
+        params.append(pytest.param(*values, dtype, marks=mark,
+                                   id=w.get("label", f"w{i}")))
     return params
 
 
-class GenerativeBenchFixture(FixtureBase):
-    PARAMS = [("op_name, seq_len, dim, dtype", _generative_params())]
+class AlibiBenchFixture(FixtureBase):
+    PARAMS = [("seq_len, num_heads, dtype",
+               _generative_params(load_workloads(_ALIBI_OP),
+                                  ("seq_len", "num_heads")))]
+
+
+class SinusoidalBenchFixture(FixtureBase):
+    PARAMS = [("seq_len, d_model, dtype",
+               _generative_params(load_workloads(_SINUSOIDAL_OP),
+                                  ("seq_len", "d_model")))]
 
 
 def _alibi_reference(seq_len: int, num_heads: int, dtype: torch.dtype) -> torch.Tensor:
@@ -285,32 +270,41 @@ def _sinusoidal_reference(seq_len: int, d_model: int, dtype: torch.dtype) -> tor
     return pe.to(dtype)
 
 
-@GenerativeBenchFixture
-def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dtype) -> None:
-    test = GenerativeBenchCase(seq_len, dim, dtype)
+class _GenerativeWorkload:
+    """ShapeDtypeWorkload for the generative ops (no input tensors)."""
 
-    if op_name == "alibi":
-        # ALiBi outputs (num_heads, seq_len, seq_len); override n_total.
-        test.n_total = dim * seq_len * seq_len
-        shape = (dim, seq_len, seq_len)
-        op = AlibiFwdOp(seq_len=seq_len, num_heads=dim, dtype=dtype)
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.dtype = dtype
 
-        def baseline_fn():
-            return _alibi_reference(seq_len, dim, dtype)
-    else:
-        # Sinusoidal positional embedding: (seq_len, d_model).
-        shape = (seq_len, dim)
-        op = SinusoidalFwdOp(seq_len=seq_len, d_model=dim, dtype=dtype)
+    def gen_inputs(self) -> tuple:
+        return ()
 
-        def baseline_fn():
-            return _sinusoidal_reference(seq_len, dim, dtype)
 
-    bm = GenerativeBenchmark(test)
+@AlibiBenchFixture
+def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
+    op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads, dtype=dtype)
+    workload = _GenerativeWorkload((num_heads, seq_len, seq_len), dtype)
+    bm = ManifestBenchmark(_ALIBI_OP, op, workload)
+
     result = bm.profile(op)
-    BenchmarkReport.record(op_name, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(baseline_fn)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch-ref")
+    result_bl = bm.profile(lambda: _alibi_reference(seq_len, num_heads, dtype))
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+
+@SinusoidalBenchFixture
+def test_sinusoidal_bench(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
+    op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model, dtype=dtype)
+    workload = _GenerativeWorkload((seq_len, d_model), dtype)
+    bm = ManifestBenchmark(_SINUSOIDAL_OP, op, workload)
+
+    result = bm.profile(op)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(lambda: _sinusoidal_reference(seq_len, d_model, dtype))
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 # fp8 benchmarks: representative independent ops with e4m3fn / e5m2

@@ -19,21 +19,21 @@ RMSNormFwdOp:
       normalized_shape: {type: "list[int] | tuple[int, ...]"}
       eps: {type: "float | None", default: null}
     shape_rules:
-    - "len(normalized_shape) > 0"
-    - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
-    - "weight.shape == tuple(normalized_shape)"
-    - "output.shape == x.shape"
+      - "len(normalized_shape) > 0"
+      - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
+      - "weight.shape == tuple(normalized_shape)"
+      - "output.shape == x.shape"
 
   workloads:
     # Llama-3.1-8B (hidden_dim=4096)
-  - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-  - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
     # Llama-3.1-70B (hidden_dim=8192)
-  - {x_shape: [2048, 8192], normalized_shape: [8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
-  - {x_shape: [1, 8192], normalized_shape: [8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+    - {x_shape: [2048, 8192], normalized_shape: [8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
+    - {x_shape: [1, 8192], normalized_shape: [8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
     # Llama-3.1-405B (hidden_dim=16384)
-  - {x_shape: [2048, 16384], normalized_shape: [16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
-  - {x_shape: [1, 16384], normalized_shape: [16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
+    - {x_shape: [2048, 16384], normalized_shape: [16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
+    - {x_shape: [1, 16384], normalized_shape: [16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
 
   roofline:
     vars:
@@ -69,22 +69,22 @@ LayerNormFwdOp:
       normalized_shape: {type: "list[int] | tuple[int, ...]"}
       eps: {type: float, default: 1.0e-5}
     shape_rules:
-    - "len(normalized_shape) > 0"
-    - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
-    - "weight.shape == tuple(normalized_shape)"
-    - "bias.shape == tuple(normalized_shape)"
-    - "output.shape == x.shape"
+      - "len(normalized_shape) > 0"
+      - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
+      - "weight.shape == tuple(normalized_shape)"
+      - "bias.shape == tuple(normalized_shape)"
+      - "output.shape == x.shape"
 
   workloads:
     # Llama-3.1-8B (hidden_dim=4096)
-  - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-  - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
     # Llama-3.1-70B (hidden_dim=8192)
-  - {x_shape: [2048, 8192], normalized_shape: [8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
-  - {x_shape: [1, 8192], normalized_shape: [8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+    - {x_shape: [2048, 8192], normalized_shape: [8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
+    - {x_shape: [1, 8192], normalized_shape: [8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
     # Llama-3.1-405B (hidden_dim=16384)
-  - {x_shape: [2048, 16384], normalized_shape: [16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
-  - {x_shape: [1, 16384], normalized_shape: [16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
+    - {x_shape: [2048, 16384], normalized_shape: [16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
+    - {x_shape: [1, 16384], normalized_shape: [16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
 
   roofline:
     vars:
@@ -119,16 +119,16 @@ AdaLayerNormFwdOp:
     params:
       eps: {type: float, default: 1.0e-5}
     shape_rules:
-    - "scale.shape == x.shape"
-    - "shift.shape == x.shape"
-    - "output.shape == x.shape"
+      - "scale.shape == x.shape"
+      - "shift.shape == x.shape"
+      - "output.shape == x.shape"
 
   workloads:
     # DiT-XL/2 (hidden_dim=1152)
-  - {x_shape: [1024, 1152], dtypes: [float16, bfloat16], label: "dit-xl-2"}
+    - {x_shape: [1024, 1152], dtypes: [float16, bfloat16], label: "dit-xl-2"}
     # Llama-3.1-8B (hidden_dim=4096)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-  - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
 
   roofline:
     vars:
@@ -164,17 +164,17 @@ AdaLayerNormZeroFwdOp:
     params:
       eps: {type: float, default: 1.0e-5}
     shape_rules:
-    - "scale.shape == x.shape"
-    - "shift.shape == x.shape"
-    - "gate.shape == x.shape"
-    - "output.shape == x.shape"
+      - "scale.shape == x.shape"
+      - "shift.shape == x.shape"
+      - "gate.shape == x.shape"
+      - "output.shape == x.shape"
 
   workloads:
     # DiT-XL/2 (hidden_dim=1152)
-  - {x_shape: [1024, 1152], dtypes: [float16, bfloat16], label: "dit-xl-2"}
+    - {x_shape: [1024, 1152], dtypes: [float16, bfloat16], label: "dit-xl-2"}
     # Llama-3.1-8B (hidden_dim=4096)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-  - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
 
   roofline:
     vars:
@@ -211,19 +211,19 @@ FusedAddLayerNormFwdOp:
     params:
       eps: {type: float, default: 1.0e-5}
     shape_rules:
-    - "residual.shape == x.shape"
-    - "weight.shape == (x.shape[-1],)"
-    - "bias.shape == (x.shape[-1],)"
-    - "output.shape == x.shape"
-    - "residual_out.shape == x.shape"
+      - "residual.shape == x.shape"
+      - "weight.shape == (x.shape[-1],)"
+      - "bias.shape == (x.shape[-1],)"
+      - "output.shape == x.shape"
+      - "residual_out.shape == x.shape"
 
   workloads:
     # Llama-3.1-8B (hidden_dim=4096)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-  - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
     # Llama-3.1-70B (hidden_dim=8192)
-  - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
-  - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+    - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
+    - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
 
   roofline:
     vars:
@@ -259,21 +259,21 @@ FusedAddRMSNormFwdOp:
     params:
       eps: {type: float, default: 1.0e-6}
     shape_rules:
-    - "residual.shape == x.shape"
-    - "weight.shape == (x.shape[-1],)"
-    - "output.shape == x.shape"
-    - "residual_out.shape == x.shape"
+      - "residual.shape == x.shape"
+      - "weight.shape == (x.shape[-1],)"
+      - "output.shape == x.shape"
+      - "residual_out.shape == x.shape"
 
   workloads:
     # Llama-3.1-8B (hidden_dim=4096)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-  - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
     # Llama-3.1-70B (hidden_dim=8192)
-  - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
-  - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
+    - {x_shape: [2048, 8192], dtypes: [float16, bfloat16], label: "llama-3.1-70b-prefill"}
+    - {x_shape: [1, 8192], dtypes: [bfloat16], label: "llama-3.1-70b-decode"}
     # Llama-3.1-405B (hidden_dim=16384)
-  - {x_shape: [2048, 16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
-  - {x_shape: [1, 16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
+    - {x_shape: [2048, 16384], dtypes: [float16, bfloat16], label: "llama-3.1-405b-prefill"}
+    - {x_shape: [1, 16384], dtypes: [bfloat16], label: "llama-3.1-405b-decode"}
 
   roofline:
     vars:
@@ -296,6 +296,7 @@ FusedAddRMSNormFwdOp:
 # norm — spatial-norm ops (operate over spatial/channel dims, shape: [N, C, *spatial])
 # ---------------------------------------------------------------------------
 
+    bench_manifest_driven: true
 BatchNormFwdOp:
   ref_api: "torch.nn.functional.batch_norm"
   family: normalization
@@ -315,20 +316,20 @@ BatchNormFwdOp:
       momentum: {type: float, default: 0.1}
       eps: {type: float, default: 1.0e-5}
     shape_rules:
-    - "running_mean.shape == (x.shape[1],)"
-    - "running_var.shape == (x.shape[1],)"
-    - "weight.shape == (x.shape[1],)"
-    - "bias.shape == (x.shape[1],)"
-    - "output.shape == x.shape"
+      - "running_mean.shape == (x.shape[1],)"
+      - "running_var.shape == (x.shape[1],)"
+      - "weight.shape == (x.shape[1],)"
+      - "bias.shape == (x.shape[1],)"
+      - "output.shape == x.shape"
 
   workloads:
     # ResNet-50 stages
-  - {x_shape: [32, 64], dtypes: [float16], label: "resnet50-fc"}
-  - {x_shape: [8, 64, 32, 32], dtypes: [float16], label: "resnet50-stage1"}
-  - {x_shape: [4, 128, 32, 32], dtypes: [float16], label: "resnet50-stage2"}
-  - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "resnet50-stage3"}
+    - {x_shape: [32, 64], dtypes: [float16], label: "resnet50-fc"}
+    - {x_shape: [8, 64, 32, 32], dtypes: [float16], label: "resnet50-stage1"}
+    - {x_shape: [4, 128, 32, 32], dtypes: [float16], label: "resnet50-stage2"}
+    - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "resnet50-stage3"}
     # Large spatial
-  - {x_shape: [4, 128, 1024, 1024], dtypes: [float16], label: "large-spatial"}
+    - {x_shape: [4, 128, 1024, 1024], dtypes: [float16], label: "large-spatial"}
 
   roofline:
     vars:
@@ -367,22 +368,22 @@ BatchNormBwdOp:
       grad_bias: {dtype: "float32"}
     params: {}
     shape_rules:
-    - "x.shape == grad_out.shape"
-    - "weight.shape == (grad_out.shape[1],)"
-    - "mean.shape == (grad_out.shape[1],)"
-    - "rstd.shape == (grad_out.shape[1],)"
-    - "grad_x.shape == grad_out.shape"
-    - "grad_weight.shape == (grad_out.shape[1],)"
-    - "grad_bias.shape == (grad_out.shape[1],)"
+      - "x.shape == grad_out.shape"
+      - "weight.shape == (grad_out.shape[1],)"
+      - "mean.shape == (grad_out.shape[1],)"
+      - "rstd.shape == (grad_out.shape[1],)"
+      - "grad_x.shape == grad_out.shape"
+      - "grad_weight.shape == (grad_out.shape[1],)"
+      - "grad_bias.shape == (grad_out.shape[1],)"
 
   workloads:
     # ResNet-50 stages (same as fwd)
-  - {x_shape: [32, 64], dtypes: [float16], label: "resnet50-fc"}
-  - {x_shape: [8, 64, 32, 32], dtypes: [float16], label: "resnet50-stage1"}
-  - {x_shape: [4, 128, 32, 32], dtypes: [float16], label: "resnet50-stage2"}
-  - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "resnet50-stage3"}
+    - {x_shape: [32, 64], dtypes: [float16], label: "resnet50-fc"}
+    - {x_shape: [8, 64, 32, 32], dtypes: [float16], label: "resnet50-stage1"}
+    - {x_shape: [4, 128, 32, 32], dtypes: [float16], label: "resnet50-stage2"}
+    - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "resnet50-stage3"}
     # Large spatial
-  - {x_shape: [4, 128, 1024, 1024], dtypes: [float16], label: "large-spatial"}
+    - {x_shape: [4, 128, 1024, 1024], dtypes: [float16], label: "large-spatial"}
 
   roofline:
     vars:
@@ -418,16 +419,16 @@ GroupNormFwdOp:
       num_groups: {type: int}
       eps: {type: float, default: 1.0e-5}
     shape_rules:
-    - "weight.shape == (x.shape[1],)"
-    - "bias.shape == (x.shape[1],)"
-    - "x.shape[1] % num_groups == 0"
-    - "output.shape == x.shape"
+      - "weight.shape == (x.shape[1],)"
+      - "bias.shape == (x.shape[1],)"
+      - "x.shape[1] % num_groups == 0"
+      - "output.shape == x.shape"
 
   workloads:
     # Typical CV shapes
-  - {x_shape: [8, 128, 32, 32], num_groups: 32, dtypes: [float16, bfloat16], label: "image-g32"}
-  - {x_shape: [4, 256, 28, 28], num_groups: 32, dtypes: [float16], label: "wider-channel-g32"}
-  - {x_shape: [4, 128, 30, 30], num_groups: 16, dtypes: [float16], label: "tail-spatial-g16"}
+    - {x_shape: [8, 128, 32, 32], num_groups: 32, dtypes: [float16, bfloat16], label: "image-g32"}
+    - {x_shape: [4, 256, 28, 28], num_groups: 32, dtypes: [float16], label: "wider-channel-g32"}
+    - {x_shape: [4, 128, 30, 30], num_groups: 16, dtypes: [float16], label: "tail-spatial-g16"}
 
   roofline:
     vars:
@@ -468,15 +469,15 @@ GroupNormNoAffineFwdOp:
       num_groups: {type: int}
       eps: {type: float, default: 1.0e-5}
     shape_rules:
-    - "x.shape[1] % num_groups == 0"
-    - "output.shape == x.shape"
+      - "x.shape[1] % num_groups == 0"
+      - "output.shape == x.shape"
 
   workloads:
     # Mirror the affine primary's CV shapes; affine-vs-no-affine perf
     # difference is sub-percent, so shape coverage is what matters.
-  - {x_shape: [8, 128, 32, 32], num_groups: 32, dtypes: [float16, bfloat16], label: "image-g32"}
-  - {x_shape: [4, 256, 28, 28], num_groups: 32, dtypes: [float16], label: "wider-channel-g32"}
-  - {x_shape: [4, 128, 30, 30], num_groups: 16, dtypes: [float16], label: "tail-spatial-g16"}
+    - {x_shape: [8, 128, 32, 32], num_groups: 32, dtypes: [float16, bfloat16], label: "image-g32"}
+    - {x_shape: [4, 256, 28, 28], num_groups: 32, dtypes: [float16], label: "wider-channel-g32"}
+    - {x_shape: [4, 128, 30, 30], num_groups: 16, dtypes: [float16], label: "tail-spatial-g16"}
 
   roofline:
     vars:
@@ -515,15 +516,15 @@ InstanceNormFwdOp:
       momentum: {type: float, default: 0.1}
       eps: {type: float, default: 1.0e-5}
     shape_rules:
-    - "weight.shape == (x.shape[1],)"
-    - "bias.shape == (x.shape[1],)"
-    - "output.shape == x.shape"
+      - "weight.shape == (x.shape[1],)"
+      - "bias.shape == (x.shape[1],)"
+      - "output.shape == x.shape"
 
   workloads:
     # Typical CV shapes (style transfer, image generation)
-  - {x_shape: [8, 128, 32, 32], dtypes: [float16, bfloat16], label: "image"}
-  - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "wider-channel"}
-  - {x_shape: [4, 64, 30, 30], dtypes: [float16], label: "tail-spatial"}
+    - {x_shape: [8, 128, 32, 32], dtypes: [float16, bfloat16], label: "image"}
+    - {x_shape: [4, 256, 28, 28], dtypes: [float16], label: "wider-channel"}
+    - {x_shape: [4, 64, 30, 30], dtypes: [float16], label: "tail-spatial"}
 
   roofline:
     vars:
@@ -566,16 +567,16 @@ InstanceNormNoAffineFwdOp:
       momentum: {type: float, default: 0.1}
       eps: {type: float, default: 1.0e-5}
     shape_rules:
-    - "running_mean.shape == (x.shape[1],)"
-    - "running_var.shape == (x.shape[1],)"
-    - "output.shape == x.shape"
+      - "running_mean.shape == (x.shape[1],)"
+      - "running_var.shape == (x.shape[1],)"
+      - "output.shape == x.shape"
 
   workloads:
     # Mirror the affine primary's CV shapes. running_mean / running_var
     # are per-channel (shape [C]) per torch.nn.functional.instance_norm.
-  - {x_shape: [8, 128, 32, 32], running_mean_shape: [128], running_var_shape: [128], dtypes: [float16, bfloat16], label: "image"}
-  - {x_shape: [4, 256, 28, 28], running_mean_shape: [256], running_var_shape: [256], dtypes: [float16], label: "wider-channel"}
-  - {x_shape: [4, 64, 30, 30], running_mean_shape: [64], running_var_shape: [64], dtypes: [float16], label: "tail-spatial"}
+    - {x_shape: [8, 128, 32, 32], running_mean_shape: [128], running_var_shape: [128], dtypes: [float16, bfloat16], label: "image"}
+    - {x_shape: [4, 256, 28, 28], running_mean_shape: [256], running_var_shape: [256], dtypes: [float16], label: "wider-channel"}
+    - {x_shape: [4, 64, 30, 30], running_mean_shape: [64], running_var_shape: [64], dtypes: [float16], label: "tail-spatial"}
 
   roofline:
     vars:

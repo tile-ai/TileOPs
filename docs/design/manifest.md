@@ -354,7 +354,7 @@ are defined in [roofline.md](roofline.md).
 | `op`                    | yes      | Op class file path.                                                    |
 | `test`                  | yes      | Test file path.                                                        |
 | `bench`                 | yes      | Benchmark file path.                                                   |
-| `bench_manifest_driven` | no       | `true` = L4 is a hard CI error. Migration flag.                        |
+| `bench_manifest_driven` | \*       | Required `true` when `status: implemented`; makes L4 a hard CI error.  |
 
 #### kernel_map
 
