@@ -3435,7 +3435,7 @@ def check_l4_benchmark(
 # Infrastructure params that the validator filters out of ctor parity:
 # they never appear in manifest ``signature.params`` but are part of the
 # Op interface contract.
-_CTOR_INFRA_PARAMS = frozenset({"self", "kernel_map", "tune", "strategy"})
+_CTOR_INFRA_PARAMS = frozenset({"self", "kernel_map", "tune"})
 
 # Sentinel for "manifest did not declare this attribute" — distinct from
 # any legitimate manifest value (including the string "REQUIRED" used to
