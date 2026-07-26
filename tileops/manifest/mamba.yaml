@@ -1,0 +1,312 @@
+# mamba.yaml -- manifest entries for the 'mamba' (Mamba-2 / SSD) family.
+#
+# Source of truth for op interfaces in this family. Loaded and merged with
+# other family files by tileops.manifest at runtime. See docs/design/manifest.md
+# for the full schema.
+#
+# Dim-name conventions shared across this family:
+#   B  batch          S  seq_len (= NC * Q)   H  n_heads
+#   P  d_head         N  d_state              G  n_groups (H % G == 0)
+#   NC num_chunks     Q  chunk_len
+# Workload shapes follow the public Mamba-2 model family sizes
+# (780M: H=48, 1.3B: H=64, 2.7B: H=80; P=64, N=128, Q=256, G=1).
+
+DaCumsumFwdOp:
+  # Mamba-2 dt preprocessing + chunk-local inclusive prefix sum of dA = dt * A.
+  # dt_bias is consumed only when has_dt_bias=true; the tensor is still part
+  # of the forward tuple, so it is declared as a regular input here.
+  ref_api: "none"
+  family: mamba
+  status: implemented
+
+  signature:
+    inputs:
+      dt: {dtype: "float32", shape: "[B, S, H]"}
+      A: {dtype: "float32", shape: "[H]"}
+      dt_bias: {dtype: "float32", shape: "[H]"}
+    outputs:
+      # dt_out is stored in the construction dtype; dA_cumsum stays float32.
+      dt_out: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, NC, chunk_len]"}
+      dA_cumsum: {dtype: "float32", shape: "[B, H, NC, chunk_len]"}
+    params:
+      chunk_len: {type: int}
+      dtype: {type: torch.dtype}
+      dt_softplus: {type: bool, default: false}
+      has_dt_bias: {type: bool, default: false}
+      dt_min: {type: float, default: 0.0}
+      dt_max: {type: float, default: .inf}
+    shape_rules:
+    - "S % chunk_len == 0"
+    - "NC == S // chunk_len"
+
+  workloads:
+  - {dt_shape: [1, 4096, 48], A_shape: [48], dt_bias_shape: [48], chunk_len: 256, dtype: float16, dt_softplus: true, has_dt_bias: true, dtypes: [float16], label: "mamba2-780m-b1-s4k"}
+  - {dt_shape: [8, 2048, 64], A_shape: [64], dt_bias_shape: [64], chunk_len: 256, dtype: bfloat16, dt_softplus: true, has_dt_bias: true, dtypes: [bfloat16], label: "mamba2-1p3b-b8-s2k"}
+  - {dt_shape: [2, 32768, 80], A_shape: [80], dt_bias_shape: [80], chunk_len: 256, dtype: float16, dt_softplus: true, has_dt_bias: true, dtypes: [float16], label: "mamba2-2p7b-b2-s32k"}
+
+  roofline:
+    func: "tileops.perf.formulas.da_cumsum_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/mamba/da_cumsum.py
+    kernel_map:
+      da_cumsum_fwd: DaCumsumFwdKernel
+    op: tileops/ops/da_cumsum.py
+    test: tests/ops/test_mamba.py
+    bench: benchmarks/ops/bench_mamba.py
+    bench_manifest_driven: false
+
+CBProducerOp:
+  # Causal C@B coupling-matrix producer:
+  #   cb[b, c, g, l, s] = sum_n C[b, c*Q+l, g, n] * B[b, c*Q+s, g, n], s <= l.
+  ref_api: "none"
+  family: mamba
+  status: implemented
+
+  signature:
+    inputs:
+      C_mat: {dtype: "float16 | bfloat16", shape: "[B, S, G, N]"}
+      B_mat: {dtype: "same_as(C_mat)", shape: "[B, S, G, N]"}
+    outputs:
+      cb: {dtype: "same_as(C_mat)", shape: "[B, NC, G, Q, Q]"}
+    params:
+      batch: {type: int}
+      num_chunks: {type: int}
+      n_groups: {type: int}
+      chunk_len: {type: int}
+      d_state: {type: int}
+      dtype: {type: torch.dtype}
+    shape_rules:
+    - "B == batch"
+    - "S == num_chunks * chunk_len"
+    - "G == n_groups"
+    - "N == d_state"
+    - "NC == num_chunks"
+    - "Q == chunk_len"
+
+  workloads:
+  - {C_mat_shape: [1, 4096, 1, 128], B_mat_shape: [1, 4096, 1, 128], batch: 1, num_chunks: 16, n_groups: 1, chunk_len: 256, d_state: 128, dtype: float16, dtypes: [float16], label: "mamba2-780m-b1-s4k"}
+  - {C_mat_shape: [4, 2048, 1, 128], B_mat_shape: [4, 2048, 1, 128], batch: 4, num_chunks: 8, n_groups: 1, chunk_len: 256, d_state: 128, dtype: bfloat16, dtypes: [bfloat16], label: "mamba2-2p7b-b4-s2k"}
+
+  roofline:
+    func: "tileops.perf.formulas.cb_producer_roofline"
+
+  source:
+    kernel: tileops/kernels/mamba/cb_producer.py
+    kernel_map:
+      cb_producer: CBProducerKernel
+    op: tileops/ops/cb_producer.py
+    test: tests/ops/test_mamba.py
+    # Exercised through the Mamba-2 end-to-end benchmark (CB stage of
+    # Mamba2FwdOp); no standalone bench file exists yet.
+    bench: benchmarks/ops/bench_mamba2_e2e.py
+    bench_manifest_driven: false
+
+SSDChunkStateFwdOp:
+  # Per-chunk SSM state: decay-weighted (P x Q) @ (Q x N) per (batch, chunk,
+  # head). seq_idx is consumed only when has_seq_idx=true; the kernel still
+  # receives the tensor (zeros otherwise), so it is declared as an input.
+  ref_api: "none"
+  family: mamba
+  status: implemented
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16", shape: "[B, S, H, P]"}
+      Bmat: {dtype: "same_as(x)", shape: "[B, S, G, N]"}
+      dt: {dtype: "same_as(x)", shape: "[B, H, NC, Q]"}
+      dA_cumsum: {dtype: "float32", shape: "[B, H, NC, Q]"}
+      seq_idx: {dtype: "int32", shape: "[B, S]"}
+    outputs:
+      states: {dtype: "float32", shape: "[B, NC, H, P, N]"}
+    params:
+      has_seq_idx: {type: bool, default: false}
+    shape_rules:
+    - "S == NC * Q"
+    - "H % G == 0"
+
+  workloads:
+  - {x_shape: [1, 4096, 48, 64], Bmat_shape: [1, 4096, 1, 128], dt_shape: [1, 48, 16, 256], dA_cumsum_shape: [1, 48, 16, 256], seq_idx_shape: [1, 4096], dtypes: [float16, bfloat16], label: "mamba2-780m-b1-s4k"}
+  - {x_shape: [4, 2048, 80, 64], Bmat_shape: [4, 2048, 1, 128], dt_shape: [4, 80, 8, 256], dA_cumsum_shape: [4, 80, 8, 256], seq_idx_shape: [4, 2048], dtypes: [bfloat16], label: "mamba2-2p7b-b4-s2k"}
+  - {x_shape: [2, 32768, 64, 64], Bmat_shape: [2, 32768, 1, 128], dt_shape: [2, 64, 128, 256], dA_cumsum_shape: [2, 64, 128, 256], seq_idx_shape: [2, 32768], dtypes: [float16], label: "mamba2-1p3b-b2-s32k"}
+
+  roofline:
+    func: "tileops.perf.formulas.ssd_chunk_state_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/mamba/ssd_chunk_state.py
+    kernel_map:
+      ssd_chunk_state_fwd: SSDChunkStateFwdKernel
+    op: tileops/ops/ssd_chunk_state.py
+    test: tests/ops/test_mamba.py
+    bench: benchmarks/ops/bench_mamba.py
+    bench_manifest_driven: false
+
+SSDStatePassingFwdOp:
+  # Inter-chunk recurrent scan over a flattened state dimension:
+  #   s_c = exp(dA_chunk_cumsum[b, h, c]) * s_{c-1} + states[b, c, h, :].
+  # In the Mamba-2 pipeline N here is the flattened d_head * d_state.
+  ref_api: "none"
+  family: mamba
+  status: implemented
+
+  signature:
+    inputs:
+      states: {dtype: "float16 | bfloat16 | float32", shape: "[B, NC, H, N]"}
+      dA_chunk_cumsum: {dtype: "float32", shape: "[B, H, NC]"}
+      initial_states: {dtype: "float32", shape: "[B, H, N]"}
+    outputs:
+      out: {dtype: "float32", shape: "[B, NC, H, N]"}
+      final_states: {dtype: "float32", shape: "[B, H, N]"}
+    params:
+      has_initial_states: {type: bool, default: true}
+
+  workloads:
+  - {states_shape: [1, 16, 64, 128], dA_chunk_cumsum_shape: [1, 64, 16], initial_states_shape: [1, 64, 128], dtypes: [float16, bfloat16], label: "mamba2-1p3b-b1-s4k-dstate"}
+    # Flattened d_head * d_state = 8192 as produced inside Mamba2FwdOp.
+  - {states_shape: [1, 16, 64, 8192], dA_chunk_cumsum_shape: [1, 64, 16], initial_states_shape: [1, 64, 8192], dtypes: [float32], label: "mamba2-1p3b-b1-s4k-flat"}
+  - {states_shape: [2, 128, 80, 128], dA_chunk_cumsum_shape: [2, 80, 128], initial_states_shape: [2, 80, 128], dtypes: [float16], label: "mamba2-2p7b-b2-s32k-dstate"}
+
+  roofline:
+    func: "tileops.perf.formulas.ssd_state_passing_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/mamba/ssd_state_passing.py
+    kernel_map:
+      ssd_state_passing_fwd: SSDStatePassingFwdKernel
+    op: tileops/ops/ssd_state_passing.py
+    test: tests/ops/test_mamba.py
+    bench: benchmarks/ops/bench_mamba.py
+    bench_manifest_driven: false
+
+SSDChunkScanFwdOp:
+  # Fused SSD chunk output: history contribution exp(dA[l]) * (C[l] @
+  # prev_states) plus the causal intra-chunk path over cb.
+  ref_api: "none"
+  family: mamba
+  status: implemented
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16", shape: "[B, S, H, P]"}
+      cb: {dtype: "same_as(x)", shape: "[B, NC, G, Q, Q]"}
+      dA_cumsum: {dtype: "float32", shape: "[B, H, NC, Q]"}
+      C: {dtype: "same_as(x)", shape: "[B, S, G, N]"}
+      prev_states: {dtype: "float32", shape: "[B, NC, H, P, N]"}
+      dt: {dtype: "same_as(x)", shape: "[B, H, NC, Q]"}
+    outputs:
+      y: {dtype: "float32", shape: "[B, S, H, P]"}
+    params: {}
+    shape_rules:
+    - "S == NC * Q"
+    - "H % G == 0"
+
+  workloads:
+  - {x_shape: [1, 4096, 48, 64], cb_shape: [1, 16, 1, 256, 256], dA_cumsum_shape: [1, 48, 16, 256], C_shape: [1, 4096, 1, 128], prev_states_shape: [1, 16, 48, 64, 128], dt_shape: [1, 48, 16, 256], dtypes: [float16, bfloat16], label: "mamba2-780m-b1-s4k"}
+  - {x_shape: [4, 2048, 80, 64], cb_shape: [4, 8, 1, 256, 256], dA_cumsum_shape: [4, 80, 8, 256], C_shape: [4, 2048, 1, 128], prev_states_shape: [4, 8, 80, 64, 128], dt_shape: [4, 80, 8, 256], dtypes: [bfloat16], label: "mamba2-2p7b-b4-s2k"}
+  - {x_shape: [2, 32768, 64, 64], cb_shape: [2, 128, 1, 256, 256], dA_cumsum_shape: [2, 64, 128, 256], C_shape: [2, 32768, 1, 128], prev_states_shape: [2, 128, 64, 64, 128], dt_shape: [2, 64, 128, 256], dtypes: [float16], label: "mamba2-1p3b-b2-s32k"}
+
+  roofline:
+    func: "tileops.perf.formulas.ssd_chunk_scan_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/mamba/ssd_chunk_scan.py
+    kernel_map:
+      ssd_chunk_scan_fwd: SSDChunkScanFwdKernel
+    op: tileops/ops/ssd_chunk_scan.py
+    test: tests/ops/test_mamba.py
+    bench: benchmarks/ops/bench_mamba.py
+    bench_manifest_driven: false
+
+SSDDecodeOp:
+  # Single-token Mamba-2 SSD decode step. state is updated in place (read +
+  # write); y_out is the only returned tensor. The D * x skip connection and
+  # z-gate are not fused here.
+  ref_api: "none"
+  family: mamba
+  status: implemented
+
+  signature:
+    inputs:
+      A: {dtype: "float32", shape: "[H, P, N]"}
+      dt: {dtype: "float32", shape: "[B, H, P]"}
+      x: {dtype: "float16 | bfloat16", shape: "[B, H, P]"}
+      B_in: {dtype: "same_as(x)", shape: "[B, G, N]"}
+      C_in: {dtype: "same_as(x)", shape: "[B, G, N]"}
+      state: {dtype: "float32", shape: "[B, H, P, N]"}
+    outputs:
+      y_out: {dtype: "float32", shape: "[B, H, P]"}
+    params: {}
+    shape_rules:
+    - "H % G == 0"
+
+  workloads:
+  - {A_shape: [64, 64, 128], dt_shape: [1, 64, 64], x_shape: [1, 64, 64], B_in_shape: [1, 1, 128], C_in_shape: [1, 1, 128], state_shape: [1, 64, 64, 128], dtypes: [float16, bfloat16], label: "mamba2-1p3b-decode-b1"}
+  - {A_shape: [80, 64, 128], dt_shape: [8, 80, 64], x_shape: [8, 80, 64], B_in_shape: [8, 1, 128], C_in_shape: [8, 1, 128], state_shape: [8, 80, 64, 128], dtypes: [float16], label: "mamba2-2p7b-decode-b8"}
+  - {A_shape: [48, 64, 128], dt_shape: [32, 48, 64], x_shape: [32, 48, 64], B_in_shape: [32, 1, 128], C_in_shape: [32, 1, 128], state_shape: [32, 48, 64, 128], dtypes: [float16], label: "mamba2-780m-decode-b32"}
+
+  roofline:
+    func: "tileops.perf.formulas.ssd_decode_roofline"
+
+  source:
+    kernel: tileops/kernels/mamba/ssd_decode.py
+    kernel_map:
+      ssd_decode: SSDDecodeKernel
+    op: tileops/ops/ssd_decode.py
+    test: tests/ops/test_mamba.py
+    bench: benchmarks/ops/bench_mamba.py
+    bench_manifest_driven: false
+
+Mamba2FwdOp:
+  # End-to-end Mamba-2 SSD forward: DaCumsum -> CBProducer -> SSDChunkState ->
+  # SSDStatePassing -> SSDChunkScan. Interface mirrors
+  # mamba_ssm.ops.triton.ssd_combined.mamba_chunk_scan_combined.
+  #
+  # spec-only: the composite class does not yet conform to the Op protocol
+  # (not an Op subclass; no kernel_map ctor param / dispatch_kernel slot),
+  # so it cannot pass the implemented-status validator gates. The runtime,
+  # tests, and benchmark exist; conforming the class is code-side work for
+  # a follow-up implementation PR.
+  #
+  # dt_bias and initial_states are optional at the code level (zeros are
+  # substituted when omitted; initial_states additionally requires
+  # has_initial_states=true). They are declared as regular inputs because
+  # they are part of the forward tuple.
+  ref_api: "none"
+  family: mamba
+  status: spec-only
+
+  signature:
+    inputs:
+      x: {dtype: "float16 | bfloat16", shape: "[B, S, H, P]"}
+      dt: {dtype: "float32", shape: "[B, S, H]"}
+      A: {dtype: "float32", shape: "[H]"}
+      B: {dtype: "same_as(x)", shape: "[B, S, G, N]"}
+      C: {dtype: "same_as(x)", shape: "[B, S, G, N]"}
+      dt_bias: {dtype: "float32", shape: "[H]"}
+      initial_states: {dtype: "float32", shape: "[B, H, P, N]"}
+    outputs:
+      y: {dtype: "float32", shape: "[B, S, H, P]"}
+      final_states: {dtype: "float32", shape: "[B, H, P, N]"}
+    params:
+      chunk_size: {type: int, default: 256}
+      dt_softplus: {type: bool, default: true}
+      has_initial_states: {type: bool, default: false}
+      return_final_states: {type: bool, default: false}
+    shape_rules:
+    - "S % chunk_size == 0"
+    - "H % G == 0"
+
+  workloads:
+  - {x_shape: [1, 2048, 80, 64], dt_shape: [1, 2048, 80], A_shape: [80], B_shape: [1, 2048, 1, 128], C_shape: [1, 2048, 1, 128], dt_bias_shape: [80], initial_states_shape: [1, 80, 64, 128], dtypes: [bfloat16], label: "mamba2-2p7b-b1-s2k"}
+  - {x_shape: [1, 8192, 64, 64], dt_shape: [1, 8192, 64], A_shape: [64], B_shape: [1, 8192, 1, 128], C_shape: [1, 8192, 1, 128], dt_bias_shape: [64], initial_states_shape: [1, 64, 64, 128], dtypes: [float16], label: "mamba2-1p3b-b1-s8k"}
+
+  roofline:
+    func: "tileops.perf.formulas.mamba2_fwd_roofline"
+
+  source:
+    kernel: tileops/ops/mamba2_fwd.py
+    op: tileops/ops/mamba2_fwd.py
+    test: tests/ops/test_mamba.py
+    bench: benchmarks/ops/bench_mamba2_e2e.py
+    bench_manifest_driven: false
