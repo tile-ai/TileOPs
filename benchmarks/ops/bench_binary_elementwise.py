@@ -424,11 +424,11 @@ def test_fused_gated_strategy_bench(
     shape = (M, N)
     kernel = kernel_cls(M=M, N=N, dtype=dtype, config={"strategy": strategy})
     result = bm.profile(kernel, *inputs)
-    BenchmarkReport.record(kernel, locals(), result, tag=f"tileops-{strategy}")
+    BenchmarkReport.record(f"{op_name}_strategy", locals(), result, tag=f"tileops-{strategy}")
 
     baseline_fn = _FUSED_BASELINES[op_name]
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(kernel, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(f"{op_name}_strategy", locals(), result_bl, tag="torch")
 
 
 # Broadcast benchmark (bias-add pattern)

@@ -1020,9 +1020,7 @@ class BinaryKernel(Kernel):
         """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
 
         Covers a range of occupancy/register-pressure tradeoffs for
-        bandwidth-bound binary elementwise kernels. "strategy" is a
-        build-time config key (it selects the kernel body, not a JIT
-        parameter), so it is excluded from the sweep.
+        bandwidth-bound binary elementwise kernels.
         """
         if _is_fp8(self.dtype):
             # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
@@ -1067,9 +1065,6 @@ class BinaryKernel(Kernel):
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
         super().init_config(config, tune)
-        # Record the resolved strategy so ``self.config`` is the single
-        # source of truth (a coerced/downgraded request or an autotune
-        # result would otherwise leave the key stale or missing).
         self.config["strategy"] = self.strategy
         # Pre-compile and cache the kernel function for the chosen config
         # to avoid JIT lookup overhead on every forward() call.
@@ -1192,9 +1187,7 @@ class FusedGatedKernel(Kernel):
         """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
 
         Covers a range of occupancy/register-pressure tradeoffs for
-        bandwidth-bound fused gated elementwise kernels. "strategy" is a
-        build-time config key (it selects the kernel body, not a JIT
-        parameter), so it is excluded from the sweep.
+        bandwidth-bound fused gated elementwise kernels.
         """
         if _is_fp8(self.dtype):
             # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
@@ -1236,8 +1229,6 @@ class FusedGatedKernel(Kernel):
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
         super().init_config(config, tune)
-        # Record the resolved strategy so ``self.config`` is the single
-        # source of truth (an autotune result would otherwise drop the key).
         self.config["strategy"] = self.strategy
         # Pre-compile and cache the kernel function for the chosen config
         # to avoid JIT lookup overhead on every forward() call.
