@@ -310,14 +310,7 @@ satisfy the cold-call contract.
 
 ## Family-Base Refactoring
 
-The scaffold emits T2 (L1-direct) ops only; once a family accumulates 2-3 ops sharing an identical `forward()` flow, a separate family-specific refactoring (not scaffold-op) extracts an L2 base and rewrites the concrete ops as T1 thin wrappers — see [Development Path](ops-design-reference.md#development-path) for when to extract and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the process.
-
-### Dimension-parametrized families
-
-Families whose ops differ only in spatial rank (1d/2d/3d variants of one operation) may use a single generic base parametrized by a class-attribute `ndim`.
-
-- Concrete public classes MUST keep `eval_roofline` and `_validate_dtypes` in their own class body (delegating to a shared helper is fine) — manifest codegen resolves both per concrete class, and a definition inherited from an intermediate base is silently shadowed or bypassed.
-- Genuine per-rank behavior differences (parameter availability, kernel constructor keyword names, fast-path policy) stay as explicit per-rank tables or subclass overrides; the refactor MUST NOT normalize them.
+The scaffold emits T2 (L1-direct) ops only; once a family accumulates 2-3 ops sharing an identical `forward()` flow, a separate family-specific refactoring (not scaffold-op) extracts an L2 base and rewrites the concrete ops as T1 thin wrappers — see [Development Path](ops-design-reference.md#development-path) for when to extract and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the process. Family bases MUST NOT normalize genuine per-op behavior differences; codegen-managed methods follow the inheritance rules in [Inheritance in family-base hierarchies](ops-design-reference.md#inheritance-in-family-base-hierarchies).
 
 ## Further Reference
 

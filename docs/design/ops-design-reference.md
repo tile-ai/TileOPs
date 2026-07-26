@@ -368,6 +368,8 @@ Three time points: (1) manifest — constraint structure; (2) `__init__` — use
 | Family member has variant logic (e.g., multi-output) | L3 concrete op            | Overrides             |
 | Op inherits L1 directly (T2)                         | L3 concrete op            | Scaffold emits body   |
 
+The two codegen installers honor manual overrides differently: `maybe_install_eval_roofline` honors an override anywhere in the MRO above L1 (an L2-base `eval_roofline` suppresses synthesis), while `maybe_install_validator` honors `_validate_dtypes` only in the concrete class `__dict__` — an L2-base definition is silently shadowed by the synthesized validator on `implemented` ops. A manual `_validate_dtypes` MUST therefore be bound in each concrete class body.
+
 ### Consistency enforcement
 
 | Check                                                    | Mechanism                            |
