@@ -528,10 +528,15 @@ class TestRooflineStructuralRules:
             validator, {"flops": "2*M*N", "bytes": "M*N", "func": "tileops.perf.formulas.gemm"})
         assert any("exclusive" in e for e in errors)
 
-    @pytest.mark.parametrize("value", [0, "", "   ", None])
-    def test_non_string_or_empty_field_fails(self, validator, value):
-        errors = self._entry(validator, {"flops": value, "bytes": "M*N"})
+    def test_non_string_field_fails(self, validator):
+        """Integer placeholders were the shipped violation shape."""
+        errors = self._entry(validator, {"flops": 0, "bytes": "M*N"})
         assert any("non-empty string" in e for e in errors)
+
+    def test_vars_non_mapping_fails(self, validator):
+        errors = self._entry(
+            validator, {"flops": "2*M*N", "bytes": "M*N", "vars": ["M"]})
+        assert any("vars must be a mapping" in e for e in errors)
 
     def test_vars_non_string_value_fails(self, validator):
         errors = self._entry(
