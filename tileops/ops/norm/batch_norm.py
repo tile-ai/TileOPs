@@ -20,8 +20,6 @@ Input tensors accept any shape ``(N, C, *spatial)``; the op reshapes to
 kernel's block_l (chosen automatically by the kernel's default_config).
 """
 
-import functools
-import weakref
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -33,6 +31,7 @@ from tileops.kernels.norm.batch_norm import (
     BatchNormFwdTrainKernel,
 )
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 
 __all__ = ["BatchNormBwdOp", "BatchNormFwdOp"]
@@ -466,17 +465,8 @@ class BatchNormBwdOp(Op):
 
 
 # ---------------------------------------------------------------------------
-# torch.compile registration -- BatchNormFwdOp / BatchNormBwdOp
+# torch.compile dispatch boundary (see tileops/ops/compile_boundary.py)
 # ---------------------------------------------------------------------------
-
-_OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
-
-
-def _register_instance(op_instance: object) -> int:
-    """Register an op instance and return its integer key."""
-    key = id(op_instance)
-    _OP_REGISTRY[key] = op_instance
-    return key
 
 
 @torch.library.custom_op(
@@ -489,9 +479,9 @@ def _batch_norm_fwd_wrapped(
     running_var: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor,
-    instance_key: int,
+    instance_key: str,
 ) -> torch.Tensor:
-    instance = _OP_REGISTRY[instance_key]
+    instance = get_instance(instance_key)
     return instance._eager_forward(
         x, running_mean, running_var, weight, bias)
 
@@ -503,7 +493,7 @@ def _batch_norm_fwd_fake(
     running_var: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor,
-    instance_key: int,
+    instance_key: str,
 ) -> torch.Tensor:
     return torch.empty_like(x)
 
@@ -525,16 +515,6 @@ def _batchnorm_fwd_eager_forward(
 
 BatchNormFwdOp._eager_forward = _batchnorm_fwd_eager_forward
 
-_orig_fwd_init = BatchNormFwdOp.__init__
-
-
-@functools.wraps(_orig_fwd_init)
-def _patched_fwd_init(self, *args, **kwargs):
-    _orig_fwd_init(self, *args, **kwargs)
-    self._instance_key = _register_instance(self)
-
-
-BatchNormFwdOp.__init__ = _patched_fwd_init
 
 
 def _patched_fwd_forward(
@@ -559,9 +539,9 @@ def _batch_norm_bwd_wrapped(
     weight: torch.Tensor,
     mean: torch.Tensor,
     rstd: torch.Tensor,
-    instance_key: int,
+    instance_key: str,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    instance = _OP_REGISTRY[instance_key]
+    instance = get_instance(instance_key)
     return instance._eager_forward(grad_out, x, weight, mean, rstd)
 
 
@@ -572,7 +552,7 @@ def _batch_norm_bwd_fake(
     weight: torch.Tensor,
     mean: torch.Tensor,
     rstd: torch.Tensor,
-    instance_key: int,
+    instance_key: str,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     C = weight.shape[0]
     return (
@@ -599,16 +579,6 @@ def _batchnorm_bwd_eager_forward(
 
 BatchNormBwdOp._eager_forward = _batchnorm_bwd_eager_forward
 
-_orig_bwd_init = BatchNormBwdOp.__init__
-
-
-@functools.wraps(_orig_bwd_init)
-def _patched_bwd_init(self, *args, **kwargs):
-    _orig_bwd_init(self, *args, **kwargs)
-    self._instance_key = _register_instance(self)
-
-
-BatchNormBwdOp.__init__ = _patched_bwd_init
 
 
 def _patched_bwd_forward(self, grad_out, x, weight, mean, rstd):

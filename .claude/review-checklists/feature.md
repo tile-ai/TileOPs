@@ -3,7 +3,7 @@ For `[Feat]` and `[Enhancement]`. For op/kernel PRs the structural axis is gover
 #### Checklist
 
 - [ ] Op/kernel public interface matches its `tileops/manifest/` entry. No entry → wrong PR order
-- [ ] Diff does not modify `tileops/manifest/` (`.claude/rules/manifest-trust-model.md`)
+- [ ] Manifest edits, if any, stay within the carve-out whitelist (`.claude/rules/manifest-trust-model.md`)
 - [ ] If feature is an op, spot-check the diff against at least one of the structural checks below; flag any divergence (full rules in `docs/design/ops-design-reference.md`):
   - Class name ≡ manifest entry key
   - `__init__` kwargs derivable from manifest (`static_dims` / `dtype` / `signature.params`)

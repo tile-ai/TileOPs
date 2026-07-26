@@ -17,6 +17,7 @@ import importlib
 # gains contract-backing compile tests.
 _EVIDENCE_MODULES = (
     "tests.ops.test_elementwise_compile",
+    "tests.ops.test_pool",
     "tests.test_compile",
 )
 

@@ -23,6 +23,7 @@ from tileops.kernels.pool.common import (
     validate_pool_params,
 )
 
+from .compile_boundary import get_instance
 from .op_base import Op
 
 __all__ = [
@@ -185,6 +186,9 @@ class AvgPool1dFwdOp(Op):
             )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return _pool_fwd(input, self._instance_key)
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         n, c_in, l_in, out_l, dtype = self._resolve_input_1d(input)
         input = input.contiguous()
         kernel = self._get_kernel_1d(n, c_in, l_in, dtype, _device_index(input))
@@ -365,6 +369,9 @@ class AvgPool2dFwdOp(Op):
             )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return _pool_fwd(input, self._instance_key)
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         n, c_in, h_in, w_in, out_h, out_w, dtype = self._resolve_input_2d(input)
         input = input.contiguous()
         kernel = self._get_kernel_2d(n, c_in, h_in, w_in, dtype, _device_index(input))
@@ -532,6 +539,9 @@ class MaxPool1dFwdOp(_MaxPool1dFwdOpBase):
         return {"output": (n, c_in, out_l)}
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return _pool_fwd(input, self._instance_key)
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         n, c_in, l_in, out_l, dtype = self._resolve_input_1d(input)
         input = input.contiguous()
         kernel = self._get_kernel_1d(n, c_in, l_in, dtype, _device_index(input))
@@ -585,6 +595,9 @@ class MaxPool1dIndicesFwdOp(_MaxPool1dFwdOpBase):
         return {"output": (n, c_in, out_l), "indices": (n, c_in, out_l)}
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return _pool_fwd_with_indices(input, self._instance_key)
+
+    def _eager_forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         n, c_in, l_in, out_l, dtype = self._resolve_input_1d(input)
         input = input.contiguous()
         kernel = self._get_kernel_1d(n, c_in, l_in, dtype, _device_index(input))
@@ -767,6 +780,9 @@ class MaxPool2dFwdOp(_MaxPool2dFwdOpBase):
         return {"output": (n, c_in, out_h, out_w)}
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return _pool_fwd(input, self._instance_key)
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         n, c_in, h_in, w_in, out_h, out_w, dtype = self._resolve_input_2d(input)
         input = input.contiguous()
         kernel = self._get_kernel_2d(n, c_in, h_in, w_in, dtype, _device_index(input))
@@ -823,6 +839,9 @@ class MaxPool2dIndicesFwdOp(_MaxPool2dFwdOpBase):
         return {"output": (n, c_in, out_h, out_w), "indices": (n, c_in, out_h, out_w)}
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return _pool_fwd_with_indices(input, self._instance_key)
+
+    def _eager_forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         n, c_in, h_in, w_in, out_h, out_w, dtype = self._resolve_input_2d(input)
         input = input.contiguous()
         kernel = self._get_kernel_2d(n, c_in, h_in, w_in, dtype, _device_index(input))
@@ -1026,6 +1045,9 @@ class MaxPool3dFwdOp(_MaxPool3dFwdOpBase):
         return {"output": (n, c_in, out_d, out_h, out_w)}
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return _pool_fwd(input, self._instance_key)
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         n, c_in, d_in, h_in, w_in, out_d, out_h, out_w, dtype = self._resolve_input_3d(input)
         input = input.contiguous()
         kernel = self._get_kernel_3d(n, c_in, d_in, h_in, w_in, dtype, _device_index(input))
@@ -1097,6 +1119,9 @@ class MaxPool3dIndicesFwdOp(_MaxPool3dFwdOpBase):
         }
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return _pool_fwd_with_indices(input, self._instance_key)
+
+    def _eager_forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         n, c_in, d_in, h_in, w_in, out_d, out_h, out_w, dtype = self._resolve_input_3d(input)
         input = input.contiguous()
         kernel = self._get_kernel_3d(n, c_in, d_in, h_in, w_in, dtype, _device_index(input))
@@ -1311,6 +1336,9 @@ class AvgPool3dFwdOp(Op):
             )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return _pool_fwd(input, self._instance_key)
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         n, c_in, d_in, h_in, w_in, out_d, out_h, out_w, dtype = self._resolve_input_3d(input)
         input = input.contiguous()
         kernel = self._get_kernel_3d(n, c_in, d_in, h_in, w_in, dtype, _device_index(input))
@@ -1367,3 +1395,39 @@ class AvgPool3dFwdOp(Op):
         )
         bytes_ = (n * c_in * d_in * h_in * w_in + n * c_in * out_d * out_h * out_w) * elem_bytes
         return flops, bytes_
+
+
+# ---------------------------------------------------------------------------
+# torch.compile dispatch boundary (see tileops/ops/compile_boundary.py)
+# ---------------------------------------------------------------------------
+
+
+@torch.library.custom_op("top::pool_fwd", mutates_args=())
+def _pool_fwd(input: torch.Tensor, instance_key: str) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(input)
+
+
+@_pool_fwd.register_fake
+def _pool_fwd_fake(input: torch.Tensor, instance_key: str) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(input.shape))
+    return input.new_empty(shapes["output"])
+
+
+@torch.library.custom_op("top::pool_fwd_with_indices", mutates_args=())
+def _pool_fwd_with_indices(
+    input: torch.Tensor, instance_key: str,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return get_instance(instance_key)._eager_forward(input)
+
+
+@_pool_fwd_with_indices.register_fake
+def _pool_fwd_with_indices_fake(
+    input: torch.Tensor, instance_key: str,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(input.shape))
+    return (
+        input.new_empty(shapes["output"]),
+        input.new_empty(shapes["indices"], dtype=torch.int64),
+    )

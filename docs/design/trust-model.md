@@ -25,7 +25,7 @@ Source of truth for op interfaces. Human-reviewed, separate PR.
 
 ### Status flip carve-out
 
-An implementation PR may edit only `status`, `source.kernel_map`, `source.test`, `source.bench`, and (only when promoting `spec-only → implemented`) `workloads` on the aligned op; every other contractual field — including `torch_compile_fullgraph` — needs a separate manifest-only PR.
+An implementation PR may edit only `status`, `source.kernel_map`, `source.test`, `source.bench`, (only when promoting `spec-only → implemented`) `workloads`, and (only together with its registered compile-test evidence) `torch_compile_fullgraph` on the aligned op; every other contractual field needs a separate manifest-only PR.
 
 Full enumeration: [.claude/rules/manifest-trust-model.md](../../.claude/rules/manifest-trust-model.md) §Status flip carve-out.
 
@@ -70,7 +70,7 @@ Shared input-definition layer — not a development stage. Test stage OWNS it (Q
 **Must not contain**: ref_program, check/tolerance logic, calculate_flops/memory, benchmark baselines. Reason: prevents shared oracle surface between test correctness and benchmark baselines.
 
 ```
-WorkloadBase (workloads/workload_base.py)  # gen_inputs() only — default implementation
+WorkloadBase (workloads/workload_base.py)  # gen_inputs() only — abstract contract
   ├── TestBase (tests/test_base.py)     # adds ref_program(), check()
   └── concrete subclasses typically define shape + dtype
 

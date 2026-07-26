@@ -25,7 +25,7 @@ Inputs:
 
 Bound type is whichever term dominates `sol_time` (memory-bound if `memory_time > compute_time`, else compute-bound). It depends on shape, not on the op; the roofline tool computes it per-workload and the manifest does not declare it.
 
-## 1.3 Convention
+### 1.3 Convention
 
 Per-element FLOP rule for elementwise ops:
 
@@ -91,14 +91,16 @@ Tests and workloads are not consumers: they may supply shapes and dtypes but mus
 
 Runs on every PR touching `tileops/manifest/`. Scope is structural.
 
-In scope:
+Every roofline entry MUST satisfy:
 
-- Required fields per mode: inline must have `flops` and `bytes`; func must have `func`.
-- Mode exclusivity: `flops`/`bytes`/`vars` and `func` must not coexist.
+- Required fields per mode: inline has `flops` and `bytes`; func has `func`.
+- Mode exclusivity: `flops`/`bytes`/`vars` and `func` do not coexist.
 - Field types: `flops`/`bytes`/`func` are non-empty strings; `vars` is a mapping of str → non-empty str.
 - `func` dotted path resolves at import time.
 
-Out of scope:
+The validator enforces these rules.
+
+Out of the validator's scope:
 
 - Name whitelist — a formula's names are checked by codegen (§4.4), which owns the binding table. Validator does not mirror it.
 - Form checks (layer violations, forbidden AST nodes) — codegen refuses to emit invalid forms.
@@ -253,10 +255,10 @@ Rules:
 Hardware parameters use theoretical values with calibration factors from one-time microbenchmark measurements. YAML files store only `theoretical` and `calibration`; `effective = theoretical × calibration` is computed by `load_profile()`:
 
 ```yaml
-# tileops/perf/profiles/h200.yaml
+# tileops/perf/profiles/<gpu>.yaml
 hbm:
   theoretical: 4800e9       # bytes/s, from spec sheet
-  calibration: 0.94         # from microbench
+  calibration: 0.848        # from microbench (STREAM Triad)
 tensor_core:
   fp16:
     theoretical: 989.5e12   # FLOPS, from spec sheet

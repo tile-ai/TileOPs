@@ -512,6 +512,53 @@ class TestSingleInputWorkloadKeys:
 # torch_compile_fullgraph: capability flag schema
 # ---------------------------------------------------------------------------
 
+class TestRooflineStructuralRules:
+    """L0 roofline reject branches, one guard each.
+
+    Accept paths are owned by TestIntegration: the shipped manifest
+    exercises inline and func modes through the same checks.
+    """
+
+    def _entry(self, validator, roofline):
+        entry = _make_entry()
+        entry["roofline"] = roofline
+        return validator.check_l0("my_op", entry)
+
+    def test_mixed_modes_fail(self, validator):
+        errors = self._entry(
+            validator, {"flops": "2*M*N", "bytes": "M*N", "func": "tileops.perf.formulas.gemm"})
+        assert any("exclusive" in e for e in errors)
+
+    def test_non_string_field_fails(self, validator):
+        """Integer placeholders were the shipped violation shape."""
+        errors = self._entry(validator, {"flops": 0, "bytes": "M*N"})
+        assert any("non-empty string" in e for e in errors)
+
+    def test_vars_non_mapping_fails(self, validator):
+        errors = self._entry(
+            validator, {"flops": "2*M*N", "bytes": "M*N", "vars": ["M"]})
+        assert any("vars must be a mapping" in e for e in errors)
+
+    def test_vars_non_string_value_fails(self, validator):
+        errors = self._entry(
+            validator, {"flops": "2*M*N", "bytes": "M*N", "vars": {"M": 4}})
+        assert any("vars" in e and "non-empty string" in e for e in errors)
+
+    def test_vars_non_string_key_fails(self, validator):
+        errors = self._entry(
+            validator, {"flops": "2*M*N", "bytes": "M*N", "vars": {4: "M"}})
+        assert any("key" in e and "must be a string" in e for e in errors)
+
+    def test_unresolvable_func_fails(self, validator):
+        errors = self._entry(validator, {"func": "tileops.perf.formulas.no_such_formula"})
+        assert any("does not resolve" in e for e in errors)
+
+    def test_non_callable_func_fails(self, validator):
+        """Distinguishes the callable() predicate from a hasattr regression."""
+        errors = self._entry(validator, {"func": "tileops.perf.formulas.__doc__"})
+        assert any("does not resolve" in e for e in errors)
+
+
 class TestTorchCompileFullgraph:
     """torch_compile_fullgraph accepts only literal true on implemented ops."""
 
