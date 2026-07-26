@@ -1,5 +1,5 @@
 import inspect
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 import pytest
 import torch
@@ -1553,6 +1553,23 @@ def test_pool_ctor_rank_annotations_snapshot(op_cls: type, ndim: int) -> None:
         ann = str(params[name].annotation)
         assert "Tuple[int, ...]" not in ann, f"{op_cls.__name__}.{name} widened to variadic: {ann}"
         assert rank_tuple in ann, f"{op_cls.__name__}.{name} lost rank annotation: {ann}"
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("op_cls", "expected_return"),
+    [
+        pytest.param(MaxPool2dFwdOp, torch.Tensor, id="max-pool2d"),
+        pytest.param(
+            MaxPool2dIndicesFwdOp, Tuple[torch.Tensor, torch.Tensor],
+            id="max-pool2d-indices"),
+    ],
+)
+def test_max_pool_forward_return_annotation_snapshot(op_cls: type, expected_return) -> None:
+    """forward return annotations match manifest outputs per concrete class."""
+    assert "forward" in op_cls.__dict__
+    ann = inspect.signature(op_cls.forward).return_annotation
+    assert ann == expected_return, f"{op_cls.__name__}.forward -> {ann}"
 
 
 @pytest.mark.smoke

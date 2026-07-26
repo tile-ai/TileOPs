@@ -471,6 +471,17 @@ def _max_pool_roofline(op: "_MaxPoolFwdOpBase", *, indices: bool) -> tuple[int, 
         bytes_ += out_elems * 8
     return flops, bytes_
 
+def _make_max_pool_forward(returns_indices: bool):
+    """Build the compile-boundary forward for one max-pool output variant."""
+    if returns_indices:
+        def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+            return _pool_fwd_with_indices(input, self._instance_key)
+    else:
+        def forward(self, input: torch.Tensor) -> torch.Tensor:
+            return _pool_fwd(input, self._instance_key)
+    return forward
+
+
 class _MaxPoolFwdOpBase(Op):
     """Generic max-pooling forward, parametrized by class attributes.
 
@@ -616,12 +627,13 @@ class _MaxPoolFwdOpBase(Op):
             return {"output": full, "indices": full}
         return {"output": full}
 
-    def forward(
-        self, input: torch.Tensor,
-    ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
-        if self._returns_indices:
-            return _pool_fwd_with_indices(input, self._instance_key)
-        return _pool_fwd(input, self._instance_key)
+    def __init_subclass__(cls, **kwargs) -> None:
+        # _returns_indices selects the forward variant at class-definition
+        # time so every concrete class carries the exact return annotation
+        # its manifest outputs declare (Tensor vs Tuple[Tensor, Tensor]).
+        super().__init_subclass__(**kwargs)
+        if "forward" not in cls.__dict__:
+            cls.forward = _make_max_pool_forward(cls._returns_indices)
 
     def _eager_forward(self, input: torch.Tensor):
         resolved = self._resolve_input(input)
