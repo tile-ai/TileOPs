@@ -1,33 +1,12 @@
-from typing import Optional
-
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from workloads.fused_add_rms_norm import FusedAddRMSNormTest
 
 _OP_NAME = "FusedAddRMSNormFwdOp"
-
-
-class FusedAddRMSNormBenchmark(BenchmarkBase[FusedAddRMSNormTest]):
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-        self._roofline_cache: Optional[tuple[float, float]] = None
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _manifest_params():
@@ -56,7 +35,7 @@ def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool
     inputs = test.gen_inputs()
 
     op = FusedAddRMSNormFwdOp(dtype=dtype, tune=tune)
-    bm = FusedAddRMSNormBenchmark(test, op)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

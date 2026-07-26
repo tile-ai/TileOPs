@@ -1,35 +1,13 @@
-from typing import Optional
-
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.layer_norm import LayerNormTest
 
 _OP_NAME = "LayerNormFwdOp"
-
-
-class LayerNormBenchmark(BenchmarkBase[LayerNormTest]):
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _manifest_params():
@@ -50,7 +28,7 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
     inputs = test.gen_inputs()
 
     op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype, tune=tune)
-    bm = LayerNormBenchmark(test, op)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

@@ -12,8 +12,6 @@ Real model configurations:
   Qwen3-30B-A3B    3072  128   8
 """
 
-from typing import Optional
-
 import pytest
 import torch
 
@@ -23,7 +21,7 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteNopadFwdOp
 from workloads.workload_base import WorkloadBase
@@ -53,26 +51,6 @@ class MoePermuteNopadTest(WorkloadBase):
 
 
 # Benchmark class
-
-
-class MoePermuteNopadBenchmark(BenchmarkBase[MoePermuteNopadTest]):
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 # Manifest-driven parametrize
@@ -110,7 +88,7 @@ def test_moe_permute_nopad_bench(
 
     # TileOPs
     op = MoePermuteNopadFwdOp(num_experts=num_experts, dtype=dtype)
-    bm = MoePermuteNopadBenchmark(test, op)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     op(hidden_states, topk_ids)  # warmup / JIT compile
     torch.cuda.synchronize()
 

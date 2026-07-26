@@ -20,7 +20,6 @@ Baselines:
 """
 
 import warnings
-from typing import Optional
 
 import pytest
 import torch
@@ -54,7 +53,7 @@ except ImportError:
             stacklevel=2,
         )
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
@@ -93,25 +92,6 @@ class MoEExpertsTest(WorkloadBase):
 
 
 # Benchmark class
-
-
-class MoEExpertsBenchmark(BenchmarkBase[MoEExpertsTest]):
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-        self._roofline_cache: Optional[tuple[float, float]] = None
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 # Manifest-driven parametrize
@@ -155,7 +135,7 @@ def test_moe_experts_nopad_bench(
 
     # -- TileOPs nopad (3WG persistent) --------------------------------------
     nopad = FusedMoEExpertsNopadPersistent3WGFwdOp(**kwargs)
-    bm = MoEExpertsBenchmark(test, nopad)
+    bm = ManifestBenchmark(_OP_NAME, nopad, test)
 
     def _nopad_fn(hidden, w1, w2, topk_weights, topk_ids):
         nopad.forward(

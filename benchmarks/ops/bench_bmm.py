@@ -1,9 +1,7 @@
-from typing import Optional
-
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tests.ops.test_bmm import BmmFp8Test, BmmTest
 from tileops.manifest import load_workloads
 from tileops.ops import BmmFp8Op, BmmFwdOp
@@ -43,53 +41,6 @@ def _flashinfer_bmm_fp8_per_tensor_ref(
     )
 
 
-class BmmBenchmark(BenchmarkBase[BmmTest]):
-    """Reads FLOP/byte counts from the Op's manifest-derived roofline.
-
-    ``BmmFwdOp`` is input-inferred, so ``eval_roofline()`` is valid only
-    after a forward has bound ``batch/m/n/k/dtype``; the benchmark calls it
-    lazily.
-    """
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test: BmmTest, op: BmmFwdOp):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            flops, mem_bytes = self._op.eval_roofline()
-            self._roofline_cache = (float(flops), float(mem_bytes))
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
-
-
-class BmmFp8Benchmark(BenchmarkBase[BmmFp8Test]):
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test: BmmFp8Test, op: BmmFp8Op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            flops, mem_bytes = self._op.eval_roofline()
-            self._roofline_cache = (float(flops), float(mem_bytes))
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
-
-
 def _manifest_params() -> list:
     """Convert manifest workloads to pytest params (batch, m, n, k, dtype)."""
     params = []
@@ -122,7 +73,7 @@ def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype_str: str) -> None:
     a, b = test.gen_inputs()
 
     op = BmmFwdOp(tune=True)
-    bm = BmmBenchmark(test, op)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
 
     # eval_roofline() is read lazily after profiling, by which point
     # forward() has bound the dims.
@@ -146,7 +97,7 @@ def test_bmm_fp8_bench(
 
     # Fast path: feed [B, N, K] (K-innermost) via explicit b_layout='nk'.
     op = BmmFp8Op(out_dtype=out_dtype, tune=True, b_layout="nk")
-    bm = BmmFp8Benchmark(test, op)
+    bm = ManifestBenchmark(_FP8_OP_NAME, op, test)
     result = bm.profile(op, a, b_nk, scale_a, scale_b)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

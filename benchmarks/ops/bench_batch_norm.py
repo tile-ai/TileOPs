@@ -4,12 +4,11 @@ Compares TileOPs vs PyTorch cuDNN batch norm on common ResNet-style shapes.
 """
 
 import math
-from typing import Optional
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.batch_norm import BatchNormBwdTest, BatchNormFwdTest
@@ -18,45 +17,6 @@ _FWD_OP_NAME = "BatchNormFwdOp"
 _BWD_OP_NAME = "BatchNormBwdOp"
 
 # Benchmark classes
-
-class BatchNormFwdBenchmark(BenchmarkBase[BatchNormFwdTest]):
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
-
-
-class BatchNormBwdBenchmark(BenchmarkBase[BatchNormBwdTest]):
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 # Benchmark helpers
@@ -141,7 +101,7 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     op = BatchNormFwdOp(training=training, tune=tune)
 
     test = BatchNormFwdTest(N, C, spatial, dtype, training)
-    bm = BatchNormFwdBenchmark(test, op)
+    bm = ManifestBenchmark(_FWD_OP_NAME, op, test)
 
     result = bm.profile(lambda *a: op(*a), *inputs)
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering
@@ -160,7 +120,7 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
     op = BatchNormBwdOp()
 
     test = BatchNormBwdTest(N, C, spatial, dtype)
-    bm = BatchNormBwdBenchmark(test, op)
+    bm = ManifestBenchmark(_BWD_OP_NAME, op, test)
 
     result = bm.profile(op, *inputs)
     spatial = str(spatial)  # stringify tuple so it survives BenchmarkReport.record filtering

@@ -15,8 +15,6 @@ Real model configurations:
   Qwen3-30B-A3B    3072   8
 """
 
-from typing import Optional
-
 import pytest
 import torch
 
@@ -26,7 +24,7 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoeUnpermuteFwdOp
 from workloads.moe import MoeUnpermuteTest
@@ -34,26 +32,6 @@ from workloads.moe import MoeUnpermuteTest
 _OP_NAME = "MoeUnpermuteFwdOp"
 
 # Benchmark class
-
-
-class MoeUnpermuteBenchmark(BenchmarkBase[MoeUnpermuteTest]):
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 # Manifest-driven parametrize
@@ -86,7 +64,7 @@ def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) ->
 
     # TileOPs
     op = MoeUnpermuteFwdOp(total_tokens, top_k, hidden_size, dtype)
-    bm = MoeUnpermuteBenchmark(test, op)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     op(mm2_pad, fwd_idx, topk_weights)  # warmup / JIT compile
     torch.cuda.synchronize()
 

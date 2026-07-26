@@ -8,7 +8,6 @@ Baselines:
 """
 
 import math
-from typing import Optional
 
 import pytest
 import torch
@@ -21,7 +20,7 @@ try:
 except ImportError:
     _SGL_KERNEL_AVAILABLE = False
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteAlignFwdOp
 from workloads.moe import MoePermuteAlignTest
@@ -137,26 +136,6 @@ def _triton_permute_align(
 # Benchmark class
 
 
-class MoePermuteAlignBenchmark(BenchmarkBase[MoePermuteAlignTest]):
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
-
-
 # Manifest-driven parametrize
 
 
@@ -189,7 +168,7 @@ def test_permute_align_bench(
 
     # TileOPs
     op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
-    bm = MoePermuteAlignBenchmark(test, op)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
 
     # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)

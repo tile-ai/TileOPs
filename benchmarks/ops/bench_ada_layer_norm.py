@@ -1,10 +1,8 @@
-from typing import Optional
-
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
@@ -13,50 +11,6 @@ from workloads.ada_layer_norm_zero import AdaLayerNormZeroTest
 
 _ADA_OP_NAME = "AdaLayerNormFwdOp"
 _ADA_ZERO_OP_NAME = "AdaLayerNormZeroFwdOp"
-
-
-class AdaLayerNormBenchmark(BenchmarkBase[AdaLayerNormTest]):
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        cache = self._roofline_cache
-        if cache is None:
-            cache = self._op.eval_roofline()
-            self._roofline_cache = cache
-        return cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
-
-
-class AdaLayerNormZeroBenchmark(BenchmarkBase[AdaLayerNormZeroTest]):
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        cache = self._roofline_cache
-        if cache is None:
-            cache = self._op.eval_roofline()
-            self._roofline_cache = cache
-        return cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _to_params(workloads):
@@ -77,7 +31,7 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
     inputs = test.gen_inputs()
 
     op = AdaLayerNormFwdOp(dtype=dtype)
-    bm = AdaLayerNormBenchmark(test, op)
+    bm = ManifestBenchmark(_ADA_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -96,7 +50,7 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
     inputs = test.gen_inputs()
 
     op = AdaLayerNormZeroFwdOp(dtype=dtype)
-    bm = AdaLayerNormZeroBenchmark(test, op)
+    bm = ManifestBenchmark(_ADA_ZERO_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

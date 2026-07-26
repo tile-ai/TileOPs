@@ -12,7 +12,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.kernels.pool.common import pool_output_dim
 from tileops.manifest import load_workloads
 from tileops.ops import (
@@ -76,25 +76,6 @@ class AvgPool1dBenchCase:
         )
 
 
-class AvgPool1dBenchmark(BenchmarkBase[AvgPool1dBenchCase]):
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test: AvgPool1dBenchCase, op: AvgPool1dFwdOp) -> None:
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
-
-
 def _avg_pool1d_bench_params() -> list:
     params = []
     for workload in load_workloads(_AVG_POOL1D_OP_NAME):
@@ -154,7 +135,7 @@ def test_avg_pool1d_bench(
         count_include_pad=count_include_pad,
         tune=tune,
     )
-    bm = AvgPool1dBenchmark(test, op)
+    bm = ManifestBenchmark(_AVG_POOL1D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("avg_pool1d", locals(), result, tag="tileops")
 
@@ -205,25 +186,6 @@ class AvgPool2dBenchCase:
             count_include_pad=self.count_include_pad,
             divisor_override=self.divisor_override,
         )
-
-
-class AvgPool2dBenchmark(BenchmarkBase[AvgPool2dBenchCase]):
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test: AvgPool2dBenchCase, op: AvgPool2dFwdOp) -> None:
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _avg_pool2d_bench_params() -> list:
@@ -303,7 +265,7 @@ def test_avg_pool2d_bench(
         divisor_override=divisor_override,
         tune=tune,
     )
-    bm = AvgPool2dBenchmark(test, op)
+    bm = ManifestBenchmark(_AVG_POOL2D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("avg_pool2d", locals(), result, tag="tileops")
 
@@ -362,25 +324,6 @@ class AvgPool3dBenchCase:
             count_include_pad=self.count_include_pad,
             divisor_override=self.divisor_override,
         )
-
-
-class AvgPool3dBenchmark(BenchmarkBase[AvgPool3dBenchCase]):
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test: AvgPool3dBenchCase, op: AvgPool3dFwdOp) -> None:
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _avg_pool3d_bench_params() -> list:
@@ -463,7 +406,7 @@ def test_avg_pool3d_bench(
         divisor_override=divisor_override,
         tune=tune,
     )
-    bm = AvgPool3dBenchmark(test, op)
+    bm = ManifestBenchmark(_AVG_POOL3D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("avg_pool3d", locals(), result, tag="tileops")
 
@@ -514,29 +457,6 @@ class MaxPool2dBenchCase:
             ceil_mode=self.ceil_mode,
             return_indices=self.return_indices,
         )
-
-
-class MaxPool2dBenchmark(BenchmarkBase[MaxPool2dBenchCase]):
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(
-        self,
-        test: MaxPool2dBenchCase,
-        op: MaxPool2dFwdOp | MaxPool2dIndicesFwdOp,
-    ) -> None:
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _max_pool2d_bench_params_from_workloads(workloads: list[dict]) -> list:
@@ -619,7 +539,7 @@ def test_max_pool2d_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = MaxPool2dBenchmark(test, op)
+    bm = ManifestBenchmark(_MAX_POOL2D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("max_pool2d", locals(), result, tag="tileops")
 
@@ -667,7 +587,7 @@ def test_max_pool2d_indices_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = MaxPool2dBenchmark(test, op)
+    bm = ManifestBenchmark(_MAX_POOL2D_INDICES_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("max_pool2d_indices", locals(), result, tag="tileops")
 
@@ -714,29 +634,6 @@ class MaxPool1dBenchCase:
             ceil_mode=self.ceil_mode,
             return_indices=self.return_indices,
         )
-
-
-class MaxPool1dBenchmark(BenchmarkBase[MaxPool1dBenchCase]):
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(
-        self,
-        test: MaxPool1dBenchCase,
-        op: MaxPool1dFwdOp | MaxPool1dIndicesFwdOp,
-    ) -> None:
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _max_pool1d_bench_params_from_workloads(workloads: list[dict]) -> list:
@@ -819,7 +716,7 @@ def test_max_pool1d_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = MaxPool1dBenchmark(test, op)
+    bm = ManifestBenchmark(_MAX_POOL1D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("max_pool1d", locals(), result, tag="tileops")
 
@@ -865,7 +762,7 @@ def test_max_pool1d_indices_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = MaxPool1dBenchmark(test, op)
+    bm = ManifestBenchmark(_MAX_POOL1D_INDICES_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("max_pool1d_indices", locals(), result, tag="tileops")
 
@@ -924,29 +821,6 @@ class MaxPool3dBenchCase:
             ceil_mode=self.ceil_mode,
             return_indices=self.return_indices,
         )
-
-
-class MaxPool3dBenchmark(BenchmarkBase[MaxPool3dBenchCase]):
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(
-        self,
-        test: MaxPool3dBenchCase,
-        op: MaxPool3dFwdOp | MaxPool3dIndicesFwdOp,
-    ) -> None:
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _max_pool3d_bench_params_from_workloads(workloads: list[dict]) -> list:
@@ -1035,7 +909,7 @@ def test_max_pool3d_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = MaxPool3dBenchmark(test, op)
+    bm = ManifestBenchmark(_MAX_POOL3D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("max_pool3d", locals(), result, tag="tileops")
 
@@ -1085,7 +959,7 @@ def test_max_pool3d_indices_bench(
         ceil_mode=ceil_mode,
         tune=tune,
     )
-    bm = MaxPool3dBenchmark(test, op)
+    bm = ManifestBenchmark(_MAX_POOL3D_INDICES_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record("max_pool3d_indices", locals(), result, tag="tileops")
 
