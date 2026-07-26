@@ -204,7 +204,7 @@ def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) ->
         if layout == "bthd":
             batch, seq_len, heads, dim_k = q_shape
             _, v_seq_len, v_heads, dim_v = v_shape
-        elif layout in ("bhtd", "bhsd"):
+        elif layout == "bhtd":
             batch, heads, seq_len, dim_k = q_shape
             _, v_heads, v_seq_len, dim_v = v_shape
         else:

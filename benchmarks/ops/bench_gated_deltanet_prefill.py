@@ -98,8 +98,6 @@ def _fla_prefill_fwd():
 
 def _normalize_gdn_prefill_layout(layout: str) -> str:
     layout = layout.lower()
-    if layout == "bhsd":
-        return "bhtd"
     if layout in ("bhtd", "bthd"):
         return layout
     raise ValueError(f"Unsupported layout: {layout}")
@@ -138,7 +136,7 @@ def _gdn_prefill_args(
     if layout == "bthd":
         batch, seq_len, heads, dim_k = workload["q_shape"]
         _, v_seq_len, v_heads, dim_v = workload["v_shape"]
-    elif layout in ("bhtd", "bhsd"):
+    elif layout == "bhtd":
         batch, heads, seq_len, dim_k = workload["q_shape"]
         _, v_heads, v_seq_len, dim_v = workload["v_shape"]
     else:
