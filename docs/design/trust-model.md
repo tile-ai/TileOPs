@@ -25,7 +25,7 @@ Source of truth for op interfaces. Human-reviewed, separate PR.
 
 ### Status flip carve-out
 
-An implementation PR may edit only `status`, `source.kernel_map`, `source.test`, `source.bench`, and (only when promoting `spec-only → implemented`) `workloads` on the aligned op; every other contractual field needs a separate manifest-only PR. Exception: `torch_compile_fullgraph` lands atomically with its registered test evidence in one human-reviewed PR — the declaration/evidence equality gate forbids split landing.
+An implementation PR may edit only `status`, `source.kernel_map`, `source.test`, `source.bench`, (only when promoting `spec-only → implemented`) `workloads`, and (only together with its registered compile-test evidence) `torch_compile_fullgraph` on the aligned op; every other contractual field needs a separate manifest-only PR.
 
 Full enumeration: [.claude/rules/manifest-trust-model.md](../../.claude/rules/manifest-trust-model.md) §Status flip carve-out.
 
