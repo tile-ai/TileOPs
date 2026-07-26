@@ -20,7 +20,7 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
-from workloads.deltanet import DeltaNetFwdTest
+from workloads.linear_attention import DeltaNetFwdTest
 from workloads.workload_base import FixtureBase
 
 

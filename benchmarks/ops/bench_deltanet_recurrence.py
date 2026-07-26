@@ -7,7 +7,7 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBe
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import DeltaNetDecodeOp
-from workloads.deltanet import DeltaNetDecodeTest
+from workloads.linear_attention import DeltaNetDecodeTest
 from workloads.workload_base import FixtureBase
 
 _OP_NAME = "DeltaNetDecodeOp"

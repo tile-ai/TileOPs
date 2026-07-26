@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GatedDeltaNetFwdOp
-from workloads.gated_deltanet import (
+from workloads.linear_attention import (
     GatedDeltaNetFwdTest as _GatedDeltaNetFwdTestWorkload,
 )
 

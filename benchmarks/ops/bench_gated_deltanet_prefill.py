@@ -24,7 +24,7 @@ from benchmarks.ops.bench_gated_deltanet import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetPrefillFwdOp
-from workloads.gated_deltanet import GatedDeltaNetPrefillFwdTest
+from workloads.linear_attention import GatedDeltaNetPrefillFwdTest
 
 _OP_NAME = "GatedDeltaNetPrefillFwdOp"
 _TORCH_FALLBACK_MAX_SEQ_LEN = 4096

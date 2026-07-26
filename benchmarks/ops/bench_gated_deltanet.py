@@ -20,7 +20,7 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
-from workloads.gated_deltanet import GatedDeltaNetFwdTest
+from workloads.linear_attention import GatedDeltaNetFwdTest
 from workloads.workload_base import FixtureBase
 
 

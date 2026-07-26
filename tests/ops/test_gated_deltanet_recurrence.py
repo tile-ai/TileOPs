@@ -7,7 +7,7 @@ import tileops.ops.gated_deltanet as gated_deltanet_ops
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.gated_deltanet_recurrence import GatedDeltaNetDecodeRawCudaFlaStyleKernel
 from tileops.ops import GatedDeltaNetDecodeOp
-from workloads.gated_deltanet import (
+from workloads.linear_attention import (
     GatedDeltaNetDecodeTest as _GatedDeltaNetDecodeTestWorkload,
 )
 
