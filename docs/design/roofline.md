@@ -91,14 +91,16 @@ Tests and workloads are not consumers: they may supply shapes and dtypes but mus
 
 Runs on every PR touching `tileops/manifest/`. Scope is structural.
 
-In scope:
+Every roofline entry MUST satisfy:
 
-- Required fields per mode: inline must have `flops` and `bytes`; func must have `func`.
-- Mode exclusivity: `flops`/`bytes`/`vars` and `func` must not coexist.
+- Required fields per mode: inline has `flops` and `bytes`; func has `func`.
+- Mode exclusivity: `flops`/`bytes`/`vars` and `func` do not coexist.
 - Field types: `flops`/`bytes`/`func` are non-empty strings; `vars` is a mapping of str → non-empty str.
 - `func` dotted path resolves at import time.
 
-Out of scope:
+The validator is the enforcement point for these rules.
+
+Out of the validator's scope:
 
 - Name whitelist — a formula's names are checked by codegen (§4.4), which owns the binding table. Validator does not mirror it.
 - Form checks (layer violations, forbidden AST nodes) — codegen refuses to emit invalid forms.
