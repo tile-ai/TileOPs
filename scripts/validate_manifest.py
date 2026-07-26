@@ -162,26 +162,12 @@ def _check_shape_rule_callables(
 ) -> list[str]:
     """Validate that bare-name calls in a shape_rule reference known helpers.
 
-    Parses ``rule_str`` as a Python expression and walks the AST. For each
-    ``ast.Call`` whose ``func`` is a bare ``ast.Name``, verify the name is
-    registered in ``_SHAPE_RULE_BUILTINS``. Method calls
-    (``x.foo(y)`` -> ``func`` is ``ast.Attribute``) and subscript calls
-    (``f[0](x)``) are skipped — only direct name lookups are validated.
-
-    A ``SyntaxError`` on parse surfaces as a single ``[schema]`` error so
-    typos and malformed rules are rejected at L0 without requiring the L2
-    eval context.
-
-    Args:
-        op_name: Op key being validated, used in error messages.
-        index: Index of the rule within ``signature.shape_rules`` for the
-            ``shape_rules[<i>]`` locator in error messages.
-        rule_str: The shape_rule expression source.
-
-    Returns:
-        A list of ``[schema]``-prefixed error strings. Empty when the rule
-        parses cleanly and every bare-name call resolves to a registered
-        builtin.
+    Walks the parsed rule AST; every ``ast.Call`` whose ``func`` is a
+    bare ``ast.Name`` must be registered in ``_SHAPE_RULE_BUILTINS``.
+    Method / subscript calls are skipped — only direct name lookups are
+    validated. A ``SyntaxError`` surfaces as a single ``[schema]`` error
+    so malformed rules are rejected at L0 without the L2 eval context.
+    Returns ``[schema]``-prefixed error strings (empty when clean).
     """
     errors: list[str] = []
     try:
@@ -264,27 +250,23 @@ def _check_single_input_workload_keys(
     return errors
 
 
-def check_l0(
-    op_name: str, entry: dict, *, warnings: list[str] | None = None,
-    all_op_names: Collection[str] = (),
+def _l0_key_format(
+    op_name: str, all_op_names: Collection[str],
 ) -> list[str]:
-    """Validate structural schema of a manifest entry. Returns error strings."""
+    """Key format: variant words precede the direction suffix.
+
+    The direction suffix itself is required only when the manifest
+    carries a direction sibling of the same op.
+    """
     errors: list[str] = []
-
-    if not isinstance(entry, dict):
-        errors.append(f"[schema] {op_name}: entry must be a mapping, got {type(entry).__name__}")
-        return errors
-
-    # Key format: variant words precede the direction suffix; the direction
-    # suffix itself is required only when the manifest carries a direction
-    # sibling of the same op.
+    err = _emit_to(errors, "schema", op_name)
     key_match = re.match(r"^(.*)(Fwd|Bwd)Op(.+)$", op_name)
     if key_match:
         stem, direction, trailing = key_match.groups()
-        errors.append(
-            f"[schema] {op_name}: variant word '{trailing}' follows "
-            f"'{direction}Op'; variant words must precede the direction "
-            f"suffix (expected '{stem}{trailing}{direction}Op')"
+        err(
+            f"variant word '{trailing}' follows '{direction}Op'; variant "
+            f"words must precede the direction suffix "
+            f"(expected '{stem}{trailing}{direction}Op')"
         )
     elif op_name.endswith("Op") and not op_name.endswith(("FwdOp", "BwdOp")):
         stem = op_name[:-2]
@@ -292,424 +274,402 @@ def check_l0(
             s for s in (f"{stem}FwdOp", f"{stem}BwdOp") if s in all_op_names
         ]
         if siblings:
-            errors.append(
-                f"[schema] {op_name}: missing direction suffix; direction "
-                f"sibling '{siblings[0]}' exists in the manifest"
+            err(
+                f"missing direction suffix; direction sibling "
+                f"'{siblings[0]}' exists in the manifest"
+            )
+    return errors
+
+
+def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
+    """Signature sub-schema: tensors, params, dtype_combos, shape_rules."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+
+    missing_sig = _REQUIRED_SIGNATURE - set(sig.keys())
+    if missing_sig:
+        err(f"signature missing: {missing_sig}")
+
+    # inputs/outputs/params names must be strings.
+    for field in ("inputs", "outputs", "params"):
+        names = sig.get(field)
+        if not isinstance(names, dict):
+            continue
+        non_str = sorted(repr(k) for k in names if not isinstance(k, str))
+        if non_str:
+            err(
+                f"signature.{field} has non-string names "
+                f"[{', '.join(non_str)}]"
             )
 
-    # Top-level required fields
-    missing_top = _REQUIRED_TOP - set(entry.keys())
-    if missing_top:
-        errors.append(f"[schema] {op_name}: missing top-level fields: {missing_top}")
-
-    # Signature structure
-    sig = entry.get("signature")
-    if isinstance(sig, dict):
-        missing_sig = _REQUIRED_SIGNATURE - set(sig.keys())
-        if missing_sig:
-            errors.append(f"[schema] {op_name}: signature missing: {missing_sig}")
-
-        # Check inputs/outputs/params are dicts with string names
-        for field in ("inputs", "outputs", "params"):
-            names = sig.get(field)
-            if not isinstance(names, dict):
+    # inputs/outputs are dicts of tensor-attr dicts carrying a dtype.
+    for direction in ("inputs", "outputs"):
+        tensors = sig.get(direction)
+        if not isinstance(tensors, dict):
+            if direction in sig:
+                err(f"signature.{direction} must be a dict")
+            continue
+        for tname, attrs in tensors.items():
+            if not isinstance(attrs, dict):
+                err(f"{direction}.{tname} must be a dict")
                 continue
-            non_str = sorted(repr(k) for k in names if not isinstance(k, str))
-            if non_str:
-                errors.append(
-                    f"[schema] {op_name}: signature.{field} has non-string "
-                    f"names [{', '.join(non_str)}]"
-                )
-
-        # Check inputs/outputs are dicts with dtype
-        for direction in ("inputs", "outputs"):
-            tensors = sig.get(direction)
-            if not isinstance(tensors, dict):
-                if direction in sig:
-                    errors.append(
-                        f"[schema] {op_name}: signature.{direction} must be a dict"
-                    )
-                continue
-            for tname, attrs in tensors.items():
-                if not isinstance(attrs, dict):
-                    errors.append(
-                        f"[schema] {op_name}: {direction}.{tname} must be a dict"
-                    )
-                    continue
-                if "dtype" not in attrs:
-                    errors.append(
-                        f"[schema] {op_name}: {direction}.{tname} missing 'dtype'"
-                    )
-                # constraints keys must name dims of the declared shape
-                if "constraints" in attrs:
-                    constraints = attrs["constraints"]
-                    if not isinstance(constraints, dict):
-                        errors.append(
-                            f"[schema] {op_name}: {direction}.{tname}."
-                            f"constraints must be a mapping"
-                        )
-                    elif not isinstance(attrs.get("shape"), str):
-                        errors.append(
-                            f"[schema] {op_name}: {direction}.{tname} has "
-                            f"constraints but no shape"
-                        )
-                    else:
-                        dims = {
-                            d.strip()
-                            for d in attrs["shape"].strip("[]").split(",")
-                            if d.strip()
-                        }
-                        for ckey in constraints:
-                            if ckey not in dims:
-                                errors.append(
-                                    f"[schema] {op_name}: {direction}.{tname} "
-                                    f"constraints key '{ckey}' is not in "
-                                    f"shape dims {sorted(dims)}"
-                                )
-                # layout validation (R19)
-                if "layout" in attrs:
-                    layout = attrs["layout"]
-                    if not isinstance(layout, str):
-                        errors.append(
-                            f"[schema] {op_name}: {direction}.{tname}.layout "
-                            f"must be a string"
-                        )
-                    elif layout not in _VALID_LAYOUTS:
-                        errors.append(
-                            f"[schema] {op_name}: {direction}.{tname}.layout "
-                            f"'{layout}' is not recognized "
-                            f"(valid: {', '.join(sorted(_VALID_LAYOUTS))})"
-                        )
-
-        # Params must be a mapping if present; each entry must have 'type' (R1)
-        if "params" in sig:
-            params = sig["params"]
-            if not isinstance(params, dict):
-                errors.append(
-                    f"[schema] {op_name}: signature.params must be a mapping"
-                )
-            else:
-                for pname, pattrs in params.items():
-                    if not isinstance(pattrs, dict):
-                        errors.append(
-                            f"[schema] {op_name}: params.{pname} must be a dict"
-                        )
-                        continue
-                    if "type" not in pattrs:
-                        errors.append(
-                            f"[schema] {op_name}: params.{pname} missing 'type'"
-                        )
-
-        # Surface invariant: every op produces at least one output, and every
-        # op has at least one construction handle — either a tensor input or
-        # a manifest-declared param. ``inputs: {}`` is permitted (generative
-        # ops synthesize the output from params alone); an op with neither
-        # inputs nor params has no surface the validator or codegen can act
-        # on.
-        raw_inputs = sig.get("inputs")
-        raw_outputs = sig.get("outputs")
-        raw_params = sig.get("params")
-        inputs_count = len(raw_inputs) if isinstance(raw_inputs, dict) else 0
-        outputs_count = len(raw_outputs) if isinstance(raw_outputs, dict) else 0
-        params_count = len(raw_params) if isinstance(raw_params, dict) else 0
-        if outputs_count < 1:
-            errors.append(
-                f"[schema] {op_name}: signature.outputs must declare at "
-                f"least one tensor"
-            )
-        if inputs_count < 1 and params_count < 1:
-            errors.append(
-                f"[schema] {op_name}: signature must declare at least one "
-                f"input tensor or one param (both are empty)"
-            )
-
-        # Every output must declare a shape, or the signature must carry
-        # shape_rules that pin the output shapes.
-        raw_rules = sig.get("shape_rules")
-        has_shape_rules = isinstance(raw_rules, list) and len(raw_rules) > 0
-        if isinstance(raw_outputs, dict) and not has_shape_rules:
-            for tname, attrs in raw_outputs.items():
-                if isinstance(attrs, dict) and "shape" not in attrs:
-                    errors.append(
-                        f"[schema] {op_name}: output '{tname}' must declare "
-                        f"'shape' or the signature must have shape_rules"
-                    )
-
-        # dtype_combos must be a list of dicts if present (R4)
-        if "dtype_combos" in sig:
-            combos = sig["dtype_combos"]
-            if not isinstance(combos, list):
-                errors.append(
-                    f"[schema] {op_name}: signature.dtype_combos must be a list"
-                )
-            else:
-                tensor_names = set()
-                for d in ("inputs", "outputs"):
-                    t = sig.get(d)
-                    if isinstance(t, dict):
-                        tensor_names.update(t.keys())
-                for i, combo in enumerate(combos):
-                    if not isinstance(combo, dict):
-                        errors.append(
-                            f"[schema] {op_name}: dtype_combos[{i}] must be a dict"
-                        )
-                        continue
-                    for key in combo:
-                        if key not in tensor_names:
-                            errors.append(
-                                f"[schema] {op_name}: dtype_combos[{i}] key "
-                                f"'{key}' is not a declared tensor name"
+            if "dtype" not in attrs:
+                err(f"{direction}.{tname} missing 'dtype'")
+            # constraints keys must name dims of the declared shape
+            if "constraints" in attrs:
+                constraints = attrs["constraints"]
+                if not isinstance(constraints, dict):
+                    err(f"{direction}.{tname}.constraints must be a mapping")
+                elif not isinstance(attrs.get("shape"), str):
+                    err(f"{direction}.{tname} has constraints but no shape")
+                else:
+                    dims = {
+                        d.strip()
+                        for d in attrs["shape"].strip("[]").split(",")
+                        if d.strip()
+                    }
+                    for ckey in constraints:
+                        if ckey not in dims:
+                            err(
+                                f"{direction}.{tname} constraints key "
+                                f"'{ckey}' is not in shape dims "
+                                f"{sorted(dims)}"
                             )
-
-        # shape_rules must be list of strings if present
-        if "shape_rules" in sig:
-            rules = sig["shape_rules"]
-            if not isinstance(rules, list):
-                errors.append(f"[schema] {op_name}: shape_rules must be a list")
-            else:
-                for i, rule in enumerate(rules):
-                    if not isinstance(rule, str):
-                        errors.append(
-                            f"[schema] {op_name}: shape_rules[{i}] must be a string"
-                        )
-                        continue
-                    errors.extend(
-                        _check_shape_rule_callables(op_name, i, rule)
+            # layout validation (R19)
+            if "layout" in attrs:
+                layout = attrs["layout"]
+                if not isinstance(layout, str):
+                    err(f"{direction}.{tname}.layout must be a string")
+                elif layout not in _VALID_LAYOUTS:
+                    err(
+                        f"{direction}.{tname}.layout '{layout}' is not "
+                        f"recognized "
+                        f"(valid: {', '.join(sorted(_VALID_LAYOUTS))})"
                     )
 
-        # Unknown signature keys are silently ignored by L1+, so reject
-        # anything outside the schema here.
-        unknown_sig = sorted(repr(k) for k in set(sig) - _VALID_SIGNATURE_KEYS)
-        if unknown_sig:
-            errors.append(
-                f"[schema] {op_name}: unknown signature keys "
-                f"[{', '.join(unknown_sig)}]; valid keys are "
-                f"{sorted(_VALID_SIGNATURE_KEYS)}"
-            )
+    # Params must be a mapping if present; each entry needs 'type' (R1).
+    if "params" in sig:
+        params = sig["params"]
+        if not isinstance(params, dict):
+            err("signature.params must be a mapping")
+        else:
+            for pname, pattrs in params.items():
+                if not isinstance(pattrs, dict):
+                    err(f"params.{pname} must be a dict")
+                    continue
+                if "type" not in pattrs:
+                    err(f"params.{pname} missing 'type'")
 
-        # static_dims must be a mapping of str -> str expression (R20)
-        if "static_dims" in sig:
-            errors.extend(
-                _check_static_dims(op_name, sig["static_dims"], sig)
-            )
-    elif "signature" in entry:
-        errors.append(f"[schema] {op_name}: signature must be a mapping")
+    # Surface invariant: every op produces at least one output, and has
+    # at least one construction handle — a tensor input or a declared
+    # param. ``inputs: {}`` is permitted (generative ops synthesize the
+    # output from params alone).
+    raw_inputs = sig.get("inputs")
+    raw_outputs = sig.get("outputs")
+    raw_params = sig.get("params")
+    inputs_count = len(raw_inputs) if isinstance(raw_inputs, dict) else 0
+    outputs_count = len(raw_outputs) if isinstance(raw_outputs, dict) else 0
+    params_count = len(raw_params) if isinstance(raw_params, dict) else 0
+    if outputs_count < 1:
+        err("signature.outputs must declare at least one tensor")
+    if inputs_count < 1 and params_count < 1:
+        err(
+            "signature must declare at least one input tensor or one "
+            "param (both are empty)"
+        )
 
-    # Workloads
-    workloads = entry.get("workloads")
-    if isinstance(workloads, list):
-        # Implemented ops need benchmarkable coverage: at least 2 workloads.
-        if entry.get("status") == "implemented" and len(workloads) < 2:
-            errors.append(
-                f"[schema] {op_name}: implemented op must have at least 2 "
-                f"workloads, got {len(workloads)}"
-            )
-        # Params without a default must be pinned by every workload.
-        sig_params = entry.get("signature", {})
-        sig_params = sig_params.get("params") if isinstance(sig_params, dict) else None
-        required_params = {
-            pname
-            for pname, pattrs in (sig_params or {}).items()
-            if isinstance(pname, str)
-            and isinstance(pattrs, dict)
-            and "default" not in pattrs
-        } if isinstance(sig_params, dict) else set()
-        for i, w in enumerate(workloads):
-            if not isinstance(w, dict):
-                errors.append(f"[schema] {op_name}: workloads[{i}] must be a dict")
-                continue
-            if "dtypes" not in w:
-                errors.append(
-                    f"[schema] {op_name}: workloads[{i}] missing 'dtypes'"
+    # Every output declares a shape, or shape_rules pin the output shapes.
+    raw_rules = sig.get("shape_rules")
+    has_shape_rules = isinstance(raw_rules, list) and len(raw_rules) > 0
+    if isinstance(raw_outputs, dict) and not has_shape_rules:
+        for tname, attrs in raw_outputs.items():
+            if isinstance(attrs, dict) and "shape" not in attrs:
+                err(
+                    f"output '{tname}' must declare 'shape' or the "
+                    f"signature must have shape_rules"
                 )
-            non_str = [k for k in w if not isinstance(k, str)]
-            if non_str:
-                errors.append(
-                    f"[schema] {op_name}: workloads[{i}] has non-string "
-                    f"keys {non_str}"
-                )
-            missing_params = required_params - set(w.keys())
-            if missing_params:
-                errors.append(
-                    f"[schema] {op_name}: workloads[{i}] missing required "
-                    f"param(s): {sorted(missing_params)}"
-                )
-        if isinstance(entry.get("signature"), dict):
-            errors.extend(
-                _check_single_input_workload_keys(
-                    op_name, entry["signature"], workloads
-                )
-            )
-    elif "workloads" in entry:
-        errors.append(f"[schema] {op_name}: workloads must be a list")
 
-    # Roofline (structural rules per docs/design/roofline.md §4.1)
-    roofline = entry.get("roofline")
-    if isinstance(roofline, dict):
-        has_inline = "flops" in roofline and "bytes" in roofline
-        has_func = "func" in roofline
-        if not has_inline and not has_func:
-            errors.append(
-                f"[schema] {op_name}: roofline must have (flops + bytes) or func"
-            )
-        if has_func and ({"flops", "bytes", "vars"} & set(roofline)):
-            errors.append(
-                f"[schema] {op_name}: roofline modes are exclusive — "
-                f"func must not coexist with flops/bytes/vars"
-            )
-        for field in ("flops", "bytes", "func"):
-            if field in roofline and not (
-                isinstance(roofline[field], str) and roofline[field].strip()
-            ):
-                errors.append(
-                    f"[schema] {op_name}: roofline.{field} must be a "
-                    f"non-empty string"
-                )
-        rl_vars = roofline.get("vars")
-        if rl_vars is not None:
-            if not isinstance(rl_vars, dict):
-                errors.append(
-                    f"[schema] {op_name}: roofline.vars must be a mapping"
-                )
-            else:
-                for k, v in rl_vars.items():
-                    if not isinstance(k, str):
-                        errors.append(
-                            f"[schema] {op_name}: roofline.vars key {k!r} "
-                            f"must be a string"
+    # dtype_combos must be a list of dicts if present (R4).
+    if "dtype_combos" in sig:
+        combos = sig["dtype_combos"]
+        if not isinstance(combos, list):
+            err("signature.dtype_combos must be a list")
+        else:
+            tensor_names = set()
+            for d in ("inputs", "outputs"):
+                t = sig.get(d)
+                if isinstance(t, dict):
+                    tensor_names.update(t.keys())
+            for i, combo in enumerate(combos):
+                if not isinstance(combo, dict):
+                    err(f"dtype_combos[{i}] must be a dict")
+                    continue
+                for key in combo:
+                    if key not in tensor_names:
+                        err(
+                            f"dtype_combos[{i}] key '{key}' is not a "
+                            f"declared tensor name"
                         )
-                    if not (isinstance(v, str) and v.strip()):
-                        errors.append(
-                            f"[schema] {op_name}: roofline.vars[{k!r}] must "
-                            f"be a non-empty string"
-                        )
-        if has_func and isinstance(roofline.get("func"), str):
-            mod, _, attr = roofline["func"].rpartition(".")
-            try:
-                target = importlib.import_module(mod) if mod else None
-            except ImportError:
-                target = None
-            if target is None or not callable(getattr(target, attr, None)):
-                errors.append(
-                    f"[schema] {op_name}: roofline.func "
-                    f"{roofline['func']!r} does not resolve to a callable"
-                )
-    elif "roofline" in entry:
-        errors.append(f"[schema] {op_name}: roofline must be a mapping")
 
-    # Source
-    source = entry.get("source")
-    if isinstance(source, dict):
-        missing_src = _REQUIRED_SOURCE - set(source.keys())
-        if missing_src:
-            errors.append(
-                f"[schema] {op_name}: source missing fields: {missing_src}"
+    # shape_rules must be a list of strings if present.
+    if "shape_rules" in sig:
+        rules = sig["shape_rules"]
+        if not isinstance(rules, list):
+            err("shape_rules must be a list")
+        else:
+            for i, rule in enumerate(rules):
+                if not isinstance(rule, str):
+                    err(f"shape_rules[{i}] must be a string")
+                    continue
+                errors.extend(_check_shape_rule_callables(op_name, i, rule))
+
+    # Unknown signature keys are silently ignored by L1+; reject here.
+    unknown_sig = sorted(repr(k) for k in set(sig) - _VALID_SIGNATURE_KEYS)
+    if unknown_sig:
+        err(
+            f"unknown signature keys [{', '.join(unknown_sig)}]; valid "
+            f"keys are {sorted(_VALID_SIGNATURE_KEYS)}"
+        )
+
+    # static_dims must be a mapping of str -> str expression (R20).
+    if "static_dims" in sig:
+        errors.extend(_check_static_dims(op_name, sig["static_dims"], sig))
+    return errors
+
+
+def _l0_workloads(op_name: str, entry: dict, workloads: list) -> list[str]:
+    """Workload policy: count, dtypes, required-param pinning, R21 keys."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+    # Implemented ops need benchmarkable coverage: at least 2 workloads.
+    if entry.get("status") == "implemented" and len(workloads) < 2:
+        err(
+            f"implemented op must have at least 2 workloads, "
+            f"got {len(workloads)}"
+        )
+    # Params without a default must be pinned by every workload.
+    sig_params = entry.get("signature", {})
+    sig_params = sig_params.get("params") if isinstance(sig_params, dict) else None
+    required_params = {
+        pname
+        for pname, pattrs in (sig_params or {}).items()
+        if isinstance(pname, str)
+        and isinstance(pattrs, dict)
+        and "default" not in pattrs
+    } if isinstance(sig_params, dict) else set()
+    for i, w in enumerate(workloads):
+        if not isinstance(w, dict):
+            err(f"workloads[{i}] must be a dict")
+            continue
+        if "dtypes" not in w:
+            err(f"workloads[{i}] missing 'dtypes'")
+        non_str = [k for k in w if not isinstance(k, str)]
+        if non_str:
+            err(f"workloads[{i}] has non-string keys {non_str}")
+        missing_params = required_params - set(w.keys())
+        if missing_params:
+            err(
+                f"workloads[{i}] missing required param(s): "
+                f"{sorted(missing_params)}"
             )
-        # source.kernel: string or list of strings
-        kernel = source.get("kernel")
-        if kernel is not None:
-            if isinstance(kernel, list):
-                for i, k in enumerate(kernel):
-                    if not isinstance(k, str):
-                        errors.append(
-                            f"[schema] {op_name}: source.kernel[{i}] "
-                            f"must be a string"
-                        )
-            elif not isinstance(kernel, str):
-                errors.append(
-                    f"[schema] {op_name}: source.kernel must be a string or list"
-                )
-        if "bench_manifest_driven" in source and not isinstance(
-            source["bench_manifest_driven"], bool,
+    if isinstance(entry.get("signature"), dict):
+        errors.extend(
+            _check_single_input_workload_keys(
+                op_name, entry["signature"], workloads
+            )
+        )
+    return errors
+
+
+def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
+    """Roofline structural rules per docs/design/roofline.md §4.1."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+    has_inline = "flops" in roofline and "bytes" in roofline
+    has_func = "func" in roofline
+    if not has_inline and not has_func:
+        err("roofline must have (flops + bytes) or func")
+    if has_func and ({"flops", "bytes", "vars"} & set(roofline)):
+        err(
+            "roofline modes are exclusive — func must not coexist with "
+            "flops/bytes/vars"
+        )
+    for field in ("flops", "bytes", "func"):
+        if field in roofline and not (
+            isinstance(roofline[field], str) and roofline[field].strip()
         ):
-            errors.append(
-                f"[schema] {op_name}: source.bench_manifest_driven must be a bool"
+            err(f"roofline.{field} must be a non-empty string")
+    rl_vars = roofline.get("vars")
+    if rl_vars is not None:
+        if not isinstance(rl_vars, dict):
+            err("roofline.vars must be a mapping")
+        else:
+            for k, v in rl_vars.items():
+                if not isinstance(k, str):
+                    err(f"roofline.vars key {k!r} must be a string")
+                if not (isinstance(v, str) and v.strip()):
+                    err(f"roofline.vars[{k!r}] must be a non-empty string")
+    if has_func and isinstance(roofline.get("func"), str):
+        mod, _, attr = roofline["func"].rpartition(".")
+        try:
+            target = importlib.import_module(mod) if mod else None
+        except ImportError:
+            target = None
+        if target is None or not callable(getattr(target, attr, None)):
+            err(
+                f"roofline.func {roofline['func']!r} does not resolve "
+                f"to a callable"
             )
-    elif "source" in entry:
-        errors.append(f"[schema] {op_name}: source must be a mapping")
+    return errors
 
-    # Unknown top-level keys are ignored by every later level, so reject
-    # them here (covers removed fields like parity_opt_out).
-    unknown_top = sorted(repr(k) for k in set(entry) - _VALID_TOP_KEYS)
-    if unknown_top:
-        errors.append(
-            f"[schema] {op_name}: unknown entry keys [{', '.join(unknown_top)}]; "
-            f"valid keys are {sorted(_VALID_TOP_KEYS)}"
-        )
 
-    # variant_of: must be a string if present (R16); cross-entry checks in
-    # check_variant_of_consistency()
-    if "variant_of" in entry and not isinstance(entry["variant_of"], str):
-        errors.append(
-            f"[schema] {op_name}: variant_of must be a string"
-        )
+def _l0_source(op_name: str, entry: dict, source: dict) -> list[str]:
+    """Source block: required path fields; kernel string-or-list."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+    missing_src = _REQUIRED_SOURCE - set(source.keys())
+    if missing_src:
+        err(f"source missing fields: {missing_src}")
+    # source.kernel: string or list of strings
+    kernel = source.get("kernel")
+    if kernel is not None:
+        if isinstance(kernel, list):
+            for i, k in enumerate(kernel):
+                if not isinstance(k, str):
+                    err(f"source.kernel[{i}] must be a string")
+        elif not isinstance(kernel, str):
+            err("source.kernel must be a string or list")
+    if "bench_manifest_driven" in source and not isinstance(
+        source["bench_manifest_driven"], bool,
+    ):
+        err("source.bench_manifest_driven must be a bool")
+    return errors
 
-    # ref_api: required string — fully qualified PyTorch API equivalent or "none"
-    if "ref_api" not in entry:
-        errors.append(
-            f"[schema] {op_name}: missing required field 'ref_api'"
-        )
-    elif not isinstance(entry["ref_api"], str):
-        errors.append(
-            f"[schema] {op_name}: ref_api must be a string"
-        )
 
-    # status: must be "implemented" or "spec-only"
-    # (skip if already caught by missing top-level fields check)
-    status = entry.get("status")
-    if "status" in entry and not isinstance(status, str):
-        errors.append(
-            f"[schema] {op_name}: status must be a string, "
-            f"got {type(status).__name__}"
-        )
-    elif isinstance(status, str) and status not in ("implemented", "spec-only"):
-        errors.append(
-            f"[schema] {op_name}: status must be 'implemented' or 'spec-only', "
-            f"got '{status}'"
-        )
+def _l0_kernel_map(
+    op_name: str, entry: dict, warnings: list[str] | None,
+) -> list[str]:
+    """kernel_map (under source): mapping of str -> str.
 
-    # torch_compile_fullgraph: optional capability flag. Declares that
-    # torch.compile(op, fullgraph=True) succeeds cold-call. Only literal
-    # `true` is accepted; absence is the only spelling of "no promise"
-    # (`false` is rejected). Invalid on `status: spec-only` entries — a
-    # spec without an implementation cannot promise graph capture.
-    if "torch_compile_fullgraph" in entry:
-        tcf = entry["torch_compile_fullgraph"]
-        if tcf is not True:
-            errors.append(
-                f"[schema] {op_name}: torch_compile_fullgraph must be "
-                f"literal true when present (omit the field to make no "
-                f"promise), got {tcf!r}"
-            )
-        elif status == "spec-only":
-            errors.append(
-                f"[schema] {op_name}: torch_compile_fullgraph is invalid "
-                f"on 'status: spec-only' entries — the promise requires "
-                f"an implementation"
-            )
-
-    # kernel_map: lives under source (source.kernel_map per manifest spec)
+    Missing kernel_map on an implemented op is advisory (warning), not
+    an error.
+    """
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
     source = entry.get("source", {})
     kernel_map = source.get("kernel_map") if isinstance(source, dict) else None
     if kernel_map is not None:
         if not isinstance(kernel_map, dict):
-            errors.append(
-                f"[schema] {op_name}: kernel_map must be a mapping, "
+            err(
+                f"kernel_map must be a mapping, "
                 f"got {type(kernel_map).__name__}"
             )
         else:
             for k, v in kernel_map.items():
                 if not isinstance(k, str) or not isinstance(v, str):
-                    errors.append(
-                        f"[schema] {op_name}: kernel_map entries must be "
-                        f"str -> str, got {k!r}: {v!r}"
+                    err(
+                        f"kernel_map entries must be str -> str, "
+                        f"got {k!r}: {v!r}"
                     )
-    elif status == "implemented" and warnings is not None:
+    elif entry.get("status") == "implemented" and warnings is not None:
         warnings.append(
             f"[schema] {op_name}: status is 'implemented' but "
             f"kernel_map is missing (should be a mapping of str -> str)"
         )
+    return errors
 
+
+# Table-driven L0 sections, in emission order. Each row: (field, expected
+# container type, type-error phrase, section validator run on type match).
+# Genuinely custom rules (key format, scalar fields, kernel_map) stay as
+# dedicated small validators around the table loop in ``check_l0``.
+_L0_SECTIONS = (
+    ("signature", dict, "a mapping", _l0_signature),
+    ("workloads", list, "a list", _l0_workloads),
+    ("roofline", dict, "a mapping", _l0_roofline),
+    ("source", dict, "a mapping", _l0_source),
+)
+
+
+def check_l0(
+    op_name: str, entry: dict, *, warnings: list[str] | None = None,
+    all_op_names: Collection[str] = (),
+) -> list[str]:
+    """Validate structural schema of a manifest entry. Returns error strings."""
+    if not isinstance(entry, dict):
+        return [
+            f"[schema] {op_name}: entry must be a mapping, "
+            f"got {type(entry).__name__}"
+        ]
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+
+    errors.extend(_l0_key_format(op_name, all_op_names))
+
+    # Top-level required fields
+    missing_top = _REQUIRED_TOP - set(entry.keys())
+    if missing_top:
+        err(f"missing top-level fields: {missing_top}")
+
+    for field, container, desc, section in _L0_SECTIONS:
+        value = entry.get(field)
+        if isinstance(value, container):
+            errors.extend(section(op_name, entry, value))
+        elif field in entry:
+            err(f"{field} must be {desc}")
+
+    # Unknown top-level keys are ignored by every later level, so reject
+    # them here (covers removed fields like parity_opt_out).
+    unknown_top = sorted(repr(k) for k in set(entry) - _VALID_TOP_KEYS)
+    if unknown_top:
+        err(
+            f"unknown entry keys [{', '.join(unknown_top)}]; "
+            f"valid keys are {sorted(_VALID_TOP_KEYS)}"
+        )
+
+    # variant_of: must be a string if present (R16); cross-entry checks
+    # in check_variant_of_consistency().
+    if "variant_of" in entry and not isinstance(entry["variant_of"], str):
+        err("variant_of must be a string")
+
+    # ref_api: required string — fully qualified PyTorch API equivalent
+    # or "none".
+    if "ref_api" not in entry:
+        err("missing required field 'ref_api'")
+    elif not isinstance(entry["ref_api"], str):
+        err("ref_api must be a string")
+
+    # status: must be "implemented" or "spec-only"
+    # (missing status is already caught by the required-fields check).
+    status = entry.get("status")
+    if "status" in entry and not isinstance(status, str):
+        err(f"status must be a string, got {type(status).__name__}")
+    elif isinstance(status, str) and status not in ("implemented", "spec-only"):
+        err(
+            f"status must be 'implemented' or 'spec-only', "
+            f"got '{status}'"
+        )
+
+    # torch_compile_fullgraph: optional capability flag declaring that
+    # torch.compile(op, fullgraph=True) succeeds cold-call. Only literal
+    # `true` is accepted; absence is the only spelling of "no promise".
+    # Invalid on `status: spec-only` entries — a spec without an
+    # implementation cannot promise graph capture.
+    if "torch_compile_fullgraph" in entry:
+        tcf = entry["torch_compile_fullgraph"]
+        if tcf is not True:
+            err(
+                f"torch_compile_fullgraph must be literal true when "
+                f"present (omit the field to make no promise), got {tcf!r}"
+            )
+        elif status == "spec-only":
+            err(
+                "torch_compile_fullgraph is invalid on 'status: "
+                "spec-only' entries — the promise requires an "
+                "implementation"
+            )
+
+    errors.extend(_l0_kernel_map(op_name, entry, warnings))
     return errors
 
 
@@ -746,14 +706,11 @@ def check_variant_of_consistency(
 ) -> list[str]:
     """Validate variant_of references across all entries.
 
-    Per R16:
-    - variant_of must reference an existing op in the manifest.
-    - Single-level: the primary (referenced) entry must NOT itself have
-      variant_of (no chaining).
-    - Variant and primary must share source.kernel and source.op.
-
-    When *scope* is given, only ops whose names are in *scope* are checked;
-    lookups into *ops* still use the full dict so reference resolution works.
+    Per R16: variant_of must reference an existing op; the primary must
+    not itself be a variant (no chaining); variant and primary must
+    share source.kernel and source.op. When *scope* is given, only ops
+    named in *scope* are checked; lookups still use the full dict so
+    reference resolution works.
     """
     errors: list[str] = []
 
@@ -822,25 +779,16 @@ def check_l1_signature(
     appear in ``forward()`` in declaration order. Every ``static_dims`` key
     must appear as an ``__init__()`` parameter (per R20).
 
-    Args:
-        op_name: Manifest op name.
-        manifest_inputs: The signature.inputs dict from manifest.
-        manifest_params: The signature.params dict from manifest.
-        forward_params: List of parameter names from Op.forward() (excluding 'self').
-        init_params: List of parameter names from Op.__init__() (excluding 'self').
-            When None, treated as empty (only forward is checked).
-        manifest_static_dims: The signature.static_dims dict from manifest (may be None).
-
-    Returns:
-        List of error strings (empty if OK).
+    ``init_params=None`` is treated as empty (only forward is checked).
     """
     errors: list[str] = []
+    err = _emit_to(errors, "signature", op_name)
 
     # Guard: manifest_params must be a dict (schema should catch this, but be safe)
     if not isinstance(manifest_params, dict):
-        errors.append(
-            f"[signature] {op_name}: signature.params is not a mapping, "
-            f"cannot validate forward() consistency"
+        err(
+            "signature.params is not a mapping, cannot validate "
+            "forward() consistency"
         )
         return errors
 
@@ -854,33 +802,32 @@ def check_l1_signature(
         name for name in manifest_params.keys() if name in forward_params
     ]
     if forward_params != expected:
-        errors.append(
-            f"[signature] {op_name}: forward() params {forward_params} do not match "
+        err(
+            f"forward() params {forward_params} do not match "
             f"manifest order {expected}"
         )
 
-    # 2. Strict subset check: every manifest param must exist in init OR forward
+    # Strict subset check: every manifest param must exist in init OR forward
     code_params = set(forward_params) | set(init_params)
     for pname in manifest_params:
         if pname not in code_params:
-            errors.append(
-                f"[signature] {op_name}: manifest param {pname!r} not found in "
-                f"__init__() or forward() parameters"
+            err(
+                f"manifest param {pname!r} not found in __init__() or "
+                f"forward() parameters"
             )
 
-    # 3. static_dims check (R20): every static_dims key must be an __init__ param
+    # static_dims check (R20): every static_dims key must be an __init__ param
     if manifest_static_dims:
         if not isinstance(manifest_static_dims, dict):
-            errors.append(
-                f"[signature] {op_name}: signature.static_dims is not a mapping"
-            )
+            err("signature.static_dims is not a mapping")
         else:
             init_param_set = set(init_params)
             for dim_name in manifest_static_dims:
                 if dim_name not in init_param_set:
-                    errors.append(
-                        f"[signature] {op_name}: static_dims key {dim_name!r} not found in "
-                        f"__init__() parameters (R20: static_dims keys are required __init__ params)"
+                    err(
+                        f"static_dims key {dim_name!r} not found in "
+                        f"__init__() parameters (R20: static_dims keys "
+                        f"are required __init__ params)"
                     )
 
     return errors
@@ -900,13 +847,10 @@ class _ResolveResult:
 def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
     """Try to import the Op class from the source.op file.
 
-    Returns a _ResolveResult with:
-      - cls set if the Op class was found
-      - import_error=True if the module could not be imported due to
-        missing dependencies (ImportError / ModuleNotFoundError)
+    Returns a _ResolveResult: ``cls`` set when found; ``import_error``
+    True when the module could not be imported (missing dependencies).
     """
-    # Convert file path to module path
-    # e.g., "tileops/ops/norm/rms_norm.py" -> "tileops.ops.norm.rms_norm"
+    # "tileops/ops/norm/rms_norm.py" -> "tileops.ops.norm.rms_norm"
     mod_path = op_file.replace("/", ".").replace(".py", "")
     try:
         mod = importlib.import_module(mod_path)
@@ -915,8 +859,7 @@ def _resolve_op_class(op_file: str, op_name: str) -> _ResolveResult:
     except Exception:
         return _ResolveResult()
 
-    # Find Op subclass in the module. We look for classes defined in this module
-    # that have a forward() method.
+    # Candidates: classes defined in this module with a forward() method.
     seen_ids: set[int] = set()
     candidates = []
     for _name, obj in inspect.getmembers(mod, inspect.isclass):
@@ -1053,15 +996,7 @@ def check_l1(
     """Signature check: resolve Op class and compare forward() to manifest.
 
     Checks both ``__init__()`` and ``forward()`` parameter names against
-    the manifest signature.
-
-    Args:
-        op_name: Manifest op name.
-        entry: The manifest entry dict.
-        warnings: Optional list to append warning messages to.
-
-    Returns:
-        List of error strings (empty if OK).
+    the manifest signature. Returns error strings (empty if OK).
     """
     errors: list[str] = []
     sig = entry.get("signature", {})
@@ -1195,15 +1130,13 @@ def _validate_dtype_token(
 
 
 def _build_same_as_map(all_tensors: dict) -> dict[str, str]:
-    """Build a mapping from tensor name to its same_as reference target.
+    """Map tensor name → same_as reference target for pure same_as dtypes.
 
-    For each tensor whose dtype is ``same_as(ref)``, maps tensor → ref.
-    Only pure same_as dtypes are tracked (not ``float16 | same_as(x)``).
+    Mixed expressions (``float16 | same_as(x)``) are not tracked.
     """
     same_as_map: dict[str, str] = {}
     for tname, attrs in all_tensors.items():
-        dtype_str = attrs.get("dtype", "")
-        tokens = _parse_dtype_expr(dtype_str)
+        tokens = _parse_dtype_expr(attrs.get("dtype", ""))
         if len(tokens) == 1:
             m = _SAME_AS_RE.match(tokens[0])
             if m:
@@ -1214,12 +1147,13 @@ def _build_same_as_map(all_tensors: dict) -> dict[str, str]:
 def _check_dtype_combos_same_as_identity(
     op_name: str, dtype_combos: list, same_as_map: dict[str, str],
 ) -> list[str]:
-    """Enforce same_as identity constraint in dtype_combos entries.
+    """Enforce same_as identity in dtype_combos entries (R3).
 
-    For each dtype_combos entry, every tensor bound by same_as(ref) must
-    have the exact same dtype as its reference tensor (R3 identity constraint).
+    Every tensor bound by same_as(ref) must have the exact same dtype as
+    its reference tensor in every combo row.
     """
     errors: list[str] = []
+    err = _emit_to(errors, "dtype", op_name)
     for i, combo in enumerate(dtype_combos):
         if not isinstance(combo, dict):
             continue
@@ -1227,17 +1161,16 @@ def _check_dtype_combos_same_as_identity(
             t_in = tensor in combo
             r_in = ref in combo
             if t_in and r_in and combo[tensor] != combo[ref]:
-                errors.append(
-                    f"[dtype] {op_name}: dtype_combos[{i}] violates "
-                    f"same_as identity constraint — {tensor} "
-                    f"({combo[tensor]}) must match {ref} "
-                    f"({combo[ref]}) per R3"
+                err(
+                    f"dtype_combos[{i}] violates same_as identity "
+                    f"constraint — {tensor} ({combo[tensor]}) must match "
+                    f"{ref} ({combo[ref]}) per R3"
                 )
             elif t_in and not r_in:
-                errors.append(
-                    f"[dtype] {op_name}: dtype_combos[{i}] has "
-                    f"same_as-bound tensor '{tensor}' without its "
-                    f"reference '{ref}' — cannot verify identity"
+                err(
+                    f"dtype_combos[{i}] has same_as-bound tensor "
+                    f"'{tensor}' without its reference '{ref}' — cannot "
+                    f"verify identity"
                 )
     return errors
 
@@ -1249,6 +1182,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     Also enforces same_as identity constraint in dtype_combos (R3).
     """
     errors: list[str] = []
+    err = _emit_to(errors, "dtype", op_name)
     sig = entry.get("signature", {})
     raw_inputs = sig.get("inputs")
     raw_outputs = sig.get("outputs")
@@ -1261,39 +1195,34 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     tensor_names = set(all_tensors.keys())
     input_names = set(inputs.keys())
 
-    # Validate signature tensor dtypes. ``promote_int_to_float`` is an
-    # output-side-only construct (R3a) — reject it on input tensors.
+    # Signature tensor dtypes. ``promote_int_to_float`` is output-side
+    # only (R3a) — reject it on input tensors.
     for tname, attrs in all_tensors.items():
         if not isinstance(attrs, dict):
             continue
-        dtype_str = attrs.get("dtype", "")
-        tokens = _parse_dtype_expr(dtype_str)
-        is_input = tname in input_names
-        for token in tokens:
-            err = _validate_dtype_token(
+        for token in _parse_dtype_expr(attrs.get("dtype", "")):
+            token_err = _validate_dtype_token(
                 op_name, tname, token, tensor_names,
-                allow_promote_int_to_float=not is_input,
+                allow_promote_int_to_float=tname not in input_names,
                 input_tensor_names=input_names,
             )
-            if err:
-                errors.append(err)
+            if token_err:
+                errors.append(token_err)
 
-    # Validate same_as identity constraint in dtype_combos (R3)
+    # same_as identity constraint in dtype_combos (R3)
     dtype_combos = sig.get("dtype_combos", [])
     if isinstance(dtype_combos, list) and dtype_combos:
         same_as_map = _build_same_as_map(all_tensors)
         errors.extend(
             _check_dtype_combos_same_as_identity(op_name, dtype_combos, same_as_map)
         )
-        # Hard data-validation for combo values: every combo entry must
-        # resolve to a concrete torch dtype (or a ``same_as(ref)`` whose
-        # ref resolves to concrete torch dtypes). Runs unconditionally —
+        # Hard data-validation for combo values, run unconditionally —
         # independent of whether the op overrides ``_validate_dtypes`` —
         # so an un-migrated op carrying invalid combo data still surfaces
         # a hard L3 error rather than only a missing-override warning.
         errors.extend(check_l3_dtype_combos_data(op_name, sig))
 
-    # Validate workload dtypes
+    # Workload dtypes
     workloads = entry.get("workloads", [])
     if isinstance(workloads, list):
         for i, w in enumerate(workloads):
@@ -1304,20 +1233,16 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
                 continue
             for j, dt in enumerate(dtypes):
                 if not isinstance(dt, str):
-                    errors.append(
-                        f"[dtype] {op_name}: workloads[{i}].dtypes[{j}] "
-                        f"is not a string"
-                    )
+                    err(f"workloads[{i}].dtypes[{j}] is not a string")
                     continue
-                tokens = _parse_dtype_expr(dt)
-                for token in tokens:
-                    err = _validate_dtype_token(
+                for token in _parse_dtype_expr(dt):
+                    token_err = _validate_dtype_token(
                         op_name, f"workloads[{i}].dtypes[{j}]",
                         token, tensor_names,
                         allow_promote_int_to_float=False,
                     )
-                    if err:
-                        errors.append(err)
+                    if token_err:
+                        errors.append(token_err)
 
     return errors
 
@@ -1336,6 +1261,7 @@ def _diagnose_unresolvable_signature(op_name: str, sig: dict) -> list[str]:
         to nothing — generic fallback, so callers are never left guessing.
     """
     errors: list[str] = []
+    err = _emit_to(errors, "dtype", op_name)
     inputs = sig.get("inputs") or {}
     outputs = sig.get("outputs") or {}
     all_tensors: dict[str, dict] = {}
@@ -1344,9 +1270,9 @@ def _diagnose_unresolvable_signature(op_name: str, sig: dict) -> list[str]:
     if isinstance(outputs, dict):
         all_tensors.update(outputs)
 
-    # Pure ``same_as(ref)`` edges only — mixed expressions (``float16 |
-    # same_as(x)``) are not part of the cycle graph; a cycle in pure edges
-    # is what makes fixpoint resolution stall.
+    # Pure ``same_as(ref)`` edges only — mixed expressions are not part
+    # of the cycle graph; a cycle in pure edges is what stalls fixpoint
+    # resolution.
     edges: dict[str, str] = {}
     for tname, attrs in all_tensors.items():
         if not isinstance(attrs, dict):
@@ -1361,17 +1287,16 @@ def _diagnose_unresolvable_signature(op_name: str, sig: dict) -> list[str]:
     dangling: set[str] = set()
     for tname, ref in edges.items():
         if ref not in all_tensors:
-            errors.append(
-                f"[dtype] {op_name}: signature.inputs/outputs — tensor "
-                f"{tname!r} declares dtype same_as({ref}) but {ref!r} is "
-                f"not a declared tensor (dangling reference; combo "
-                f"validation cannot proceed)"
+            err(
+                f"signature.inputs/outputs — tensor {tname!r} declares "
+                f"dtype same_as({ref}) but {ref!r} is not a declared "
+                f"tensor (dangling reference; combo validation cannot "
+                f"proceed)"
             )
             dangling.add(tname)
 
-    # Cycle detection via DFS over pure same_as edges. Only tensors that
-    # have not already been reported as dangling are considered (a chain
-    # ending in a dangling ref is not a cycle).
+    # Cycle detection via DFS over pure same_as edges. A chain ending in
+    # a dangling ref is not a cycle.
     reported_cycles: set[frozenset[str]] = set()
     visited: set[str] = set()
     for start in edges:
@@ -1386,9 +1311,8 @@ def _diagnose_unresolvable_signature(op_name: str, sig: dict) -> list[str]:
                 key = frozenset(cycle_nodes)
                 if key not in reported_cycles:
                     reported_cycles.add(key)
-                    errors.append(
-                        f"[dtype] {op_name}: same_as cycle detected "
-                        f"among tensors "
+                    err(
+                        f"same_as cycle detected among tensors "
                         f"{sorted(cycle_nodes)} — dtype options cannot "
                         f"be resolved (combo validation skipped)"
                     )
@@ -1406,15 +1330,15 @@ def _diagnose_unresolvable_signature(op_name: str, sig: dict) -> list[str]:
         visited.update(path)
 
     if not errors:
-        # Fixpoint failed but we cannot pinpoint a cycle or dangling edge
-        # (e.g. a mixed expression containing an unknown token that did
-        # not trip per-token validation). Emit a generic hard error so
-        # combo validation is never silently skipped.
-        errors.append(
-            f"[dtype] {op_name}: could not resolve signature.inputs/outputs "
-            f"dtype options — combo validation cannot proceed. Check "
-            f"signature.inputs/outputs dtype declarations for unresolved "
-            f"same_as references or malformed expressions."
+        # Fixpoint failed but no cycle or dangling edge was found (e.g. a
+        # mixed expression containing an unknown token that did not trip
+        # per-token validation). Emit a generic hard error so combo
+        # validation is never silently skipped.
+        err(
+            "could not resolve signature.inputs/outputs dtype options — "
+            "combo validation cannot proceed. Check "
+            "signature.inputs/outputs dtype declarations for unresolved "
+            "same_as references or malformed expressions."
         )
     return errors
 
@@ -1423,29 +1347,24 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
     """Validate ``dtype_combos`` entries resolve to concrete torch dtypes.
 
     Manifest-data check, independent of any op class / ``_validate_dtypes``
-    implementation. Every combo value must be either:
-      * a concrete dtype name in ``_TORCH_DTYPES``; or
-      * a ``same_as(ref)`` expression whose ref resolves transitively to
-        concrete dtype names.
-
-    Anything else (e.g. ``"not_a_real_dtype"``, ``same_as(unknown)``) is a
+    implementation. Every combo value must be either a concrete dtype
+    name in ``_TORCH_DTYPES`` or a ``same_as(ref)`` expression whose ref
+    resolves transitively to concrete dtype names. Anything else is a
     hard L3 error — callers must not silently proceed with invalid combo
     data.
     """
     errors: list[str] = []
+    err = _emit_to(errors, "dtype", op_name)
     dtype_combos = sig.get("dtype_combos")
     if not isinstance(dtype_combos, list) or not dtype_combos:
         return errors
     dtype_options = _resolve_tensor_dtype_options(sig)
     if dtype_options is None:
-        # Unresolvable signature. Previously this branch returned silently
-        # under the assumption that ``check_l3`` had already flagged the
-        # culprit, but a pure ``same_as`` cycle (e.g. ``x: same_as(y)`` and
-        # ``y: same_as(x)``) satisfies per-token validation *and* the R3
-        # identity check, so combo validation would be silently skipped and
-        # invalid combo data would pass. Emit a hard L3 error with a
-        # specific diagnosis when possible (cycle / dangling reference),
-        # falling back to a generic unresolved-signature error otherwise.
+        # Unresolvable signature. A pure ``same_as`` cycle satisfies
+        # per-token validation *and* the R3 identity check, so returning
+        # silently here would let invalid combo data pass. Emit a hard
+        # L3 error with a specific diagnosis (cycle / dangling
+        # reference) when possible.
         errors.extend(_diagnose_unresolvable_signature(op_name, sig))
         return errors
     inputs = sig.get("inputs") or {}
@@ -1456,63 +1375,53 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
         if not isinstance(combo, dict):
             continue
         # Combo-row completeness: every declared signature.inputs tensor
-        # must be assigned a dtype in every combo row. Otherwise a combo
-        # row that silently omits an input would pass L3 when no
-        # ``_validate_dtypes`` override exists, since ``_combo_accepted``
-        # is never exercised for omitted inputs.
+        # must be assigned a dtype in every combo row; otherwise a row
+        # omitting an input would pass L3 when no ``_validate_dtypes``
+        # override exists (``_combo_accepted`` never runs for it).
         for input_name in declared_input_names:
             if input_name not in combo:
-                errors.append(
-                    f"[dtype] {op_name}: dtype_combos[{i}] is missing "
-                    f"declared input {input_name!r} (every combo row "
-                    f"must cover every signature.inputs tensor)"
+                err(
+                    f"dtype_combos[{i}] is missing declared input "
+                    f"{input_name!r} (every combo row must cover every "
+                    f"signature.inputs tensor)"
                 )
         for key, val in combo.items():
             if not isinstance(val, str):
-                errors.append(
-                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
-                    f"{val!r} is not a string"
-                )
+                err(f"dtype_combos[{i}].{key} = {val!r} is not a string")
                 continue
-            # Per manifest.md R4, each combo value must be a single
-            # concrete dtype token (or a ``same_as(ref)`` naming one
-            # sibling in the same combo row). Reject union expressions
-            # like ``"float16 | bfloat16"`` outright — a union in a
-            # combo row would let an implementation silently widen the
-            # accepted-dtype set beyond what the manifest authored.
+            # Per manifest.md R4, each combo value pins a single concrete
+            # dtype token (or a ``same_as(ref)`` naming a sibling in the
+            # same row). A union would let an implementation silently
+            # widen the accepted-dtype set beyond what was authored.
             if "|" in val:
-                errors.append(
-                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
-                    f"{val!r} — combo values must be a single concrete "
-                    f"dtype, not a union"
+                err(
+                    f"dtype_combos[{i}].{key} = {val!r} — combo values "
+                    f"must be a single concrete dtype, not a union"
                 )
                 continue
-            # promote_int_to_float(ref) is an output-side construct that
-            # may expand to multiple concrete dtypes (e.g. {float32,
-            # float16, bfloat16}). Combo rows must pin a single concrete
-            # dtype per tensor, so reject this DSL form on the combo-value
-            # side. Authors should expand the rows manually or use
-            # same_as(ref) when the dtype is genuinely identity-bound.
+            # promote_int_to_float(ref) may expand to multiple concrete
+            # dtypes, so it cannot pin a combo row either; authors expand
+            # the rows manually or use same_as(ref).
             if _PROMOTE_INT_TO_FLOAT_RE.match(val):
-                errors.append(
-                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
-                    f"{val!r} — combo values must be a single concrete "
-                    f"dtype; promote_int_to_float(...) is allowed only on "
+                err(
+                    f"dtype_combos[{i}].{key} = {val!r} — combo values "
+                    f"must be a single concrete dtype; "
+                    f"promote_int_to_float(...) is allowed only on "
                     f"signature.outputs"
                 )
                 continue
             opts = _dtype_options_for_tensor(key, val, dtype_options)
             if opts is None:
-                errors.append(
-                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
-                    f"{val!r} is not a valid dtype (unresolved "
-                    f"same_as reference or not in torch dtype set)"
+                err(
+                    f"dtype_combos[{i}].{key} = {val!r} is not a valid "
+                    f"dtype (unresolved same_as reference or not in "
+                    f"torch dtype set)"
                 )
             elif not all(t in _TORCH_DTYPES for t in opts):
                 bad = [t for t in opts if t not in _TORCH_DTYPES]
-                errors.append(
-                    f"[dtype] {op_name}: dtype_combos[{i}].{key} = "
-                    f"{val!r} resolves to unknown dtype(s) {bad!r}"
+                err(
+                    f"dtype_combos[{i}].{key} = {val!r} resolves to "
+                    f"unknown dtype(s) {bad!r}"
                 )
     return errors
 
@@ -1521,30 +1430,23 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
 # shape parity: _infer_output_shapes vs shape_rules (L2 extension)
 # ---------------------------------------------------------------------------
 
-# Default mock sizes for symbolic shape dimensions. Chosen small to keep
-# evaluation cheap; 4 avoids degenerate cases (e.g. shape[0]==1 matching
-# scalar broadcasts) while staying small. Distinct symbolic dims get
-# ``_MOCK_DIM_SIZE + counter`` so cross-tensor equality checks remain
-# meaningful (see ``_mock_input_shapes``).
+# Default mock size for symbolic shape dims: small for cheap evaluation,
+# 4 avoids degenerate cases (e.g. shape[0]==1 matching scalar broadcasts).
+# Distinct symbolic dims get ``_MOCK_DIM_SIZE + counter`` so cross-tensor
+# equality checks remain meaningful (see ``_mock_input_shapes``).
 _MOCK_DIM_SIZE = 4
 
-# Safety bound for Cartesian-product enumeration in L3 dtype parity. A
-# pathological future op with many inputs × wide dtype unions could blow
-# CI budgets (each candidate allocates tiny tensors and invokes
-# _validate_dtypes). Current manifest maxes out at ~5 inputs × ~4 options
-# = 1024 combos, so this cap only fires on genuinely outsized specs; when
-# it does we skip the op deterministically with a warning rather than
-# sampling, so validation output stays reproducible.
+# Safety bound for Cartesian-product enumeration in L3 dtype parity: an op
+# with many inputs × wide dtype unions could blow CI budgets. Over-bound
+# ops are skipped deterministically with a warning (no sampling), so
+# validation output stays reproducible.
 _MAX_DTYPE_COMBOS = 4096
 
 # Sentinel pool used only by the same_as-identity negative probe, where
-# the goal is a dtype *different from the ref's baseline* (union membership
-# is irrelevant). The out-of-union probes in both branches of
-# ``check_l3_validate_dtypes_parity`` derive their candidate pool from
-# ``sorted(_TORCH_DTYPES - declared)`` instead — that guarantees a
-# non-empty probe whenever declared does not cover the entire torch dtype
-# universe, closing a prior engulfment gap where a fixed 8-dtype pool
-# could be fully absorbed by a wide union and leave the probe vacuous.
+# the goal is a dtype *different from the ref's baseline*. The
+# out-of-union probes derive their candidate pool from
+# ``sorted(_TORCH_DTYPES - declared)`` instead, guaranteeing a non-empty
+# probe whenever declared does not cover the entire torch dtype universe.
 _DTYPE_SENTINELS: tuple[str, ...] = (
     "float16", "bfloat16", "float32", "float64",
     "int8", "int16", "int32", "int64",
@@ -1552,12 +1454,11 @@ _DTYPE_SENTINELS: tuple[str, ...] = (
 
 
 def _out_of_union_candidates(declared: set[str]) -> list[str]:
-    """Return torch dtypes that are outside ``declared``.
+    """Return torch dtypes outside ``declared``, sorted for reproducibility.
 
-    Deterministic (sorted) so validator output is reproducible; bounded
-    because ``_TORCH_DTYPES`` is a fixed small set. Callers should still
-    cap the iteration length via ``_MAX_DTYPE_COMBOS`` when combining
-    with other enumeration.
+    Bounded because ``_TORCH_DTYPES`` is a fixed small set; callers still
+    cap iteration via ``_MAX_DTYPE_COMBOS`` when combining with other
+    enumeration.
     """
     return sorted(_TORCH_DTYPES - declared)
 
@@ -1579,27 +1480,40 @@ class _MockShape(tuple):
         return len(self)
 
 
-def _extract_shape_tuple_literals(rules: list) -> dict[str, int]:
-    """Parse ``<name>.shape == (<ids>...)`` rules for input-tensor rank hints.
+_SHAPE_EQ_RE = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.shape\s*==\s*\(([^)]*)\)\s*$"
+)
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-    Returns a mapping tensor-name → rank. Only handles the simple literal
-    form; other shape_rules patterns are skipped.
+
+def _shape_eq_literals(rules: list) -> list[tuple[str, list[str]]]:
+    """Extract ``<name>.shape == (<parts>...)`` literals from shape_rules.
+
+    Returns ``(tensor_name, parts)`` pairs in rule order; empty parts are
+    dropped. Only this simple literal form is recognized — consumers
+    decide whether the parts must be bare identifiers.
     """
-    ranks: dict[str, int] = {}
-    shape_eq_re = re.compile(
-        r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.shape\s*==\s*\(([^)]*)\)\s*$"
-    )
+    out: list[tuple[str, list[str]]] = []
     for rule in rules:
         if not isinstance(rule, str):
             continue
-        m = shape_eq_re.match(rule)
+        m = _SHAPE_EQ_RE.match(rule)
         if m is None:
             continue
-        name, body = m.group(1), m.group(2)
-        parts = [p.strip() for p in body.split(",") if p.strip()]
-        # Require all parts to be bare identifiers so we can assign mock
-        # sizes by name; skip otherwise.
-        if all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p) for p in parts):
+        parts = [p.strip() for p in m.group(2).split(",") if p.strip()]
+        out.append((m.group(1), parts))
+    return out
+
+
+def _extract_shape_tuple_literals(rules: list) -> dict[str, int]:
+    """Parse ``<name>.shape == (<ids>...)`` rules for input-tensor rank hints.
+
+    Only the all-bare-identifier form contributes a rank; other
+    shape_rules patterns are skipped.
+    """
+    ranks: dict[str, int] = {}
+    for name, parts in _shape_eq_literals(rules):
+        if all(_IDENT_RE.fullmatch(p) for p in parts):
             ranks[name] = len(parts)
     return ranks
 
@@ -1620,11 +1534,10 @@ def _parse_shape_decl(shape_str: str) -> list[str] | None:
     m = _SHAPE_DECL_RE.match(shape_str)
     if m is None:
         return None
-    body = m.group(1)
-    parts = [p.strip() for p in body.split(",") if p.strip()]
+    parts = [p.strip() for p in m.group(1).split(",") if p.strip()]
     if not parts:
         return None
-    if not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p) for p in parts):
+    if not all(_IDENT_RE.fullmatch(p) for p in parts):
         return None
     return parts
 
@@ -1632,50 +1545,34 @@ def _parse_shape_decl(shape_str: str) -> list[str] | None:
 def _input_bound_symbols(sig: dict) -> set[str]:
     """Return symbolic dim names bound by INPUT shapes only.
 
-    A symbol is input-bound when it appears in either:
-      - a ``<input>.shape == (...)`` literal in ``signature.shape_rules``
-      - a ``signature.inputs[*].shape`` declaration like ``"[N, C, L]"``
-
-    Symbols that appear only in output shape declarations (e.g. ``L_out``
-    in ``signature.outputs.y.shape = "[N, C, L_out]"`` where ``L_out`` is
-    derived by a ``shape_rules`` entry such as ``L_out = L_in - kW + 1``)
-    are **not** included. The L2 parity check uses this set to decide
-    whether a declared output-shape symbol carries a concrete mock size
-    (input-bound) versus a value derived by ``_infer_output_shapes``
-    (output-only): comparing the inferred output against an arbitrary
-    mock size for output-only symbols would misreport a correct
-    implementation as a parity mismatch.
+    A symbol is input-bound when it appears in either a
+    ``<input>.shape == (...)`` literal in ``signature.shape_rules`` or a
+    ``signature.inputs[*].shape`` declaration like ``"[N, C, L]"``.
+    Symbols that appear only in output shape declarations (e.g. a conv
+    ``L_out`` derived by a shape_rules formula) are **not** included:
+    the L2 parity check compares input-bound symbols against concrete
+    mock sizes, while output-only symbols carry values derived by
+    ``_infer_output_shapes`` — comparing those against arbitrary mock
+    sizes would misreport a correct implementation.
     """
     bound: set[str] = set()
-    ident_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-    # shape_rules: <name>.shape == (<ids>...)
     rules = sig.get("shape_rules") or []
-    shape_eq_re = re.compile(
-        r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.shape\s*==\s*\(([^)]*)\)\s*$"
-    )
     inputs_raw = sig.get("inputs")
     inputs = inputs_raw if isinstance(inputs_raw, dict) else {}
     input_names = set(inputs.keys())
-    for rule in rules:
-        if not isinstance(rule, str):
-            continue
-        m = shape_eq_re.match(rule)
-        if m is None:
-            continue
-        tname, body = m.group(1), m.group(2)
+    for tname, parts in _shape_eq_literals(rules):
         if tname not in input_names:
             continue
-        for p in (q.strip() for q in body.split(",")):
-            if p and ident_re.fullmatch(p):
+        for p in parts:
+            if _IDENT_RE.fullmatch(p):
                 bound.add(p)
     # Per-tensor shape decl on inputs
-    if isinstance(inputs, dict):
-        for attrs in inputs.values():
-            if not isinstance(attrs, dict):
-                continue
-            parts = _parse_shape_decl(attrs.get("shape", ""))
-            if parts is not None:
-                bound.update(parts)
+    for attrs in inputs.values():
+        if not isinstance(attrs, dict):
+            continue
+        parts = _parse_shape_decl(attrs.get("shape", ""))
+        if parts is not None:
+            bound.update(parts)
     return bound
 
 
@@ -1685,19 +1582,18 @@ def _mock_input_shapes(
     """Derive concrete mock input shapes for every declared input.
 
     Uses rank hints from ``shape_rules`` (literal ``tensor.shape == (...)``
-    forms) and from ``signature.inputs[*].shape`` declarations (e.g.
-    ``"[N, C_in, L_in]"``). Falls back to a default 2D shape when the
-    rank is unknown. Returns (shapes, dim_sizes) where ``dim_sizes`` maps
-    each symbolic dimension name (e.g. ``B``, ``S``, ``H``, ``D``, or
-    ``N``, ``C_in``, ``L_in`` from shape declarations) to the integer
-    size used in the mock shapes, so callers can bind those names into a
-    shape_rules evaluation context. Returns None only if
-    ``signature.inputs`` is malformed.
+    forms) and from ``signature.inputs[*].shape`` declarations, falling
+    back to a default 2D shape when the rank is unknown. Returns
+    ``(shapes, dim_sizes)`` where ``dim_sizes`` maps each symbolic dim
+    name to the integer size used in the mock shapes, so callers can bind
+    those names into a shape_rules evaluation context. Returns None only
+    if ``signature.inputs`` is malformed.
     """
     inputs = sig.get("inputs")
     if not isinstance(inputs, dict) or not inputs:
         return None
     rules = sig.get("shape_rules") or []
+    rule_literals = _shape_eq_literals(rules)
     ranks = _extract_shape_tuple_literals(rules)
 
     # Extra rank hints from per-tensor shape declarations.
@@ -1711,41 +1607,22 @@ def _mock_input_shapes(
             ranks.setdefault(name, len(parts))
 
     shapes: dict[str, _MockShape] = {}
-    # Assign dim-name → size map shared across tensors for consistent rules.
-    # Use a global counter keyed on first-seen order so distinct symbolic
-    # dims get distinct sizes across rules (e.g. rule1 ``x.shape == (A, B)``
-    # and rule2 ``y.shape == (C, D)`` produce A=4, B=5, C=6, D=7 rather than
-    # colliding A==C and B==D, which would spuriously satisfy cross-tensor
-    # equality checks).
+    # Dim-name → size map shared across tensors. Distinct symbolic dims
+    # get distinct sizes (first-seen order) so cross-tensor equality
+    # rules do not spuriously pass on colliding mock sizes.
     dim_sizes: dict[str, int] = {}
-    shape_eq_re = re.compile(
-        r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.shape\s*==\s*\(([^)]*)\)\s*$"
-    )
-    for rule in rules:
-        if not isinstance(rule, str):
-            continue
-        m = shape_eq_re.match(rule)
-        if m is None:
-            continue
-        body = m.group(2)
-        parts = [p.strip() for p in body.split(",") if p.strip()]
+    for _tname, parts in rule_literals:
         for p in parts:
-            if (
-                re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p)
-                and p not in dim_sizes
-            ):
+            if _IDENT_RE.fullmatch(p) and p not in dim_sizes:
                 dim_sizes[p] = _MOCK_DIM_SIZE + len(dim_sizes)
 
-    # Also bind symbolic dim names from per-tensor shape declarations so
-    # downstream rule/shape-decl checks resolve them against the same mock
-    # sizes used to build the input tensors.
+    # Also bind symbolic dims from input shape declarations, then from
+    # declared output shapes, so downstream rule / shape-decl checks
+    # resolve them against the same mock sizes.
     for parts in shape_decls.values():
         for p in parts:
             if p not in dim_sizes:
                 dim_sizes[p] = _MOCK_DIM_SIZE + len(dim_sizes)
-    # Also bind symbolic dim names from declared output shapes, so rules
-    # referencing output dim names (via signature.outputs[*].shape) can be
-    # evaluated when shape_rules are absent.
     outputs_map = sig.get("outputs") or {}
     if isinstance(outputs_map, dict):
         for attrs in outputs_map.values():
@@ -1760,19 +1637,13 @@ def _mock_input_shapes(
 
     for name in inputs:
         if name in ranks:
-            parts = None
-            for rule in rules:
-                if not isinstance(rule, str):
-                    continue
-                m = shape_eq_re.match(rule)
-                if m is None or m.group(1) != name:
-                    continue
-                parts = [
-                    p.strip() for p in m.group(2).split(",") if p.strip()
-                ]
-                break
+            # First matching rule literal for this tensor, if all parts
+            # are bare identifiers.
+            parts = next(
+                (ps for tn, ps in rule_literals if tn == name), None,
+            )
             if parts is not None and all(
-                re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p) for p in parts
+                _IDENT_RE.fullmatch(p) for p in parts
             ):
                 shapes[name] = _MockShape(
                     dim_sizes.get(p, _MOCK_DIM_SIZE) for p in parts
@@ -1814,14 +1685,11 @@ def _static_dim_values(
 
     Each entry is declared as ``<name>: "<tensor>.shape[<axis>]"`` where
     ``<tensor>`` is an input and ``<axis>`` is either an integer literal
-    or a param name. Returns a mapping ``{static_dim_name: int}`` with
-    only successfully resolved entries (malformed / out-of-range entries
-    are silently skipped — validator's L0 schema check reports those).
-
-    Used by parity mock_self builders so methods that consult
-    ``self.<static_dim_name>`` attributes (e.g. ``_infer_output_shapes``
-    reading ``self.N``) see the concrete size carried by the synthetic
-    inputs, rather than raising ``AttributeError``.
+    or a param name. Returns only successfully resolved entries
+    (malformed / out-of-range entries are silently skipped — the L0
+    schema check reports those). Used by parity mock_self builders so
+    methods consulting ``self.<static_dim_name>`` see the concrete size
+    carried by the synthetic inputs instead of raising AttributeError.
     """
     out: dict = {}
     sdims = sig.get("static_dims")
@@ -1871,17 +1739,9 @@ def _class_overrides_method(cls: type, name: str) -> bool:
 def _broadcast_shapes(*shapes: object) -> tuple:
     """Pure-Python equivalent of ``torch.broadcast_shapes``.
 
-    Computes the broadcasted output shape from one or more input shapes
-    using NumPy/PyTorch broadcasting rules: shapes are right-aligned,
-    each dimension must be equal, or one of them must be 1 (or missing).
-
-    Args:
-        *shapes: Iterables of integers (typically tuples or lists)
-            representing tensor shapes. May be empty (scalar shape).
-
-    Returns:
-        The broadcasted shape as a tuple of ints. Returns ``()`` when
-        called with no arguments.
+    Shapes are right-aligned; each dimension must be equal, or one of
+    them must be 1 (or missing). Returns ``()`` when called with no
+    arguments.
 
     Raises:
         ValueError: If the shapes are not broadcast-compatible.
@@ -1915,18 +1775,10 @@ def _broadcast_shapes(*shapes: object) -> tuple:
 def _is_broadcastable_to(src: object, dst: object) -> bool:
     """Return True if ``src`` is broadcastable *to* ``dst`` (unidirectional).
 
-    Unlike ``broadcast_shapes`` which is symmetric, this predicate fixes
-    the destination shape and asks whether ``src`` can expand into it
-    without shrinking ``dst``: each ``src`` dim (right-aligned) must be
-    equal to the matching ``dst`` dim or be 1, and ``src`` may not have
-    more dimensions than ``dst``.
-
-    Args:
-        src: Source shape (iterable of ints).
-        dst: Destination shape (iterable of ints).
-
-    Returns:
-        True iff ``src`` broadcasts to ``dst``.
+    Unlike the symmetric ``broadcast_shapes``, this predicate fixes the
+    destination shape: each ``src`` dim (right-aligned) must equal the
+    matching ``dst`` dim or be 1, and ``src`` may not have more
+    dimensions than ``dst``.
     """
     src_t = tuple(int(d) for d in src)
     dst_t = tuple(int(d) for d in dst)
@@ -1942,29 +1794,23 @@ def _is_broadcastable_to(src: object, dst: object) -> bool:
 
 
 # Safe builtins allowed in shape_rules eval — matches the R11 / R11a
-# documented helper set (see docs/design/ops-design-reference.md). Keep this list
-# aligned with manifest spec; widening it changes the rule language.
+# documented helper set (see docs/design/ops-design-reference.md); keep
+# aligned with the manifest spec, since widening it changes the rule
+# language. Python primitives, the pure-Python broadcasting helpers
+# (validator stays torch-free), and the reduction-dim helpers from
+# ``tileops.manifest.shape_rules`` all share one flat eval namespace,
+# callable by bare name from any rule body.
 #
-# Three name groups live here together: Python primitives (``len`` etc.),
-# broadcasting helpers (``broadcast_shapes`` / ``is_broadcastable_to``,
-# pure-Python so the validator does not require ``torch``), and
-# reduction-dim helpers from ``tileops.manifest.shape_rules``. All three
-# share the same eval-scope contract — callable by bare name from any
-# rule body. Group membership is editorial; the eval scope sees one
-# flat namespace.
-#
-# The dict is built from an explicit (name, callable) list so a name
-# collision between groups raises at validator import time. Silent
-# dict-merge override would let a future helper shadow a Python primitive
-# (or an existing broadcasting helper) without surfacing the conflict.
+# Built from an explicit (name, callable) list so a name collision
+# raises at validator import time instead of silently shadowing a
+# primitive via dict merge.
 _SHAPE_RULE_BUILTIN_PAIRS = [
     ("len", len),
     ("isinstance", isinstance),
     ("int", int),
-    # ``float`` is part of the rule language so manifest rules can spell
-    # sentinel values like ``ord == float('inf')``. Adding new callables
-    # here widens the L2 eval scope; do so only when an existing manifest
-    # rule needs it and the addition has obvious bounded semantics.
+    # ``float`` lets manifest rules spell sentinels like
+    # ``ord == float('inf')``. Add new callables only when an existing
+    # manifest rule needs them and the semantics are obviously bounded.
     ("float", float),
     ("tuple", tuple),
     ("list", list),
@@ -2003,20 +1849,12 @@ def _eval_shape_rule(
     indicates the rule could not be evaluated (treated as skipped, not a
     parity error).
 
-    The eval globals expose the ``_SHAPE_RULE_BUILTINS`` helper set
-    (``len``, ``isinstance``, ``int``, ``float``, ``tuple``, ``list``,
-    ``type``, ``all``, ``any``, ``range``, ``set``, ``abs``, ``min``,
-    ``max``, ``broadcast_shapes``, ``is_broadcastable_to``,
-    ``dim_range_validity``, ``dim_uniqueness``, ``reduced_axes``) so
-    R11 / R11a-style rules that use these helpers can be evaluated
-    against the mock context instead of being silently skipped.
-
-    The context names (inputs / outputs / params) are injected into both
-    eval globals and locals. Comprehensions (generator / set / list /
-    dict) create their own enclosing scope at compile time that only
-    sees the eval globals, not the locals dict; passing ctx as globals
-    too lets rules like ``all(d % x.ndim in ... for d in dim)`` resolve
-    ``x`` and ``dim`` inside the generator expression.
+    The eval globals expose the ``_SHAPE_RULE_BUILTINS`` helper set so
+    R11 / R11a-style rules can be evaluated against the mock context
+    instead of being silently skipped. Context names (inputs / outputs /
+    params) are injected into both eval globals and locals: comprehension
+    scopes only see globals, so rules like
+    ``all(d % x.ndim in ... for d in dim)`` still resolve ``x`` / ``dim``.
     """
     # Defense-in-depth: even though manifest content is trusted (PR review
     # gates it), parse the rule first and reject any dunder attribute
@@ -2036,15 +1874,10 @@ def _eval_shape_rule(
             )
 
     eval_globals = {"__builtins__": _SHAPE_RULE_BUILTINS}
-    # Ctx names must be visible inside comprehensions, which only see
-    # globals. Merge ctx into globals while keeping locals=ctx so plain
-    # (non-comprehension) lookups behave identically.
     eval_globals.update(ctx)
-    # Defense-in-depth: a manifest identifier literally named
-    # ``__builtins__`` (via a rule context key) would otherwise overwrite
-    # the sandboxed builtins mapping installed above and re-expose the
-    # full unrestricted builtins set. Reinstate the sandbox after the
-    # update so ctx cannot escape it.
+    # A ctx key literally named ``__builtins__`` would overwrite the
+    # sandboxed mapping installed above and re-expose the unrestricted
+    # builtins; reinstate the sandbox after the update.
     eval_globals["__builtins__"] = _SHAPE_RULE_BUILTINS
     try:
         result = eval(
@@ -2065,29 +1898,16 @@ def _build_mock_self(
 ) -> object:
     """Build a mock ``self`` instance without running ``__init__``.
 
-    Uses ``cls.__new__(cls)`` so that methods bound to ``cls`` (and any
-    helpers defined on its MRO) remain accessible as ``self.method(...)``
-    calls — a plain :class:`types.SimpleNamespace` cannot satisfy methods
-    that read attributes defined on the class or reach for class helpers
-    during a parity probe.
-
-    ``param_defaults`` is the manifest-derived params map (from
-    ``signature.params``). Each default is installed as an instance
-    attribute so ``self.<param>`` lookups resolve without running any
-    initialization logic.
-
-    ``extra_attrs`` carries additional manifest-derived attributes to
-    install after the params — typically ``static_dims`` values resolved
-    from the synthetic mock inputs (so methods reading ``self.<N>``
-    where ``N`` is a static dim see a concrete size) and the dtype axis
-    (so ``self.dtype`` reflects the candidate combo instead of the
-    inherited ``Op.dtype = None`` base-class default). Entries in
-    ``extra_attrs`` override same-named entries in ``param_defaults``
-    because they are specific to the current parity probe context.
-
-    Falls back to :class:`types.SimpleNamespace` if ``cls.__new__``
-    raises (defensive; Python ``type`` subclasses can override ``__new__``
-    with required positional arguments).
+    Uses ``cls.__new__(cls)`` so methods and helpers on the MRO remain
+    reachable — a plain :class:`types.SimpleNamespace` cannot satisfy
+    methods that read class attributes during a parity probe. Each
+    ``param_defaults`` entry (from ``signature.params``) is installed as
+    an instance attribute so ``self.<param>`` lookups resolve.
+    ``extra_attrs`` carries probe-specific attributes installed last
+    (overriding same-named params): static_dims values resolved from the
+    synthetic mock inputs, and the dtype axis so ``self.dtype`` reflects
+    the candidate combo instead of the ``Op.dtype = None`` base default.
+    Falls back to SimpleNamespace if ``cls.__new__`` raises.
     """
     merged: dict = dict(param_defaults)
     if extra_attrs:
@@ -2118,23 +1938,17 @@ def check_l2_infer_parity(
     shapes (no tensor allocation, no kernel execution). Plugs the result
     into a shape_rules evaluation context and verifies every rule holds.
 
-    Behaviour:
-      - For implemented ops whose class does not override
-        ``_infer_output_shapes``, emits a warning reporting the missing
-        manifest-derived method. The parity check itself is skipped
-        because there is no concrete method to compare against, but the
-        gap is surfaced (no silent pass).
-      - An exception raised from the body of ``_infer_output_shapes``
-        (i.e. after argument binding succeeds) is a hard L2 error.
-        An introspection-level failure (signature binding mismatch)
-        is still reported separately as a signature error.
-      - Produces L2 errors for concrete disagreement: the method returns
-        shapes that fail one or more ``shape_rules`` or disagree with a
-        declared ``signature.outputs[*].shape``.
+    A missing override is surfaced as a warning (no silent pass); a
+    body-level exception after successful argument binding is a hard L2
+    error (binding mismatches report separately as signature errors);
+    concrete disagreement — rule violations or mismatches against a
+    declared ``signature.outputs[*].shape`` — produces L2 errors.
     """
     errors: list[str] = []
     if cls is None:
         return errors
+    err = _emit_to(errors, "shape", op_name)
+    warn = _emit_to(warnings, "shape", op_name)
 
     sig = entry.get("signature", {})
     rules = sig.get("shape_rules") or []
@@ -2154,14 +1968,12 @@ def check_l2_infer_parity(
         return errors
 
     if not _class_overrides_method(cls, "_infer_output_shapes"):
-        if warnings is not None:
-            warnings.append(
-                f"[shape] {op_name}: class does not override "
-                f"_infer_output_shapes — manifest-derived method not yet "
-                f"generated; parity check skipped. Demote the op to "
-                f"'status: spec-only' if the method genuinely cannot be "
-                f"exercised from the CPU validator."
-            )
+        warn(
+            "class does not override _infer_output_shapes — "
+            "manifest-derived method not yet generated; parity check "
+            "skipped. Demote the op to 'status: spec-only' if the method "
+            "genuinely cannot be exercised from the CPU validator."
+        )
         return errors
 
     infer_fn = getattr(cls, "_infer_output_shapes", None)
@@ -2176,17 +1988,12 @@ def check_l2_infer_parity(
     params = sig.get("params") or {}
     param_defaults = _param_defaults(params)
 
-    # Build a mock ``self`` via ``cls.__new__(cls)`` so class-defined
-    # helpers and attribute descriptors remain reachable, then install
-    # manifest-derived params as instance attributes without running
-    # __init__. A plain SimpleNamespace would raise AttributeError when
-    # _infer_output_shapes consults an unrelated ``self.<attr>`` helper.
-    #
-    # Generated ``_infer_output_shapes`` implementations commonly consult
-    # static_dims via ``self.<dim>`` (e.g. ``self.N`` for
-    # ``static_dims: {N: x.shape[-1]}``). Resolve them against the
-    # synthetic mock inputs so the parity call does not raise a spurious
-    # ``AttributeError`` and skip the check.
+    # Build a mock ``self`` via ``cls.__new__(cls)`` (see
+    # ``_build_mock_self``) enriched with static_dims values resolved
+    # against the synthetic mock inputs, so generated implementations
+    # consulting ``self.<dim>`` (e.g. ``self.N`` for
+    # ``static_dims: {N: x.shape[-1]}``) do not raise a spurious
+    # AttributeError and skip the check.
     extra_attrs = _static_dim_values(sig, mock_shapes, param_defaults)
     mock_self = _build_mock_self(cls, param_defaults, extra_attrs)
 
@@ -2199,19 +2006,18 @@ def check_l2_infer_parity(
     try:
         inspect.signature(infer_fn).bind(mock_self, **shape_kwargs)
     except TypeError as exc:
-        errors.append(
-            f"[shape] {op_name}: _infer_output_shapes signature does not match "
-            f"manifest inputs (expected kwargs {sorted(shape_kwargs)}): {exc}"
+        err(
+            f"_infer_output_shapes signature does not match manifest "
+            f"inputs (expected kwargs {sorted(shape_kwargs)}): {exc}"
         )
         return errors
     except Exception as exc:
         # signature() itself failed (e.g. builtin without introspection) —
         # skip parity rather than fabricating a signature error.
-        if warnings is not None:
-            warnings.append(
-                f"[shape] {op_name}: _infer_output_shapes parity skipped — "
-                f"inspect.signature raised {exc.__class__.__name__}: {exc}"
-            )
+        warn(
+            f"_infer_output_shapes parity skipped — inspect.signature "
+            f"raised {exc.__class__.__name__}: {exc}"
+        )
         return errors
 
     try:
@@ -2221,16 +2027,15 @@ def check_l2_infer_parity(
         # derived ``_infer_output_shapes`` must succeed on manifest-
         # compatible mock inputs; treat any body-level exception as a
         # hard L2 parity error.
-        errors.append(
-            f"[shape] {op_name}: _infer_output_shapes raised "
-            f"{exc.__class__.__name__} under mock inputs "
-            f"{shape_kwargs}: {exc}"
+        err(
+            f"_infer_output_shapes raised {exc.__class__.__name__} "
+            f"under mock inputs {shape_kwargs}: {exc}"
         )
         return errors
 
     if not isinstance(result, dict):
-        errors.append(
-            f"[shape] {op_name}: _infer_output_shapes must return a dict "
+        err(
+            f"_infer_output_shapes must return a dict "
             f"(output_name -> shape), got {type(result).__name__}"
         )
         return errors
@@ -2238,38 +2043,29 @@ def check_l2_infer_parity(
     outputs = sig.get("outputs") or {}
     for out_name in outputs:
         if out_name not in result:
-            errors.append(
-                f"[shape] {op_name}: _infer_output_shapes missing output "
-                f"{out_name!r} (declared in manifest)"
+            err(
+                f"_infer_output_shapes missing output {out_name!r} "
+                f"(declared in manifest)"
             )
 
     # Assemble evaluation context: symbolic dims + inputs + outputs +
-    # params. Symbolic dim names (e.g. B, S, H, D extracted from literal
-    # shape_rules like ``q.shape == (B, S, H, D)``) are bound first so
-    # param / tensor names later in the dict take precedence on any
-    # accidental collision.
+    # params. Symbolic dim names are bound first so param / tensor names
+    # later in the dict take precedence on any accidental collision.
     ctx: dict = {}
     ctx.update(dim_sizes)
     ctx.update(param_defaults)
     for name, shape in mock_shapes.items():
         ctx[name] = _MockShape(shape)
-    # Identify output-only symbols (symbols that appear only in declared
-    # output shapes, not in any input shape). Their concrete sizes are
-    # derived by ``_infer_output_shapes`` (possibly via a ``shape_rules``
-    # formula such as ``L_out == L_in - kW + 1``). For classification
-    # and rule evaluation, rebind these from the inferred ``result`` so
-    # a rule defining them is checked against the actual computed value
-    # rather than a synthetic mock size — otherwise a wrong
-    # _infer_output_shapes would silently pass, because the synthetic
-    # size pre-bound in ``dim_sizes`` would make the rule fail in both
-    # ctx and input_only_ctx and be misclassified as an input-only
-    # precondition to skip.
+    # Output-only symbols (appearing only in declared output shapes) get
+    # their concrete sizes from ``_infer_output_shapes`` (possibly via a
+    # ``shape_rules`` formula like ``L_out == L_in - kW + 1``). Rebind
+    # them from the inferred ``result`` so a rule defining them checks
+    # the computed value, not a synthetic mock size — otherwise a wrong
+    # implementation would be misclassified as an input-only
+    # precondition and skipped. On conflicting rebindings prefer the
+    # first; the consistency check below flags the mismatch.
     input_bound = _input_bound_symbols(sig)
     output_only_symbols: set[str] = set()
-    # Rebind output-only symbols from the inferred ``result`` tuple
-    # positions. When the same symbol appears in multiple output
-    # positions that yield differing sizes, prefer the first and leave
-    # the consistency check below to flag the mismatch.
     output_only_rebindings: dict[str, int] = {}
     for out_name, decl_parts in declared_output_shapes.items():
         for p in decl_parts:
@@ -2290,19 +2086,15 @@ def check_l2_infer_parity(
                 continue
             if p not in output_only_rebindings:
                 output_only_rebindings[p] = got
-    # Apply output-only rebindings before rule evaluation. These replace
-    # the synthetic sizes that ``_mock_input_shapes`` seeded via the
-    # declared-output-shape pass in ``dim_sizes``.
     for p, v in output_only_rebindings.items():
         ctx[p] = v
     # Input-only context (no inferred outputs, no output-only symbols)
-    # is used to detect rules that already fail on the mock inputs
-    # themselves — such rules encode input-only preconditions (e.g.
-    # ``weight.shape == (x.shape[dim],)``) that mock inputs may violate.
-    # A correct ``_infer_output_shapes`` must not be blamed in that
-    # case. Strip output-only symbols so a rule like
-    # ``L_out == L_in - kW + 1`` is never reachable via this path (it is
-    # output-dependent by construction).
+    # detects rules that already fail on the mock inputs themselves —
+    # such rules encode input-only preconditions (e.g.
+    # ``weight.shape == (x.shape[dim],)``) that mock inputs may violate;
+    # a correct ``_infer_output_shapes`` must not be blamed for those.
+    # Output-only symbols are stripped so an output-dependent rule like
+    # ``L_out == L_in - kW + 1`` is never reachable via this path.
     input_only_ctx: dict = {
         k: v for k, v in ctx.items() if k not in output_only_symbols
     }
@@ -2310,9 +2102,9 @@ def check_l2_infer_parity(
         try:
             ctx[out_name] = _MockShape(tuple(out_shape))
         except TypeError:
-            errors.append(
-                f"[shape] {op_name}: _infer_output_shapes returned "
-                f"non-iterable shape for {out_name!r}: {out_shape!r}"
+            err(
+                f"_infer_output_shapes returned non-iterable shape "
+                f"for {out_name!r}: {out_shape!r}"
             )
 
     output_names = set(result.keys()) | set(outputs.keys())
@@ -2323,11 +2115,10 @@ def check_l2_infer_parity(
         if reason is not None:
             # Could not evaluate this rule under the mock context; do not
             # flag as parity mismatch.
-            if warnings is not None:
-                warnings.append(
-                    f"[shape] {op_name}: shape_rules[{i}] could not be "
-                    f"evaluated against mock inputs ({reason}); rule: {rule!r}"
-                )
+            warn(
+                f"shape_rules[{i}] could not be evaluated against mock "
+                f"inputs ({reason}); rule: {rule!r}"
+            )
             continue
         if not ok:
             # Distinguish a genuine parity mismatch from a mock-input
@@ -2347,63 +2138,33 @@ def check_l2_infer_parity(
                     rule, input_only_ctx,
                 )
                 if reason_inputs is None and not ok_inputs:
-                    if warnings is not None:
-                        warnings.append(
-                            f"[shape] {op_name}: shape_rules[{i}] "
-                            f"{rule!r} not satisfied by synthetic mock "
-                            f"inputs {shape_kwargs}; parity check "
-                            f"skipped (input-only precondition)"
-                        )
+                    warn(
+                        f"shape_rules[{i}] {rule!r} not satisfied by "
+                        f"synthetic mock inputs {shape_kwargs}; parity "
+                        f"check skipped (input-only precondition)"
+                    )
                     continue
-            errors.append(
-                f"[shape] {op_name}: _infer_output_shapes output violates "
-                f"shape_rules[{i}] {rule!r} under mock inputs "
-                f"{shape_kwargs} -> {result}"
+            err(
+                f"_infer_output_shapes output violates shape_rules[{i}] "
+                f"{rule!r} under mock inputs {shape_kwargs} -> {result}"
             )
 
     # Compare inferred outputs against per-tensor declared shapes in
-    # signature.outputs[*].shape, independently of shape_rules. This
-    # catches ops whose outputs are only specified via declared shape
-    # fields (no equivalent shape_rule).
-    #
-    # Only symbols **bound by input shapes** (input shape_rules literals
-    # or signature.inputs[*].shape declarations) carry a concrete mock
-    # size that ``_infer_output_shapes`` is expected to echo back.
-    # Output-only symbols (e.g. ``L_out`` in a conv output shape that is
-    # derived by a ``shape_rules`` entry such as ``L_out = L_in - kW + 1``)
-    # cannot be meaningfully compared against an arbitrary
-    # ``dim_sizes`` entry — doing so would flag a correct
-    # implementation, since ``_infer_output_shapes`` computes the real
-    # post-conv length, not the synthetic size assigned to ``L_out``.
-    # For such symbols we enforce rank + per-symbol consistency instead
-    # (same symbol must map to the same concrete size across every
-    # position it appears in any declared output shape).
-    # ``input_bound`` is already computed above (reused for the
-    # output-only rebinding pass before rule evaluation).
-    #
-    # Static-dim resolution: symbols declared in ``signature.static_dims``
-    # (e.g. ``static_dims: {N: "x.shape[-1]"}``) are resolved to concrete
-    # integer sizes against the mock inputs via ``_static_dim_values``
-    # (already stored in ``extra_attrs`` above). Treat those as pinned
-    # expected sizes for the declared-output-shape comparison — a bad
-    # ``_infer_output_shapes`` returning arbitrary integers for a
-    # static-dim position must be caught, not mistakenly reclassified as
-    # an output-only symbol with only rank/consistency enforcement.
+    # signature.outputs[*].shape, independently of shape_rules (catches
+    # ops specified only via declared shape fields). Input-bound symbols
+    # carry a concrete mock size to echo back exactly; output-only
+    # symbols get rank + per-symbol consistency enforcement instead.
+    # Static-dim symbols resolve to concrete integers against the mock
+    # inputs (``extra_attrs`` above) and pin expected sizes exactly.
     static_expected: dict[str, int] = {
         name: int(val) for name, val in extra_attrs.items()
         if isinstance(val, int) and not isinstance(val, bool)
     }
     # Params with a concrete integer ``default`` are also compile-time
-    # known and should pin declared-output-shape dims with the same
-    # authority as ``static_dims``. Without this, a declared output
-    # ``shape: "[k]"`` where ``k`` is a param default would be
-    # classified as an output-only symbol, and a bad
-    # ``_infer_output_shapes`` returning an arbitrary integer for that
-    # position would only trip rank/consistency checks rather than exact
-    # value comparison. Edge cases: params without a default (supplied
-    # at op construction, unknown to the validator) are skipped; params
-    # whose default is not a single ``int`` (e.g. ``list[int]``) are
-    # skipped so they cannot pin a scalar dim position.
+    # known and pin declared-output-shape dims with the same authority as
+    # ``static_dims``. Params without a default (supplied at op
+    # construction, unknown to the validator) are skipped; non-int
+    # defaults (e.g. ``list[int]``) cannot pin a scalar dim position.
     for pname, pdefault in param_defaults.items():
         if pname in static_expected:
             continue  # static_dims wins — it is the declared source of truth.
@@ -2420,11 +2181,11 @@ def check_l2_infer_parity(
         except TypeError:
             continue  # already reported above
         if len(inferred) != len(decl_parts):
-            errors.append(
-                f"[shape] {op_name}: _infer_output_shapes output "
-                f"{out_name!r} rank {len(inferred)} disagrees with "
-                f"declared shape {decl_parts} (rank {len(decl_parts)}) "
-                f"under mock inputs {shape_kwargs} -> {inferred}"
+            err(
+                f"_infer_output_shapes output {out_name!r} rank "
+                f"{len(inferred)} disagrees with declared shape "
+                f"{decl_parts} (rank {len(decl_parts)}) under mock "
+                f"inputs {shape_kwargs} -> {inferred}"
             )
             continue
         for idx, (p, got) in enumerate(zip(decl_parts, inferred, strict=True)):
@@ -2437,10 +2198,10 @@ def check_l2_infer_parity(
                     p, dim_sizes.get(p, _MOCK_DIM_SIZE)
                 )
                 if got != expected:
-                    errors.append(
-                        f"[shape] {op_name}: _infer_output_shapes output "
-                        f"{out_name!r} dim[{idx}]={got} disagrees with "
-                        f"declared {p}={expected} under mock inputs "
+                    err(
+                        f"_infer_output_shapes output {out_name!r} "
+                        f"dim[{idx}]={got} disagrees with declared "
+                        f"{p}={expected} under mock inputs "
                         f"{shape_kwargs} -> {inferred}"
                     )
             else:
@@ -2453,11 +2214,11 @@ def check_l2_infer_parity(
                 if prev is None:
                     output_only_seen[p] = got
                 elif prev != got:
-                    errors.append(
-                        f"[shape] {op_name}: _infer_output_shapes output "
-                        f"{out_name!r} binds output-only symbol {p!r} to "
-                        f"{got} but earlier output bound it to {prev} "
-                        f"(inconsistent under mock inputs {shape_kwargs})"
+                    err(
+                        f"_infer_output_shapes output {out_name!r} binds "
+                        f"output-only symbol {p!r} to {got} but earlier "
+                        f"output bound it to {prev} (inconsistent under "
+                        f"mock inputs {shape_kwargs})"
                     )
     return errors
 
@@ -2498,28 +2259,13 @@ def _dtype_options_for_tensor(
     whether that is a temporary state inside the fixpoint loop or a
     permanent failure).
     """
-    tokens = _parse_dtype_expr(dtype_str)
-    # Pure same_as(ref): inherits ref's options.
-    if len(tokens) == 1:
-        m = _SAME_AS_RE.match(tokens[0])
-        if m:
-            ref = m.group(1)
-            if ref not in resolved:
-                # Unresolved reference — propagate failure per docstring
-                # contract. Returning [] here would silently disable parity.
-                return None
-            return list(resolved[ref])
-        m = _PROMOTE_INT_TO_FLOAT_RE.match(tokens[0])
-        if m:
-            ref = m.group(1)
-            if ref not in resolved:
-                return None
-            return _expand_promote_int_to_float(resolved[ref])
     out: list[str] = []
-    for tok in tokens:
+    for tok in _parse_dtype_expr(dtype_str):
         m = _SAME_AS_RE.match(tok)
         if m:
             ref = m.group(1)
+            # Unresolved reference — propagate failure per docstring
+            # contract. Returning [] here would silently disable parity.
             if ref not in resolved:
                 return None
             out.extend(resolved[ref])
@@ -2645,21 +2391,16 @@ def _combo_accepted(
     reason=None means the op raised during validation (rejected);
     reason!=None indicates the call could not be performed (skip).
 
-    ``sig`` (optional) is the manifest signature; when provided, the
-    mock-self is enriched with static_dims values resolved against
-    synthetic mock input shapes and with ``self.dtype`` bound to the
-    candidate's dtype axis (see below). Both attributes are commonly
-    consulted by generated ``_validate_dtypes`` implementations (e.g.
-    ``if x.dtype != self.dtype: raise``); without them the parity
-    probe would spuriously reject listed combos.
-
-    ``self_dtype_name`` (optional) pins the dtype installed on
-    ``mock_self.dtype``. Used by out-of-union probes to keep the op's
-    configured dtype at a valid baseline while mutating the input
-    tensor's dtype — otherwise ``self.dtype`` would follow the bad
-    candidate and a ``x.dtype != self.dtype`` check would spuriously
-    pass. When omitted, defaults to the combo entry for the first
-    non-same_as-bound input (the listed-combo convention).
+    When ``sig`` is provided, the mock-self is enriched with static_dims
+    values resolved against synthetic mock inputs and with ``self.dtype``
+    bound to the candidate's dtype axis — both commonly consulted by
+    generated ``_validate_dtypes`` implementations (``if x.dtype !=
+    self.dtype: raise``); without them the probe would spuriously reject
+    listed combos. ``self_dtype_name`` pins ``mock_self.dtype``
+    explicitly (out-of-union probes keep the op's configured dtype at a
+    valid baseline while mutating the input tensor's dtype); when
+    omitted it follows the combo entry for the first non-same_as-bound
+    input.
     """
     validate_fn = getattr(cls, "_validate_dtypes", None)
     if validate_fn is None:
@@ -2736,6 +2477,118 @@ def _combo_accepted(
     return True, None
 
 
+def _emit_to(sink, tag: str, op_name: str):
+    """Return an emitter appending ``[tag] op_name: msg`` strings to *sink*.
+
+    A ``None`` sink yields a no-op emitter so callers can bind a warning
+    emitter without guarding every call site.
+    """
+    if sink is None:
+        return lambda msg: None
+    prefix = f"[{tag}] {op_name}: "
+    return lambda msg: sink.append(prefix + msg)
+
+
+# ``_combo_accepted`` reason prefixes → dispatch kinds. Callers branch on
+# the kind instead of re-matching prefixes at every probe site.
+_REASON_KINDS = (
+    ("TypeError", "signature"),
+    ("introspect-failed", "introspect"),
+    ("unexpected", "unexpected"),
+    ("cannot build mock tensor", "no-mock"),
+    ("combo missing input", "missing-input"),
+)
+
+
+def _probe_reason_kind(reason: str | None) -> str | None:
+    """Classify a ``_combo_accepted`` reason string by its prefix.
+
+    Returns None for a clean probe (reason is None); ``"other"`` for an
+    unrecognized reason (no caller acts on it, matching the previous
+    per-site prefix cascades).
+    """
+    if reason is None:
+        return None
+    for prefix, kind in _REASON_KINDS:
+        if reason.startswith(prefix):
+            return kind
+    return "other"
+
+
+def _probe_out_of_union(
+    op_name: str,
+    cls: type,
+    sig: dict,
+    forward_inputs: list[str],
+    baseline: dict[str, str],
+    dtype_options: dict[str, list[str]],
+    param_defaults: dict,
+    errors: list[str],
+    warnings: list[str] | None,
+) -> None:
+    """Out-of-union negative probe (rejection side), shared by both branches.
+
+    Starting from *baseline* (a combination known to be accepted),
+    substitutes an out-of-union sentinel for each non-same_as-bound input
+    in turn; every candidate must be rejected. ``self.dtype`` stays
+    pinned to the baseline's primary dtype so only the input tensor's
+    dtype deviates (a generated ``x.dtype != self.dtype`` check would
+    otherwise spuriously pass). same_as-bound tensors follow their ref
+    via propagation. Bounded by ``_MAX_DTYPE_COMBOS``.
+    """
+    err = _emit_to(errors, "dtype", op_name)
+    warn = _emit_to(warnings, "dtype", op_name)
+    same_as_refs = _same_as_refs(sig)
+    baseline_primary = _primary_dtype_input(sig, forward_inputs)
+    baseline_self_dtype = (
+        baseline.get(baseline_primary)
+        if baseline_primary is not None else None
+    )
+    probed = 0
+    for target in forward_inputs:
+        if target in same_as_refs:
+            continue
+        declared = set(dtype_options.get(target, []))
+        out_of_union = _out_of_union_candidates(declared)
+        if not out_of_union:
+            # Declared union covers the entire torch dtype set (wildly
+            # permissive spec) — no rejection candidate exists. Warn
+            # instead of vacuously passing.
+            warn(
+                f"out-of-union probe skipped for input {target!r} — "
+                f"declared dtype union covers the entire torch dtype "
+                f"set; rejection side cannot be exercised"
+            )
+            continue
+        for bad_dtype in out_of_union:
+            if probed >= _MAX_DTYPE_COMBOS:
+                break
+            probed += 1
+            candidate = dict(baseline)
+            candidate[target] = bad_dtype
+            for tname, ref in same_as_refs.items():
+                if ref == target and tname in candidate:
+                    candidate[tname] = bad_dtype
+            accepted, reason = _combo_accepted(
+                cls, forward_inputs, candidate, param_defaults,
+                sig=sig, self_dtype_name=baseline_self_dtype,
+            )
+            if _probe_reason_kind(reason) == "unexpected":
+                err(
+                    f"_validate_dtypes raised unexpected exception on "
+                    f"out-of-union probe {candidate!r} — {reason}"
+                )
+                continue
+            if accepted:
+                err(
+                    f"_validate_dtypes accepts out-of-union dtype "
+                    f"{candidate!r} (input {target!r} declared "
+                    f"{sorted(declared)})"
+                )
+        if probed >= _MAX_DTYPE_COMBOS:
+            break
+
+
 def check_l3_validate_dtypes_parity(
     op_name: str,
     entry: dict,
@@ -2759,16 +2612,16 @@ def check_l3_validate_dtypes_parity(
     errors: list[str] = []
     if cls is None:
         return errors
+    err = _emit_to(errors, "dtype", op_name)
+    warn = _emit_to(warnings, "dtype", op_name)
 
     if not _class_overrides_method(cls, "_validate_dtypes"):
-        if warnings is not None:
-            warnings.append(
-                f"[dtype] {op_name}: class does not override "
-                f"_validate_dtypes — manifest-derived method not yet "
-                f"generated; parity check skipped. Demote the op to "
-                f"'status: spec-only' if the method genuinely cannot be "
-                f"exercised from the CPU validator."
-            )
+        warn(
+            "class does not override _validate_dtypes — manifest-derived "
+            "method not yet generated; parity check skipped. Demote the "
+            "op to 'status: spec-only' if the method genuinely cannot be "
+            "exercised from the CPU validator."
+        )
         return errors
 
     sig = entry.get("signature", {})
@@ -2789,24 +2642,19 @@ def check_l3_validate_dtypes_parity(
     dtype_combos = sig.get("dtype_combos")
     if isinstance(dtype_combos, list) and dtype_combos:
         # Combo-data validity: surface invalid entries as hard L3 errors
-        # so downstream parity probing does not run on junk data (which
-        # would otherwise produce a cascade of misleading "rejects" /
-        # "skipped" diagnostics). The same check also runs
-        # unconditionally in ``check_l3`` — the driver dedupes error
-        # strings so users see each message once even when both entry
-        # points are invoked in the same run.
+        # so downstream parity probing does not run on junk data. The
+        # same check also runs unconditionally in ``check_l3`` — the
+        # driver dedupes error strings so users see each message once.
         combo_validation_errors = check_l3_dtype_combos_data(op_name, sig)
         if combo_validation_errors:
             errors.extend(combo_validation_errors)
             return errors
 
         # Expand ``same_as(ref)`` in combo values to a concrete dtype
-        # before parity probing: ``_combo_accepted`` / ``_make_mock_tensor``
-        # expect literal torch dtype names and would otherwise try to look
-        # up ``same_as(x)`` as a torch attribute. Per R3 + R4 we already
-        # enforce identity (``_check_dtype_combos_same_as_identity``), so
-        # each ``same_as(ref)`` value resolves to the same concrete dtype
-        # the ref carries in the same combo row.
+        # before parity probing: ``_combo_accepted`` expects literal
+        # torch dtype names. Per R3 + R4 identity is already enforced
+        # (``_check_dtype_combos_same_as_identity``), so each
+        # ``same_as(ref)`` resolves to the ref's dtype in the same row.
         expanded_combos: list[dict[str, str]] = []
         for combo in dtype_combos:
             if not isinstance(combo, dict):
@@ -2832,53 +2680,40 @@ def check_l3_validate_dtypes_parity(
             accepted, reason = _combo_accepted(
                 cls, forward_inputs, combo, param_defaults, sig=sig,
             )
-            if reason and reason.startswith("TypeError"):
-                errors.append(
-                    f"[dtype] {op_name}: _validate_dtypes signature does "
-                    f"not match manifest inputs (expected kwargs "
-                    f"{sorted(forward_inputs)}): {reason}"
-                )
-                return errors
-            if reason and reason.startswith("introspect-failed"):
-                # Validator-side introspection failure (inspect.signature
-                # could not parse the method). Not an op-side bug —
-                # skip with warning.
-                if warnings is not None:
-                    warnings.append(
-                        f"[dtype] {op_name}: _validate_dtypes parity skipped "
-                        f"for dtype_combos[{i}] — {reason}"
-                    )
-                continue
-            if reason and reason.startswith("unexpected"):
-                # Body-level exception that is not ValueError / TypeError
-                # — a real implementation bug. Hard L3 parity error.
-                errors.append(
-                    f"[dtype] {op_name}: _validate_dtypes raised "
-                    f"unexpected exception on dtype_combos[{i}] "
-                    f"{combo!r} — {reason}"
-                )
-                continue
-            if reason and reason.startswith("cannot build mock tensor"):
-                # Validator limitation (no torch dtype for this name) — emit
-                # a parity-skip warning rather than reporting a rejection.
-                if warnings is not None:
-                    warnings.append(
-                        f"[dtype] {op_name}: _validate_dtypes parity skipped "
-                        f"for dtype_combos[{i}] — {reason}"
-                    )
-                continue
-            if reason and reason.startswith("combo missing input"):
-                # Manifest error: combo doesn't specify a dtype for every
-                # declared input. Surface as parity error but not a reject.
-                errors.append(
-                    f"[dtype] {op_name}: dtype_combos[{i}] {combo!r} "
+            kind = _probe_reason_kind(reason)
+            if kind == "signature":
+                err(
+                    f"_validate_dtypes signature does not match manifest "
+                    f"inputs (expected kwargs {sorted(forward_inputs)}): "
                     f"{reason}"
                 )
+                return errors
+            if kind in ("introspect", "no-mock"):
+                # Validator-side limitation (inspect.signature failed or
+                # the local torch build lacks the dtype) — skip with a
+                # parity-skip warning, not an op-side error.
+                warn(
+                    f"_validate_dtypes parity skipped for "
+                    f"dtype_combos[{i}] — {reason}"
+                )
+                continue
+            if kind == "unexpected":
+                # Body-level exception that is not ValueError / TypeError
+                # — a real implementation bug. Hard L3 parity error.
+                err(
+                    f"_validate_dtypes raised unexpected exception on "
+                    f"dtype_combos[{i}] {combo!r} — {reason}"
+                )
+                continue
+            if kind == "missing-input":
+                # Manifest error: combo doesn't specify a dtype for every
+                # declared input. Parity error, not a rejection.
+                err(f"dtype_combos[{i}] {combo!r} {reason}")
                 continue
             if not accepted:
-                errors.append(
-                    f"[dtype] {op_name}: _validate_dtypes rejects "
-                    f"dtype_combos[{i}] {combo!r} listed in manifest"
+                err(
+                    f"_validate_dtypes rejects dtype_combos[{i}] "
+                    f"{combo!r} listed in manifest"
                 )
 
         # Every non-listed combo drawn from the inputs' union must be
@@ -2892,15 +2727,13 @@ def check_l3_validate_dtypes_parity(
         for opts in input_options:
             product_size *= max(len(opts), 1)
         if product_size > _MAX_DTYPE_COMBOS:
-            if warnings is not None:
-                warnings.append(
-                    f"[dtype] {op_name}: Cartesian product of dtype "
-                    f"options ({product_size}) exceeds "
-                    f"_MAX_DTYPE_COMBOS={_MAX_DTYPE_COMBOS}; non-listed "
-                    f"rejection check skipped "
-                    f"({len(forward_inputs)} inputs × options "
-                    f"{[len(o) for o in input_options]})"
-                )
+            warn(
+                f"Cartesian product of dtype options ({product_size}) "
+                f"exceeds _MAX_DTYPE_COMBOS={_MAX_DTYPE_COMBOS}; "
+                f"non-listed rejection check skipped "
+                f"({len(forward_inputs)} inputs × options "
+                f"{[len(o) for o in input_options]})"
+            )
             return errors
         listed_combo_keys = {
             tuple(combo.get(n) for n in forward_inputs)
@@ -2916,16 +2749,13 @@ def check_l3_validate_dtypes_parity(
             accepted, reason = _combo_accepted(
                 cls, forward_inputs, candidate, param_defaults, sig=sig,
             )
-            if reason and reason.startswith(
-                ("introspect-failed", "TypeError")
-            ):
+            kind = _probe_reason_kind(reason)
+            if kind in ("introspect", "signature"):
                 continue
-            if reason and reason.startswith("unexpected"):
-                # Body-level unexpected exception — hard error.
-                errors.append(
-                    f"[dtype] {op_name}: _validate_dtypes raised "
-                    f"unexpected exception on non-listed combo "
-                    f"{candidate!r} — {reason}"
+            if kind == "unexpected":
+                err(
+                    f"_validate_dtypes raised unexpected exception on "
+                    f"non-listed combo {candidate!r} — {reason}"
                 )
                 continue
             if not accepted:
@@ -2933,17 +2763,13 @@ def check_l3_validate_dtypes_parity(
                 continue
             # Accepted non-listed combo — parity violation. Keep scanning
             # so multiple such combos are all surfaced in a single run.
-            errors.append(
-                f"[dtype] {op_name}: _validate_dtypes accepts non-listed "
-                f"combo {candidate!r} (not in dtype_combos)"
+            err(
+                f"_validate_dtypes accepts non-listed combo "
+                f"{candidate!r} (not in dtype_combos)"
             )
 
-        # --- Out-of-union negative probe (rejection side) -------------
-        # Mirrors the probe in the no-dtype_combos branch. Picks a listed
-        # combo as a baseline (known to be accepted) and substitutes an
-        # out-of-union sentinel for each non-same_as-bound input in turn.
-        # Each resulting candidate must be rejected. Bounded by
-        # _MAX_DTYPE_COMBOS to preserve the Cartesian safety bound.
+        # Out-of-union negative probe: baseline is the first listed combo
+        # covering every input (known to be accepted).
         baseline_combo: dict[str, str] | None = None
         for c in dtype_combos:
             if isinstance(c, dict) and all(
@@ -2952,94 +2778,26 @@ def check_l3_validate_dtypes_parity(
                 baseline_combo = dict(c)
                 break
         if baseline_combo is not None:
-            same_as_refs = _same_as_refs(sig)
-            # Baseline's primary dtype pins ``self.dtype`` during the
-            # probe so only the input tensor's dtype deviates from the
-            # op's configured dtype (otherwise the ``x.dtype !=
-            # self.dtype`` check in a generated _validate_dtypes would
-            # spuriously pass, since both sides track the bad dtype).
-            baseline_primary = _primary_dtype_input(sig, forward_inputs)
-            baseline_self_dtype = (
-                baseline_combo.get(baseline_primary)
-                if baseline_primary is not None else None
+            _probe_out_of_union(
+                op_name, cls, sig, forward_inputs, baseline_combo,
+                dtype_options, param_defaults, errors, warnings,
             )
-            probe_budget = _MAX_DTYPE_COMBOS
-            probed = 0
-            for target in forward_inputs:
-                # Skip same_as(ref)-bound tensors: their dtype is
-                # controlled by ``ref``. Mutate the ref instead and let
-                # same_as propagation carry the out-of-union dtype.
-                if target in same_as_refs:
-                    continue
-                declared = set(dtype_options.get(target, []))
-                out_of_union = _out_of_union_candidates(declared)
-                if not out_of_union:
-                    # Declared union covers the entire torch dtype
-                    # universe for this input — no candidate exists to
-                    # probe rejection. Emit a parity-skip warning naming
-                    # the op/input so the gap is visible rather than a
-                    # vacuous pass. Only possible when declared ==
-                    # _TORCH_DTYPES (wildly permissive spec).
-                    if warnings is not None:
-                        warnings.append(
-                            f"[dtype] {op_name}: out-of-union probe "
-                            f"skipped for input {target!r} — declared "
-                            f"dtype union covers the entire torch dtype "
-                            f"set; rejection side cannot be exercised"
-                        )
-                    continue
-                for bad_dtype in out_of_union:
-                    if probed >= probe_budget:
-                        break
-                    probed += 1
-                    candidate = dict(baseline_combo)
-                    candidate[target] = bad_dtype
-                    for tname, ref in same_as_refs.items():
-                        if ref == target and tname in candidate:
-                            candidate[tname] = bad_dtype
-                    accepted, reason = _combo_accepted(
-                        cls, forward_inputs, candidate, param_defaults,
-                        sig=sig, self_dtype_name=baseline_self_dtype,
-                    )
-                    if reason and reason.startswith(
-                        ("introspect-failed", "TypeError",
-                         "cannot build", "combo missing")
-                    ):
-                        continue
-                    if reason and reason.startswith("unexpected"):
-                        errors.append(
-                            f"[dtype] {op_name}: _validate_dtypes raised "
-                            f"unexpected exception on out-of-union probe "
-                            f"{candidate!r} — {reason}"
-                        )
-                        continue
-                    if accepted:
-                        errors.append(
-                            f"[dtype] {op_name}: _validate_dtypes "
-                            f"accepts out-of-union dtype "
-                            f"{candidate!r} (input {target!r} declared "
-                            f"{sorted(declared)})"
-                        )
-                if probed >= probe_budget:
-                    break
 
-        if not errors and warnings is not None:
+        if not errors:
             if not checked_any:
                 # No non-listed combo exists in the Cartesian product —
                 # dtype_combos already enumerates every reachable tuple.
-                warnings.append(
-                    f"[dtype] {op_name}: could not find a non-listed combo "
-                    f"to exercise rejection (dtype_combos exhausts the "
-                    f"union)"
+                warn(
+                    "could not find a non-listed combo to exercise "
+                    "rejection (dtype_combos exhausts the union)"
                 )
             elif not rejected_at_least_one:
                 # Non-listed combos were tried but none were rejected —
                 # either _validate_dtypes is too lax or every non-listed
                 # candidate was skipped (unexpected/TypeError).
-                warnings.append(
-                    f"[dtype] {op_name}: no non-listed dtype combo was "
-                    f"rejected by _validate_dtypes; parity coverage may be "
-                    f"incomplete"
+                warn(
+                    "no non-listed dtype combo was rejected by "
+                    "_validate_dtypes; parity coverage may be incomplete"
                 )
     else:
         # No dtype_combos — verify every Cartesian combination is accepted.
@@ -3052,14 +2810,12 @@ def check_l3_validate_dtypes_parity(
         for opts in input_options:
             product_size *= len(opts)
         if product_size > _MAX_DTYPE_COMBOS:
-            if warnings is not None:
-                warnings.append(
-                    f"[dtype] {op_name}: Cartesian product of dtype "
-                    f"options ({product_size}) exceeds "
-                    f"_MAX_DTYPE_COMBOS={_MAX_DTYPE_COMBOS}; parity check "
-                    f"skipped ({len(forward_inputs)} inputs × options "
-                    f"{[len(o) for o in input_options]})"
-                )
+            warn(
+                f"Cartesian product of dtype options ({product_size}) "
+                f"exceeds _MAX_DTYPE_COMBOS={_MAX_DTYPE_COMBOS}; parity "
+                f"check skipped ({len(forward_inputs)} inputs × options "
+                f"{[len(o) for o in input_options]})"
+            )
             return errors
         for tup in itertools.product(*input_options):
             # Only keep combos that honour same_as identity constraints:
@@ -3070,43 +2826,39 @@ def check_l3_validate_dtypes_parity(
             accepted, reason = _combo_accepted(
                 cls, forward_inputs, candidate, param_defaults, sig=sig,
             )
-            if reason and reason.startswith("TypeError"):
+            kind = _probe_reason_kind(reason)
+            if kind == "signature":
                 # Signature mismatch between manifest inputs and the op's
                 # _validate_dtypes — surface as a parity error (analogous
                 # to the L2 _infer_output_shapes signature check).
-                errors.append(
-                    f"[dtype] {op_name}: _validate_dtypes signature does "
-                    f"not match manifest inputs (expected kwargs "
-                    f"{sorted(forward_inputs)}): {reason}"
+                err(
+                    f"_validate_dtypes signature does not match manifest "
+                    f"inputs (expected kwargs {sorted(forward_inputs)}): "
+                    f"{reason}"
                 )
                 return errors
-            if reason and reason.startswith("introspect-failed"):
-                if warnings is not None:
-                    warnings.append(
-                        f"[dtype] {op_name}: _validate_dtypes parity skipped "
-                        f"for combo {candidate!r} — {reason}"
-                    )
+            if kind == "introspect":
+                warn(
+                    f"_validate_dtypes parity skipped for combo "
+                    f"{candidate!r} — {reason}"
+                )
                 continue
-            if reason and reason.startswith("unexpected"):
+            if kind == "unexpected":
                 # Body-level unexpected exception — hard error.
                 # See ``_combo_accepted`` docstring.
-                errors.append(
-                    f"[dtype] {op_name}: _validate_dtypes raised "
-                    f"unexpected exception on combo {candidate!r} — "
-                    f"{reason}"
+                err(
+                    f"_validate_dtypes raised unexpected exception on "
+                    f"combo {candidate!r} — {reason}"
                 )
                 continue
             if not accepted:
-                errors.append(
-                    f"[dtype] {op_name}: _validate_dtypes rejects valid "
-                    f"combo {candidate!r} drawn from manifest dtype unions"
+                err(
+                    f"_validate_dtypes rejects valid combo {candidate!r} "
+                    f"drawn from manifest dtype unions"
                 )
 
-        # --- Out-of-union negative probe (rejection side) -------------
-        # For each input, substitute one dtype outside its declared union
-        # and assert _validate_dtypes rejects it. Candidates are built on
-        # a same_as-honouring baseline so the only deviation is the
-        # out-of-union dtype. Bounded by _MAX_DTYPE_COMBOS.
+        # Out-of-union negative probe: baseline is the first
+        # same_as-honouring candidate from the union.
         baseline: dict[str, str] | None = None
         for tup in itertools.product(*input_options):
             cand = dict(zip(forward_inputs, tup, strict=True))
@@ -3114,73 +2866,10 @@ def check_l3_validate_dtypes_parity(
                 baseline = cand
                 break
         if baseline is not None:
-            same_as_refs = _same_as_refs(sig)
-            # Keep ``self.dtype`` pinned to the baseline's primary valid
-            # dtype during out-of-union probes — see the dtype_combos
-            # branch above for rationale.
-            baseline_primary = _primary_dtype_input(sig, forward_inputs)
-            baseline_self_dtype = (
-                baseline.get(baseline_primary)
-                if baseline_primary is not None else None
+            _probe_out_of_union(
+                op_name, cls, sig, forward_inputs, baseline,
+                dtype_options, param_defaults, errors, warnings,
             )
-            probe_budget = _MAX_DTYPE_COMBOS
-            probed = 0
-            for target in forward_inputs:
-                # Don't directly mutate tensors that are bound by
-                # same_as(ref) — their dtype is controlled by ``ref``.
-                # Instead mutate the ref (or a free tensor) and let
-                # same_as propagation carry the out-of-union dtype.
-                if target in same_as_refs:
-                    continue
-                declared = set(dtype_options.get(target, []))
-                out_of_union = _out_of_union_candidates(declared)
-                if not out_of_union:
-                    # Declared union covers every torch dtype — cannot
-                    # produce a rejection candidate. Skip with a warning
-                    # rather than vacuously pass.
-                    if warnings is not None:
-                        warnings.append(
-                            f"[dtype] {op_name}: out-of-union probe "
-                            f"skipped for input {target!r} — declared "
-                            f"dtype union covers the entire torch dtype "
-                            f"set; rejection side cannot be exercised"
-                        )
-                    continue
-                for bad_dtype in out_of_union:
-                    if probed >= probe_budget:
-                        break
-                    probed += 1
-                    candidate = dict(baseline)
-                    candidate[target] = bad_dtype
-                    # Propagate to all same_as(target) tensors so the
-                    # only manifest violation is the out-of-union dtype.
-                    for tname, ref in same_as_refs.items():
-                        if ref == target and tname in candidate:
-                            candidate[tname] = bad_dtype
-                    accepted, reason = _combo_accepted(
-                        cls, forward_inputs, candidate, param_defaults,
-                        sig=sig, self_dtype_name=baseline_self_dtype,
-                    )
-                    if reason and reason.startswith(
-                        ("introspect-failed", "TypeError")
-                    ):
-                        continue
-                    if reason and reason.startswith("unexpected"):
-                        errors.append(
-                            f"[dtype] {op_name}: _validate_dtypes raised "
-                            f"unexpected exception on out-of-union probe "
-                            f"{candidate!r} — {reason}"
-                        )
-                        continue
-                    if accepted:
-                        errors.append(
-                            f"[dtype] {op_name}: _validate_dtypes "
-                            f"accepts out-of-union dtype "
-                            f"{candidate!r} (input {target!r} declared "
-                            f"{sorted(declared)})"
-                        )
-                if probed >= probe_budget:
-                    break
 
         # --- same_as identity negative probe (R3 rejection side) -------
         # For each same_as(ref) input, build a candidate where that
@@ -3212,22 +2901,21 @@ def check_l3_validate_dtypes_parity(
                     accepted, reason = _combo_accepted(
                         cls, forward_inputs, candidate, param_defaults, sig=sig,
                     )
-                    if reason and reason.startswith(
-                        ("introspect-failed", "TypeError")
-                    ):
+                    kind = _probe_reason_kind(reason)
+                    if kind in ("introspect", "signature"):
                         continue
-                    if reason and reason.startswith("unexpected"):
-                        errors.append(
-                            f"[dtype] {op_name}: _validate_dtypes raised "
-                            f"unexpected exception on same_as probe "
-                            f"{candidate!r} — {reason}"
+                    if kind == "unexpected":
+                        err(
+                            f"_validate_dtypes raised unexpected "
+                            f"exception on same_as probe {candidate!r} "
+                            f"— {reason}"
                         )
                         continue
                     if accepted:
-                        errors.append(
-                            f"[dtype] {op_name}: _validate_dtypes "
-                            f"accepts same_as violation {candidate!r} "
-                            f"(input {tname!r} declared same_as({ref}))"
+                        err(
+                            f"_validate_dtypes accepts same_as violation "
+                            f"{candidate!r} (input {tname!r} declared "
+                            f"same_as({ref}))"
                         )
     return errors
 
@@ -3314,14 +3002,10 @@ def _ast_manifest_call_usage(
 ) -> dict[str, bool]:
     """Check whether target functions are imported and called with this op name.
 
-    Recognises three patterns:
-
-    1. **Direct** — ``from tileops.manifest import load_workloads`` called
-       with the op name and ``op.eval_roofline()`` called on an Op instance.
-    2. **Indirect via benchmarks.benchmark_base** — ``workloads_to_params``
-       (wraps ``load_workloads``) and ``ManifestBenchmark`` (wraps
-       op-local ``eval_roofline``) imported from ``benchmarks.benchmark_base``
-       and called with the op name as the first argument.
+    Recognises the direct pattern (``load_workloads`` from
+    ``tileops.manifest`` called with the op name + ``op.eval_roofline()``)
+    and the indirect one (``workloads_to_params`` / ``ManifestBenchmark``
+    from ``benchmarks.benchmark_base``, op name as first argument).
     """
     # Maps from the indirect helper name → the direct target it satisfies.
     _INDIRECT_EQUIV: dict[str, str] = {
@@ -3448,14 +3132,11 @@ def _init_calls_dispatch_kernel(cls: type) -> "bool | None":
     ``self.dispatch_kernel(...)`` directly or delegates via
     ``super().__init__(...)``.
 
-    ``None`` means we could not parse the source (built-in / dynamically
-    generated ``__init__``); the caller treats that as inconclusive.
-
-    Pure-AST inspection per the Slot S13 contract in
-    ``docs/design/ops-design-reference.md``: the body must call
-    ``self.dispatch_kernel(kernel_map)`` to honor the routing override.
-    ``super().__init__(...)`` satisfies S13 transitively — the parent's
-    body owns the dispatch call. No runtime construction; no GPU.
+    ``None`` means the source could not be parsed (built-in /
+    dynamically generated ``__init__``); callers treat that as
+    inconclusive. Pure-AST inspection per the Slot S13 contract in
+    ``docs/design/ops-design-reference.md``; ``super().__init__(...)``
+    satisfies S13 transitively. No runtime construction; no GPU.
     """
     try:
         lines, start_lineno = inspect.getsourcelines(cls.__init__)
@@ -3516,6 +3197,7 @@ def check_c3_ctor_signature_parity(
     errors: list[str] = []
     if cls is None:
         return errors
+    err = _emit_to(errors, "ctor", op_name)
 
     sig = entry.get("signature", {})
     manifest_params = sig.get("params") or {}
@@ -3567,8 +3249,8 @@ def check_c3_ctor_signature_parity(
         )
         code_has_default = code_p.default is not inspect.Parameter.empty
         if manifest_has_default and not code_has_default:
-            errors.append(
-                f"[ctor] {op_name}: param {pname!r} has manifest default "
+            err(
+                f"param {pname!r} has manifest default "
                 f"{manifest_default!r} but no default on __init__"
             )
         elif (not manifest_has_default) and code_has_default:
@@ -3576,8 +3258,8 @@ def check_c3_ctor_signature_parity(
                 not manifest_has_compat_default
                 or code_p.default != compat_default
             ):
-                errors.append(
-                    f"[ctor] {op_name}: param {pname!r} has __init__ default "
+                err(
+                    f"param {pname!r} has __init__ default "
                     f"{code_p.default!r} but no manifest default"
                 )
         elif (
@@ -3585,8 +3267,8 @@ def check_c3_ctor_signature_parity(
             and code_has_default
             and code_p.default != manifest_default
         ):
-            errors.append(
-                f"[ctor] {op_name}: param {pname!r} default mismatch — "
+            err(
+                f"param {pname!r} default mismatch — "
                 f"manifest={manifest_default!r}, code={code_p.default!r}"
             )
 
@@ -3594,20 +3276,15 @@ def check_c3_ctor_signature_parity(
         manifest_kw_only = bool(pattrs.get("kw_only", False))
         code_kw_only = code_p.kind is inspect.Parameter.KEYWORD_ONLY
         if manifest_kw_only != code_kw_only:
-            errors.append(
-                f"[ctor] {op_name}: param {pname!r} kw_only mismatch — "
+            err(
+                f"param {pname!r} kw_only mismatch — "
                 f"manifest={manifest_kw_only}, code={code_kw_only}"
             )
 
-    # Code-only extras detection deferred: a faithful "this kwarg is
-    # not declared anywhere in the manifest" rule needs to consult
-    # ``signature.params`` AND ``signature.static_dims`` AND shape /
-    # dtype variables exposed by the op protocol (e.g. ``N_total``,
-    # ``dtype`` in elementwise). Computing the protocol-derived
-    # allowed set requires interpretation of manifest
-    # ``signature.inputs`` shape strings + the op family's convention,
-    # which is out of scope for the C3 helper as written. Tracked as
-    # a strict-parity follow-up.
+    # Code-only extras detection deferred: a faithful "kwarg not declared
+    # anywhere in the manifest" rule needs the protocol-derived allowed
+    # set (params + static_dims + per-family shape/dtype variables),
+    # which is out of scope for the C3 helper. Strict-parity follow-up.
 
     return errors
 
@@ -3762,25 +3439,17 @@ def check_c7_eval_roofline_not_stub(
     return []
 
 
-# Tag prefixes that strict-parity checks (C1-C7) emit.
-#
-# Routing is structural, not tag-based: the orchestrator unconditionally
-# extends ``strict_errors`` with the return of each strict check. The
-# tags below are documentation / triage aids, not the routing key.
-#
-# ``[shape]`` and ``[dtype]`` are also emitted by the non-strict L2 / L3
-# checks (``check_l2`` / ``check_l3`` for shape_rules / dtype_combos
-# parsing); when those entries appear in ``errors`` it is not a strict
-# leak — they are non-strict errors that always stay in ``errors``
-# regardless of mode. Use ``STRICT_ONLY_TAGS`` for leakage assertions
-# (tags exclusive to C1-C7's parity / structural checks).
+# Tag prefixes that strict-parity checks (C1-C7) emit. Routing is
+# structural, not tag-based (the orchestrator extends ``strict_errors``
+# with each strict check's return); tags are triage aids only.
+# ``[shape]`` / ``[dtype]`` are also emitted by the non-strict L2 / L3
+# checks and may legitimately appear in ``errors`` regardless of mode —
+# use ``STRICT_ONLY_TAGS`` for leakage assertions.
 STRICT_TAGS: tuple[str, ...] = (
     "[shape]", "[dtype]", "[ctor]", "[forward]", "[dispatch]", "[stub]",
 )
 
-# Subset of ``STRICT_TAGS`` that only strict-parity checks emit. Used by
-# tests asserting that strict-parity failures are routed to ``warnings``
-# (advisory mode) instead of ``errors``.
+# Subset of ``STRICT_TAGS`` that only strict-parity checks emit.
 STRICT_ONLY_TAGS: tuple[str, ...] = (
     "[ctor]", "[forward]", "[dispatch]", "[stub]",
 )
@@ -3821,22 +3490,12 @@ def validate_manifest(
 ) -> tuple[list[str], list[str]]:
     """Run applicable validation levels on the manifest.
 
-    Args:
-        manifest_path: Optional path to a single manifest YAML file. When None,
-            the merged manifest is loaded from the ``tileops.manifest`` package
-            (one file per family). Tests pass a temp file to validate synthetic
-            single-file manifests.
-        repo_root: Repository root directory.
-        verbose: If True, print progress.
-        levels: Set of check names to run (e.g. {"schema", "shape", "dtype", "bench"}).
-                When None, all checks are enabled.
-        check_op: When set, force all validation levels (L0-L4) on this op and
-                  its variants, ignoring the ``status`` field. Only this variant
-                  family is validated; all other ops are skipped.
-
-    Returns:
-        A tuple of (errors, warnings). Errors are hard failures; warnings
-        are informational messages (e.g. signature skipped due to missing deps).
+    Returns ``(errors, warnings)``: errors are hard failures; warnings
+    are informational. ``manifest_path=None`` loads the merged manifest
+    from the ``tileops.manifest`` package (tests pass a temp file for
+    synthetic single-file manifests). ``levels=None`` enables all
+    checks. ``check_op`` forces all levels (L0-L4) on the named op and
+    its variants, ignoring ``status``; all other ops are skipped.
     """
     if repo_root is None:
         repo_root = REPO_ROOT
@@ -3860,9 +3519,8 @@ def validate_manifest(
     if check_op is not None and check_op not in ops:
         return [f"--check-op: op '{check_op}' not found in manifest"], []
 
-    # When --check-op is set, compute the "variant family" scope: the named
-    # op plus all ops where variant_of == check_op.  This ensures that
-    # modifications to a variant are caught when validating the primary.
+    # --check-op scope: the named op plus its immediate variants, so a
+    # variant edit is caught when validating the primary.
     variant_family: set[str] | None = None
     if check_op is not None:
         variant_family = {check_op} | {
@@ -3877,10 +3535,9 @@ def validate_manifest(
     # warnings (advisory mode) once all per-op checks have run.
     strict_errors: list[str] = []
 
-    # Cross-entry checks (must run before per-entry checks).
-    # When --check-op is set, scope cross-entry checks to the variant family
-    # so that unrelated ops with invalid variant_of references don't cause
-    # failures for the selected op.
+    # Cross-entry checks (must run before per-entry checks), scoped to
+    # the variant family under --check-op so unrelated ops with invalid
+    # variant_of references don't fail the selected op.
     if "schema" in levels:
         all_errors.extend(
             check_variant_of_consistency(ops, scope=variant_family)
@@ -3911,8 +3568,6 @@ def validate_manifest(
             continue
 
         # Resolve Op class once per entry so parity checks can reuse it.
-        # Resolution is lightweight (import + getattr); skipped silently
-        # when unnecessary.
         source = entry.get("source", {})
         op_file = source.get("op", "")
         resolve_result = _resolve_op_class(op_file, op_name) if op_file else None
@@ -3941,11 +3596,9 @@ def validate_manifest(
             )
 
         # C3-C7: strict parity gates for status: implemented ops, each
-        # gated by the level whose contract it enforces. ``--levels``
-        # therefore composes predictably: e.g. ``--levels schema``
-        # triggers no strict-parity work.
-        # Routed to strict_errors so advisory mode can downgrade them
-        # without losing visibility.
+        # gated by the level whose contract it enforces (``--levels
+        # schema`` triggers no strict-parity work). Routed to
+        # strict_errors so advisory mode can downgrade them.
         if "signature" in levels:
             strict_errors.extend(
                 check_c3_ctor_signature_parity(
@@ -3981,10 +3634,9 @@ def validate_manifest(
                 else:
                     all_warnings.extend(bench_errors)
 
-    # Deduplicate aggregate error/warning strings while preserving order.
-    # ``check_l3`` and ``check_l3_validate_dtypes_parity`` both surface
-    # ``dtype_combos`` data errors (each is a valid standalone entry
-    # point); deduping at the driver keeps user-visible reports crisp.
+    # Deduplicate while preserving order: ``check_l3`` and
+    # ``check_l3_validate_dtypes_parity`` both surface ``dtype_combos``
+    # data errors (each is a valid standalone entry point).
     def _dedup(items: list[str]) -> list[str]:
         seen: set[str] = set()
         out: list[str] = []
