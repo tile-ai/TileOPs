@@ -345,7 +345,11 @@ def maybe_install_validator(cls: type) -> None:
     - Resolved status is ``"implemented"`` (spec-only entries
       intentionally leave the L1 stub in place).
     - The class did not already define ``_validate_dtypes`` in its own
-      ``__dict__`` (manual overrides are honored verbatim).
+      ``__dict__`` (manual overrides are honored verbatim). Note this
+      differs from ``_roofline_codegen.maybe_install_eval_roofline``,
+      which honors an override anywhere above L1 in the MRO: a manual
+      ``_validate_dtypes`` on an intermediate family base is shadowed by
+      the synthesized one, so bind it in the concrete class body.
     - The manifest signature has a non-empty ``inputs`` mapping the
       codegen recognizes.
     """
