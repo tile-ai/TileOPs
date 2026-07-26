@@ -186,7 +186,7 @@ def _is_fp8(dtype: torch.dtype) -> bool:
 def _strategy_npt(strategy: str, dtype: torch.dtype) -> int:
     """Return the default num_per_thread for a strategy + dtype pair.
 
-    Strategy-aware heuristic (H200 benchmarks, issue 553):
+    Strategy-aware heuristic (from H200 benchmarks):
     - explicit_parallel: npt=4 for fp16/bf16 (42% bandwidth gain vs npt=8)
     - register_copy: npt=8 for fp16/bf16 (vectorized 128-bit loads)
     - fp32: npt=4 for all strategies (4 bytes x 4 = 128-bit alignment)
@@ -2442,12 +2442,6 @@ class LeakyReluFwdKernel(ParametricUnaryKernel):
 def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False,
                      threads=256, npt=8):
     """Build ELU kernel: y = x if x > 0 else alpha * (exp(x) - 1).
-
-    For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
-    -> fragment store for coalesced memory access.
-
-    For fp8 dtypes, uses explicit_parallel with fp16 accumulation
-    (register_copy is unreliable for 8-bit fragments).
     """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
@@ -2515,12 +2509,6 @@ class EluFwdKernel(ParametricUnaryKernel):
 def _make_hardtanh_kernel(N, dtype, min_val, max_val, output_dtype=None,
                           is_fp8=False, threads=256, npt=8):
     """Build hardtanh kernel: y = clamp(x, min_val, max_val).
-
-    For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
-    -> fragment store for coalesced memory access.
-
-    For fp8 dtypes, uses explicit_parallel with fp16 accumulation
-    (register_copy is unreliable for 8-bit fragments).
     """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
@@ -2585,12 +2573,6 @@ class HardtanhFwdKernel(ParametricUnaryKernel):
 def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None,
                           is_fp8=False, threads=256, npt=8):
     """Build softplus kernel: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
-
-    For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
-    -> fragment store for coalesced memory access.
-
-    For fp8 dtypes, uses explicit_parallel with fp16 accumulation
-    (register_copy is unreliable for 8-bit fragments).
     """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
@@ -2670,9 +2652,6 @@ def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
 
     For non-fp8 dtypes, uses register_copy strategy for input/output to
     improve memory coalescing for the main data path.
-
-    For fp8 dtypes, uses explicit_parallel with fp16 accumulation
-    (register_copy is unreliable for 8-bit fragments).
     """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
@@ -2762,9 +2741,6 @@ def _make_where_kernel(N, dtype, is_fp8=False, threads=256, npt=8):
     For non-fp8 dtypes, writes the result back into the x register fragment
     (in-place) to reduce register pressure and avoid a fourth data-typed
     fragment allocation.
-
-    For fp8 dtypes, uses explicit_parallel (direct element access) since
-    register_copy is unreliable for 8-bit fragments.
     """
     block_size = threads * npt
 
@@ -2911,9 +2887,6 @@ def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val,
     For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
     -> fragment store for coalesced memory access.  Computes in fp32 then
     casts back to preserve precision.
-
-    For fp8 dtypes, uses explicit_parallel with fp16 accumulation
-    (register_copy is unreliable for 8-bit fragments).
     """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
@@ -3251,9 +3224,8 @@ def _make_masked_fill_kernel(N, dtype, fill_value, output_dtype=None,
     (in-place) to reduce register pressure and avoid a third data-typed
     fragment allocation.
 
-    For fp8 dtypes, uses explicit_parallel (direct element access) since
-    register_copy is unreliable for 8-bit fragments.  For e5m2, the kernel
-    outputs fp16 so the Op layer can do a non-saturating cast to e5m2.
+    For e5m2, the kernel outputs fp16 so the Op layer can do a
+    non-saturating cast to e5m2.
     """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
@@ -3438,9 +3410,6 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
 
     For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
     -> fragment store for coalesced memory access.
-
-    For fp8 dtypes, uses explicit_parallel (direct element access) since
-    register_copy is unreliable for 8-bit fragments.
     """
     out_dtype = output_dtype or dtype
     block_size = threads * npt

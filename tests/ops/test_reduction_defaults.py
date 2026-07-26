@@ -36,7 +36,7 @@ def _make_logical(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     return (torch.randint(-1, 2, shape, device="cuda")).to(dtype)
 
 
-# AC-3: default dim=None for the ten ops -> full reduction on 3-D input
+# default dim=None for the ten ops -> full reduction on 3-D input
 
 
 @pytest.mark.smoke
@@ -144,7 +144,7 @@ def test_count_nonzero_default_dim_full_reduction() -> None:
     assert y.dtype == torch.int64
 
 
-# AC-4: ProdFwdOp keeps documented dim=-1 default
+# ProdFwdOp keeps documented dim=-1 default
 
 
 @pytest.mark.smoke
@@ -158,7 +158,7 @@ def test_prod_default_dim_last_axis() -> None:
     assert y.shape == torch.prod(x, dim=-1).shape
 
 
-# AC-5: AllFwdOp/AnyFwdOp dim=[] / dim=() noop contract
+# AllFwdOp/AnyFwdOp dim=[] / dim=() noop contract
 
 
 @pytest.mark.smoke
@@ -187,7 +187,7 @@ def test_any_empty_dim_noop(empty_dim) -> None:
     assert torch.equal(y, x.bool())
 
 
-# AC-6: normalize_dim noop policy returns []
+# normalize_dim noop policy returns []
 
 
 @pytest.mark.smoke
@@ -215,7 +215,7 @@ def test_normalize_dim_full_returns_all() -> None:
 
 @pytest.mark.smoke
 def test_empty_dim_policy_class_attrs() -> None:
-    """AC-6: per-op empty_dim_policy bindings."""
+    """Per-op empty_dim_policy bindings."""
     from tileops.ops.reduction.all_op import AllFwdOp
     from tileops.ops.reduction.any_op import AnyFwdOp
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp

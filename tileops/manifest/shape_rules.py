@@ -28,7 +28,7 @@ list whose elements are not ints) propagates the same ``TypeError`` the
 inline expression would have raised. The validator already classifies
 such eval errors as warnings (the rule is treated as un-evaluatable
 under mock inputs and the parity check is skipped), so behavioural
-parity with the pre-migration manifest is preserved end-to-end.
+parity with the equivalent inline expressions is preserved end-to-end.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def dim_range_validity(x: Any, dim: Any) -> bool:
     Raises:
         TypeError: For malformed ``dim`` values (e.g. a list whose
             elements are strings); the validator handles this as a
-            warning, matching the pre-migration inline behaviour.
+            warning, matching the equivalent inline expression.
     """
     if dim is None:
         return True
@@ -138,12 +138,12 @@ def reduced_axes(x: Any, dim: Any) -> frozenset:
         whatever that operation produces (e.g. ``float`` for ``1.5``)
         appears verbatim in the result. The helper preserves inline
         semantics, so callers that supply non-int sequence elements get
-        the same return as the pre-migration inline expression.
+        the same return as the equivalent inline expression.
 
     Raises:
         TypeError: For a list/tuple whose elements cannot be reduced
             modulo ``x.ndim``; the validator handles this as a warning,
-            matching the pre-migration inline behaviour.
+            matching the equivalent inline expression.
     """
     if isinstance(dim, int):
         return frozenset({dim % x.ndim})

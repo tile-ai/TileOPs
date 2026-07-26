@@ -3293,7 +3293,7 @@ class TestShapeRuleHelpers:
         the helper, which the validator classifies as an eval-error
         warning ("could not be evaluated"). The contract: the parity
         check is skipped with a warning, not turned into a hard shape
-        error — bit-identical to the pre-migration inline form.
+        error — bit-identical to the equivalent inline form.
         """
         def infer(self, x_shape, *, dim=None, keepdim=False):  # noqa: ARG001
             return {"y": x_shape}
