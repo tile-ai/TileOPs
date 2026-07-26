@@ -12,6 +12,11 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from tileops.kernels.elementwise import (
+    GeluAndMulFwdKernel,
+    GeluTanhAndMulFwdKernel,
+    SiluAndMulFwdKernel,
+)
 from tileops.ops.elementwise import (
     BitwiseAndFwdOp,
     BitwiseOrFwdOp,
@@ -370,28 +375,30 @@ def test_fused_gated_bench(
 
 _STRATEGY_SHAPES = [(1024, 4096), (1024, 11008), (4096, 4096)]
 _STRATEGY_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-_STRATEGY_OPS = [
-    ("silu_and_mul", SiluAndMulFwdOp),
-    ("gelu_and_mul", GeluAndMulFwdOp),
-    ("gelu_tanh_and_mul", GeluTanhAndMulFwdOp),
+_STRATEGY_KERNELS = [
+    ("silu_and_mul", SiluAndMulFwdKernel),
+    ("gelu_and_mul", GeluAndMulFwdKernel),
+    ("gelu_tanh_and_mul", GeluTanhAndMulFwdKernel),
 ]
 
 
 def _strategy_params():
     """3 ops × 3 shapes × 3 dtypes × 2 strategies = 54 rows."""
     params = []
-    for op_name, op_cls in _STRATEGY_OPS:
+    for op_name, kernel_cls in _STRATEGY_KERNELS:
         for M, N in _STRATEGY_SHAPES:
             for dtype in _STRATEGY_DTYPES:
                 for strategy in ("direct", "explicit_parallel"):
                     is_smoke = _STRATEGY_SHAPES[0] == (M, N) and dtype == torch.float16
                     mark = pytest.mark.smoke if is_smoke else pytest.mark.full
-                    params.append(pytest.param(op_name, M, N, dtype, op_cls, strategy, marks=mark))
+                    params.append(
+                        pytest.param(op_name, M, N, dtype, kernel_cls, strategy, marks=mark)
+                    )
     return params
 
 
 class FusedGatedStrategyBenchFixture(FixtureBase):
-    PARAMS = [("op_name, M, N, dtype, op_cls, strategy", _strategy_params())]
+    PARAMS = [("op_name, M, N, dtype, kernel_cls, strategy", _strategy_params())]
 
 
 @FusedGatedStrategyBenchFixture
@@ -400,7 +407,7 @@ def test_fused_gated_strategy_bench(
     M: int,
     N: int,
     dtype: torch.dtype,
-    op_cls,
+    kernel_cls,
     strategy: str,
 ) -> None:
     """Benchmark each fused gated strategy to validate DEFAULT_STRATEGY choice."""
@@ -409,8 +416,8 @@ def test_fused_gated_strategy_bench(
     inputs = test.gen_inputs()
 
     shape = (M, N)
-    op = op_cls(M=M, N=N, dtype=dtype, strategy=strategy)
-    result = bm.profile(op, *inputs)
+    kernel = kernel_cls(M=M, N=N, dtype=dtype, config={"strategy": strategy})
+    result = bm.profile(kernel, *inputs)
     BenchmarkReport.record(
         f"{op_name}_strategy", locals(), result, tag=f"tileops-{strategy}",
     )

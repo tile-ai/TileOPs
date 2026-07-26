@@ -55,7 +55,6 @@ class GeluFwdOp(_GeluApproximateBase):
             the erf-based ``GeluFwdKernel``. ``'tanh'`` routes to
             ``GeluTanhFwdKernel`` (the fused tanh approximation
             ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``).
-        strategy: Optional kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
     """

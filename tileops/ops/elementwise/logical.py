@@ -49,16 +49,15 @@ class LogicalNotFwdOp(UnaryOp):
         *,
         N_total: int,
         dtype: torch.dtype,
-        strategy,
         tune: bool = False,
     ):
         self._bool_storage = dtype == torch.bool
         if self._bool_storage:
             return self.kernel_map[f"{self._op_name}_bool_storage"](
-                N_total, torch.uint8, strategy=strategy, tune=tune,
+                N_total, torch.uint8, tune=tune,
             )
         return super()._build_kernel_instance(
-            N_total=N_total, dtype=dtype, strategy=strategy, tune=tune,
+            N_total=N_total, dtype=dtype, tune=tune,
         )
 
     def _resolve_output_dtype(self):

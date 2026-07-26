@@ -598,7 +598,6 @@ class UnaryOp(Op):
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype.
-        strategy: Kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """
@@ -616,16 +615,14 @@ class UnaryOp(Op):
         self,
         N_total: int,
         dtype: torch.dtype,
-        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.N_total = N_total
         self.dtype = dtype
-        self.strategy = strategy
         self.dispatch_kernel(kernel_map)
         self.kernel = self._build_kernel_instance(
-            N_total=N_total, dtype=dtype, strategy=strategy, tune=tune,
+            N_total=N_total, dtype=dtype, tune=tune,
         )
         self.output_dtype = self._resolve_output_dtype()
         # Register in global registry for torch.compile dispatch
@@ -637,13 +634,10 @@ class UnaryOp(Op):
         *,
         N_total: int,
         dtype: torch.dtype,
-        strategy: Optional[str],
         tune: bool,
     ):
         """Construct the kernel. Subclasses override to specialize construction."""
-        return self.kernel_map[self._op_name](
-            N_total, dtype, strategy=strategy, tune=tune,
-        )
+        return self.kernel_map[self._op_name](N_total, dtype, tune=tune)
 
     def _resolve_output_dtype(self) -> torch.dtype:
         # Use _fp8_output_dtype (the final dtype after Op-layer post-cast)
@@ -718,7 +712,6 @@ class BinaryOp(Op):
         a_shape: Shape of input a.
         b_shape: Shape of input b.
         dtype: Torch dtype.
-        strategy: Kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """
@@ -763,7 +756,6 @@ class BinaryOp(Op):
         a_shape: tuple,
         b_shape: tuple,
         dtype: torch.dtype,
-        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -777,7 +769,6 @@ class BinaryOp(Op):
         self.dtype = dtype
         self.a_shape = tuple(a_shape)
         self.b_shape = tuple(b_shape)
-        self.strategy = strategy
         out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
             a_shape, b_shape,
         )
@@ -788,19 +779,19 @@ class BinaryOp(Op):
         self.b_numel = prod(b_shape)
         self.dispatch_kernel(kernel_map)
         self.kernel = self._build_kernel_instance(
-            coalesced_shape, a_strides, b_strides, strategy, tune,
+            coalesced_shape, a_strides, b_strides, tune,
         )
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
     def _build_kernel_instance(
-        self, coalesced_shape, a_strides, b_strides, strategy, tune,
+        self, coalesced_shape, a_strides, b_strides, tune,
     ):
         """Construct the kernel. Subclasses override to inject extra kwargs."""
         return self.kernel_map[self._op_name](
             self.N_total, self.dtype, coalesced_shape, a_strides, b_strides,
-            self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+            self.a_numel, self.b_numel, tune=tune,
         )
 
     @property
@@ -868,7 +859,6 @@ class FusedGatedOp(Op):
         N: Optional half column dim (output width). Inferred from ``x`` when
             omitted.
         dtype: Optional torch dtype. Inferred from ``x`` when omitted.
-        strategy: Kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """
@@ -883,7 +873,6 @@ class FusedGatedOp(Op):
         M: Optional[int] = None,
         N: Optional[int] = None,
         dtype: Optional[torch.dtype] = None,
-        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -896,7 +885,6 @@ class FusedGatedOp(Op):
         self.M = M
         self.N = N
         self.dtype = dtype
-        self.strategy = strategy
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self.kernel = None
@@ -952,9 +940,7 @@ class FusedGatedOp(Op):
         self.M = M
         self.N = N
         self.dtype = dtype
-        self.kernel = self.kernel_map[self._op_name](
-            M, N, dtype, strategy=self.strategy, tune=self.tune,
-        )
+        self.kernel = self.kernel_map[self._op_name](M, N, dtype, tune=self.tune)
         self._kernel_key = key
 
     def _validate_runtime_input(self, x: torch.Tensor) -> tuple[int, int]:
@@ -1057,13 +1043,10 @@ class _ParamFreeActivationOp(_UnaryActivationMixin, UnaryOp):
         dtype: torch.dtype,
         inplace: bool = False,
         *,
-        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        super().__init__(
-            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
-        )
+        super().__init__(N_total, dtype, kernel_map=kernel_map, tune=tune)
         self.inplace = inplace
 
 
@@ -1123,9 +1106,9 @@ class _AlphaScaledBinaryOp(BinaryOp):
     through the same fast kernel as the default.
 
     The leading ``*`` makes ``alpha`` and the existing
-    ``strategy`` / ``kernel_map`` / ``tune`` parameters keyword-only;
-    only the positional triplet ``(a_shape, b_shape, dtype)`` is shared
-    with ``BinaryOp``.
+    ``kernel_map`` / ``tune`` parameters keyword-only; only the
+    positional triplet ``(a_shape, b_shape, dtype)`` is shared with
+    ``BinaryOp``.
     """
 
     def __init__(
@@ -1135,22 +1118,20 @@ class _AlphaScaledBinaryOp(BinaryOp):
         dtype: torch.dtype,
         *,
         alpha: int | float = 1,
-        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.alpha = alpha
         super().__init__(
-            a_shape, b_shape, dtype,
-            strategy=strategy, kernel_map=kernel_map, tune=tune,
+            a_shape, b_shape, dtype, kernel_map=kernel_map, tune=tune,
         )
 
     def _build_kernel_instance(
-        self, coalesced_shape, a_strides, b_strides, strategy, tune,
+        self, coalesced_shape, a_strides, b_strides, tune,
     ):
         return self.kernel_map[self._op_name](
             self.N_total, self.dtype, coalesced_shape, a_strides, b_strides,
-            self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+            self.a_numel, self.b_numel, tune=tune,
             alpha=self.alpha,
         )
 
@@ -1168,7 +1149,7 @@ class _BoolOutputBinaryOp(BinaryOp):
         return kernel_map
 
     def _build_kernel_instance(
-        self, coalesced_shape, a_strides, b_strides, strategy, tune,
+        self, coalesced_shape, a_strides, b_strides, tune,
     ):
         self._bool_storage = (
             self.dtype == torch.bool and self.bool_storage_kernel_cls is not None
@@ -1176,10 +1157,10 @@ class _BoolOutputBinaryOp(BinaryOp):
         if self._bool_storage:
             return self.kernel_map[f"{self._op_name}_bool_storage"](
                 self.N_total, torch.uint8, coalesced_shape, a_strides, b_strides,
-                self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+                self.a_numel, self.b_numel, tune=tune,
             )
         return super()._build_kernel_instance(
-            coalesced_shape, a_strides, b_strides, strategy, tune,
+            coalesced_shape, a_strides, b_strides, tune,
         )
 
     def _eager_forward(
@@ -1253,14 +1234,12 @@ class _IntIdentityUnaryOp(UnaryOp):
         self,
         N_total: int,
         dtype: torch.dtype,
-        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         if dtype in type(self)._fallback_dtypes:
             self.N_total = N_total
             self.dtype = dtype
-            self.strategy = strategy
             # The float-only kernel cannot be instantiated for an integer
             # dtype, so the kernel itself stays unconstructed. The kernel_map
             # is still installed through the shared validate-and-install path
@@ -1276,9 +1255,7 @@ class _IntIdentityUnaryOp(UnaryOp):
             self._instance_key = id(self)
             _OP_REGISTRY[self._instance_key] = self
             return
-        super().__init__(
-            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
-        )
+        super().__init__(N_total, dtype, kernel_map=kernel_map, tune=tune)
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         if self.kernel is None:
@@ -1302,7 +1279,6 @@ class _GeluApproximateBase(UnaryOp):
         dtype: torch.dtype,
         *,
         approximate: str = "none",
-        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -1312,9 +1288,7 @@ class _GeluApproximateBase(UnaryOp):
                 f"'tanh', got {approximate!r}"
             )
         self.approximate = approximate
-        super().__init__(
-            N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
-        )
+        super().__init__(N_total, dtype, kernel_map=kernel_map, tune=tune)
 
 
 class _ClampTensorBase(Op):

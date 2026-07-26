@@ -5,11 +5,18 @@ floor_divide, lerp, maximum, minimum (plus existing add).
 Also includes L4 edge case tests for div, remainder, floor_divide, pow.
 """
 
+import math
+
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.elementwise import DivTruncFwdKernel, FloorDivideFwdKernel
+from tileops.kernels.elementwise import (
+    AddFwdKernel,
+    DivTruncFwdKernel,
+    FloorDivideFwdKernel,
+    MaximumFwdKernel,
+)
 from tileops.ops.elementwise import (
     AddFwdOp,
     DivFwdOp,
@@ -243,12 +250,16 @@ class AddStrategyFixture(FixtureBase):
 
 @AddStrategyFixture
 def test_add_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None:
-    """Verify both binary strategies produce correct results."""
+    """Binary strategies selected via the config dict produce correct results."""
     test = AddSameShapeTest(n_total, dtype)
-    shape = (n_total,)
-    op = AddFwdOp(a_shape=shape, b_shape=shape, dtype=dtype, strategy=strategy)
+    kernel = AddFwdKernel(
+        n_total, dtype, (n_total,), (1,), (1,), n_total, n_total,
+        config={"strategy": strategy},
+    )
+    assert kernel.strategy == strategy
+    assert kernel.config["strategy"] == strategy
     atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(kernel, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
 # Generic binary test helper
@@ -785,33 +796,41 @@ def test_max_min_optimized_large(op_cls, torch_ref, n_total: int, dtype: torch.d
 
 @pytest.mark.smoke
 def test_register_copy_downgrades_on_broadcast() -> None:
-    """Explicitly requesting register_copy on broadcast shapes must not crash.
+    """Requesting register_copy via config on broadcast shapes must not crash.
 
     register_copy only works for same-shape contiguous inputs. When the
-    caller passes strategy='register_copy' with broadcast shapes, the kernel
-    must silently downgrade to explicit_parallel and produce correct results.
+    caller passes config={"strategy": "register_copy"} with broadcast
+    strides, the kernel must silently downgrade to explicit_parallel and
+    produce correct results.
     """
     a_shape = (2, 64, 128)
     b_shape = (1, 1, 128)
     dtype = torch.float16
+    out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
+        a_shape, b_shape,
+    )
+    n_total = math.prod(out_shape)
 
-    for op_cls, ref_fn in [
-        (AddFwdOp, lambda a, b: a + b),
-        (MaximumFwdOp, lambda a, b: torch.maximum(a, b)),
+    for kernel_cls, ref_fn in [
+        (AddFwdKernel, lambda a, b: a + b),
+        (MaximumFwdKernel, lambda a, b: torch.maximum(a, b)),
     ]:
-        op = op_cls(
-            a_shape=a_shape, b_shape=b_shape, dtype=dtype,
-            strategy="register_copy",
+        kernel = kernel_cls(
+            n_total, dtype, coalesced_shape, a_strides, b_strides,
+            math.prod(a_shape), math.prod(b_shape),
+            config={"strategy": "register_copy"},
         )
-        # Strategy must have been downgraded
-        assert op.kernel.strategy == "explicit_parallel", (
-            f"{op_cls.__name__} did not downgrade register_copy for broadcast inputs"
+        # Strategy must have been downgraded, and the resolved config must
+        # reflect the downgrade (config is the single source of truth).
+        assert kernel.strategy == "explicit_parallel", (
+            f"{kernel_cls.__name__} did not downgrade register_copy for broadcast inputs"
         )
+        assert kernel.config["strategy"] == "explicit_parallel"
         a = torch.randn(*a_shape, device="cuda", dtype=dtype)
         b = torch.randn(*b_shape, device="cuda", dtype=dtype)
         ref = ref_fn(a, b)
         with torch.no_grad():
-            out = op(a, b)
+            out = kernel(a.view(-1), b.view(-1)).reshape(out_shape)
         torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 

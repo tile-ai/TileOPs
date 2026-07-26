@@ -646,9 +646,11 @@ class UnaryKernel(Kernel):
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype for input.
-        strategy: One of "direct", "explicit_parallel", "register_copy".
-        config: Optional dict with "threads" and "num_per_thread".
-        tune: Whether to autotune.
+        config: Optional dict with "strategy", "threads" and "num_per_thread".
+            "strategy" is one of "direct", "explicit_parallel",
+            "register_copy"; it selects the kernel body at build time.
+        tune: Whether to autotune (sweeps "threads" / "num_per_thread"
+            within the resolved strategy).
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -664,7 +666,7 @@ class UnaryKernel(Kernel):
         """Pointwise operation. Must be overridden by subclass."""
         raise NotImplementedError
 
-    def __init__(self, N_total, dtype, strategy=None, config=None, tune=False):
+    def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
         if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
             supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
@@ -683,6 +685,14 @@ class UnaryKernel(Kernel):
             self.output_dtype = torch.float16
         else:
             self.output_dtype = self.OUTPUT_DTYPE or dtype
+        # Validate a config-requested strategy up front so typos raise the
+        # same ValueError regardless of dtype (the bool coercion below would
+        # otherwise silently accept an unknown strategy for bool inputs).
+        requested = (config or {}).get("strategy")
+        if requested is not None and requested not in self.STRATEGIES:
+            raise ValueError(
+                f"Unknown strategy '{requested}', expected one of {self.STRATEGIES}"
+            )
         # torch.bool maps to TileLang ``boolx<N>`` for vectorised loads, which
         # the CUDA codegen cannot lower. Keep bool inputs on the scalar path.
         bool_output = torch.bool == self.OUTPUT_DTYPE
@@ -690,32 +700,32 @@ class UnaryKernel(Kernel):
             torch.uint8, torch.int8, torch.int16,
         )
         if dtype == torch.bool:
-            if strategy is not None and strategy != "direct":
+            if requested is not None and requested != "direct":
                 warnings.warn(
                     f"UnaryKernel: dtype=torch.bool requires strategy="
                     f"'direct' (TileLang cannot lower vectorised boolx<N> "
-                    f"loads); overriding requested strategy={strategy!r}.",
+                    f"loads); overriding requested strategy={requested!r}.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
             self.strategy = "direct"
         elif bool_output_needs_scalar:
-            if strategy is not None and strategy != "direct":
+            if requested is not None and requested != "direct":
                 warnings.warn(
                     f"UnaryKernel: dtype={dtype} with torch.bool output "
                     f"requires strategy='direct' (TileLang cannot lower "
                     f"vectorised boolx<N> stores for sub-32-bit integer "
-                    f"inputs); overriding requested strategy={strategy!r}.",
+                    f"inputs); overriding requested strategy={requested!r}.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
             self.strategy = "direct"
         # fp8: register_copy may not reliably handle 8-bit fragments;
         # default to explicit_parallel for fp8 dtypes
-        elif strategy is None and _is_fp8(dtype):
+        elif requested is None and _is_fp8(dtype):
             self.strategy = "explicit_parallel"
         else:
-            self.strategy = strategy or self.DEFAULT_STRATEGY
+            self.strategy = requested or self.DEFAULT_STRATEGY
         if self.strategy not in self.STRATEGIES:
             raise ValueError(
                 f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
@@ -765,16 +775,18 @@ class UnaryKernel(Kernel):
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
             # fp8: 1 byte per element, 16 elements = 128-bit alignment
-            return {"threads": 256, "num_per_thread": 16}
+            return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
         npt = _strategy_npt(self.strategy, self.dtype)
-        return {"threads": 256, "num_per_thread": npt}
+        return {"strategy": self.strategy, "threads": 256, "num_per_thread": npt}
 
     @property
     def autotune_configs(self) -> list[dict]:
         """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
 
         Covers a range of occupancy/register-pressure tradeoffs for
-        bandwidth-bound unary elementwise kernels.
+        bandwidth-bound unary elementwise kernels. "strategy" is a
+        build-time config key (it selects the kernel body, not a JIT
+        parameter), so it is excluded from the sweep.
         """
         if _is_fp8(self.dtype):
             # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
@@ -816,6 +828,10 @@ class UnaryKernel(Kernel):
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
         super().init_config(config, tune)
+        # Record the resolved strategy so ``self.config`` is the single
+        # source of truth (a coerced/downgraded request or an autotune
+        # result would otherwise leave the key stale or missing).
+        self.config["strategy"] = self.strategy
         # Pre-compile and cache the kernel function for the chosen config
         # to avoid JIT lookup overhead on every forward() call.
         cfg = self.config
@@ -845,11 +861,12 @@ class BinaryKernel(Kernel):
         b_strides: Strides for input b (0 means broadcast).
         a_numel: Number of elements in a.
         b_numel: Number of elements in b.
-        strategy: One of "direct", "explicit_parallel", "register_copy".
-            If "register_copy" is requested but inputs require broadcast,
-            silently downgrades to "explicit_parallel".
-        config: Optional dict with "threads" and "num_per_thread".
-        tune: Whether to autotune.
+        config: Optional dict with "strategy", "threads" and "num_per_thread".
+            "strategy" is one of "direct", "explicit_parallel",
+            "register_copy". If "register_copy" is requested but inputs
+            require broadcast, silently downgrades to "explicit_parallel".
+        tune: Whether to autotune (sweeps "threads" / "num_per_thread"
+            within the resolved strategy).
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -865,7 +882,7 @@ class BinaryKernel(Kernel):
 
     def __init__(
         self, N_total, dtype, coalesced_shape, a_strides, b_strides,
-        a_numel, b_numel, strategy=None, config=None, tune=False,
+        a_numel, b_numel, config=None, tune=False,
     ):
         super().__init__()
         if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
@@ -889,12 +906,13 @@ class BinaryKernel(Kernel):
         self._same_shape = _is_contiguous_same_shape(
             coalesced_shape, a_strides, b_strides,
         )
-        # Validate a caller-provided strategy up front so typos raise the
+        # Validate a config-requested strategy up front so typos raise the
         # same ValueError regardless of dtype (the bool override below
         # otherwise silently accepts an unknown strategy for bool inputs).
-        if strategy is not None and strategy not in self.STRATEGIES:
+        requested = (config or {}).get("strategy")
+        if requested is not None and requested not in self.STRATEGIES:
             raise ValueError(
-                f"Unknown strategy '{strategy}', expected one of {self.STRATEGIES}"
+                f"Unknown strategy '{requested}', expected one of {self.STRATEGIES}"
             )
         # torch.bool maps to TileLang ``boolx<N>`` for vectorised loads /
         # stores, which the CUDA codegen cannot lower. Force the scalar
@@ -905,34 +923,34 @@ class BinaryKernel(Kernel):
             torch.uint8, torch.int8, torch.int16,
         )
         if bool_input:
-            if strategy is not None and strategy != "direct":
+            if requested is not None and requested != "direct":
                 warnings.warn(
                     f"BinaryKernel: dtype=torch.bool requires strategy="
                     f"'direct' (TileLang cannot lower vectorised boolx<N> "
-                    f"loads); overriding requested strategy={strategy!r}.",
+                    f"loads); overriding requested strategy={requested!r}.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
             self.strategy = "direct"
         elif bool_output_needs_scalar:
-            if strategy is not None and strategy != "direct":
+            if requested is not None and requested != "direct":
                 warnings.warn(
                     f"BinaryKernel: dtype={dtype} with torch.bool output "
                     f"requires strategy='direct' (TileLang cannot lower "
                     f"vectorised boolx<N> stores for sub-32-bit integer "
-                    f"inputs); overriding requested strategy={strategy!r}.",
+                    f"inputs); overriding requested strategy={requested!r}.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
             self.strategy = "direct"
-        elif strategy is not None:
+        elif requested is not None:
             # register_copy requires same-shape contiguous inputs (no
             # broadcast); silently downgrade to explicit_parallel when
             # the caller requests register_copy on broadcast shapes.
-            if strategy == "register_copy" and (not self._same_shape or bool_output):
+            if requested == "register_copy" and (not self._same_shape or bool_output):
                 self.strategy = "explicit_parallel"
             else:
-                self.strategy = strategy
+                self.strategy = requested
         elif self._same_shape and not bool_output:
             # register_copy gives vectorized 128-bit loads, ~2-3x faster
             # for complex op_funcs that block TVM's auto-vectorizer.
@@ -993,16 +1011,18 @@ class BinaryKernel(Kernel):
     @property
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
-            return {"threads": 256, "num_per_thread": 16}
+            return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
         npt = _strategy_npt(self.strategy, self.dtype)
-        return {"threads": 256, "num_per_thread": npt}
+        return {"strategy": self.strategy, "threads": 256, "num_per_thread": npt}
 
     @property
     def autotune_configs(self) -> list[dict]:
         """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
 
         Covers a range of occupancy/register-pressure tradeoffs for
-        bandwidth-bound binary elementwise kernels.
+        bandwidth-bound binary elementwise kernels. "strategy" is a
+        build-time config key (it selects the kernel body, not a JIT
+        parameter), so it is excluded from the sweep.
         """
         if _is_fp8(self.dtype):
             # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
@@ -1047,6 +1067,10 @@ class BinaryKernel(Kernel):
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
         super().init_config(config, tune)
+        # Record the resolved strategy so ``self.config`` is the single
+        # source of truth (a coerced/downgraded request or an autotune
+        # result would otherwise leave the key stale or missing).
+        self.config["strategy"] = self.strategy
         # Pre-compile and cache the kernel function for the chosen config
         # to avoid JIT lookup overhead on every forward() call.
         cfg = self.config
@@ -1074,9 +1098,11 @@ class FusedGatedKernel(Kernel):
         M: Number of rows.
         N: Half the column dimension (output width).
         dtype: Torch dtype.
-        strategy: One of "direct", "explicit_parallel".
-        config: Optional dict with "threads" and "num_per_thread".
-        tune: Whether to autotune.
+        config: Optional dict with "strategy", "threads" and "num_per_thread".
+            "strategy" is one of "direct", "explicit_parallel"; it selects
+            the kernel body at build time.
+        tune: Whether to autotune (sweeps "threads" / "num_per_thread"
+            within the resolved strategy).
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -1093,7 +1119,7 @@ class FusedGatedKernel(Kernel):
         """Activation function. Must be overridden by subclass."""
         raise NotImplementedError
 
-    def __init__(self, M, N, dtype, strategy=None, config=None, tune=False):
+    def __init__(self, M, N, dtype, config=None, tune=False):
         super().__init__()
         if self.SUPPORTED_DTYPES is not None and dtype not in self.SUPPORTED_DTYPES:
             supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
@@ -1111,7 +1137,7 @@ class FusedGatedKernel(Kernel):
             self.output_dtype = torch.float16
         else:
             self.output_dtype = dtype
-        self.strategy = strategy or self.DEFAULT_STRATEGY
+        self.strategy = (config or {}).get("strategy") or self.DEFAULT_STRATEGY
         if self.strategy not in self.STRATEGIES:
             raise ValueError(
                 f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
@@ -1153,20 +1179,22 @@ class FusedGatedKernel(Kernel):
     @property
     def default_config(self) -> dict:
         if _is_fp8(self.dtype):
-            return {"threads": 256, "num_per_thread": 16}
+            return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
         if self.strategy == "explicit_parallel" and self.dtype in (torch.float16, torch.bfloat16):
             # 128x8 keeps block_N=1024 but widens loads to 128-bit and lifts occupancy.
             # Only fp16/bf16 gain the width: fp32 npt=4 already saturates LDG.128.
-            return {"threads": 128, "num_per_thread": 8}
+            return {"strategy": self.strategy, "threads": 128, "num_per_thread": 8}
         npt = _strategy_npt(self.strategy, self.dtype)
-        return {"threads": 256, "num_per_thread": npt}
+        return {"strategy": self.strategy, "threads": 256, "num_per_thread": npt}
 
     @property
     def autotune_configs(self) -> list[dict]:
         """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
 
         Covers a range of occupancy/register-pressure tradeoffs for
-        bandwidth-bound fused gated elementwise kernels.
+        bandwidth-bound fused gated elementwise kernels. "strategy" is a
+        build-time config key (it selects the kernel body, not a JIT
+        parameter), so it is excluded from the sweep.
         """
         if _is_fp8(self.dtype):
             # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
@@ -1208,6 +1236,9 @@ class FusedGatedKernel(Kernel):
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
         super().init_config(config, tune)
+        # Record the resolved strategy so ``self.config`` is the single
+        # source of truth (an autotune result would otherwise drop the key).
+        self.config["strategy"] = self.strategy
         # Pre-compile and cache the kernel function for the chosen config
         # to avoid JIT lookup overhead on every forward() call.
         cfg = self.config
@@ -1255,7 +1286,7 @@ class _Uint8StorageUnaryKernel(UnaryKernel):
 
     @property
     def default_config(self) -> dict:
-        return {"threads": 256, "num_per_thread": 16}
+        return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
 
 
 class _Uint8StorageBinaryKernel(BinaryKernel):
@@ -1266,7 +1297,7 @@ class _Uint8StorageBinaryKernel(BinaryKernel):
 
     @property
     def default_config(self) -> dict:
-        return {"threads": 256, "num_per_thread": 16}
+        return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
 
 
 class ReluFwdKernel(FloatUnaryKernel):
@@ -1299,7 +1330,7 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
 
     def __init__(
         self, N_total, dtype, coalesced_shape, a_strides, b_strides,
-        a_numel, b_numel, strategy=None, config=None, tune=False, alpha=1,
+        a_numel, b_numel, config=None, tune=False, alpha=1,
     ):
         # PyTorch's torch.add / torch.sub reject a floating alpha when the
         # input tensor is integral (or bool). Mirror that contract here so
@@ -1315,7 +1346,7 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
         self._alpha = alpha
         super().__init__(
             N_total, dtype, coalesced_shape, a_strides, b_strides,
-            a_numel, b_numel, strategy=strategy, config=config, tune=tune,
+            a_numel, b_numel, config=config, tune=tune,
         )
 
     def _alpha_op_func(self):
@@ -1508,12 +1539,12 @@ class LerpFwdKernel(BinaryKernel):
 
     def __init__(
         self, N_total, dtype, coalesced_shape, a_strides, b_strides,
-        a_numel, b_numel, strategy=None, config=None, tune=False, weight=0.5,
+        a_numel, b_numel, config=None, tune=False, weight=0.5,
     ):
         self._weight = weight
         super().__init__(
             N_total, dtype, coalesced_shape, a_strides, b_strides,
-            a_numel, b_numel, strategy=strategy, config=config, tune=tune,
+            a_numel, b_numel, config=config, tune=tune,
         )
 
     def _build_kernel(self, strategy):

@@ -68,7 +68,7 @@ class TestUnaryCaching:
     @pytest.mark.full
     def test_unary_direct_strategy_caching(self):
         """Direct strategy kernels should also cache _compiled_fn."""
-        k = ReluFwdKernel(N, torch.float16, strategy="direct")
+        k = ReluFwdKernel(N, torch.float16, config={"strategy": "direct"})
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 

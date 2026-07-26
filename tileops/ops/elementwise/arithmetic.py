@@ -75,10 +75,9 @@ class DivFwdOp(BinaryOp):
     ``rounding_mode`` accepts ``None`` (true division), ``"trunc"``
     (truncation toward zero), or ``"floor"`` (floor division); each
     value selects a dedicated kernel specialization. The leading ``*``
-    makes ``rounding_mode`` and the existing ``strategy`` /
-    ``kernel_map`` / ``tune`` parameters keyword-only; only the
-    positional triplet ``(a_shape, b_shape, dtype)`` is shared with
-    ``BinaryOp``.
+    makes ``rounding_mode`` and the existing ``kernel_map`` / ``tune``
+    parameters keyword-only; only the positional triplet
+    ``(a_shape, b_shape, dtype)`` is shared with ``BinaryOp``.
     """
 
     _op_name = "div"
@@ -91,7 +90,6 @@ class DivFwdOp(BinaryOp):
         dtype: torch.dtype,
         *,
         rounding_mode: Optional[str] = None,
-        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -107,8 +105,7 @@ class DivFwdOp(BinaryOp):
         # matching ``rounding_mode``.
         self.kernel_cls = _DIV_KERNEL_BY_ROUNDING_MODE[rounding_mode]
         super().__init__(
-            a_shape, b_shape, dtype, strategy=strategy,
-            kernel_map=kernel_map, tune=tune,
+            a_shape, b_shape, dtype, kernel_map=kernel_map, tune=tune,
         )
 
 
@@ -152,7 +149,6 @@ class LerpFwdOp(BinaryOp):
         b_shape: Shape of input b.
         dtype: Torch dtype.
         weight: Scalar interpolation weight, fixed at construction (default 0.5).
-        strategy: Kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """
@@ -167,7 +163,6 @@ class LerpFwdOp(BinaryOp):
         b_shape: tuple,
         dtype: torch.dtype,
         weight: float = 0.5,
-        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -181,7 +176,6 @@ class LerpFwdOp(BinaryOp):
         self.dtype = dtype
         self.a_shape = tuple(a_shape)
         self.b_shape = tuple(b_shape)
-        self.strategy = strategy
         self._weight = weight
         out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
             a_shape, b_shape,
@@ -194,7 +188,7 @@ class LerpFwdOp(BinaryOp):
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map[self._op_name](
             self.N_total, dtype, coalesced_shape, a_strides, b_strides,
-            self.a_numel, self.b_numel, strategy=strategy, tune=tune,
+            self.a_numel, self.b_numel, tune=tune,
             weight=weight,
         )
         # Register in global registry for torch.compile dispatch
@@ -249,7 +243,6 @@ class LerpTensorFwdOp(Op):
         end: tuple,
         weight: tuple,
         dtype: torch.dtype,
-        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -263,7 +256,6 @@ class LerpTensorFwdOp(Op):
         self.end_shape = tuple(end)
         self.weight_shape = tuple(weight)
         self.dtype = dtype
-        self.strategy = strategy
         self.out_shape = tuple(
             torch.broadcast_shapes(
                 self.input_shape, self.end_shape, self.weight_shape,
