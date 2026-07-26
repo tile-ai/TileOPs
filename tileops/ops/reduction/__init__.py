@@ -10,26 +10,12 @@ kernels are implemented.
 # Each sub-category PR uncomments its own lines.
 
 # --- LogicalReduceKernel ops ---
-from .all_op import AllFwdOp
-from .any_op import AnyFwdOp
-
 # --- ArgreduceKernel ops ---
-from .argmax import ArgmaxFwdOp
-from .argmin import ArgminFwdOp
-from .count_nonzero import CountNonzeroFwdOp
+from .argreduce import ArgmaxFwdOp, ArgminFwdOp
 
 # --- CumulativeKernel ops ---
-from .cumprod import CumprodFwdOp
-from .cumsum import CumsumFwdOp
-
-# from .cummax import CummaxOp
-# from .cummin import CumminOp
-# --- VectorNormKernel ops ---
-from .inf_norm import InfNormFwdOp
-from .l1_norm import L1NormFwdOp
-from .l2_norm import L2NormFwdOp
-from .log_softmax import LogSoftmaxFwdOp
-from .logsumexp import LogSumExpFwdOp
+from .cumulative import CumprodFwdOp, CumsumFwdOp
+from .logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
 # --- ReduceKernel ops ---
 # --- SoftmaxKernel ops ---
@@ -43,7 +29,12 @@ from .reduce import (
     VarFwdOp,
     VarMeanFwdOp,
 )
-from .softmax import SoftmaxFwdOp
+from .softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
+
+# from .cummax import CummaxOp
+# from .cummin import CumminOp
+# --- VectorNormKernel ops ---
+from .vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 
 __all__: list[str] = [
     # --- LogicalReduceKernel ops ---

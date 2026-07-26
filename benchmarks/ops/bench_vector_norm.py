@@ -8,9 +8,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
-from tileops.ops.reduction.inf_norm import InfNormFwdOp
-from tileops.ops.reduction.l1_norm import L1NormFwdOp
-from tileops.ops.reduction.l2_norm import L2NormFwdOp
+from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 from workloads.reduction import InfNormTest, L1NormTest, L2NormTest
 
 # Op name constants

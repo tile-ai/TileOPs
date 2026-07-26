@@ -153,9 +153,7 @@ def _make_op(
     kernel_map=None,
 ):
     """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.inf_norm import InfNormFwdOp
-    from tileops.ops.reduction.l1_norm import L1NormFwdOp
-    from tileops.ops.reduction.l2_norm import L2NormFwdOp
+    from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 
     op_map = {
         "l1": L1NormFwdOp,

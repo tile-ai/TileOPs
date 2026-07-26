@@ -10,8 +10,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
-from tileops.ops.reduction.argmax import ArgmaxFwdOp
-from tileops.ops.reduction.argmin import ArgminFwdOp
+from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 from workloads.reduction import ArgmaxTest, ArgminTest
 
 _ARGMAX_OP = "ArgmaxFwdOp"

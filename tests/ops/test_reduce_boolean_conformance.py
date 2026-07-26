@@ -23,9 +23,7 @@ from typing import Callable
 import pytest
 import torch
 
-from tileops.ops.reduction.all_op import AllFwdOp
-from tileops.ops.reduction.any_op import AnyFwdOp
-from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
 # (op_cls, torch_fn) pairs for ops sharing the (dim, keepdim) signature.
 _OP_CASES: list[tuple[type, Callable]] = [

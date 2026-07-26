@@ -150,9 +150,7 @@ def test_invalid_dof_welford_reductions_match_pytorch(
 def test_scalar_logical_and_count_reductions(
     dim, dtype: torch.dtype, make_input,
 ) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
-    from tileops.ops.reduction.any_op import AnyFwdOp
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
     x = make_input(dtype)
 

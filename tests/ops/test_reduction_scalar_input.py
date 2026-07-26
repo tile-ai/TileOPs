@@ -100,7 +100,7 @@ def test_prod_scalar_input(dim) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("all"))
 def test_all_scalar_input(dim) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = torch.tensor(1.0, dtype=torch.float32, device="cuda")
     op = AllFwdOp(dtype=torch.float32, dim=dim)
@@ -114,7 +114,7 @@ def test_all_scalar_input(dim) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("any"))
 def test_any_scalar_input(dim) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = torch.tensor(0.0, dtype=torch.float32, device="cuda")
     op = AnyFwdOp(dtype=torch.float32, dim=dim)
@@ -128,7 +128,7 @@ def test_any_scalar_input(dim) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("count_nonzero"))
 def test_count_nonzero_scalar_input(dim) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     x = torch.tensor(2.5, dtype=torch.float32, device="cuda")
     op = CountNonzeroFwdOp(dtype=torch.float32, dim=dim)

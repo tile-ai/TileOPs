@@ -216,7 +216,7 @@ def _make_nd_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
 
 @LogicalReduceBasicFixture
 def test_any_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dtype=dtype, dim=-1)
@@ -225,7 +225,7 @@ def test_any_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @LogicalReduceNonContigFixture
 def test_any_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
@@ -238,7 +238,7 @@ def test_any_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @LogicalReduce3DFixture
 def test_any_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
     op = AnyFwdOp(dtype=dtype, dim=-1)
@@ -250,7 +250,7 @@ def test_any_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 
 @LogicalReduce4DFixture
 def test_any_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
     op = AnyFwdOp(dtype=dtype, dim=-1)
@@ -262,7 +262,7 @@ def test_any_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
 
 @LogicalReduce1DFixture
 def test_any_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = _make_1d_input(n, dtype)
     op = AnyFwdOp(dtype=dtype, dim=-1)
@@ -274,7 +274,7 @@ def test_any_1d(n: int, dtype: torch.dtype) -> None:
 
 @LogicalReduceDimFixture
 def test_any_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = _make_nd_input(shape, dtype)
     op = AnyFwdOp(dtype=dtype, dim=dim)
@@ -287,7 +287,7 @@ def test_any_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 
 @LogicalReduceKeepdimFixture
 def test_any_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = _make_nd_input(shape, dtype)
     op = AnyFwdOp(dtype=dtype, dim=dim, keepdim=True)
@@ -303,7 +303,7 @@ def test_any_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 
 @LogicalReduceBasicFixture
 def test_all_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dtype=dtype, dim=-1)
@@ -312,7 +312,7 @@ def test_all_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @LogicalReduceNonContigFixture
 def test_all_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
@@ -325,7 +325,7 @@ def test_all_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @LogicalReduce3DFixture
 def test_all_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
     op = AllFwdOp(dtype=dtype, dim=-1)
@@ -337,7 +337,7 @@ def test_all_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 
 @LogicalReduce4DFixture
 def test_all_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
     op = AllFwdOp(dtype=dtype, dim=-1)
@@ -349,7 +349,7 @@ def test_all_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
 
 @LogicalReduce1DFixture
 def test_all_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = _make_1d_input(n, dtype)
     op = AllFwdOp(dtype=dtype, dim=-1)
@@ -361,7 +361,7 @@ def test_all_1d(n: int, dtype: torch.dtype) -> None:
 
 @LogicalReduceDimFixture
 def test_all_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = _make_nd_input(shape, dtype)
     op = AllFwdOp(dtype=dtype, dim=dim)
@@ -374,7 +374,7 @@ def test_all_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 
 @LogicalReduceKeepdimFixture
 def test_all_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = _make_nd_input(shape, dtype)
     op = AllFwdOp(dtype=dtype, dim=dim, keepdim=True)
@@ -390,7 +390,7 @@ def test_all_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 
 @LogicalReduceBasicFixture
 def test_count_nonzero_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
@@ -399,7 +399,7 @@ def test_count_nonzero_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @LogicalReduceNonContigFixture
 def test_count_nonzero_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
@@ -412,7 +412,7 @@ def test_count_nonzero_non_contiguous(m: int, n: int, dtype: torch.dtype) -> Non
 
 @LogicalReduce3DFixture
 def test_count_nonzero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
     op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
@@ -424,7 +424,7 @@ def test_count_nonzero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype)
 
 @LogicalReduce4DFixture
 def test_count_nonzero_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
     op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
@@ -436,7 +436,7 @@ def test_count_nonzero_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype)
 
 @LogicalReduce1DFixture
 def test_count_nonzero_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     x = _make_1d_input(n, dtype)
     op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
@@ -448,7 +448,7 @@ def test_count_nonzero_1d(n: int, dtype: torch.dtype) -> None:
 
 @LogicalReduceDimFixture
 def test_count_nonzero_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     x = _make_nd_input(shape, dtype)
     op = CountNonzeroFwdOp(dtype=dtype, dim=dim)
@@ -493,7 +493,7 @@ _DtypeSmoke_bool = _make_dtype_smoke_fixture(torch.bool)
 
 @_DtypeSmoke_float16
 def test_any_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dtype=dtype, dim=-1)
@@ -502,7 +502,7 @@ def test_any_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_bfloat16
 def test_any_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dtype=dtype, dim=-1)
@@ -511,7 +511,7 @@ def test_any_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_int32
 def test_any_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dtype=dtype, dim=-1)
@@ -520,7 +520,7 @@ def test_any_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_int64
 def test_any_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dtype=dtype, dim=-1)
@@ -529,7 +529,7 @@ def test_any_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_bool
 def test_any_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "any")
     op = AnyFwdOp(dtype=dtype, dim=-1)
@@ -538,7 +538,7 @@ def test_any_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_float16
 def test_all_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dtype=dtype, dim=-1)
@@ -547,7 +547,7 @@ def test_all_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_bfloat16
 def test_all_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dtype=dtype, dim=-1)
@@ -556,7 +556,7 @@ def test_all_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_int32
 def test_all_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dtype=dtype, dim=-1)
@@ -565,7 +565,7 @@ def test_all_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_int64
 def test_all_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dtype=dtype, dim=-1)
@@ -574,7 +574,7 @@ def test_all_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_bool
 def test_all_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "all")
     op = AllFwdOp(dtype=dtype, dim=-1)
@@ -583,7 +583,7 @@ def test_all_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_float16
 def test_count_nonzero_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
@@ -592,7 +592,7 @@ def test_count_nonzero_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None
 
 @_DtypeSmoke_bfloat16
 def test_count_nonzero_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
@@ -601,7 +601,7 @@ def test_count_nonzero_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> Non
 
 @_DtypeSmoke_int32
 def test_count_nonzero_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
@@ -610,7 +610,7 @@ def test_count_nonzero_smoke_int32(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_int64
 def test_count_nonzero_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
@@ -619,7 +619,7 @@ def test_count_nonzero_smoke_int64(m: int, n: int, dtype: torch.dtype) -> None:
 
 @_DtypeSmoke_bool
 def test_count_nonzero_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     test = LogicalReduceTest(m, n, dtype, "count_nonzero")
     op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
@@ -637,9 +637,7 @@ def test_count_nonzero_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
 )
 def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) -> None:
     """Exercise the N-tiled path with a tail-M block."""
-    from tileops.ops.reduction.all_op import AllFwdOp
-    from tileops.ops.reduction.any_op import AnyFwdOp
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
     op_map = {
         "any": AnyFwdOp,
@@ -683,7 +681,7 @@ def test_logical_reduce_accepts_bool(op_name: str) -> None:
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_count_nonzero_returns_int64() -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     op = CountNonzeroFwdOp(dtype=torch.float16, dim=-1)
     x = torch.randn(_M, _N, dtype=torch.float16, device="cuda")

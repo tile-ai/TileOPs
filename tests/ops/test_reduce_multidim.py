@@ -194,7 +194,7 @@ def test_var_mean_multidim(
 def test_logsumexp_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
+    from tileops.ops.reduction.softmax import LogSumExpFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = LogSumExpFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
@@ -249,7 +249,7 @@ def _make_logical_input(
 def test_all_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = _make_logical_input(shape, dtype)
     op = AllFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
@@ -263,7 +263,7 @@ def test_all_multidim(
 def test_any_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = _make_logical_input(shape, dtype)
     op = AnyFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
@@ -299,7 +299,7 @@ class MultiDimCountFixture(FixtureBase):
 def test_count_nonzero_multidim(
     shape: tuple, dims: list, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     if dtype == torch.bool:
         x = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
@@ -323,7 +323,7 @@ def test_count_nonzero_multidim(
 def test_l1_norm_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.l1_norm import L1NormFwdOp
+    from tileops.ops.reduction.vector_norm import L1NormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = L1NormFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
@@ -340,7 +340,7 @@ def test_l1_norm_multidim(
 def test_l2_norm_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.l2_norm import L2NormFwdOp
+    from tileops.ops.reduction.vector_norm import L2NormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = L2NormFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
@@ -357,7 +357,7 @@ def test_l2_norm_multidim(
 def test_inf_norm_multidim(
     shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype,
 ) -> None:
-    from tileops.ops.reduction.inf_norm import InfNormFwdOp
+    from tileops.ops.reduction.vector_norm import InfNormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     op = InfNormFwdOp(dtype=dtype, dim=dims, keepdim=keepdim)
@@ -415,7 +415,7 @@ def test_mean_empty_dim_full_reduction() -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_name", ["amin", "amax", "count_nonzero"])
 def test_simple_op_empty_dim_full_reduction(op_name: str) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
     from tileops.ops.reduction.reduce import AmaxFwdOp, AminFwdOp
 
     op_cls = {"amin": AminFwdOp, "amax": AmaxFwdOp, "count_nonzero": CountNonzeroFwdOp}[op_name]
@@ -465,7 +465,7 @@ def test_prod_empty_dim_rejects() -> None:
 
 @pytest.mark.smoke
 def test_logsumexp_empty_dim_rejects() -> None:
-    from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
+    from tileops.ops.reduction.softmax import LogSumExpFwdOp
 
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
     op = LogSumExpFwdOp(dtype=torch.float16, dim=[], keepdim=False)
@@ -477,7 +477,7 @@ def test_logsumexp_empty_dim_rejects() -> None:
 def test_all_empty_dim_is_noop() -> None:
     """AllFwdOp honors the spec's ``dim=[]`` no-op contract: output equals
     ``x.bool()`` with the input shape."""
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = (torch.randn(2, 3, 4, device="cuda") > 0).to(torch.float16)
     op = AllFwdOp(dtype=torch.float16, dim=[], keepdim=False)

@@ -211,8 +211,7 @@ _ARGREDUCE_OP_NAMES = {"argmax": "ArgmaxFwdOp", "argmin": "ArgminFwdOp"}
 
 
 def _make_argreduce_op(dtype, op_kind, dim, keepdim):
-    from tileops.ops.reduction.argmax import ArgmaxFwdOp
-    from tileops.ops.reduction.argmin import ArgminFwdOp
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 
     cls = ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp
     return cls(dtype=dtype, dim=dim, keepdim=keepdim)
@@ -317,9 +316,7 @@ _LOGICAL_OP_NAMES = {
 
 
 def _make_logical_op(dtype, op_kind, dim, keepdim):
-    from tileops.ops.reduction.all_op import AllFwdOp
-    from tileops.ops.reduction.any_op import AnyFwdOp
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
     op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
     cls = op_map[op_kind]
@@ -422,9 +419,7 @@ _VECTOR_NORM_OP_NAMES = {
 
 
 def _make_norm_op(dtype, op_kind, dim, keepdim):
-    from tileops.ops.reduction.inf_norm import InfNormFwdOp
-    from tileops.ops.reduction.l1_norm import L1NormFwdOp
-    from tileops.ops.reduction.l2_norm import L2NormFwdOp
+    from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 
     op_map = {"l1": L1NormFwdOp, "l2": L2NormFwdOp, "inf": InfNormFwdOp}
     cls = op_map[op_kind]
@@ -521,8 +516,7 @@ _CUMULATIVE_OP_NAMES = {"cumsum": "CumsumFwdOp", "cumprod": "CumprodFwdOp"}
 def _make_cumulative_op(M, N, dtype, op_kind):
     import inspect
 
-    from tileops.ops.reduction.cumprod import CumprodFwdOp
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
+    from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 
     op_map = {"cumsum": CumsumFwdOp, "cumprod": CumprodFwdOp}
     cls = op_map[op_kind]
@@ -623,7 +617,7 @@ _LOGSUMEXP_OP_NAME = "LogSumExpFwdOp"
 
 
 def _make_logsumexp_op(dtype, dim, keepdim):
-    from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
+    from tileops.ops.reduction.softmax import LogSumExpFwdOp
 
     return LogSumExpFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
 

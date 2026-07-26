@@ -8,9 +8,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
-from tileops.ops.reduction.all_op import AllFwdOp
-from tileops.ops.reduction.any_op import AnyFwdOp
-from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 from workloads.reduction import AllTest, AnyTest, CountNonzeroTest
 
 # Op name constants

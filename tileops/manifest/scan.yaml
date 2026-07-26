@@ -17,14 +17,14 @@ CumsumFwdOp:
     params:
       dim: {type: int, default: -1}
     shape_rules:
-      - "-x.ndim <= dim < x.ndim"
-      - "y.shape == x.shape"
+    - "-x.ndim <= dim < x.ndim"
+    - "y.shape == x.shape"
 
   workloads:
     # Hidden state cumulative sum (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-scan"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-scan"}
     # Long sequence cumulative sum
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-scan"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-scan"}
 
   roofline:
     vars:
@@ -39,7 +39,7 @@ CumsumFwdOp:
     kernel: tileops/kernels/reduction/cumulative.py
     kernel_map:
       cumulative_fwd: CumulativeKernel
-    op: tileops/ops/reduction/cumsum.py
+    op: tileops/ops/reduction/cumulative.py
     test: tests/ops/test_cumulative.py
     bench: benchmarks/ops/bench_cumulative.py
     bench_manifest_driven: true
@@ -57,14 +57,14 @@ CumprodFwdOp:
     params:
       dim: {type: int, default: -1}
     shape_rules:
-      - "-x.ndim <= dim < x.ndim"
-      - "y.shape == x.shape"
+    - "-x.ndim <= dim < x.ndim"
+    - "y.shape == x.shape"
 
   workloads:
     # Hidden state cumulative product (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-scan"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-scan"}
     # Long sequence cumulative product
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-scan"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-scan"}
 
   roofline:
     vars:
@@ -79,7 +79,7 @@ CumprodFwdOp:
     kernel: tileops/kernels/reduction/cumulative.py
     kernel_map:
       cumulative_fwd: CumulativeKernel
-    op: tileops/ops/reduction/cumprod.py
+    op: tileops/ops/reduction/cumulative.py
     test: tests/ops/test_cumulative.py
     bench: benchmarks/ops/bench_cumulative.py
     bench_manifest_driven: true
