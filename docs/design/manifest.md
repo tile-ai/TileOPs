@@ -478,7 +478,7 @@ RMSNormFwdOp:
       rms_norm: RMSNormKernel
     op: tileops/ops/norm/rms_norm.py
     test: tests/ops/test_rms_norm.py
-    bench: benchmarks/ops/bench_rms_norm.py
+    bench: benchmarks/ops/bench_norm.py
 ```
 
 ## Benchmark Pattern
