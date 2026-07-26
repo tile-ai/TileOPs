@@ -12,7 +12,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    workload_field_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.engram_decode import EngramDecodeOp
@@ -26,25 +30,6 @@ from workloads.engram import (
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
 _TUNE = True
-
-
-def _workload_params(workloads: list, keys: tuple) -> list:
-    """Turn manifest workload dicts into pytest params.
-
-    First workload is marked ``smoke``, the rest ``full``. Keys ending in
-    ``dtype`` are resolved to ``torch.dtype`` values.
-    """
-    params = []
-    for i, w in enumerate(workloads):
-        args = [getattr(torch, w[k]) if k.endswith("dtype") else w[k] for k in keys]
-        params.append(
-            pytest.param(
-                *args,
-                marks=pytest.mark.smoke if i == 0 else pytest.mark.full,
-                id=w["label"],
-            )
-        )
-    return params
 
 
 def _rmsnorm(x, w, eps=1e-6):
@@ -87,7 +72,7 @@ def engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, eps=1e-6):
 
 
 _ENGRAM_GATE_CONV_FWD_OP = "EngramGateConvFwdOp"
-_ENGRAM_GATE_CONV_FWD_PARAMS = _workload_params(
+_ENGRAM_GATE_CONV_FWD_PARAMS = workload_field_params(
     load_workloads(_ENGRAM_GATE_CONV_FWD_OP), ("M", "seq_len", "d", "dtype"),
 )
 
@@ -161,7 +146,7 @@ class _EngramGateConvBwdTestBaseline(EngramGateConvBwdTest):
 
 
 _ENGRAM_GATE_CONV_BWD_OP = "EngramGateConvBwdOp"
-_ENGRAM_GATE_CONV_BWD_PARAMS = _workload_params(
+_ENGRAM_GATE_CONV_BWD_PARAMS = workload_field_params(
     load_workloads(_ENGRAM_GATE_CONV_BWD_OP), ("M", "seq_len", "d", "dtype"),
 )
 
@@ -242,7 +227,7 @@ def engram_decode_step_torch(
 
 
 _ENGRAM_DECODE_OP = "EngramDecodeOp"
-_ENGRAM_DECODE_PARAMS = _workload_params(
+_ENGRAM_DECODE_PARAMS = workload_field_params(
     load_workloads(_ENGRAM_DECODE_OP),
     ("batch", "d_mem", "d", "max_conv_len", "conv_kernel_size", "dilation", "dtype"),
 )

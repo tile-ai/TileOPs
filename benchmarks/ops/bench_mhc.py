@@ -10,7 +10,11 @@ import math
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    workload_field_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops import MHCPostOp, MHCPreOp
 from workloads.mhc import MHCPostTest, MHCPreTest
@@ -22,25 +26,6 @@ _TUNE = True
 # Sinkhorn epsilon is not part of any manifest workload; use the manifest
 # signature default.
 _SINKHORN_EPS = 0.02
-
-
-def _workload_params(workloads: list, keys: tuple) -> list:
-    """Turn manifest workload dicts into pytest params.
-
-    First workload is marked ``smoke``, the rest ``full``. Keys ending in
-    ``dtype`` are resolved to ``torch.dtype`` values.
-    """
-    params = []
-    for i, w in enumerate(workloads):
-        args = [getattr(torch, w[k]) if k.endswith("dtype") else w[k] for k in keys]
-        params.append(
-            pytest.param(
-                *args,
-                marks=pytest.mark.smoke if i == 0 else pytest.mark.full,
-                id=w["label"],
-            )
-        )
-    return params
 
 
 class _MHCPreTestBaseline(MHCPreTest):
@@ -99,7 +84,7 @@ class _MHCPreTestBaseline(MHCPreTest):
 
 
 _MHC_PRE_OP = "MHCPreOp"
-_MHC_PRE_PARAMS = _workload_params(
+_MHC_PRE_PARAMS = workload_field_params(
     load_workloads(_MHC_PRE_OP),
     ("batch", "n_expand", "c_x", "dtype", "alpha_pre", "alpha_post", "alpha_res",
      "sinkhorn_repeat"),
@@ -144,7 +129,7 @@ class _MHCPostTestBaseline(MHCPostTest):
 
 
 _MHC_POST_OP = "MHCPostOp"
-_MHC_POST_PARAMS = _workload_params(
+_MHC_POST_PARAMS = workload_field_params(
     load_workloads(_MHC_POST_OP), ("batch", "n_expand", "c_x", "dtype"),
 )
 

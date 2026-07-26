@@ -218,11 +218,6 @@ class GatedDeltaNetVsFlaFwdFixture(FixtureBase):
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
             (2, 32768, 4, 64, 64, 64, torch.float16, False),
-            (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 16384, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 32768, 4, 64, 64, 64, torch.bfloat16, False),
         ]),
     ]
 
@@ -291,10 +286,6 @@ class GatedDeltaNetVsFlaBwdFixture(FixtureBase):
             (2, 4096, 4, 64, 64, 64, torch.float16, False),
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 16384, 4, 64, 64, 64, torch.bfloat16, False),
         ]),
     ]
 
@@ -386,10 +377,6 @@ class GatedDeltaNetVsFlaFwdBwdFixture(FixtureBase):
             (2, 4096, 4, 64, 64, 64, torch.float16, False),
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 16384, 4, 64, 64, 64, torch.bfloat16, False),
         ]),
     ]
 

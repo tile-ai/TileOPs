@@ -25,21 +25,6 @@ def _generate_offsets(batch_sizes_list, padding_M):
             + math.ceil((batch_sizes_list[i] + 1) / padding_M) * padding_M)
     return batch_offsets_list, batch_padded_offsets_list
 
-class GroupedGemmCompleteTest:
-    """Parameter holder for GroupedGemmCompleteBenchmark (forward NT + backward NN + backward TN).
-
-    The benchmark test function profiles each variant (NT/NN/TN) individually
-    using GroupedGemmTest; this class exists so the benchmark can access
-    batch_sum, batch_count, N, K, and dtype for FLOPS/memory calculations.
-    """
-
-    def __init__(self, batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype):
-        self.batch_sum = batch_sum
-        self.batch_count = batch_count
-        self.N = N
-        self.K = K
-        self.dtype = dtype
-
 class GroupedGemmTest(WorkloadBase):
 
     def __init__(self, batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,

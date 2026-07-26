@@ -8,7 +8,11 @@ FLOP and byte counts come from the op's ``eval_roofline()`` via
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    workload_field_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops import TopkSelectorOp
 from workloads.topk_selector import TopkSelectorTest
@@ -16,25 +20,6 @@ from workloads.topk_selector import TopkSelectorTest
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
 _TUNE = True
-
-
-def _workload_params(workloads: list, keys: tuple) -> list:
-    """Turn manifest workload dicts into pytest params.
-
-    First workload is marked ``smoke``, the rest ``full``. Keys ending in
-    ``dtype`` are resolved to ``torch.dtype`` values.
-    """
-    params = []
-    for i, w in enumerate(workloads):
-        args = [getattr(torch, w[k]) if k.endswith("dtype") else w[k] for k in keys]
-        params.append(
-            pytest.param(
-                *args,
-                marks=pytest.mark.smoke if i == 0 else pytest.mark.full,
-                id=w["label"],
-            )
-        )
-    return params
 
 
 class _TopkSelectorTestBaseline(TopkSelectorTest):
@@ -49,7 +34,7 @@ class _TopkSelectorTestBaseline(TopkSelectorTest):
 
 
 _TOPK_SELECTOR_OP = "TopkSelectorOp"
-_TOPK_SELECTOR_PARAMS = _workload_params(
+_TOPK_SELECTOR_PARAMS = workload_field_params(
     load_workloads(_TOPK_SELECTOR_OP),
     ("batch", "seq_len", "seq_len_kv", "kv_group", "topk", "in_dtype", "out_dtype"),
 )

@@ -134,10 +134,7 @@ class GLAFwdFixture(FixtureBase):
             (2, 4096, 4, 64, 64, 64, torch.float16, False),
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 16384, 4, 64, 64, 64, torch.bfloat16, False),
         ]),
     ]
 
@@ -201,10 +198,7 @@ class GLABwdFixture(FixtureBase):
             (2, 4096, 4, 64, 64, 64, torch.float16, False),
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 16384, 4, 64, 64, 64, torch.bfloat16, False),
         ]),
     ]
 
@@ -292,10 +286,7 @@ class GLAFwdBwdFixture(FixtureBase):
             (2, 4096, 4, 64, 64, 64, torch.float16, False),
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
             (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 16384, 4, 64, 64, 64, torch.bfloat16, False),
         ]),
     ]
 

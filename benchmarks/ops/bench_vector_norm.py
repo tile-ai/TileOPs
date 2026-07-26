@@ -21,12 +21,18 @@ _INF_NORM_OP = "InfNormFwdOp"
 # L1 Norm benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_L1_NORM_OP))
-def test_l1_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_L1_NORM_OP, include_extra=True),
+)
+def test_l1_norm_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = L1NormTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = L1NormFwdOp(dtype=dtype, dim=-1)
+    op_params.setdefault("dim", -1)
+    op = L1NormFwdOp(dtype=dtype, **op_params)
     bm = ManifestBenchmark(_L1_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -36,8 +42,13 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        return torch.linalg.vector_norm(x.float(), ord=1, dim=-1).to(x.dtype)
+        return torch.linalg.vector_norm(
+            x.float(), ord=1, dim=dim, keepdim=keepdim,
+        ).to(x.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
@@ -46,12 +57,18 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
 # L2 Norm benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_L2_NORM_OP))
-def test_l2_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_L2_NORM_OP, include_extra=True),
+)
+def test_l2_norm_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = L2NormTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = L2NormFwdOp(dtype=dtype, dim=-1)
+    op_params.setdefault("dim", -1)
+    op = L2NormFwdOp(dtype=dtype, **op_params)
     bm = ManifestBenchmark(_L2_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -61,8 +78,13 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        return torch.linalg.vector_norm(x.float(), ord=2, dim=-1).to(x.dtype)
+        return torch.linalg.vector_norm(
+            x.float(), ord=2, dim=dim, keepdim=keepdim,
+        ).to(x.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
@@ -71,12 +93,18 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
 # Inf Norm benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_INF_NORM_OP))
-def test_inf_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_INF_NORM_OP, include_extra=True),
+)
+def test_inf_norm_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = InfNormTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = InfNormFwdOp(dtype=dtype, dim=-1)
+    op_params.setdefault("dim", -1)
+    op = InfNormFwdOp(dtype=dtype, **op_params)
     bm = ManifestBenchmark(_INF_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -86,8 +114,13 @@ def test_inf_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        return torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(x.dtype)
+        return torch.linalg.vector_norm(
+            x.float(), ord=float("inf"), dim=dim, keepdim=keepdim,
+        ).to(x.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")

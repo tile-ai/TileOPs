@@ -495,6 +495,24 @@ def workloads_to_params(op_name: str, include_extra: bool = False) -> list:
     return params
 
 
+def workload_field_params(workloads: list, keys: tuple) -> list:
+    """Turn manifest workload dicts into pytest params.
+
+    First workload is marked ``smoke``, the rest ``full``. Keys ending in
+    ``dtype`` are resolved to ``torch.dtype`` values.
+    """
+    params = []
+    for i, w in enumerate(workloads):
+        args = [getattr(torch, w[k]) if k.endswith("dtype") else w[k] for k in keys]
+        params.append(
+            pytest.param(
+                *args,
+                marks=pytest.mark.smoke if i == 0 else pytest.mark.full,
+                id=w["label"],
+            )
+        )
+    return params
+
 class ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload]):
     """Generic benchmark that reads FLOP/memory counts from an Op instance.
 

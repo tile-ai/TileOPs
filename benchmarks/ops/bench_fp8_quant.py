@@ -8,7 +8,11 @@ byte counts come from the op's ``eval_roofline()`` via
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    workload_field_params,
+)
 from tileops.manifest import load_workloads
 from tileops.ops import FP8QuantOp
 from workloads.fp8_quant import FP8QuantTest
@@ -16,25 +20,6 @@ from workloads.fp8_quant import FP8QuantTest
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
 _TUNE = True
-
-
-def _workload_params(workloads: list, keys: tuple) -> list:
-    """Turn manifest workload dicts into pytest params.
-
-    First workload is marked ``smoke``, the rest ``full``. Keys ending in
-    ``dtype`` are resolved to ``torch.dtype`` values.
-    """
-    params = []
-    for i, w in enumerate(workloads):
-        args = [getattr(torch, w[k]) if k.endswith("dtype") else w[k] for k in keys]
-        params.append(
-            pytest.param(
-                *args,
-                marks=pytest.mark.smoke if i == 0 else pytest.mark.full,
-                id=w["label"],
-            )
-        )
-    return params
 
 
 class _FP8QuantTestBaseline(FP8QuantTest):
@@ -50,7 +35,7 @@ class _FP8QuantTestBaseline(FP8QuantTest):
 
 
 _FP8_QUANT_OP = "FP8QuantOp"
-_FP8_QUANT_PARAMS = _workload_params(
+_FP8_QUANT_PARAMS = workload_field_params(
     load_workloads(_FP8_QUANT_OP),
     ("batch", "seq_len_kv", "kv_group", "index_dim", "in_dtype"),
 )
