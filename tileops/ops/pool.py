@@ -266,7 +266,6 @@ class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
     """Average pooling over PyTorch-compatible NCL inputs."""
 
     ndim = 1
-    # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
     def __init__(
@@ -318,7 +317,6 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
     """Average pooling over PyTorch-compatible NCHW inputs."""
 
     ndim = 2
-    # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
     def __init__(
@@ -579,7 +577,6 @@ class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
 
     ndim = 1
     _kernel_slot = "max_pool1d_kernel"
-    # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
     def __init__(
@@ -619,7 +616,6 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
     ndim = 1
     _kernel_slot = "max_pool1d_with_indices_kernel"
     _returns_indices = True
-    # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
     def __init__(
@@ -661,7 +657,6 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
 
     ndim = 2
     _kernel_slot = "max_pool2d_kernel"
-    # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
     def __init__(
@@ -701,7 +696,6 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
     ndim = 2
     _kernel_slot = "max_pool2d_with_indices_kernel"
     _returns_indices = True
-    # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
     def __init__(
@@ -743,7 +737,6 @@ class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
 
     ndim = 3
     _kernel_slot = "max_pool3d_kernel"
-    # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
     def __init__(
@@ -783,7 +776,6 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
     ndim = 3
     _kernel_slot = "max_pool3d_with_indices_kernel"
     _returns_indices = True
-    # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
     def __init__(
@@ -824,7 +816,6 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
     """Average pooling over PyTorch-compatible NCDHW inputs."""
 
     ndim = 3
-    # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
     def __init__(
