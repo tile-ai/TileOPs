@@ -15,9 +15,14 @@ DaCumsumFwdOp:
   # Mamba-2 dt preprocessing + chunk-local inclusive prefix sum of dA = dt * A.
   # dt_bias is consumed only when has_dt_bias=true; the tensor is still part
   # of the forward tuple, so it is declared as a regular input here.
+  #
+  # spec-only: the constructor carries a legacy `dtype` default
+  # (torch.float32) that the spec does not advertise, failing strict ctor
+  # parity. The status flips once the code-side default is removed
+  # (dtype is spec-required, matching the repo-wide ctor-dtype removal).
   ref_api: "none"
   family: mamba
-  status: implemented
+  status: spec-only
 
   signature:
     inputs:
@@ -59,9 +64,14 @@ DaCumsumFwdOp:
 CBProducerOp:
   # Causal C@B coupling-matrix producer:
   #   cb[b, c, g, l, s] = sum_n C[b, c*Q+l, g, n] * B[b, c*Q+s, g, n], s <= l.
+  #
+  # spec-only: the constructor carries a legacy `dtype` default
+  # (torch.float16) that the spec does not advertise, failing strict ctor
+  # parity. The status flips once the code-side default is removed
+  # (dtype is spec-required, matching the repo-wide ctor-dtype removal).
   ref_api: "none"
   family: mamba
-  status: implemented
+  status: spec-only
 
   signature:
     inputs:
