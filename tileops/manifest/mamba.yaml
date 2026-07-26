@@ -265,8 +265,8 @@ Mamba2FwdOp:
   # spec-only: the composite class does not yet conform to the Op protocol
   # (not an Op subclass; no kernel_map ctor param / dispatch_kernel slot),
   # so it cannot pass the implemented-status validator gates. The runtime,
-  # tests, and benchmark exist; conforming the class is code-side work for
-  # a follow-up implementation PR.
+  # tests, and benchmark exist; the status flips once the class conforms to
+  # the Op protocol.
   #
   # dt_bias and initial_states are optional at the code level (zeros are
   # substituted when omitted; initial_states additionally requires
