@@ -49,11 +49,8 @@ __all__ = [
     "gqa_decode_paged_roofline",
     "gqa_decode_roofline",
     "gqa_fwd_roofline",
-    "gqa_prefill_fp8_tensor_core_roofline",
-    "gqa_prefill_fwd_roofline",
     "gqa_prefill_paged_with_kv_cache_fwd_roofline",
     "gqa_prefill_varlen_fwd_roofline",
-    "gqa_prefill_with_kv_cache_fwd_roofline",
     "gqa_sliding_window_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
     "grouped_gemm_roofline",
@@ -196,44 +193,6 @@ def _causal_prefill_visible_scores(seq_len_q: int, seq_len_kv: int) -> int:
     return seq_len_q * seq_len_kv - seq_len_q * (seq_len_q - 1) // 2
 
 
-def gqa_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Conservative roofline for dense GQA prefill.
-
-    Workloads bind ``q_shape`` and ``kv_shape``. Causal mode uses bottom-right
-    alignment with ``S_q <= S_kv``.
-    """
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        q_shape = data["q_shape"]
-        kv_shape = data.get("kv_shape", data.get("k_shape"))
-        batch, seq_len_q, heads, dim = q_shape
-        _, seq_len_kv, heads_kv, _ = kv_shape
-    else:
-        batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = (
-            data["batch"],
-            data["seq_len_q"],
-            data["seq_len_kv"],
-            data["heads"],
-            data["heads_kv"],
-            data["dim"],
-        )
-    is_causal = bool(data.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    visible = (
-        _causal_prefill_visible_scores(seq_len_q, seq_len_kv)
-        if is_causal
-        else seq_len_q * seq_len_kv
-    )
-    flops = 4 * batch * heads * visible * dim
-
-    q_elems = batch * seq_len_q * heads * dim
-    kv_elems = batch * seq_len_kv * heads_kv * dim
-    o_elems = q_elems
-    nbytes = (q_elems + 2 * kv_elems + o_elems) * elem_bytes
-    return int(flops), int(nbytes)
-
-
 def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Approximate roofline for Gated DeltaNet zero-state prefill.
 
@@ -331,36 +290,6 @@ def gla_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]
     return int(flops), int(nbytes * elem_bytes)
 
 
-def gqa_prefill_fp8_tensor_core_roofline(
-    op: Any | None = None,
-    **kwargs: Any,
-) -> tuple[int, int]:
-    """Roofline for dense no-cache FP8 Tensor Core GQA prefill."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        q_shape = data["q_shape"]
-        kv_shape = data.get("kv_shape", data.get("k_shape"))
-        batch, seq_len, heads, dim = q_shape
-        _, _, heads_kv, _ = kv_shape
-    else:
-        batch, seq_len, heads, heads_kv, dim = (
-            data["batch"],
-            data["seq_len"],
-            data["heads"],
-            data["heads_kv"],
-            data["dim"],
-        )
-    out_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 4 * batch * heads * seq_len * seq_len * dim
-    q_elems = batch * seq_len * heads * dim
-    kv_elems = batch * seq_len * heads_kv * dim
-    # Public FP8 descales follow the FA3-compatible [batch, heads_kv] contract.
-    descale_bytes = 3 * batch * heads_kv * 4
-    nbytes = q_elems + 2 * kv_elems + q_elems * out_bytes + descale_bytes
-    return int(flops), int(nbytes)
-
-
 def _distribute_total(total: int, batch: int, max_len: int) -> list[int]:
     lengths = [0] * batch
     remaining = total
@@ -423,55 +352,6 @@ def gqa_prefill_varlen_fwd_roofline(
     o_elems = q_elems
     cu_bytes = 2 * (batch + 1) * 4
     nbytes = (q_elems + 2 * kv_elems + o_elems) * elem_bytes + cu_bytes
-    return int(flops), int(nbytes)
-
-
-def gqa_prefill_with_kv_cache_fwd_roofline(
-    op: Any | None = None,
-    **kwargs: Any,
-) -> tuple[int, int]:
-    """Conservative roofline for contiguous-cache GQA prefill.
-
-    The benchmark workload convention uses
-    ``old_len = S_kv_cap - S_new`` for every batch item.
-    """
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        q_shape = data["q_shape"]
-        k_new_shape = data["k_new_shape"]
-        k_cache_shape = data["k_cache_shape"]
-        batch, seq_len_new, heads, dim = q_shape
-        _, _, heads_kv, _ = k_new_shape
-        _, seq_len_cap, _, _ = k_cache_shape
-    else:
-        seq_len_cap = data["seq_len_cap"] if "seq_len_cap" in data else data["seqlen_kv"]
-        batch, seq_len_new, heads, heads_kv, dim = (
-            data["batch"],
-            data["seq_len_new"],
-            data["heads"],
-            data["heads_kv"],
-            data["dim"],
-        )
-    old_len = seq_len_cap - seq_len_new
-    is_causal = bool(data.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    visible = (
-        seq_len_new * old_len + seq_len_new * (seq_len_new + 1) // 2
-        if is_causal
-        else seq_len_new * (old_len + seq_len_new)
-    )
-    flops = 4 * batch * heads * visible * dim
-
-    q_elems = batch * seq_len_new * heads * dim
-    old_kv_elems = 2 * batch * old_len * heads_kv * dim
-    new_kv_elems = 2 * batch * seq_len_new * heads_kv * dim
-    append_kv_elems = new_kv_elems
-    o_elems = q_elems
-    cache_seqlens_bytes = batch * 4
-    nbytes = (
-        q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems
-    ) * elem_bytes + cache_seqlens_bytes
     return int(flops), int(nbytes)
 
 

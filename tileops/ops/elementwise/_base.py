@@ -594,23 +594,6 @@ def _is_fp8(dtype: torch.dtype) -> bool:
     return dtype in _FP8_DTYPES
 
 
-def _fp8_compute_dtype(dtype: torch.dtype) -> torch.dtype:
-    """Return the compute dtype used to emulate fp8 elementwise fallbacks.
-
-    PyTorch's CUDA backend does not implement ``clamp``/``maximum``/
-    ``minimum``/``masked_fill_`` on Float8 tensors (raises NotImplementedError
-    on ``clamp_cuda`` / ``max_elementwise_cuda`` / ``min_elementwise_cuda`` /
-    ``masked_fill_``). Both e4m3fn (finite range ±448) and e5m2 (finite range
-    ±57344) fit in fp16, so we upcast to fp16, run the op, and cast back. The
-    final cast preserves Inf/NaN for e5m2 (PyTorch's fp16->e5m2 conversion is
-    non-saturating) and saturates for e4m3fn (matching PyTorch's default
-    fp16->e4m3fn behaviour).
-    """
-    if not _is_fp8(dtype):
-        raise ValueError(f"_fp8_compute_dtype expects an fp8 dtype, got {dtype}")
-    return torch.float16
-
-
 class UnaryOp(Op):
     """Template base class for unary elementwise ops.
 

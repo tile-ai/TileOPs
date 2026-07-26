@@ -1,6 +1,4 @@
-import warnings
 from collections.abc import Sequence
-from typing import Tuple
 
 
 def _normalize_pool_dims(name: str, value: int | Sequence[int], ndim: int) -> tuple[int, ...]:
@@ -20,18 +18,6 @@ def _normalize_pool_dims(name: str, value: int | Sequence[int], ndim: int) -> tu
         raise TypeError(f"{name} must contain only ints")
 
     return tuple(value)
-
-
-def normalize_1d(value: int | Tuple[int]) -> int:
-    return _normalize_pool_dims("value", value, 1)[0]
-
-
-def normalize_2d(value: int | Tuple[int, int]) -> Tuple[int, int]:
-    return _normalize_pool_dims("value", value, 2)
-
-
-def normalize_3d(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
-    return _normalize_pool_dims("value", value, 3)
 
 
 def validate_pool_params(
@@ -83,30 +69,6 @@ def validate_pool_params(
 
     if divisor_override == 0:
         raise ValueError("divisor_override must not be zero")
-
-
-def validate_channels_last_input(
-    *,
-    op_name: str,
-    x_shape: tuple[int, ...],
-    expected_shape: tuple[int, ...],
-    layout: str,
-    ambiguous_layout_shape: tuple[int, ...] | None = None,
-) -> None:
-    if x_shape != expected_shape:
-        raise ValueError(
-            f"{op_name} expects a {layout} input tensor with shape {expected_shape}, "
-            f"but got {x_shape}"
-        )
-
-    if ambiguous_layout_shape is not None and ambiguous_layout_shape == expected_shape:
-        warnings.warn(
-            (
-                f"{op_name} received an ambiguous {layout} shape {x_shape}; "
-                "shape alone cannot distinguish channels-last from channels-first layout"
-            ),
-            stacklevel=2,
-        )
 
 
 def pool_output_dim(
