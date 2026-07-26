@@ -321,6 +321,29 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
     # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
+    def __init__(
+        self,
+        kernel_size: int | Tuple[int, int],
+        stride: Optional[int | Tuple[int, int]] = None,
+        padding: int | Tuple[int, int] = 0,
+        ceil_mode: bool = False,
+        count_include_pad: bool = True,
+        divisor_override: Optional[int] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__(
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            ceil_mode=ceil_mode,
+            count_include_pad=count_include_pad,
+            divisor_override=divisor_override,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
+
+
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
@@ -564,6 +587,27 @@ class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
     # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
+    def __init__(
+        self,
+        kernel_size: int | Tuple[int],
+        stride: Optional[int | Tuple[int]] = None,
+        padding: int | Tuple[int] = 0,
+        dilation: int | Tuple[int] = 1,
+        ceil_mode: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__(
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            ceil_mode=ceil_mode,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
+
+
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
@@ -582,6 +626,27 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
     _returns_indices = True
     # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
+
+    def __init__(
+        self,
+        kernel_size: int | Tuple[int],
+        stride: Optional[int | Tuple[int]] = None,
+        padding: int | Tuple[int] = 0,
+        dilation: int | Tuple[int] = 1,
+        ceil_mode: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__(
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            ceil_mode=ceil_mode,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
+
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -604,6 +669,27 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
     # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
+    def __init__(
+        self,
+        kernel_size: int | Tuple[int, int],
+        stride: Optional[int | Tuple[int, int]] = None,
+        padding: int | Tuple[int, int] = 0,
+        dilation: int | Tuple[int, int] = 1,
+        ceil_mode: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__(
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            ceil_mode=ceil_mode,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
+
+
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
@@ -622,6 +708,27 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
     _returns_indices = True
     # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
+
+    def __init__(
+        self,
+        kernel_size: int | Tuple[int, int],
+        stride: Optional[int | Tuple[int, int]] = None,
+        padding: int | Tuple[int, int] = 0,
+        dilation: int | Tuple[int, int] = 1,
+        ceil_mode: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__(
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            ceil_mode=ceil_mode,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
+
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -644,6 +751,27 @@ class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
     # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
 
+    def __init__(
+        self,
+        kernel_size: int | Tuple[int, int, int],
+        stride: Optional[int | Tuple[int, int, int]] = None,
+        padding: int | Tuple[int, int, int] = 0,
+        dilation: int | Tuple[int, int, int] = 1,
+        ceil_mode: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__(
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            ceil_mode=ceil_mode,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
+
+
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
@@ -662,6 +790,27 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
     _returns_indices = True
     # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
+
+    def __init__(
+        self,
+        kernel_size: int | Tuple[int, int, int],
+        stride: Optional[int | Tuple[int, int, int]] = None,
+        padding: int | Tuple[int, int, int] = 0,
+        dilation: int | Tuple[int, int, int] = 1,
+        ceil_mode: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__(
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            ceil_mode=ceil_mode,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
+
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -682,6 +831,29 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
     ndim = 3
     # Keep a concrete binding so manifest dtype codegen honors the shared validator.
     _validate_dtypes = _validate_pool_input_dtypes
+
+    def __init__(
+        self,
+        kernel_size: int | Tuple[int, int, int],
+        stride: Optional[int | Tuple[int, int, int]] = None,
+        padding: int | Tuple[int, int, int] = 0,
+        ceil_mode: bool = False,
+        count_include_pad: bool = True,
+        divisor_override: Optional[int] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__(
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            ceil_mode=ceil_mode,
+            count_include_pad=count_include_pad,
+            divisor_override=divisor_override,
+            kernel_map=kernel_map,
+            tune=tune,
+        )
+
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

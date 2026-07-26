@@ -1529,6 +1529,34 @@ def test_pool_ctor_signature_snapshot(
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
+    ("op_cls", "ndim"),
+    [
+        pytest.param(AvgPool1dFwdOp, 1, id="avg-pool1d"),
+        pytest.param(AvgPool2dFwdOp, 2, id="avg-pool2d"),
+        pytest.param(AvgPool3dFwdOp, 3, id="avg-pool3d"),
+        pytest.param(MaxPool1dFwdOp, 1, id="max-pool1d"),
+        pytest.param(MaxPool1dIndicesFwdOp, 1, id="max-pool1d-indices"),
+        pytest.param(MaxPool2dFwdOp, 2, id="max-pool2d"),
+        pytest.param(MaxPool2dIndicesFwdOp, 2, id="max-pool2d-indices"),
+        pytest.param(MaxPool3dFwdOp, 3, id="max-pool3d"),
+        pytest.param(MaxPool3dIndicesFwdOp, 3, id="max-pool3d-indices"),
+    ],
+)
+def test_pool_ctor_rank_annotations_snapshot(op_cls: type, ndim: int) -> None:
+    """Public ctor annotations stay rank-specific; ``Tuple[int, ...]`` is a regression."""
+    rank_tuple = "typing.Tuple[" + ", ".join(["int"] * ndim) + "]"
+    params = inspect.signature(op_cls.__init__).parameters
+    pool_params = ["kernel_size", "stride", "padding"]
+    if "dilation" in params:
+        pool_params.append("dilation")
+    for name in pool_params:
+        ann = str(params[name].annotation)
+        assert "Tuple[int, ...]" not in ann, f"{op_cls.__name__}.{name} widened to variadic: {ann}"
+        assert rank_tuple in ann, f"{op_cls.__name__}.{name} lost rank annotation: {ann}"
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
     "op_cls",
     [
         AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp,
