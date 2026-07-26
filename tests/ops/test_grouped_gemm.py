@@ -70,14 +70,10 @@ class GroupedGemmTest(_GroupedGemmTestWorkload, TestBase):
         return output
 
 
-# ---------------------------------------------------------------------------
 # Shared helper
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # Parametrized grouped GEMM test
-# ---------------------------------------------------------------------------
 
 class GroupedGemmFixture(FixtureBase):
     PARAMS = [
@@ -110,9 +106,7 @@ def test_grouped_gemm(batch_sum: int, batch_count: int, N: int, K: int, dtype: t
     test.check(op, *test.gen_inputs())
 
 
-# ---------------------------------------------------------------------------
 # Complete variant: forward (NT) + backward dA (NN) + backward dB (TN)
-# ---------------------------------------------------------------------------
 
 class GroupedGemmCompleteFixture(FixtureBase):
     PARAMS = [

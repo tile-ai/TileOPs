@@ -13,9 +13,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
 from workloads.logical_reduce import AnyTest as _AnyWorkload
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 class LogicalReduceBasicFixture(FixtureBase):
@@ -132,9 +130,7 @@ class LogicalReduceKeepdimFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # TestBase helpers — inherit gen_inputs() from workload classes
-# ---------------------------------------------------------------------------
 
 
 class LogicalReduceTest(_AnyWorkload, TestBase):
@@ -215,9 +211,7 @@ def _make_nd_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     return torch.randn(shape, dtype=dtype, device="cuda")
 
 
-# ---------------------------------------------------------------------------
 # AnyFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @LogicalReduceBasicFixture
@@ -304,9 +298,7 @@ def test_any_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     assert torch.equal(y, ref), f"any keepdim dim={dim} mismatch: {(y != ref).sum().item()}"
 
 
-# ---------------------------------------------------------------------------
 # AllFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @LogicalReduceBasicFixture
@@ -393,9 +385,7 @@ def test_all_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     assert torch.equal(y, ref), f"all keepdim dim={dim} mismatch: {(y != ref).sum().item()}"
 
 
-# ---------------------------------------------------------------------------
 # CountNonzeroFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @LogicalReduceBasicFixture
@@ -469,11 +459,9 @@ def test_count_nonzero_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     assert torch.equal(y, ref), f"count_nonzero dim={dim} mismatch: {(y != ref).sum().item()}"
 
 
-# ---------------------------------------------------------------------------
 # Dtype smoke tests: ensure all 6 supported dtypes are covered at smoke tier.
 # Each uses a single-param fixture so the framework's "exactly 1 smoke per
 # test function" constraint is satisfied while giving broad dtype coverage.
-# ---------------------------------------------------------------------------
 
 _DTYPE_SMOKE_M, _DTYPE_SMOKE_N = 64, 512
 
@@ -671,9 +659,7 @@ def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) ->
     assert kernel.config["tile_n"] > 0
 
 
-# ---------------------------------------------------------------------------
 # Manifest dtype contract: bool input + int64 / bool output dtypes.
-# ---------------------------------------------------------------------------
 
 _M = 64
 _N = 256

@@ -30,9 +30,7 @@ import torch
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from workloads.workload_base import FixtureBase, WorkloadBase
 
-# ===================================================================
 # 1. Reduce (sum, mean, amax) — multi-dim
-# ===================================================================
 
 
 class ReduceMultidimFixture(FixtureBase):
@@ -142,11 +140,9 @@ def test_reduce_multidim_bench(
     BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
-# ===================================================================
 # 2. Argreduce (argmax, argmin) — non-last-axis dims on 3D tensor
 #    ArgmaxFwdOp/ArgminFwdOp only accept scalar dim (int), not a list.
 #    We cover dim=0, dim=1, and dim=2 on a 3D tensor.
-# ===================================================================
 
 
 class ArgreduceMultidimFixture(FixtureBase):
@@ -248,9 +244,7 @@ def test_argreduce_multidim_bench(
     BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
-# ===================================================================
 # 3. Logical reduce (any, all, count_nonzero) — multi-dim
-# ===================================================================
 
 
 class LogicalReduceMultidimFixture(FixtureBase):
@@ -360,9 +354,7 @@ def test_logical_reduce_multidim_bench(
     BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
-# ===================================================================
 # 4. Vector norm (l1, l2, inf) — multi-dim
-# ===================================================================
 
 
 class VectorNormMultidimFixture(FixtureBase):
@@ -464,14 +456,12 @@ def test_vector_norm_multidim_bench(
     BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
-# ===================================================================
 # 5. Cumulative (cumsum, cumprod) — 3D tensor reshaped to (M, N)
 #    CumsumFwdOp/CumprodFwdOp accept only (M, N, dtype) and always
 #    operate on dim=-1.  Multi-dim reduction is architecturally
 #    unsupported.  We benchmark 3D-shaped inputs (reshaped to M=batch*seq,
 #    N=hidden) so the benchmark exercises realistic multi-dim-shaped data
 #    even though the kernel sees a 2D view.
-# ===================================================================
 
 
 class CumulativeMultidimFixture(FixtureBase):
@@ -561,10 +551,8 @@ def test_cumulative_multidim_bench(
     BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
-# ===================================================================
 # 6. LogSumExp — multi-dim
 #    LogSumExpFwdOp supports multi-dim via _supports_multidim = True.
-# ===================================================================
 
 
 class LogSumExpMultidimFixture(FixtureBase):

@@ -10,9 +10,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 class CumulativeBasicFixture(FixtureBase):
@@ -84,9 +82,7 @@ class Cumulative1DFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # TestBase helpers
-# ---------------------------------------------------------------------------
 
 
 class CumulativeTest(TestBase):
@@ -118,9 +114,7 @@ class CumulativeTest(TestBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-# ---------------------------------------------------------------------------
 # Helper to get tolerances
-# ---------------------------------------------------------------------------
 
 
 def _tol(dtype: torch.dtype) -> dict:
@@ -136,9 +130,7 @@ def _cumprod_tol(dtype: torch.dtype) -> dict:
     return {"atol": 5e-2, "rtol": 5e-2}
 
 
-# ---------------------------------------------------------------------------
 # CumsumFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @CumulativeBasicFixture
@@ -225,9 +217,7 @@ def test_cumsum_dynamic_shape_kernel_cache() -> None:
     assert len(op._kernel_cache) == 2
 
 
-# ---------------------------------------------------------------------------
 # CumprodFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @CumulativeBasicFixture

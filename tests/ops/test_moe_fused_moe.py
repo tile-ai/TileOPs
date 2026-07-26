@@ -20,9 +20,7 @@ from tileops.ops.moe import (
     FusedTopKOp,
 )
 
-# ---------------------------------------------------------------------------
 # vLLM optional import
-# ---------------------------------------------------------------------------
 
 try:
     from vllm.model_executor.layers.fused_moe.fused_moe import (
@@ -33,9 +31,7 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 
-# ---------------------------------------------------------------------------
 # Reference implementations
-# ---------------------------------------------------------------------------
 
 
 def _ref_moe_ffn(
@@ -79,9 +75,7 @@ def _ref_kimi_routing(
     return topk_weights, topk_ids
 
 
-# ---------------------------------------------------------------------------
 # Test fixture — Qwen3 config
-# ---------------------------------------------------------------------------
 
 
 class Qwen3Fixture(FixtureBase):
@@ -235,9 +229,7 @@ def test_fused_moe_deterministic(case):
         )
 
 
-# ---------------------------------------------------------------------------
 # Test fixture — Kimi K2 config
-# ---------------------------------------------------------------------------
 
 
 class KimiFixture(FixtureBase):
@@ -332,9 +324,7 @@ def test_fused_moe_kimi(
     )
 
 
-# ---------------------------------------------------------------------------
 # expert_map local filtering test (EP simulation without All-to-All)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -390,9 +380,7 @@ def test_expert_map_local_filter() -> None:
     print(f"PASS expert_map local filter [T={T}, E={E}, K={K}, H={H}, F={F}]")
 
 
-# ---------------------------------------------------------------------------
 # correction_bias routing precision
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -427,9 +415,7 @@ def test_correction_bias_routing_precision() -> None:
     print("PASS correction_bias precision test")
 
 
-# ---------------------------------------------------------------------------
 # vLLM alignment (optional)
-# ---------------------------------------------------------------------------
 
 
 class VllmFixture(FixtureBase):
@@ -506,9 +492,7 @@ def test_fused_moe_vs_vllm(
     )
 
 
-# ---------------------------------------------------------------------------
 # prepare_finalize / experts contract
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke

@@ -29,9 +29,7 @@ from workloads.reduce import (
     VarTest,
 )
 
-# ===================================================================
 # Op name constants
-# ===================================================================
 
 _SUM_OP = "SumFwdOp"
 _MEAN_OP = "MeanFwdOp"
@@ -43,9 +41,7 @@ _VAR_OP = "VarFwdOp"
 _VAR_MEAN_OP = "VarMeanFwdOp"
 
 
-# ===================================================================
 # Sum benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize(
@@ -79,9 +75,7 @@ def test_sum_bench(
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # Mean benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_MEAN_OP))
@@ -106,9 +100,7 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # Amax benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_AMAX_OP))
@@ -133,9 +125,7 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # Amin benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_AMIN_OP))
@@ -160,9 +150,7 @@ def test_amin_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # Prod benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_PROD_OP))
@@ -187,9 +175,7 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # Std benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_STD_OP))
@@ -214,9 +200,7 @@ def test_std_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # Var benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_VAR_OP))
@@ -241,9 +225,7 @@ def test_var_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # VarMean benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_VAR_MEAN_OP))

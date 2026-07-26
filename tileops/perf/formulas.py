@@ -82,9 +82,7 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # MHA prefill
-# ---------------------------------------------------------------------------
 
 
 def _shape_or_attrs(op: Any | None, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -140,9 +138,7 @@ def mha_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     return int(flops), int(nbytes)
 
 
-# ---------------------------------------------------------------------------
 # GQA prefill
-# ---------------------------------------------------------------------------
 
 
 def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -437,9 +433,7 @@ def gqa_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     return int(flops), int(nbytes)
 
 
-# ---------------------------------------------------------------------------
 # MHA decode
-# ---------------------------------------------------------------------------
 
 
 def mha_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -490,9 +484,7 @@ def mha_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int
     return int(flops), int(nbytes)
 
 
-# ---------------------------------------------------------------------------
 # GQA decode
-# ---------------------------------------------------------------------------
 
 
 def gqa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -541,9 +533,7 @@ def gqa_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int
     return int(flops), int(nbytes)
 
 
-# ---------------------------------------------------------------------------
 # Sliding window attention
-# ---------------------------------------------------------------------------
 
 
 def gqa_sliding_window_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -620,9 +610,7 @@ def gqa_sliding_window_varlen_fwd_roofline(
     return int(flops), int(nbytes)
 
 
-# ---------------------------------------------------------------------------
 # DeepSeek MLA / DSA decode
-# ---------------------------------------------------------------------------
 
 
 def deepseek_mla_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -681,9 +669,7 @@ def deepseek_dsa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[
     return int(flops), int(nbytes)
 
 
-# ---------------------------------------------------------------------------
 # Elementwise — mixed-dtype ops requiring func-mode roofline
-# ---------------------------------------------------------------------------
 
 
 def where_fwd_roofline(op: "Op") -> tuple[int, int]:
@@ -728,9 +714,7 @@ def where_fwd_roofline(op: "Op") -> tuple[int, int]:
     return flops, nbytes
 
 
-# ---------------------------------------------------------------------------
 # Clamp family (Tensor-bound variants)
-# ---------------------------------------------------------------------------
 #
 # Func mode is required for the broadcasted Tensor-bound clamp variants
 # because ``N_total`` follows the post-broadcast convention
@@ -816,9 +800,7 @@ def lerp_tensor_fwd_roofline(op: "Op") -> tuple[int, int]:
     return 3 * n_total, 4 * n_total * elem_bytes
 
 
-# ---------------------------------------------------------------------------
 # MaskedFill family
-# ---------------------------------------------------------------------------
 #
 # Func mode is required because ``N_total`` follows the post-broadcast
 # convention ``product(broadcast_shapes(input.shape, mask.shape))`` —
@@ -958,9 +940,7 @@ def bitwise_xor_fwd_roofline(op: "Op") -> tuple[int, int]:
     return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
 
 
-# ---------------------------------------------------------------------------
 # MoE
-# ---------------------------------------------------------------------------
 
 
 def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:

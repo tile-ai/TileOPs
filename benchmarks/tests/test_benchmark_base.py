@@ -20,9 +20,7 @@ from benchmarks.benchmark_base import (
     workloads_to_params,
 )
 
-# ---------------------------------------------------------------------------
 # Duck-typed test workloads
-# ---------------------------------------------------------------------------
 
 
 class _DuckShapeDtype:
@@ -77,9 +75,7 @@ class _FakeRooflineOp:
         return self._roofline
 
 
-# ---------------------------------------------------------------------------
 # ShapeDtypeWorkload protocol tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -94,9 +90,7 @@ def test_shape_dtype_protocol_is_runtime_checkable():
     assert not isinstance(bad_no_shape, ShapeDtypeWorkload)
 
 
-# ---------------------------------------------------------------------------
 # InputGeneratingWorkload protocol tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -109,9 +103,7 @@ def test_input_generating_protocol():
     assert not isinstance(no_gen, InputGeneratingWorkload)
 
 
-# ---------------------------------------------------------------------------
 # BenchmarkWorkload protocol tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -130,9 +122,7 @@ def test_benchmark_workload_protocol():
     assert not isinstance(gen_only, BenchmarkWorkload)
 
 
-# ---------------------------------------------------------------------------
 # ManifestBenchmark contract tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -147,9 +137,7 @@ def test_manifest_benchmark_accepts_protocol_workload():
     assert op.calls == 1
 
 
-# ---------------------------------------------------------------------------
 # WorkloadBase compatibility
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -175,9 +163,7 @@ def test_workload_base_satisfies_benchmark_workload():
     assert bm.calculate_memory() == 8.0
 
 
-# ---------------------------------------------------------------------------
 # ManifestBenchmark roofline contract
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke

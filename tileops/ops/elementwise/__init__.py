@@ -178,13 +178,11 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # torch.compile registration for the concrete elementwise ops.
 #
 # ``AlibiFwdOp`` and ``SinusoidalFwdOp`` are intentionally excluded: they
 # have zero tensor inputs (output is fully derived from ``__init__``
 # params), so they bypass the custom-op wrapper and run eager-only.
-# ---------------------------------------------------------------------------
 
 # --- Unary ops: float-preserving output (1 + 17 + 8 + 1 = 27 ops) ---
 for _cls in [

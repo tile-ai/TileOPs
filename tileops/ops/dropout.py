@@ -125,9 +125,7 @@ class DropoutOp(Op):
     _wrapped = None
 
 
-# ---------------------------------------------------------------------------
 # torch.compile registration
-# ---------------------------------------------------------------------------
 
 @torch.library.custom_op("top::dropout", mutates_args=())
 def _wrapped_dropout(x: torch.Tensor, instance_key: int) -> torch.Tensor:

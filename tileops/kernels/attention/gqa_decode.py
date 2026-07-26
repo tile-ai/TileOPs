@@ -16,9 +16,7 @@ from tileops.kernels.online_softmax import (
 
 __all__ = ["GQADecodeKernel"]
 
-# ---------------------------------------------------------------------------
 # JIT kernel: no-split variant
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -115,9 +113,7 @@ def _gqa_decode_no_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, 
     return _func
 
 
-# ---------------------------------------------------------------------------
 # JIT kernel: split variant (split + combine)
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -281,9 +277,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, sof
     return _func
 
 
-# ---------------------------------------------------------------------------
 # Custom ops (torch.compile compatible wrappers)
-# ---------------------------------------------------------------------------
 
 
 @torch.library.custom_op("top::gqa_decode_no_split_op", mutates_args=())
@@ -326,9 +320,7 @@ def _(batch: int, heads: int, groups: int, seqlen_kv: int, real_seqlen_kv: int, 
     return torch.empty_like(Q)
 
 
-# ---------------------------------------------------------------------------
 # Kernel class
-# ---------------------------------------------------------------------------
 
 
 class GQADecodeKernel(Kernel):

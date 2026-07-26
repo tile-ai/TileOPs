@@ -24,9 +24,7 @@ from tileops.kernels.elementwise import (
     SiluAndMulFwdKernel,
 )
 
-# ---------------------------------------------------------------------------
 # Fix 1: npt 3-way check in default_config
-# ---------------------------------------------------------------------------
 
 
 INDEPENDENT_KERNELS_SIMPLE = [LeakyReluFwdKernel, EluFwdKernel, HardtanhFwdKernel]
@@ -69,9 +67,7 @@ def test_prelu_preserves_dtype_driven_default_npt(dtype, expected_npt):
     assert kernel.default_config["num_per_thread"] == expected_npt
 
 
-# ---------------------------------------------------------------------------
 # Fix 2: OUTPUT_DTYPE consistency (all should be torch.dtype, not string)
-# ---------------------------------------------------------------------------
 
 
 COMPARISON_KERNELS = [EqFwdKernel, NeFwdKernel, GtFwdKernel, LtFwdKernel, GeFwdKernel, LeFwdKernel]
@@ -91,9 +87,7 @@ def test_bool_like_elementwise_kernels_expose_torch_dtype_output(kernel_cls):
     assert torch.bool == kernel_cls.OUTPUT_DTYPE
 
 
-# ---------------------------------------------------------------------------
 # Fix 3: output_dtype attribute on all three base kernel types
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.full

@@ -13,9 +13,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 
-# ---------------------------------------------------------------------------
 # Test helpers
-# ---------------------------------------------------------------------------
 
 
 class WelfordNonAlignedTest(TestBase):
@@ -56,9 +54,7 @@ def _tol(dtype: torch.dtype) -> dict:
     return {"atol": 1e-2, "rtol": 1e-2}
 
 
-# ---------------------------------------------------------------------------
 # Fixtures — non-aligned N values (not multiples of 256)
-# ---------------------------------------------------------------------------
 
 # N values chosen to exercise zero-padding edge cases:
 #   7   — small prime, heavy padding
@@ -190,9 +186,7 @@ class WelfordNonAlignedMultiDimFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # VarFwdOp — non-aligned N (single-dim, dim=-1)
-# ---------------------------------------------------------------------------
 
 
 @WelfordNonAlignedFixture
@@ -205,9 +199,7 @@ def test_var_non_aligned(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-# ---------------------------------------------------------------------------
 # StdFwdOp — non-aligned N (single-dim, dim=-1)
-# ---------------------------------------------------------------------------
 
 
 @WelfordNonAlignedFixture
@@ -220,9 +212,7 @@ def test_std_non_aligned(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-# ---------------------------------------------------------------------------
 # VarMeanFwdOp — non-aligned N (single-dim, dim=-1)
-# ---------------------------------------------------------------------------
 
 
 @WelfordNonAlignedFixture
@@ -235,9 +225,7 @@ def test_var_mean_non_aligned(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-# ---------------------------------------------------------------------------
 # 3D tests — non-aligned hidden dim
-# ---------------------------------------------------------------------------
 
 
 @WelfordNonAligned3DFixture
@@ -285,9 +273,7 @@ def test_var_mean_3d_non_aligned(batch: int, seq: int, hidden: int, dtype: torch
     )
 
 
-# ---------------------------------------------------------------------------
 # Multi-dim tests — flattened reduction size is non-aligned
-# ---------------------------------------------------------------------------
 
 
 @WelfordNonAlignedMultiDimFixture

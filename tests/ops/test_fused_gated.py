@@ -14,9 +14,7 @@ from tileops.kernels.elementwise import (
 )
 from tileops.ops.elementwise import GeluAndMulFwdOp, GeluTanhAndMulFwdOp, SiluAndMulFwdOp
 
-# ---------------------------------------------------------------------------
 # SiluAndMul
-# ---------------------------------------------------------------------------
 
 
 class SiluAndMulFixture(FixtureBase):
@@ -88,9 +86,7 @@ def test_silu_and_mul_lazy_op_rebinds_shape() -> None:
         assert (op.M, op.N, op.dtype) == (m, n, torch.float16)
 
 
-# ---------------------------------------------------------------------------
 # GeluAndMul
-# ---------------------------------------------------------------------------
 
 
 class GeluAndMulFixture(FixtureBase):
@@ -130,9 +126,7 @@ def test_gelu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # GeluTanhAndMul
-# ---------------------------------------------------------------------------
 
 
 class GeluTanhAndMulFixture(FixtureBase):
@@ -188,9 +182,7 @@ def test_fused_gated_rejects_runtime_dtype_mismatch() -> None:
         op(x)
 
 
-# ---------------------------------------------------------------------------
 # Strategy selection tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke

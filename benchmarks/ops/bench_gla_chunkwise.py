@@ -86,9 +86,7 @@ except ImportError:
     chunk_gla = None
 
 
-# =============================================================================
 # Test helper (shared between fwd and bwd benchmarks)
-# =============================================================================
 
 class GLATest(WorkloadBase):
 
@@ -113,9 +111,7 @@ class GLATest(WorkloadBase):
         return gla_fwd_chunked_torch(q, k, v, g, self.chunk_size)
 
 
-# =============================================================================
 # Forward benchmark
-# =============================================================================
 
 class GLAFwdBenchmark(BenchmarkBase[GLATest]):
 
@@ -182,9 +178,7 @@ def test_gla_fwd_bench(
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# =============================================================================
 # Backward benchmark
-# =============================================================================
 
 class GLABwdBenchmark(BenchmarkBase[GLATest]):
 
@@ -275,9 +269,7 @@ def test_gla_bwd_bench(
         BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
 
 
-# =============================================================================
 # Combined fwd+bwd benchmark
-# =============================================================================
 
 class GLAFwdBwdBenchmark(BenchmarkBase[GLATest]):
 

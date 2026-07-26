@@ -36,9 +36,7 @@ def _make_logical(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     return (torch.randint(-1, 2, shape, device="cuda")).to(dtype)
 
 
-# ---------------------------------------------------------------------------
 # AC-3: default dim=None for the ten ops -> full reduction on 3-D input
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -146,9 +144,7 @@ def test_count_nonzero_default_dim_full_reduction() -> None:
     assert y.dtype == torch.int64
 
 
-# ---------------------------------------------------------------------------
 # AC-4: ProdFwdOp keeps documented dim=-1 default
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -162,9 +158,7 @@ def test_prod_default_dim_last_axis() -> None:
     assert y.shape == torch.prod(x, dim=-1).shape
 
 
-# ---------------------------------------------------------------------------
 # AC-5: AllFwdOp/AnyFwdOp dim=[] / dim=() noop contract
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -193,9 +187,7 @@ def test_any_empty_dim_noop(empty_dim) -> None:
     assert torch.equal(y, x.bool())
 
 
-# ---------------------------------------------------------------------------
 # AC-6: normalize_dim noop policy returns []
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -251,9 +243,7 @@ def test_empty_dim_policy_class_attrs() -> None:
     assert ProdFwdOp._empty_dim_policy == "reject"
 
 
-# ---------------------------------------------------------------------------
 # Empty-dim noop must NOT bypass input validation or roofline binding
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke

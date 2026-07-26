@@ -36,9 +36,7 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.moe import FusedTopKOp, SharedFusedMoE
 from workloads.workload_base import FixtureBase, WorkloadBase
 
-# ---------------------------------------------------------------------------
 # Test / fixture types
-# ---------------------------------------------------------------------------
 
 
 class SharedFusedMoEBenchTest(WorkloadBase):
@@ -132,9 +130,7 @@ class SharedFusedMoEBenchFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # Benchmark class
-# ---------------------------------------------------------------------------
 
 
 class SharedFusedMoEBenchmark(BenchmarkBase[SharedFusedMoEBenchTest]):
@@ -166,9 +162,7 @@ class SharedFusedMoEBenchmark(BenchmarkBase[SharedFusedMoEBenchTest]):
         return routed_w + shared_w + act
 
 
-# ---------------------------------------------------------------------------
 # Benchmark test
-# ---------------------------------------------------------------------------
 
 
 @SharedFusedMoEBenchFixture

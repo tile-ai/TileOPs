@@ -27,9 +27,7 @@ __all__ = [
 ]
 
 
-# =============================================================================
 # Split kernel: bwd_parallel (fully parallel over chunks)
-# =============================================================================
 
 @functools.lru_cache(maxsize=32)
 def _bwd_parallel_tl(
@@ -191,9 +189,7 @@ def _bwd_parallel_tl(
     return _func
 
 
-# =============================================================================
 # Split kernel: dh_recurrence_bwd (sequential backward over chunks)
-# =============================================================================
 
 @functools.lru_cache(maxsize=32)
 def _dh_recurrence_bwd_tl(

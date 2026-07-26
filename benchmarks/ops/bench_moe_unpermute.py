@@ -33,9 +33,7 @@ from workloads.moe import MoeUnpermuteTest
 
 _OP_NAME = "MoeUnpermuteFwdOp"
 
-# ---------------------------------------------------------------------------
 # Benchmark class
-# ---------------------------------------------------------------------------
 
 
 class MoeUnpermuteBenchmark(BenchmarkBase[MoeUnpermuteTest]):
@@ -58,9 +56,7 @@ class MoeUnpermuteBenchmark(BenchmarkBase[MoeUnpermuteTest]):
         return self._get_roofline()[1]
 
 
-# ---------------------------------------------------------------------------
 # Manifest-driven parametrize
-# ---------------------------------------------------------------------------
 
 
 def _manifest_params():
@@ -76,9 +72,7 @@ def _manifest_params():
     return params
 
 
-# ---------------------------------------------------------------------------
 # Benchmark test
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

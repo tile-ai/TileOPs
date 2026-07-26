@@ -111,24 +111,20 @@ def _ssd_state_passing_fwd_kernel(
 
                 d0 = bd * block_d
 
-                # ------------------------------------------------------------
                 # Precompute exp(dA) for all chunks in one parallel pass so
                 # the serial scan reads pre-computed scales from L1/shared
                 # instead of calling T.exp() once per CTA per serial step.
                 # T.sync_threads() ensures visibility before the scan begins.
-                # ------------------------------------------------------------
                 scale_shared = T.alloc_shared((C,), accum_dtype)
                 for c in T.Parallel(C):
                     scale_shared[c] = T.exp(dA_chunk_cumsum[bb, bh, c])
                 T.sync_threads()
 
                 if vectorize:
-                    # --------------------------------------------------------
                     # Vectorized path: 2 d-state elements per thread.
                     # threads = block_d // 2;
                     #   lo covers [d0 .. d0+threads-1]
                     #   hi covers [d0+threads .. d0+block_d-1]
-                    # --------------------------------------------------------
                     s_lo = T.alloc_fragment((threads,), accum_dtype)
                     s_hi = T.alloc_fragment((threads,), accum_dtype)
                     u_lo = T.alloc_fragment((threads,), accum_dtype)
@@ -185,11 +181,9 @@ def _ssd_state_passing_fwd_kernel(
                             final_states[bb, bh, di_hi] = s_hi[i]
 
                 else:
-                    # --------------------------------------------------------
                     # Non-vectorized path: 1 d-state element per thread.
                     # threads >= block_d; extra warps improve latency hiding
                     # on small grids where warp count per CTA matters most.
-                    # --------------------------------------------------------
                     s_frag = T.alloc_fragment((block_d,), accum_dtype)
                     u_frag = T.alloc_fragment((block_d,), accum_dtype)
 

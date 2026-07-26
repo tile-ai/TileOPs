@@ -106,9 +106,7 @@ def _make_math_test(n_total, dtype, gen_fn, ref_fn, op_cls):
     test.check(op, *test.gen_inputs(), **_get_tolerances(dtype))
 
 
-# ---------------------------------------------------------------------------
 # L1 tests (17 ops)
-# ---------------------------------------------------------------------------
 
 
 @MathFixture
@@ -231,14 +229,12 @@ def test_math_ops_reject_non_float_dtype() -> None:
         ExpFwdKernel(N_total=16, dtype=torch.int32)
 
 
-# ---------------------------------------------------------------------------
 # Integer-dtype identity short-circuit for floor / ceil / round / trunc.
 #
 # The manifest declares these ops over both integer and float dtypes; the
 # underlying kernels are float-only. ``torch.{floor,ceil,round,trunc}`` are
 # no-ops on integer tensors, so the op layer short-circuits and returns a
 # clone of the input unchanged.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -273,13 +269,11 @@ def test_round_int_identity_with_decimals() -> None:
     assert torch.equal(y, x)
 
 
-# ---------------------------------------------------------------------------
 # Integer-dtype op-layer fallbacks for abs / neg / sign and the
 # is{nan,inf,finite} predicates. Their manifest entries declare integer
 # input dtypes alongside floats; the underlying kernels are float-only,
 # so the op layer routes int input through a torch primitive (or the
 # constant-bool result, for the predicates).
-# ---------------------------------------------------------------------------
 
 
 _INT_DTYPES = [
@@ -336,9 +330,7 @@ def test_predicate_non_float_constant(op_cls, expected, non_float_dtype) -> None
     assert (y == expected).all()
 
 
-# ---------------------------------------------------------------------------
 # L4 edge-case tests (fp32, 4K)
-# ---------------------------------------------------------------------------
 
 
 @MathEdgeFixture

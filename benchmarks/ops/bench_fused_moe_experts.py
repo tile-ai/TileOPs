@@ -64,9 +64,7 @@ from workloads.workload_base import WorkloadBase
 _OP_NAME = "FusedMoEExpertsNopadPersistent3WGFwdOp"  # manifest entry name
 
 
-# ---------------------------------------------------------------------------
 # Workload
-# ---------------------------------------------------------------------------
 
 
 class MoEExpertsTest(WorkloadBase):
@@ -94,9 +92,7 @@ class MoEExpertsTest(WorkloadBase):
         return None
 
 
-# ---------------------------------------------------------------------------
 # Benchmark class
-# ---------------------------------------------------------------------------
 
 
 class MoEExpertsBenchmark(BenchmarkBase[MoEExpertsTest]):
@@ -118,9 +114,7 @@ class MoEExpertsBenchmark(BenchmarkBase[MoEExpertsTest]):
         return self._get_roofline()[1]
 
 
-# ---------------------------------------------------------------------------
 # Manifest-driven parametrize
-# ---------------------------------------------------------------------------
 
 
 def _manifest_params():
@@ -137,9 +131,7 @@ def _manifest_params():
     return params
 
 
-# ---------------------------------------------------------------------------
 # Benchmark test
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

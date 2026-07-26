@@ -16,9 +16,7 @@ from tileops.ops.elementwise import (
     BitwiseXorFwdOp,
 )
 
-# ---------------------------------------------------------------------------
 # Shared helpers
-# ---------------------------------------------------------------------------
 
 
 def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
@@ -45,9 +43,7 @@ class BitwiseTest(TestBase):
         return self.ref_fn(a, b)
 
 
-# ---------------------------------------------------------------------------
 # BitwiseAnd op
-# ---------------------------------------------------------------------------
 
 
 class BitwiseAndFixture(FixtureBase):
@@ -67,9 +63,7 @@ def test_bitwise_and_op(n_total: int) -> None:
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
-# ---------------------------------------------------------------------------
 # BitwiseOr op
-# ---------------------------------------------------------------------------
 
 
 class BitwiseOrFixture(FixtureBase):
@@ -89,9 +83,7 @@ def test_bitwise_or_op(n_total: int) -> None:
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
-# ---------------------------------------------------------------------------
 # BitwiseXor op
-# ---------------------------------------------------------------------------
 
 
 class BitwiseXorFixture(FixtureBase):
@@ -111,9 +103,7 @@ def test_bitwise_xor_op(n_total: int) -> None:
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
-# ---------------------------------------------------------------------------
 # Broadcast pattern tests for binary bitwise ops (L3)
-# ---------------------------------------------------------------------------
 
 _BROADCAST_PATTERNS = [
     ((2, 64, 128), (1, 1, 128)),   # bias-add
@@ -183,9 +173,7 @@ def test_bool_bitwise_fast_path(
     _exact_compare(out, ref)
 
 
-# ---------------------------------------------------------------------------
 # BitwiseNot op
-# ---------------------------------------------------------------------------
 
 
 class BitwiseFixture(FixtureBase):
@@ -242,9 +230,7 @@ def test_bitwise_not_rejects_float_dtype(dtype: torch.dtype) -> None:
         BitwiseNotFwdKernel(N_total=16, dtype=dtype)
 
 
-# ---------------------------------------------------------------------------
 # Dtype rejection tests for binary bitwise ops
-# ---------------------------------------------------------------------------
 
 
 class BitwiseBinaryRejectFixture(FixtureBase):

@@ -132,9 +132,7 @@ def test_logical_reduce_unaligned_innermost(
     torch.testing.assert_close(y, ref, atol=0, rtol=0)
 
 
-# ---------------------------------------------------------------------------
 # CountNonzero: separate matrix because the op does not accept ``keepdim``.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke

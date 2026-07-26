@@ -87,9 +87,7 @@ class _SoftmaxBaseOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {self._kernel_key: self._kernel_class}
 
-    # ------------------------------------------------------------------
     # Validation
-    # ------------------------------------------------------------------
 
     def _validate(self, x: torch.Tensor) -> None:
         """Validate input tensor."""
@@ -108,9 +106,7 @@ class _SoftmaxBaseOp(Op):
             raise ValueError("Input tensor must be at least 1D")
         self.dtype = x.dtype
 
-    # ------------------------------------------------------------------
     # Forward
-    # ------------------------------------------------------------------
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the softmax-family op.
@@ -239,9 +235,7 @@ class _SoftmaxBaseOp(Op):
             )
         return self._kernel_cache[key]
 
-    # ------------------------------------------------------------------
     # Output reshaping
-    # ------------------------------------------------------------------
 
     def _reshape_output(
         self,

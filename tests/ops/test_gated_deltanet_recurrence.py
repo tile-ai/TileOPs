@@ -56,14 +56,10 @@ class GatedDeltaNetDecodeTest(_GatedDeltaNetDecodeTestWorkload, TestBase):
         return o.to(self.dtype), new_state.to(self.dtype)
 
 
-# =============================================================================
 # Torch reference implementation (test-only)
-# =============================================================================
 
 
-# =============================================================================
 # Correctness tests
-# =============================================================================
 
 
 def _get_tolerances(dtype: torch.dtype) -> dict:

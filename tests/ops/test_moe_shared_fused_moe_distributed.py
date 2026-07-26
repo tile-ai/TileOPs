@@ -45,9 +45,7 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _setup_vllm_distributed(tp_size: int) -> tuple[int, int]:
     """Initialize torch.distributed + vLLM model parallel groups.
@@ -101,9 +99,7 @@ def _teardown_vllm_distributed():
         dist.destroy_process_group()
 
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 class TPFixture:
     """Fixture for shared expert TP tests."""
@@ -128,9 +124,7 @@ class TPFixture:
         return wrapper
 
 
-# ---------------------------------------------------------------------------
 # Test: TileOPs SharedFusedMoE TP vs vLLM DeepseekV2MLP TP
-# ---------------------------------------------------------------------------
 
 @TPFixture()
 def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):

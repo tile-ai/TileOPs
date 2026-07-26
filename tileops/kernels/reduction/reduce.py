@@ -50,9 +50,7 @@ _SIMPLE_REDUCE_MAP = {
 _WELFORD_KINDS = {"std", "var", "var_mean"}
 
 
-# ---------------------------------------------------------------------------
 # Simple reduce kernel
-# ---------------------------------------------------------------------------
 
 
 def _pad_value_for_op(op_kind: str) -> float:
@@ -399,9 +397,7 @@ def _prod_reduce_kernel_tiled(M, N, dtype, tile_n):
     return _func
 
 
-# ---------------------------------------------------------------------------
 # Welford reduce kernel (std, var, var_mean)
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -771,9 +767,7 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
     return _func
 
 
-# ---------------------------------------------------------------------------
 # custom_op wrappers
-# ---------------------------------------------------------------------------
 
 
 @torch.library.custom_op("top::reduce_simple_fwd", mutates_args=())
@@ -873,9 +867,7 @@ def _(M, N, op_kind, correction, dtype_str, tile_n, block_m, threads, x):
     return [torch.empty((M,), dtype=x.dtype, device=x.device)]
 
 
-# ---------------------------------------------------------------------------
 # ReduceKernel class
-# ---------------------------------------------------------------------------
 
 
 class ReduceKernel(Kernel):

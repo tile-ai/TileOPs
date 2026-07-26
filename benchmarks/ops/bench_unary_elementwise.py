@@ -43,9 +43,7 @@ from tileops.ops.elementwise import (
     TruncFwdOp,
 )
 
-# ---------------------------------------------------------------------------
 # Workload + input generation
-# ---------------------------------------------------------------------------
 
 
 class _UnaryWorkload:
@@ -97,9 +95,7 @@ def _special_floats(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
     return (x,)
 
 
-# ---------------------------------------------------------------------------
 # Shared workload and profiling helpers
-# ---------------------------------------------------------------------------
 
 
 def _profile_and_record(
@@ -132,11 +128,9 @@ def _profile_and_record(
     BenchmarkReport.record(op, params, result_bl, tag="torch")
 
 
-# ===================================================================
 # Per-op constants and tests — one block per manifest entry so the
 # validator AST check ties each ``load_workloads(<OpName>)`` /
 # ``ManifestBenchmark(<OpName>, ...)`` call to its op.
-# ===================================================================
 
 _EXP_OP = "ExpFwdOp"
 

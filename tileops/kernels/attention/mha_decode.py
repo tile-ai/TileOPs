@@ -11,9 +11,7 @@ from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax
 
 __all__ = ["MHADecodeKernel"]
 
-# ---------------------------------------------------------------------------
 # JIT kernel: no-split variant
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -100,9 +98,7 @@ def _mha_decode_no_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causa
     return _func
 
 
-# ---------------------------------------------------------------------------
 # JIT kernel: split variant (split + combine)
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -202,10 +198,8 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, 
                 scores_sum = T.alloc_fragment([block_M], accum_dtype)
                 logsum = T.alloc_fragment([block_M], accum_dtype)
 
-                #=======================================
                 split_length_shared = T.alloc_shared([num_split], "int32")
                 T.copy(split_length, split_length_shared, disable_tma=True)
-                #========================================
 
                 mid = bx
                 hid = by % heads
@@ -326,9 +320,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, 
     return _func
 
 
-# ---------------------------------------------------------------------------
 # Custom ops (torch.compile compatible wrappers)
-# ---------------------------------------------------------------------------
 
 
 @torch.library.custom_op("top::mha_decode_no_split_op", mutates_args=())
@@ -370,9 +362,7 @@ def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, real_seqlen_kv: int
     return torch.empty_like(Q)
 
 
-# ---------------------------------------------------------------------------
 # Kernel class
-# ---------------------------------------------------------------------------
 
 
 class MHADecodeKernel(Kernel):

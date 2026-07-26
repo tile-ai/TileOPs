@@ -52,9 +52,7 @@ class BatchNormFwdTest(_BatchNormFwdTestWorkload, TestBase):
         return (y,)
 
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 class BatchNormFwdFixture(FixtureBase):
     """(N, C, *spatial, dtype, training)"""
@@ -99,14 +97,10 @@ class BatchNormBwdFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # Test helpers
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # Test functions
-# ---------------------------------------------------------------------------
 
 @BatchNormFwdFixture
 def test_batch_norm_fwd(N, C, spatial, dtype, training):

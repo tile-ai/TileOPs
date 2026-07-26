@@ -7,9 +7,7 @@ error handling) and correctness of the generated macro logic.
 
 import pytest
 
-# -----------------------------------------------------------------------
 # align_up
-# -----------------------------------------------------------------------
 
 
 class TestAlignUp:
@@ -68,9 +66,7 @@ class TestAlignUp:
             assert align_up(alignment + 1, alignment) == 2 * alignment
 
 
-# -----------------------------------------------------------------------
 # DEFAULT_ALIGNMENT
-# -----------------------------------------------------------------------
 
 
 class TestDefaultAlignment:
@@ -89,9 +85,7 @@ class TestDefaultAlignment:
         assert isinstance(DEFAULT_ALIGNMENT, int)
 
 
-# -----------------------------------------------------------------------
 # make_reduce_epilogue
-# -----------------------------------------------------------------------
 
 
 class TestMakeReduceEpilogue:
@@ -120,9 +114,7 @@ class TestMakeReduceEpilogue:
             make_reduce_epilogue("invalid_op")
 
 
-# -----------------------------------------------------------------------
 # make_welford_update
-# -----------------------------------------------------------------------
 
 
 class TestMakeWelfordUpdate:
@@ -184,9 +176,7 @@ class TestMakeWelfordUpdate:
         )
 
 
-# -----------------------------------------------------------------------
 # make_softmax_epilogue
-# -----------------------------------------------------------------------
 
 
 class TestMakeSoftmaxEpilogue:
@@ -243,9 +233,7 @@ class TestMakeSoftmaxEpilogue:
         assert m_soft is not m_log
 
 
-# -----------------------------------------------------------------------
 # make_cumulative_scan
-# -----------------------------------------------------------------------
 
 
 class TestMakeCumulativeScan:
@@ -316,9 +304,7 @@ class TestMakeCumulativeScan:
         assert m_sum is not m_prod
 
 
-# -----------------------------------------------------------------------
 # __init__.py re-exports
-# -----------------------------------------------------------------------
 
 
 class TestInitReExports:

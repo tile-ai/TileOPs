@@ -30,9 +30,7 @@ from workloads.workload_base import WorkloadBase
 
 _OP_NAME = "MoePermuteNopadFwdOp"
 
-# ---------------------------------------------------------------------------
 # Test class
-# ---------------------------------------------------------------------------
 
 
 class MoePermuteNopadTest(WorkloadBase):
@@ -54,9 +52,7 @@ class MoePermuteNopadTest(WorkloadBase):
         return None
 
 
-# ---------------------------------------------------------------------------
 # Benchmark class
-# ---------------------------------------------------------------------------
 
 
 class MoePermuteNopadBenchmark(BenchmarkBase[MoePermuteNopadTest]):
@@ -79,9 +75,7 @@ class MoePermuteNopadBenchmark(BenchmarkBase[MoePermuteNopadTest]):
         return self._get_roofline()[1]
 
 
-# ---------------------------------------------------------------------------
 # Manifest-driven parametrize
-# ---------------------------------------------------------------------------
 
 
 def _manifest_params():
@@ -100,9 +94,7 @@ def _manifest_params():
     return params
 
 
-# ---------------------------------------------------------------------------
 # Benchmark test
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

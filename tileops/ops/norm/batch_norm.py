@@ -464,9 +464,7 @@ class BatchNormBwdOp(Op):
         return self._forward_impl(grad_out, x, weight, mean, rstd)
 
 
-# ---------------------------------------------------------------------------
 # torch.compile dispatch boundary (see tileops/ops/compile_boundary.py)
-# ---------------------------------------------------------------------------
 
 
 @torch.library.custom_op(

@@ -12,9 +12,7 @@ import inspect
 import pytest
 import torch
 
-# ---------------------------------------------------------------------------
 # WhereFwdOp full broadcasting
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -72,9 +70,7 @@ def test_where_rejects_non_bool_condition(bad_dtype):
         op(cond, inp, other)
 
 
-# ---------------------------------------------------------------------------
 # ClampFwdOp Tensor min/max
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -196,9 +192,7 @@ def test_clamp_runtime_tensor_none_must_match_init():
         op2(inp, mn, mn)
 
 
-# ---------------------------------------------------------------------------
 # ClampScalarFwdOp / ClampMinFwdOp / ClampMaxFwdOp
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -282,7 +276,6 @@ def test_clamp_max_init_signature_pytorch_aligned():
     assert fwd_params[1:] == ["input", "max"], fwd_params
 
 
-# ---------------------------------------------------------------------------
 # Regression: NaN propagation for Tensor-bound clamp variants.
 #
 # torch.clamp / torch.clamp_min / torch.clamp_max propagate NaN: if any of
@@ -290,7 +283,6 @@ def test_clamp_max_init_signature_pytorch_aligned():
 # fmax / fmin (used by T.max / T.min) drop NaN by returning the non-NaN
 # operand, so the kernel adds explicit isnan guards. These tests pin the
 # semantics so a future refactor cannot regress to non-IEEE behaviour.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -345,9 +337,7 @@ def test_clamp_max_nan_propagation(dtype):
     torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
 
 
-# ---------------------------------------------------------------------------
 # MaskedFillFwdOp (0-dim Tensor) / MaskedFillScalarFwdOp (Number)
-# ---------------------------------------------------------------------------
 
 
 _MASKED_FILL_TENSOR_VALUE_FLOAT_DTYPES = [
@@ -442,10 +432,8 @@ def test_masked_fill_scalar_init_signature_pytorch_aligned():
     assert fwd_params[1:] == ["input", "mask"], fwd_params
 
 
-# ---------------------------------------------------------------------------
 # Validator passes: this test exercises the L1 signature check directly
 # so it doesn't depend on the manifest YAML ``status`` value.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke

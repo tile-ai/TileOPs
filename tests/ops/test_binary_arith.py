@@ -32,9 +32,7 @@ class AddSameShapeTest(_AddSameShapeTestWorkload, TestBase):
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return (a.float() + b.float()).to(a.dtype)
 
-# ---------------------------------------------------------------------------
 # coalesce_broadcast_dims unit tests
-# ---------------------------------------------------------------------------
 
 
 class CoalesceFixture(FixtureBase):
@@ -78,9 +76,7 @@ def test_coalesce_broadcast_dims(a_shape, b_shape, expected_ndim) -> None:
     assert len(b_strides) == len(coalesced_shape)
 
 
-# ---------------------------------------------------------------------------
 # Shared helpers
-# ---------------------------------------------------------------------------
 
 
 def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
@@ -92,9 +88,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
         return 1.6e-2, 1.6e-2
 
 
-# ---------------------------------------------------------------------------
 # Add op correctness tests
-# ---------------------------------------------------------------------------
 
 
 class AddSameShapeFixture(FixtureBase):
@@ -117,9 +111,7 @@ def test_add_same_shape(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Broadcast pattern tests (L3)
-# ---------------------------------------------------------------------------
 
 
 class AddBroadcastFixture(FixtureBase):
@@ -165,9 +157,7 @@ def test_add_broadcast(a_shape, b_shape, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Broadcast pattern tests for all binary arith ops (L3)
-# ---------------------------------------------------------------------------
 
 # Broadcast patterns: (a_shape, b_shape)
 _BROADCAST_PATTERNS = [
@@ -261,9 +251,7 @@ def test_add_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Generic binary test helper
-# ---------------------------------------------------------------------------
 
 
 class BinarySameShapeTest(TestBase):
@@ -300,9 +288,7 @@ class BinaryPositiveTest(TestBase):
         return self.ref_fn(a.float(), b.float()).to(a.dtype)
 
 
-# ---------------------------------------------------------------------------
 # Sub op
-# ---------------------------------------------------------------------------
 
 
 class SubFixture(FixtureBase):
@@ -324,9 +310,7 @@ def test_sub_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Mul op
-# ---------------------------------------------------------------------------
 
 
 class MulFixture(FixtureBase):
@@ -348,9 +332,7 @@ def test_mul_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Div op
-# ---------------------------------------------------------------------------
 
 
 class DivFixture(FixtureBase):
@@ -372,9 +354,7 @@ def test_div_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Remainder op
-# ---------------------------------------------------------------------------
 
 
 class RemainderFixture(FixtureBase):
@@ -414,9 +394,7 @@ def test_remainder_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Pow op
-# ---------------------------------------------------------------------------
 
 
 class PowFixture(FixtureBase):
@@ -454,9 +432,7 @@ def test_pow_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # FloorDivide op
-# ---------------------------------------------------------------------------
 
 
 class FloorDivideFixture(FixtureBase):
@@ -496,9 +472,7 @@ def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=0.0)
 
 
-# ---------------------------------------------------------------------------
 # Lerp op (ternary in PyTorch; compile-time weight=0.5)
-# ---------------------------------------------------------------------------
 
 
 class LerpFixture(FixtureBase):
@@ -545,9 +519,7 @@ def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
         test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Maximum op
-# ---------------------------------------------------------------------------
 
 
 class MaximumFixture(FixtureBase):
@@ -569,9 +541,7 @@ def test_maximum_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Minimum op
-# ---------------------------------------------------------------------------
 
 
 class MinimumFixture(FixtureBase):
@@ -593,9 +563,7 @@ def test_minimum_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Maximum/Minimum NaN propagation tests
-# ---------------------------------------------------------------------------
 
 
 class MaxMinNanFixture(FixtureBase):
@@ -652,9 +620,7 @@ def test_minimum_nan_propagation(dtype: torch.dtype) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Maximum/Minimum signed-zero regression tests
-# ---------------------------------------------------------------------------
 
 
 class SignedZeroFixture(FixtureBase):
@@ -769,9 +735,7 @@ def test_minimum_signed_zero_with_nan(dtype: torch.dtype) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # L4 edge case tests (fp32, 4K)
-# ---------------------------------------------------------------------------
 
 
 class EdgeCaseFixture(FixtureBase):
@@ -845,9 +809,7 @@ def test_binary_arith_edge_cases(op_cls, ref_fn, gen_fn) -> None:
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
 
-# ---------------------------------------------------------------------------
 # Dtype contract tests
-# ---------------------------------------------------------------------------
 
 
 class FloatOnlyBinaryRejectFixture(FixtureBase):
@@ -880,9 +842,7 @@ def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
         op(a, b)
 
 
-# ---------------------------------------------------------------------------
 # BinaryKernel autotune_configs tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -919,9 +879,7 @@ def test_binary_kernel_autotune_configs_distinct() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Optimized maximum/minimum correctness on larger shapes
-# ---------------------------------------------------------------------------
 
 
 class OptimizedMaxMinFixture(FixtureBase):
@@ -960,9 +918,7 @@ def test_minimum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
 
 
-# ---------------------------------------------------------------------------
 # register_copy broadcast downgrade regression test
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -997,9 +953,7 @@ def test_register_copy_downgrades_on_broadcast() -> None:
         torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-# ---------------------------------------------------------------------------
 # tune=True regression test (must not crash)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -1036,11 +990,9 @@ def test_binary_tune_true_does_not_crash() -> None:
         assert out.dtype == dtype
 
 
-# ---------------------------------------------------------------------------
 # LerpTensorFwdOp — Tensor-weight torch.lerp overload (manifest:
 # elementwise_multi_input). Covers same-shape, 3-way broadcast, dtype
 # rejection, and dtype-mismatch rejection at forward().
-# ---------------------------------------------------------------------------
 
 
 _LERP_TENSOR_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
@@ -1115,9 +1067,7 @@ def test_lerp_tensor_dtype_mismatch_rejected() -> None:
         op(a, b, w_bad)
 
 
-# ---------------------------------------------------------------------------
 # DivFwdOp rounding_mode trunc/floor coverage
-# ---------------------------------------------------------------------------
 
 
 _DIV_ROUNDING_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
@@ -1164,9 +1114,7 @@ def test_div_rounding_mode_dispatch() -> None:
         )
 
 
-# ---------------------------------------------------------------------------
 # Per-dtype int / bool correctness for arithmetic ops with manifest int union
-# ---------------------------------------------------------------------------
 
 _BINARY_INT_DTYPES = [
     torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,

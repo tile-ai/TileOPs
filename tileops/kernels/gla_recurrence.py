@@ -28,9 +28,7 @@ _LOG2E = 1.4426950408889634
 _DEFAULT_K_TILE = 16
 
 
-# =============================================================================
 # Low-precision decode kernel — bf16 / fp16, fp32 accumulation
-# =============================================================================
 
 @functools.lru_cache(maxsize=32)
 def _gla_decode_tl(
@@ -283,9 +281,7 @@ class GLADecodeKernel(Kernel):
         return self._kernel_fn(q, k, v, gk, state)
 
 
-# =============================================================================
 # FP32-precision decode kernel (no T.gemm → avoids TF32 mantissa truncation)
-# =============================================================================
 
 @functools.lru_cache(maxsize=32)
 def _gla_decode_fp32_tl(

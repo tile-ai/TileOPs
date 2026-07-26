@@ -98,9 +98,7 @@ def _register_table(table):
         register_compile_contract(values[0])
 
 
-# ---------------------------------------------------------------------------
 # Unary compile test: relu
-# ---------------------------------------------------------------------------
 
 
 class ReluCompileFixture(FixtureBase):
@@ -136,9 +134,7 @@ def test_relu_compile(n_total, dtype):
     test.check(compiled_op, *inputs, atol=1e-3, rtol=1e-3)
 
 
-# ---------------------------------------------------------------------------
 # Binary compile test: add
-# ---------------------------------------------------------------------------
 
 
 class AddCompileFixture(FixtureBase):
@@ -177,9 +173,7 @@ def test_add_compile(a_shape, b_shape, dtype):
     test.check(compiled_op, *inputs, atol=1e-3, rtol=1e-3)
 
 
-# ---------------------------------------------------------------------------
 # Comparison compile test: eq (bool output)
-# ---------------------------------------------------------------------------
 
 
 class EqCompileFixture(FixtureBase):
@@ -219,9 +213,7 @@ def test_eq_compile(a_shape, b_shape, dtype):
     test.check(compiled_op, *inputs, compare=exact_compare)
 
 
-# ---------------------------------------------------------------------------
 # FusedGated compile test: silu_and_mul
-# ---------------------------------------------------------------------------
 
 
 class SiluAndMulCompileFixture(FixtureBase):
@@ -260,9 +252,7 @@ def test_silu_and_mul_compile(M, N, dtype):
     test.check(compiled_op, *inputs, atol=1e-2, rtol=1e-2)
 
 
-# ---------------------------------------------------------------------------
 # Additional unary compile tests: abs, sign
-# ---------------------------------------------------------------------------
 
 
 class AbsCompileFixture(FixtureBase):
@@ -329,9 +319,7 @@ def test_sign_compile(n_total, dtype):
     test.check(compiled_op, *inputs, atol=1e-3, rtol=1e-3)
 
 
-# ---------------------------------------------------------------------------
 # register_fake shape/dtype correctness
-# ---------------------------------------------------------------------------
 
 
 class FakeUnaryFixture(FixtureBase):
@@ -391,9 +379,7 @@ def test_register_fake_fused_gated_shape(M, N, dtype):
     assert out.dtype == dtype
 
 
-# ---------------------------------------------------------------------------
 # Exhaustive compile-smoke: every registered op
-# ---------------------------------------------------------------------------
 # These tests instantiate and torch.compile each op to verify that the
 # custom_op registration, register_fake, and CUDA codegen all succeed.
 # They are marked "smoke" so CI catches registration regressions early.

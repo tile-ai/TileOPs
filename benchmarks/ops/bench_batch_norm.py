@@ -17,9 +17,7 @@ from workloads.batch_norm import BatchNormBwdTest, BatchNormFwdTest
 _FWD_OP_NAME = "BatchNormFwdOp"
 _BWD_OP_NAME = "BatchNormBwdOp"
 
-# ---------------------------------------------------------------------------
 # Benchmark classes
-# ---------------------------------------------------------------------------
 
 class BatchNormFwdBenchmark(BenchmarkBase[BatchNormFwdTest]):
 
@@ -61,9 +59,7 @@ class BatchNormBwdBenchmark(BenchmarkBase[BatchNormBwdTest]):
         return self._get_roofline()[1]
 
 
-# ---------------------------------------------------------------------------
 # Benchmark helpers
-# ---------------------------------------------------------------------------
 
 def _make_inputs(N, C, spatial, dtype, device="cuda"):
     shape = (N, C, *spatial)
@@ -106,9 +102,7 @@ def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
     return x32.grad, w32.grad, b32.grad
 
 
-# ---------------------------------------------------------------------------
 # Manifest-driven params
-# ---------------------------------------------------------------------------
 
 def _manifest_fwd_params():
     params = []
@@ -136,9 +130,7 @@ def _manifest_bwd_params():
     return params
 
 
-# ---------------------------------------------------------------------------
 # Benchmark tests
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("N, C, spatial, dtype, training, tune", _manifest_fwd_params())
 def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):

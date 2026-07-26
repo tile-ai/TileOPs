@@ -13,18 +13,14 @@ from tileops.ops.reduction.any_op import AnyFwdOp
 from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 from workloads.logical_reduce import AllTest, AnyTest, CountNonzeroTest
 
-# ===================================================================
 # Op name constants
-# ===================================================================
 
 _ANY_OP = "AnyFwdOp"
 _ALL_OP = "AllFwdOp"
 _COUNT_NONZERO_OP = "CountNonzeroFwdOp"
 
 
-# ===================================================================
 # Any benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_ANY_OP))
@@ -49,9 +45,7 @@ def test_any_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # All benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_ALL_OP))
@@ -76,9 +70,7 @@ def test_all_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # CountNonzero benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_COUNT_NONZERO_OP))

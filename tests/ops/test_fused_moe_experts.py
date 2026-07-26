@@ -110,9 +110,7 @@ def test_weighted_reduce_noop_same_tensor():
     assert torch.allclose(t, original)
 
 
-# ---------------------------------------------------------------------------
 # MoEPrepareAndFinalizeNoDPEP
-# ---------------------------------------------------------------------------
 
 class TestMoEPrepareAndFinalizeNoDPEP:
 
@@ -141,9 +139,7 @@ class TestMoEPrepareAndFinalizeNoDPEP:
         assert torch.allclose(output, expert_out)
 
 
-# ---------------------------------------------------------------------------
 # FusedMoEExpertsNopadPersistent3WGFwdOp
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def moe_meta():

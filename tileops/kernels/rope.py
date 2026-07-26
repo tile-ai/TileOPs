@@ -41,9 +41,7 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # Kernel factories for 1D and 2D layouts
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -281,9 +279,7 @@ def _make_rope_non_neox_2d(batch: int, seq_len: int, num_heads: int, head_dim: i
     return kernel
 
 
-# ---------------------------------------------------------------------------
 # Kernel base class for RoPE
-# ---------------------------------------------------------------------------
 
 
 class _RopeKernelBase(Kernel):
@@ -390,9 +386,7 @@ class _RopeKernelBase(Kernel):
             return self.kernel(cfg["threads"], cfg["num_per_thread"])(x, cos, sin)
 
 
-# ---------------------------------------------------------------------------
 # Concrete kernel classes (5 variants)
-# ---------------------------------------------------------------------------
 
 
 class RopeNeoxKernel(_RopeKernelBase):

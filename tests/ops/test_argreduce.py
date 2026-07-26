@@ -24,9 +24,7 @@ def _call(op, x: torch.Tensor) -> torch.Tensor:
     """
     return cast(torch.Tensor, op(x))
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 class ArgreduceBasicFixture(FixtureBase):
@@ -144,9 +142,7 @@ class SpecArgreduceFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # TestBase helpers — inherit gen_inputs() from workload classes
-# ---------------------------------------------------------------------------
 
 
 class ArgreduceTest(_ArgmaxWorkload, TestBase):
@@ -177,9 +173,7 @@ def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # ArgmaxFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @ArgreduceBasicFixture
@@ -310,9 +304,7 @@ def test_argmax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
     assert torch.equal(y, ref), f"spec dim={dim} argmax mismatch: {(y != ref).sum().item()}"
 
 
-# ---------------------------------------------------------------------------
 # ArgminFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @ArgreduceBasicFixture
@@ -443,9 +435,7 @@ def test_argmin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
     assert torch.equal(y, ref), f"spec dim={dim} argmin mismatch: {(y != ref).sum().item()}"
 
 
-# ---------------------------------------------------------------------------
 # Regression: multidim dim must be rejected for argreduce ops
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -467,9 +457,7 @@ def test_argreduce_rejects_multidim(op_cls_path: str, dim) -> None:
         op_cls(dtype=torch.float16, dim=dim)
 
 
-# ---------------------------------------------------------------------------
 # dim=None (full-tensor reduction) tests
-# ---------------------------------------------------------------------------
 
 
 class ArgreduceDimNoneFixture(FixtureBase):

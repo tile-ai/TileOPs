@@ -18,9 +18,7 @@ from workloads.reduce import (
     SumTest as _SumTest,
 )
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 class ReduceBasicFixture(FixtureBase):
@@ -123,9 +121,7 @@ class BesselFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # TestBase helpers — inherit gen_inputs() from workload classes
-# ---------------------------------------------------------------------------
 
 
 class ReduceTest(_SumTest, TestBase):
@@ -181,9 +177,7 @@ class WelfordTest(_StdTest, TestBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-# ---------------------------------------------------------------------------
 # Helper to get tolerances
-# ---------------------------------------------------------------------------
 
 
 def _tol(dtype: torch.dtype) -> dict:
@@ -192,9 +186,7 @@ def _tol(dtype: torch.dtype) -> dict:
     return {"atol": 1e-2, "rtol": 1e-2}
 
 
-# ---------------------------------------------------------------------------
 # SumFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @ReduceBasicFixture
@@ -271,9 +263,7 @@ def test_sum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     assert torch.allclose(y, ref, **tol), f"4D max err: {(y - ref).abs().max()}"
 
 
-# ---------------------------------------------------------------------------
 # MeanFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @ReduceBasicFixture
@@ -285,9 +275,7 @@ def test_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-# ---------------------------------------------------------------------------
 # AminFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @ReduceBasicFixture
@@ -299,9 +287,7 @@ def test_amin_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-# ---------------------------------------------------------------------------
 # AmaxFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @ReduceBasicFixture
@@ -313,9 +299,7 @@ def test_amax_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-# ---------------------------------------------------------------------------
 # ProdFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @ReduceBasicFixture
@@ -329,9 +313,7 @@ def test_prod_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **tol)
 
 
-# ---------------------------------------------------------------------------
 # StdFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @ReduceBasicFixture
@@ -352,9 +334,7 @@ def test_std_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-# ---------------------------------------------------------------------------
 # VarFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @ReduceBasicFixture
@@ -375,9 +355,7 @@ def test_var_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-# ---------------------------------------------------------------------------
 # VarMeanFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @ReduceBasicFixture
@@ -398,9 +376,7 @@ def test_var_mean_bessel(m: int, n: int, dtype: torch.dtype, correction: int) ->
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-# ---------------------------------------------------------------------------
 # Multi-dim tests for non-contiguous (3D) for Welford ops
-# ---------------------------------------------------------------------------
 
 
 @Reduce3DFixture
@@ -427,9 +403,7 @@ def test_std_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     assert torch.allclose(y, ref, **tol), f"3D std max err: {(y - ref).abs().max()}"
 
 
-# ---------------------------------------------------------------------------
 # 1D input tests (F004)
-# ---------------------------------------------------------------------------
 
 
 @Reduce1DFixture
@@ -460,9 +434,7 @@ def test_var_1d(n: int, dtype: torch.dtype) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Non-contiguous tests for Welford ops (F005)
-# ---------------------------------------------------------------------------
 
 
 @ReduceNonContigFixture
@@ -491,9 +463,7 @@ def test_std_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     assert torch.allclose(y, ref, **tol), f"non-contig std max err: {(y - ref).abs().max()}"
 
 
-# ---------------------------------------------------------------------------
 # Spec-conformant tests (dim + keepdim interface)
-# ---------------------------------------------------------------------------
 
 
 class SpecReduceFixture(FixtureBase):

@@ -139,10 +139,8 @@ def _ssd_chunk_scan_fwd_kernel(
                 acc = T.alloc_fragment((block_l, block_p), accum_dtype)
                 T.clear(acc)
 
-                # =====================================================
                 # PART 1: history path
                 #   acc[l,p] += exp(dA_l[l]) * sum_n C[l,g,n] * prev_states[h,p,n]
-                # =====================================================
 
                 hist_acc = T.alloc_fragment((block_l, block_p), accum_dtype)
                 T.clear(hist_acc)
@@ -193,12 +191,10 @@ def _ssd_chunk_scan_fwd_kernel(
 
 
 
-                # =====================================================
                 # Cache dA_cumsum and dt for this chunk in shared memory.
                 # Eliminates repeated L2 round-trips in the exp_l/exp_s and
                 # diagonal-path loops.  Q fp32 scalars = Q*4 bytes (e.g. 1 KB
                 # for Q=256).  Loaded once, reused by every s-block.
-                # =====================================================
                 dA_smem = T.alloc_shared((Q,), accum_dtype)
                 dt_smem  = T.alloc_shared((Q,), accum_dtype)
                 for q in T.Parallel(Q):
@@ -227,7 +223,6 @@ def _ssd_chunk_scan_fwd_kernel(
                     if (l_abs < Q) and (p_abs < P):
                         acc[ll, pp] += hist_acc[ll, pp] * exp_dA_l[ll]
 
-                # =====================================================
                 # PART 2: intra-chunk causal path
                 #   acc[l,p] += sum_{s<=l} cb[c,g,l,s]
                 #               * exp(dA_l[l] - dA_s[s]) * dt[h,c,s] * x[s,h,p]
@@ -252,7 +247,6 @@ def _ssd_chunk_scan_fwd_kernel(
                 # cost (block_l * block_s in the worst case) is acceptable.
                 #
                 # Upper-triangle blocks are skipped entirely by the loop bound.
-                # =====================================================
                 cb_tile    = T.alloc_shared((block_l, block_s), dtype)
                 x_tile     = T.alloc_shared((block_s, block_p), dtype)
                 # Full-lower buffers (l-side anchor).

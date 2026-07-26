@@ -18,18 +18,14 @@ from workloads.softmax import (
     SoftmaxTest,
 )
 
-# ===================================================================
 # Op name constants
-# ===================================================================
 
 _SOFTMAX_OP = "SoftmaxFwdOp"
 _LOG_SOFTMAX_OP = "LogSoftmaxFwdOp"
 _LOGSUMEXP_OP = "LogSumExpFwdOp"
 
 
-# ===================================================================
 # Softmax benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_SOFTMAX_OP))
@@ -54,9 +50,7 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # LogSoftmax benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOG_SOFTMAX_OP))
@@ -81,9 +75,7 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # LogSumExp benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOGSUMEXP_OP))

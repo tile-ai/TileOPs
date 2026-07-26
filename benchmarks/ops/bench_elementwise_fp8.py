@@ -41,9 +41,7 @@ def _shape_id(shape: tuple[int, ...]) -> str:
     return "x".join(str(s) for s in shape)
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 class Fp8UnaryBenchCase:
@@ -114,9 +112,7 @@ class Fp8FusedGatedBenchmark(BenchmarkBase[Fp8FusedGatedBenchCase]):
         return (self.workload.M * 2 * self.workload.N + self.workload.M * self.workload.N)
 
 
-# ---------------------------------------------------------------------------
 # Unary fp8 benchmarks: relu, exp
-# ---------------------------------------------------------------------------
 
 _unary_params = []
 for _op_name, _op_cls, _bl_fn in [
@@ -159,9 +155,7 @@ def test_fp8_unary_bench(op_name, shape, dtype, op_cls, baseline_fn):
     )
 
 
-# ---------------------------------------------------------------------------
 # Binary fp8 benchmark: add
-# ---------------------------------------------------------------------------
 
 _binary_params = []
 for _shape in _SHAPES:
@@ -198,9 +192,7 @@ def test_fp8_binary_bench(op_name, shape, dtype):
     )
 
 
-# ---------------------------------------------------------------------------
 # Fused gated fp8 benchmark: silu_and_mul
-# ---------------------------------------------------------------------------
 
 # Fused gated output shapes: (batch * seq_len, intermediate_dim).
 # LLaMA-7B:  hidden=4096,  intermediate=11008  (non-pow2)

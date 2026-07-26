@@ -22,9 +22,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 
-# ---------------------------------------------------------------------------
 # Reference implementations (pure PyTorch)
-# ---------------------------------------------------------------------------
 
 
 def _compute_freqs_cis_base(head_dim: int, seq_len: int, base: float = 10000.0,
@@ -247,9 +245,7 @@ def _compute_longrope_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
     return cos_vals, sin_vals
 
 
-# ---------------------------------------------------------------------------
 # Test fixtures
-# ---------------------------------------------------------------------------
 
 
 class RopeTest(TestBase):
@@ -317,9 +313,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
         return 1.6e-2, 1.6e-2
 
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 class RopeBasicFixture(FixtureBase):
@@ -345,9 +339,7 @@ class RopeEdgeFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # Neox RoPE tests
-# ---------------------------------------------------------------------------
 
 
 @RopeBasicFixture
@@ -427,9 +419,7 @@ def test_rope_neox_position_ids_none_rotary_dim_reinfers_head_dim() -> None:
     assert op._requested_rotary_dim is None
 
 
-# ---------------------------------------------------------------------------
 # Non-neox (RoFormer) RoPE tests
-# ---------------------------------------------------------------------------
 
 
 @RopeBasicFixture
@@ -454,9 +444,7 @@ def test_rope_non_neox_2d(batch: int, seq_len: int, num_heads: int,
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Llama 3.1 RoPE tests
-# ---------------------------------------------------------------------------
 
 
 @RopeBasicFixture
@@ -487,9 +475,7 @@ def test_rope_llama31_2d(batch: int, seq_len: int, num_heads: int,
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # YaRN RoPE tests
-# ---------------------------------------------------------------------------
 
 
 @RopeBasicFixture
@@ -520,9 +506,7 @@ def test_rope_yarn_2d(batch: int, seq_len: int, num_heads: int,
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # LongRoPE tests
-# ---------------------------------------------------------------------------
 
 
 @RopeBasicFixture
@@ -567,9 +551,7 @@ def test_rope_longrope_2d(batch: int, seq_len: int, num_heads: int,
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Edge case tests
-# ---------------------------------------------------------------------------
 
 
 @RopeEdgeFixture
@@ -596,9 +578,7 @@ def test_rope_non_neox_edge(batch: int, seq_len: int, num_heads: int,
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Input validation regression tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke

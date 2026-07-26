@@ -324,9 +324,7 @@ def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
     return fp8_accum_op
 
 
-# ---------------------------------------------------------------------------
 # Strategy factory: Unary
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -391,9 +389,7 @@ def _make_unary_regcopy(N, dtype, op_func, output_dtype=None, threads=256, num_p
     return kernel
 
 
-# ---------------------------------------------------------------------------
 # Strategy factory: Binary
-# ---------------------------------------------------------------------------
 
 
 def _compute_broadcast_offsets(flat_idx, ndim, divisors, a_strides, b_strides):
@@ -573,9 +569,7 @@ def _make_binary_explicit(
     return kernel
 
 
-# ---------------------------------------------------------------------------
 # Strategy factory: FusedGated
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -640,9 +634,7 @@ def _make_fused_gated_explicit(M, N, dtype, op_func, threads=256, num_per_thread
     return kernel
 
 
-# ---------------------------------------------------------------------------
 # Template base classes
-# ---------------------------------------------------------------------------
 
 
 class UnaryKernel(Kernel):
@@ -1231,9 +1223,7 @@ class FusedGatedKernel(Kernel):
         return result
 
 
-# ---------------------------------------------------------------------------
 # Concrete kernel subclasses
-# ---------------------------------------------------------------------------
 
 
 class FloatUnaryKernel(UnaryKernel):
@@ -1648,9 +1638,7 @@ class MinimumFwdKernel(BinaryKernel):
         return result
 
 
-# ---------------------------------------------------------------------------
 # Comparison kernel subclasses (bool output)
-# ---------------------------------------------------------------------------
 
 
 class EqFwdKernel(BinaryKernel):
@@ -1773,9 +1761,7 @@ class LeBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
         return T.bitwise_or(T.bitwise_xor(a, T.cast(1, "uint8")), b)
 
 
-# ---------------------------------------------------------------------------
 # Logical kernel subclasses (bool output)
-# ---------------------------------------------------------------------------
 
 
 class LogicalAndFwdKernel(BinaryKernel):
@@ -1822,9 +1808,7 @@ class LogicalOrBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
         return T.bitwise_or(a, b)
 
 
-# ---------------------------------------------------------------------------
 # Bitwise kernel subclasses
-# ---------------------------------------------------------------------------
 
 
 class BitwiseAndFwdKernel(BinaryKernel):
@@ -1881,9 +1865,7 @@ class BitwiseXorBoolStorageFwdKernel(_Uint8StorageBinaryKernel):
         return T.bitwise_xor(a, b)
 
 
-# ---------------------------------------------------------------------------
 # Fused gated kernel subclasses
-# ---------------------------------------------------------------------------
 
 
 class SiluAndMulFwdKernel(FusedGatedKernel):
@@ -1939,9 +1921,7 @@ class GeluTanhAndMulFwdKernel(FusedGatedKernel):
         return half * x * (one + tanh_val)
 
 
-# ---------------------------------------------------------------------------
 # Concrete unary kernel subclasses -- math (17)
-# ---------------------------------------------------------------------------
 
 
 class ExpFwdKernel(FloatUnaryKernel):
@@ -2112,9 +2092,7 @@ class Expm1FwdKernel(FloatUnaryKernel):
         return T.exp(T.cast(x, "float32")) - T.cast(1.0, "float32")
 
 
-# ---------------------------------------------------------------------------
 # Concrete unary kernel subclasses -- activations (9)
-# ---------------------------------------------------------------------------
 
 
 class GeluFwdKernel(FloatUnaryKernel):
@@ -2218,9 +2196,7 @@ class SeluFwdKernel(FloatUnaryKernel):
         return scale * T.if_then_else(x32 > zero, x32, alpha * (T.exp(x32) - one))
 
 
-# ---------------------------------------------------------------------------
 # Concrete unary kernel subclasses -- logical / bitwise (2)
-# ---------------------------------------------------------------------------
 
 
 class LogicalNotFwdKernel(LogicalUnaryKernel):
@@ -2258,9 +2234,7 @@ class BitwiseNotFwdKernel(UnaryKernel):
         return T.bitwise_xor(x, T.cast(-1, x.dtype))
 
 
-# ---------------------------------------------------------------------------
 # Concrete unary kernel subclasses -- special predicates (3)
-# ---------------------------------------------------------------------------
 
 
 class IsnanFwdKernel(FloatPredicateKernel):
@@ -2287,9 +2261,7 @@ class IsfiniteFwdKernel(FloatPredicateKernel):
         return T.isfinite(T.cast(x, "float32"))
 
 
-# ---------------------------------------------------------------------------
 # Independent (custom-signature) kernel classes (11)
-# ---------------------------------------------------------------------------
 
 
 class ParametricUnaryKernel(Kernel):

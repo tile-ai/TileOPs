@@ -39,9 +39,7 @@ def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
     return contract
 
 
-# ---------------------------------------------------------------------------
 # Benchmark capability protocols
-# ---------------------------------------------------------------------------
 
 
 @runtime_checkable
@@ -144,9 +142,7 @@ def _sum_kernel_time_us(kineto_results):
     return total_us, len(windows)
 
 
-# ---------------------------------------------------------------------------
 # L2 cache flush buffer (sized to actual L2, allocated lazily)
-# ---------------------------------------------------------------------------
 
 _l2_flush_cache: Optional[torch.Tensor] = None
 
@@ -185,9 +181,7 @@ def _native_output_suppressor():
     return suppress_stdout_stderr()
 
 
-# ---------------------------------------------------------------------------
 # NVIDIA SOL-ExecBench–style benchmark
-# ---------------------------------------------------------------------------
 
 def bench_kernel(
     fn: Callable,
@@ -447,9 +441,7 @@ class BenchmarkBase(Generic[W], ABC):
         return result
 
 
-# ---------------------------------------------------------------------------
 # Manifest-driven benchmark helpers
-# ---------------------------------------------------------------------------
 
 
 def _workload_extra_params(w: dict, shape_key: str) -> dict[str, Any]:

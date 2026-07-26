@@ -32,9 +32,7 @@ def _is_unsupported_large_argreduce_error(exc: Exception) -> bool:
     )
 
 
-# ===================================================================
 # Argmax benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype, extra", workloads_to_params(_ARGMAX_OP, include_extra=True))
@@ -67,9 +65,7 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # Argmin benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype, extra", workloads_to_params(_ARGMIN_OP, include_extra=True))

@@ -13,9 +13,7 @@ import torch
 
 from tests.test_base import FixtureBase
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 class DimNoneFixture(FixtureBase):
@@ -51,9 +49,7 @@ class DimNoneFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _tol(dtype: torch.dtype) -> dict:
@@ -67,9 +63,7 @@ def _all_dims(shape: tuple) -> list[int]:
     return list(range(len(shape)))
 
 
-# ---------------------------------------------------------------------------
 # Unit test: normalize_dim(None, ndim) -> list(range(ndim))
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -82,9 +76,7 @@ def test_normalize_dim_none() -> None:
     assert normalize_dim(None, 5) == [0, 1, 2, 3, 4]
 
 
-# ---------------------------------------------------------------------------
 # Simple reduce ops: sum, mean, amax, amin, prod
-# ---------------------------------------------------------------------------
 
 
 @DimNoneFixture
@@ -162,9 +154,7 @@ def test_prod_dim_none_rejected() -> None:
         ProdFwdOp(dtype=torch.float16, dim=None)
 
 
-# ---------------------------------------------------------------------------
 # Welford ops: var, std, var_mean
-# ---------------------------------------------------------------------------
 
 
 @DimNoneFixture
@@ -222,9 +212,7 @@ def test_var_mean_dim_none(
 
 
 
-# ---------------------------------------------------------------------------
 # Logical reduce ops: all, any, count_nonzero
-# ---------------------------------------------------------------------------
 
 
 class DimNoneLogicalFixture(FixtureBase):
@@ -327,9 +315,7 @@ def test_count_nonzero_dim_none_dtypes(dtype: torch.dtype) -> None:
     assert torch.equal(y, ref), f"count_nonzero dim=None mismatch for {dtype}"
 
 
-# ---------------------------------------------------------------------------
 # Vector norm ops: l1, l2, inf
-# ---------------------------------------------------------------------------
 
 
 @DimNoneFixture

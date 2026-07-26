@@ -514,9 +514,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
         return self._kernel_fn(q, k, v, beta, state)
 
 
-# ---------------------------------------------------------------------------
 # FP32-precision decode kernel (no T.gemm -> avoids TF32 mantissa truncation)
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _deltanet_decode_fp32_tl(

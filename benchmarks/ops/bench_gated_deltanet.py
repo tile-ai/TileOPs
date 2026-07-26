@@ -190,9 +190,7 @@ def _to_fla_layout(q, k, v, g, beta):
     )
 
 
-# =============================================================================
 # Forward benchmark
-# =============================================================================
 
 class GatedDeltaNetFwdBenchmark(BenchmarkBase[GatedDeltaNetFwdTest]):
 
@@ -275,9 +273,7 @@ def test_gated_deltanet_vs_fla_fwd(
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# =============================================================================
 # Backward benchmark
-# =============================================================================
 
 class GatedDeltaNetBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdTest]):
 
@@ -381,9 +377,7 @@ def test_gated_deltanet_vs_fla_bwd(
         BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
 
 
-# =============================================================================
 # Combined fwd+bwd benchmark (fair comparison: both measure fwd+bwd total)
-# =============================================================================
 
 class GatedDeltaNetFwdBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdTest]):
 

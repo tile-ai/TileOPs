@@ -13,18 +13,14 @@ from tileops.ops.reduction.l1_norm import L1NormFwdOp
 from tileops.ops.reduction.l2_norm import L2NormFwdOp
 from workloads.vector_norm import InfNormTest, L1NormTest, L2NormTest
 
-# ===================================================================
 # Op name constants
-# ===================================================================
 
 _L1_NORM_OP = "L1NormFwdOp"
 _L2_NORM_OP = "L2NormFwdOp"
 _INF_NORM_OP = "InfNormFwdOp"
 
 
-# ===================================================================
 # L1 Norm benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_L1_NORM_OP))
@@ -49,9 +45,7 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # L2 Norm benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_L2_NORM_OP))
@@ -76,9 +70,7 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # Inf Norm benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_INF_NORM_OP))

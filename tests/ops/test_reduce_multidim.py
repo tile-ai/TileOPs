@@ -13,9 +13,7 @@ import torch
 
 from tests.test_base import FixtureBase
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 class MultiDimFixture(FixtureBase):
@@ -51,9 +49,7 @@ class MultiDimFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _tol(dtype: torch.dtype) -> dict:
@@ -62,9 +58,7 @@ def _tol(dtype: torch.dtype) -> dict:
     return {"atol": 1e-2, "rtol": 1e-2}
 
 
-# ---------------------------------------------------------------------------
 # Simple reduce ops: sum, mean, amax, amin
-# ---------------------------------------------------------------------------
 
 
 @MultiDimFixture
@@ -140,9 +134,7 @@ def test_amin_multidim(
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
 
-# ---------------------------------------------------------------------------
 # Welford ops: var, std, var_mean
-# ---------------------------------------------------------------------------
 
 
 @MultiDimFixture
@@ -195,9 +187,7 @@ def test_var_mean_multidim(
     assert torch.allclose(mean_out, ref_mean, **tol), f"mean err: {(mean_out - ref_mean).abs().max()}"
 
 
-# ---------------------------------------------------------------------------
 # LogSumExp
-# ---------------------------------------------------------------------------
 
 
 @MultiDimFixture
@@ -215,9 +205,7 @@ def test_logsumexp_multidim(
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
 
-# ---------------------------------------------------------------------------
 # Logical reduce ops: all, any, count_nonzero
-# ---------------------------------------------------------------------------
 
 
 class MultiDimLogicalFixture(FixtureBase):
@@ -328,9 +316,7 @@ def test_count_nonzero_multidim(
     assert torch.equal(y, ref), "count_nonzero multi-dim mismatch"
 
 
-# ---------------------------------------------------------------------------
 # Vector norm ops: l1, l2, inf
-# ---------------------------------------------------------------------------
 
 
 @MultiDimFixture
@@ -384,9 +370,7 @@ def test_inf_norm_multidim(
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
 
-# ---------------------------------------------------------------------------
 # Empty dim list / tuple is full-reduction (matches PyTorch semantics)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke

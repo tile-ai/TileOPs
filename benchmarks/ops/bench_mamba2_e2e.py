@@ -18,9 +18,7 @@ from tests.ops.test_mamba import mamba2_fwd_ref as _mamba2_fwd_ref
 from tileops.ops.mamba2_fwd import Mamba2FwdOp
 from workloads.mamba2_e2e import Mamba2FwdFixture, Mamba2FwdTest
 
-# ---------------------------------------------------------------------------
 # Optional mamba_ssm Triton baseline
-# ---------------------------------------------------------------------------
 try:
     from mamba_ssm.ops.triton.ssd_combined import (
         mamba_chunk_scan_combined as _mamba_chunk_scan_combined,
@@ -29,9 +27,7 @@ except ImportError:
     _mamba_chunk_scan_combined = None
 
 
-# ---------------------------------------------------------------------------
 # FLOPS / memory calculators
-# ---------------------------------------------------------------------------
 
 class Mamba2FwdBenchmark(BenchmarkBase["Mamba2FwdTest"]):
 
@@ -75,9 +71,7 @@ class Mamba2FwdBenchmark(BenchmarkBase["Mamba2FwdTest"]):
         return float(reads + writes)
 
 
-# ---------------------------------------------------------------------------
 # Benchmark test
-# ---------------------------------------------------------------------------
 
 @Mamba2FwdFixture
 def test_mamba2_fwd_bench(batch, seqlen, n_heads, d_head, d_state, n_groups,

@@ -11,9 +11,7 @@ from tileops.kernels.kernel_base import Kernel
 LOG2_E = 1.44269504
 
 
-# ---------------------------------------------------------------------------
 # Pre-compute: g_cumsum per chunk (parallel, B*H*NC thread blocks)
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _gla_precompute_g_kernel(
@@ -75,10 +73,8 @@ def _gla_precompute_g_kernel(
     return _fn
 
 
-# ---------------------------------------------------------------------------
 # Pass 1: compute h per chunk (sequential, B*H thread blocks)
 # Uses pre-computed g_cumsum — no T.Serial cumsum needed.
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _gla_fwd_h_kernel(
@@ -211,10 +207,8 @@ def _gla_fwd_h_kernel(
     return _h_func
 
 
-# ---------------------------------------------------------------------------
 # Pass 2: compute output per chunk (parallel, B*H*NC thread blocks)
 # Uses pre-computed g_cumsum — no T.Serial cumsum needed.
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _gla_fwd_o_kernel(
@@ -335,9 +329,7 @@ def _gla_fwd_o_kernel(
     return _o_func
 
 
-# ---------------------------------------------------------------------------
 # Custom op wrappers (kept for torch.compile compatibility)
-# ---------------------------------------------------------------------------
 
 @torch.library.custom_op("top::gla_fwd_wrapped_kernel", mutates_args=("h_out",))
 def _gla_fwd_wrapped_kernel(

@@ -90,14 +90,10 @@ class DeltaNetFwdTest(_DeltaNetFwdTestWorkload, TestBase):
         return o.to(self.dtype)
 
 
-# =============================================================================
 # Torch reference implementations (test-only)
-# =============================================================================
 
 
-# =============================================================================
 # Forward correctness tests
-# =============================================================================
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:

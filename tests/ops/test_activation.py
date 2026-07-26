@@ -67,9 +67,7 @@ def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> Non
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ===========================================================================
 # Template-based activation ops
-# ===========================================================================
 
 
 class ActivationFixture(FixtureBase):
@@ -190,9 +188,7 @@ def test_activation_rejects_non_float_dtype() -> None:
         GeluFwdKernel(N_total=16, dtype=torch.int32)
 
 
-# ---------------------------------------------------------------------------
 # L4 edge-case tests (fp32, 4K)
-# ---------------------------------------------------------------------------
 
 
 @ActivationEdgeFixture
@@ -223,9 +219,7 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_activation_test(n_total, dtype, _extreme, torch.tanh, TanhFwdOp)
 
 
-# ===========================================================================
 # Independent activation ops
-# ===========================================================================
 
 
 @ActivationFixture

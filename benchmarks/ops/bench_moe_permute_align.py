@@ -28,9 +28,7 @@ from workloads.moe import MoePermuteAlignTest
 
 _OP_NAME = "MoePermuteAlignFwdOp"
 
-# ---------------------------------------------------------------------------
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
-# ---------------------------------------------------------------------------
 
 
 def _ceil_div(a: int, b: int) -> int:
@@ -136,9 +134,7 @@ def _triton_permute_align(
     )
 
 
-# ---------------------------------------------------------------------------
 # Benchmark class
-# ---------------------------------------------------------------------------
 
 
 class MoePermuteAlignBenchmark(BenchmarkBase[MoePermuteAlignTest]):
@@ -161,9 +157,7 @@ class MoePermuteAlignBenchmark(BenchmarkBase[MoePermuteAlignTest]):
         return self._get_roofline()[1]
 
 
-# ---------------------------------------------------------------------------
 # Manifest-driven parametrize
-# ---------------------------------------------------------------------------
 
 
 def _manifest_params():
@@ -179,9 +173,7 @@ def _manifest_params():
     return params
 
 
-# ---------------------------------------------------------------------------
 # Benchmark test
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

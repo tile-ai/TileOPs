@@ -76,9 +76,7 @@ def test_isfinite(n_total: int, dtype: torch.dtype) -> None:
     _make_special_test(n_total, dtype, IsfiniteFwdOp, torch.isfinite)
 
 
-# ---------------------------------------------------------------------------
 # L4 edge-case tests (fp32, 4K)
-# ---------------------------------------------------------------------------
 
 
 @SpecialEdgeFixture
@@ -118,10 +116,8 @@ def test_special_predicates_reject_non_float_dtype() -> None:
         IsnanFwdKernel(N_total=16, dtype=torch.int32)
 
 
-# ===========================================================================
 # Independent special ops: where, clamp, masked_fill, nan_to_num,
 # alibi, sinusoidal
-# ===========================================================================
 
 
 class IndependentFixture(FixtureBase):
@@ -297,9 +293,7 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
     print("All checks passed for SinusoidalFwdOp.")
 
 
-# ===========================================================================
 # L2 — Dtype x Size (4 cases for clamp)
-# ===========================================================================
 
 
 class ClampDtypeSizeFixture(FixtureBase):
@@ -331,9 +325,7 @@ def test_clamp_dtype_size(n_total: int, dtype: torch.dtype) -> None:
     print("All checks passed for ClampFwdOp dtype/size variant.")
 
 
-# ===========================================================================
 # L4 — Edge Cases (8 cases, fp32, 4K)
-# ===========================================================================
 
 
 @IndependentEdgeFixture
@@ -466,9 +458,7 @@ def test_independent_special_rejects_non_float_dtype() -> None:
         ClampFwdKernel(N_total=16, dtype=torch.int32)
 
 
-# ===========================================================================
 # Negative tests: forward() dtype / numel validation
-# ===========================================================================
 
 
 @pytest.mark.smoke
@@ -543,9 +533,7 @@ def test_masked_fill_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> N
         op(x, mask)
 
 
-# ===========================================================================
 # Negative tests: __init__() scalar parameter validation
-# ===========================================================================
 
 
 @pytest.mark.smoke
@@ -637,9 +625,7 @@ def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
         op(x, mask)
 
 
-# ---------------------------------------------------------------------------
 # MaskedFillScalar: int / uint / bool dtype coverage
-# ---------------------------------------------------------------------------
 
 
 _MASKED_FILL_INT_DTYPES = [

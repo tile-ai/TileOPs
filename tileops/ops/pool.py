@@ -1397,9 +1397,7 @@ class AvgPool3dFwdOp(Op):
         return flops, bytes_
 
 
-# ---------------------------------------------------------------------------
 # torch.compile dispatch boundary (see tileops/ops/compile_boundary.py)
-# ---------------------------------------------------------------------------
 
 
 @torch.library.custom_op("top::pool_fwd", mutates_args=())
