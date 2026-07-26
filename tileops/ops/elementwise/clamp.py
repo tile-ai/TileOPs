@@ -313,9 +313,6 @@ class ClampScalarFwdOp(Op):
         self.dtype = dtype
         self.min = min
         self.max = max
-        # Backwards-compat aliases for legacy callers.
-        self.min_val = min
-        self.max_val = max
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["clamp"](
             self.N_total, dtype, min_val=min, max_val=max, tune=tune,

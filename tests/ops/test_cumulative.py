@@ -192,16 +192,6 @@ def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_cumsum_explicit_n_mismatch_raises() -> None:
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
-
-    x = torch.randn(4, 8, dtype=torch.float16, device="cuda")
-    op = CumsumFwdOp(N=9, dtype=torch.float16)
-    with pytest.raises(ValueError, match="Expected x.shape"):
-        op(x)
-
-
-@pytest.mark.smoke
 def test_cumsum_dynamic_shape_kernel_cache() -> None:
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 

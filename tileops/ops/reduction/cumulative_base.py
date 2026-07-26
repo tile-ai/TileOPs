@@ -32,8 +32,6 @@ class CumulativeOp(Op):
     Args:
         dtype: Data type (float32, float16, or bfloat16). If omitted,
             inferred from the first input tensor.
-        N: Optional reduction dimension size. When provided, forward validates
-            it against ``x.shape[dim]`` for backward compatibility.
         dim: Reduction axis (default -1). Negative values are normalized at
             forward time (`dim % x.ndim`).
         kernel_map: Optional kernel override dict.
@@ -49,16 +47,14 @@ class CumulativeOp(Op):
 
     def __init__(
         self,
-        N: Optional[int] = None,
         dtype: Optional[torch.dtype] = None,
         dim: int = -1,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.N = N
+        self.N = None
         self.dtype = dtype
-        self._committed_N = N
         self._committed_dtype = dtype
         self.dim = dim
         self.tune = tune
@@ -112,11 +108,6 @@ class CumulativeOp(Op):
             )
         dim_norm = self.dim % ndim
         N = x.shape[dim_norm]
-        if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(
-                f"Expected x.shape[{self.dim}]={self._committed_N}, "
-                f"got {N}"
-            )
         self.N = N
         self.dtype = x.dtype
         # Bind the dynamic static-axis (param-dependent N axis) so

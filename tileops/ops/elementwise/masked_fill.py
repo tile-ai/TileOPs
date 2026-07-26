@@ -191,8 +191,6 @@ class MaskedFillScalarFwdOp(Op):
         self.mask_shape = tuple(mask)
         self.dtype = dtype
         self.value = value
-        # Backwards-compat alias.
-        self.fill_value = value
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.mask_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
         _validate_scalar_param_repr(

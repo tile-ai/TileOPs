@@ -15,7 +15,7 @@ _logger = logging.getLogger("tileops.ops")
 # Thread-local storage for conftest hook to pick up per-test Op info.
 _check_result = threading.local()
 
-# Re-export for backward compatibility with tests that import from here.
+# Canonical import hub: tests import fixture types from here, not workloads.
 __all__ = [
     "FixtureBase",
     "FixtureMeta",

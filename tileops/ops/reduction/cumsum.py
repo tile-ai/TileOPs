@@ -21,8 +21,6 @@ class CumsumFwdOp(CumulativeOp):
     handled inside the kernel via masked loads.
 
     Args:
-        N: Optional committed reduction dimension size for compatibility.
-            Preferred API infers it from ``x.shape[dim]``.
         dtype: Optional data type (float32, float16, or bfloat16).
             Preferred API infers it from ``x``.
         dim: Reduction axis (default -1). Negative values are normalized
