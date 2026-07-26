@@ -543,8 +543,17 @@ class TestRooflineStructuralRules:
             validator, {"flops": "2*M*N", "bytes": "M*N", "vars": {"M": 4}})
         assert any("vars" in e and "non-empty string" in e for e in errors)
 
+    def test_vars_non_string_key_fails(self, validator):
+        errors = self._entry(
+            validator, {"flops": "2*M*N", "bytes": "M*N", "vars": {4: "M"}})
+        assert any("key" in e and "must be a string" in e for e in errors)
+
     def test_unresolvable_func_fails(self, validator):
         errors = self._entry(validator, {"func": "tileops.perf.formulas.no_such_formula"})
+        assert any("does not resolve" in e for e in errors)
+
+    def test_non_callable_func_fails(self, validator):
+        errors = self._entry(validator, {"func": "tileops.perf.formulas.__doc__"})
         assert any("does not resolve" in e for e in errors)
 
     def test_resolvable_func_passes(self, validator):

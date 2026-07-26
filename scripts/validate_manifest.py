@@ -549,6 +549,11 @@ def check_l0(
                 )
             else:
                 for k, v in rl_vars.items():
+                    if not isinstance(k, str):
+                        errors.append(
+                            f"[schema] {op_name}: roofline.vars key {k!r} "
+                            f"must be a string"
+                        )
                     if not (isinstance(v, str) and v.strip()):
                         errors.append(
                             f"[schema] {op_name}: roofline.vars[{k!r}] must "
@@ -560,11 +565,10 @@ def check_l0(
                 target = importlib.import_module(mod) if mod else None
             except ImportError:
                 target = None
-            if target is None or not hasattr(target, attr):
+            if target is None or not callable(getattr(target, attr, None)):
                 errors.append(
                     f"[schema] {op_name}: roofline.func "
-                    f"{roofline['func']!r} does not resolve to an importable "
-                    f"attribute"
+                    f"{roofline['func']!r} does not resolve to a callable"
                 )
     elif "roofline" in entry:
         errors.append(f"[schema] {op_name}: roofline must be a mapping")
