@@ -465,9 +465,8 @@ class BatchNormBwdOp(Op):
 
 
 # ---------------------------------------------------------------------------
-# torch.compile registration -- BatchNormFwdOp / BatchNormBwdOp
+# torch.compile dispatch boundary (see tileops/ops/compile_boundary.py)
 # ---------------------------------------------------------------------------
-
 
 
 @torch.library.custom_op(

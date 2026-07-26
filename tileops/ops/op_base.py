@@ -192,8 +192,8 @@ class Op(ABC):
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Resolve and install the kernel map (auto-discovery entry point)."""
         self._install_kernel_map(kernel_map)
-        # Every conforming op calls dispatch_kernel from __init__, so this is
-        # the zero-boilerplate hook for the torch.compile dispatch boundary.
+        # Conforming __init__s all pass through here — the zero-boilerplate
+        # registration point for the compile dispatch boundary.
         self._instance_key = register_instance(self)
 
     def autotune(self) -> None:

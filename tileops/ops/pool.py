@@ -1398,11 +1398,8 @@ class AvgPool3dFwdOp(Op):
 
 
 # ---------------------------------------------------------------------------
-# torch.compile dispatch boundary
+# torch.compile dispatch boundary (see tileops/ops/compile_boundary.py)
 # ---------------------------------------------------------------------------
-# Pool kernels are resolved per input shape/dtype/device on the first call,
-# so forward routes through an opaque custom op: the eager body runs the
-# kernel-cache lookup/construction dynamo cannot trace.
 
 
 @torch.library.custom_op("top::pool_fwd", mutates_args=())

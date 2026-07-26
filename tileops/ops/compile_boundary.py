@@ -1,16 +1,12 @@
 """Opaque dispatch boundary for torch.compile.
 
-A dynamo-traced ``Op.forward`` must not construct kernels or enter a
-TileLang builder: kernel-cache misses build TileLang programs through
-machinery dynamo cannot trace. Ops that resolve kernels lazily at call
-time therefore route ``forward`` through a ``torch.library.custom_op``
-whose eager body looks the instance up here and runs the untraced eager
-path, so cache lookup, kernel construction, and launch stay outside the
-graph.
+Invariant: a dynamo-traced ``Op.forward`` must not construct kernels or
+enter a TileLang builder. Lazy-dispatch ops route ``forward`` through a
+``torch.library.custom_op`` whose eager body resolves the instance here
+and runs the untraced path (cache lookup, kernel construction, launch).
 
-Instances are registered by ``Op.dispatch_kernel`` (every conforming op
-calls it from ``__init__``); the registry holds weak references and never
-extends instance lifetime.
+``Op.dispatch_kernel`` registers every conforming op at ``__init__``
+time; weak references keep the registry from extending lifetimes.
 """
 
 import weakref
