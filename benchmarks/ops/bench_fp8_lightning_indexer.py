@@ -57,26 +57,20 @@ _SHAPE_KEYS = (
 
 
 def _indexer_params() -> list:
-    """Params from manifest workloads; first is smoke, the rest full.
+    """Params from manifest workloads, deduped on shape.
 
-    ``FP8LightningIndexerWorkload.gen_inputs`` emits bf16 index tensors and
-    quantizes inside the op, so manifest workloads that differ only in
-    ``dtypes`` collapse onto a single benchmark case.
+    ``FP8LightningIndexerWorkload.gen_inputs`` emits bf16 and quantizes inside
+    the op, so workloads differing only in ``dtypes`` are one measurement.
     """
-    params: list = []
-    seen: set = set()
+    seen, params = set(), []
     for w in load_workloads(_FP8_LIGHTNING_INDEXER_OP):
         args = tuple(w[k] for k in _SHAPE_KEYS)
         if args in seen:
             continue
         seen.add(args)
-        params.append(
-            pytest.param(
-                *args,
-                marks=pytest.mark.smoke if not params else pytest.mark.full,
-                id=w["label"],
-            )
-        )
+        params.append(pytest.param(
+            *args, id=w["label"],
+            marks=pytest.mark.smoke if not params else pytest.mark.full))
     return params
 
 

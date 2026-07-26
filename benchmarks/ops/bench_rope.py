@@ -85,15 +85,12 @@ def _position_ids_params(workloads: list[dict]) -> list:
 # Bench-local PyTorch baselines
 
 
-def _rope_tables(
-    seq_len: int, head_dim: int, dtype: torch.dtype, *, interleaved: bool,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pre-compute full-width cos/sin tables of shape ``(seq_len, head_dim)``.
+def _rope_tables(seq_len: int, head_dim: int, dtype: torch.dtype):
+    """Half-split cos/sin tables, shape ``(seq_len, head_dim)``.
 
-    ``interleaved`` selects the adjacent-pair (RoFormer) table layout; the
-    default is the half-split (GPT-NeoX) layout. Frequency *values* are
-    variant-specific, but the timed rotation cost depends only on the table
-    geometry, which every variant shares.
+    Frequency values are variant-specific, but the timed rotation cost depends
+    only on table geometry, which every RoPE variant shares — so one baseline
+    serves all of them.
     """
     half = head_dim // 2
     freqs = 1.0 / (
@@ -102,49 +99,19 @@ def _rope_tables(
     angles = torch.outer(
         torch.arange(seq_len, device="cuda", dtype=torch.float32), freqs,
     )
-    cos, sin = torch.cos(angles), torch.sin(angles)
-    if interleaved:
-        cos = torch.repeat_interleave(cos, 2, dim=-1)
-        sin = torch.repeat_interleave(sin, 2, dim=-1)
-    else:
-        cos = torch.cat([cos, cos], dim=-1)
-        sin = torch.cat([sin, sin], dim=-1)
-    return cos.to(dtype), sin.to(dtype)
+    return (torch.cat([torch.cos(angles)] * 2, dim=-1).to(dtype),
+            torch.cat([torch.sin(angles)] * 2, dim=-1).to(dtype))
 
 
-def _apply_neox(
-    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
-) -> torch.Tensor:
-    """Half-split (GPT-NeoX) rotation."""
+def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     half = x.shape[-1] // 2
     x1, x2 = x[..., :half], x[..., half:]
     return x * cos + torch.cat((-x2, x1), dim=-1) * sin
 
 
-def _apply_non_neox(
-    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
-) -> torch.Tensor:
-    """Adjacent-pair (RoFormer) rotation."""
-    x1, x2 = x[..., 0::2], x[..., 1::2]
-    rotated = torch.stack((-x2, x1), dim=-1).flatten(-2)
-    return x * cos + rotated * sin
-
-
-def _profile_rope(
-    op,
-    bm: ManifestBenchmark,
-    shape: tuple[int, ...],
-    dtype: torch.dtype,
-    layout: str,
-    *,
-    interleaved: bool = False,
-) -> None:
-    """Profile op and the bench-local torch rotation on the same input.
-
-    ``ManifestBenchmark`` is constructed at each per-op test's call site with
-    the literal op-name constant so the validator AST check can match it; this
-    helper only handles input generation and the profile + record pairs.
-    """
+def _profile_rope(op, bm: ManifestBenchmark, shape: tuple[int, ...],
+                  dtype: torch.dtype, layout: str) -> None:
+    """Profile op and the torch rotation baseline on the same input."""
     x = torch.randn(shape, device="cuda", dtype=dtype)
     params = {"shape": shape, "dtype": dtype, "layout": layout}
 
@@ -152,17 +119,10 @@ def _profile_rope(
     BenchmarkReport.record(op, params, result, tag="tileops")
 
     seq_len = shape[0] if layout == "1d" else shape[1]
-    head_dim = shape[-1]
-    cos, sin = _rope_tables(seq_len, head_dim, dtype, interleaved=interleaved)
+    cos, sin = _rope_tables(seq_len, shape[-1], dtype)
     if layout != "1d":
-        cos = cos.view(1, seq_len, 1, head_dim)
-        sin = sin.view(1, seq_len, 1, head_dim)
-    apply_fn = _apply_non_neox if interleaved else _apply_neox
-
-    def baseline_fn(t: torch.Tensor) -> torch.Tensor:
-        return apply_fn(t, cos, sin)
-
-    result_bl = bm.profile(baseline_fn, x)
+        cos, sin = (t.view(1, seq_len, 1, shape[-1]) for t in (cos, sin))
+    result_bl = bm.profile(lambda t: _rotate(t, cos, sin), x)
     BenchmarkReport.record(op, params, result_bl, tag="torch-ref")
 
 
@@ -193,7 +153,7 @@ def test_rope_non_neox_bench(
 ) -> None:
     op = RopeNonNeoxOp(layout=layout, base=_BASE)
     bm = ManifestBenchmark(_NON_NEOX_OP, op, _RopeWorkload(shape, dtype))
-    _profile_rope(op, bm, shape, dtype, layout, interleaved=True)
+    _profile_rope(op, bm, shape, dtype, layout)
 
 
 _LLAMA31_OP = "RopeLlama31Op"
@@ -261,11 +221,11 @@ def test_rope_neox_position_ids_bench(
     result = bm.profile(op, x, position_ids)
     BenchmarkReport.record(op, params, result, tag="tileops")
 
-    cos, sin = _rope_tables(max_position, head_dim, dtype, interleaved=False)
+    cos, sin = _rope_tables(max_position, head_dim, dtype)
 
     def baseline_fn(t: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
         idx = pos.long()
-        return _apply_neox(t, cos[idx].unsqueeze(1), sin[idx].unsqueeze(1))
+        return _rotate(t, cos[idx].unsqueeze(1), sin[idx].unsqueeze(1))
 
     result_bl = bm.profile(baseline_fn, x, position_ids)
     BenchmarkReport.record(op, params, result_bl, tag="torch-ref")
