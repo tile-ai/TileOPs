@@ -57,26 +57,26 @@ graph TD
 
 ### Flow status
 
-| Flow                  | Status      | What works                    | Gap                                                                 |
-| :-------------------- | :---------- | :---------------------------- | :------------------------------------------------------------------ |
-| 🟢 **Op Delivery**    | done        | M1 → M2 → M3 → M7 (CI gate)   | —                                                                   |
-| 🔵 **Perf Tuning**    | broken      | M4 produces raw time          | `roofline.py` + `formulas.py` missing; optimization loop not closed |
-| 🟠 **HW Calibration** | partial     | HBM microbench + h200 profile | tensor core calibration missing; h100 profile missing               |
-| 🟣 **Publish**        | not started | —                             | no doc-gen scripts, no build system                                 |
+| Flow                  | Status  | What works                                                                     | Gap                                                                                |
+| :-------------------- | :------ | :----------------------------------------------------------------------------- | :--------------------------------------------------------------------------------- |
+| 🟢 **Op Delivery**    | done    | M1 → M2 → M3 → M7 (CI gate)                                                    | —                                                                                  |
+| 🔵 **Perf Tuning**    | partial | M4 produces raw time; roofline formulas + GPU profile loader (`tileops/perf/`) | efficiency computation (SOL vs. actual time) missing; optimization loop not closed |
+| 🟠 **HW Calibration** | partial | HBM microbench + GPU profiles                                                  | tensor core calibration missing                                                    |
+| 🟣 **Publish**        | partial | nightly bench data + manifest stats published for TileOPs.github.io            | API reference generation missing                                                   |
 
 ### Module reference
 
-| Module                                       | Responsibility                                                                                                                         | Key Artifact                       |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **M1: Spec**                                 | Declare op interface, workloads, roofline formulas                                                                                     | `tileops/manifest/`                |
-| **M2: Kernel + Op**                          | GPU kernel implementations and user-facing Python API                                                                                  | `tileops/kernels/`, `tileops/ops/` |
-| **M3: Correctness**                          | Numerical correctness against PyTorch reference                                                                                        | `tests/`                           |
-| **M4: Perf Tuning**                          | Benchmark execution time and drive kernel optimization loop                                                                            | `benchmarks/`                      |
-| **M5: Roofline**                             | Hardware efficiency from raw time + formulas + HW profile                                                                              | `tileops/perf/`                    |
-| **M6: HW Profile**                           | GPU hardware parameters (bandwidth, FLOPS) from offline calibration                                                                    | `tileops/perf/profiles/`           |
-| **M7: CI Gate**                              | Correctness and performance regression guard per PR                                                                                    | CI pipeline                        |
-| **M8: Docs**                                 | Design docs, API reference, perf tables — agent artifacts published alongside auto-generated content                                   | TileOPs.github.io                  |
-| **Workloads** _(shared layer, not a module)_ | Shared input generation + parametrize decorators consumed by M3 and M4. See [trust-model.md](trust-model.md#workloads-layer-contract). | `workloads/`                       |
+| Module                                       | Responsibility                                                                                                                | Key Artifact                       |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| **M1: Spec**                                 | Declare op interface, workloads, roofline formulas                                                                            | `tileops/manifest/`                |
+| **M2: Kernel + Op**                          | GPU kernel implementations and user-facing Python API                                                                         | `tileops/kernels/`, `tileops/ops/` |
+| **M3: Correctness**                          | Numerical correctness against PyTorch reference                                                                               | `tests/`                           |
+| **M4: Perf Tuning**                          | Benchmark execution time and drive kernel optimization loop                                                                   | `benchmarks/`                      |
+| **M5: Roofline**                             | Hardware efficiency from raw time + formulas + HW profile                                                                     | `tileops/perf/`                    |
+| **M6: HW Profile**                           | GPU hardware parameters (bandwidth, FLOPS) from offline calibration                                                           | `tileops/perf/profiles/`           |
+| **M7: CI Gate**                              | Correctness and performance regression guard per PR                                                                           | CI pipeline                        |
+| **M8: Docs**                                 | Design docs, API reference, perf tables — agent artifacts published alongside auto-generated content                          | TileOPs.github.io                  |
+| **Workloads** _(shared layer, not a module)_ | Shared input generation + parametrize decorators consumed by M3 and M4. See [trust-model.md](trust-model.md#workloads-layer). | `workloads/`                       |
 
 ## Data Contracts
 
@@ -91,7 +91,7 @@ Modules communicate through data contracts. The topology diagram above is simpli
 | M2   | M4  | Op callable                      | Python import                    |
 | M2   | M8  | design docs, docstrings          | Markdown, Google-style in source |
 | M3   | M7  | pass/fail                        | pytest exit code                 |
-| M4   | M5  | raw time per workload            | JSON/CSV                         |
+| M4   | M5  | raw time per workload            | JUnit XML                        |
 | M6   | M5  | GPU profile                      | YAML (`tileops/perf/profiles/`)  |
 | M7   | M8  | gate status                      | CI pipeline                      |
 
@@ -132,32 +132,4 @@ Design documents are authored during development and published alongside auto-ge
 
 ## Directory Structure
 
-```
-TileOPs/
-├── tileops/
-│   ├── manifest/                     # Op registry (per-family YAML files + loader; agent entry point, packaged)
-│   ├── kernels/                      # L1: GPU kernel implementations
-│   ├── ops/                          # L2: User-facing Op classes
-│   ├── utils/
-│   └── perf/                         # Roofline evaluation
-│       ├── roofline.py               # efficiency = sol_time / actual_time
-│       ├── formulas.py               # Complex op roofline functions
-│       └── profiles/                 # GPU hardware parameters
-│           ├── h100.yaml
-│           └── h200.yaml
-├── workloads/                        # Shared workload definitions (WorkloadBase, FixtureBase)
-│   ├── base.py                       # WorkloadBase, FixtureMeta, FixtureBase
-│   └── ops/                          # Per-op workload subclasses
-├── benchmarks/
-│   ├── benchmark.py                  # BenchmarkBase[W], capability protocols, ManifestBenchmark
-│   ├── hardware/                     # Microbench (GPU characterization)
-│   │   ├── memory/
-│   │   ├── compute/
-│   │   └── system/
-│   ├── ops/                          # Op-level benchmarks
-│   ├── kernels/                      # Kernel-level benchmarks
-│   └── tests/                        # Benchmark contract tests
-├── tests/                            # Correctness tests
-├── docs/
-└── scripts/
-```
+The Module reference table above maps each module to its directory (Key Artifact column). Top-level layout: `tileops/` (manifest, kernels, ops, perf), `workloads/`, `tests/`, `benchmarks/`, `docs/`, `scripts/`. This doc does not track the file inventory — consult the tree itself.

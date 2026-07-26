@@ -194,7 +194,7 @@ SumFwdOp:
     inputs:  {x: {dtype: "..."}}
     outputs: {y: {dtype: "same_as(x)"}}
     params:
-      dim:     {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+      dim:     {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     # static_dims absent — equivalent to static_dims: {}
     shape_rules: [...]
@@ -203,7 +203,7 @@ SumFwdOp:
 The generated `__init__` has no shape kwargs:
 
 ```python
-def __init__(self, *, dtype, dim=-1, keepdim=False, ...):
+def __init__(self, *, dtype, dim=None, keepdim=False, ...):
     # ...
 ```
 
@@ -250,7 +250,7 @@ Validator enforces `cls.__name__ == manifest_key` exactly — no heuristic resol
 
 ### `family`
 
-Closed set: `elementwise`, `reduction`, `normalization`, `convolution`, `gemm`, `quantize`, `sampling`, `attention`, `moe`, `linear_attention`, `ssm`, `scan`.
+Lowercase snake_case family name. Determines which family file owns the entry (see [Layout](#layout)). Introducing a new family means adding a new family file — human-reviewed like any manifest change. The validator checks presence only.
 
 ### `torch_compile_fullgraph`
 
@@ -327,7 +327,7 @@ Op has Optional[Tensor] inputs?
    └─ 3+ → decompose the op first
 ```
 
-**Naming:** Variants follow the same PascalCase key format, with a descriptive suffix inserted before `{Direction}Op` (e.g., `MoEFusedMoeCbFwdOp` where `Cb` is the variant suffix).
+**Naming:** Variants follow the same PascalCase key format, with a descriptive suffix inserted before `{Direction}Op` (e.g., `Conv1dBiasFwdOp`, the `Bias` variant of `Conv1dFwdOp`).
 
 ### Workloads
 
@@ -358,24 +358,23 @@ are defined in [roofline.md](roofline.md).
 
 #### kernel_map
 
-Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [ops-design-reference.md § Kernel Dispatch](ops-design-reference.md#kernel-dispatch-kernel_map).
+Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [ops-design-reference.md § S14 `default_kernel_map`](ops-design-reference.md#slot-s14).
 
 ```yaml
 # Single-kernel op
 source:
   kernel: tileops/kernels/norm/rms_norm.py
   kernel_map:
-    rms_norm: RmsNormKernel
+    rms_norm: RMSNormKernel
   op: tileops/ops/norm/rms_norm.py
 
 # Multi-kernel op
 source:
-  kernel:
-    - tileops/kernels/attention/gqa_bwd.py
+  kernel: tileops/kernels/attention/gqa_bwd.py
   kernel_map:
-    mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-    mha_bwd_kernel: MHABwdKernel
-    mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
+    gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
+    gqa_bwd_kernel: GQABwdKernel
+    gqa_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
   op: tileops/ops/attention/mha.py
 ```
 
@@ -402,42 +401,42 @@ outputs:
   y: {dtype: "same_as(x)", shape: "[M, N]"}
 ```
 
-**Arbitrary rank — RMSNorm** \[R9, R13, R20\]:
+**Arbitrary rank — RMSNorm** \[R9, R13, R17\]:
 
 ```yaml
 inputs:
   x: {dtype: "float16 | bfloat16"}
   weight: {dtype: "same_as(x)"}
 outputs:
-  y: {dtype: "same_as(x)"}
+  output: {dtype: "same_as(x)"}
 params:
-  dim: {type: int, default: -1}
-  eps: {type: float, default: 1e-6}
-static_dims:
-  N: "x.shape[dim]"
+  normalized_shape: {type: "list[int] | tuple[int, ...]"}
+  eps: {type: "float | None", default: null}
 shape_rules:
-  - "y.shape == x.shape"
-  - "weight.shape == (x.shape[dim],)"
+  - "len(normalized_shape) > 0"
+  - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
+  - "weight.shape == tuple(normalized_shape)"
+  - "output.shape == x.shape"
 ```
 
 **Arbitrary rank — Reduce** \[R9, R13\]:
 
 ```yaml
 inputs:
-  x: {dtype: "float16 | bfloat16"}
+  x: {dtype: "float16 | bfloat16 | float32"}
 outputs:
-  y: {dtype: "same_as(x)"}
+  output: {dtype: "same_as(x)"}
 params:
-  dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+  dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
   keepdim: {type: bool, default: false}
 shape_rules:
   - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-  - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-  - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
   - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+  - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+  # per-axis output-shape rules follow the same normalize-then-check pattern
 ```
 
-All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve input shape (no `keepdim`); use `shape_rules` to express `y.shape == x.shape`. count_nonzero has no `keepdim` (per R17). Authoring contract for `dim`: see R14 → [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
+All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve input shape (no `keepdim`); use `shape_rules` to express `output.shape == x.shape`. count_nonzero has no `keepdim` (per R17). Authoring contract for `dim`: see R14 → [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
 
 **Full entry — RMSNorm:**
 
@@ -452,29 +451,31 @@ RMSNormFwdOp:
       x: {dtype: "float16 | bfloat16"}
       weight: {dtype: "same_as(x)"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(x)"}
     params:
-      dim: {type: int, default: -1}
-      eps: {type: float, default: 1e-6}
-    static_dims:
-      N: "x.shape[dim]"
+      normalized_shape: {type: "list[int] | tuple[int, ...]"}
+      eps: {type: "float | None", default: null}
     shape_rules:
-      - "y.shape == x.shape"
-      - "weight.shape == (x.shape[dim],)"
+      - "len(normalized_shape) > 0"
+      - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
+      - "weight.shape == tuple(normalized_shape)"
+      - "output.shape == x.shape"
 
   workloads:
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
 
   roofline:
     vars:
-      M: "product(x.shape[:dim])"
-      N: "x.shape[dim]"
+      M: "product(x.shape[:x.ndim - len(normalized_shape)])"
+      N: "product(normalized_shape)"
     flops: "4 * M * N"
     bytes: "(2 * M * N + N) * elem_bytes"
 
   source:
     kernel: tileops/kernels/norm/rms_norm.py
+    kernel_map:
+      rms_norm: RMSNormKernel
     op: tileops/ops/norm/rms_norm.py
     test: tests/ops/test_rms_norm.py
     bench: benchmarks/ops/bench_rms_norm.py
@@ -518,7 +519,7 @@ workloads:
 | L3    | Dtype     | dtype strings are valid torch types, `same_as()` refs, or `promote_int_to_float()` refs                                     |
 | L4    | Benchmark | Bench file imports/calls `load_workloads` and `eval_roofline` (directly or via `workloads_to_params` / `ManifestBenchmark`) |
 
-`spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on a targeted entry + its variants.
+`spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on a targeted entry + its variants. L2 and L3 additionally run parity extensions against the implemented Op's `_infer_output_shapes` / `_validate_dtypes` methods; see [ops-design.md](ops-design.md).
 
 ```bash
 python scripts/validate_manifest.py

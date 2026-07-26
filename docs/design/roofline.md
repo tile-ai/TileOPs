@@ -25,7 +25,7 @@ Inputs:
 
 Bound type is whichever term dominates `sol_time` (memory-bound if `memory_time > compute_time`, else compute-bound). It depends on shape, not on the op; the roofline tool computes it per-workload and the manifest does not declare it.
 
-## 1.3 Convention
+### 1.3 Convention
 
 Per-element FLOP rule for elementwise ops:
 
@@ -253,10 +253,10 @@ Rules:
 Hardware parameters use theoretical values with calibration factors from one-time microbenchmark measurements. YAML files store only `theoretical` and `calibration`; `effective = theoretical × calibration` is computed by `load_profile()`:
 
 ```yaml
-# tileops/perf/profiles/h200.yaml
+# tileops/perf/profiles/<gpu>.yaml
 hbm:
   theoretical: 4800e9       # bytes/s, from spec sheet
-  calibration: 0.94         # from microbench
+  calibration: 0.848        # from microbench (STREAM Triad)
 tensor_core:
   fp16:
     theoretical: 989.5e12   # FLOPS, from spec sheet
