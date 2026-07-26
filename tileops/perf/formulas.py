@@ -1285,14 +1285,18 @@ def da_cumsum_fwd_roofline(op: "Op") -> tuple[int, int]:
     batch = int(op.batch)
     seq_len = int(op.seq_len)
     n_heads = int(op.n_heads)
+    has_dt_bias = bool(getattr(op, "has_dt_bias", False))
+    dt_softplus = bool(getattr(op, "dt_softplus", False))
     elem_bytes = _dtype_itemsize(getattr(op, "dtype", "float32"))
 
     tokens = batch * seq_len * n_heads
-    # bias add + softplus (~4 flops) + clamp + dt * A + cumsum add
-    flops = 8 * tokens
+    # Unconditional: clamp + dt * A + cumsum add; bias add (+1) and
+    # softplus (~4 flops) only when the op is configured with them.
+    flops = (3 + (1 if has_dt_bias else 0) + (4 if dt_softplus else 0)) * tokens
     nbytes = (
         tokens * 4                 # dt (float32, read)
-        + 2 * n_heads * 4          # A + dt_bias (float32, read)
+        + n_heads * 4              # A (float32, read)
+        + (n_heads * 4 if has_dt_bias else 0)  # dt_bias (float32, read)
         + tokens * elem_bytes      # dt_out (target dtype, write)
         + tokens * 4               # dA_cumsum (float32, write)
     )
@@ -1343,7 +1347,7 @@ def ssd_chunk_state_fwd_roofline(op: "Op") -> tuple[int, int]:
         + batch * seq_len * n_groups * d_state * elem_bytes     # Bmat
         + tokens * elem_bytes                                   # dt
         + tokens * 4                                            # dA_cumsum
-        + batch * seq_len * 4                                   # seq_idx
+        + (batch * seq_len * 4 if bool(getattr(op, "has_seq_idx", False)) else 0)  # seq_idx
         + batch * num_chunks * n_heads * d_head * d_state * 4   # states out
     )
     return int(flops), int(nbytes)
@@ -1358,12 +1362,15 @@ def ssd_state_passing_fwd_roofline(op: "Op") -> tuple[int, int]:
     elem_bytes = _dtype_itemsize(getattr(op, "dtype", "float32"))
 
     state_elems = batch * num_chunks * n_heads * d_state
-    # exp-scaled multiply-add per state element along the chunk scan.
-    flops = 3 * state_elems
+    # Multiply-add per state element along the chunk scan; the decay scalar
+    # exp(dA_chunk_cumsum[b, h, c]) is computed once per (batch, head, chunk)
+    # and shared across the state dimension.
+    flops = 2 * state_elems + batch * n_heads * num_chunks
     nbytes = (
         state_elems * elem_bytes                 # states (read)
         + batch * n_heads * num_chunks * 4       # dA_chunk_cumsum
-        + batch * n_heads * d_state * 4          # initial_states
+        + (batch * n_heads * d_state * 4         # initial_states
+           if bool(getattr(op, "has_initial_states", True)) else 0)
         + state_elems * 4                        # out (float32)
         + batch * n_heads * d_state * 4          # final_states
     )
@@ -1411,9 +1418,10 @@ def ssd_decode_roofline(op: "Op") -> tuple[int, int]:
     elem_bytes = _dtype_itemsize(getattr(op, "dtype", "float16"))
 
     state_elems = batch * n_heads * d_head * d_state
-    # Per state element: exp(dt * A), decay multiply, dt*B*x fused
-    # multiply-add, and the output dot against C.
-    flops = 6 * state_elems
+    # Per state element under the multiply/add convention: dt * A, exp,
+    # two products for dt * x * B, the decay multiply, the state add, and
+    # the output multiply-add against C — eight ops total.
+    flops = 8 * state_elems
     nbytes = (
         n_heads * d_head * d_state * 4          # A
         + batch * n_heads * d_head * 4          # dt
@@ -1442,13 +1450,21 @@ def mamba2_fwd_roofline(op: Any) -> tuple[int, int]:
     n_groups = int(op.n_groups)
     elem_bytes = _dtype_itemsize(getattr(op, "dtype", "float16"))
 
+    has_dt_bias = bool(getattr(op, "has_dt_bias", False))
+    dt_softplus = bool(getattr(op, "dt_softplus", False))
+    has_initial_states = bool(getattr(op, "has_initial_states", False))
+
     tokens = batch * seq_len * n_heads
     state_elems = batch * num_chunks * n_heads * d_head * d_state
+    # FLOPs are the exact sum of the five standalone stage formulas, with the
+    # state-passing stage running over the flattened d_head * d_state dim.
     flops = (
-        8 * tokens                                                       # da_cumsum
+        # da_cumsum: clamp + dt*A + cumsum, plus configured bias/softplus
+        (3 + (1 if has_dt_bias else 0) + (4 if dt_softplus else 0)) * tokens
         + batch * num_chunks * n_groups * chunk_len**2 * d_state         # cb (causal)
-        + 2 * batch * num_chunks * n_heads * d_head * d_state * chunk_len  # chunk_state
-        + 3 * state_elems                                                # state_passing
+        + 2 * batch * num_chunks * n_heads * d_head * d_state * chunk_len  # chunk_state GEMM
+        + 4 * tokens + tokens * d_head                                   # chunk_state decay + x scaling
+        + 2 * state_elems + batch * n_heads * num_chunks                 # state_passing
         + 2 * tokens * d_state * d_head                                  # scan history
         + batch * num_chunks * n_heads * chunk_len**2 * d_head           # scan intra (causal)
     )
@@ -1456,7 +1472,10 @@ def mamba2_fwd_roofline(op: Any) -> tuple[int, int]:
         tokens * d_head * elem_bytes                                 # x
         + tokens * 4                                                 # dt
         + 2 * batch * seq_len * n_groups * d_state * elem_bytes      # B, C
-        + 2 * n_heads * 4                                            # A, dt_bias
+        + n_heads * 4                                                # A
+        + (n_heads * 4 if has_dt_bias else 0)                        # dt_bias
+        + (batch * n_heads * d_head * d_state * 4                    # initial_states
+           if has_initial_states else 0)
         # dominant intermediates: cb, chunk states (read + write), dt_out,
         # dA_cumsum
         + batch * num_chunks * n_groups * chunk_len**2 * elem_bytes
