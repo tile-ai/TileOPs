@@ -27,13 +27,9 @@ from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
 
-# torch.compile registration factories
-#
-# Each factory creates a @torch.library.custom_op + register_fake pair.
-# Instances register themselves in _OP_REGISTRY keyed by integer id.
-# The custom_op receives this key and looks up the instance to call the
-# pre-built tilelang kernel.  The key is a plain int so dynamo can trace
-# through forward() without hitting unsupported Python side-effects.
+# torch.compile registration factories (see module docstring). The registry
+# key is a plain int so dynamo can trace through forward() without hitting
+# unsupported Python side-effects.
 
 _OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 

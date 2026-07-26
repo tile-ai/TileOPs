@@ -40,12 +40,8 @@ from tileops.kernels.rope import (
 
 from .op_base import Op
 
-# torch.compile registration factory
-#
-# Creates a @torch.library.custom_op + register_fake pair for each RoPE op.
-# Instances register themselves in _OP_REGISTRY keyed by integer id.
-# The custom_op receives this key and looks up the instance to call the
-# pre-built tilelang kernel.
+# torch.compile registration factory: a @torch.library.custom_op +
+# register_fake pair per RoPE op (see module docstring).
 
 _OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 

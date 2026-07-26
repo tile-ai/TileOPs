@@ -163,7 +163,6 @@ def test_where(n_total: int, dtype: torch.dtype) -> None:
     op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
     out = op(cond, x, y)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
-    print("All checks passed for WhereFwdOp.")
 
 
 # --- L1: clamp ---
@@ -183,7 +182,6 @@ def test_clamp(n_total: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for ClampFwdOp.")
 
 
 # --- L1: masked_fill ---
@@ -206,7 +204,6 @@ def test_masked_fill(n_total: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for MaskedFillFwdOp.")
 
 
 # --- L1: nan_to_num ---
@@ -230,7 +227,6 @@ def test_nan_to_num(n_total: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol, equal_nan=True)
-    print("All checks passed for NanToNumFwdOp.")
 
 
 # --- L1: alibi ---
@@ -262,7 +258,6 @@ def test_alibi(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
 
     tol = {"atol": 1e-2, "rtol": 1e-2} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for AlibiFwdOp.")
 
 
 # --- L1: sinusoidal ---
@@ -298,7 +293,6 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for SinusoidalFwdOp.")
 
 
 # L2 — Dtype x Size (4 cases for clamp)
@@ -330,7 +324,6 @@ def test_clamp_dtype_size(n_total: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for ClampFwdOp dtype/size variant.")
 
 
 # L4 — Edge Cases (8 cases, fp32, 4K)
@@ -347,7 +340,6 @@ def test_clamp_min_gt_max(n_total: int, dtype: torch.dtype) -> None:
     op = ClampScalarFwdOp(input=(n_total,), min=0.5, max=-0.5, dtype=dtype)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for ClampFwdOp min>max edge case.")
 
 
 @IndependentEdgeFixture
@@ -360,7 +352,6 @@ def test_clamp_upper_only(n_total: int, dtype: torch.dtype) -> None:
     op = ClampScalarFwdOp(input=(n_total,), min=None, max=0.5, dtype=dtype)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for ClampFwdOp upper-only edge case.")
 
 
 @IndependentEdgeFixture
@@ -373,7 +364,6 @@ def test_clamp_lower_only(n_total: int, dtype: torch.dtype) -> None:
     op = ClampScalarFwdOp(input=(n_total,), min=-0.5, max=None, dtype=dtype)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for ClampFwdOp lower-only edge case.")
 
 
 @IndependentEdgeFixture
@@ -388,7 +378,6 @@ def test_masked_fill_all_true(n_total: int, dtype: torch.dtype) -> None:
     op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype)
     out = op(x, mask)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for MaskedFillFwdOp all-true edge case.")
 
 
 @IndependentEdgeFixture
@@ -403,7 +392,6 @@ def test_masked_fill_all_false(n_total: int, dtype: torch.dtype) -> None:
     op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype)
     out = op(x, mask)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for MaskedFillFwdOp all-false edge case.")
 
 
 @IndependentEdgeFixture
@@ -418,7 +406,6 @@ def test_where_all_true(n_total: int, dtype: torch.dtype) -> None:
     op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
     out = op(cond, x, y)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
-    print("All checks passed for WhereFwdOp all-true edge case.")
 
 
 @IndependentEdgeFixture
@@ -433,7 +420,6 @@ def test_where_all_false(n_total: int, dtype: torch.dtype) -> None:
     op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
     out = op(cond, x, y)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
-    print("All checks passed for WhereFwdOp all-false edge case.")
 
 
 @IndependentEdgeFixture
@@ -456,7 +442,6 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
     op = NanToNumFwdOp(N_total=n_total, dtype=dtype, nan=0.0, posinf=1e4, neginf=-1e4)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5, equal_nan=True)
-    print("All checks passed for NanToNumFwdOp edge case.")
 
 
 @pytest.mark.smoke

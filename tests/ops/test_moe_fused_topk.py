@@ -121,9 +121,6 @@ def _check(test: FusedTopKTest) -> None:
                     f"{kth_val:.6f}"
                 )
 
-    tag = (f"[T={test.num_tokens}, E={test.num_experts}, K={test.top_k}, "
-           f"fn={test.scoring_func}, renorm={test.renormalize}, {test.dtype}]")
-    print(f"PASS {tag}")
 
 
 @FusedTopKFixture

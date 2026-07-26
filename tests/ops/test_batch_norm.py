@@ -139,7 +139,6 @@ def test_batch_norm_fwd(N, C, spatial, dtype, training):
         assert torch.allclose(running_var.float(), ref_rv.float(), atol=atol, rtol=rtol), \
             f"running_var mismatch: max_err={rv_err:.4e}"
 
-    print(f"test_batch_norm_fwd passed [training={training}]: max_err={max_err:.4e}")
 
 
 @BatchNormBwdFixture
@@ -162,7 +161,6 @@ def test_batch_norm_bwd(N, C, spatial, dtype):
         max_err = (got - ref).abs().max()
         assert torch.allclose(got, ref, atol=atol, rtol=rtol), \
             f"bwd {name} mismatch: max_err={max_err:.4e}"
-    print("test_batch_norm_bwd passed: grad_x/weight/bias all match")
 
 
 @pytest.mark.smoke

@@ -155,7 +155,6 @@ class NsaTopkTest(_NsaTopkTestWorkload, TestBase):
                     f"Top-K mismatch ratio {mismatch_ratio:.3%} exceeds threshold {threshold:.3%}"
                 print(f"Top-K Indices Mismatched slightly within threshold: "
                       f"{mismatch_ratio * 100:.3f}%")
-        print(f"All checks passed for {op.__class__.__name__}.")
 
     def ref_program(
         self,

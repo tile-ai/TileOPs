@@ -159,11 +159,6 @@ def test_fused_moe_qwen3(
         ).to(dtype)
         torch.testing.assert_close(out_nopad.float(), out_vllm.float(), rtol=1e-2, atol=1e-2)
 
-    print(
-        f"PASS [T={num_tokens}, E={num_experts}, K={top_k}, "
-        f"H={hidden_size}, F={ffn_size}, fn={scoring_func}, "
-        f"renorm={renormalize}, {dtype}]"
-    )
 
 
 # Cases for the FusedMoe non-determinism regression. The cooperative 3WG
@@ -317,11 +312,6 @@ def test_fused_moe_kimi(
 
     torch.testing.assert_close(out_nopad.float(), ref.float(), rtol=1e-2, atol=1e-2)
 
-    print(
-        f"PASS [T={num_tokens}, E={num_experts}, K={top_k}, "
-        f"H={hidden_size}, F={ffn_size}, scale={routed_scaling_factor}, "
-        f"bias={with_correction_bias}, {dtype}]"
-    )
 
 
 # expert_map local filtering test (EP simulation without All-to-All)
@@ -377,7 +367,6 @@ def test_expert_map_local_filter() -> None:
     # Sum of partial outputs should match full output
     out_sum = (out_r0.float() + out_r1.float()).to(dtype)
     torch.testing.assert_close(out_sum.float(), out_full.float(), rtol=1e-2, atol=1e-2)
-    print(f"PASS expert_map local filter [T={T}, E={E}, K={K}, H={H}, F={F}]")
 
 
 # correction_bias routing precision
@@ -412,7 +401,6 @@ def test_correction_bias_routing_precision() -> None:
         f"Expert selection mismatch:\n  ref={ref_ids_sorted}\n  got={tile_ids_sorted}"
     )
     torch.testing.assert_close(tw, ref_weights, rtol=1e-4, atol=1e-4)
-    print("PASS correction_bias precision test")
 
 
 # vLLM alignment (optional)
@@ -485,10 +473,6 @@ def test_fused_moe_vs_vllm(
 
     torch.testing.assert_close(
         out_tileops.float(), out_vllm.float(), rtol=1e-2, atol=1e-2,
-    )
-    print(
-        f"PASS vs vLLM [T={num_tokens}, E={num_experts}, K={top_k}, "
-        f"H={hidden_size}, F={ffn_size}, scale={routed_scaling_factor}, {dtype}]"
     )
 
 

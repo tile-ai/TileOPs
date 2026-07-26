@@ -293,7 +293,6 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for PreluFwdOp.")
 
 
 @pytest.mark.smoke
@@ -310,7 +309,6 @@ def test_prelu_batch_dim() -> None:
     op = PreluFwdOp(shape=shape, dtype=dtype, num_channels=C)
     out = op(x, weight)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for PreluFwdOp batch-dim.")
 
 
 @pytest.mark.smoke

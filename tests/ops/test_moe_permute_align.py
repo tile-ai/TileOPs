@@ -187,8 +187,6 @@ def test_permute_align_op(
     outputs_ref = tuple(test.ref_program(*inputs))
 
     _permute_align_compare(outputs, outputs_ref, block_size, num_experts, numel)
-    print(f"All checks passed for MoePermuteAlignFwdOp [{total_tokens}tok, top{top_k}, "
-          f"E={num_experts}, bs={block_size}].")
 
 
 @pytest.mark.smoke
@@ -248,7 +246,6 @@ def test_permute_align_skewed_distribution() -> None:
     outputs_ref = tuple(_ref_permute_align(topk_ids, block_size, num_experts))
 
     _permute_align_compare(outputs, outputs_ref, block_size, num_experts, numel)
-    print("All checks passed for skewed distribution (all tokens -> expert 0).")
 
 
 if __name__ == "__main__":
