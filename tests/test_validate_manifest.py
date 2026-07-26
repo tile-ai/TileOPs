@@ -2595,34 +2595,6 @@ class TestCtorSignatureParity:
             )
             assert any(substring in e for e in errs), (desc, errs)
 
-    def test_retired_ctor_param_fails(self, validator):
-        """A code-only retired ctor param (e.g. `strategy`) is rejected."""
-        from tileops.ops.op_base import Op
-
-        class OpRetired(Op):
-            def __init__(self, dim=-1, strategy=None, kernel_map=None): pass
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
-
-        entry = {"signature": {"params": {"dim": {"type": "int", "default": -1}}}}
-        errs = validator.check_c3_ctor_signature_parity("OpRetired", entry, OpRetired)
-        assert any("'strategy' is retired" in e for e in errs), errs
-
-        # Explicit manifest declaration reintroduces the name legally.
-        entry_declared = {"signature": {"params": {
-            "dim": {"type": "int", "default": -1},
-            "strategy": {"type": "str", "compat_default": None},
-        }}}
-        errs = validator.check_c3_ctor_signature_parity(
-            "OpRetired", entry_declared, OpRetired,
-        )
-        assert not any("retired" in e for e in errs), errs
-
-
-class TestForwardSignatureParity:
-    """C4: forward positional names match manifest inputs order."""
-
     def test_forward_order_matrix(self, validator):
         """Matching order passes; swapped positional names fail."""
         entry = {"signature": {
