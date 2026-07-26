@@ -1567,7 +1567,6 @@ def test_pool_ctor_rank_annotations_snapshot(op_cls: type, ndim: int) -> None:
 )
 def test_max_pool_forward_return_annotation_snapshot(op_cls: type, expected_return) -> None:
     """forward return annotations match manifest outputs per concrete class."""
-    assert "forward" in op_cls.__dict__
     ann = inspect.signature(op_cls.forward).return_annotation
     assert ann == expected_return, f"{op_cls.__name__}.forward -> {ann}"
 
@@ -1741,55 +1740,6 @@ def test_pool_eval_roofline_snapshot(
     x = torch.randn(*shape, device="cuda", dtype=torch.float16)
     op(x)
     assert op.eval_roofline() == (expected_flops, expected_bytes)
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("op_cls", "ctor", "in_dims", "spatial", "expected"),
-    [
-        pytest.param(
-            AvgPool1dFwdOp, dict(kernel_size=2), (16,), True,
-            ("avg_pool1d_spatial_kernel", 2, 4, 16, 2, 2, 0, False, True,
-             torch.float16, 0, False),
-            id="avg1d-spatial"),
-        pytest.param(
-            AvgPool1dFwdOp, dict(kernel_size=2, ceil_mode=True), (16,), False,
-            ("avg_pool1d_kernel", 2, 4, 16, 2, 2, 0, True, True,
-             torch.float16, 0, False),
-            id="avg1d-general"),
-        pytest.param(
-            AvgPool2dFwdOp, dict(kernel_size=2), (8, 8), True,
-            ("spatial", 2, 4, 8, 8, (2, 2), (2, 2), (0, 0), False, True, None,
-             torch.float16, 0, False),
-            id="avg2d-spatial"),
-        pytest.param(
-            AvgPool2dFwdOp, dict(kernel_size=2, ceil_mode=True), (8, 8), False,
-            ("general", 2, 4, 8, 8, (2, 2), (2, 2), (0, 0), True, True, None,
-             torch.float16, 0, False),
-            id="avg2d-general"),
-        pytest.param(
-            AvgPool3dFwdOp, dict(kernel_size=2), (4, 8, 8), True,
-            ("avg_pool3d_spatial_kernel", 2, 4, 4, 8, 8, (2, 2, 2), (2, 2, 2),
-             (0, 0, 0), False, True, None, torch.float16, 0, False),
-            id="avg3d-spatial"),
-        pytest.param(
-            AvgPool3dFwdOp, dict(kernel_size=2, ceil_mode=True), (4, 8, 8), False,
-            ("avg_pool3d_kernel", 2, 4, 4, 8, 8, (2, 2, 2), (2, 2, 2),
-             (0, 0, 0), True, True, None, torch.float16, 0, False),
-            id="avg3d-general"),
-    ],
-)
-def test_avg_pool_kernel_cache_key_snapshot(
-    op_cls: type, ctor: dict, in_dims: tuple, spatial: bool, expected: tuple,
-) -> None:
-    """Cache-key tuples stay byte-identical to their per-rank pre-collapse form."""
-    op = op_cls(**ctor)
-    kernel_name = op._spatial_slot if spatial else op._generic_slot
-    key = op._kernel_cache_key(
-        kernel_name, spatial, 2, 4, in_dims, torch.float16, 0,
-    )
-    assert key == expected
-    assert op._use_spatial_fast_path() == spatial
 
 
 

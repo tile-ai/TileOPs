@@ -137,32 +137,6 @@ class _AvgPoolFwdOpBase(Op):
         """Return (kernel_size, stride, padding) as ndim-tuples."""
         return self.kernel_size, self.stride, self.padding
 
-    def _kernel_cache_key(
-        self,
-        kernel_name: str,
-        use_spatial_fast_path: bool,
-        n: int,
-        c_in: int,
-        in_dims: Tuple[int, ...],
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> tuple:
-        return (
-            kernel_name,
-            n,
-            c_in,
-            *in_dims,
-            self.kernel_size,
-            self.stride,
-            self.padding,
-            self.ceil_mode,
-            self.count_include_pad,
-            self.divisor_override,
-            dtype,
-            device_index,
-            self.tune,
-        )
-
     def _use_spatial_fast_path(self) -> bool:
         # Strict 1d/3d policy: an explicit generic-kernel override opts out of
         # the spatial fast path unless the spatial kernel is also explicit.
@@ -208,8 +182,20 @@ class _AvgPoolFwdOpBase(Op):
     ) -> Kernel:
         use_spatial_fast_path = self._use_spatial_fast_path()
         kernel_name = self._spatial_slot if use_spatial_fast_path else self._generic_slot
-        key = self._kernel_cache_key(
-            kernel_name, use_spatial_fast_path, n, c_in, in_dims, dtype, device_index,
+        key = (
+            kernel_name,
+            n,
+            c_in,
+            *in_dims,
+            self.kernel_size,
+            self.stride,
+            self.padding,
+            self.ceil_mode,
+            self.count_include_pad,
+            self.divisor_override,
+            dtype,
+            device_index,
+            self.tune,
         )
         if key not in self._kernel_cache:
             ks, st, pd = self._param_tuples()
@@ -311,32 +297,6 @@ class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
     def _param_tuples(self) -> tuple[Tuple[int, ...], Tuple[int, ...], Tuple[int, ...]]:
         return (self.kernel_size,), (self.stride,), (self.padding,)
 
-    def _kernel_cache_key(
-        self,
-        kernel_name: str,
-        use_spatial_fast_path: bool,
-        n: int,
-        c_in: int,
-        in_dims: Tuple[int, ...],
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> tuple:
-        # avg_pool1d has no divisor_override; its key never carried one.
-        return (
-            kernel_name,
-            n,
-            c_in,
-            *in_dims,
-            self.kernel_size,
-            self.stride,
-            self.padding,
-            self.ceil_mode,
-            self.count_include_pad,
-            dtype,
-            device_index,
-            self.tune,
-        )
-
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
@@ -413,33 +373,6 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
         bytes_ = (n * c_in * h_in * w_in + n * c_in * out_h * out_w) * elem_bytes
         return flops, bytes_
 
-    def _kernel_cache_key(
-        self,
-        kernel_name: str,
-        use_spatial_fast_path: bool,
-        n: int,
-        c_in: int,
-        in_dims: Tuple[int, ...],
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> tuple:
-        # avg_pool2d keys historically discriminate on "spatial"/"general".
-        variant = "spatial" if use_spatial_fast_path else "general"
-        return (
-            variant,
-            n,
-            c_in,
-            *in_dims,
-            self.kernel_size,
-            self.stride,
-            self.padding,
-            self.ceil_mode,
-            self.count_include_pad,
-            self.divisor_override,
-            dtype,
-            device_index,
-            self.tune,
-        )
 
 
 
@@ -470,16 +403,6 @@ def _max_pool_roofline(op: "_MaxPoolFwdOpBase", *, indices: bool) -> tuple[int, 
     if indices:
         bytes_ += out_elems * 8
     return flops, bytes_
-
-def _make_max_pool_forward(returns_indices: bool):
-    """Build the compile-boundary forward for one max-pool output variant."""
-    if returns_indices:
-        def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-            return _pool_fwd_with_indices(input, self._instance_key)
-    else:
-        def forward(self, input: torch.Tensor) -> torch.Tensor:
-            return _pool_fwd(input, self._instance_key)
-    return forward
 
 
 class _MaxPoolFwdOpBase(Op):
@@ -627,13 +550,8 @@ class _MaxPoolFwdOpBase(Op):
             return {"output": full, "indices": full}
         return {"output": full}
 
-    def __init_subclass__(cls, **kwargs) -> None:
-        # _returns_indices selects the forward variant at class-definition
-        # time so every concrete class carries the exact return annotation
-        # its manifest outputs declare (Tensor vs Tuple[Tensor, Tensor]).
-        super().__init_subclass__(**kwargs)
-        if "forward" not in cls.__dict__:
-            cls.forward = _make_max_pool_forward(cls._returns_indices)
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return _pool_fwd(input, self._instance_key)
 
     def _eager_forward(self, input: torch.Tensor):
         resolved = self._resolve_input(input)
@@ -731,6 +649,9 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
             "max_pool1d_with_indices_kernel": MaxPool1dWithIndicesKernel,
         }
 
+    def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return _pool_fwd_with_indices(input, self._instance_key)
+
     def eval_roofline(self) -> tuple[int, int]:
         return _max_pool_roofline(self, indices=True)
 
@@ -810,6 +731,9 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
             "max_pool2d_with_indices_kernel": MaxPool2dWithIndicesKernel,
         }
 
+    def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return _pool_fwd_with_indices(input, self._instance_key)
+
     def eval_roofline(self) -> tuple[int, int]:
         return _max_pool_roofline(self, indices=True)
 
@@ -888,6 +812,9 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
         return {
             "max_pool3d_with_indices_kernel": MaxPool3dWithIndicesKernel,
         }
+
+    def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return _pool_fwd_with_indices(input, self._instance_key)
 
     def eval_roofline(self) -> tuple[int, int]:
         return _max_pool_roofline(self, indices=True)

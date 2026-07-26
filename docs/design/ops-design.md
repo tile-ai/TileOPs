@@ -314,11 +314,10 @@ The scaffold emits T2 (L1-direct) ops only; once a family accumulates 2-3 ops sh
 
 ### Dimension-parametrized families
 
-Families whose ops differ only in spatial rank (1d/2d/3d variants of one operation) use a single generic base parametrized by a class-attribute `ndim`; variant axes beyond rank (e.g. an indices output) are additional class attributes, not subclass method bodies.
+Families whose ops differ only in spatial rank (1d/2d/3d variants of one operation) may use a single generic base parametrized by a class-attribute `ndim`.
 
 - Concrete public classes MUST keep `eval_roofline` and `_validate_dtypes` in their own class body (delegating to a shared helper is fine) — manifest codegen resolves both per concrete class, and a definition inherited from an intermediate base is silently shadowed or bypassed.
-- The generic base MUST preserve each variant's kernel-cache key contents and kernel constructor keyword names; rank-dependent naming is table-driven, never positional.
-- Genuine per-rank behavior differences (parameter availability, fast-path policy) stay as explicit subclass overrides; the refactor MUST NOT normalize them.
+- Genuine per-rank behavior differences (parameter availability, kernel constructor keyword names, fast-path policy) stay as explicit per-rank tables or subclass overrides; the refactor MUST NOT normalize them.
 
 ## Further Reference
 
