@@ -343,8 +343,8 @@ def test_expm1_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 
 # SigmoidFwdOp / TanhFwdOp are activation ops; their manifest source.bench
-# points to ``benchmarks/ops/bench_activation.py`` and is intentionally out
-# of scope for this file.
+# points to ``benchmarks/ops/bench_elementwise_manifest.py`` and is
+# intentionally out of scope for this file.
 
 _LOGICAL_NOT_OP = "LogicalNotFwdOp"
 
