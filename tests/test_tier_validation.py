@@ -68,7 +68,7 @@ def _make_item(
 
 @pytest.mark.full
 class TestFreezeValue:
-    """Regression coverage for stable signatures built from set values."""
+    """Signatures built from set values must sort stably across non-comparable types."""
 
     def test_set_with_non_comparable_values_is_sorted_stably(self):
         frozen = _freeze_value({torch.float16, None, 1})

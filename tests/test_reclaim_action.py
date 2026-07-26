@@ -218,7 +218,7 @@ def test_atomic_trim_handles_empty_root(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# trim-files (non-atomic roots, legacy behaviour)
+# trim-files (non-atomic roots)
 # ---------------------------------------------------------------------------
 
 
@@ -275,7 +275,7 @@ def test_security_policy_routes_trust_by_collaborator_permission() -> None:
     script = step["run"]
     env = step["env"]
 
-    assert "AUTHOR_ASSOC" not in env, "author_association must no longer drive trust"
+    assert "AUTHOR_ASSOC" not in env, "author_association must not drive trust"
     assert "AUTHOR_ASSOC" not in script
     assert "collaborators/${PR_AUTHOR}/permission" in script
     assert "admin|maintain|write" in script

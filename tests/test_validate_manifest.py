@@ -119,10 +119,10 @@ class TestSchema:
              ["nonexistent", "dtype_combos"]),
             ("source.kernel non-string non-list",
              lambda e: e["source"].update(kernel=42), ["source.kernel"]),
-            ("unknown signature key (removed init_dims)",
+            ("unknown signature key (init_dims)",
              lambda e: e["signature"].update(init_dims={"N": "x.shape[-1]"}),
              ["init_dims", "unknown signature keys"]),
-            ("unknown top-level key (removed parity_opt_out)",
+            ("unknown top-level key (parity_opt_out)",
              lambda e: e.update(parity_opt_out=True),
              ["parity_opt_out", "unknown entry keys"]),
             ("unrecognized layout value (R19)",
@@ -1032,15 +1032,12 @@ class TestInferShapeParity:
 
 
     def test_symbolic_dim_rule_detects_wrong_output(self, validator):
-        """Regression: rules like ``o.shape == (B, S, H, D)`` must fire.
+        """Rules like ``o.shape == (B, S, H, D)`` must evaluate, not warn-skip.
 
-        The MultiHeadAttentionFwdOp-style manifest rule references
-        symbolic dimension names (B, S, H, D) declared only via literal
-        ``tensor.shape == (...)`` rules. Without binding those names into
-        the evaluation context, the rule raised NameError and the
-        validator silently downgraded it to a warning — meaning a
-        genuinely wrong ``_infer_output_shapes`` (e.g. returning a 1-D
-        shape instead of a 4-D shape) could pass parity.
+        Symbolic dimension names declared only via literal
+        ``tensor.shape == (...)`` rules must be bound into the evaluation
+        context; an unbound name raises NameError, downgrades the rule to
+        a warning, and lets a wrong ``_infer_output_shapes`` pass parity.
         """
         def infer(self, q_shape, k_shape, v_shape):
             # Wrong: returns a 1-D shape instead of a 4-D shape.
@@ -1161,13 +1158,11 @@ class TestInferShapeParity:
         """R11 / R11a rules that call ``len`` or use comprehensions must be
         evaluable.
 
-        Regression pair: (a) the eval context once stripped ``__builtins__``
-        so every rule using ``len`` / ``isinstance`` / ``set`` raised
-        NameError and was silently downgraded to a warning; (b)
-        ``eval(rule, globals, locals)`` scopes comprehension bodies against
-        globals only, so ctx names passed only as locals made every
-        comprehension-shaped rule raise NameError. Either way a real parity
-        mismatch could slip through because no rule ever evaluated False.
+        Two eval-context invariants: the restricted builtins expose
+        ``len`` / ``isinstance`` / ``set``, and ctx names are visible
+        inside comprehension scopes (``eval`` resolves those against
+        globals). Breaking either turns the rule into a NameError
+        warning-skip and hides parity mismatches.
         """
         # Wrong: reduction op declares dim, keepdim=False so y should drop
         # rank(s), but _infer_output_shapes returns x_shape verbatim.
@@ -1275,12 +1270,11 @@ class TestInferShapeParity:
     def test_mock_input_shapes_cross_tensor_dims_distinct(self, validator):
         """Distinct symbolic dims across rules must get distinct mock sizes.
 
-        Regression for a latent correctness bug where a per-rule index
-        caused different symbolic dims to collide (e.g. ``A`` in rule
-        ``x.shape == (A, B)`` and ``C`` in rule ``y.shape == (C, D)``
-        both got assigned ``_MOCK_DIM_SIZE + 0``). A downstream rule
-        comparing ``x.shape[0]`` to ``y.shape[0]`` would then get a
-        spurious True / False depending on direction.
+        If dims from different rules collide (e.g. ``A`` in
+        ``x.shape == (A, B)`` and ``C`` in ``y.shape == (C, D)`` mapping
+        to the same mock size), a downstream rule comparing
+        ``x.shape[0]`` to ``y.shape[0]`` evaluates to a spurious
+        True / False.
         """
         sig = {
             "inputs": {"x": {}, "y": {}},
@@ -1361,12 +1355,10 @@ class TestInferShapeParity:
     def test_declared_output_shape_catches_wrong_infer(self, validator):
         """Declared output shapes alone (no shape_rules) must drive parity.
 
-        Regression: previously ``check_l2_infer_parity`` short-circuited
-        on empty ``shape_rules``, so a manifest that specified output
-        shape only via ``signature.outputs[*].shape`` (e.g. conv ops'
-        ``"[N, C_out, L_out]"``) could not catch a broken
-        ``_infer_output_shapes``. The validator now also compares
-        inferred outputs against declared output shape fields.
+        Inferred outputs are compared against ``signature.outputs[*].shape``
+        even when ``shape_rules`` is empty; a manifest that declares
+        shapes only per-output (e.g. conv ops' ``"[N, C_out, L_out]"``)
+        must still catch a broken ``_infer_output_shapes``.
         """
         def infer(self, x_shape, w_shape):
             # Wrong: returns x_shape verbatim instead of
@@ -1407,12 +1399,9 @@ class TestInferShapeParity:
     def test_infer_reads_self_attr_uses_cls_new(self, validator):
         """Reading a non-manifest-param ``self`` attribute must not falsely skip parity.
 
-        Regression: when the mock ``self`` was a
-        :class:`types.SimpleNamespace`, the call raised AttributeError
-        and the parity check silently skipped. After switching to
-        ``cls.__new__(cls)`` + setattr for manifest params, the mock
-        ``self`` carries class-defined helpers (here a class attribute),
-        and the parity check proceeds end-to-end.
+        The mock ``self`` is built via ``cls.__new__(cls)`` so
+        class-defined attributes stay reachable; a plain namespace mock
+        raises AttributeError and silently skips the check.
         """
         from tileops.ops.op_base import Op
 
@@ -1456,13 +1445,10 @@ class TestInferShapeParity:
     def test_infer_reads_static_dim_attr_populated(self, validator):
         """Reading ``self.<static_dim>`` must exercise parity, not AttributeError-skip.
 
-        Regression: ``_build_mock_self`` previously
-        installed only ``signature.params`` defaults, so a generated
-        ``_infer_output_shapes`` that consults ``self.N`` (a
-        ``static_dims`` key) raised AttributeError and the check was
-        silently skipped. With static_dims now resolved against mock
-        inputs and installed on mock_self, the method runs and its
-        output is compared end-to-end.
+        ``_build_mock_self`` installs ``static_dims`` values resolved
+        against the mock inputs in addition to ``signature.params``
+        defaults, so a generated ``_infer_output_shapes`` that consults
+        ``self.N`` runs end-to-end instead of AttributeError-skipping.
         """
         from tileops.ops.op_base import Op
 
@@ -1499,12 +1485,9 @@ class TestInferShapeParity:
     def test_conv_like_output_only_symbol_not_blamed(self, validator):
         """Correct infer with an output-only ``L_out`` symbol passes parity.
 
-        Regression: previously the declared
-        output-shape comparison pulled an arbitrary concrete size for
-        ``L_out`` from ``dim_sizes`` and flagged the correct
-        ``_infer_output_shapes`` as a mismatch. Output-only symbols must
-        only be checked for rank + per-symbol consistency across
-        outputs.
+        Output-only symbols have no input-derived concrete size; they are
+        checked only for rank and per-symbol consistency across outputs,
+        never against an arbitrary ``dim_sizes`` entry.
         """
         def infer(self, x_shape, w_shape):
             # x: [N, C_in, L_in]; w: [C_out, C_in, kW]
@@ -1536,15 +1519,11 @@ class TestInferShapeParity:
     def test_conv_like_wrong_output_only_value_reported(self, validator):
         """Wrong output-only symbol value is flagged via the shape_rules defining it.
 
-        Regression: previously ``check_l2_infer_parity`` classified the
-        rule ``L_out == L_in - kW + 1`` as an input-only precondition
-        (the rule does not mention any output tensor name), so an
-        incorrect ``_infer_output_shapes`` that returned a bogus
-        ``L_out`` silently slipped past: the rule failed in both the
-        full and input-only contexts and was skipped. Output-only
-        symbols appearing in declared output shapes now trigger
-        mentions_output classification and are rebound from the
-        inferred result before rule evaluation.
+        A rule like ``L_out == L_in - kW + 1`` mentions no output tensor
+        name, but ``L_out`` appears in a declared output shape, so it
+        must classify as output-mentioning and be rebound from the
+        inferred result before evaluation; treated as an input-only
+        precondition it would fail in both contexts and be skipped.
         """
         def infer(self, x_shape, w_shape):
             # Deliberately wrong output-only L_out value (999).
@@ -1636,10 +1615,9 @@ class TestDtypeOptionsHelper:
     def test_pure_same_as_unresolved_returns_none(self, validator):
         """same_as(ref) with ref missing from ``resolved`` returns None.
 
-        Regression: previously returned [] which silently disabled
-        downstream dtype parity (``_resolve_tensor_dtype_options`` only
-        bails on None, and an empty list yields an empty Cartesian
-        product).
+        Returning ``[]`` instead would silently disable downstream dtype
+        parity: ``_resolve_tensor_dtype_options`` bails only on None, and
+        an empty list yields an empty Cartesian product.
         """
         out = validator._dtype_options_for_tensor(
             "y", "same_as(x)", resolved={},
@@ -1889,11 +1867,11 @@ class TestValidateDtypesParity:
         assert any("accepts non-listed combo" in e for e in errors), errors
 
     def test_dtype_combos_first_rejected_later_accepted_fails(self, validator):
-        """Regression: non-listed combos must all be checked, not just first.
+        """Non-listed combos must all be checked, not just the first.
 
-        Previously the loop broke on the first rejection, letting a later
-        accepted non-listed combo escape detection. Enumerate every
-        non-listed combination and report each acceptance.
+        Stopping at the first rejection would let a later accepted
+        non-listed combo escape detection; every non-listed combination
+        is probed and each acceptance reported.
         """
         import torch
 
@@ -1939,9 +1917,9 @@ class TestValidateDtypesParity:
         """_validate_dtypes with a wrong kwarg name must fail on both the
         union and the dtype_combos branch.
 
-        Previously TypeError from a signature mismatch was silently
-        downgraded to a warning, letting an unusable _validate_dtypes
-        satisfy parity. The validator must surface this as a hard error.
+        A signature-mismatch TypeError is a hard parity error; downgraded
+        to a warning it would let an uncallable ``_validate_dtypes``
+        satisfy parity.
         """
         def validate(self, wrong_name, other_wrong=None):
             return None
@@ -2128,11 +2106,9 @@ class TestValidateDtypesParity:
     def test_body_typeerror_is_rejection_not_signature_mismatch(self, validator):
         """Body TypeError is a legitimate rejection, not a signature mismatch.
 
-        Regression: previously a bare ``except (ValueError, TypeError)``
-        could not distinguish between a kwarg-name mismatch (signature
-        error) and a TypeError raised inside the body (legitimate
-        rejection). The validator must pre-bind the signature and only
-        flag the former as a signature mismatch.
+        The signature is pre-bound before invocation; a bare
+        ``except (ValueError, TypeError)`` around the call could not tell
+        a kwarg-name mismatch from a TypeError raised inside the body.
         """
         # Signature matches (``x`` kwarg), but the body raises TypeError
         # on every call. This should be treated as a rejection of every
@@ -2170,18 +2146,16 @@ class TestValidateDtypesParity:
     def test_dtype_combos_exhausts_union_emits_warning(self, validator):
         """Exhaustive dtype_combos still emit the 'exhausts the union' warning.
 
-        Regression: previously the warning fired only when
-        ``checked_any and not rejected_at_least_one`` — which is
-        impossible in the exhaustive case because every tuple hits the
-        ``listed_combo_keys`` continue path and ``checked_any`` stays
-        False.
+        When every Cartesian tuple is listed, no non-listed combo is ever
+        checked, so the warning must not be conditioned on a non-listed
+        probe having run.
         """
         import torch
 
         allowed = {torch.float16, torch.bfloat16}
 
         def validate(self, x, w):
-            # Reject dtypes outside the declared union so the new
+            # Reject dtypes outside the declared union so the
             # out-of-union probe does not produce parity errors.
             if x.dtype not in allowed or w.dtype not in allowed:
                 raise ValueError("dtype out of union")
@@ -2218,9 +2192,9 @@ class TestValidateDtypesParity:
     def test_no_combos_accepts_out_of_union_fails(self, validator):
         """Accepting an out-of-union dtype is a parity error on the no-combos branch.
 
-        Regression for an earlier gap where the no-combos branch iterated
-        only the union's Cartesian product and could not detect an
-        overly-permissive ``_validate_dtypes``.
+        Iterating only the union's Cartesian product cannot detect an
+        overly-permissive ``_validate_dtypes``; the branch needs its own
+        out-of-union probe.
         """
         # Overly-permissive implementation: accepts any dtype.
         def validate(self, x):
@@ -2374,11 +2348,8 @@ class TestValidateDtypesParity:
     def test_combos_branch_out_of_union_probe(self, validator):
         """Dtype_combos branch must fire the out-of-union probe.
 
-        Regression: previously the out-of-union negative probe only ran
-        in the no-dtype_combos branch, so a permissive ``_validate_dtypes``
-        that accepts every dtype could pass parity as long as every
-        listed combo was accepted. The probe now exercises the same
-        rejection invariant in the dtype_combos branch.
+        Without it, a permissive ``_validate_dtypes`` that accepts every
+        dtype passes parity as long as every listed combo is accepted.
         """
         # Overly-permissive implementation: accepts any dtype combo.
         def validate(self, x):
@@ -2409,11 +2380,10 @@ class TestValidateDtypesParity:
     def test_invalid_dtype_combo_value_is_hard_error(self, validator):
         """A non-existent dtype in dtype_combos is a hard L3 error, not a skip warning.
 
-        Regression: previously an invalid dtype name reached the
-        ``cannot build mock tensor`` warning branch inside the parity
-        loop, which silently disabled the check and hid a manifest data
-        bug. The upfront validation pass now rejects entries that are
-        neither in ``_TORCH_DTYPES`` nor a resolvable ``same_as`` ref.
+        The upfront validation pass rejects entries that are neither in
+        ``_TORCH_DTYPES`` nor a resolvable ``same_as`` ref; letting them
+        reach the ``cannot build mock tensor`` branch would silently
+        disable the check and hide a manifest data bug.
         """
         def validate(self, x, w):
             return None
@@ -2539,13 +2509,10 @@ class TestValidateDtypesParity:
     def test_validate_dtypes_reads_self_dtype_attr(self, validator):
         """Comparing ``x.dtype != self.dtype`` must work with a populated mock self.
 
-        Regression: ``_build_mock_self`` previously
-        installed only ``signature.params`` defaults, so
-        ``self.dtype`` fell through to the base-class ``Op.dtype = None``
-        and the comparison always raised — causing the parity check to
-        mark every listed combo as rejected. With the dtype axis now
-        populated from the candidate combo, listed combos are accepted
-        end-to-end.
+        ``_build_mock_self`` populates the dtype axis from the candidate
+        combo; if ``self.dtype`` fell through to the base-class
+        ``Op.dtype = None``, the comparison would raise and every listed
+        combo would be marked rejected.
         """
         def validate(self, x):
             # The generated pattern under test: compare the input dtype
@@ -2624,9 +2591,8 @@ class TestDtypeCombosData:
         errors instead of silently skipping combo validation.
 
         A pure cycle like ``x: same_as(y)`` / ``y: same_as(x)`` satisfies
-        per-token validation and the R3 identity check, so without a
-        dedicated diagnosis combo validation would be silently skipped and
-        invalid combo data would pass.
+        per-token validation and the R3 identity check, so it needs a
+        dedicated diagnosis to keep invalid combo data from passing.
         """
         cycle_sig = {
             "inputs": {
@@ -2658,20 +2624,17 @@ class TestStaticDimShapeParity:
     """static_dims values must pin expected output sizes in L2 parity."""
 
     def test_static_dim_output_shape_catches_bad_infer(self, validator):
-        """A generated _infer_output_shapes returning arbitrary integers
-        for a static-dim-bound output position must fail parity.
+        """Arbitrary integers at a static-dim-bound output position must fail parity.
 
-        Previously the declared-output-shape comparison only checked
-        input-bound symbols — ``static_dims`` keys were reclassified as
-        output-only, so only rank/consistency was enforced. A bad impl
-        returning e.g. ``(999, 999)`` for a declared ``[N, N]`` output
-        with ``static_dims: {N: "x.shape[-1]"}`` would pass.
+        ``static_dims`` keys in declared output shapes are checked by
+        exact value (resolved against mock inputs), not only by
+        rank/consistency; a bad impl returning ``(999, 999)`` for a
+        declared ``[N, N]`` with ``static_dims: {N: "x.shape[-1]"}``
+        must be caught.
         """
         def bad_infer(self, x_shape):
-            # Declared output shape is [N, N]; static_dims says N =
-            # x.shape[-1] (=4 under mock). A correct impl would return
-            # (4, 4); the bug returns (999, 999), which the old code
-            # failed to catch because N was treated as output-only.
+            # static_dims pins N = x.shape[-1] (=4 under mock); a correct
+            # impl returns (4, 4).
             return {"y": (999, 999)}
 
         cls = _make_op_cls_with_infer(bad_infer, name="StaticDimBadOp")
@@ -2942,9 +2905,9 @@ class TestCheckOp:
     def test_check_op_ignores_unrelated_variant_of_errors(self, validator, tmp_path):
         """--check-op must not report variant_of errors from unrelated ops.
 
-        Regression: check_variant_of_consistency ran across the full manifest
-        before the check_op filter, causing --check-op to fail on unrelated
-        ops with invalid variant_of references.
+        check_variant_of_consistency must scope to the variant family;
+        run across the full manifest it fails --check-op on unrelated ops
+        with invalid variant_of references.
         """
         import yaml
 
@@ -2981,9 +2944,8 @@ class TestCheckOp:
     def test_check_op_validates_variant_family(self, validator, tmp_path):
         """--check-op on a primary also validates its immediate variants.
 
-        Regression: an agent could modify a variant to break R16 variant
-        rules, and --check-op <primary> would still pass because variants
-        were excluded from the validation scope.
+        Excluding variants from the scope would let a variant edit that
+        breaks R16 pass --check-op <primary>.
         """
         import yaml
 
@@ -3404,7 +3366,7 @@ class TestValidatorHelperResolution:
 
         Schema-independent shape-rule extraction must not crash when
         ``signature.inputs`` is missing or non-mapping; the schema layer
-        owns the structural error message. Regression for a list value.
+        owns the structural error message.
         """
         result = validator._input_bound_symbols({
             "inputs": [{"x": {"shape": "[N]"}}],
@@ -3795,14 +3757,17 @@ class TestStrictAdvisoryMode:
 
 
 class TestCompileContractRegistry:
-    """Enforcement point for the torch_compile_fullgraph contract."""
+    """Enforcement point for the torch_compile_fullgraph contract.
+
+    Must stay in this file: the always-on ``compile-contract-gate``
+    preflight job runs pytest on this file on a CPU runner.
+    """
 
     def test_declarations_match_registered_evidence(self):
         """Manifest declarations == registered compile-test evidence, exactly.
 
-        Subsumes registration, aggregation, and manifest-key checks: a
-        broken helper, a missing evidence module, or a typo'd name all
-        surface as a set difference here.
+        A broken registration helper, a missing evidence module, or a
+        typo'd op name all surface as a set difference here.
         """
         from tests.compile_contract import compile_contract_ops
         from tileops.manifest import load_manifest
