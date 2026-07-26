@@ -596,12 +596,23 @@ def _make_fused_gated_direct(M, N, dtype, op_func, threads=256, output_dtype=Non
     def kernel(threads_arg):
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
-            with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg) as (bx, by):
-                for i in T.Parallel(threads_arg):
-                    col = bx * threads_arg + i
-                    gate = x[by, col]
-                    value = x[by, N + col]
-                    y[by, col] = op_func(gate, value)
+            if M <= 65535:
+                with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg) as (bx, by):
+                    for i in T.Parallel(threads_arg):
+                        col = bx * threads_arg + i
+                        gate = x[by, col]
+                        value = x[by, N + col]
+                        y[by, col] = op_func(gate, value)
+            else:
+                col_blocks = T.ceildiv(N, threads_arg)
+                with T.Kernel(M * col_blocks, threads=threads_arg) as bx:
+                    row = bx // col_blocks
+                    col_block = bx % col_blocks
+                    for i in T.Parallel(threads_arg):
+                        col = col_block * threads_arg + i
+                        gate = x[row, col]
+                        value = x[row, N + col]
+                        y[row, col] = op_func(gate, value)
 
         return main
 
@@ -628,12 +639,91 @@ def _make_fused_gated_explicit(M, N, dtype, op_func, threads=256, num_per_thread
     def kernel(threads_arg, npt_arg):
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
-            with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    col = (bx * threads_arg + i) * npt_arg + j
-                    gate = x[by, col]
-                    value = x[by, N + col]
-                    y[by, col] = op_func(gate, value)
+            if M <= 65535:
+                with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = (bx * threads_arg + i) * npt_arg + j
+                        gate = x[by, col]
+                        value = x[by, N + col]
+                        y[by, col] = op_func(gate, value)
+            else:
+                col_blocks = T.ceildiv(N, block_N)
+                with T.Kernel(M * col_blocks, threads=threads_arg) as bx:
+                    row = bx // col_blocks
+                    col_block = bx % col_blocks
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = (col_block * threads_arg + i) * npt_arg + j
+                        gate = x[row, col]
+                        value = x[row, N + col]
+                        y[row, col] = op_func(gate, value)
+
+        return main
+
+    return kernel
+
+
+@functools.lru_cache(maxsize=32)
+def _make_fused_gated_direct_bounded(
+    M, N, dtype, op_func, grid_rows, threads=256, output_dtype=None,
+):
+    """Persistent FusedGated direct with a device-side valid row count."""
+    out_dtype = output_dtype or dtype
+
+    @tilelang.jit(out_idx=[2])
+    def kernel(threads_arg):
+        @T.prim_func
+        def main(
+            x: T.Tensor((M, 2 * N), dtype),
+            valid_rows: T.Tensor((1,), "int32"),
+            y: T.Tensor((M, N), out_dtype),
+        ):
+            col_blocks = T.ceildiv(N, threads_arg)
+            with T.Kernel(grid_rows * col_blocks, threads=threads_arg) as bx:
+                worker_row = bx // col_blocks
+                col_block = bx % col_blocks
+                for row_iter in T.serial(T.ceildiv(M, grid_rows)):
+                    row = worker_row + row_iter * grid_rows
+                    for i in T.Parallel(threads_arg):
+                        col = col_block * threads_arg + i
+                        if row < valid_rows[0]:
+                            gate = x[row, col]
+                            value = x[row, N + col]
+                            y[row, col] = op_func(gate, value)
+
+        return main
+
+    return kernel
+
+
+@functools.lru_cache(maxsize=32)
+def _make_fused_gated_explicit_bounded(
+    M, N, dtype, op_func, grid_rows, threads=256, num_per_thread=8,
+    output_dtype=None,
+):
+    """Persistent FusedGated explicit_parallel with a device row count."""
+    block_N = threads * num_per_thread
+    out_dtype = output_dtype or dtype
+
+    @tilelang.jit(out_idx=[2])
+    def kernel(threads_arg, npt_arg):
+        @T.prim_func
+        def main(
+            x: T.Tensor((M, 2 * N), dtype),
+            valid_rows: T.Tensor((1,), "int32"),
+            y: T.Tensor((M, N), out_dtype),
+        ):
+            col_blocks = T.ceildiv(N, block_N)
+            with T.Kernel(grid_rows * col_blocks, threads=threads_arg) as bx:
+                worker_row = bx // col_blocks
+                col_block = bx % col_blocks
+                for row_iter in T.serial(T.ceildiv(M, grid_rows)):
+                    row = worker_row + row_iter * grid_rows
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        col = (col_block * threads_arg + i) * npt_arg + j
+                        if row < valid_rows[0]:
+                            gate = x[row, col]
+                            value = x[row, N + col]
+                            y[row, col] = op_func(gate, value)
 
         return main
 
@@ -1223,9 +1313,58 @@ class FusedGatedKernel(Kernel):
             self._compiled_fn = self.kernel(cfg["threads"])
         else:
             self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+        self._bounded_compiled_fn = None
 
     def forward(self, x):
         result = self._compiled_fn(x)
+        if self._fp8_output_dtype is not None:
+            result = result.to(self._fp8_output_dtype)
+        return result
+
+    def forward_rows(self, x, valid_rows):
+        """Apply the gated activation only to ``valid_rows`` leading rows.
+
+        ``valid_rows`` remains a CUDA int32 tensor so one compiled capacity
+        can be replayed with different received row counts without host sync.
+        Rows in the returned capacity tail are unspecified.
+        """
+        if valid_rows.dtype != torch.int32 or valid_rows.numel() != 1:
+            raise ValueError("valid_rows must be a one-element torch.int32 tensor")
+        if valid_rows.device != x.device:
+            raise ValueError("valid_rows and x must be on the same device")
+        if self._bounded_compiled_fn is None:
+            cfg = self.config
+            effective_op = self._get_effective_op_func()
+            sm_count = torch.cuda.get_device_properties(
+                x.device
+            ).multi_processor_count
+            grid_rows = min(self.M, 16 * sm_count)
+            if self.strategy == "direct":
+                bounded_kernel = _make_fused_gated_direct_bounded(
+                    self.M,
+                    self.N,
+                    self.dtype_str,
+                    effective_op,
+                    grid_rows,
+                    threads=cfg["threads"],
+                    output_dtype=self._kernel_output_dtype,
+                )
+                self._bounded_compiled_fn = bounded_kernel(cfg["threads"])
+            else:
+                bounded_kernel = _make_fused_gated_explicit_bounded(
+                    self.M,
+                    self.N,
+                    self.dtype_str,
+                    effective_op,
+                    grid_rows,
+                    cfg["threads"],
+                    cfg["num_per_thread"],
+                    output_dtype=self._kernel_output_dtype,
+                )
+                self._bounded_compiled_fn = bounded_kernel(
+                    cfg["threads"], cfg["num_per_thread"]
+                )
+        result = self._bounded_compiled_fn(x, valid_rows.reshape(1))
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
         return result

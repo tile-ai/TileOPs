@@ -5,6 +5,9 @@ from .fused_topk import FusedTopKOp
 from .permute_align import MoePermuteAlignFwdOp
 from .prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from .routed_expert import (
+    DispatchedExpertMLPFwdOp,
+    ExpertBatch,
+    ExpertBatchOutput,
     FusedMoEExperts,
     FusedMoEExpertsModular,
     FusedMoEExpertsNopadPersistent3WGFwdOp,
@@ -20,6 +23,9 @@ from .routed_expert.abc import FusedMoEPrepareAndFinalize
 from .shared_fused_moe import SharedFusedMoE
 
 __all__ = [
+    "DispatchedExpertMLPFwdOp",
+    "ExpertBatch",
+    "ExpertBatchOutput",
     "FusedMoEExperts",
     "FusedMoEExpertsModular",
     "FusedMoEExpertsNopadPersistent3WGFwdOp",
