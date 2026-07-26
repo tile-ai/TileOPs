@@ -32,9 +32,7 @@ def _align_up(n: int, alignment: int) -> int:
     return ((n + alignment - 1) // alignment) * alignment
 
 
-# ---------------------------------------------------------------------------
 # Fused Add + LayerNorm kernel
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _fused_add_layer_norm_kernel(M, N, eps, dtype):
@@ -209,9 +207,7 @@ class FusedAddLayerNormKernel(Kernel):
         )
 
 
-# ---------------------------------------------------------------------------
 # Fused Add + RMSNorm kernel
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _fused_add_rms_norm_kernel(M, N, eps, dtype):

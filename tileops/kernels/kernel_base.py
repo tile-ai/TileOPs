@@ -61,11 +61,11 @@ class Kernel(ABC):
         return {}
 
     @abstractmethod
-    def forward(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
         """Run the kernel"""
         raise NotImplementedError
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self.forward(*args, **kwargs)
 
     @property

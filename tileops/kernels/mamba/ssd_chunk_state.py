@@ -129,7 +129,6 @@ def _ssd_chunk_state_fwd_kernel(
                 threads=threads,
             ) as (bhc, bp, bn):
 
-                # --------------------------------------------------------
                 # 1. Decode fused axis  (b, c, h — h is fastest-changing)
                 #
                 # Consecutive CTAs share the same (b, c), so they cover the
@@ -141,7 +140,6 @@ def _ssd_chunk_state_fwd_kernel(
                 # HEADS_PER_GROUP×.  The alternative b,h,c order (c fastest)
                 # shifts chunk_start on every CTA step so no Bmat rows are
                 # reused between consecutive CTAs.
-                # --------------------------------------------------------
                 bz = bhc // (C * H)
                 bc = (bhc % (C * H)) // H
                 bh = bhc % H
@@ -155,20 +153,15 @@ def _ssd_chunk_state_fwd_kernel(
                 # starting token index of this chunk in the full sequence
                 chunk_start = bc * Q
 
-                # --------------------------------------------------------
                 # 2. Allocate accumulator for one output tile (P x N)
-                # --------------------------------------------------------
                 acc = T.alloc_fragment((block_p, block_n), accum_dtype)
                 T.clear(acc)
 
-                # --------------------------------------------------------
                 # 3. Load chunk-end cumulative decay scalar and seq_idx
                 #    dA_end = dA_cumsum[bz, bh, bc, Q-1]
-                # --------------------------------------------------------
                 dA_end = dA_cumsum[bz, bh, bc, Q - 1]
                 seq_end = seq_idx[bz, chunk_start + Q - 1] if has_seq_idx else T.int32(0)
 
-                # --------------------------------------------------------
                 # 4. Allocate tiles once outside the reduction loop
                 #
                 #    x_scaled[l, p] = x[l, p] * w(l)   (row-scaled x, dtype)
@@ -193,14 +186,11 @@ def _ssd_chunk_state_fwd_kernel(
                 #    GEMM:  acc[p, n] += x_scaled^T @ b_tile
                 #           i.e. (block_l x block_p)^T @ (block_l x block_n)
                 #                = (block_p x block_l) @ (block_l x block_n)
-                # --------------------------------------------------------
                 w_tile   = T.alloc_shared((block_l,), accum_dtype)
                 x_scaled = T.alloc_shared((block_l, block_p), dtype)
                 b_tile   = T.alloc_shared((block_l, block_n), dtype)
 
-                # --------------------------------------------------------
                 # 5. Reduce over chunk positions in L-tiles
-                # --------------------------------------------------------
                 for l_blk in T.Serial(T.ceildiv(Q, block_l)):
                     l0 = l_blk * block_l
 
@@ -262,9 +252,7 @@ def _ssd_chunk_state_fwd_kernel(
                     #     shapes: (block_l x block_p)^T @ (block_l x block_n)
                     T.gemm(x_scaled, b_tile, acc, transpose_A=True)
 
-                # --------------------------------------------------------
                 # 6. Write back output tile: out[bz, bc, bh, p0:p0+block_p, n0:n0+block_n]
-                # --------------------------------------------------------
                 for pp, nn in T.Parallel(block_p, block_n):
                     p_idx = p0 + pp
                     n_idx = n0 + nn

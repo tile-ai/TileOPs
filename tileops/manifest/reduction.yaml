@@ -21,17 +21,17 @@ SoftmaxFwdOp:
       # so dtype is omitted here; tracked as BLOCKED on missing-manifest-capability.
       dim: {type: "int | None", default: null}
     shape_rules:
-      - "dim is None or -x.ndim <= dim < x.ndim"
-      - "output.shape == x.shape"
+    - "dim is None or -x.ndim <= dim < x.ndim"
+    - "output.shape == x.shape"
 
   workloads:
     # Attention weight matrices (batch * heads, seq, seq)
-    - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
-    - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
-    - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
+  - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
+  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
+  - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits (batch, vocab_size)
-    - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
-    - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
+  - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
+  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
 
   roofline:
     vars:
@@ -70,17 +70,17 @@ LogSoftmaxFwdOp:
       # missing-manifest-capability.
       dim: {type: "int | None", default: null}
     shape_rules:
-      - "dim is None or -x.ndim <= dim < x.ndim"
-      - "output.shape == x.shape"
+    - "dim is None or -x.ndim <= dim < x.ndim"
+    - "output.shape == x.shape"
 
   workloads:
     # Attention weight matrices
-    - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
-    - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
-    - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
+  - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
+  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k-fp32"}
+  - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits
-    - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
-    - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
+  - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
+  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits-fp32"}
 
   roofline:
     vars:
@@ -99,7 +99,7 @@ LogSoftmaxFwdOp:
     kernel: tileops/kernels/reduction/softmax.py
     kernel_map:
       softmax_fwd: SoftmaxKernel
-    op: tileops/ops/reduction/log_softmax.py
+    op: tileops/ops/reduction/softmax.py
     test: tests/ops/test_softmax.py
     bench: benchmarks/ops/bench_softmax.py
     bench_manifest_driven: true
@@ -118,19 +118,19 @@ LogSumExpFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...]", default: -1}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, int) or len(dim) > 0"
-      - "isinstance(dim, int) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - (1 if isinstance(dim, int) else len({d % x.ndim for d in dim})))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim})][k]] for k in range(output.ndim))"
+    - "all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, int) or len(dim) > 0"
+    - "isinstance(dim, int) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - (1 if isinstance(dim, int) else len({d % x.ndim for d in dim})))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim})][k]] for k in range(output.ndim))"
 
   workloads:
     # Attention weight matrices
-    - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
-    - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
+  - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
+  - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits
-    - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
+  - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
 
   roofline:
     vars:
@@ -147,7 +147,7 @@ LogSumExpFwdOp:
     kernel: tileops/kernels/reduction/logsumexp.py
     kernel_map:
       logsumexp_fwd: LogSumExpKernel
-    op: tileops/ops/reduction/logsumexp.py
+    op: tileops/ops/reduction/softmax.py
     test: tests/ops/test_softmax.py
     bench: benchmarks/ops/bench_softmax.py
     bench_manifest_driven: true
@@ -174,21 +174,21 @@ SumFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
     # Long sequence reduction
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
     # Non-last-axis reduction (exercises dim=0 path)
-    - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: 0, label: "hidden-state-reduce-dim0"}
+  - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: 0, label: "hidden-state-reduce-dim0"}
     # Keepdim variant (exercises keepdim forwarding through the baseline)
-    - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: -1, keepdim: true, label: "hidden-state-reduce-keepdim"}
+  - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: -1, keepdim: true, label: "hidden-state-reduce-keepdim"}
 
   roofline:
     vars:
@@ -226,17 +226,17 @@ MeanFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
     # Long sequence reduction
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
 
   roofline:
     vars:
@@ -270,17 +270,17 @@ AmaxFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
     # Long sequence reduction
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
 
   roofline:
     vars:
@@ -314,17 +314,17 @@ AminFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
     # Long sequence reduction
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
 
   roofline:
     vars:
@@ -368,16 +368,16 @@ ProdFwdOp:
       dim: {type: int, default: -1}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "-x.ndim <= dim < x.ndim"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - 1)"
-      - "not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i != dim % x.ndim][k]] for k in range(output.ndim))"
+    - "-x.ndim <= dim < x.ndim"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - 1)"
+    - "not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i != dim % x.ndim][k]] for k in range(output.ndim))"
 
   workloads:
     # Hidden state reduction (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
     # Long sequence reduction
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
 
   roofline:
     vars:
@@ -416,17 +416,17 @@ VarFwdOp:
       correction: {type: int, default: 1}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
 
   workloads:
     # Hidden state variance (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-var"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-var"}
     # Long sequence variance
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-var"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-var"}
 
   roofline:
     vars:
@@ -461,17 +461,17 @@ StdFwdOp:
       correction: {type: int, default: 1}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
 
   workloads:
     # Hidden state std (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-std"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-std"}
     # Long sequence std
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-std"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-std"}
 
   roofline:
     vars:
@@ -507,19 +507,19 @@ VarMeanFwdOp:
       correction: {type: int, default: 1}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "var.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "not keepdim or all(var.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(var.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(var.ndim))"
-      - "mean.ndim == var.ndim"
-      - "mean.shape == var.shape"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "var.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+    - "not keepdim or all(var.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(var.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(var.ndim))"
+    - "mean.ndim == var.ndim"
+    - "mean.shape == var.shape"
 
   workloads:
     # Hidden state var+mean (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-var-mean"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-var-mean"}
     # Long sequence var+mean
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-var-mean"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-var-mean"}
 
   roofline:
     vars:
@@ -557,17 +557,17 @@ ArgmaxFwdOp:
       dim: {type: "int | None", default: null}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "dim is None or -x.ndim <= dim < x.ndim"
-      - "output.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
-      - "dim is not None or not keepdim or all(output.shape[i] == 1 for i in range(x.ndim))"
-      - "dim is None or not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
-      - "dim is None or keepdim or all(output.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(output.ndim))"
+    - "dim is None or -x.ndim <= dim < x.ndim"
+    - "output.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
+    - "dim is not None or not keepdim or all(output.shape[i] == 1 for i in range(x.ndim))"
+    - "dim is None or not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
+    - "dim is None or keepdim or all(output.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(output.ndim))"
 
   workloads:
     # LM head argmax (batch, vocab_size) -- greedy decoding
-    - {x_shape: [4, 102400], dtypes: [float16, bfloat16], dim: -1, label: "lm-head-argmax"}
+  - {x_shape: [4, 102400], dtypes: [float16, bfloat16], dim: -1, label: "lm-head-argmax"}
     # Hidden state argmax
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], dim: -1, label: "hidden-state-argmax"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], dim: -1, label: "hidden-state-argmax"}
 
   roofline:
     vars:
@@ -582,7 +582,7 @@ ArgmaxFwdOp:
     kernel: tileops/kernels/reduction/argreduce.py
     kernel_map:
       argreduce: ArgreduceKernel
-    op: tileops/ops/reduction/argmax.py
+    op: tileops/ops/reduction/argreduce.py
     test: tests/ops/test_argreduce.py
     bench: benchmarks/ops/bench_argreduce.py
 
@@ -600,17 +600,17 @@ ArgminFwdOp:
       dim: {type: "int | None", default: null}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "dim is None or -x.ndim <= dim < x.ndim"
-      - "output.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
-      - "dim is not None or not keepdim or all(output.shape[i] == 1 for i in range(x.ndim))"
-      - "dim is None or not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
-      - "dim is None or keepdim or all(output.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(output.ndim))"
+    - "dim is None or -x.ndim <= dim < x.ndim"
+    - "output.ndim == (x.ndim if keepdim else (x.ndim - 1 if dim is not None else 0))"
+    - "dim is not None or not keepdim or all(output.shape[i] == 1 for i in range(x.ndim))"
+    - "dim is None or not keepdim or all(output.shape[i] == (1 if i == dim % x.ndim else x.shape[i]) for i in range(x.ndim))"
+    - "dim is None or keepdim or all(output.shape[i] == (x.shape[i] if i < dim % x.ndim else x.shape[i + 1]) for i in range(output.ndim))"
 
   workloads:
     # LM head argmin
-    - {x_shape: [4, 102400], dtypes: [float16, bfloat16], dim: -1, label: "lm-head-argmin"}
+  - {x_shape: [4, 102400], dtypes: [float16, bfloat16], dim: -1, label: "lm-head-argmin"}
     # Hidden state argmin
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], dim: -1, label: "hidden-state-argmin"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], dim: -1, label: "hidden-state-argmin"}
 
   roofline:
     vars:
@@ -625,7 +625,7 @@ ArgminFwdOp:
     kernel: tileops/kernels/reduction/argreduce.py
     kernel_map:
       argreduce: ArgreduceKernel
-    op: tileops/ops/reduction/argmin.py
+    op: tileops/ops/reduction/argreduce.py
     test: tests/ops/test_argreduce.py
     bench: benchmarks/ops/bench_argreduce.py
 
@@ -650,16 +650,16 @@ AllFwdOp:
     # unlike sum/mean/amax. Only dim=None triggers full reduction; empty
     # list/tuple yields an empty reduction set.
     shape_rules:
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(output.ndim))"
 
   workloads:
     # Mask validation (batch, seq_len)
-    - {x_shape: [32, 4096], dtypes: [bool], label: "mask-validation-4k"}
-    - {x_shape: [32, 32768], dtypes: [bool], label: "mask-validation-32k"}
+  - {x_shape: [32, 4096], dtypes: [bool], label: "mask-validation-4k"}
+  - {x_shape: [32, 32768], dtypes: [bool], label: "mask-validation-32k"}
 
   roofline:
     vars:
@@ -674,7 +674,7 @@ AllFwdOp:
     kernel: tileops/kernels/reduction/logical_reduce.py
     kernel_map:
       logical_reduce: LogicalReduceKernel
-    op: tileops/ops/reduction/all_op.py
+    op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
     bench: benchmarks/ops/bench_logical_reduce.py
     bench_manifest_driven: true
@@ -696,16 +696,16 @@ AnyFwdOp:
     # unlike sum/mean/amax. Only dim=None triggers full reduction; empty
     # list/tuple yields an empty reduction set.
     shape_rules:
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim)))][k]] for k in range(output.ndim))"
 
   workloads:
     # Mask validation (batch, seq_len)
-    - {x_shape: [32, 4096], dtypes: [bool], label: "mask-validation-4k"}
-    - {x_shape: [32, 32768], dtypes: [bool], label: "mask-validation-32k"}
+  - {x_shape: [32, 4096], dtypes: [bool], label: "mask-validation-4k"}
+  - {x_shape: [32, 32768], dtypes: [bool], label: "mask-validation-32k"}
 
   roofline:
     vars:
@@ -720,7 +720,7 @@ AnyFwdOp:
     kernel: tileops/kernels/reduction/logical_reduce.py
     kernel_map:
       logical_reduce: LogicalReduceKernel
-    op: tileops/ops/reduction/any_op.py
+    op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
     bench: benchmarks/ops/bench_logical_reduce.py
     bench_manifest_driven: true
@@ -738,16 +738,16 @@ CountNonzeroFwdOp:
     params:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
     shape_rules:
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "output.ndim == x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-      - "output.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "output.ndim == x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
+    - "output.shape == tuple(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
 
   workloads:
     # Sparsity analysis (batch, hidden_dim)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "sparsity-hidden"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "sparsity-hidden"}
     # Sparse attention mask
-    - {x_shape: [32, 32768], dtypes: [float16], label: "sparsity-seq"}
+  - {x_shape: [32, 32768], dtypes: [float16], label: "sparsity-seq"}
 
   roofline:
     vars:
@@ -762,7 +762,7 @@ CountNonzeroFwdOp:
     kernel: tileops/kernels/reduction/logical_reduce.py
     kernel_map:
       logical_reduce: LogicalReduceKernel
-    op: tileops/ops/reduction/count_nonzero.py
+    op: tileops/ops/reduction/logical_reduce.py
     test: tests/ops/test_logical_reduce.py
     bench: benchmarks/ops/bench_logical_reduce.py
     bench_manifest_driven: true
@@ -790,18 +790,18 @@ L1NormFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "ord == 1"
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "ord == 1"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
 
   workloads:
     # Hidden state L1 norm (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-l1"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-l1"}
     # Long sequence L1 norm
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-l1"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-l1"}
 
   roofline:
     vars:
@@ -816,7 +816,7 @@ L1NormFwdOp:
     kernel: tileops/kernels/reduction/vector_norm.py
     kernel_map:
       vector_norm: VectorNormKernel
-    op: tileops/ops/reduction/l1_norm.py
+    op: tileops/ops/reduction/vector_norm.py
     test: tests/ops/test_vector_norm.py
     bench: benchmarks/ops/bench_vector_norm.py
     bench_manifest_driven: true
@@ -840,18 +840,18 @@ L2NormFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "ord == 2"
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "ord == 2"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
 
   workloads:
     # Hidden state L2 norm (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-l2"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-l2"}
     # Long sequence L2 norm
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-l2"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-l2"}
 
   roofline:
     vars:
@@ -866,7 +866,7 @@ L2NormFwdOp:
     kernel: tileops/kernels/reduction/vector_norm.py
     kernel_map:
       vector_norm: VectorNormKernel
-    op: tileops/ops/reduction/l2_norm.py
+    op: tileops/ops/reduction/vector_norm.py
     test: tests/ops/test_vector_norm.py
     bench: benchmarks/ops/bench_vector_norm.py
     bench_manifest_driven: true
@@ -890,18 +890,18 @@ InfNormFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     shape_rules:
-      - "ord == float('inf')"
-      - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-      - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-      - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
-      - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
+    - "ord == float('inf')"
+    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
+    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+    - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+    - "not keepdim or all(output.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) else x.shape[i]) for i in range(x.ndim))"
+    - "keepdim or all(output.shape[k] == x.shape[[i for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))][k]] for k in range(output.ndim))"
 
   workloads:
     # Hidden state inf norm (Llama-3.1-8B)
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-inf"}
+  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-inf"}
     # Long sequence inf norm
-    - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-inf"}
+  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-inf"}
 
   roofline:
     vars:
@@ -916,7 +916,7 @@ InfNormFwdOp:
     kernel: tileops/kernels/reduction/vector_norm.py
     kernel_map:
       vector_norm: VectorNormKernel
-    op: tileops/ops/reduction/inf_norm.py
+    op: tileops/ops/reduction/vector_norm.py
     test: tests/ops/test_vector_norm.py
     bench: benchmarks/ops/bench_vector_norm.py
     bench_manifest_driven: true

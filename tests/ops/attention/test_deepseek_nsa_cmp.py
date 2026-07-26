@@ -5,7 +5,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSACmpFwdVarlenOp
-from workloads.attention.deepseek_nsa_cmp import NsaCmpFwdTest as _NsaCmpFwdTestWorkload
+from workloads.attention.deepseek import NsaCmpFwdTest as _NsaCmpFwdTestWorkload
 from workloads.nsa_utils import prepare_chunk_offsets
 
 

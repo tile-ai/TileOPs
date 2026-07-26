@@ -170,9 +170,7 @@ def _cb_producer_kernel(
     return kernel_func
 
 
-# ========================================================================
 # PyTorch custom op registration
-# ========================================================================
 
 @torch.library.custom_op("top::cb_producer", mutates_args=())
 def _cb_producer_wrapped(
@@ -219,9 +217,7 @@ def _(
     )
 
 
-# ========================================================================
 # High-level Kernel wrapper
-# ========================================================================
 
 class CBProducerKernel(Kernel):
     """CB (C@B) matrix producer kernel.

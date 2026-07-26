@@ -100,10 +100,10 @@ def _fused_topk_kernel(num_tokens, num_experts, top_k, scoring_func, with_correc
             # the original (unbiased) sigmoid score.
             @T.prim_func
             def main(
-                gating_output: T.Tensor([num_tokens, num_experts], "float32"),   # noqa: F821
-                correction_bias: T.Tensor([num_experts], "float32"),             # noqa: F821
-                topk_weights: T.Tensor([num_tokens, top_k], "float32"),          # noqa: F821
-                topk_ids: T.Tensor([num_tokens, top_k], "int32"),                # noqa: F821
+                gating_output: T.Tensor([num_tokens, num_experts], "float32"),
+                correction_bias: T.Tensor([num_experts], "float32"),
+                topk_weights: T.Tensor([num_tokens, top_k], "float32"),
+                topk_ids: T.Tensor([num_tokens, top_k], "int32"),
             ):
                 with T.Kernel(num_blocks, threads=TOKENS_PER_BLOCK * WARP_SIZE) as (block_id,):
                     tx = T.get_thread_binding()
@@ -209,9 +209,9 @@ def _fused_topk_kernel(num_tokens, num_experts, top_k, scoring_func, with_correc
             # ── Standard variant (no correction bias) ─────────────────────────
             @T.prim_func
             def main(
-                gating_output: T.Tensor([num_tokens, num_experts], "float32"),  # noqa: F821
-                topk_weights: T.Tensor([num_tokens, top_k], "float32"),         # noqa: F821
-                topk_ids: T.Tensor([num_tokens, top_k], "int32"),               # noqa: F821
+                gating_output: T.Tensor([num_tokens, num_experts], "float32"),
+                topk_weights: T.Tensor([num_tokens, top_k], "float32"),
+                topk_ids: T.Tensor([num_tokens, top_k], "int32"),
             ):
                 with T.Kernel(num_blocks, threads=TOKENS_PER_BLOCK * WARP_SIZE) as (block_id,):
                     tx = T.get_thread_binding()

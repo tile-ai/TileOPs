@@ -38,14 +38,10 @@ def fused_topk_torch(
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
     return topk_weights, topk_ids.int()
 
-# ---------------------------------------------------------------------------
 # Reference implementation
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # Test fixture
-# ---------------------------------------------------------------------------
 
 
 class FusedTopKFixture(FixtureBase):
@@ -75,9 +71,7 @@ class FusedTopKFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # Tests
-# ---------------------------------------------------------------------------
 
 
 def _check(test: FusedTopKTest) -> None:
@@ -127,9 +121,6 @@ def _check(test: FusedTopKTest) -> None:
                     f"{kth_val:.6f}"
                 )
 
-    tag = (f"[T={test.num_tokens}, E={test.num_experts}, K={test.top_k}, "
-           f"fn={test.scoring_func}, renorm={test.renormalize}, {test.dtype}]")
-    print(f"PASS {tag}")
 
 
 @FusedTopKFixture

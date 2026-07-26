@@ -1,4 +1,4 @@
-from .benchmark_base import BenchmarkBase, BenchmarkReport  # noqa: F401
+from .benchmark_base import BenchmarkBase, BenchmarkReport
 
 __all__ = [
     "BenchmarkBase",

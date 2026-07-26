@@ -49,14 +49,10 @@ def deltanet_autograd_bwd_torch(do, q, k, v, beta, chunk_size):
     dq, dk, dv, dbeta = torch.autograd.grad(loss, [q_, k_, v_, beta_])
     return dq, dk, dv, dbeta
 
-# =============================================================================
 # Autograd-based reference: differentiable forward -> torch.autograd.grad
-# =============================================================================
 
 
-# =============================================================================
 # Backward correctness tests
-# =============================================================================
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:

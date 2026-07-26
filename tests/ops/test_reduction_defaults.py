@@ -36,9 +36,7 @@ def _make_logical(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     return (torch.randint(-1, 2, shape, device="cuda")).to(dtype)
 
 
-# ---------------------------------------------------------------------------
-# AC-3: default dim=None for the ten ops -> full reduction on 3-D input
-# ---------------------------------------------------------------------------
+# default dim=None for the ten ops -> full reduction on 3-D input
 
 
 @pytest.mark.smoke
@@ -115,7 +113,7 @@ def test_var_mean_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_all_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = _make_logical(_LOGICAL_SHAPE, torch.float16)
     op = AllFwdOp(dtype=torch.float16)
@@ -126,7 +124,7 @@ def test_all_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_any_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = _make_logical(_LOGICAL_SHAPE, torch.float16)
     op = AnyFwdOp(dtype=torch.float16)
@@ -137,7 +135,7 @@ def test_any_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_count_nonzero_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     x = _make_logical(_LOGICAL_SHAPE, torch.float16)
     op = CountNonzeroFwdOp(dtype=torch.float16)
@@ -146,9 +144,7 @@ def test_count_nonzero_default_dim_full_reduction() -> None:
     assert y.dtype == torch.int64
 
 
-# ---------------------------------------------------------------------------
-# AC-4: ProdFwdOp keeps documented dim=-1 default
-# ---------------------------------------------------------------------------
+# ProdFwdOp keeps documented dim=-1 default
 
 
 @pytest.mark.smoke
@@ -162,15 +158,13 @@ def test_prod_default_dim_last_axis() -> None:
     assert y.shape == torch.prod(x, dim=-1).shape
 
 
-# ---------------------------------------------------------------------------
-# AC-5: AllFwdOp/AnyFwdOp dim=[] / dim=() noop contract
-# ---------------------------------------------------------------------------
+# AllFwdOp/AnyFwdOp dim=[] / dim=() noop contract
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("empty_dim", [[], ()])
 def test_all_empty_dim_noop(empty_dim) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = _make_logical(_LOGICAL_SHAPE, torch.float16)
     op = AllFwdOp(dtype=torch.float16, dim=empty_dim)
@@ -183,7 +177,7 @@ def test_all_empty_dim_noop(empty_dim) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("empty_dim", [[], ()])
 def test_any_empty_dim_noop(empty_dim) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = _make_logical(_LOGICAL_SHAPE, torch.float16)
     op = AnyFwdOp(dtype=torch.float16, dim=empty_dim)
@@ -193,9 +187,7 @@ def test_any_empty_dim_noop(empty_dim) -> None:
     assert torch.equal(y, x.bool())
 
 
-# ---------------------------------------------------------------------------
-# AC-6: normalize_dim noop policy returns []
-# ---------------------------------------------------------------------------
+# normalize_dim noop policy returns []
 
 
 @pytest.mark.smoke
@@ -223,10 +215,8 @@ def test_normalize_dim_full_returns_all() -> None:
 
 @pytest.mark.smoke
 def test_empty_dim_policy_class_attrs() -> None:
-    """AC-6: per-op empty_dim_policy bindings."""
-    from tileops.ops.reduction.all_op import AllFwdOp
-    from tileops.ops.reduction.any_op import AnyFwdOp
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    """Per-op empty_dim_policy bindings."""
+    from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
     from tileops.ops.reduction.reduce import (
         AmaxFwdOp,
         AminFwdOp,
@@ -251,15 +241,13 @@ def test_empty_dim_policy_class_attrs() -> None:
     assert ProdFwdOp._empty_dim_policy == "reject"
 
 
-# ---------------------------------------------------------------------------
 # Empty-dim noop must NOT bypass input validation or roofline binding
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
 def test_all_empty_dim_noop_rejects_cpu_tensor() -> None:
     """dim=[] must still validate device; non-CUDA input must raise."""
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = (torch.randint(-1, 2, _LOGICAL_SHAPE)).to(torch.float16)  # cpu
     op = AllFwdOp(dtype=torch.float16, dim=[])
@@ -269,7 +257,7 @@ def test_all_empty_dim_noop_rejects_cpu_tensor() -> None:
 
 @pytest.mark.smoke
 def test_any_empty_dim_noop_rejects_cpu_tensor() -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = (torch.randint(-1, 2, _LOGICAL_SHAPE)).to(torch.float16)  # cpu
     op = AnyFwdOp(dtype=torch.float16, dim=[])
@@ -280,7 +268,7 @@ def test_any_empty_dim_noop_rejects_cpu_tensor() -> None:
 @pytest.mark.smoke
 def test_all_empty_dim_noop_rejects_wrong_dtype() -> None:
     """dim=[] must still validate dtype against the op's declared dtype."""
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = _make_logical(_LOGICAL_SHAPE, torch.float32)  # cuda, fp32
     op = AllFwdOp(dtype=torch.float16, dim=[])
@@ -290,7 +278,7 @@ def test_all_empty_dim_noop_rejects_wrong_dtype() -> None:
 
 @pytest.mark.smoke
 def test_any_empty_dim_noop_rejects_wrong_dtype() -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = _make_logical(_LOGICAL_SHAPE, torch.float32)
     op = AnyFwdOp(dtype=torch.float16, dim=[])
@@ -303,7 +291,7 @@ def test_all_empty_dim_noop_binds_roofline() -> None:
     """eval_roofline() must succeed after a dim=[] noop forward and
     report non-zero data-movement (the noop still reads the input and
     writes an equal-shape cast result)."""
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = _make_logical(_LOGICAL_SHAPE, torch.float16)
     op = AllFwdOp(dtype=torch.float16, dim=[])
@@ -326,7 +314,7 @@ def test_all_empty_dim_noop_binds_roofline() -> None:
 
 @pytest.mark.smoke
 def test_any_empty_dim_noop_binds_roofline() -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = _make_logical(_LOGICAL_SHAPE, torch.float16)
     op = AnyFwdOp(dtype=torch.float16, dim=[])

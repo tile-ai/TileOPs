@@ -40,14 +40,8 @@ from tileops.kernels.rope import (
 
 from .op_base import Op
 
-# ---------------------------------------------------------------------------
-# torch.compile registration factory
-#
-# Creates a @torch.library.custom_op + register_fake pair for each RoPE op.
-# Instances register themselves in _OP_REGISTRY keyed by integer id.
-# The custom_op receives this key and looks up the instance to call the
-# pre-built tilelang kernel.
-# ---------------------------------------------------------------------------
+# torch.compile registration factory: a @torch.library.custom_op +
+# register_fake pair per RoPE op (see module docstring).
 
 _OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
@@ -99,9 +93,7 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # Frequency computation helpers (pure Python / PyTorch, run on host)
-# ---------------------------------------------------------------------------
 
 
 def _base_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
@@ -321,9 +313,7 @@ def _longrope_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
     )
 
 
-# ---------------------------------------------------------------------------
 # Base Op class for RoPE
-# ---------------------------------------------------------------------------
 
 
 class _RopeOpBase(Op):
@@ -495,9 +485,7 @@ class _RopeOpBase(Op):
         return self._eager_forward(x)
 
 
-# ---------------------------------------------------------------------------
 # Concrete Op classes (5 variants)
-# ---------------------------------------------------------------------------
 
 
 class RopeNeoxOp(_RopeOpBase):
@@ -867,9 +855,7 @@ class RopeLongRopeOp(_RopeOpBase):
         )
 
 
-# ---------------------------------------------------------------------------
 # torch.compile registration for all 5 RoPE ops
-# ---------------------------------------------------------------------------
 
 for _cls in [RopeNeoxOp, RopeNonNeoxOp, RopeLlama31Op, RopeYarnOp, RopeLongRopeOp]:
     _register_rope_custom_op(_cls)

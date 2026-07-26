@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import ReluFwdOp
-from workloads.activation import ReluTest as _ReluTestWorkload
+from workloads.elementwise import ReluTest as _ReluTestWorkload
 
 
 class ReluTest(_ReluTestWorkload, TestBase):
@@ -67,9 +67,7 @@ def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> Non
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ===========================================================================
 # Template-based activation ops
-# ===========================================================================
 
 
 class ActivationFixture(FixtureBase):
@@ -190,9 +188,7 @@ def test_activation_rejects_non_float_dtype() -> None:
         GeluFwdKernel(N_total=16, dtype=torch.int32)
 
 
-# ---------------------------------------------------------------------------
 # L4 edge-case tests (fp32, 4K)
-# ---------------------------------------------------------------------------
 
 
 @ActivationEdgeFixture
@@ -223,9 +219,7 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_activation_test(n_total, dtype, _extreme, torch.tanh, TanhFwdOp)
 
 
-# ===========================================================================
 # Independent activation ops
-# ===========================================================================
 
 
 @ActivationFixture
@@ -299,7 +293,6 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for PreluFwdOp.")
 
 
 @pytest.mark.smoke
@@ -316,7 +309,6 @@ def test_prelu_batch_dim() -> None:
     op = PreluFwdOp(shape=shape, dtype=dtype, num_channels=C)
     out = op(x, weight)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for PreluFwdOp batch-dim.")
 
 
 @pytest.mark.smoke

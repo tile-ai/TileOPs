@@ -14,7 +14,7 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBe
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import GLADecodeOp
-from workloads.gla import GLADecodeTest
+from workloads.linear_attention import GLADecodeTest
 from workloads.workload_base import FixtureBase
 
 _OP_NAME = "GLADecodeOp"

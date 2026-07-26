@@ -1,6 +1,83 @@
+"""Workload definitions for the reduction op family."""
+
 import torch
 
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import RandnTest, WorkloadBase
+
+
+class SumTest(RandnTest):
+    """Workload definition for SumFwdOp."""
+
+
+class MeanTest(RandnTest):
+    """Workload definition for MeanFwdOp."""
+
+
+class AmaxTest(RandnTest):
+    """Workload definition for AmaxFwdOp."""
+
+
+class AminTest(RandnTest):
+    """Workload definition for AminFwdOp."""
+
+
+class ProdTest(WorkloadBase):
+    """Workload definition for ProdFwdOp.
+
+    Uses small-range values (0.99..1.0) to avoid overflow in product reduction.
+    """
+
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.rand(*self.shape, dtype=self.dtype, device="cuda") * 0.01 + 0.99
+        return (x,)
+
+
+class StdTest(RandnTest):
+    """Workload definition for StdFwdOp."""
+
+
+class VarTest(RandnTest):
+    """Workload definition for VarFwdOp."""
+
+
+class VarMeanTest(RandnTest):
+    """Workload definition for VarMeanFwdOp."""
+
+
+class ArgmaxTest(RandnTest):
+    """Workload definition for ArgmaxFwdOp."""
+
+
+class ArgminTest(RandnTest):
+    """Workload definition for ArgminFwdOp."""
+
+
+class SoftmaxTest(RandnTest):
+    """Workload definition for SoftmaxFwdOp (spec interface: shape + dtype)."""
+
+
+class LogSoftmaxTest(RandnTest):
+    """Workload definition for LogSoftmaxFwdOp (spec interface: shape + dtype)."""
+
+
+class LogSumExpTest(RandnTest):
+    """Workload definition for LogSumExpFwdOp (spec interface: shape + dtype)."""
+
+
+class L1NormTest(RandnTest):
+    """Workload definition for L1NormFwdOp."""
+
+
+class L2NormTest(RandnTest):
+    """Workload definition for L2NormFwdOp."""
+
+
+class InfNormTest(RandnTest):
+    """Workload definition for InfNormFwdOp."""
 
 
 class _LogicalTest(WorkloadBase):

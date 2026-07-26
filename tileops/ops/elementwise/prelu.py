@@ -62,7 +62,7 @@ class PreluFwdOp(Op):
 
     def _eager_forward(
         self,
-        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
         orig_shape = input.shape
@@ -73,7 +73,7 @@ class PreluFwdOp(Op):
 
     def forward(
         self,
-        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
         if not input.is_cuda:

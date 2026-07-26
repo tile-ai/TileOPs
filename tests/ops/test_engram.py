@@ -304,7 +304,6 @@ def test_engram_decode_multi_step():
         assert y_err < 0.1, f"Step {step}: y max_err={y_err:.6f}"
         assert s_err < 0.05, f"Step {step}: state max_err={s_err:.6f}"
 
-    print(f"Multi-step decode test passed ({num_steps} steps, w={conv_kernel_size}, δ={dilation}).")
 
 
 if __name__ == "__main__":

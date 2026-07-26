@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSATopkVarlenOp
-from workloads.attention.deepseek_nsa_topk import NsaTopkTest as _NsaTopkTestWorkload
+from workloads.attention.deepseek import NsaTopkTest as _NsaTopkTestWorkload
 
 
 def _nsa_topk_torch(test, q, k_cmp, lse, block_counts, block_size, scale,
@@ -155,7 +155,6 @@ class NsaTopkTest(_NsaTopkTestWorkload, TestBase):
                     f"Top-K mismatch ratio {mismatch_ratio:.3%} exceeds threshold {threshold:.3%}"
                 print(f"Top-K Indices Mismatched slightly within threshold: "
                       f"{mismatch_ratio * 100:.3f}%")
-        print(f"All checks passed for {op.__class__.__name__}.")
 
     def ref_program(
         self,

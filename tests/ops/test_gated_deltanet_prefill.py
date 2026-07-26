@@ -8,7 +8,7 @@ from tests.ops.test_gated_deltanet_fwd import (
 )
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GatedDeltaNetPrefillFwdOp
-from workloads.gated_deltanet import (
+from workloads.linear_attention import (
     GatedDeltaNetPrefillFwdTest as _GatedDeltaNetPrefillFwdTestWorkload,
 )
 

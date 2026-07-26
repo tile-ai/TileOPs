@@ -61,11 +61,11 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
 
         @T.prim_func
         def _align_main(
-            flat: T.Tensor([numel], "int32"),                    # noqa: F821
-            sorted_token_ids: T.Tensor([max_padded], "int32"),   # noqa: F821
-            expert_ids: T.Tensor([max_num_blocks], "int32"),     # noqa: F821
-            num_tokens_post_pad: T.Tensor([1], "int32"),         # noqa: F821
-            cumsum: T.Tensor([num_experts + 1], "int32"),        # noqa: F821
+            flat: T.Tensor([numel], "int32"),
+            sorted_token_ids: T.Tensor([max_padded], "int32"),
+            expert_ids: T.Tensor([max_num_blocks], "int32"),
+            num_tokens_post_pad: T.Tensor([1], "int32"),
+            cumsum: T.Tensor([num_experts + 1], "int32"),
         ):
             with T.Kernel(1, threads=threads) as (_,):
                 tx = T.get_thread_binding()
@@ -189,9 +189,9 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
 
         @T.prim_func
         def _scatter_main(
-            flat: T.Tensor([numel], "int32"),                   # noqa: F821
-            sorted_token_ids: T.Tensor([max_padded], "int32"),  # noqa: F821
-            cumsum: T.Tensor([num_experts + 1], "int32"),       # noqa: F821
+            flat: T.Tensor([numel], "int32"),
+            sorted_token_ids: T.Tensor([max_padded], "int32"),
+            cumsum: T.Tensor([num_experts + 1], "int32"),
         ):
             with T.Kernel(scatter_blocks, threads=_SCATTER_THREADS) as (bid,):
                 tx = T.get_thread_binding()
@@ -245,10 +245,10 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
 
         @T.prim_func
         def _small_main(
-            flat: T.Tensor([numel], "int32"),                    # noqa: F821
-            sorted_token_ids: T.Tensor([max_padded], "int32"),   # noqa: F821
-            expert_ids: T.Tensor([max_num_blocks], "int32"),     # noqa: F821
-            num_tokens_post_pad: T.Tensor([1], "int32"),         # noqa: F821
+            flat: T.Tensor([numel], "int32"),
+            sorted_token_ids: T.Tensor([max_padded], "int32"),
+            expert_ids: T.Tensor([max_num_blocks], "int32"),
+            num_tokens_post_pad: T.Tensor([1], "int32"),
         ):
             with T.Kernel(1, threads=total_threads) as (_,):
                 tx = T.get_thread_binding()

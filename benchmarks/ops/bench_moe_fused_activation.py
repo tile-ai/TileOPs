@@ -45,10 +45,8 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.moe import FusedMoEExpertsNopadPersistent3WGFwdOp
 from workloads.workload_base import WorkloadBase
 
-# ---------------------------------------------------------------------------
 # Shape constants
 # Model reference: Qwen2.5/Mistral-scale MoE configuration
-# ---------------------------------------------------------------------------
 
 HIDDEN_SIZE = 2048   # H — model hidden dimension
 FFN_SIZE    = 768    # F — per-expert FFN intermediate dim (768 % 128 == 0)
@@ -58,9 +56,7 @@ DTYPE       = torch.bfloat16
 ACTIVATION  = "silu_and_mul"
 
 
-# ---------------------------------------------------------------------------
 # Workload
-# ---------------------------------------------------------------------------
 
 class MoEFusedActWorkload(WorkloadBase):
     """Workload descriptor for fused vs unfused activation benchmark."""
@@ -107,9 +103,7 @@ class MoEFusedActWorkload(WorkloadBase):
         return _torch_ref_fn(self, *args)
 
 
-# ---------------------------------------------------------------------------
 # Torch reference helper (always available — no external dependency)
-# ---------------------------------------------------------------------------
 
 
 def _torch_ref_fn(
@@ -147,9 +141,7 @@ def _torch_ref_fn(
     return output_buf.to(hidden.dtype)
 
 
-# ---------------------------------------------------------------------------
 # Benchmark class
-# ---------------------------------------------------------------------------
 
 class MoEFusedActBenchmark(BenchmarkBase[MoEFusedActWorkload]):
 
@@ -165,9 +157,7 @@ class MoEFusedActBenchmark(BenchmarkBase[MoEFusedActWorkload]):
         return weights + tokens
 
 
-# ---------------------------------------------------------------------------
 # Benchmark test
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
     "regime, num_tokens",

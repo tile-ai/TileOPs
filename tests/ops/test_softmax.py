@@ -18,16 +18,12 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.reduction.log_softmax import LogSoftmaxFwdOp
-from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
-from tileops.ops.reduction.softmax import SoftmaxFwdOp
-from workloads.softmax import LogSoftmaxTest as _LogSoftmaxTestWorkload
-from workloads.softmax import LogSumExpTest as _LogSumExpTestWorkload
-from workloads.softmax import SoftmaxTest as _SoftmaxTestWorkload
+from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
+from workloads.reduction import LogSoftmaxTest as _LogSoftmaxTestWorkload
+from workloads.reduction import LogSumExpTest as _LogSumExpTestWorkload
+from workloads.reduction import SoftmaxTest as _SoftmaxTestWorkload
 
-# ---------------------------------------------------------------------------
 # Tolerances (from docs/design/testing.md)
-# ---------------------------------------------------------------------------
 
 
 def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
@@ -39,9 +35,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
         return 1.6e-2, 1.6e-2
 
 
-# ===================================================================
 # Softmax — spec-conformant interface (shape, dim, dtype)
-# ===================================================================
 
 
 class SoftmaxFixture(FixtureBase):
@@ -110,9 +104,7 @@ def test_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> N
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ===================================================================
 # Softmax — non-contiguous input (spec interface)
-# ===================================================================
 
 
 class SoftmaxNonContigFixture(FixtureBase):
@@ -148,9 +140,7 @@ def test_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-# ===================================================================
 # Softmax — 1D input (spec interface)
-# ===================================================================
 
 
 class Softmax1DFixture(FixtureBase):
@@ -183,9 +173,7 @@ def test_softmax_1d(n: int, dtype: torch.dtype) -> None:
     )
 
 
-# ===================================================================
 # LogSoftmax — spec-conformant interface (shape, dim, dtype)
-# ===================================================================
 
 
 class LogSoftmaxFixture(FixtureBase):
@@ -254,9 +242,7 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ===================================================================
 # LogSumExp — spec-conformant interface (shape, dim, keepdim, dtype)
-# ===================================================================
 
 
 class LogSumExpFixture(FixtureBase):
@@ -325,9 +311,7 @@ def test_logsumexp_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) ->
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ===================================================================
 # LogSumExp — keepdim=True (exercises _reshape_output keepdim path)
-# ===================================================================
 
 
 class LogSumExpKeepdimFixture(FixtureBase):
@@ -364,9 +348,7 @@ def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     )
 
 
-# ===================================================================
 # Non-contiguous input tests (spec interface)
-# ===================================================================
 
 
 class LogSoftmaxNonContigFixture(FixtureBase):
@@ -435,9 +417,7 @@ def test_logsumexp_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
-# ===================================================================
 # 1D input tests (spec interface)
-# ===================================================================
 
 
 class LogSoftmax1DFixture(FixtureBase):
@@ -501,10 +481,8 @@ def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
     )
 
 
-# ===================================================================
 # Multi-dim guard tests: SoftmaxFwdOp and LogSoftmaxFwdOp must reject
 # list/tuple dims eagerly (before kernel build/execute).
-# ===================================================================
 
 
 @pytest.mark.smoke
@@ -662,10 +640,8 @@ def test_log_softmax_dim_none_reused_across_ranks() -> None:
     assert torch.allclose(y3, y3_ref, atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Roofline regression: LogSoftmax FLOPs must equal 5 * M * N (not 6 * M * N).
 # Direct construction — no manifest-string indirection.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke

@@ -29,8 +29,6 @@ __all__ = ["GatedDeltaNetPrefillFwdKernel"]
 
 def _normalize_prefill_layout(layout: str) -> str:
     layout = layout.lower()
-    if layout == "bhsd":
-        return "bhtd"
     if layout in ("bhtd", "bthd"):
         return layout
     raise ValueError(f"Unsupported layout: {layout}")

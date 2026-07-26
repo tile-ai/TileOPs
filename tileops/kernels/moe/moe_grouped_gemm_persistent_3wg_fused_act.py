@@ -194,11 +194,11 @@ def _make_pingpong_fused_act_kernel(numel, num_experts, ffn, K, dtype, activatio
 
     @T.prim_func
     def _gemm_main_fused(
-        A: T.Tensor(A_shape, dtype),                            # type: ignore  # noqa: F821
-        B: T.Tensor((num_experts, 2 * ffn, K), dtype),         # type: ignore  # noqa: F821
-        true_sizes: T.Tensor((num_experts,), "int32"),          # noqa: F821
-        true_offsets: T.Tensor((num_experts,), "int32"),        # noqa: F821
-        C: T.Tensor((numel, ffn), dtype),                       # type: ignore  # noqa: F821
+        A: T.Tensor(A_shape, dtype),                            # type: ignore
+        B: T.Tensor((num_experts, 2 * ffn, K), dtype),         # type: ignore
+        true_sizes: T.Tensor((num_experts,), "int32"),
+        true_offsets: T.Tensor((num_experts,), "int32"),
+        C: T.Tensor((numel, ffn), dtype),                       # type: ignore
     ):
         with T.Kernel(sm_count, threads=threads) as (pid,):
             # ── Per-WG ring-buffered SMEM (num_stages slots): A + dual B ──
@@ -589,11 +589,11 @@ def _make_cooperative_fused_act_kernel(numel, num_experts, ffn, K, dtype, activa
 
     @T.prim_func
     def _gemm_main_fused_coop(
-        A: T.Tensor(A_shape, dtype),                            # type: ignore  # noqa: F821
-        B: T.Tensor((num_experts, 2 * ffn, K), dtype),         # type: ignore  # noqa: F821
-        true_sizes: T.Tensor((num_experts,), "int32"),          # noqa: F821
-        true_offsets: T.Tensor((num_experts,), "int32"),        # noqa: F821
-        C: T.Tensor((numel, ffn), dtype),                       # type: ignore  # noqa: F821
+        A: T.Tensor(A_shape, dtype),                            # type: ignore
+        B: T.Tensor((num_experts, 2 * ffn, K), dtype),         # type: ignore
+        true_sizes: T.Tensor((num_experts,), "int32"),
+        true_offsets: T.Tensor((num_experts,), "int32"),
+        C: T.Tensor((numel, ffn), dtype),                       # type: ignore
     ):
         with T.Kernel(sm_count, threads=threads) as (pid,):
             # ── Split-A SMEM rings (zero-offset WGMMA) + shared dual B rings ──

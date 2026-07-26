@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import DeltaNetFwdOp
-from workloads.deltanet import DeltaNetFwdTest as _DeltaNetFwdTestWorkload
+from workloads.linear_attention import DeltaNetFwdTest as _DeltaNetFwdTestWorkload
 
 
 def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):
@@ -90,14 +90,10 @@ class DeltaNetFwdTest(_DeltaNetFwdTestWorkload, TestBase):
         return o.to(self.dtype)
 
 
-# =============================================================================
 # Torch reference implementations (test-only)
-# =============================================================================
 
 
-# =============================================================================
 # Forward correctness tests
-# =============================================================================
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:

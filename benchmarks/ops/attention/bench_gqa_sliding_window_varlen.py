@@ -11,7 +11,7 @@ from benchmarks.ops.attention.manifest_params import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionSlidingWindowVarlenFwdOp
-from workloads.attention.gqa_sliding_window_varlen import (
+from workloads.attention.gqa import (
     GroupedQueryAttentionSlidingWindowVarlenFwdTest,
 )
 
@@ -86,7 +86,7 @@ def _torch_sliding_window_varlen_fwd(test):
 def _fa3_varlen_baseline(max_seqlen_k, is_causal, wl, wr):
     """Return FA3 varlen baseline callable, or None if not installed."""
     try:
-        from flash_attn_interface import flash_attn_varlen_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_varlen_func
     except ImportError:
         return None
 
@@ -115,7 +115,7 @@ def _flashinfer_varlen_sliding_window_fwd(test, q, k, v, cu_seqlens_q, cu_seqlen
     if test.wr >= 0:
         return None
     try:
-        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
+        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper
     except ImportError:
         return None
 

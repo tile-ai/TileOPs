@@ -5,7 +5,7 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import NSAFwdVarlenOp
-from workloads.attention.deepseek_nsa import NsaFwdTest
+from workloads.attention.deepseek import NsaFwdTest
 
 
 class _NsaFwdTestBaseline(NsaFwdTest):

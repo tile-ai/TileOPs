@@ -51,7 +51,6 @@ from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["SSDDecodeKernel"]
 
-# =============================================================================
 # Differences vs. the official Mamba-2 step() in mamba_ssm/modules/mamba2.py
 # (https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba2.py)
 #
@@ -107,7 +106,6 @@ __all__ = ["SSDDecodeKernel"]
 #     Official fallback (no selective_state_update): asserts ngroups == 1.
 #     Here:     Supports arbitrary ngroups via g = h // HEADS_PER_GROUP indexing,
 #               matching the behaviour of the optimised selective_state_update path.
-# =============================================================================
 
 @functools.lru_cache(maxsize=32)
 def _ssd_decode_kernel(
@@ -151,7 +149,6 @@ def _ssd_decode_kernel(
             state: T.Tensor((B, H, P, N), accum_dtype),         # type: ignore  in-place
             y_out: T.Tensor((B, H, P), accum_dtype),            # type: ignore
         ):
-            # ----------------------------------------------------------------
             # Grid: axis-0 fuses (batch, head); axis-1 tiles d_head.
             # threads = block_p * block_n.
             #
@@ -168,7 +165,6 @@ def _ssd_decode_kernel(
             # y reduction: each thread accumulates a partial sum in a register
             # (y_frag), then a log-depth tree reduction in shared memory
             # collapses the block_n partial sums for each pp into y_out[p].
-            # ----------------------------------------------------------------
             with T.Kernel(B * H, T.ceildiv(P, block_p), threads=threads) as (bh, bp):
                 b = bh // H
                 h = bh % H
@@ -179,7 +175,6 @@ def _ssd_decode_kernel(
                 y_frag = T.alloc_fragment((block_p, block_n), accum_dtype)
                 T.clear(y_frag)
 
-                # --------------------------------------------------------
                 # Hoist x and dt loads out of the n_blk loop.
                 #   x[b,h,p] and dt[b,h,p] depend only on pp, not on n_blk,
                 #   so reading them once before the loop eliminates
@@ -187,7 +182,6 @@ def _ssd_decode_kernel(
                 #   Allocated as (block_p,) — one scalar per pp — so each
                 #   thread stores exactly one value, not block_n redundant
                 #   copies.  Loaded by T.Parallel(block_p) only.
-                # --------------------------------------------------------
                 x_frag  = T.alloc_fragment((block_p,), accum_dtype)
                 dt_frag = T.alloc_fragment((block_p,), accum_dtype)
                 for pp in T.Parallel(block_p):
@@ -204,12 +198,10 @@ def _ssd_decode_kernel(
                         T.float32(0.0),
                     )
 
-                # --------------------------------------------------------
                 # Main loop: 2D parallel state update.
                 #   T.Parallel(block_p, block_n) maps (pp, nn) → thread index.
                 #   Adjacent threads in the same pp-row access consecutive n
                 #   positions → coalesced loads for A, state, B_in, C_in.
-                # --------------------------------------------------------
                 for n_blk in T.serial(T.ceildiv(N, block_n)):
                     n0 = n_blk * block_n
                     for pp, nn in T.Parallel(block_p, block_n):
@@ -245,13 +237,11 @@ def _ssd_decode_kernel(
 
                         y_frag[pp, nn] = y_frag[pp, nn] + new_s * C_val
 
-                # --------------------------------------------------------
                 # y reduction: store fragments to shared memory, then
                 # perform a log-depth tree reduction over the nn dimension.
                 # Round r: threads with nn < block_n>>(r+1) add the value
                 # at nn + block_n>>(r+1) into their cell.  Unrolled at
                 # Python trace-time; each _stride is a compile-time int.
-                # --------------------------------------------------------
                 y_smem = T.alloc_shared((block_p, block_n), accum_dtype)
                 for pp, nn in T.Parallel(block_p, block_n):
                     y_smem[pp, nn] = y_frag[pp, nn]
@@ -265,9 +255,7 @@ def _ssd_decode_kernel(
                             y_smem[pp, nn] = y_smem[pp, nn] + y_smem[pp, nn + _stride]
                     T.sync_threads()
 
-                # --------------------------------------------------------
                 # Write y_out from the reduced y_smem[:, 0].
-                # --------------------------------------------------------
                 for pp, nn in T.Parallel(block_p, block_n):
                     if nn == 0:
                         p_idx = p0 + pp

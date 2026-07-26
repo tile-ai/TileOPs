@@ -39,9 +39,7 @@ from workloads.workload_base import FixtureBase
 _SHAPES = ((1024, 4096), (1024, 10240), (1024, 11008))
 
 
-# ---------------------------------------------------------------------------
 # Workloads
-# ---------------------------------------------------------------------------
 
 
 class BinaryBenchCase:
@@ -105,9 +103,7 @@ class FusedGatedBenchmark(BenchmarkBase[FusedGatedBenchCase]):
         return t.n_total * 3 * elem
 
 
-# ---------------------------------------------------------------------------
 # Input generators
-# ---------------------------------------------------------------------------
 
 
 def _randn_pair(shape: tuple, dtype: torch.dtype):
@@ -134,9 +130,7 @@ def _bool_pair(shape: tuple, dtype: torch.dtype):
     return a, b
 
 
-# ---------------------------------------------------------------------------
 # Binary arithmetic ops (9)
-# ---------------------------------------------------------------------------
 
 
 class BinaryArithBenchFixture(FixtureBase):
@@ -200,9 +194,7 @@ def test_binary_arith_bench(
     BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
-# ---------------------------------------------------------------------------
 # Comparison ops (6)
-# ---------------------------------------------------------------------------
 
 
 class ComparisonBenchFixture(FixtureBase):
@@ -247,9 +239,7 @@ def test_comparison_bench(
     BenchmarkReport.record(f"cmp_{op_name}", locals(), result_bl, tag="torch")
 
 
-# ---------------------------------------------------------------------------
 # Logical ops (2)
-# ---------------------------------------------------------------------------
 
 
 class LogicalBenchFixture(FixtureBase):
@@ -285,9 +275,7 @@ def test_logical_bench(
     BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
-# ---------------------------------------------------------------------------
 # Bitwise ops (3)
-# ---------------------------------------------------------------------------
 
 
 class BitwiseBenchFixture(FixtureBase):
@@ -321,9 +309,7 @@ def test_bitwise_bench(
     BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
-# ---------------------------------------------------------------------------
 # Fused gated ops (2)
-# ---------------------------------------------------------------------------
 
 
 class FusedGatedBenchFixture(FixtureBase):
@@ -379,9 +365,7 @@ def test_fused_gated_bench(
     BenchmarkReport.record(op_name, locals(), result_bl, tag="torch-ref")
 
 
-# ---------------------------------------------------------------------------
 # Fused gated strategy benchmark (direct vs explicit_parallel)
-# ---------------------------------------------------------------------------
 
 
 _STRATEGY_SHAPES = [(1024, 4096), (1024, 11008), (4096, 4096)]
@@ -432,9 +416,7 @@ def test_fused_gated_strategy_bench(
     )
 
 
-# ---------------------------------------------------------------------------
 # Broadcast benchmark (bias-add pattern)
-# ---------------------------------------------------------------------------
 
 # DNN bias-add: (tokens, hidden_dim) + (1, hidden_dim). Includes a non-pow2
 # hidden (LLaMA-7B intermediate=11008) to exercise tail handling.

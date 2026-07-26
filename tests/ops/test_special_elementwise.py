@@ -7,7 +7,15 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, exact_compare
-from tileops.ops.elementwise import IsfiniteFwdOp, IsinfFwdOp, IsnanFwdOp
+from tileops.ops.elementwise import (
+    ClampScalarFwdOp,
+    EluFwdOp,
+    HardtanhFwdOp,
+    IsfiniteFwdOp,
+    IsinfFwdOp,
+    IsnanFwdOp,
+    SoftplusFwdOp,
+)
 
 
 class SpecialFixture(FixtureBase):
@@ -76,9 +84,7 @@ def test_isfinite(n_total: int, dtype: torch.dtype) -> None:
     _make_special_test(n_total, dtype, IsfiniteFwdOp, torch.isfinite)
 
 
-# ---------------------------------------------------------------------------
 # L4 edge-case tests (fp32, 4K)
-# ---------------------------------------------------------------------------
 
 
 @SpecialEdgeFixture
@@ -118,10 +124,8 @@ def test_special_predicates_reject_non_float_dtype() -> None:
         IsnanFwdKernel(N_total=16, dtype=torch.int32)
 
 
-# ===========================================================================
 # Independent special ops: where, clamp, masked_fill, nan_to_num,
 # alibi, sinusoidal
-# ===========================================================================
 
 
 class IndependentFixture(FixtureBase):
@@ -159,7 +163,6 @@ def test_where(n_total: int, dtype: torch.dtype) -> None:
     op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
     out = op(cond, x, y)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
-    print("All checks passed for WhereFwdOp.")
 
 
 # --- L1: clamp ---
@@ -179,7 +182,6 @@ def test_clamp(n_total: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for ClampFwdOp.")
 
 
 # --- L1: masked_fill ---
@@ -202,7 +204,6 @@ def test_masked_fill(n_total: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for MaskedFillFwdOp.")
 
 
 # --- L1: nan_to_num ---
@@ -226,7 +227,6 @@ def test_nan_to_num(n_total: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol, equal_nan=True)
-    print("All checks passed for NanToNumFwdOp.")
 
 
 # --- L1: alibi ---
@@ -258,7 +258,6 @@ def test_alibi(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
 
     tol = {"atol": 1e-2, "rtol": 1e-2} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for AlibiFwdOp.")
 
 
 # --- L1: sinusoidal ---
@@ -294,12 +293,9 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for SinusoidalFwdOp.")
 
 
-# ===========================================================================
 # L2 — Dtype x Size (4 cases for clamp)
-# ===========================================================================
 
 
 class ClampDtypeSizeFixture(FixtureBase):
@@ -328,12 +324,9 @@ def test_clamp_dtype_size(n_total: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for ClampFwdOp dtype/size variant.")
 
 
-# ===========================================================================
 # L4 — Edge Cases (8 cases, fp32, 4K)
-# ===========================================================================
 
 
 @IndependentEdgeFixture
@@ -347,7 +340,6 @@ def test_clamp_min_gt_max(n_total: int, dtype: torch.dtype) -> None:
     op = ClampScalarFwdOp(input=(n_total,), min=0.5, max=-0.5, dtype=dtype)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for ClampFwdOp min>max edge case.")
 
 
 @IndependentEdgeFixture
@@ -360,7 +352,6 @@ def test_clamp_upper_only(n_total: int, dtype: torch.dtype) -> None:
     op = ClampScalarFwdOp(input=(n_total,), min=None, max=0.5, dtype=dtype)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for ClampFwdOp upper-only edge case.")
 
 
 @IndependentEdgeFixture
@@ -373,7 +364,6 @@ def test_clamp_lower_only(n_total: int, dtype: torch.dtype) -> None:
     op = ClampScalarFwdOp(input=(n_total,), min=-0.5, max=None, dtype=dtype)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for ClampFwdOp lower-only edge case.")
 
 
 @IndependentEdgeFixture
@@ -388,7 +378,6 @@ def test_masked_fill_all_true(n_total: int, dtype: torch.dtype) -> None:
     op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype)
     out = op(x, mask)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for MaskedFillFwdOp all-true edge case.")
 
 
 @IndependentEdgeFixture
@@ -403,7 +392,6 @@ def test_masked_fill_all_false(n_total: int, dtype: torch.dtype) -> None:
     op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype)
     out = op(x, mask)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for MaskedFillFwdOp all-false edge case.")
 
 
 @IndependentEdgeFixture
@@ -418,7 +406,6 @@ def test_where_all_true(n_total: int, dtype: torch.dtype) -> None:
     op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
     out = op(cond, x, y)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
-    print("All checks passed for WhereFwdOp all-true edge case.")
 
 
 @IndependentEdgeFixture
@@ -433,7 +420,6 @@ def test_where_all_false(n_total: int, dtype: torch.dtype) -> None:
     op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
     out = op(cond, x, y)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
-    print("All checks passed for WhereFwdOp all-false edge case.")
 
 
 @IndependentEdgeFixture
@@ -456,7 +442,6 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
     op = NanToNumFwdOp(N_total=n_total, dtype=dtype, nan=0.0, posinf=1e4, neginf=-1e4)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5, equal_nan=True)
-    print("All checks passed for NanToNumFwdOp edge case.")
 
 
 @pytest.mark.smoke
@@ -466,9 +451,7 @@ def test_independent_special_rejects_non_float_dtype() -> None:
         ClampFwdKernel(N_total=16, dtype=torch.int32)
 
 
-# ===========================================================================
 # Negative tests: forward() dtype / numel validation
-# ===========================================================================
 
 
 @pytest.mark.smoke
@@ -543,65 +526,30 @@ def test_masked_fill_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> N
         op(x, mask)
 
 
-# ===========================================================================
 # Negative tests: __init__() scalar parameter validation
-# ===========================================================================
 
 
 @pytest.mark.smoke
-def test_elu_rejects_unrepresentable_alpha() -> None:
-    """EluFwdOp must reject alpha that overflows the kernel dtype."""
-    from tileops.ops.elementwise import EluFwdOp
+@pytest.mark.parametrize("make_op", [
+    pytest.param(lambda: EluFwdOp(N_total=1024, dtype=torch.float16, alpha=1e6),
+                 id="elu-alpha"),
+    pytest.param(lambda: HardtanhFwdOp(N_total=1024, dtype=torch.float16, min_val=1e6),
+                 id="hardtanh-min_val"),
+    pytest.param(lambda: HardtanhFwdOp(N_total=1024, dtype=torch.float16, max_val=1e6),
+                 id="hardtanh-max_val"),
+    pytest.param(lambda: SoftplusFwdOp(N_total=1024, dtype=torch.float16, beta=1e6),
+                 id="softplus-beta"),
+    pytest.param(lambda: SoftplusFwdOp(N_total=1024, dtype=torch.float16, threshold=1e6),
+                 id="softplus-threshold"),
+    pytest.param(lambda: ClampScalarFwdOp(input=(1024,), min=1e6, dtype=torch.float16),
+                 id="clamp-min"),
+    pytest.param(lambda: ClampScalarFwdOp(input=(1024,), max=1e6, dtype=torch.float16),
+                 id="clamp-max"),
+])
+def test_scalar_param_rejects_unrepresentable(make_op) -> None:
+    """__init__ must reject scalar params that overflow the kernel dtype."""
     with pytest.raises((ValueError, TypeError)):
-        EluFwdOp(N_total=1024, dtype=torch.float16, alpha=1e6)
-
-
-@pytest.mark.smoke
-def test_hardtanh_rejects_unrepresentable_min_val() -> None:
-    """HardtanhFwdOp must reject min_val that overflows the kernel dtype."""
-    from tileops.ops.elementwise import HardtanhFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        HardtanhFwdOp(N_total=1024, dtype=torch.float16, min_val=1e6)
-
-
-@pytest.mark.smoke
-def test_hardtanh_rejects_unrepresentable_max_val() -> None:
-    """HardtanhFwdOp must reject max_val that overflows the kernel dtype."""
-    from tileops.ops.elementwise import HardtanhFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        HardtanhFwdOp(N_total=1024, dtype=torch.float16, max_val=1e6)
-
-
-@pytest.mark.smoke
-def test_softplus_rejects_unrepresentable_beta() -> None:
-    """SoftplusFwdOp must reject beta that overflows the kernel dtype."""
-    from tileops.ops.elementwise import SoftplusFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        SoftplusFwdOp(N_total=1024, dtype=torch.float16, beta=1e6)
-
-
-@pytest.mark.smoke
-def test_softplus_rejects_unrepresentable_threshold() -> None:
-    """SoftplusFwdOp must reject threshold that overflows the kernel dtype."""
-    from tileops.ops.elementwise import SoftplusFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        SoftplusFwdOp(N_total=1024, dtype=torch.float16, threshold=1e6)
-
-
-@pytest.mark.smoke
-def test_clamp_rejects_unrepresentable_min_val() -> None:
-    """ClampFwdOp must reject min_val that overflows the kernel dtype."""
-    from tileops.ops.elementwise import ClampScalarFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        ClampScalarFwdOp(input=(1024,), min=1e6, dtype=torch.float16)
-
-
-@pytest.mark.smoke
-def test_clamp_rejects_unrepresentable_max_val() -> None:
-    """ClampFwdOp must reject max_val that overflows the kernel dtype."""
-    from tileops.ops.elementwise import ClampScalarFwdOp
-    with pytest.raises((ValueError, TypeError)):
-        ClampScalarFwdOp(input=(1024,), max=1e6, dtype=torch.float16)
+        make_op()
 
 
 @pytest.mark.smoke
@@ -637,9 +585,7 @@ def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
         op(x, mask)
 
 
-# ---------------------------------------------------------------------------
 # MaskedFillScalar: int / uint / bool dtype coverage
-# ---------------------------------------------------------------------------
 
 
 _MASKED_FILL_INT_DTYPES = [

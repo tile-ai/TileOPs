@@ -8,12 +8,10 @@ Workload shapes come from the manifest entry's `workloads` (via
 manifest-derived roofline (`op.eval_roofline()`).
 """
 
-from typing import Optional
-
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoeGroupedGemmNopadFwdOp
 from workloads.workload_base import WorkloadBase
@@ -47,26 +45,6 @@ class MoeGroupedGemmNopadTest(WorkloadBase):
         return None
 
 
-class MoeGroupedGemmNopadBenchmark(BenchmarkBase[MoeGroupedGemmNopadTest]):
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
-
-
 _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
     "float16": torch.float16,
@@ -98,7 +76,7 @@ def test_moe_grouped_gemm_nopad_bench(
     a, b, true_sizes, true_offsets = test.gen_inputs()
 
     op = MoeGroupedGemmNopadFwdOp(numel, num_experts, n, k, dtype=dtype)
-    bm = MoeGroupedGemmNopadBenchmark(test, op)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
 
     # Warmup: trigger JIT compilation before timed profiling.
     op(a, b, true_sizes, true_offsets)

@@ -30,9 +30,7 @@ __all__ = [
     "BatchNormFwdTrainKernel",
 ]
 
-# ---------------------------------------------------------------------------
 # Config helpers
-# ---------------------------------------------------------------------------
 
 # L threshold for the persistent (single global read) training path.
 # x_shared uses L * sizeof(dtype) bytes per block:
@@ -77,9 +75,7 @@ def _find_best_block_l(L: int) -> dict:
     )
 
 
-# ---------------------------------------------------------------------------
 # Training forward
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_train_kernel(
@@ -295,9 +291,7 @@ class BatchNormFwdTrainKernel(Kernel):
         return y, mean_out, rstd_out
 
 
-# ---------------------------------------------------------------------------
 # Inference forward
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_infer_kernel(
@@ -412,9 +406,7 @@ class BatchNormFwdInferKernel(Kernel):
         )(x, weight, bias, running_mean, running_var)
 
 
-# ---------------------------------------------------------------------------
 # Backward
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_bwd_kernel(

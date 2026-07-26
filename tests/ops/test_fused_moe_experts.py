@@ -54,8 +54,8 @@ def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation
     # raises immediately rather than silently falling back to a wrong
     # reference value when this helper is extended.
     _ACT_FNS = {
-        "silu_and_mul": lambda gate, up: F.silu(gate) * up,  # noqa: E731
-        "gelu_and_mul": lambda gate, up: F.gelu(gate, approximate="none") * up,  # noqa: E731
+        "silu_and_mul": lambda gate, up: F.silu(gate) * up,
+        "gelu_and_mul": lambda gate, up: F.gelu(gate, approximate="none") * up,
     }
     if activation not in _ACT_FNS:
         raise ValueError(
@@ -110,9 +110,7 @@ def test_weighted_reduce_noop_same_tensor():
     assert torch.allclose(t, original)
 
 
-# ---------------------------------------------------------------------------
 # MoEPrepareAndFinalizeNoDPEP
-# ---------------------------------------------------------------------------
 
 class TestMoEPrepareAndFinalizeNoDPEP:
 
@@ -141,9 +139,7 @@ class TestMoEPrepareAndFinalizeNoDPEP:
         assert torch.allclose(output, expert_out)
 
 
-# ---------------------------------------------------------------------------
 # FusedMoEExpertsNopadPersistent3WGFwdOp
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def moe_meta():

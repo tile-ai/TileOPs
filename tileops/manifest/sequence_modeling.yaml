@@ -237,8 +237,8 @@ MHCPreOp:
     kernel_map:
       mhc_pre_kernel: MHCPreKernel
     op: tileops/ops/mhc.py
-    test: tests/ops/test_mhc_pre.py
-    bench: benchmarks/ops/bench_mhc_pre.py
+    test: tests/ops/test_mhc.py
+    bench: benchmarks/ops/bench_mhc.py
     bench_manifest_driven: false
 
 MHCPostOp:
@@ -272,6 +272,6 @@ MHCPostOp:
     kernel_map:
       mhc_post_kernel: MHCPostKernel
     op: tileops/ops/mhc.py
-    test: tests/ops/test_mhc_post.py
-    bench: benchmarks/ops/bench_mhc_post.py
+    test: tests/ops/test_mhc.py
+    bench: benchmarks/ops/bench_mhc.py
     bench_manifest_driven: false

@@ -64,10 +64,10 @@ def _make_unpermute_kernel(
 
         @T.prim_func
         def _unpermute_main(
-            mm2_pad: T.Tensor([padded_batch_sum, hidden_size], dtype),    # noqa: F821
-            fwd_idx: T.Tensor([numel], "int32"),                          # noqa: F821
-            topk_weights: T.Tensor([num_tokens, top_k], "float32"),       # noqa: F821
-            output: T.Tensor([num_tokens, hidden_size], dtype),            # noqa: F821
+            mm2_pad: T.Tensor([padded_batch_sum, hidden_size], dtype),
+            fwd_idx: T.Tensor([numel], "int32"),
+            topk_weights: T.Tensor([num_tokens, top_k], "float32"),
+            output: T.Tensor([num_tokens, hidden_size], dtype),
         ):
             with T.Kernel(num_tokens, threads=threads) as (token_idx,):
                 # float32 accumulator for this token's H slice

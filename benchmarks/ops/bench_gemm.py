@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tests.ops.test_gemm import GemmFp8Test, GemmTest
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8Op, GemmOp
@@ -17,32 +17,6 @@ _DTYPE_MAP = {
     "float8_e4m3fn": torch.float8_e4m3fn,
     "float8_e5m2": torch.float8_e5m2,
 }
-
-
-class GemmBenchmark(BenchmarkBase[GemmTest]):
-    """Reads FLOP/byte counts from the Op's manifest-derived roofline.
-
-    `GemmOp` is input-inferred, so `eval_roofline()` is valid only after a
-    forward has bound `m/n/k/dtype`; the benchmark calls it lazily.
-    """
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test: GemmTest, op: GemmOp):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            flops, mem_bytes = self._op.eval_roofline()
-            self._roofline_cache = (float(flops), float(mem_bytes))
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _flashinfer_fp8_blockscale_ref(test: GemmFp8Test, *inputs: torch.Tensor) -> torch.Tensor:
@@ -98,26 +72,6 @@ def _flashinfer_fp8_per_tensor_unsupported_reason(device: torch.device) -> Optio
     return None
 
 
-class GemmFp8Benchmark(BenchmarkBase[GemmFp8Test]):
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test: GemmFp8Test, op: GemmFp8Op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            flops, mem_bytes = self._op.eval_roofline()
-            self._roofline_cache = (float(flops), float(mem_bytes))
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
-
-
 def _manifest_params() -> list:
     """Convert manifest workloads to pytest params (m, n, k, trans_a, trans_b, dtype)."""
     params = []
@@ -154,7 +108,7 @@ def test_gemm_bench(
     a, b = test.gen_inputs()
 
     op = GemmOp(trans_a=trans_a, trans_b=trans_b)
-    bm = GemmBenchmark(test, op)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
 
     # The benchmark framework warms up internally; eval_roofline() is read
     # lazily after profiling, by which point forward() has bound the dims.
@@ -175,7 +129,7 @@ def test_gemm_fp8_bench(
     inputs = test.gen_inputs()
 
     op = GemmFp8Op(out_dtype=out_dtype)
-    bm = GemmFp8Benchmark(test, op)
+    bm = ManifestBenchmark(_FP8_OP_NAME, op, test)
 
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

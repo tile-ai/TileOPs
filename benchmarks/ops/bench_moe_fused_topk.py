@@ -48,9 +48,7 @@ def fused_topk_torch(
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
     return topk_weights, topk_ids.int()
 
-# ---------------------------------------------------------------------------
 # Benchmark class
-# ---------------------------------------------------------------------------
 
 
 class FusedTopKBenchmark(BenchmarkBase[FusedTopKTest]):
@@ -87,9 +85,7 @@ class FusedTopKBenchFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # Benchmark test
-# ---------------------------------------------------------------------------
 
 
 @FusedTopKBenchFixture

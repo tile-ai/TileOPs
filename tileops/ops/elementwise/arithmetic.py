@@ -245,7 +245,7 @@ class LerpTensorFwdOp(Op):
     def __init__(
         self,
         *,
-        input: tuple,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: tuple,
         end: tuple,
         weight: tuple,
         dtype: torch.dtype,
@@ -290,7 +290,7 @@ class LerpTensorFwdOp(Op):
 
     def _eager_forward(
         self,
-        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: torch.Tensor,
         end: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
@@ -303,7 +303,7 @@ class LerpTensorFwdOp(Op):
 
     def forward(
         self,
-        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: torch.Tensor,
         end: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:

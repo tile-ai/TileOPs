@@ -1,39 +1,17 @@
-from typing import Optional
-
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.instance_norm import (
     InstanceNormFwdOp,
     InstanceNormNoAffineFwdOp,
 )
-from workloads.instance_norm import InstanceNormTest
+from workloads.normalization import InstanceNormTest
 
 _OP_NAME = "InstanceNormFwdOp"
 _OP_NAME_NO_AFFINE = "InstanceNormNoAffineFwdOp"
-
-
-class InstanceNormBenchmark(BenchmarkBase[InstanceNormTest]):
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
 
 
 def _build_params(workloads):
@@ -60,7 +38,7 @@ def test_instance_norm_bench(n: int, c: int, spatial: tuple,
     x, weight, bias = test.gen_inputs()
 
     op = InstanceNormFwdOp(tune=tune)
-    bm = InstanceNormBenchmark(test, op)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, x, weight, bias)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -79,7 +57,7 @@ def test_instance_norm_no_affine_bench(n: int, c: int, spatial: tuple,
     x, _, _ = test.gen_inputs()
 
     op = InstanceNormNoAffineFwdOp(tune=tune)
-    bm = InstanceNormBenchmark(test, op)
+    bm = ManifestBenchmark(_OP_NAME_NO_AFFINE, op, test)
     # Running stats are required positional args (R16) but ignored on the
     # use_input_stats=True path; pass placeholders.
     rm = torch.zeros(c, dtype=torch.float32, device="cuda")

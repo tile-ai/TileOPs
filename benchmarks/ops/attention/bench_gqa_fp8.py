@@ -93,7 +93,7 @@ def _make_inputs(case: GQAFp8TensorCoreBenchCase) -> tuple[torch.Tensor, ...]:
 
 def _fa3_gqa_fp8_fwd(case: GQAFp8TensorCoreBenchCase):
     try:
-        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_func
     except Exception:
         return None
 

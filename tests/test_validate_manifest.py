@@ -18,9 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VALIDATOR_SCRIPT = REPO_ROOT / "scripts" / "validate_manifest.py"
 
 
-# ---------------------------------------------------------------------------
 # Import the validator module dynamically (it lives in scripts/, not a package)
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
 def validator():
@@ -33,9 +31,7 @@ def validator():
     return mod
 
 
-# ---------------------------------------------------------------------------
 # schema: YAML structure validation
-# ---------------------------------------------------------------------------
 
 def _make_entry(*, inputs=None, outputs=None, params=None, dtype_combos=None,
                  source_kernel="k.py", status="spec-only", kernel_map=None,
@@ -525,9 +521,7 @@ class TestSingleInputWorkloadKeys:
         assert any("unknown entry keys" in e for e in errors), errors
 
 
-# ---------------------------------------------------------------------------
 # torch_compile_fullgraph: capability flag schema
-# ---------------------------------------------------------------------------
 
 class TestRooflineStructuralRules:
     """L0 roofline reject branches, one guard each.
@@ -610,9 +604,7 @@ class TestTorchCompileFullgraph:
         ), f"Expected spec-only rejection, got: {errors}"
 
 
-# ---------------------------------------------------------------------------
 # variant_of: cross-entry consistency (R16)
-# ---------------------------------------------------------------------------
 
 class TestVariantOf:
     """variant_of checks cross-entry consistency."""
@@ -680,9 +672,7 @@ class TestVariantOf:
         assert any("source.op" in e and "R16" in e for e in errors)
 
 
-# ---------------------------------------------------------------------------
 # signature: Op.forward() consistency
-# ---------------------------------------------------------------------------
 
 
 def _run_check_l1(validator, monkeypatch, cls, signature):
@@ -833,9 +823,7 @@ class TestSignature:
             ), f"{desc}: expected error with {substrings}, got: {errors}"
 
 
-# ---------------------------------------------------------------------------
 # dtype: dtype string conformance
-# ---------------------------------------------------------------------------
 
 
 class TestDtype:
@@ -1032,9 +1020,7 @@ class TestDtype:
         assert isinstance(errors, list)
 
 
-# ---------------------------------------------------------------------------
 # L2 extension: _infer_output_shapes parity with shape_rules
-# ---------------------------------------------------------------------------
 
 
 def _make_op_cls_with_infer(infer_fn, *, name="FakeOp"):
@@ -1691,9 +1677,7 @@ class TestDtypeOptionsHelper:
         )
 
 
-# ---------------------------------------------------------------------------
 # shape_rules broadcasting helpers (broadcast_shapes / is_broadcastable_to)
-# ---------------------------------------------------------------------------
 
 
 class TestShapeRuleBroadcastBuiltins:
@@ -1772,9 +1756,7 @@ class TestShapeRuleBroadcastBuiltins:
             assert ok is expected_ok, (rule, ok, expected_ok)
 
 
-# ---------------------------------------------------------------------------
 # L3 extension: _validate_dtypes parity with dtype_combos / unions
-# ---------------------------------------------------------------------------
 
 
 def _make_op_cls_with_validate(validate_fn, *, name="FakeDtypeOp"):
@@ -2759,9 +2741,7 @@ class TestParamDefaultOutputShapePin:
         )
 
 
-# ---------------------------------------------------------------------------
 # Bench checks
-# ---------------------------------------------------------------------------
 class TestBench:
     """bench checks that bench files use manifest workloads and op roofline."""
 
@@ -2836,9 +2816,7 @@ class TestBench:
         assert errors == []
 
 
-# ---------------------------------------------------------------------------
 # --check-op: force all levels on a specific op, ignoring status
-# ---------------------------------------------------------------------------
 
 
 class TestCheckOp:
@@ -3096,9 +3074,7 @@ class TestCheckOp:
             validator._parse_check_op(["--check-op"])
 
 
-# ---------------------------------------------------------------------------
 # _resolve_op_class: multi-class file resolution
-# ---------------------------------------------------------------------------
 
 class TestResolveOpClass:
     """_resolve_op_class correctly resolves op names to classes in multi-class files."""
@@ -3270,9 +3246,7 @@ class TestResolveOpClass:
         )
 
 
-# ---------------------------------------------------------------------------
 # Integration: validate_manifest.py passes on the real codebase
-# ---------------------------------------------------------------------------
 
 class TestIntegration:
     """Run the actual validator script and verify it passes."""
@@ -3305,9 +3279,7 @@ class TestIntegration:
         )
 
 
-# ---------------------------------------------------------------------------
 # tileops.manifest.shape_rules helper module + validator integration
-# ---------------------------------------------------------------------------
 
 
 class TestShapeRuleHelpers:
@@ -3321,9 +3293,9 @@ class TestShapeRuleHelpers:
         the helper, which the validator classifies as an eval-error
         warning ("could not be evaluated"). The contract: the parity
         check is skipped with a warning, not turned into a hard shape
-        error — bit-identical to the pre-migration inline form.
+        error — bit-identical to the equivalent inline form.
         """
-        def infer(self, x_shape, *, dim=None, keepdim=False):  # noqa: ARG001
+        def infer(self, x_shape, *, dim=None, keepdim=False):
             return {"y": x_shape}
 
         cls = _make_op_cls_with_infer(infer, name="HelperMalformedDimOp")
@@ -3464,9 +3436,7 @@ class TestValidatorHelperResolution:
             assert ok is True, name
 
 
-# ---------------------------------------------------------------------------
 # C1-C7 strict parity gates
-# ---------------------------------------------------------------------------
 
 
 class TestCtorSignatureParity:
@@ -3724,7 +3694,7 @@ class TestStrictAdvisoryMode:
             def __init__(self, N, dtype):
                 self.N = N
                 self.dtype = dtype
-            def forward(self, x):  # noqa: ANN001
+            def forward(self, x):
                 return x
             @property
             def default_kernel_map(self):

@@ -29,9 +29,7 @@ def _ids(prefix: str):
     return [f"{prefix}-dim={d!r}" for d in _DIM_FORMS]
 
 
-# ---------------------------------------------------------------------------
 # Arithmetic + logical reductions on scalar input
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -102,7 +100,7 @@ def test_prod_scalar_input(dim) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("all"))
 def test_all_scalar_input(dim) -> None:
-    from tileops.ops.reduction.all_op import AllFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = torch.tensor(1.0, dtype=torch.float32, device="cuda")
     op = AllFwdOp(dtype=torch.float32, dim=dim)
@@ -116,7 +114,7 @@ def test_all_scalar_input(dim) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("any"))
 def test_any_scalar_input(dim) -> None:
-    from tileops.ops.reduction.any_op import AnyFwdOp
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = torch.tensor(0.0, dtype=torch.float32, device="cuda")
     op = AnyFwdOp(dtype=torch.float32, dim=dim)
@@ -130,7 +128,7 @@ def test_any_scalar_input(dim) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dim", _DIM_FORMS, ids=_ids("count_nonzero"))
 def test_count_nonzero_scalar_input(dim) -> None:
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     x = torch.tensor(2.5, dtype=torch.float32, device="cuda")
     op = CountNonzeroFwdOp(dtype=torch.float32, dim=dim)
@@ -141,9 +139,7 @@ def test_count_nonzero_scalar_input(dim) -> None:
     assert torch.equal(y, ref)
 
 
-# ---------------------------------------------------------------------------
 # Welford-family reductions on scalar input -> nan + UserWarning
-# ---------------------------------------------------------------------------
 
 
 def _expect_var_warning() -> bool:
@@ -221,11 +217,9 @@ def test_var_mean_scalar_input(dim) -> None:
         assert any(issubclass(w.category, UserWarning) for w in op_caught)
 
 
-# ---------------------------------------------------------------------------
 # Duplicate-dim regression — aliasing sequences on a 0-D tensor must raise
 # the same RuntimeError PyTorch raises ("dim 0 appears multiple times in
 # the list of dims") instead of silently returning a scalar.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
@@ -245,10 +239,8 @@ def test_sum_scalar_duplicate_dim_matches_torch(dim) -> None:
         op(x)
 
 
-# ---------------------------------------------------------------------------
 # Welford requires_grad regression — the invalid-DOF (NaN) fast path must
 # return a tensor with autograd history matching PyTorch so backward works.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke

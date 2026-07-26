@@ -1,13 +1,4 @@
-"""CumulativeOp base class for scan operators (cumsum, cumprod).
-
-Implements manifest-driven dynamic shape binding: ctor binds only
-semantic/config params (`dim`, optional committed `N` for strict
-compatibility); `M` and the effective `N` are derived at forward time, kernels
-are built lazily and cached by `(M, N, dtype, device)`.
-
-Forward pipeline: validate -> movedim(dim → -1) -> reshape (M, N) -> kernel
-(handles alignment via masked loads) -> trim -> reshape -> movedim(-1 → dim).
-"""
+"""Cumulative scan operators (cumsum, cumprod)."""
 
 from abc import abstractmethod
 from typing import Dict, Optional, Tuple
@@ -20,7 +11,7 @@ from tileops.kernels.reduction.cumulative import CumulativeKernel
 
 from ..op_base import Op
 
-__all__ = ["CumulativeOp"]
+__all__ = ["CumprodFwdOp", "CumsumFwdOp", "CumulativeOp"]
 
 
 class CumulativeOp(Op):
@@ -32,8 +23,6 @@ class CumulativeOp(Op):
     Args:
         dtype: Data type (float32, float16, or bfloat16). If omitted,
             inferred from the first input tensor.
-        N: Optional reduction dimension size. When provided, forward validates
-            it against ``x.shape[dim]`` for backward compatibility.
         dim: Reduction axis (default -1). Negative values are normalized at
             forward time (`dim % x.ndim`).
         kernel_map: Optional kernel override dict.
@@ -49,16 +38,14 @@ class CumulativeOp(Op):
 
     def __init__(
         self,
-        N: Optional[int] = None,
         dtype: Optional[torch.dtype] = None,
         dim: int = -1,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        self.N = N
+        self.N = None
         self.dtype = dtype
-        self._committed_N = N
         self._committed_dtype = dtype
         self.dim = dim
         self.tune = tune
@@ -112,11 +99,6 @@ class CumulativeOp(Op):
             )
         dim_norm = self.dim % ndim
         N = x.shape[dim_norm]
-        if self._committed_N is not None and self._committed_N != N:
-            raise ValueError(
-                f"Expected x.shape[{self.dim}]={self._committed_N}, "
-                f"got {N}"
-            )
         self.N = N
         self.dtype = x.dtype
         # Bind the dynamic static-axis (param-dependent N axis) so
@@ -152,3 +134,57 @@ class CumulativeOp(Op):
         if dim_norm != ndim - 1:
             y = y.movedim(-1, dim_norm)
         return y
+
+
+
+class CumsumFwdOp(CumulativeOp):
+    """Cumulative sum operator: ``y = cumsum(x, dim)``.
+
+    Output has the same shape and dtype as ``x``. Alignment padding is
+    handled inside the kernel via masked loads.
+
+    Args:
+        dtype: Optional data type (float32, float16, or bfloat16).
+            Preferred API infers it from ``x``.
+        dim: Reduction axis (default -1). Negative values are normalized
+            at forward time.
+        kernel_map: Optional override for kernel dispatch.
+        tune: Whether to autotune (default False).
+
+    Example:
+        >>> op = CumsumFwdOp()
+        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
+        >>> y = op(x)  # shape: (1024, 4096)
+    """
+
+    _op_kind = "sum"
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self._run(x)
+
+
+
+class CumprodFwdOp(CumulativeOp):
+    """Cumulative product operator: ``y = cumprod(x, dim)``.
+
+    Output has the same shape and dtype as ``x``. Alignment padding is
+    handled inside the kernel via masked loads.
+
+    Args:
+        dtype: Optional data type (float32, float16, or bfloat16).
+            Preferred API infers it from ``x``.
+        dim: Reduction axis (default -1). Negative values are normalized
+            at forward time.
+        kernel_map: Optional override for kernel dispatch.
+        tune: Whether to autotune (default False).
+
+    Example:
+        >>> op = CumprodFwdOp()
+        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda") * 0.01 + 0.99
+        >>> y = op(x)  # shape: (1024, 4096)
+    """
+
+    _op_kind = "prod"
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self._run(x)

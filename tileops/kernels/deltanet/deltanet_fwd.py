@@ -26,9 +26,7 @@ from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 __all__ = ["DeltaNetFwdKernel"]
 
 
-# =============================================================================
 # Split kernel: h_recurrence  (sequential over chunks, state update only)
-# =============================================================================
 
 
 @functools.lru_cache(maxsize=32)
@@ -128,9 +126,7 @@ def _h_recurrence_tl(
     return _func
 
 
-# =============================================================================
 # Split kernel: output_o  (fully parallel over chunks)
-# =============================================================================
 
 @functools.lru_cache(maxsize=32)
 def _output_o_tl(

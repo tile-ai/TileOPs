@@ -28,9 +28,7 @@ __all__ = ["GLABwdKernel"]
 LOG2_E = 1.44269504
 
 
-# ---------------------------------------------------------------------------
 # Pass 1: compute dh per chunk (reverse order, sequential)
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _gla_bwd_dh_kernel(
@@ -155,9 +153,7 @@ def _gla_bwd_dh_kernel(
     return _dh_func
 
 
-# ---------------------------------------------------------------------------
 # Pass 2: fused intra+inter kernel (eliminates global memory round-trip)
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _gla_bwd_fused_kernel(
@@ -243,9 +239,7 @@ def _gla_bwd_fused_kernel(
                 T.copy(g_cumsum[i_b, chunk_start:chunk_start + BT, i_h, :],
                        g_cumsum_s, disable_tma=True)
 
-                # ============================================================
                 # PHASE A: Intra-chunk (results kept in fragments)
-                # ============================================================
 
                 # ---- A[i,j] = scale * sum_k q*k*exp(g_i - g_j), causal ----
                 A_frag = T.alloc_fragment([BT, BT], accum_dtype)
@@ -412,9 +406,7 @@ def _gla_bwd_fused_kernel(
                         dk_frag[s_j * BC + j_local, i_k] = (
                             dk_sub[j_local, i_k])
 
-                # ============================================================
                 # PHASE B: Inter-chunk gradients + combine + dg
-                # ============================================================
 
                 h_cast_s = T.alloc_shared([dim_k, dim_v], dtype)
                 dh_cast_s = T.alloc_shared([dim_k, dim_v], dtype)

@@ -8,7 +8,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.deltanet_recurrence import DeltaNetDecodeRawCudaFlaStyleKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import DeltaNetDecodeOp
-from workloads.deltanet import DeltaNetDecodeTest as _DeltaNetDecodeTestWorkload
+from workloads.linear_attention import DeltaNetDecodeTest as _DeltaNetDecodeTestWorkload
 
 
 def deltanet_decode_torch(
@@ -50,14 +50,10 @@ class DeltaNetDecodeTest(_DeltaNetDecodeTestWorkload, TestBase):
         return o.to(self.dtype), new_state.to(self.dtype)
 
 
-# =============================================================================
 # Torch reference implementation (test-only)
-# =============================================================================
 
 
-# =============================================================================
 # Correctness tests
-# =============================================================================
 
 
 def _get_tolerances(dtype: torch.dtype) -> dict:

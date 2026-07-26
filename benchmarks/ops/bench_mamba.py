@@ -23,9 +23,7 @@ from workloads.mamba import (
     SSDStatePassingFwdWorkload,
 )
 
-# ---------------------------------------------------------------------------
 # Optional mamba_ssm Triton baselines
-# ---------------------------------------------------------------------------
 try:
     from mamba_ssm.ops.triton.ssd_chunk_state import _chunk_cumsum_fwd as _mamba_chunk_cumsum_fwd
 except ImportError:
@@ -252,7 +250,6 @@ class SSDChunkScanFwdBenchmark(BenchmarkBase[SSDChunkScanFwdWorkload]):
         return float(reads + writes)
 
 
-# ---------------------------------------------------------------------------
 # Benchmark parameters
 #
 # Model-to-shape mapping (Mamba-2 defaults):
@@ -264,7 +261,6 @@ class SSDChunkScanFwdBenchmark(BenchmarkBase[SSDChunkScanFwdWorkload]):
 #   1.3B -> n_heads=64   2.7B -> n_heads=80
 #
 # Schema: (batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune)
-# ---------------------------------------------------------------------------
 _SSD_CHUNK_SCAN_FWD_BENCH_PARAMS = [
     # ── unit-scale ──
     pytest.param(1, 2,  64, 4,  64,  32, 1, torch.float16,  False, id="b1-c2-L64-h4-p64-n32-fp16"),

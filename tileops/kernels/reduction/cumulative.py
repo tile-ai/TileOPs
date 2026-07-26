@@ -255,9 +255,7 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
     return _func
 
 
-# ---------------------------------------------------------------------------
 # custom_op wrappers for torch.compile compatibility
-# ---------------------------------------------------------------------------
 
 
 @torch.library.custom_op("top::cumulative_fwd", mutates_args=())
@@ -280,9 +278,7 @@ def _(M, N, op_kind, dtype_str, block_m, block_n, threads, x):
     return torch.empty((M, N_padded), dtype=x.dtype, device=x.device)
 
 
-# ---------------------------------------------------------------------------
 # CumulativeKernel class
-# ---------------------------------------------------------------------------
 
 
 class CumulativeKernel(Kernel):

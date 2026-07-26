@@ -35,9 +35,7 @@ from tileops.kernels.reduction._primitives import (
 __all__ = ["SoftmaxKernel"]
 
 
-# ---------------------------------------------------------------------------
 # Single-tile kernel (N fits in shared memory) -- original fast path
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=64)
@@ -166,9 +164,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
     return _func
 
 
-# ---------------------------------------------------------------------------
 # Multi-tile kernel (N tiled over shared memory)
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=64)
@@ -442,9 +438,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
     return _func
 
 
-# ---------------------------------------------------------------------------
 # Dispatch: choose single-tile or multi-tile kernel based on tile_n
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=64)
@@ -459,9 +453,7 @@ def _softmax_kernel(M: int, N: int, op_kind: str, dtype: str, tile_n: int = 0):
     return _softmax_kernel_tiled(M, N, op_kind, dtype, tile_n)
 
 
-# ---------------------------------------------------------------------------
 # custom_op wrappers for torch.compile compatibility
-# ---------------------------------------------------------------------------
 
 
 def _compute_padded_cols(N: int, tile_n: int) -> int:
@@ -493,9 +485,7 @@ def _(M, N, op_kind, dtype_str, block_m, threads, tile_n, x):
     return torch.empty((M, total_cols), dtype=x.dtype, device=x.device)
 
 
-# ---------------------------------------------------------------------------
 # Kernel class
-# ---------------------------------------------------------------------------
 
 
 def _elem_bytes(dtype: torch.dtype) -> int:

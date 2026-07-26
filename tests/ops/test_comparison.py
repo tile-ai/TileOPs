@@ -10,9 +10,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
 
-# ---------------------------------------------------------------------------
 # Shared helpers
-# ---------------------------------------------------------------------------
 
 
 def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
@@ -40,9 +38,7 @@ class ComparisonTest(TestBase):
         return self.ref_fn(a, b)
 
 
-# ---------------------------------------------------------------------------
 # Eq op
-# ---------------------------------------------------------------------------
 
 
 class EqFixture(FixtureBase):
@@ -63,9 +59,7 @@ def test_eq_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
-# ---------------------------------------------------------------------------
 # Ne op
-# ---------------------------------------------------------------------------
 
 
 class NeFixture(FixtureBase):
@@ -86,9 +80,7 @@ def test_ne_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
-# ---------------------------------------------------------------------------
 # Gt op
-# ---------------------------------------------------------------------------
 
 
 class GtFixture(FixtureBase):
@@ -109,9 +101,7 @@ def test_gt_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
-# ---------------------------------------------------------------------------
 # Lt op
-# ---------------------------------------------------------------------------
 
 
 class LtFixture(FixtureBase):
@@ -132,9 +122,7 @@ def test_lt_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
-# ---------------------------------------------------------------------------
 # Ge op
-# ---------------------------------------------------------------------------
 
 
 class GeFixture(FixtureBase):
@@ -155,9 +143,7 @@ def test_ge_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
-# ---------------------------------------------------------------------------
 # Le op
-# ---------------------------------------------------------------------------
 
 
 class LeFixture(FixtureBase):
@@ -178,9 +164,7 @@ def test_le_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
-# ---------------------------------------------------------------------------
 # Broadcast pattern tests for all comparison ops (L3)
-# ---------------------------------------------------------------------------
 
 _BROADCAST_PATTERNS = [
     ((2, 64, 128), (1, 1, 128)),   # bias-add
@@ -224,9 +208,7 @@ def test_comparison_broadcast(
     _bool_compare(out, ref)
 
 
-# ---------------------------------------------------------------------------
 # L4 edge case: eq with some equal elements
-# ---------------------------------------------------------------------------
 
 
 class EqEdgeCaseFixture(FixtureBase):
@@ -253,9 +235,7 @@ def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
     assert torch.equal(out, ref)
 
 
-# ---------------------------------------------------------------------------
 # Per-dtype correctness across the manifest dtype union
-# ---------------------------------------------------------------------------
 
 _INT_DTYPES = [torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64]
 _CMP_OP_CASES = [
@@ -356,10 +336,8 @@ def test_comparison_bool_dtype(op_cls, ref_fn) -> None:
     _bool_compare(out, ref)
 
 
-# ---------------------------------------------------------------------------
 # Dtype rejection tests (dtypes outside the manifest dtype union: fp8 and
 # complex must raise at construction time).
-# ---------------------------------------------------------------------------
 
 
 class ComparisonRejectFixture(FixtureBase):

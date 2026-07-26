@@ -6,7 +6,7 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import gqa_decode_args, manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.gqa_decode import GroupedQueryAttentionDecodeTest
+from workloads.attention.gqa import GroupedQueryAttentionDecodeTest
 
 _OP_NAME = "GroupedQueryAttentionDecodeWithKVCacheFwdOp"
 
@@ -32,7 +32,7 @@ def _fa3_gqa_decode_fwd(test):
     if test.sm_scale != test.dim**-0.5 or test.softcap != 0.0:
         return None
     try:
-        from flash_attn_interface import flash_attn_with_kvcache  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_with_kvcache
     except ImportError:
         return None
 
@@ -70,7 +70,7 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
 
     if B == 1:
         try:
-            from flashinfer.decode import single_decode_with_kv_cache  # noqa: PLC0415
+            from flashinfer.decode import single_decode_with_kv_cache
         except ImportError:
             return None
 
@@ -87,7 +87,7 @@ def _flashinfer_gqa_decode_fwd(test, q, k, v):
         return run_fn
 
     try:
-        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper  # noqa: PLC0415
+        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
     except ImportError:
         return None
     Skv = k.shape[1]

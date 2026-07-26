@@ -57,9 +57,7 @@ except ImportError:
     chunk_gla = None
 
 
-# =============================================================================
 # Forward correctness tests
-# =============================================================================
 
 class GLAFwdFixture(FixtureBase):
     PARAMS = [

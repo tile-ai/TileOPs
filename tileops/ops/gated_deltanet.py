@@ -191,8 +191,7 @@ class GatedDeltaNetPrefillFwdOp(Op):
     ``layout="bthd"`` follows the official FLA/Qwen convention
     (``q/k/v/o [B, T, H, D]``, ``g/beta [B, T, H]``). ``layout="bhtd"``
     selects the TileOps head-major convention (``q/k/v/o [B, H, T, D]``,
-    ``g/beta [B, H, T]``). ``layout="bhsd"`` is accepted as a backward-compatible
-    alias for ``"bhtd"``.
+    ``g/beta [B, H, T]``).
     When ``chunk_size`` is not specified, the op uses a small-stream serving
     default: 128 for ``batch * heads <= 8`` when the sequence length allows it,
     otherwise 64.
@@ -231,8 +230,6 @@ class GatedDeltaNetPrefillFwdOp(Op):
     @staticmethod
     def _normalize_layout(layout: str) -> str:
         layout = layout.lower()
-        if layout == "bhsd":
-            return "bhtd"
         if layout in ("bhtd", "bthd"):
             return layout
         raise ValueError(f"Unsupported layout: {layout}")

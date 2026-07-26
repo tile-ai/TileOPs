@@ -11,9 +11,7 @@ from tileops.kernels.online_softmax import make_log2e_scale, make_online_softmax
 
 __all__ = ["MHADecodePagedKernel"]
 
-# ---------------------------------------------------------------------------
 # JIT kernel: no-split variant (paged)
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -112,9 +110,7 @@ def _mha_decode_no_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_siz
     return _func
 
 
-# ---------------------------------------------------------------------------
 # JIT kernel: split variant (paged, split + combine)
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -235,10 +231,8 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                 hid = by % heads
                 bid = by // heads
                 sid = bz
-                # =======================================
                 split_length_shared = T.alloc_shared([num_split], "int32")
                 T.copy(split_length[bid, :], split_length_shared, disable_tma=True)
-                # ========================================
                 # NOTE(wt): tma barrier has some problems with padded dimensions (seq_q here) currently
                 # disable relevant tma copy and use SIMT as fallback for now
                 T.copy(
@@ -385,9 +379,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
     return _func
 
 
-# ---------------------------------------------------------------------------
 # Custom ops (torch.compile compatible wrappers)
-# ---------------------------------------------------------------------------
 
 
 # Use distinct op names so paged and non-paged (mha_decode.py) do not overwrite
@@ -436,9 +428,7 @@ def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int, page_size
     return torch.empty_like(Q)
 
 
-# ---------------------------------------------------------------------------
 # Kernel class
-# ---------------------------------------------------------------------------
 
 
 class MHADecodePagedKernel(Kernel):

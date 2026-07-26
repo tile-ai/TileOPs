@@ -95,7 +95,7 @@ class FFTC2COp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"fft_c2c_kernel": FFTC2CKernel}
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Compute 1D FFT of complex input.
 
         Args:

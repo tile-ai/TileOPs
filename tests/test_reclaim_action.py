@@ -35,9 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RECLAIM_SCRIPT = REPO_ROOT / ".github" / "actions" / "reclaim-runner-disk" / "reclaim_cache.sh"
 
 
-# ---------------------------------------------------------------------------
 # Test helpers
-# ---------------------------------------------------------------------------
 
 
 def _age_path(path: Path, *, days: float) -> None:
@@ -81,9 +79,7 @@ def _make_autotuner_subdir(
     return subdir
 
 
-# ---------------------------------------------------------------------------
 # sentinel-repair
-# ---------------------------------------------------------------------------
 
 
 def test_sentinel_repair_removes_half_dead_subdir(tmp_path: Path) -> None:
@@ -131,9 +127,7 @@ def test_sentinel_repair_honours_custom_sentinel_filename(tmp_path: Path) -> Non
     assert subdir.exists(), "subdir with the custom sentinel must be preserved"
 
 
-# ---------------------------------------------------------------------------
 # atomic-trim
-# ---------------------------------------------------------------------------
 
 
 def test_atomic_trim_removes_stale_subdir_whole(tmp_path: Path) -> None:
@@ -217,9 +211,7 @@ def test_atomic_trim_handles_empty_root(tmp_path: Path) -> None:
     assert root.exists(), "the cache root itself is never removed"
 
 
-# ---------------------------------------------------------------------------
 # trim-files (non-atomic roots)
-# ---------------------------------------------------------------------------
 
 
 def test_trim_files_removes_old_files_but_leaves_atomic_roots_alone(
@@ -254,9 +246,7 @@ def test_trim_files_removes_old_files_but_leaves_atomic_roots_alone(
     assert (subdir / "kernel.cu").exists()
 
 
-# ---------------------------------------------------------------------------
 # gpu-smoke security trust routing
-# ---------------------------------------------------------------------------
 
 GPU_SMOKE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "gpu-smoke.yml"
 

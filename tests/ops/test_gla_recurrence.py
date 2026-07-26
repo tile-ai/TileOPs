@@ -5,7 +5,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GLADecodeOp
-from workloads.gla import GLADecodeTest as _GLADecodeTestWorkload
+from workloads.linear_attention import GLADecodeTest as _GLADecodeTestWorkload
 
 
 def gla_decode_torch(
@@ -50,14 +50,10 @@ try:
 except ImportError:
     fused_recurrent_gla = None
 
-# =============================================================================
 # Torch reference implementation (test-only)
-# =============================================================================
 
 
-# =============================================================================
 # Correctness tests
-# =============================================================================
 
 
 def _get_tolerances(dtype: torch.dtype) -> dict:

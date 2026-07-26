@@ -47,14 +47,10 @@ class MoeUnpermuteTest(_MoeUnpermuteTestWorkload, TestBase):
         return _ref_moe_unpermute(mm2_pad, fwd_idx, topk_weights)
 
 
-# ---------------------------------------------------------------------------
 # Reference implementation
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # Fixture
-# ---------------------------------------------------------------------------
 
 
 class MoeUnpermuteFixture(FixtureBase):
@@ -79,14 +75,10 @@ class MoeUnpermuteFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # TestBase subclass
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # Tests
-# ---------------------------------------------------------------------------
 
 
 @MoeUnpermuteFixture
@@ -101,7 +93,6 @@ def test_moe_unpermute_op(total_tokens, top_k, hidden_size, dtype):
     rtol = 1.6e-2 if dtype == torch.bfloat16 else 1e-3
     atol = 1.6e-2 if dtype == torch.bfloat16 else 1e-3
     torch.testing.assert_close(output.float(), output_ref.float(), rtol=rtol, atol=atol)
-    print(f"PASS [{total_tokens}tok, top{top_k}, H={hidden_size}, {dtype}]")
 
 
 @pytest.mark.smoke
@@ -121,7 +112,6 @@ def test_moe_unpermute_skewed():
     assert torch.allclose(output.float(), output_ref.float(), atol=1e-2), (
         f"skewed mismatch: max_err={(output.float() - output_ref.float()).abs().max()}"
     )
-    print("PASS skewed (all slots → first K padded positions)")
 
 
 @pytest.mark.smoke
@@ -156,7 +146,6 @@ def test_moe_unpermute_ep_masking():
     assert torch.allclose(output.float(), ref, atol=1e-2), (
         f"EP -1 masking mismatch: max_err={(output.float() - ref).abs().max()}"
     )
-    print("PASS ep-masking (fwd_idx=-1 contributes zero inside pipeline)")
 
 
 @pytest.mark.smoke

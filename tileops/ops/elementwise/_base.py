@@ -27,15 +27,9 @@ from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
 
-# ---------------------------------------------------------------------------
-# torch.compile registration factories
-#
-# Each factory creates a @torch.library.custom_op + register_fake pair.
-# Instances register themselves in _OP_REGISTRY keyed by integer id.
-# The custom_op receives this key and looks up the instance to call the
-# pre-built tilelang kernel.  The key is a plain int so dynamo can trace
-# through forward() without hitting unsupported Python side-effects.
-# ---------------------------------------------------------------------------
+# torch.compile registration factories (see module docstring). The registry
+# key is a plain int so dynamo can trace through forward() without hitting
+# unsupported Python side-effects.
 
 _OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
@@ -304,7 +298,7 @@ def _register_lerp_tensor_custom_op(op_cls):
 
     @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
     def _wrapped(
-        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: torch.Tensor,
         end: torch.Tensor,
         weight: torch.Tensor,
         instance_key: int,
@@ -314,7 +308,7 @@ def _register_lerp_tensor_custom_op(op_cls):
 
     @_wrapped.register_fake
     def _(
-        input: torch.Tensor,  # noqa: A002
+        input: torch.Tensor,
         end: torch.Tensor,
         weight: torch.Tensor,
         instance_key: int,
@@ -368,7 +362,7 @@ def _register_masked_fill_tensor_value_custom_op(op_cls):
         f"top::elementwise_{op_name}_tensor_value", mutates_args=(),
     )
     def _wrapped(
-        input: torch.Tensor,  # noqa: A002
+        input: torch.Tensor,
         mask: torch.Tensor,
         value: torch.Tensor,
         instance_key: int,
@@ -378,7 +372,7 @@ def _register_masked_fill_tensor_value_custom_op(op_cls):
 
     @_wrapped.register_fake
     def _(
-        input: torch.Tensor,  # noqa: A002
+        input: torch.Tensor,
         mask: torch.Tensor,
         value: torch.Tensor,
         instance_key: int,
@@ -406,9 +400,9 @@ def _register_clamp_tensor_custom_op(op_cls):
         f"top::elementwise_{op_name}_tensor", mutates_args=(),
     )
     def _wrapped(
-        input: torch.Tensor,  # noqa: A002
-        min: Optional[torch.Tensor],  # noqa: A002
-        max: Optional[torch.Tensor],  # noqa: A002
+        input: torch.Tensor,
+        min: Optional[torch.Tensor],
+        max: Optional[torch.Tensor],
         instance_key: int,
     ) -> torch.Tensor:
         instance = _OP_REGISTRY[instance_key]
@@ -416,9 +410,9 @@ def _register_clamp_tensor_custom_op(op_cls):
 
     @_wrapped.register_fake
     def _(
-        input: torch.Tensor,  # noqa: A002
-        min: Optional[torch.Tensor],  # noqa: A002
-        max: Optional[torch.Tensor],  # noqa: A002
+        input: torch.Tensor,
+        min: Optional[torch.Tensor],
+        max: Optional[torch.Tensor],
         instance_key: int,
     ) -> torch.Tensor:
         shapes = [input.shape]
@@ -438,8 +432,8 @@ def _register_clamp_min_custom_op(op_cls):
 
     @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
     def _wrapped(
-        input: torch.Tensor,  # noqa: A002
-        min: torch.Tensor,    # noqa: A002
+        input: torch.Tensor,
+        min: torch.Tensor,
         instance_key: int,
     ) -> torch.Tensor:
         instance = _OP_REGISTRY[instance_key]
@@ -447,8 +441,8 @@ def _register_clamp_min_custom_op(op_cls):
 
     @_wrapped.register_fake
     def _(
-        input: torch.Tensor,  # noqa: A002
-        min: torch.Tensor,    # noqa: A002
+        input: torch.Tensor,
+        min: torch.Tensor,
         instance_key: int,
     ) -> torch.Tensor:
         out_shape = torch.broadcast_shapes(input.shape, min.shape)
@@ -463,8 +457,8 @@ def _register_clamp_max_custom_op(op_cls):
 
     @torch.library.custom_op(f"top::elementwise_{op_name}", mutates_args=())
     def _wrapped(
-        input: torch.Tensor,  # noqa: A002
-        max: torch.Tensor,    # noqa: A002
+        input: torch.Tensor,
+        max: torch.Tensor,
         instance_key: int,
     ) -> torch.Tensor:
         instance = _OP_REGISTRY[instance_key]
@@ -472,8 +466,8 @@ def _register_clamp_max_custom_op(op_cls):
 
     @_wrapped.register_fake
     def _(
-        input: torch.Tensor,  # noqa: A002
-        max: torch.Tensor,    # noqa: A002
+        input: torch.Tensor,
+        max: torch.Tensor,
         instance_key: int,
     ) -> torch.Tensor:
         out_shape = torch.broadcast_shapes(input.shape, max.shape)
@@ -594,23 +588,6 @@ def _is_fp8(dtype: torch.dtype) -> bool:
     return dtype in _FP8_DTYPES
 
 
-def _fp8_compute_dtype(dtype: torch.dtype) -> torch.dtype:
-    """Return the compute dtype used to emulate fp8 elementwise fallbacks.
-
-    PyTorch's CUDA backend does not implement ``clamp``/``maximum``/
-    ``minimum``/``masked_fill_`` on Float8 tensors (raises NotImplementedError
-    on ``clamp_cuda`` / ``max_elementwise_cuda`` / ``min_elementwise_cuda`` /
-    ``masked_fill_``). Both e4m3fn (finite range ±448) and e5m2 (finite range
-    ±57344) fit in fp16, so we upcast to fp16, run the op, and cast back. The
-    final cast preserves Inf/NaN for e5m2 (PyTorch's fp16->e5m2 conversion is
-    non-saturating) and saturates for e4m3fn (matching PyTorch's default
-    fp16->e4m3fn behaviour).
-    """
-    if not _is_fp8(dtype):
-        raise ValueError(f"_fp8_compute_dtype expects an fp8 dtype, got {dtype}")
-    return torch.float16
-
-
 class UnaryOp(Op):
     """Template base class for unary elementwise ops.
 
@@ -700,7 +677,7 @@ class UnaryOp(Op):
         """
         return self.FLOPS_PER_ELEM * self.N_total, int(self.total_memory)
 
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
         orig_shape = input.shape
         flat = input.contiguous().reshape(-1)
@@ -709,7 +686,7 @@ class UnaryOp(Op):
         # cast to e5m2 here using PyTorch's non-saturating conversion.
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def _validate_input(self, input: torch.Tensor) -> None:  # noqa: A002
+    def _validate_input(self, input: torch.Tensor) -> None:
         """Validate input tensor against the op's dtype / numel contract."""
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
@@ -722,7 +699,7 @@ class UnaryOp(Op):
                 f"Expected {self.N_total} elements, got {input.numel()}"
             )
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         self._validate_input(input)
         wrapped = type(self)._wrapped
         if wrapped is not None:
@@ -840,7 +817,7 @@ class BinaryOp(Op):
 
     def _eager_forward(
         self,
-        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: torch.Tensor,
         other: torch.Tensor,
     ) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
@@ -851,7 +828,7 @@ class BinaryOp(Op):
 
     def forward(
         self,
-        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: torch.Tensor,
         other: torch.Tensor,
     ) -> torch.Tensor:
         a_name = getattr(self, "_input_name", "input")
@@ -1014,9 +991,7 @@ class FusedGatedOp(Op):
         return self._eager_forward(x)
 
 
-# ---------------------------------------------------------------------------
 # Intermediate (private) base classes shared by leaf op modules
-# ---------------------------------------------------------------------------
 
 
 class _UnaryActivationMixin:
@@ -1047,7 +1022,7 @@ class _UnaryActivationMixin:
     # test-only subclass that skipped registration).
     _wrapped_inplace = None
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         self._validate_input(input)
         if self.inplace:
             wrapped_inplace = type(self)._wrapped_inplace
@@ -1209,7 +1184,7 @@ class _BoolOutputBinaryOp(BinaryOp):
 
     def _eager_forward(
         self,
-        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: torch.Tensor,
         other: torch.Tensor,
     ) -> torch.Tensor:
         if getattr(self, "_bool_storage", False):
@@ -1229,15 +1204,15 @@ _MANIFEST_INT_DTYPES = (
 )
 
 
-def _int_identity(input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+def _int_identity(input: torch.Tensor) -> torch.Tensor:
     return input.clone()
 
 
-def _int_all_false(input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+def _int_all_false(input: torch.Tensor) -> torch.Tensor:
     return torch.zeros(input.shape, dtype=torch.bool, device=input.device)
 
 
-def _int_all_true(input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+def _int_all_true(input: torch.Tensor) -> torch.Tensor:
     return torch.ones(input.shape, dtype=torch.bool, device=input.device)
 
 
@@ -1305,7 +1280,7 @@ class _IntIdentityUnaryOp(UnaryOp):
             N_total, dtype, strategy=strategy, kernel_map=kernel_map, tune=tune,
         )
 
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         if self.kernel is None:
             return type(self)._int_handler(input)
         return super()._eager_forward(input)

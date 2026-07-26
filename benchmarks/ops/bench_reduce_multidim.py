@@ -30,9 +30,7 @@ import torch
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from workloads.workload_base import FixtureBase, WorkloadBase
 
-# ===================================================================
 # 1. Reduce (sum, mean, amax) — multi-dim
-# ===================================================================
 
 
 class ReduceMultidimFixture(FixtureBase):
@@ -142,11 +140,9 @@ def test_reduce_multidim_bench(
     BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
-# ===================================================================
 # 2. Argreduce (argmax, argmin) — non-last-axis dims on 3D tensor
 #    ArgmaxFwdOp/ArgminFwdOp only accept scalar dim (int), not a list.
 #    We cover dim=0, dim=1, and dim=2 on a 3D tensor.
-# ===================================================================
 
 
 class ArgreduceMultidimFixture(FixtureBase):
@@ -215,8 +211,7 @@ _ARGREDUCE_OP_NAMES = {"argmax": "ArgmaxFwdOp", "argmin": "ArgminFwdOp"}
 
 
 def _make_argreduce_op(dtype, op_kind, dim, keepdim):
-    from tileops.ops.reduction.argmax import ArgmaxFwdOp
-    from tileops.ops.reduction.argmin import ArgminFwdOp
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 
     cls = ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp
     return cls(dtype=dtype, dim=dim, keepdim=keepdim)
@@ -248,9 +243,7 @@ def test_argreduce_multidim_bench(
     BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
-# ===================================================================
 # 3. Logical reduce (any, all, count_nonzero) — multi-dim
-# ===================================================================
 
 
 class LogicalReduceMultidimFixture(FixtureBase):
@@ -323,9 +316,7 @@ _LOGICAL_OP_NAMES = {
 
 
 def _make_logical_op(dtype, op_kind, dim, keepdim):
-    from tileops.ops.reduction.all_op import AllFwdOp
-    from tileops.ops.reduction.any_op import AnyFwdOp
-    from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
+    from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
     op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
     cls = op_map[op_kind]
@@ -360,9 +351,7 @@ def test_logical_reduce_multidim_bench(
     BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
-# ===================================================================
 # 4. Vector norm (l1, l2, inf) — multi-dim
-# ===================================================================
 
 
 class VectorNormMultidimFixture(FixtureBase):
@@ -430,9 +419,7 @@ _VECTOR_NORM_OP_NAMES = {
 
 
 def _make_norm_op(dtype, op_kind, dim, keepdim):
-    from tileops.ops.reduction.inf_norm import InfNormFwdOp
-    from tileops.ops.reduction.l1_norm import L1NormFwdOp
-    from tileops.ops.reduction.l2_norm import L2NormFwdOp
+    from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 
     op_map = {"l1": L1NormFwdOp, "l2": L2NormFwdOp, "inf": InfNormFwdOp}
     cls = op_map[op_kind]
@@ -464,14 +451,12 @@ def test_vector_norm_multidim_bench(
     BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
-# ===================================================================
 # 5. Cumulative (cumsum, cumprod) — 3D tensor reshaped to (M, N)
 #    CumsumFwdOp/CumprodFwdOp accept only (M, N, dtype) and always
 #    operate on dim=-1.  Multi-dim reduction is architecturally
 #    unsupported.  We benchmark 3D-shaped inputs (reshaped to M=batch*seq,
 #    N=hidden) so the benchmark exercises realistic multi-dim-shaped data
 #    even though the kernel sees a 2D view.
-# ===================================================================
 
 
 class CumulativeMultidimFixture(FixtureBase):
@@ -531,8 +516,7 @@ _CUMULATIVE_OP_NAMES = {"cumsum": "CumsumFwdOp", "cumprod": "CumprodFwdOp"}
 def _make_cumulative_op(M, N, dtype, op_kind):
     import inspect
 
-    from tileops.ops.reduction.cumprod import CumprodFwdOp
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
+    from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 
     op_map = {"cumsum": CumsumFwdOp, "cumprod": CumprodFwdOp}
     cls = op_map[op_kind]
@@ -561,10 +545,8 @@ def test_cumulative_multidim_bench(
     BenchmarkReport.record(op, report_params, result_bl, tag="torch")
 
 
-# ===================================================================
 # 6. LogSumExp — multi-dim
 #    LogSumExpFwdOp supports multi-dim via _supports_multidim = True.
-# ===================================================================
 
 
 class LogSumExpMultidimFixture(FixtureBase):
@@ -635,7 +617,7 @@ _LOGSUMEXP_OP_NAME = "LogSumExpFwdOp"
 
 
 def _make_logsumexp_op(dtype, dim, keepdim):
-    from tileops.ops.reduction.logsumexp import LogSumExpFwdOp
+    from tileops.ops.reduction.softmax import LogSumExpFwdOp
 
     return LogSumExpFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
 

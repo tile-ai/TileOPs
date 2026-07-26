@@ -20,9 +20,7 @@ import torch
 
 from tests.conftest import _freeze_value, pytest_collection_modifyitems
 
-# ---------------------------------------------------------------------------
 # Helpers to build mock pytest.Items
-# ---------------------------------------------------------------------------
 
 
 def _make_item(

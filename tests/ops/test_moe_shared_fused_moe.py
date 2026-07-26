@@ -65,7 +65,6 @@ def test_shared_fused_moe_basic():
     routed_ref = op_routed(hidden, gating, w_gate_up, w_down)
     torch.testing.assert_close(routed_out, routed_ref, rtol=1e-5, atol=1e-5)
 
-    print(f"PASS SharedFusedMoE basic [T={T}, E={E}, K={K}, H={H}, F={F}, F_s={F_s}]")
 
 
 @pytest.mark.smoke
@@ -91,7 +90,6 @@ def test_shared_fused_moe_none():
 
     assert shared_out is None
     assert routed_out.shape == (T, H)
-    print("PASS SharedFusedMoE with shared_ffn_size=None")
 
 
 @pytest.mark.smoke
@@ -163,7 +161,6 @@ def test_shared_fused_moe_tp():
     # partial_sum vs per-shard float32 math reference (same computation path)
     torch.testing.assert_close(partial_sum, partial_sum_ref, rtol=1e-2, atol=1e-2)
 
-    print(f"PASS SharedFusedMoE TP [T={T}, H={H}, F_s={F_s}, tp_size={tp_size}]")
 
 
 @pytest.mark.smoke
@@ -207,5 +204,3 @@ def test_shared_fused_moe_tp_rejects_local_shards():
     with pytest.raises(ValueError, match="full weights"):
         op(hidden, gating, w_gate_up, w_down,
            shared_w_gate_up=good_gate_up, shared_w_down=bad_w_down)
-
-    print("PASS SharedFusedMoE TP rejects TP-local shards")

@@ -112,7 +112,7 @@ class DropoutOp(Op):
         y_flat = self.kernel(x_flat)
         return y_flat.reshape(orig_shape)
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:
             raise ValueError("input must be a CUDA tensor")
         if input.dtype not in (torch.float16, torch.bfloat16, torch.float32):
@@ -125,9 +125,7 @@ class DropoutOp(Op):
     _wrapped = None
 
 
-# ---------------------------------------------------------------------------
 # torch.compile registration
-# ---------------------------------------------------------------------------
 
 @torch.library.custom_op("top::dropout", mutates_args=())
 def _wrapped_dropout(x: torch.Tensor, instance_key: int) -> torch.Tensor:

@@ -318,11 +318,11 @@ def _lookup_manifest_entry(op_name: str) -> dict[str, Any] | None:
     """
     try:
         from tileops.manifest import load_manifest
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     try:
         ops = load_manifest()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     entry = ops.get(op_name)
     if not isinstance(entry, dict):

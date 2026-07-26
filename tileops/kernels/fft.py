@@ -86,7 +86,6 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = 'complex64') -> Ca
         # float32 for complex64 (FP32 throughput 30× > FP64 on H200);
         # float64 for complex128 — identical behaviour, no regression.
         accum_dtype = real_dtype
-        # -----------------------------------------------------------------------
 
         @T.macro
         def fused_bitrev_smem_stages(

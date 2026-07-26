@@ -38,9 +38,7 @@ _UNARY_SHAPES = [(1024, 4096), (1024, 10240), (1024, 11008)]
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 
-# ---------------------------------------------------------------------------
 # Benchmark base classes
-# ---------------------------------------------------------------------------
 
 class UnaryBenchCase:
     def __init__(self, shape: tuple, dtype: torch.dtype):
@@ -60,9 +58,7 @@ class UnaryBenchmark(BenchmarkBase[UnaryBenchCase]):
         return self.workload.n_total * self.workload.dtype.itemsize * 2
 
 
-# ---------------------------------------------------------------------------
 # Unary-like ops: leaky_relu, elu, hardtanh, softplus, clamp, nan_to_num
-# ---------------------------------------------------------------------------
 
 def _unary_params():
     params = []
@@ -107,12 +103,10 @@ def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype)
     BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
 
 
-# ---------------------------------------------------------------------------
 # Tensor-bound clamp ops (manifest-driven): ClampFwdOp, ClampMinFwdOp,
 # ClampMaxFwdOp. Workload shapes are loaded from tileops/manifest/ so the
 # bench coverage stays aligned with the spec (post-broadcast N_total ==
 # product(out_shape)). FLOP/byte counts come from each op's eval_roofline().
-# ---------------------------------------------------------------------------
 
 _CLAMP_FWD_OP = "ClampFwdOp"
 _CLAMP_MIN_OP = "ClampMinFwdOp"
@@ -269,9 +263,7 @@ def test_clamp_max_bench(
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ---------------------------------------------------------------------------
 # prelu (2 inputs: x + weight)
-# ---------------------------------------------------------------------------
 
 _PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 10240), (1024, 11008)]
 
@@ -328,9 +320,7 @@ def test_prelu_bench(shape: tuple, num_channels: int, dtype: torch.dtype) -> Non
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ---------------------------------------------------------------------------
 # where (3 inputs: cond, x, y)
-# ---------------------------------------------------------------------------
 
 class WhereBenchCase:
     def __init__(self, shape: tuple, dtype: torch.dtype):
@@ -382,9 +372,7 @@ def test_where_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ---------------------------------------------------------------------------
 # masked_fill (2 inputs: x + mask)
-# ---------------------------------------------------------------------------
 
 class MaskedFillBenchCase:
     def __init__(self, shape: tuple, dtype: torch.dtype):
@@ -429,9 +417,7 @@ def test_masked_fill_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ---------------------------------------------------------------------------
 # alibi & sinusoidal (generative: no input tensors)
-# ---------------------------------------------------------------------------
 
 class GenerativeBenchCase:
     def __init__(self, seq_len: int, dim: int, dtype: torch.dtype):
@@ -518,10 +504,8 @@ def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dty
     BenchmarkReport.record(op_name, locals(), result_bl, tag="torch-ref")
 
 
-# ---------------------------------------------------------------------------
 # fp8 benchmarks: representative independent ops with e4m3fn / e5m2
 # Baseline: PyTorch fp16-compute-then-cast (no native fp8 elementwise in PyTorch)
-# ---------------------------------------------------------------------------
 
 _FP8_DTYPES = (torch.float8_e4m3fn, torch.float8_e5m2)
 _UNSUPPORTED_FP8_SKIP = pytest.mark.skip(
@@ -607,9 +591,7 @@ def test_fp8_unary_independent_bench(
     BenchmarkReport.record(f"{op_name}_fp8", locals(), result_bl, tag="torch-ref")
 
 
-# ---------------------------------------------------------------------------
 # fp8 where / masked_fill (selection ops - pass fp8 through directly)
-# ---------------------------------------------------------------------------
 
 
 class Fp8WhereBenchCase:

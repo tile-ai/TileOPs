@@ -42,7 +42,7 @@ class WhereFwdOp(Op):
     def __init__(
         self,
         condition: tuple,
-        input: tuple,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: tuple,
         other: tuple,
         dtype: torch.dtype,
         *,
@@ -89,7 +89,7 @@ class WhereFwdOp(Op):
     def _validate_dtypes(
         self,
         condition: torch.Tensor,
-        input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: torch.Tensor,
         other: torch.Tensor,
     ) -> None:
         if condition.dtype != torch.bool:
@@ -115,7 +115,7 @@ class WhereFwdOp(Op):
         return t.contiguous().view(-1)
 
     def _eager_forward(
-        self, condition: torch.Tensor, input: torch.Tensor, other: torch.Tensor,  # noqa: A002
+        self, condition: torch.Tensor, input: torch.Tensor, other: torch.Tensor,
     ) -> torch.Tensor:
         out_shape = self.out_shape if self.out_shape else (1,)
         cond_b = condition if condition.dtype == torch.bool else condition.bool()
@@ -126,7 +126,7 @@ class WhereFwdOp(Op):
         return result
 
     def forward(
-        self, condition: torch.Tensor, input: torch.Tensor, other: torch.Tensor,  # noqa: A002
+        self, condition: torch.Tensor, input: torch.Tensor, other: torch.Tensor,
     ) -> torch.Tensor:
         if not (condition.is_cuda and input.is_cuda and other.is_cuda):
             raise ValueError("Inputs must be CUDA tensors")
