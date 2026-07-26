@@ -317,61 +317,6 @@ satisfy the cold-call contract.
   do not need the boundary; the invariant still applies to their
   `forward`.
 
-## MoE Modular Protocol
-
-The MoE family uses a **strategy-pattern** layering that sits alongside but separate from the `Op` / `Kernel` hierarchy. Understanding where these classes fit prevents confusion when reading or extending MoE code.
-
-### Component overview
-
-```
-tileops/ops/moe/abc.py
-
-PrepareResult (dataclass)          — carries hidden_q, scale, topk_weights, topk_ids
-                                     from prepare() to apply()
-
-WeightedReduce (ABC)               — apply(output, expert_out, topk_weights, topk_ids)
-WeightedReduceNoOp(WeightedReduce) — no-op when reduction is already done inside forward()
-
-FusedMoEPrepareAndFinalize (ABC)   — owns EP communication + optional quantization
-  prepare(hidden, topk_weights, topk_ids, num_experts, expert_map) → PrepareResult
-  finalize(output, expert_out, topk_weights, topk_ids, weight_and_reduce) → None
-
-FusedMoEExperts(Op, ABC)           — owns expert GEMM (permute + GEMM + unpermute)
-  workspace_shapes(M, N, K, topk, num_experts) → (shape1, shape2)
-  output_shape(T_prime, H) → (int, int)
-  forward(output, hidden_q, w1, w2, topk_weights, topk_ids,
-          num_experts, expert_map, workspace1, workspace2) → None
-
-FusedMoEExpertsModular(FusedMoEExperts, ABC) — extends FusedMoEExperts with pluggable reduction
-  make_weighted_reduce() → WeightedReduce
-```
-
-Concrete implementations live in `prepare_finalize/` and `experts/`:
-
-| Class                                    | Base                         | File                           |
-| ---------------------------------------- | ---------------------------- | ------------------------------ |
-| `MoEPrepareAndFinalizeNoDPEP`            | `FusedMoEPrepareAndFinalize` | `prepare_finalize/no_dp_ep.py` |
-| `FusedMoEExpertsNopadPersistent3WGFwdOp` | `FusedMoEExpertsModular`     | `experts/nopad.py`             |
-| `FusedMoEExpertsPaddedFwdOp`             | `FusedMoEExpertsModular`     | `experts/padded.py`            |
-
-### Relationship to `Op` and manifest entries
-
-`FusedMoEExperts` is itself an `Op` subclass (so concrete experts implementations are full Ops with `forward()`), while `FusedMoEPrepareAndFinalize` is a pluggable strategy object injected into `FusedMoe`. The manifest entry for each experts class (`FusedMoEExpertsNopadPersistent3WGFwdOp`, `FusedMoEExpertsPaddedFwdOp`) declares the expert-GEMM contract independently of the end-to-end routing op (`FusedMoeFwdOp`).
-
-`FusedMoe` wires the pieces together:
-
-```
-FusedMoe.forward()
-  1. FusedTopKOp                          → topk_weights, topk_ids
-  2. FusedMoEPrepareAndFinalize.prepare() → PrepareResult
-  3. FusedMoEExpertsModular.forward()     → expert_out
-  4. FusedMoEPrepareAndFinalize.finalize() → output
-```
-
-### Extension points
-
-To plug in a new EP or quantization backend, subclass `FusedMoEPrepareAndFinalize` and pass it as `FusedMoe(prepare_finalize=...)`. To swap the expert GEMM kernel, subclass `FusedMoEExpertsModular` and pass it as `FusedMoe(experts=...)`. Both defaults (`MoEPrepareAndFinalizeNoDPEP`, `FusedMoEExpertsNopadPersistent3WGFwdOp`) are created automatically when the arguments are omitted.
-
 ## Family-Base Refactoring (Future Work)
 
 The scaffold emits T2 (L1-direct) ops only. Once a family accumulates 2-3 ops sharing an identical `forward()` flow, extract an L2 family base via refactoring; concrete ops then become T1 thin wrappers declaring family protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, …). This transformation is driven by a separate family-specific skill, not the scaffold-op. See [Development Path](ops-design-reference.md#development-path) for when to extract an L2 base and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the step-by-step process.
