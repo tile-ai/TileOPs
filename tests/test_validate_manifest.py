@@ -95,6 +95,16 @@ def _sig(inputs, outputs=None, **extra):
     return sig
 
 
+def _conv_sig():
+    """Conv-style signature with an output-only ``L_out`` symbol."""
+    return _sig(
+        {"x": {"dtype": "float16", "shape": "[N, C_in, L_in]"},
+         "w": {"dtype": "float16", "shape": "[C_out, C_in, kW]"}},
+        {"y": {"dtype": "float16", "shape": "[N, C_out, L_out]"}},
+        shape_rules=["L_out == L_in - kW + 1"],
+    )
+
+
 def _make_op_cls_with_infer(infer_fn, *, name="FakeOp"):
     """Build a minimal Op subclass whose ``_infer_output_shapes`` is *infer_fn*.
 
@@ -408,37 +418,28 @@ class TestSchema:
     def test_shape_rule_expressions_rejected_at_l0(self, validator):
         """Unknown callables and syntax errors fail with [schema] errors;
         repeated misspellings in one rule are reported once per name."""
-        entry = _make_entry()
-        entry["signature"]["shape_rules"] = ["totally_unknown_helper(x.shape) == 0"]
-        errors = validator.check_l0("test_op", entry)
-        assert any(
-            "[schema]" in e and "shape_rules[0]" in e
-            and "totally_unknown_helper" in e
-            for e in errors
-        ), errors
-
-        entry = _make_entry()
-        entry["signature"]["shape_rules"] = ["x.shape == ("]
-        errors = validator.check_l0("test_op", entry)
-        assert any(
-            "[schema]" in e and "shape_rules[0]" in e and "syntax" in e.lower()
-            for e in errors
-        ), errors
-
-        entry = _make_entry()
-        entry["signature"]["shape_rules"] = [
-            "totally_unknown_helper(x.shape) and totally_unknown_helper(x.shape)"
+        cases = [
+            # (rule, substring expected alongside shape_rules[0], count)
+            ("totally_unknown_helper(x.shape) == 0",
+             "totally_unknown_helper", None),
+            ("x.shape == (", "syntax", None),
+            ("totally_unknown_helper(x.shape) and "
+             "totally_unknown_helper(x.shape)",
+             "totally_unknown_helper", 1),
         ]
-        errors = validator.check_l0("test_op", entry)
-        matching = [
-            e for e in errors
-            if "[schema]" in e and "shape_rules[0]" in e
-            and "totally_unknown_helper" in e
-        ]
-        assert len(matching) == 1, (
-            f"Expected one schema error for the duplicated unknown callable, "
-            f"got {len(matching)}: {matching}"
-        )
+        for rule, substring, count in cases:
+            entry = _make_entry()
+            entry["signature"]["shape_rules"] = [rule]
+            errors = validator.check_l0("test_op", entry)
+            matching = [
+                e for e in errors
+                if "[schema]" in e and "shape_rules[0]" in e
+                and substring in e.lower()
+            ]
+            if count is None:
+                assert matching, (rule, errors)
+            else:
+                assert len(matching) == count, (rule, matching)
 
 
 class TestWorkloadPolicy:
@@ -478,7 +479,8 @@ class TestWorkloadPolicy:
 class TestOutputShapeDeclaration:
     """Every output declares a shape, or the signature has shape_rules."""
 
-    def test_output_without_shape_or_rules_fails(self, validator):
+    def test_output_shape_presence(self, validator):
+        """Case table: no shape and no rules fails; declared shape passes."""
         entry = _make_entry()
         del entry["signature"]["shape_rules"]
         errors = validator.check_l0("test_op", entry)
@@ -486,7 +488,6 @@ class TestOutputShapeDeclaration:
             "output" in e and "'y'" in e and "shape" in e for e in errors
         ), errors
 
-    def test_output_with_declared_shape_passes(self, validator):
         entry = _make_entry(
             outputs={"y": {"dtype": "same_as(x)", "shape": "[M, N]"}},
         )
@@ -497,28 +498,29 @@ class TestOutputShapeDeclaration:
 class TestTensorConstraints:
     """Tensor ``constraints`` keys must name dims of the declared shape."""
 
-    def test_constraint_key_outside_shape_dims_fails(self, validator):
-        entry = _make_entry(
-            inputs={"x": {"dtype": "float16", "shape": "[M, N]",
-                          "constraints": {"K": "K % 2 == 0"}}},
-        )
-        errors = validator.check_l0("test_op", entry)
-        assert any("constraints" in e and "'K'" in e for e in errors), errors
-
-    def test_constraints_without_shape_fails(self, validator):
-        entry = _make_entry(
-            inputs={"x": {"dtype": "float16",
-                          "constraints": {"N": "N % 2 == 0"}}},
-        )
-        errors = validator.check_l0("test_op", entry)
-        assert any("constraints" in e and "shape" in e for e in errors), errors
-
-    def test_constraint_keys_matching_shape_dims_pass(self, validator):
-        entry = _make_entry(
-            inputs={"x": {"dtype": "float16", "shape": "[M, N]",
-                          "constraints": {"N": "N % 2 == 0"}}},
-        )
-        assert validator.check_l0("test_op", entry) == []
+    def test_constraint_key_shape_dim_matching(self, validator):
+        """Case table: key outside dims / constraints without shape fail;
+        keys matching the declared dims pass."""
+        cases = [
+            # (description, input tensor attrs, substrings or None=pass)
+            ("constraint key outside shape dims",
+             {"dtype": "float16", "shape": "[M, N]",
+              "constraints": {"K": "K % 2 == 0"}}, ["constraints", "'K'"]),
+            ("constraints without shape",
+             {"dtype": "float16", "constraints": {"N": "N % 2 == 0"}},
+             ["constraints", "shape"]),
+            ("constraint keys matching shape dims",
+             {"dtype": "float16", "shape": "[M, N]",
+              "constraints": {"N": "N % 2 == 0"}}, None),
+        ]
+        for desc, attrs, substrings in cases:
+            errors = validator.check_l0("test_op", _make_entry(inputs={"x": attrs}))
+            if substrings is None:
+                assert errors == [], (desc, errors)
+            else:
+                assert any(
+                    all(s in e for s in substrings) for e in errors
+                ), f"{desc}: expected error with {substrings}, got: {errors}"
 
 
 class TestSourcePathExistence:
@@ -1035,12 +1037,8 @@ class TestDtype:
         assert errors == [], errors
 
     def test_check_l3_with_non_dict_signature_does_not_crash(self, validator):
-        """check_l3 must tolerate malformed signature.inputs/outputs.
-
-        A list or string in place of the expected dict triggered an
-        unguarded ``.update()`` / ``.keys()`` crash; treat as empty so
-        the schema layer's own diagnostics surface unmasked.
-        """
+        """check_l3 treats malformed signature.inputs/outputs as empty
+        (schema layer owns the diagnostics) instead of crashing."""
         for inputs_val in ([{"x": {}}], "not a mapping", None):
             for outputs_val in ([{"y": {}}], "nope", None):
                 entry = {
@@ -1087,12 +1085,9 @@ class TestInferShapeParity:
         ), warnings
 
     def test_symbolic_dim_rule_detects_wrong_output(self, validator):
-        """Rules like ``o.shape == (B, S, H, D)`` must evaluate, not warn-skip.
-
-        Symbolic dim names declared only via literal rules must be bound
-        into the eval context; an unbound name raises NameError, downgrades
-        the rule to a warning, and lets a wrong impl pass parity.
-        """
+        """Rules like ``o.shape == (B, S, H, D)`` must evaluate, not
+        warn-skip: an unbound symbolic dim would NameError into a warning
+        and let a wrong impl pass parity."""
         def infer(self, q_shape, k_shape, v_shape):
             # Wrong: returns a 1-D shape instead of a 4-D shape.
             return {"o": (999,)}
@@ -1165,10 +1160,9 @@ class TestInferShapeParity:
         assert seen_rank == [4], seen_rank
 
     def test_r11_style_rule_uses_len_helper(self, validator):
-        """R11 / R11a rules calling ``len`` or using comprehensions must be
-        evaluable: the restricted builtins expose the helpers, and ctx
-        names resolve inside comprehension scopes. Breaking either turns
-        the rule into a NameError warning-skip and hides mismatches."""
+        """R11-style rules using ``len`` / comprehensions stay evaluable
+        (restricted builtins + ctx visibility in comprehension scopes);
+        breaking either hides mismatches behind NameError skips."""
         # Wrong: reduction op declares dim, keepdim=False so y should drop
         # rank(s), but _infer_output_shapes returns x_shape verbatim.
         def infer(self, x_shape):
@@ -1206,12 +1200,8 @@ class TestInferShapeParity:
         ), errors
 
     def test_input_only_precondition_not_blamed_on_infer(self, validator):
-        """Mock-input precondition violations must not become parity errors.
-
-        When ``shape_rules`` encode an input-only precondition that the
-        synthesized mock inputs violate, a correct ``_infer_output_shapes``
-        is not blamed; the rule is reported as skipped via warning.
-        """
+        """Input-only preconditions violated by mock inputs are reported
+        as skip warnings, never blamed on a correct impl."""
         def infer(self, x_shape, weight_shape):
             # Correct: y has the same shape as x.
             return {"y": x_shape}
@@ -1233,11 +1223,8 @@ class TestInferShapeParity:
         assert any("input-only precondition" in w for w in warnings), warnings
 
     def test_mock_input_shapes_cross_tensor_dims_distinct(self, validator):
-        """Distinct symbolic dims across rules must get distinct mock sizes.
-
-        Colliding sizes would make a cross-tensor rule like
-        ``x.shape[0] == y.shape[0]`` evaluate to a spurious True / False.
-        """
+        """Distinct symbolic dims across rules get distinct mock sizes;
+        collisions would make cross-tensor rules spuriously True/False."""
         sig = {
             "inputs": {"x": {}, "y": {}},
             "shape_rules": [
@@ -1254,12 +1241,8 @@ class TestInferShapeParity:
         assert tuple(shapes["x"])[0] != tuple(shapes["y"])[0]
 
     def test_eval_shape_rule_rejects_dunder_attr(self, validator):
-        """Shape-rule evaluator must reject dunder attribute access.
-
-        Defense-in-depth: a classic sandbox-escape expression such as
-        ``().__class__.__mro__[1].__subclasses__()`` would bypass the
-        restricted builtins; the AST filter rejects dunder attributes.
-        """
+        """Evaluator rejects dunder attribute access (sandbox-escape
+        defense against the restricted builtins)."""
         ok, reason = validator._eval_shape_rule(
             "().__class__ is None", {},
         )
@@ -1268,13 +1251,9 @@ class TestInferShapeParity:
         assert "dunder attribute access not permitted" in reason
 
     def test_body_exception_is_hard_error_not_signature_mismatch(self, validator):
-        """Exceptions raised inside the _infer_output_shapes body surface as
-        hard L2 parity errors, never as signature mismatches or warnings.
-
-        The signature is pre-bound via ``inspect.signature().bind`` so a
-        body TypeError is distinguished from a signature mismatch;
-        RuntimeError placeholders follow the same hard-error policy.
-        """
+        """Body exceptions are hard L2 errors, never signature mismatches:
+        the signature is pre-bound, so body TypeError / RuntimeError
+        cannot masquerade as a binding failure."""
         sig = _sig({"x": "float16"}, {"y": "same_as(x)"},
                    shape_rules=["y.shape == x.shape"])
         for exc_cls, message in (
@@ -1294,12 +1273,8 @@ class TestInferShapeParity:
             ), (exc_cls, errors, warnings)
 
     def test_declared_output_shape_catches_wrong_infer(self, validator):
-        """Declared output shapes alone (no shape_rules) must drive parity.
-
-        Inferred outputs are compared against ``signature.outputs[*].shape``
-        even when ``shape_rules`` is empty (e.g. conv ops declaring
-        ``"[N, C_out, L_out]"`` per output).
-        """
+        """Declared output shapes alone (no shape_rules) must drive
+        parity against ``signature.outputs[*].shape``."""
         def infer(self, x_shape, w_shape):
             # Wrong: returns x_shape verbatim instead of [N, C_out, L_out].
             return {"y": tuple(x_shape)}
@@ -1313,12 +1288,8 @@ class TestInferShapeParity:
         assert any("disagrees with declared" in e for e in errors), errors
 
     def test_infer_reads_self_attr_uses_cls_new(self, validator):
-        """Reading a non-manifest-param ``self`` attribute must not falsely skip parity.
-
-        The mock ``self`` is built via ``cls.__new__(cls)`` so
-        class-defined attributes stay reachable; a plain namespace mock
-        raises AttributeError and silently skips the check.
-        """
+        """Reading a class-defined ``self`` attribute must not skip parity:
+        the mock self is built via ``cls.__new__(cls)``."""
         from tileops.ops.op_base import Op
 
         class SelfAttrOp(Op):
@@ -1352,12 +1323,8 @@ class TestInferShapeParity:
         ), warnings
 
     def test_infer_reads_static_dim_attr_populated(self, validator):
-        """Reading ``self.<static_dim>`` must exercise parity, not AttributeError-skip.
-
-        ``_build_mock_self`` installs ``static_dims`` values resolved
-        against the mock inputs in addition to ``signature.params``
-        defaults.
-        """
+        """Reading ``self.<static_dim>`` must exercise parity:
+        ``_build_mock_self`` installs resolved static_dims values."""
         from tileops.ops.op_base import Op
 
         class StaticDimOp(Op):
@@ -1386,45 +1353,28 @@ class TestInferShapeParity:
         assert not any("AttributeError" in w for w in warnings), warnings
 
     def test_conv_like_output_only_symbol_not_blamed(self, validator):
-        """Correct infer with an output-only ``L_out`` symbol passes parity.
-
-        Output-only symbols have no input-derived concrete size; they are
-        checked only for rank and per-symbol consistency across outputs,
-        never against an arbitrary ``dim_sizes`` entry.
-        """
+        """Correct infer with an output-only ``L_out`` symbol passes:
+        output-only symbols get rank/consistency checks only, never a
+        comparison against arbitrary mock sizes."""
         def infer(self, x_shape, w_shape):
             # x: [N, C_in, L_in]; w: [C_out, C_in, kW]
             return {"y": (x_shape[0], w_shape[0], x_shape[2] - w_shape[2] + 1)}
 
-        sig = _sig(
-            {"x": {"dtype": "float16", "shape": "[N, C_in, L_in]"},
-             "w": {"dtype": "float16", "shape": "[C_out, C_in, kW]"}},
-            {"y": {"dtype": "float16", "shape": "[N, C_out, L_out]"}},
-            shape_rules=["L_out == L_in - kW + 1"],
+        errors, _ = _infer_parity(
+            validator, infer, _conv_sig(), name="ConvLikeOp",
         )
-        errors, _ = _infer_parity(validator, infer, sig, name="ConvLikeOp")
         assert errors == [], errors
 
     def test_conv_like_wrong_output_only_value_reported(self, validator):
-        """Wrong output-only symbol value is flagged via the shape_rules defining it.
-
-        ``L_out == L_in - kW + 1`` mentions no output tensor name but
-        ``L_out`` appears in a declared output shape, so it must classify
-        as output-mentioning and be rebound from the inferred result;
-        treated as an input-only precondition it would be skipped.
-        """
+        """Wrong output-only value is flagged via the defining rule:
+        ``L_out`` classifies as output-mentioning (rebound from the
+        inferred result), not as an input-only precondition."""
         def infer(self, x_shape, w_shape):
             # Deliberately wrong output-only L_out value (999).
             return {"y": (x_shape[0], w_shape[0], 999)}
 
-        sig = _sig(
-            {"x": {"dtype": "float16", "shape": "[N, C_in, L_in]"},
-             "w": {"dtype": "float16", "shape": "[C_out, C_in, kW]"}},
-            {"y": {"dtype": "float16", "shape": "[N, C_out, L_out]"}},
-            shape_rules=["L_out == L_in - kW + 1"],
-        )
         errors, _ = _infer_parity(
-            validator, infer, sig, name="ConvLikeWrongOutOnlyOp",
+            validator, infer, _conv_sig(), name="ConvLikeWrongOutOnlyOp",
         )
         assert any(
             "L_out == L_in - kW + 1" in e and "violates shape_rules" in e
@@ -1440,14 +1390,8 @@ class TestInferShapeParity:
             # Wrong rank: drops the spatial dim entirely.
             return {"y": (x_shape[0], w_shape[0])}
 
-        sig = _sig(
-            {"x": {"dtype": "float16", "shape": "[N, C_in, L_in]"},
-             "w": {"dtype": "float16", "shape": "[C_out, C_in, kW]"}},
-            {"y": {"dtype": "float16", "shape": "[N, C_out, L_out]"}},
-            shape_rules=["L_out == L_in - kW + 1"],
-        )
         errors, _ = _infer_parity(
-            validator, bad_rank_infer, sig, name="ConvLikeBadOp",
+            validator, bad_rank_infer, _conv_sig(), name="ConvLikeBadOp",
         )
         assert any("rank" in e and "disagrees" in e for e in errors), errors
 
@@ -1477,12 +1421,8 @@ class TestDtypeOptionsHelper:
     """Unit tests for ``_dtype_options_for_tensor`` unresolved-ref contract."""
 
     def test_pure_same_as_unresolved_returns_none(self, validator):
-        """same_as(ref) with ref missing from ``resolved`` returns None.
-
-        Returning ``[]`` instead would silently disable downstream dtype
-        parity: ``_resolve_tensor_dtype_options`` bails only on None, and
-        an empty list yields an empty Cartesian product.
-        """
+        """same_as(unresolved ref) returns None — an empty list would
+        silently disable dtype parity via an empty Cartesian product."""
         out = validator._dtype_options_for_tensor(
             "y", "same_as(x)", resolved={},
         )
@@ -1573,31 +1513,24 @@ class TestValidateDtypesParity:
             "does not override _validate_dtypes" in w for w in warnings
         ), warnings
 
-    def test_union_accept_all_passes(self, validator):
+    def test_union_accept_reject_matrix(self, validator):
+        """Accepting the whole union passes; rejecting a declared dtype
+        is a parity error."""
         import torch
 
-        def validate(self, x):
+        def accept_union(self, x):
             if x.dtype not in (torch.float16, torch.bfloat16):
                 raise ValueError(f"bad dtype {x.dtype}")
 
-        errors, _ = _dtype_parity(
-            validator, validate,
-            _sig({"x": "float16 | bfloat16"}, {"y": "same_as(x)"}),
-        )
-        assert errors == []
-
-    def test_union_reject_declared_fails(self, validator):
-        """Rejects a dtype in the declared union -> parity error."""
-        import torch
-
-        def validate(self, x):
+        def fp16_only(self, x):
             if x.dtype != torch.float16:
                 raise ValueError("only fp16")
 
-        errors, _ = _dtype_parity(
-            validator, validate,
-            _sig({"x": "float16 | bfloat16"}, {"y": "same_as(x)"}),
-        )
+        sig = _sig({"x": "float16 | bfloat16"}, {"y": "same_as(x)"})
+        errors, _ = _dtype_parity(validator, accept_union, sig)
+        assert errors == []
+
+        errors, _ = _dtype_parity(validator, fp16_only, sig)
         assert any("rejects valid combo" in e for e in errors), errors
 
     def test_dtype_combos_accept_listed_pass(self, validator):
@@ -1648,11 +1581,8 @@ class TestValidateDtypesParity:
         assert any("accepts non-listed combo" in e for e in errors), errors
 
     def test_dtype_combos_first_rejected_later_accepted_fails(self, validator):
-        """Non-listed combos must all be checked, not just the first.
-
-        Stopping at the first rejection would let a later accepted
-        non-listed combo escape detection.
-        """
+        """Non-listed combos are all checked: stopping at the first
+        rejection would let a later accepted combo escape."""
         import torch
 
         def validate(self, x, w):
@@ -1719,11 +1649,8 @@ class TestValidateDtypesParity:
             ), (branch, errors, warnings)
 
     def test_wide_union_probe_pool_derived_from_torch_dtypes(self, validator):
-        """The out-of-union probe pool is ``sorted(_TORCH_DTYPES - declared)``.
-
-        A wide 8-dtype union still leaves ``uint8`` as a probe candidate,
-        so an over-permissive ``_validate_dtypes`` surfaces a hard error.
-        """
+        """Probe pool is ``sorted(_TORCH_DTYPES - declared)``: a wide
+        8-dtype union still leaves uint8 to catch permissive impls."""
         def accept_all(self, x):
             return True  # over-permissive: accepts any dtype
 
@@ -1739,12 +1666,8 @@ class TestValidateDtypesParity:
         ), (errors, warnings)
 
     def test_full_torch_coverage_emits_skip_warning(self, validator):
-        """Declared union == full torch dtype set → warning, no vacuous pass.
-
-        The probe cannot produce a candidate so it skips with a warning
-        naming the op/input; no hard error because the impl is free to
-        accept anything under this (wildly permissive) spec.
-        """
+        """Full-coverage union skips the probe with a warning naming the
+        input — no vacuous pass, no hard error."""
         full_union = " | ".join(sorted(validator._TORCH_DTYPES))
 
         def accept_all(self, x):
@@ -1783,12 +1706,8 @@ class TestValidateDtypesParity:
         assert any("exceeds _MAX_DTYPE_COMBOS" in w for w in warnings), warnings
 
     def test_body_typeerror_is_rejection_not_signature_mismatch(self, validator):
-        """Body TypeError is a legitimate rejection, not a signature mismatch.
-
-        The signature is pre-bound before invocation; a bare
-        ``except (ValueError, TypeError)`` around the call could not tell
-        a kwarg-name mismatch from a TypeError raised inside the body.
-        """
+        """Body TypeError is a rejection, not a signature mismatch
+        (the signature is pre-bound before invocation)."""
         def validate(self, x):
             raise TypeError("dtype comparison not supported")
 
@@ -1804,12 +1723,8 @@ class TestValidateDtypesParity:
         assert any("rejects valid combo" in e for e in errors), errors
 
     def test_dtype_combos_exhausts_union_emits_warning(self, validator):
-        """Exhaustive dtype_combos still emit the 'exhausts the union' warning.
-
-        When every Cartesian tuple is listed, no non-listed combo is ever
-        checked, so the warning must not be conditioned on a non-listed
-        probe having run.
-        """
+        """Exhaustive dtype_combos still emit the 'exhausts the union'
+        warning even though no non-listed combo ever runs."""
         import torch
 
         allowed = {torch.float16, torch.bfloat16}
@@ -1835,45 +1750,32 @@ class TestValidateDtypesParity:
         assert errors == [], errors
         assert any("exhausts the union" in w for w in warnings), warnings
 
-    def test_no_combos_accepts_out_of_union_fails(self, validator):
-        """Accepting an out-of-union dtype is a parity error on the no-combos branch.
-
-        Iterating only the union's Cartesian product cannot detect an
-        overly-permissive ``_validate_dtypes``; the branch needs its own
-        out-of-union probe.
-        """
-        def validate(self, x):
-            return None  # overly permissive: accepts any dtype
-
-        errors, _ = _dtype_parity(
-            validator, validate,
-            _sig({"x": "float16 | bfloat16"}, {"y": "same_as(x)"}),
-        )
-        assert any("out-of-union" in e for e in errors), errors
-
-    def test_no_combos_rejects_out_of_union_pass(self, validator):
-        """Op that rejects out-of-union dtypes produces no parity error."""
+    def test_no_combos_out_of_union_probe_matrix(self, validator):
+        """No-combos branch fires its own out-of-union probe: a permissive
+        op accepting any dtype fails (union iteration alone cannot catch
+        it); an op rejecting out-of-union dtypes passes."""
         import torch
 
-        def validate(self, x):
+        def accept_all(self, x):
+            return None
+
+        def reject_out_of_union(self, x):
             if x.dtype not in (torch.float16, torch.bfloat16):
                 raise ValueError(f"unsupported dtype {x.dtype}")
 
-        errors, _ = _dtype_parity(
-            validator, validate,
-            _sig({"x": "float16 | bfloat16"}, {"y": "same_as(x)"}),
-        )
+        sig = _sig({"x": "float16 | bfloat16"}, {"y": "same_as(x)"})
+        errors, _ = _dtype_parity(validator, accept_all, sig)
+        assert any("out-of-union" in e for e in errors), errors
+
+        errors, _ = _dtype_parity(validator, reject_out_of_union, sig)
         assert errors == [], errors
 
     def test_no_combos_out_of_union_probe_respects_max(
         self, validator, monkeypatch,
     ):
-        """Out-of-union probe must stay within ``_MAX_DTYPE_COMBOS``.
-
-        With the cap tightened to 2, at most 2 probes fire even though
-        the pool has 6 out-of-union dtypes for a {float16, bfloat16}
-        union. (Product size 2 keeps the Cartesian enumeration alive.)
-        """
+        """Out-of-union probe is bounded by ``_MAX_DTYPE_COMBOS``: cap 2
+        fires at most 2 probes from a 6-dtype pool (product size 2 keeps
+        the Cartesian enumeration alive)."""
         monkeypatch.setattr(validator, "_MAX_DTYPE_COMBOS", 2)
 
         def validate(self, x):
@@ -1886,30 +1788,19 @@ class TestValidateDtypesParity:
         out_of_union_errs = [e for e in errors if "out-of-union" in e]
         assert len(out_of_union_errs) == 2, out_of_union_errs
 
-    def test_no_combos_accepts_same_as_violation_fails(self, validator):
-        """Accepting a same_as identity violation is a parity error.
-
-        The union-iteration loop skips every same_as-violating candidate
-        via ``_honours_same_as``, so a permissive op that fails to enforce
-        same_as would go unflagged without a dedicated probe.
-        """
-        def validate(self, x, w):
-            return None  # does not check x.dtype == w.dtype
-
-        errors, _ = _dtype_parity(
-            validator, validate,
-            _sig({"x": "float16 | bfloat16", "w": "same_as(x)"},
-                 {"y": "same_as(x)"}),
-        )
-        assert any("same_as violation" in e for e in errors), errors
-
-    def test_no_combos_rejects_same_as_violation_pass(self, validator):
-        """Op that enforces same_as passes the same_as probe."""
+    def test_no_combos_same_as_probe_matrix(self, validator):
+        """same_as identity has a dedicated negative probe: the union
+        iteration skips same_as-violating candidates via
+        ``_honours_same_as``, so a permissive op not enforcing same_as
+        fails only through the probe; an enforcing op passes."""
         import torch
 
         allowed = (torch.float16, torch.bfloat16)
 
-        def validate(self, x, w):
+        def accept_all(self, x, w):
+            return None  # does not check x.dtype == w.dtype
+
+        def enforce_same_as(self, x, w):
             if x.dtype not in allowed or w.dtype not in allowed:
                 raise ValueError(
                     f"unsupported dtype: x.dtype={x.dtype} "
@@ -1921,19 +1812,17 @@ class TestValidateDtypesParity:
                     f"w.dtype={w.dtype}"
                 )
 
-        errors, _ = _dtype_parity(
-            validator, validate,
-            _sig({"x": "float16 | bfloat16", "w": "same_as(x)"},
-                 {"y": "same_as(x)"}),
-        )
+        sig = _sig({"x": "float16 | bfloat16", "w": "same_as(x)"},
+                   {"y": "same_as(x)"})
+        errors, _ = _dtype_parity(validator, accept_all, sig)
+        assert any("same_as violation" in e for e in errors), errors
+
+        errors, _ = _dtype_parity(validator, enforce_same_as, sig)
         assert errors == [], errors
 
     def test_combos_branch_out_of_union_probe(self, validator):
-        """Dtype_combos branch must fire the out-of-union probe.
-
-        Without it, a permissive ``_validate_dtypes`` that accepts every
-        dtype passes parity as long as every listed combo is accepted.
-        """
+        """Dtype_combos branch fires the out-of-union probe; otherwise a
+        permissive impl passes once listed combos are accepted."""
         def validate(self, x):
             return None  # overly permissive
 
@@ -1945,13 +1834,8 @@ class TestValidateDtypesParity:
         assert any("out-of-union" in e for e in errors), errors
 
     def test_invalid_dtype_combo_value_is_hard_error(self, validator):
-        """A non-existent dtype in dtype_combos is a hard L3 error, not a skip warning.
-
-        The upfront validation pass rejects entries that are neither in
-        ``_TORCH_DTYPES`` nor a resolvable ``same_as`` ref; letting them
-        reach the ``cannot build mock tensor`` branch would silently
-        disable the check and hide a manifest data bug.
-        """
+        """A non-existent dtype in dtype_combos is a hard L3 error, not a
+        'cannot build mock tensor' skip that would hide the data bug."""
         def validate(self, x, w):
             return None
 
@@ -1974,12 +1858,8 @@ class TestValidateDtypesParity:
     def test_valid_dtype_combo_reaches_build_mock_tensor(
         self, validator, monkeypatch,
     ):
-        """The 'cannot build mock tensor' warning stays reserved for valid dtype names.
-
-        Simulates a torch build lacking support for a declared dtype by
-        monkeypatching ``_make_mock_tensor`` to return None for
-        ``float8_e4m3fn`` while the combo itself is valid.
-        """
+        """'cannot build mock tensor' stays reserved for valid dtype
+        names on torch builds lacking them (simulated via monkeypatch)."""
         def validate(self, x):
             return None
 
@@ -2021,13 +1901,8 @@ class TestValidateDtypesParity:
         assert not any("rejects dtype_combos[0]" in e for e in errors), errors
 
     def test_validate_dtypes_reads_self_dtype_attr(self, validator):
-        """Comparing ``x.dtype != self.dtype`` must work with a populated mock self.
-
-        ``_build_mock_self`` populates the dtype axis from the candidate
-        combo; if ``self.dtype`` fell through to the base-class
-        ``Op.dtype = None``, the comparison would raise and every listed
-        combo would be marked rejected.
-        """
+        """``x.dtype != self.dtype`` works on the mock self: the dtype
+        axis is populated from the candidate combo, not Op's None."""
         def validate(self, x):
             # The generated pattern under test: compare the input dtype
             # against ``self.dtype`` (set in __init__ via a dtype param).
@@ -2051,13 +1926,9 @@ class TestDtypeCombosData:
     """
 
     def test_malformed_combo_rows_are_hard_errors(self, validator):
-        """Case table: incomplete rows and multi-dtype combo values fail.
-
-        Per manifest.md R4, every combo row covers every declared input and
-        each value is a single concrete dtype token (or a ``same_as(ref)``
-        resolving to one); unions and ``promote_int_to_float(ref)`` expand
-        to multiple dtypes and cannot pin a combo row.
-        """
+        """Case table (manifest.md R4): rows must cover every declared
+        input; unions and promote_int_to_float expand to multiple dtypes
+        and cannot pin a combo row."""
         cases = [
             # (description, sig, substrings expected in one error)
             ("combo row missing a declared input",
@@ -2084,12 +1955,8 @@ class TestDtypeCombosData:
             ), f"{desc}: expected error with {substrings}, got: {errors}"
 
     def test_unresolvable_same_as_graph_is_hard_error(self, validator):
-        """Pure ``same_as`` cycles and dangling refs must surface hard L3
-        errors instead of silently skipping combo validation.
-
-        A pure cycle satisfies per-token validation and the R3 identity
-        check, so it needs a dedicated diagnosis.
-        """
+        """Pure same_as cycles and dangling refs surface hard L3 errors
+        (they satisfy per-token + R3 checks, so need a dedicated diagnosis)."""
         cycle_sig = _sig(
             {"x": "same_as(y)", "y": "same_as(x)"}, {"z": "same_as(x)"},
             dtype_combos=[{"x": "float16", "y": "float16"}],
@@ -2115,12 +1982,8 @@ class TestStaticDimShapeParity:
     """static_dims values must pin expected output sizes in L2 parity."""
 
     def test_static_dim_output_shape_catches_bad_infer(self, validator):
-        """Arbitrary integers at a static-dim-bound output position must fail parity.
-
-        ``static_dims`` keys in declared output shapes are checked by
-        exact value (resolved against mock inputs), not only by
-        rank/consistency.
-        """
+        """Static-dim-bound output positions are checked by exact value
+        (resolved against mock inputs), not only rank/consistency."""
         def bad_infer(self, x_shape):
             # static_dims pins N = x.shape[-1] (=4 under mock); a correct
             # impl returns (4, 4).
@@ -2173,68 +2036,60 @@ class TestParamDefaultOutputShapePin:
 
 # Bench checks
 class TestBench:
-    """bench checks that bench files use manifest workloads and op roofline."""
+    """bench checks that bench files use manifest workloads and op roofline.
 
-    @staticmethod
-    def _bench_errors(validator, tmp_path, text):
-        bench_file = tmp_path / "bench_test.py"
-        bench_file.write_text(text)
-        return validator.check_l4_benchmark("test_op", str(bench_file), REPO_ROOT)
+    Case table: direct (``load_workloads`` + ``op.eval_roofline()``) and
+    indirect (``benchmarks.benchmark_base`` helpers) usage passes; missing
+    helpers, wrong op names, and syntax errors fail with the named
+    diagnostics. Rows with ``None`` expect a clean pass.
+    """
 
-    def test_bench_with_load_workloads_passes(self, validator, tmp_path):
-        errors = self._bench_errors(validator, tmp_path, (
-            "from tileops.manifest import load_workloads\n"
-            "workloads = load_workloads('test_op')\n"
-            "op.eval_roofline()\n"
-        ))
-        assert errors == []
-
-    def test_bench_with_load_workloads_only_fails(self, validator, tmp_path):
-        """Bench using load_workloads but not op eval_roofline fails bench validation."""
-        errors = self._bench_errors(validator, tmp_path, (
-            "from tileops.manifest import load_workloads\n"
-            "workloads = load_workloads('test_op')\n"
-        ))
-        assert any("eval_roofline" in e for e in errors), errors
-
-    def test_bench_without_load_workloads_fails(self, validator, tmp_path):
-        errors = self._bench_errors(validator, tmp_path, (
-            "import pytest\n"
-            "shapes = [(1024, 4096)]\n"
-        ))
-        assert any("load_workloads" in e for e in errors)
-
-    def test_wrong_op_name_fails_l4(self, validator, tmp_path):
-        """Manifest helpers called with a different op name must fail, on
-        both the direct and the indirect (benchmarks.benchmark_base) path."""
-        errors = self._bench_errors(validator, tmp_path, textwrap.dedent("""\
-            from tileops.manifest import load_workloads
-            workloads = load_workloads('wrong_op')
-            op.eval_roofline()
-        """))
-        assert any("load_workloads" in e for e in errors)
-
-        errors = self._bench_errors(validator, tmp_path, textwrap.dedent("""\
-            from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
-            params = workloads_to_params('wrong_op')
-            ManifestBenchmark('wrong_op', op, params[0])
-        """))
-        assert any("load_workloads" in e for e in errors)
-        assert any("eval_roofline" in e for e in errors)
-
-    def test_syntax_error_in_bench_file_fails_l4(self, validator, tmp_path):
-        """A bench file with syntax errors produces an bench error."""
-        errors = self._bench_errors(validator, tmp_path, "def broken(\n")
-        assert any("syntax error" in e for e in errors)
-
-    def test_bench_indirect_helpers_pass(self, validator, tmp_path):
-        """Importing workloads_to_params/ManifestBenchmark from benchmarks.benchmark_base passes."""
-        errors = self._bench_errors(validator, tmp_path, textwrap.dedent("""\
-            from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
-            params = workloads_to_params('test_op')
-            ManifestBenchmark('test_op', op, params[0])
-        """))
-        assert errors == []
+    def test_bench_file_usage_matrix(self, validator, tmp_path):
+        cases = [
+            # (description, bench file text, expected substrings or None)
+            ("direct load_workloads + eval_roofline passes", """\
+                from tileops.manifest import load_workloads
+                workloads = load_workloads('test_op')
+                op.eval_roofline()
+            """, None),
+            ("indirect benchmark_base helpers pass", """\
+                from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
+                params = workloads_to_params('test_op')
+                ManifestBenchmark('test_op', op, params[0])
+            """, None),
+            ("load_workloads without eval_roofline fails", """\
+                from tileops.manifest import load_workloads
+                workloads = load_workloads('test_op')
+            """, ["eval_roofline"]),
+            ("no load_workloads fails", """\
+                import pytest
+                shapes = [(1024, 4096)]
+            """, ["load_workloads"]),
+            ("wrong op name fails (direct path)", """\
+                from tileops.manifest import load_workloads
+                workloads = load_workloads('wrong_op')
+                op.eval_roofline()
+            """, ["load_workloads"]),
+            ("wrong op name fails (indirect path)", """\
+                from benchmarks.benchmark_base import workloads_to_params, ManifestBenchmark
+                params = workloads_to_params('wrong_op')
+                ManifestBenchmark('wrong_op', op, params[0])
+            """, ["load_workloads", "eval_roofline"]),
+            ("syntax error fails", "def broken(\n", ["syntax error"]),
+        ]
+        for desc, text, expected in cases:
+            bench_file = tmp_path / "bench_test.py"
+            bench_file.write_text(textwrap.dedent(text))
+            errors = validator.check_l4_benchmark(
+                "test_op", str(bench_file), REPO_ROOT,
+            )
+            if expected is None:
+                assert errors == [], (desc, errors)
+            else:
+                for substring in expected:
+                    assert any(substring in e for e in errors), (
+                        f"{desc}: expected {substring!r} in errors, got: {errors}"
+                    )
 
 
 # --check-op: force all levels on a specific op, ignoring status
@@ -2338,12 +2193,8 @@ class TestCheckOp:
         )
 
     def test_check_op_ignores_unrelated_variant_of_errors(self, validator, tmp_path):
-        """--check-op must not report variant_of errors from unrelated ops.
-
-        check_variant_of_consistency must scope to the variant family;
-        run across the full manifest it fails --check-op on unrelated ops
-        with invalid variant_of references.
-        """
+        """--check-op scopes variant_of checks to the variant family;
+        unrelated ops with bad references must not fail the run."""
         other_entry = _make_entry()
         other_entry["variant_of"] = "nonexistent_primary"
         manifest_file = _write_manifest(
@@ -2369,11 +2220,8 @@ class TestCheckOp:
         )
 
     def test_check_op_validates_variant_family(self, validator, tmp_path):
-        """--check-op on a primary also validates its immediate variants.
-
-        Excluding variants from the scope would let a variant edit that
-        breaks R16 pass --check-op <primary>.
-        """
+        """--check-op on a primary also validates its immediate variants,
+        so a variant edit breaking R16 cannot slip through."""
         primary = _make_entry(source_kernel="shared_kernel.py")
         valid_variant = _make_entry(source_kernel="shared_kernel.py")
         valid_variant["variant_of"] = "primary_op"
@@ -2428,14 +2276,12 @@ class TestCheckOp:
         assert len(schema_errors) > 0, errors
 
     def test_check_op_cli_parsing(self, validator):
-        """_parse_check_op extracts the op name from argv."""
+        """_parse_check_op extracts the op name from argv; a missing
+        value exits with status 2."""
         assert validator._parse_check_op(["--check-op", "SoftmaxFwdOp"]) == "SoftmaxFwdOp"
         assert validator._parse_check_op(["--check-op=SoftmaxFwdOp"]) == "SoftmaxFwdOp"
         assert validator._parse_check_op(["--verbose"]) is None
         assert validator._parse_check_op([]) is None
-
-    def test_check_op_rejects_missing_value(self, validator):
-        """_parse_check_op exits with status 2 when no op name is given."""
         with pytest.raises(SystemExit, match="2"):
             validator._parse_check_op(["--check-op"])
 
@@ -2511,11 +2357,8 @@ class TestResolveOpClass:
         assert any("could not resolve" in e for e in errors)
 
     def test_direct_match_resolves_exact_class_name(self, validator):
-        """Direct match resolves when cls.__name__ == manifest key.
-
-        For op_name='SumFwdOp' with both _SumHelper and SumFwdOp in the
-        module, the exact match finds SumFwdOp. No heuristic fallback.
-        """
+        """Direct match resolves cls.__name__ == manifest key even next
+        to sibling candidates. No heuristic fallback."""
         fake_mod = _fake_op_module(
             "tileops.ops.fake_priority", ["_SumHelper", "SumFwdOp"],
         )
@@ -2566,14 +2409,9 @@ class TestShapeRuleHelpers:
     """Unit tests for :mod:`tileops.manifest.shape_rules` predicates."""
 
     def test_helper_rule_validator_warns_on_malformed_dim(self, validator):
-        """Validator integration: helper rules surface malformed dims as warnings.
-
-        A malformed dim default (``dim=["2"]``) raises TypeError from the
-        helper, which the validator classifies as an eval-error warning
-        ("could not be evaluated"): parity is skipped with a warning, not
-        turned into a hard shape error — bit-identical to the equivalent
-        inline form.
-        """
+        """A malformed dim default (``dim=["2"]``) raises TypeError from
+        the helper; the validator classifies it as an eval-error warning
+        (parity skip), bit-identical to the equivalent inline form."""
         def infer(self, x_shape, *, dim=None, keepdim=False):
             return {"y": x_shape}
 
@@ -2619,14 +2457,9 @@ class TestValidatorHelperResolution:
     """Validator integration of the shape_rules helper builtins."""
 
     def test_l2_parity_helper_detects_out_of_range_default(self, validator):
-        """Out-of-range default ``dim`` surfaces as an input-only precondition.
-
-        The helper predicate evaluates to False under mock inputs, but the
-        validator classifies that as an *input* problem (mock default
-        ``dim`` out of range for the mock ``x.ndim``), not a parity
-        failure of ``_infer_output_shapes``: ``errors == []`` plus exactly
-        one "input-only precondition" warning citing the helper rule.
-        """
+        """Out-of-range default ``dim`` classifies as an input problem:
+        ``errors == []`` plus exactly one input-only-precondition warning
+        citing the helper rule — never parity blame on the impl."""
         def infer(self, x_shape):
             return {"y": x_shape}
 
@@ -2658,12 +2491,8 @@ class TestValidatorHelperResolution:
         assert len(precondition_hits) == 1, warnings
 
     def test_input_bound_symbols_tolerates_non_dict_inputs(self, validator):
-        """``_input_bound_symbols`` must treat malformed inputs as empty.
-
-        Schema-independent shape-rule extraction must not crash when
-        ``signature.inputs`` is missing or non-mapping; the schema layer
-        owns the structural error message.
-        """
+        """``_input_bound_symbols`` treats malformed inputs as empty
+        instead of crashing (schema layer owns the diagnostics)."""
         result = validator._input_bound_symbols({
             "inputs": [{"x": {"shape": "[N]"}}],
             "shape_rules": ["x.shape == (N)"],
@@ -2675,14 +2504,9 @@ class TestValidatorHelperResolution:
         assert isinstance(result, set)
 
     def test_shape_rules_helpers_callable_by_bare_name(self, validator):
-        """Reduction-dim helpers from shape_rules.py are in the eval scope.
-
-        Each function in ``tileops.manifest.shape_rules.__all__`` must be
-        callable from a shape_rule body by bare name. Adding a new helper
-        requires updating both ``__all__`` and the validator's
-        ``_SHAPE_RULE_BUILTIN_PAIRS`` — this test fails loudly when one
-        side moves without the other.
-        """
+        """Every ``tileops.manifest.shape_rules.__all__`` helper is
+        callable by bare name from rule bodies; fails loudly when
+        ``__all__`` and ``_SHAPE_RULE_BUILTIN_PAIRS`` drift apart."""
         import types
 
         from tileops.manifest import shape_rules
@@ -2698,72 +2522,69 @@ class TestValidatorHelperResolution:
 # C1-C7 strict parity gates
 
 
+def _strict_op(name, init=None, forward=None, **methods):
+    """Op subclass with lambda-supplied ``__init__`` / ``forward``.
+
+    C3 / C4 / C6 / C7 checks read signatures and method identity only,
+    so lambdas suffice. (C5 parses ``__init__`` source and needs real
+    ``def`` statements — see TestDispatchKernelInvariant.)
+    """
+    from tileops.ops.op_base import Op
+
+    ns = {
+        "forward": forward if forward is not None else (lambda self, x: None),
+        "default_kernel_map": property(lambda self: {}),
+    }
+    if init is not None:
+        ns["__init__"] = init
+    ns.update(methods)
+    return type(name, (Op,), ns)
+
+
 class TestCtorSignatureParity:
     """C3: ctor signature parity (defaults + kw-only)."""
 
     def test_matching_defaults_pass(self, validator):
-        from tileops.ops.op_base import Op
-
-        class Op1(Op):
-            def __init__(self, dim=-1, eps=1e-6, kernel_map=None): pass
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
-
+        cls = _strict_op(
+            "Op1", init=lambda self, dim=-1, eps=1e-6, kernel_map=None: None,
+        )
         entry = {"signature": {
             "params": {
                 "dim": {"type": "int", "default": -1},
                 "eps": {"type": "float", "default": 1e-6},
             },
         }}
-        assert validator.check_c3_ctor_signature_parity("Op1", entry, Op1) == []
+        assert validator.check_c3_ctor_signature_parity("Op1", entry, cls) == []
 
         # compat_default: required manifest param with a ctor-only default.
-        class OpCompat(Op):
-            def __init__(self, num_experts=None, kernel_map=None): pass
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
-
+        cls = _strict_op(
+            "OpCompat", init=lambda self, num_experts=None, kernel_map=None: None,
+        )
         entry = {"signature": {
             "params": {
                 "num_experts": {"type": "int", "compat_default": None},
             },
         }}
         assert validator.check_c3_ctor_signature_parity(
-            "OpCompat", entry, OpCompat
+            "OpCompat", entry, cls
         ) == []
 
     def test_ctor_mismatches_fail(self, validator):
         """Case table: missing default, compat_default mismatch, kw-only."""
-        from tileops.ops.op_base import Op
-
-        class OpNoDefault(Op):
-            def __init__(self, dim, kernel_map=None): pass  # no default
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
-
-        class OpCompatMismatch(Op):
-            def __init__(self, num_experts=0, kernel_map=None): pass
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
-
-        class OpKwOnly(Op):
-            def __init__(self, *, dim=-1, kernel_map=None): pass
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
-
         cases = [
-            ("param default missing on __init__", OpNoDefault,
+            ("param default missing on __init__",
+             _strict_op("OpNoDefault",
+                        init=lambda self, dim, kernel_map=None: None),
              {"dim": {"type": "int", "default": -1}},
              "no default on __init__"),
-            ("compat_default value mismatch", OpCompatMismatch,
+            ("compat_default value mismatch",
+             _strict_op("OpCompatMismatch",
+                        init=lambda self, num_experts=0, kernel_map=None: None),
              {"num_experts": {"type": "int", "compat_default": None}},
              "no manifest default"),
-            ("kw_only mismatch", OpKwOnly,
+            ("kw_only mismatch",
+             _strict_op("OpKwOnly",
+                        init=lambda self, *, dim=-1, kernel_map=None: None),
              {"dim": {"type": "int", "default": -1, "kw_only": False}},
              "kw_only mismatch"),
         ]
@@ -2778,35 +2599,18 @@ class TestCtorSignatureParity:
 class TestForwardSignatureParity:
     """C4: forward positional names match manifest inputs order."""
 
-    def test_matching_passes(self, validator):
-        from tileops.ops.op_base import Op
-
-        class Op1(Op):
-            def __init__(self): pass
-            def forward(self, x, weight): return None
-            @property
-            def default_kernel_map(self): return {}
-
+    def test_forward_order_matrix(self, validator):
+        """Matching order passes; swapped positional names fail."""
         entry = {"signature": {
             "inputs": {"x": {"dtype": "float16"}, "weight": {"dtype": "float16"}},
         }}
+        cls = _strict_op("Op1", forward=lambda self, x, weight: None)
         assert validator.check_c4_forward_signature_parity(
-            "Op1", entry, Op1,
+            "Op1", entry, cls,
         ) == []
 
-    def test_wrong_order_fails(self, validator):
-        from tileops.ops.op_base import Op
-
-        class Op2(Op):
-            def __init__(self): pass
-            def forward(self, weight, x): return None  # swapped
-            @property
-            def default_kernel_map(self): return {}
-
-        entry = {"signature": {
-            "inputs": {"x": {"dtype": "float16"}, "weight": {"dtype": "float16"}},
-        }}
-        errs = validator.check_c4_forward_signature_parity("Op2", entry, Op2)
+        cls = _strict_op("Op2", forward=lambda self, weight, x: None)  # swapped
+        errs = validator.check_c4_forward_signature_parity("Op2", entry, cls)
         assert any("do not start with" in e for e in errs), errs
 
 
@@ -2817,34 +2621,24 @@ class TestDispatchKernelInvariant:
 
     def test_compliant_ctor_forms_pass(self, validator):
         """Case table: explicit kwarg, **kwargs absorption, and a
-        dispatch_kernel call nested in a branch all satisfy S12+S13."""
-        from tileops.ops.op_base import Op
-
-        class GoodOp(Op):
+        branch-nested dispatch_kernel call all satisfy S12+S13. Pure
+        static inspection of ``__init__`` — plain classes suffice."""
+        class GoodOp:
             def __init__(self, kernel_map=None):
                 self.dispatch_kernel(kernel_map)
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
 
-        class VarKwOp(Op):
+        class VarKwOp:
             # ``**kwargs`` absorbs ``kernel_map`` and satisfies S12.
             def __init__(self, **kwargs):
                 self.dispatch_kernel(kwargs.get("kernel_map"))
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
 
-        class BranchOp(Op):
+        class BranchOp:
             # The S13 walker is AST-recursive; a call inside a branch counts.
             def __init__(self, kernel_map=None, fast=False):
                 if fast:
                     self.dispatch_kernel(kernel_map)
                 else:
                     self.dispatch_kernel(kernel_map)
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
 
         for cls in (GoodOp, VarKwOp, BranchOp):
             assert validator.check_c5_dispatch_kernel_invariant(
@@ -2854,33 +2648,22 @@ class TestDispatchKernelInvariant:
     def test_non_compliant_ctor_forms_fail(self, validator):
         """Case table: dropped override, missing kwarg, and helper-only
         dispatch each violate the invariant."""
-        from tileops.ops.op_base import Op
-
-        class SilentDropOp(Op):
+        class SilentDropOp:
             # S13 violation: kwarg accepted but the body never calls
             # ``self.dispatch_kernel`` — the override is silently dropped.
             def __init__(self, kernel_map=None):
                 pass
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
 
-        class NoKwargOp(Op):
+        class NoKwargOp:
             # S12 violation: ``__init__`` does not accept ``kernel_map``.
             def __init__(self): pass
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
 
-        class HelperOp(Op):
+        class HelperOp:
             # S13 requires dispatch_kernel in __init__ or super().__init__.
             def __init__(self, kernel_map=None):
                 self._prepare(kernel_map)
             def _prepare(self, kernel_map=None):
                 self.dispatch_kernel(kernel_map)
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
 
         cases = [
             (SilentDropOp, "Slot S13"),
@@ -2898,55 +2681,37 @@ class TestStubOverrideGates:
     """C6 / C7: _validate_dtypes / eval_roofline must not be base stubs."""
 
     def test_base_stubs_detected(self, validator):
-        from tileops.ops.op_base import Op
-
-        class StubOp(Op):
-            def __init__(self): pass
-            def forward(self, x): return None
-            @property
-            def default_kernel_map(self): return {}
-
-        errs = validator.check_c6_validate_dtypes_not_stub("StubOp", {}, StubOp)
+        cls = _strict_op("StubOp", init=lambda self: None)
+        errs = validator.check_c6_validate_dtypes_not_stub("StubOp", {}, cls)
         assert any("is the Op base stub" in e for e in errs), errs
-        errs = validator.check_c7_eval_roofline_not_stub("StubOp", {}, StubOp)
+        errs = validator.check_c7_eval_roofline_not_stub("StubOp", {}, cls)
         assert any("is the Op base stub" in e for e in errs), errs
 
     def test_overrides_pass(self, validator):
-        from tileops.ops.op_base import Op
-
-        class OverriddenOp(Op):
-            def __init__(self): pass
-            def forward(self, x): return None
-            def _validate_dtypes(self, *args): pass
-            def eval_roofline(self): return (0, 0)
-            @property
-            def default_kernel_map(self): return {}
-
+        cls = _strict_op(
+            "OverriddenOp", init=lambda self: None,
+            _validate_dtypes=lambda self, *args: None,
+            eval_roofline=lambda self: (0, 0),
+        )
         assert validator.check_c6_validate_dtypes_not_stub(
-            "OverriddenOp", {}, OverriddenOp,
+            "OverriddenOp", {}, cls,
         ) == []
         assert validator.check_c7_eval_roofline_not_stub(
-            "OverriddenOp", {}, OverriddenOp,
+            "OverriddenOp", {}, cls,
         ) == []
 
 
 class TestStrictAdvisoryMode:
-    """Advisory vs strict routing of C1-C7 failures through ``validate_manifest()``.
-
-    Drives a synthetic single-file manifest pointing at a stub-only Op
-    fixture: tests the routing itself, not the bare helpers, so the
-    outcome is independent of the checked-in manifest's strict-parity
-    backlog.
+    """Advisory vs strict routing of C1-C7 failures through
+    ``validate_manifest()``, driven by a stub-only synthetic manifest so
+    the outcome is independent of the checked-in strict-parity backlog.
     """
 
     @pytest.fixture
     def stub_setup(self, tmp_path, monkeypatch, validator):
-        """Synthetic single-file manifest wired to an in-process Op fixture failing C6/C7.
-
-        Monkeypatches the validator's op-class resolver so the test does
-        not depend on the synthetic op file being importable from
-        sys.path.
-        """
+        """Synthetic single-file manifest wired to an in-process Op
+        fixture failing C6/C7; the op-class resolver is monkeypatched so
+        no importable module is needed."""
         from tileops.ops.op_base import Op
 
         class StubOp(Op):
@@ -2962,34 +2727,27 @@ class TestStrictAdvisoryMode:
         # Schema-valid synthetic manifest entry: all required top-level
         # fields present so the test would still parse if schema checks
         # were enabled.
-        manifest_yaml = tmp_path / "stub.yaml"
-        manifest_yaml.write_text(
-            "StubOp:\n"
-            "  family: synth\n"
-            "  status: implemented\n"
-            "  ref_api: https://example.invalid/stub\n"
-            "  signature:\n"
-            "    params:\n"
-            "      N: {type: int}\n"
-            "      dtype: {type: torch.dtype}\n"
-            "    inputs:\n"
-            "      x: {dtype: float16}\n"
-            "    outputs:\n"
-            "      y: {dtype: 'same_as(x)'}\n"
-            "    shape_rules:\n"
-            "      - 'y.shape == x.shape'\n"
-            "  workloads: []\n"
-            "  roofline:\n"
-            "    flops: 'N'\n"
-            "    bytes: '2 * N'\n"
-            "  source:\n"
-            "    op: tests/__strict_parity_stub__.py\n"
-            "    kernel: tileops/kernels/__strict_parity_stub__.py\n"
-            "    bench: benchmarks/ops/__strict_parity_stub__.py\n"
-            "    test: tests/__strict_parity_stub_test__.py\n"
-            "    kernel_map:\n"
-            "      stub: tileops.kernels.StubKernel\n"
-        )
+        entry = {
+            "family": "synth",
+            "status": "implemented",
+            "ref_api": "https://example.invalid/stub",
+            "signature": _sig(
+                {"x": "float16"}, {"y": "same_as(x)"},
+                params={"N": {"type": "int"},
+                        "dtype": {"type": "torch.dtype"}},
+                shape_rules=["y.shape == x.shape"],
+            ),
+            "workloads": [],
+            "roofline": {"flops": "N", "bytes": "2 * N"},
+            "source": {
+                "op": "tests/__strict_parity_stub__.py",
+                "kernel": "tileops/kernels/__strict_parity_stub__.py",
+                "bench": "benchmarks/ops/__strict_parity_stub__.py",
+                "test": "tests/__strict_parity_stub_test__.py",
+                "kernel_map": {"stub": "tileops.kernels.StubKernel"},
+            },
+        }
+        manifest_yaml = _write_manifest(tmp_path, {"StubOp": entry})
 
         def _fake_resolve(op_file, op_name):
             if op_name == "StubOp":
@@ -3045,11 +2803,8 @@ class TestCompileContractRegistry:
     """
 
     def test_declarations_match_registered_evidence(self):
-        """Manifest declarations == registered compile-test evidence, exactly.
-
-        A broken registration helper, a missing evidence module, or a
-        typo'd op name all surface as a set difference here.
-        """
+        """Manifest declarations == registered compile-test evidence;
+        broken registration or typo'd op names surface as a set diff."""
         from tests.compile_contract import compile_contract_ops
         from tileops.manifest import load_manifest
 
