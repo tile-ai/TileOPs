@@ -448,7 +448,7 @@ GroupNormFwdOp:
     bench: benchmarks/ops/bench_group_norm.py
     bench_manifest_driven: true
 
-GroupNormFwdOpNoAffine:
+GroupNormNoAffineFwdOp:
   ref_api: "torch.nn.functional.group_norm"
   # No-affine variant: torch.nn.functional.group_norm(x, num_groups, weight=None,
   # bias=None, eps), matching torch.nn.GroupNorm(affine=False). Split from
@@ -544,7 +544,7 @@ InstanceNormFwdOp:
     bench: benchmarks/ops/bench_instance_norm.py
     bench_manifest_driven: true
 
-InstanceNormFwdOpNoAffine:
+InstanceNormNoAffineFwdOp:
   ref_api: "torch.nn.functional.instance_norm"
   # No-affine variant: torch.nn.functional.instance_norm(x, weight=None,
   # bias=None, ...), matching torch.nn.InstanceNorm*(affine=False) — the

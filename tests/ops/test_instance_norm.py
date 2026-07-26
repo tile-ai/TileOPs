@@ -8,7 +8,7 @@ import yaml
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.instance_norm import (
     InstanceNormFwdOp,
-    InstanceNormFwdOpNoAffine,
+    InstanceNormNoAffineFwdOp,
 )
 from workloads.instance_norm import InstanceNormTest as _InstanceNormTestWorkload
 
@@ -117,8 +117,8 @@ class InstanceNormNoAffineFixture(FixtureBase):
 @InstanceNormNoAffineFixture
 def test_instance_norm_no_affine_op(n: int, c: int, spatial: tuple,
                                     dtype: torch.dtype, tune: bool) -> None:
-    """Forward correctness for InstanceNormFwdOpNoAffine vs F.instance_norm(weight=None, bias=None)."""
-    op = InstanceNormFwdOpNoAffine()
+    """Forward correctness for InstanceNormNoAffineFwdOp vs F.instance_norm(weight=None, bias=None)."""
+    op = InstanceNormNoAffineFwdOp()
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     # Running stats are required positional args (R16) but ignored on the
     # use_input_stats=True path; pass placeholders.
@@ -138,7 +138,7 @@ def test_instance_norm_no_affine_running_stats(
     n: int, c: int, spatial: tuple, dtype: torch.dtype, tune: bool,
 ) -> None:
     """use_input_stats=False uses running_mean/running_var; matches torch reference."""
-    op = InstanceNormFwdOpNoAffine(use_input_stats=False)
+    op = InstanceNormNoAffineFwdOp(use_input_stats=False)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     running_mean = torch.randn(c, dtype=torch.float32, device="cuda")
     running_var = torch.rand(c, dtype=torch.float32, device="cuda") + 0.1
@@ -302,9 +302,9 @@ def test_instance_norm_rejects_affine_device_mismatch() -> None:
 _OP_CLASSES = [
     pytest.param(InstanceNormFwdOp, "InstanceNormFwdOp", id="InstanceNormFwdOp"),
     pytest.param(
-        InstanceNormFwdOpNoAffine,
-        "InstanceNormFwdOpNoAffine",
-        id="InstanceNormFwdOpNoAffine",
+        InstanceNormNoAffineFwdOp,
+        "InstanceNormNoAffineFwdOp",
+        id="InstanceNormNoAffineFwdOp",
     ),
 ]
 
@@ -362,7 +362,7 @@ def test_instance_norm_affine_rejects_running_stats_path() -> None:
 def test_instance_norm_no_affine_accepts_running_stats_path() -> None:
     """No-affine variant supports `use_input_stats=False` end-to-end."""
     n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
-    op = InstanceNormFwdOpNoAffine(use_input_stats=False)
+    op = InstanceNormNoAffineFwdOp(use_input_stats=False)
     assert op.use_input_stats is False
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     running_mean = torch.randn(c, dtype=torch.float32, device="cuda")

@@ -144,6 +144,23 @@ class TestSchema:
                 all(s in e for s in substrings) for e in errors
             ), f"{desc}: expected error with {substrings}, got: {errors}"
 
+    def test_key_variant_word_after_direction_op_rejected(self, validator):
+        """Key format: variant words must precede the direction suffix."""
+        errors = validator.check_l0("GroupNormFwdOpNoAffine", _make_entry())
+        assert any(
+            "NoAffine" in e and "precede" in e for e in errors
+        ), errors
+
+    def test_key_missing_direction_suffix_with_sibling_rejected(self, validator):
+        """Key format: direction suffix is required when a direction sibling exists."""
+        errors = validator.check_l0(
+            "SoftmaxOp", _make_entry(),
+            all_op_names={"SoftmaxOp", "SoftmaxFwdOp"},
+        )
+        assert any(
+            "direction suffix" in e and "SoftmaxFwdOp" in e for e in errors
+        ), errors
+
     def test_valid_forms_pass(self, validator):
         """Case table: entry variations the schema explicitly permits."""
         # Tensor with valid layout field (R19).

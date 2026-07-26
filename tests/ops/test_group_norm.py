@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops.norm.group_norm import GroupNormFwdOp, GroupNormFwdOpNoAffine
+from tileops.ops.norm.group_norm import GroupNormFwdOp, GroupNormNoAffineFwdOp
 from workloads.group_norm import GroupNormTest as _GroupNormTestWorkload
 
 
@@ -231,7 +231,7 @@ class GroupNormNoAffineFixture(FixtureBase):
 def test_group_norm_no_affine_op(n: int, c: int, spatial: tuple, g: int,
                                  dtype: torch.dtype) -> None:
     """No-affine GroupNorm op matches torch.nn.functional.group_norm with weight=bias=None."""
-    op = GroupNormFwdOpNoAffine(num_groups=g)
+    op = GroupNormNoAffineFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
@@ -244,7 +244,7 @@ def test_group_norm_no_affine_op(n: int, c: int, spatial: tuple, g: int,
 def test_group_norm_no_affine_forward_signature() -> None:
     """No-affine forward accepts only x — no weight/bias parameters."""
     import inspect
-    sig = inspect.signature(GroupNormFwdOpNoAffine.forward)
+    sig = inspect.signature(GroupNormNoAffineFwdOp.forward)
     params = [p for p in sig.parameters if p != "self"]
     assert params == ["x"], f"expected ['x'], got {params}"
 
@@ -256,7 +256,7 @@ def test_group_norm_no_affine_lazily_specializes_per_device() -> None:
         pytest.skip("multi-device test requires >= 2 CUDA devices")
 
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
-    op = GroupNormFwdOpNoAffine(num_groups=g)
+    op = GroupNormNoAffineFwdOp(num_groups=g)
     x_other = torch.randn(
         (n, c, *spatial), dtype=dtype, device=torch.device("cuda", 1),
     )
@@ -277,7 +277,7 @@ def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple,
                                          g: int) -> None:
     """No-affine GroupNorm handles M not divisible by the kernel's block_m."""
     dtype = torch.float16
-    op = GroupNormFwdOpNoAffine(num_groups=g)
+    op = GroupNormNoAffineFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None,
