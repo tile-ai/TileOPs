@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.elementwise import ReluFwdKernel
 from tileops.ops.elementwise import ReluFwdOp
 from workloads.elementwise import ReluTest as _ReluTestWorkload
 
@@ -60,11 +61,13 @@ class ReluStrategyFixture(FixtureBase):
 
 @ReluStrategyFixture
 def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None:
-    """Verify all 3 unary strategies produce correct results."""
+    """All 3 unary strategies selected via the config dict produce correct results."""
     test = ReluTest(n_total, dtype)
-    op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
+    kernel = ReluFwdKernel(n_total, dtype, config={"strategy": strategy})
+    assert kernel.strategy == strategy
+    assert kernel.config["strategy"] == strategy
     atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(kernel, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
 # Template-based activation ops
