@@ -3437,6 +3437,15 @@ def check_l4_benchmark(
 # Op interface contract.
 _CTOR_INFRA_PARAMS = frozenset({"self", "kernel_map", "tune"})
 
+# Ctor parameter names whose mechanism has been removed from the codebase
+# (e.g. elementwise ``strategy``, folded into the kernel config dict). A
+# retired name appearing as a code-only ``__init__`` parameter is an error
+# regardless of family: unlike the general code-only-extras rule (deferred
+# in ``check_c3_ctor_signature_parity``), retired names need no
+# protocol-derived allowed set — they are illegal by construction unless
+# the manifest explicitly reintroduces them under ``signature.params``.
+_CTOR_RETIRED_PARAMS = frozenset({"strategy"})
+
 # Sentinel for "manifest did not declare this attribute" — distinct from
 # any legitimate manifest value (including the string "REQUIRED" used to
 # explicitly mark a parameter as required).
@@ -3542,6 +3551,16 @@ def check_c3_ctor_signature_parity(
         ):
             continue
         code_params[pname] = p
+
+    # Retired-name check: code-only occurrences of a retired ctor param
+    # fail outright (see _CTOR_RETIRED_PARAMS).
+    for pname in sorted(_CTOR_RETIRED_PARAMS & set(code_params)):
+        if pname not in manifest_params:
+            errors.append(
+                f"[ctor] {op_name}: param {pname!r} is retired — its "
+                f"dispatch mechanism lives in the kernel config dict; "
+                f"remove it from __init__"
+            )
 
     for pname, pattrs in manifest_params.items():
         if pname not in code_params:
