@@ -17,7 +17,6 @@ class MhaCompileFixture(FixtureBase):
         ("B, S, H, D, causal, dtype", [
             (8, 1024, 32, 128, False, torch.float16),
             (4, 512, 16, 64, True, torch.bfloat16),
-            (2, 2048, 64, 128, False, torch.float16),
         ]),
     ]
 

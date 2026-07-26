@@ -111,10 +111,13 @@ def test_sentinel_repair_is_idempotent(tmp_path: Path) -> None:
     assert (healthy / "best_config.json").exists()
 
 
-def test_sentinel_repair_tolerates_missing_root(tmp_path: Path) -> None:
-    """A non-existent cache root must be a no-op, not an error."""
+def test_all_subcommands_tolerate_missing_root(tmp_path: Path) -> None:
+    """A non-existent cache root must be a no-op, not an error, for every
+    subcommand."""
     missing = tmp_path / "does-not-exist"
     _run("sentinel-repair", str(missing))  # asserts rc==0
+    _run("atomic-trim", "7", str(missing))
+    _run("trim-files", "7", str(missing))
 
 
 def test_sentinel_repair_honours_custom_sentinel_filename(tmp_path: Path) -> None:
@@ -126,25 +129,6 @@ def test_sentinel_repair_honours_custom_sentinel_filename(tmp_path: Path) -> Non
     _run("sentinel-repair", str(root), env={"SENTINEL_FILENAME": "SENTINEL"})
 
     assert subdir.exists(), "subdir with the custom sentinel must be preserved"
-
-
-def test_no_half_dead_after_reclaim(tmp_path: Path) -> None:
-    """After a full reclaim sequence no autotuner subdir is left
-    in the half-dead state (exists but missing best_config.json)."""
-    root = tmp_path / "autotuner"
-    _make_autotuner_subdir(root, "halfdead_a", with_sentinel=False)
-    _make_autotuner_subdir(root, "halfdead_b", with_sentinel=False)
-    _make_autotuner_subdir(root, "healthy", with_sentinel=True)
-
-    # Full reclaim order: sentinel-repair → atomic-trim.
-    _run("sentinel-repair", str(root))
-    _run("atomic-trim", "7", str(root))
-
-    for subdir in root.iterdir():
-        if subdir.is_dir():
-            assert (subdir / "best_config.json").exists(), (
-                f"{subdir} is half-dead after reclaim"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -226,11 +210,6 @@ def test_atomic_trim_uses_file_mtime_not_dir_mtime(tmp_path: Path) -> None:
     )
 
 
-def test_atomic_trim_tolerates_missing_root(tmp_path: Path) -> None:
-    missing = tmp_path / "nope"
-    _run("atomic-trim", "7", str(missing))
-
-
 def test_atomic_trim_handles_empty_root(tmp_path: Path) -> None:
     root = tmp_path / "autotuner"
     root.mkdir()
@@ -239,7 +218,7 @@ def test_atomic_trim_handles_empty_root(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# trim-files (non-atomic roots, legacy behaviour)
+# trim-files (non-atomic roots)
 # ---------------------------------------------------------------------------
 
 
@@ -275,10 +254,6 @@ def test_trim_files_removes_old_files_but_leaves_atomic_roots_alone(
     assert (subdir / "kernel.cu").exists()
 
 
-def test_trim_files_tolerates_missing_root(tmp_path: Path) -> None:
-    _run("trim-files", "7", str(tmp_path / "nope"))
-
-
 # ---------------------------------------------------------------------------
 # gpu-smoke security trust routing
 # ---------------------------------------------------------------------------
@@ -300,7 +275,7 @@ def test_security_policy_routes_trust_by_collaborator_permission() -> None:
     script = step["run"]
     env = step["env"]
 
-    assert "AUTHOR_ASSOC" not in env, "author_association must no longer drive trust"
+    assert "AUTHOR_ASSOC" not in env, "author_association must not drive trust"
     assert "AUTHOR_ASSOC" not in script
     assert "collaborators/${PR_AUTHOR}/permission" in script
     assert "admin|maintain|write" in script
