@@ -261,7 +261,7 @@ This playbook emits exactly the 17 slots above. The following are **not** produc
 - **Family-base (T1) subclassing.** See [Family-Base Refactoring (Future Work)](#family-base-refactoring-future-work).
 - **Kernel implementations themselves.** The playbook's scope is the Op (host) layer. See [Implementing a Kernel](#implementing-a-kernel) for the kernel-side interface surface.
 - **`torch_compile_fullgraph` declaration.** Requires registered compile-test evidence; CI holds declarations and evidence in exact equality. Semantics: [manifest.md](manifest.md#torch_compile_fullgraph).
-- **Compile dispatch boundary.** A dynamo-traced `forward` MUST NOT construct a Kernel or enter a TileLang builder. Ops that resolve kernels at call time route `forward` through an opaque `custom_op` whose eager body owns cache lookup, construction, and launch — see `tileops/ops/compile_boundary.py`; pool and batch_norm are the reference adopters.
+- **Compile dispatch boundary.** See [Compile Dispatch Boundary](#compile-dispatch-boundary).
 
 ## Implementing a Kernel
 
@@ -277,6 +277,45 @@ Brief reference surface for the device-side class that a scaffolded Op depends o
 | `supported_archs`     | no       | Class variable. List of supported GPU SM versions.            |
 
 See [Kernel base class attributes](ops-design-reference.md#base-class-protocol) for the full attribute table.
+
+## Compile Dispatch Boundary
+
+Contract for every op declaring `torch_compile_fullgraph` while resolving
+kernels at call time.
+
+**Invariant.** A dynamo-traced `forward` MUST NOT construct a `Kernel` or
+enter a TileLang builder. Kernel-cache misses run TileLang JIT machinery
+(`inspect`-based signature handling) that dynamo cannot trace; an eager
+warm-up before `torch.compile` only hides the miss path and does not
+satisfy the cold-call contract.
+
+**Mechanism** (`tileops/ops/compile_boundary.py`; reference adopters:
+`pool.py`, `norm/batch_norm.py`):
+
+1. `Op.dispatch_kernel` registers every op in a weak instance registry at
+   `__init__` time and stores `self._instance_key`.
+1. The family defines one `torch.library.custom_op` per output arity. Its
+   eager body resolves the instance from the registry and calls
+   `self._eager_forward` — cache lookup, Kernel construction, and launch
+   all run untraced. Its fake derives output shapes from
+   `_infer_output_shapes` and dtypes from the manifest contract.
+1. `forward` becomes a single dispatch call:
+   `return _family_fwd(input, self._instance_key)`; the previous body is
+   renamed `_eager_forward` unchanged.
+
+**Constraints.**
+
+- Instance-key safety relies on dynamo's ID_MATCH guard holding a weak
+  reference to the compiled callable: a dead instance fails the guard and
+  forces recompilation, so a reused `id()` cannot resolve against a stale
+  graph.
+- The boundary covers forward-only compilation. Declaring
+  `torch_compile_fullgraph` on an op whose compiled graph must
+  backpropagate additionally requires registering an autograd formula for
+  the dispatch custom op.
+- Ops that pre-build their kernel at `__init__` (constructor-known shapes)
+  do not need the boundary; the invariant still applies to their
+  `forward`.
 
 ## MoE Modular Protocol
 
