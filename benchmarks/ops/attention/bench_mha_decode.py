@@ -28,7 +28,7 @@ class _MhaDecodeTestBaseline(MhaDecodeTest):
 def _fa3_mha_decode_fwd(test):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
-        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_func
     except ImportError:
         return None
 
@@ -42,7 +42,7 @@ def _fa3_mha_decode_fwd(test):
 def _flashinfer_mha_decode_fwd(test, q, k, v):
     """Set up FlashInfer batched prefill wrapper. Returns callable or None."""
     try:
-        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
+        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper
     except ImportError:
         return None
 

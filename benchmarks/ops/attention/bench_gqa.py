@@ -65,7 +65,7 @@ class GQAPrefillVarlenFwdBenchmark(BenchmarkBase[GQAPrefillVarlenFwdTest]):
 def _fa3_gqa_fwd(test: GroupedQueryAttentionFwdTest):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
-        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_func
     except ImportError:
         return None
 
@@ -79,7 +79,7 @@ def _fa3_gqa_fwd(test: GroupedQueryAttentionFwdTest):
 def _fa3_gqa_bwd(test: GroupedQueryAttentionBwdTest):
     """Return FA3 backward baseline callable, or None if not installed."""
     try:
-        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_func
     except ImportError:
         return None
 
@@ -123,7 +123,7 @@ def _flashinfer_gqa_fwd(test, q, k, v):
     """FlashInfer ragged-prefill baseline. Handles seq_len_q != seq_len_kv (square is
     the seq_len_q == seq_len_kv case). Returns callable or None."""
     try:
-        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
+        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper
     except ImportError:
         return None
 

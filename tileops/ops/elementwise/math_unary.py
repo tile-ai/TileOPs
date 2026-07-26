@@ -112,7 +112,7 @@ class ReciprocalFwdOp(UnaryOp):
                 kernel_map=kernel_map, tune=tune,
             )
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         if self.dtype in _MANIFEST_INT_DTYPES:
             self._validate_input(input)
             promoted = input.to(torch.float32)
@@ -180,7 +180,7 @@ class RoundFwdOp(_IntIdentityUnaryOp):
     _op_name = "round"
     kernel_cls = RoundFwdKernel
 
-    def forward(  # noqa: A002
+    def forward(
         self, input: torch.Tensor, decimals: int = 0,
     ) -> torch.Tensor:
         if decimals == 0:

@@ -61,7 +61,7 @@ def pytest_configure(config):
         config._warmup_orig_pool = orig_pool
 
         class _CappedPool(orig_pool):
-            def __init__(self, max_workers=None, **kwargs):  # noqa: N803
+            def __init__(self, max_workers=None, **kwargs):
                 if max_workers is None or max_workers > _cap:
                     max_workers = _cap
                 super().__init__(max_workers=max_workers, **kwargs)

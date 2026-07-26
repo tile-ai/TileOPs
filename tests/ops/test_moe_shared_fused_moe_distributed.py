@@ -211,10 +211,6 @@ def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
         # bf16 kernel vs bf16 kernel: both go through same TP shard path → tight tolerance
         torch.testing.assert_close(tileops_out, vllm_out, rtol=1e-2, atol=1e-2)
 
-        if rank == 0:
-            print(f"PASS: SharedFusedMoE TP vs vLLM DeepseekV2MLP "
-                  f"[T={T}, H={H}, F_s={F_s}, tp_size={tp_size}]")
-
         dist.barrier()
     finally:
         _teardown_vllm_distributed()

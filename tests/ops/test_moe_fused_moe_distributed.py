@@ -160,7 +160,6 @@ def test_kimi_k2_ep_distributed(T, E_global, K, H, F, world_size):
         # (1) different reduction order (local expert GEMMs → all-reduce vs full GEMM)
         # (2) bfloat16 accumulation across multiple all-reduce operations
         torch.testing.assert_close(out_local.float(), out_full.float(), rtol=5e-2, atol=5e-2)
-        print(f"PASS: 8-GPU EP (Kimi K2) [T={T}, E={E_global}, K={K}, H={H}, F={F}]")
 
     dist.barrier()
     dist.destroy_process_group()
@@ -248,7 +247,6 @@ def test_shared_fused_moe_ep_distributed(T, E_global, K, H, F, shared_F, world_s
         # Higher tolerance needed due to distributed EP numerical variance (see line 155 comment)
         torch.testing.assert_close(routed_out_local.float(), routed_out_full.float(), rtol=5e-2, atol=5e-2)
 
-        print(f"PASS: 8-GPU EP SharedFusedMoE [T={T}, E={E_global}, K={K}, H={H}, F={F}, shared_F={shared_F}]")
 
     dist.barrier()
     dist.destroy_process_group()
@@ -324,7 +322,6 @@ def test_fused_moe_vs_vllm_distributed(T, E_global, K, H, F, world_size):
 
         # Higher tolerance needed due to distributed EP numerical variance (see line 155 comment)
         torch.testing.assert_close(out_tileops.float(), out_vllm.float(), rtol=5e-2, atol=5e-2)
-        print(f"PASS: {world_size}-GPU EP TileOPs vs vLLM [T={T}, E={E_global}, K={K}, H={H}, F={F}]")
 
     dist.barrier()
     dist.destroy_process_group()
@@ -405,9 +402,6 @@ def test_fused_moe_vs_vllm_ep_layer(T, E_global, K, H, F, world_size):
     # Compare outputs
     # Higher tolerance needed due to distributed EP numerical variance (see line 155 comment)
     torch.testing.assert_close(out_tileops.float(), out_vllm.float(), rtol=5e-2, atol=5e-2)
-
-    if rank == 0:
-        print(f"PASS: {world_size}-GPU EP TileOPs vs vLLM (expert_map) [T={T}, E={E_global}, K={K}, H={H}, F={F}]")
 
     dist.barrier()
     dist.destroy_process_group()

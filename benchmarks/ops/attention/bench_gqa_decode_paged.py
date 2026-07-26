@@ -58,7 +58,7 @@ def _fa3_gqa_decode_paged(test, k, v):
     if test.page_size % 256 != 0:
         return None
     try:
-        from flash_attn_interface import flash_attn_with_kvcache  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_with_kvcache
     except ImportError:
         return None
 
@@ -84,7 +84,7 @@ def _flashinfer_gqa_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
     FlashInfer decode kernel supports group_size (Q/KV head ratio) up to 8.
     """
     try:
-        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper  # noqa: PLC0415
+        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
     except ImportError:
         return None
 

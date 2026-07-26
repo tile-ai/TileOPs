@@ -75,10 +75,10 @@ def _tile_scheduler_kernel(num_experts: int, max_tiles: int, block_m: int):
     def _func(threads: int):
         @T.prim_func
         def _sched_main(
-            true_sizes: T.Tensor([num_experts], "int32"),         # noqa: F821
-            tile_expert_ids: T.Tensor([max_tiles], "int32"),      # noqa: F821
-            tile_row_offsets: T.Tensor([max_tiles], "int32"),     # noqa: F821
-            total_tiles: T.Tensor([1], "int32"),                  # noqa: F821
+            true_sizes: T.Tensor([num_experts], "int32"),
+            tile_expert_ids: T.Tensor([max_tiles], "int32"),
+            tile_row_offsets: T.Tensor([max_tiles], "int32"),
+            total_tiles: T.Tensor([1], "int32"),
         ):
             with T.Kernel(T.ceildiv(max_tiles, threads), threads=threads) as (bx,):
                 s_cum = T.alloc_shared([num_experts + 1], "int32")
@@ -179,11 +179,11 @@ def _moe_grouped_gemm_kernel(numel: int, max_tiles: int, num_experts: int,
                 A: T.Tensor(A_shape, dtype),                           # type: ignore
                 B: T.Tensor(B_shape, dtype),                           # type: ignore
                 C: T.Tensor(C_shape, dtype),                           # type: ignore
-                tile_expert_ids: T.Tensor([max_tiles], "int32"),       # noqa: F821
-                tile_row_offsets: T.Tensor([max_tiles], "int32"),      # noqa: F821
-                true_offsets: T.Tensor([num_experts], "int32"),        # noqa: F821
-                true_sizes: T.Tensor([num_experts], "int32"),          # noqa: F821
-                total_tiles: T.Tensor([1], "int32"),                   # noqa: F821
+                tile_expert_ids: T.Tensor([max_tiles], "int32"),
+                tile_row_offsets: T.Tensor([max_tiles], "int32"),
+                true_offsets: T.Tensor([num_experts], "int32"),
+                true_sizes: T.Tensor([num_experts], "int32"),
+                total_tiles: T.Tensor([1], "int32"),
             ):
                 with T.Kernel(_total_ctas, threads=threads) as (pid,):
                     A_shared = T.alloc_shared(A_shared_shape, dtype)
@@ -235,15 +235,15 @@ def _moe_grouped_gemm_kernel(numel: int, max_tiles: int, num_experts: int,
                                 C[m_start + i, n_start + j] = C_local[i, j]
         else:
             @T.prim_func
-            def _gemm_main(                                            # noqa: F811
+            def _gemm_main(
                 A: T.Tensor(A_shape, dtype),                           # type: ignore
                 B: T.Tensor(B_shape, dtype),                           # type: ignore
                 C: T.Tensor(C_shape, dtype),                           # type: ignore
-                tile_expert_ids: T.Tensor([max_tiles], "int32"),       # noqa: F821
-                tile_row_offsets: T.Tensor([max_tiles], "int32"),      # noqa: F821
-                true_offsets: T.Tensor([num_experts], "int32"),        # noqa: F821
-                true_sizes: T.Tensor([num_experts], "int32"),          # noqa: F821
-                total_tiles: T.Tensor([1], "int32"),                   # noqa: F821
+                tile_expert_ids: T.Tensor([max_tiles], "int32"),
+                tile_row_offsets: T.Tensor([max_tiles], "int32"),
+                true_offsets: T.Tensor([num_experts], "int32"),
+                true_sizes: T.Tensor([num_experts], "int32"),
+                total_tiles: T.Tensor([1], "int32"),
             ):
                 with T.Kernel(_total_ctas, threads=threads) as (pid,):
                     A_shared = T.alloc_shared(A_shared_shape, dtype)

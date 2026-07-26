@@ -3295,7 +3295,7 @@ class TestShapeRuleHelpers:
         check is skipped with a warning, not turned into a hard shape
         error — bit-identical to the equivalent inline form.
         """
-        def infer(self, x_shape, *, dim=None, keepdim=False):  # noqa: ARG001
+        def infer(self, x_shape, *, dim=None, keepdim=False):
             return {"y": x_shape}
 
         cls = _make_op_cls_with_infer(infer, name="HelperMalformedDimOp")
@@ -3694,7 +3694,7 @@ class TestStrictAdvisoryMode:
             def __init__(self, N, dtype):
                 self.N = N
                 self.dtype = dtype
-            def forward(self, x):  # noqa: ANN001
+            def forward(self, x):
                 return x
             @property
             def default_kernel_map(self):

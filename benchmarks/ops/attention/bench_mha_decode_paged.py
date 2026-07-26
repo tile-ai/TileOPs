@@ -56,7 +56,7 @@ def _fa3_mha_decode_paged(test, k, v):
     if test.page_size % 256 != 0:
         return None
     try:
-        from flash_attn_interface import flash_attn_with_kvcache  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_with_kvcache
     except ImportError:
         return None
 
@@ -77,7 +77,7 @@ def _fa3_mha_decode_paged(test, k, v):
 def _flashinfer_mha_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
     """Set up FlashInfer paged decode wrapper. Returns callable or None."""
     try:
-        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper  # noqa: PLC0415
+        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
     except ImportError:
         return None
 

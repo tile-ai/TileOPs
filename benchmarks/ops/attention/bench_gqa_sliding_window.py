@@ -47,7 +47,7 @@ def _torch_sliding_window_fwd(test):
 def _fa3_baseline(is_causal, wl, wr):
     """Return FA3 sliding-window baseline callable, or None if not installed."""
     try:
-        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_func
     except ImportError:
         return None
 
@@ -66,7 +66,7 @@ def _flashinfer_sliding_window_fwd(test, q, k, v):
     if test.wr >= 0:
         return None
     try:
-        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
+        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper
     except ImportError:
         return None
 

@@ -45,7 +45,7 @@ class _BoolStorageBitwiseBinaryOp(BinaryOp):
 
     def _eager_forward(
         self,
-        input: torch.Tensor,  # noqa: A002
+        input: torch.Tensor,
         other: torch.Tensor,
     ) -> torch.Tensor:
         if getattr(self, "_bool_storage", False):

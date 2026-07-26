@@ -18,7 +18,7 @@ _MHA_BWD_OP = "MultiHeadAttentionBwdOp"
 def _fa3_mha_fwd(test: MhaFwdTest):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
-        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_func
     except ImportError:
         return None
 
@@ -32,7 +32,7 @@ def _fa3_mha_fwd(test: MhaFwdTest):
 def _fa3_mha_bwd(test: MhaBwdTest):
     """Return FA3 backward baseline callable, or None if not installed."""
     try:
-        from flash_attn_interface import flash_attn_func  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_func
     except ImportError:
         return None
 
@@ -52,7 +52,7 @@ def _fa3_mha_bwd(test: MhaBwdTest):
 def _flashinfer_mha_fwd(test: MhaFwdTest, q, k, v):
     """Set up FlashInfer batched prefill wrapper. Returns callable or None."""
     try:
-        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper  # noqa: PLC0415
+        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper
     except ImportError:
         return None
 

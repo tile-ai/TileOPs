@@ -2047,14 +2047,14 @@ def _eval_shape_rule(
     # update so ctx cannot escape it.
     eval_globals["__builtins__"] = _SHAPE_RULE_BUILTINS
     try:
-        result = eval(  # noqa: S307 — manifest-controlled
+        result = eval(
             rule, eval_globals, ctx,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return False, f"eval error: {exc.__class__.__name__}: {exc}"
     try:
         return bool(result), None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return False, f"non-boolean result: {exc}"
 
 
@@ -2094,7 +2094,7 @@ def _build_mock_self(
         merged.update(extra_attrs)
     try:
         instance = cls.__new__(cls)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return types.SimpleNamespace(**merged)
     for k, v in merged.items():
         # __slots__ or read-only descriptors may reject setattr; ignore
@@ -2204,7 +2204,7 @@ def check_l2_infer_parity(
             f"manifest inputs (expected kwargs {sorted(shape_kwargs)}): {exc}"
         )
         return errors
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # signature() itself failed (e.g. builtin without introspection) —
         # skip parity rather than fabricating a signature error.
         if warnings is not None:
@@ -2216,7 +2216,7 @@ def check_l2_infer_parity(
 
     try:
         result = infer_fn(mock_self, **shape_kwargs)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Signature is valid but the body raised. A correct manifest-
         # derived ``_infer_output_shapes`` must succeed on manifest-
         # compatible mock inputs; treat any body-level exception as a
@@ -2711,7 +2711,7 @@ def _combo_accepted(
         inspect.signature(validate_fn).bind(mock_self, **tensors)
     except TypeError as exc:
         return False, f"TypeError: {exc}"
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # inspect.signature itself failed to introspect — treat as a
         # validator-side skip (not an op-side bug). Tagged distinctly
         # from body-level unexpected exceptions so callers can enforce
@@ -2725,7 +2725,7 @@ def _combo_accepted(
         # TypeError arising from dtype comparisons. Both are legitimate
         # rejections once the signature has been validated above.
         return False, None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Body raised a non-ValueError/TypeError exception. This is a
         # genuine implementation bug (a correct manifest-derived
         # ``_validate_dtypes`` must either accept or raise

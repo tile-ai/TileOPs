@@ -43,9 +43,9 @@ class ClampFwdOp(_ClampTensorBase):
 
     def __init__(
         self,
-        input: tuple,  # noqa: A002 — manifest-aligned PyTorch param name
-        min: Optional[tuple] = None,  # noqa: A002 — manifest-aligned PyTorch param name
-        max: Optional[tuple] = None,  # noqa: A002 — manifest-aligned PyTorch param name
+        input: tuple,
+        min: Optional[tuple] = None,
+        max: Optional[tuple] = None,
         dtype: torch.dtype = torch.float32,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -83,9 +83,9 @@ class ClampFwdOp(_ClampTensorBase):
 
     def _eager_forward(
         self,
-        input: torch.Tensor,  # noqa: A002
-        min: Optional[torch.Tensor] = None,  # noqa: A002
-        max: Optional[torch.Tensor] = None,  # noqa: A002
+        input: torch.Tensor,
+        min: Optional[torch.Tensor] = None,
+        max: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # Broadcast all operands to ``out_shape`` and dispatch the
         # TileLang Tensor-bound clamp kernel. The kernel branches on
@@ -100,9 +100,9 @@ class ClampFwdOp(_ClampTensorBase):
 
     def forward(
         self,
-        input: torch.Tensor,  # noqa: A002
-        min: Optional[torch.Tensor] = None,  # noqa: A002
-        max: Optional[torch.Tensor] = None,  # noqa: A002
+        input: torch.Tensor,
+        min: Optional[torch.Tensor] = None,
+        max: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # Validate that the runtime None / Tensor pattern matches what
         # __init__ was configured for — the broadcast shape and the
@@ -152,8 +152,8 @@ class ClampMinFwdOp(_ClampTensorBase):
 
     def __init__(
         self,
-        input: tuple,  # noqa: A002
-        min: tuple,    # noqa: A002
+        input: tuple,
+        min: tuple,
         dtype: torch.dtype,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -176,7 +176,7 @@ class ClampMinFwdOp(_ClampTensorBase):
         return {"clamp_tensor": ClampTensorFwdKernel}
 
     def _eager_forward(
-        self, input: torch.Tensor, min: torch.Tensor,  # noqa: A002
+        self, input: torch.Tensor, min: torch.Tensor,
     ) -> torch.Tensor:
         # Broadcast input/min to out_shape and dispatch the TileLang
         # min-only Tensor-bound clamp kernel.
@@ -187,7 +187,7 @@ class ClampMinFwdOp(_ClampTensorBase):
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
-        self, input: torch.Tensor, min: torch.Tensor,  # noqa: A002
+        self, input: torch.Tensor, min: torch.Tensor,
     ) -> torch.Tensor:
         if not (input.is_cuda and min.is_cuda):
             raise ValueError("Inputs must be CUDA tensors")
@@ -221,8 +221,8 @@ class ClampMaxFwdOp(_ClampTensorBase):
 
     def __init__(
         self,
-        input: tuple,  # noqa: A002
-        max: tuple,    # noqa: A002
+        input: tuple,
+        max: tuple,
         dtype: torch.dtype,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -245,7 +245,7 @@ class ClampMaxFwdOp(_ClampTensorBase):
         return {"clamp_tensor": ClampTensorFwdKernel}
 
     def _eager_forward(
-        self, input: torch.Tensor, max: torch.Tensor,  # noqa: A002
+        self, input: torch.Tensor, max: torch.Tensor,
     ) -> torch.Tensor:
         # Broadcast input/max to out_shape and dispatch the TileLang
         # max-only Tensor-bound clamp kernel.
@@ -256,7 +256,7 @@ class ClampMaxFwdOp(_ClampTensorBase):
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
-        self, input: torch.Tensor, max: torch.Tensor,  # noqa: A002
+        self, input: torch.Tensor, max: torch.Tensor,
     ) -> torch.Tensor:
         if not (input.is_cuda and max.is_cuda):
             raise ValueError("Inputs must be CUDA tensors")
@@ -291,9 +291,9 @@ class ClampScalarFwdOp(Op):
 
     def __init__(
         self,
-        input: tuple,  # noqa: A002
-        min: Optional[float] = None,  # noqa: A002
-        max: Optional[float] = None,  # noqa: A002
+        input: tuple,
+        min: Optional[float] = None,
+        max: Optional[float] = None,
         dtype: torch.dtype = torch.float32,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -327,12 +327,12 @@ class ClampScalarFwdOp(Op):
     def default_kernel_map(self):
         return {"clamp": ClampFwdKernel}
 
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         orig_shape = input.shape
         result = self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
         if input.dtype != self.dtype:
