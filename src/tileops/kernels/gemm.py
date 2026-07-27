@@ -1315,13 +1315,53 @@ def _gemm_simple_kernel(
         num_stages: int = 4,
         threads: int = 128,
         panel_size: int = 8,
+        cluster_m: int = 1,
     ) -> Callable:
         if m % block_m or n % block_n or k % block_k:
             raise ValueError(
                 f"_gemm_simple_kernel requires exact tiling: got "
                 f"m={m} % {block_m}, n={n} % {block_n}, k={k} % {block_k}"
             )
+        if cluster_m > 1:
+            if (m // block_m) % cluster_m:
+                raise ValueError(
+                    f"cluster_m={cluster_m} must divide the M grid ({m // block_m} tiles)"
+                )
+            if panel_size > 0:
+                # TileLang only lowers the swizzle annotation for clusters on
+                # the X grid dim; our cluster pairs M tiles on Y.
+                raise ValueError("cluster_m > 1 requires panel_size == 0")
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
+
+        if cluster_m > 1:
+
+            @T.prim_func
+            def _gemm_simple_cluster_main(
+                a: T.Tensor((m, k), dtype),  # type: ignore
+                b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
+                c: T.Tensor((m, n), dtype),  # type: ignore
+            ) -> None:
+                # M tiles sharing one N column form a cluster: their B reads
+                # are co-scheduled, so the second tile's stream resolves in
+                # L2 instead of DRAM (bare geometry only — no multicast, no
+                # cluster-sync primitives).
+                with T.ClusterKernel(
+                    n // block_n, m // block_m, cluster_dims=(1, cluster_m, 1), threads=threads
+                ) as (bx, by):
+                    a_smem = T.alloc_shared((block_m, block_k), dtype)
+                    b_smem = T.alloc_shared(b_tile, dtype)
+                    c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                    T.clear(c_local)
+                    for ki in T.Pipelined(k // block_k, num_stages=num_stages):
+                        T.copy(a[by * block_m, ki * block_k], a_smem)
+                        if trans_b:
+                            T.copy(b[bx * block_n, ki * block_k], b_smem)
+                        else:
+                            T.copy(b[ki * block_k, bx * block_n], b_smem)
+                        T.gemm(a_smem, b_smem, c_local, transpose_B=trans_b)
+                    T.copy(c_local, c[by * block_m, bx * block_n])
+
+            return _gemm_simple_cluster_main
 
         @T.prim_func
         def _gemm_simple_main(
@@ -1507,6 +1547,11 @@ class GemmKernel(Kernel):
         # regime (16 K-iters, ~1 CTA wave) by ~4% over the WS kernel — the
         # producer warpgroup's fixed costs outweigh its deeper ring there.
         # Verified per-rep interleaved, two independent fresh-build rounds.
+        # m=128: pairing the two M tiles per N column into a (1, 2) cluster
+        # co-schedules their B streams (second read resolves in L2), worth a
+        # further ~2.5% (15.3 -> 14.9 us; cuBLAS nvjet gets its extra margin
+        # from TMA multicast, which TileLang cannot express). Swizzle is off
+        # because TileLang rejects the annotation for clusters on Y.
         (128, 7168, 2048, False, True, "bfloat16"): {
             "simple": True,
             "block_m": 64,
@@ -1514,7 +1559,8 @@ class GemmKernel(Kernel):
             "block_k": 128,
             "num_stages": 4,
             "threads": 128,
-            "panel_size": 8,
+            "panel_size": 0,
+            "cluster_m": 2,
         },
         (64, 7168, 2048, False, True, "bfloat16"): {
             "simple": True,
@@ -1629,6 +1675,7 @@ class GemmKernel(Kernel):
                 cfg["num_stages"],
                 cfg.get("threads", 128),
                 cfg.get("panel_size", 8),
+                cfg.get("cluster_m", 1),
             )
             return compiled(a, b)
 
