@@ -115,23 +115,15 @@ def prepare_wy_repr_deltanet_torch(k, beta, chunk_size):
     B, H, S, DK = k.shape
     assert S % chunk_size == 0
     BC = chunk_size
-    Aw = torch.empty(B, H, S, BC, dtype=torch.float32, device=k.device)
-    Au = torch.empty(B, H, S, BC, dtype=torch.float32, device=k.device)
-
-    for b in range(B):
-        for h in range(H):
-            for c in range(S // BC):
-                i0, i1 = c * BC, (c + 1) * BC
-                kc = k[b, h, i0:i1, :].float()
-                bc = beta[b, h, i0:i1].float()
-                Gram = kc @ kc.T
-                M = bc.unsqueeze(-1) * Gram
-                A = torch.eye(BC, device=k.device) + torch.tril(M, diagonal=-1)
-                A_inv = torch.linalg.inv(A)
-                Aw[b, h, i0:i1, :] = A_inv
-                Au[b, h, i0:i1, :] = A_inv
-
-    return Aw, Au
+    NC = S // BC
+    kc = k.float().reshape(B, H, NC, BC, DK)
+    bc = beta.float().reshape(B, H, NC, BC)
+    gram = kc @ kc.transpose(-2, -1)
+    m = bc.unsqueeze(-1) * gram
+    eye = torch.eye(BC, dtype=torch.float32, device=k.device)
+    a = eye + torch.tril(m, diagonal=-1)
+    a_inv = torch.linalg.inv(a).reshape(B, H, S, BC)
+    return a_inv, a_inv.clone()
 
 
 class _DeltaNetFwdTestBaseline(DeltaNetFwdTest):
