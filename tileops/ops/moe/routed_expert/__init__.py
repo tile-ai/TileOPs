@@ -9,6 +9,12 @@ from .abc import (
     WeightedReduce,
     WeightedReduceNoOp,
 )
+from .dispatch import (
+    DeepEPDispatchAdapter,
+    ExpertDispatchResult,
+    LocalDispatchHandle,
+    LocalExpertDispatcher,
+)
 from .dispatched_expert import DispatchedExpertMLPFwdOp
 from .fused_routed_expert import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
@@ -19,12 +25,16 @@ from .permute_nopad import MoePermuteNopadFwdOp
 from .unpermute import MoeUnpermuteFwdOp
 
 __all__ = [
+    "DeepEPDispatchAdapter",
+    "DispatchedExpertMLPFwdOp",
     "ExpertBatch",
     "ExpertBatchOutput",
+    "ExpertDispatchResult",
     "FusedMoEExperts",
-    "DispatchedExpertMLPFwdOp",
     "FusedMoEExpertsModular",
     "FusedMoEExpertsNopadPersistent3WGFwdOp",
+    "LocalDispatchHandle",
+    "LocalExpertDispatcher",
     "MoeGroupedGemmNopad3WGFusedActFwdOp",
     "MoeGroupedGemmNopadFwdOp",
     "MoePermuteNopadFwdOp",
