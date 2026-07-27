@@ -310,127 +310,76 @@ def test_cumprod_dim_axis1(
         f"cumprod dim=1 max err: {(y - ref).abs().max()}"
 
 
-# Test coverage for parallel scan path (N > 8192)
-@pytest.mark.parametrize(
-    "M, N, dtype",
-    [
-        pytest.param(64, 16384, torch.float32, marks=pytest.mark.smoke),   # block_n=128 path
-        pytest.param(64, 32768, torch.bfloat16, marks=pytest.mark.smoke),  # block_n=256 path
-        pytest.param(32, 16384, torch.float16, marks=pytest.mark.smoke),   # Different M
-        pytest.param(64, 8200, torch.float32, marks=pytest.mark.smoke),    # N%block_n!=0: exercises _needs_mask partial-tail branch
-    ],
-)
-def test_cumsum_parallel_scan(M: int, N: int, dtype: torch.dtype) -> None:
-    """Test parallel scan backend for small-M, large-N workloads."""
-    from tileops.ops.reduction.cumulative import CumsumFwdOp
-
-    device = torch.device("cuda")
-    x = torch.randn(M, N, dtype=dtype, device=device)
-
-    op = CumsumFwdOp(dtype=dtype, dim=-1)
-    y = op(x)
-
-    # Verify correctness
-    ref = x.float().cumsum(dim=-1).to(dtype)
-    assert torch.allclose(y, ref, **_tol(dtype)), \
-        f"Parallel scan failed for shape ({M}, {N}), max_diff={torch.abs(y - ref).max()}"
-
-    # Verify that the parallel backend was actually selected
-    kernel = op._get_kernel(M, N, dtype, x.device.index)
-    assert kernel.use_parallel, \
-        f"Expected parallel backend for shape ({M}, {N}) but got sequential"
-    expected_block_n = 256 if N > 16384 else 128
-    assert kernel.config["block_n"] == expected_block_n, \
-        f"Expected block_n={expected_block_n} for N={N}, got {kernel.config['block_n']}"
-
-
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "M, N, expected_backend",
+    "M, N, dtype, parallel",
     [
-        (64, 8192, "sequential"),   # Boundary: N=8192 should use sequential
-        (128, 16384, "sequential"), # Boundary: M=128 should use sequential
+        (64, 16384, torch.float32, True),      # block_n=128
+        (64, 32768, torch.bfloat16, True),     # block_n=256
+        (32, 16384, torch.float16, True),      # fp16 intermediate
+        (64, 8200, torch.float32, True),       # N % block_n != 0: masked tail
+        (64, 8192, torch.bfloat16, False),     # N boundary
+        (128, 16384, torch.bfloat16, False),   # M boundary
     ],
 )
-def test_cumsum_dispatch_boundary(M: int, N: int, expected_backend: str) -> None:
-    """Verify dispatch predicate boundaries select the correct backend."""
+def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, parallel: bool) -> None:
+    """Each shape takes the expected backend and matches torch.cumsum."""
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
-    device = torch.device("cuda")
-    dtype = torch.bfloat16
-    x = torch.randn(M, N, dtype=dtype, device=device)
-
+    x = torch.randn(M, N, dtype=dtype, device="cuda")
     op = CumsumFwdOp(dtype=dtype, dim=-1)
     y = op(x)
 
-    # Verify correctness
     ref = x.float().cumsum(dim=-1).to(dtype)
     assert torch.allclose(y, ref, **_tol(dtype)), \
-        f"Boundary test failed for shape ({M}, {N}), max_diff={torch.abs(y - ref).max()}"
+        f"({M}, {N}) {dtype}: max_diff={torch.abs(y - ref).max()}"
 
-    # Verify the expected backend was selected
     kernel = op._get_kernel(M, N, dtype, x.device.index)
-    if expected_backend == "parallel":
-        assert kernel.use_parallel, \
-            f"Expected parallel backend for ({M}, {N}) but got sequential"
-    else:
-        assert not kernel.use_parallel, \
-            f"Expected sequential backend for ({M}, {N}) but got parallel"
+    assert kernel.use_parallel == parallel, f"({M}, {N}): unexpected backend"
+    if parallel:
+        assert kernel.config["block_n"] == (256 if N > 16384 else 128)
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("M, N", [(1, 32768), (127, 16384)])
 def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
-    """Test carry propagation and per-row ownership across multiple tiles."""
+    """Carry propagation stays per-row across tiles and partial row blocks."""
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
-    device = torch.device("cuda")
-    row_values = torch.arange(1, M + 1, dtype=torch.float32, device=device).unsqueeze(1)
+    row_values = torch.arange(1, M + 1, dtype=torch.float32, device="cuda").unsqueeze(1)
     x = row_values.expand(-1, N).contiguous()
 
-    op = CumsumFwdOp(dtype=torch.float32, dim=-1)
-    y = op(x)
+    y = CumsumFwdOp(dtype=torch.float32, dim=-1)(x)
 
-    # Row r contains the constant r + 1, so its cumsum is (r + 1) * [1, ..., N].
-    expected = row_values * torch.arange(1, N + 1, dtype=torch.float32, device=device)
+    # Row r holds the constant r + 1, so its cumsum is (r + 1) * [1, ..., N].
+    expected = row_values * torch.arange(1, N + 1, dtype=torch.float32, device="cuda")
     assert torch.allclose(y, expected, atol=1e-3, rtol=1e-3), \
-        f"Carry propagation failed for shape ({M}, {N}), max_diff={torch.abs(y - expected).max()}"
-
-
-# ---------------------------------------------------------------------------
-# torch.compile regression: parallel scan branch must be compile-safe
-# ---------------------------------------------------------------------------
+        f"({M}, {N}): max_diff={torch.abs(y - expected).max()}"
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "M, N, dtype",
     [
-        pytest.param(64, 512, torch.float16),    # sequential branch — baseline
-        pytest.param(64, 16384, torch.float16),  # parallel branch — regression case
+        pytest.param(64, 512, torch.float16),    # sequential custom_op
+        pytest.param(64, 16384, torch.float16),  # parallel custom_op
     ],
 )
 def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype) -> None:
     """torch.compile(fullgraph=True) must succeed on a warm kernel cache.
 
-    N=512 exercises _cumulative_fwd_wrapped (sequential custom_op).
-    N=16384 exercises _cumulative_parallel_fwd_wrapped (parallel custom_op) —
-    this is the regression case: without the custom_op boundary, torch.compile
-    raises 'unsupported Function.call' when tracing the raw JIT callables.
+    Guards the custom_op boundary: tracing the raw JIT callables instead
+    raises 'unsupported Function.call'.
 
-    Not compile-contract evidence (see tests/compile_contract.py): the
-    contract covers a *cold* ``torch.compile(op, fullgraph=True)``, which
-    would trace CumulativeKernel construction inside the graph. This test
-    pre-warms the cache instead, so CumsumFwdOp must not declare
-    ``torch_compile_fullgraph`` in the manifest on its strength.
+    Not compile-contract evidence (see tests/compile_contract.py) — that
+    contract covers a *cold* compile, which would trace kernel construction
+    inside the graph. Pre-warming here sidesteps it, so CumsumFwdOp must not
+    declare ``torch_compile_fullgraph`` on this test's strength.
     """
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
     op = CumsumFwdOp(dtype=dtype, dim=-1)
     x = torch.randn(M, N, dtype=dtype, device="cuda")
-
-    # Pre-warm the kernel cache before compiling so construction never
-    # happens inside the compiled region.
     op(x)
 
     compiled = torch.compile(op, fullgraph=True)

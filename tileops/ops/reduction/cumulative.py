@@ -79,11 +79,8 @@ class CumulativeOp(Op):
     ) -> Kernel:
         """Return a kernel built for (M, N, dtype), caching by specialization.
 
-        Deliberately not decorated with ``@torch.compiler.disable``, which
-        ``torch.compile(fullgraph=True)`` rejects. On a cache miss this builds a
-        Kernel, so a caller compiling with ``fullgraph=True`` must warm the cache
-        for every (M, N, dtype, device) it will feed the compiled callable —
-        otherwise construction is traced inside the compiled region.
+        A cache miss builds a Kernel, so a ``fullgraph=True`` caller must warm
+        every (M, N, dtype, device) it will feed the compiled callable.
         """
         key = (M, N, dtype, device_index)
         if key not in self._kernel_cache:
@@ -150,10 +147,8 @@ class CumsumFwdOp(CumulativeOp):
     Output has the same shape and dtype as ``x``. Alignment padding is
     handled inside the kernel via masked loads.
 
-    The implementation automatically selects between two backends based on
-    input shape: a sequential scan for most workloads, or a parallel three-pass
-    scan (local prefix + carry propagation + final adjustment) for small-M,
-    large-N cases (M < 128 and N > 8192) to improve SM utilization.
+    Shapes with ``M < 128 and N > 8192`` take a three-pass parallel scan for
+    SM utilization; every other shape takes the sequential scan.
 
     Args:
         dtype: Optional data type (float32, float16, or bfloat16).

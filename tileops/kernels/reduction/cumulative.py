@@ -31,6 +31,7 @@ Shared memory padding:
 
 import functools
 import itertools
+import warnings
 from typing import Optional
 
 import tilelang
@@ -348,46 +349,35 @@ class CumulativeKernel(Kernel):
         self.dtype = dtype
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
 
-        # Adaptive dispatch: use parallel scan for small-M, large-N
-        # Only for cumsum (cumprod not yet supported for parallel)
+        # Parallel scan only pays off for small-M, large-N; cumprod has no
+        # parallel implementation.
         self.use_parallel = (M < 128 and N > 8192 and op_kind == "sum")
 
         if self.use_parallel:
-            self.kernel = None  # Not used for parallel
-
-            # Parallel backend does not support autotuning yet
+            self.kernel = None
             if tune:
-                import warnings
                 warnings.warn(
-                    f"Autotuning is not supported for parallel scan backend "
-                    f"(shape {M}×{N}). Using optimized defaults.",
+                    f"Autotuning is unsupported for the parallel scan backend "
+                    f"(shape {M}x{N}); using default config.",
                     UserWarning,
-                    stacklevel=2
+                    stacklevel=2,
                 )
                 tune = False
         else:
-            # Sequential scan (original implementation)
             self.kernel = _cumulative_kernel(M, N, op_kind, self.dtype_str)
 
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
-        """Select default config based on shape and backend.
-
-        For parallel scan: use larger block_n for better parallelism.
-        For sequential scan: use adaptive block_m based on M.
-        """
+        """Select the default config for the selected backend and shape."""
         if self.use_parallel:
-            # Parallel scan config: larger tiles for better parallelism
             block_n = 256 if self.N > 16384 else 128
-            block_m = max(1, min(16, self.M))
-            smem_per_row = (block_n + _SMEM_PAD) * 4  # float32 intermediate
+            smem_per_row = (block_n + _SMEM_PAD) * 4  # fp32 intermediate
             max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
-            block_m = min(block_m, max_block_m)
+            block_m = max(1, min(16, self.M, max_block_m))
             return {"block_m": block_m, "block_n": block_n, "threads": 256}
         else:
-            # Sequential scan config (original logic)
             block_n = _DEFAULT_BLOCK_N
             elem_size = torch.tensor([], dtype=self.dtype).element_size()
             smem_per_row = 2 * (block_n + _SMEM_PAD) * elem_size
@@ -441,7 +431,6 @@ class CumulativeKernel(Kernel):
                 x,
             )
         else:
-            # Sequential scan (original implementation)
             return _cumulative_fwd_wrapped(
                 self.M,
                 self.N,
@@ -461,10 +450,9 @@ class CumulativeKernel(Kernel):
 
 @functools.lru_cache(maxsize=32)
 def _parallel_scan_local_kernel(M: int, N: int, op_kind: str, dtype: str):
-    """Pass 1: Local scan within each tile (parallel across all tiles).
+    """Pass 1: scan each tile independently, emitting its total to ``tile_sums``.
 
-    Grid: (M/block_m, N_padded/block_n) for massive parallelism.
-    Each thread block independently scans one tile.
+    Grid is (ceildiv(M, block_m), n_tiles), so all tiles scan concurrently.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     _identity = 0.0 if op_kind == "sum" else 1.0
@@ -484,40 +472,17 @@ def _parallel_scan_local_kernel(M: int, N: int, op_kind: str, dtype: str):
                 tile_shared = T.alloc_shared((block_m, block_n + _SMEM_PAD), "float32")
                 tile_frag = T.alloc_fragment((block_m, block_n), "float32")
 
-                # Load tile
-                if _needs_mask:
-                    with T.If((tile_idx + 1) * block_n <= N):
-                        with T.Then():
-                            for i, j in T.Parallel(block_m, block_n):
-                                row = pid_m * block_m + i
-                                col = tile_idx * block_n + j
-                                tile_shared[i, j] = T.if_then_else(
-                                    row < M,
-                                    T.cast(x[row, col], "float32"),
-                                    T.cast(_identity, "float32"),
-                                )
-                        with T.Else():
-                            for i, j in T.Parallel(block_m, block_n):
-                                row = pid_m * block_m + i
-                                col = tile_idx * block_n + j
-                                tile_shared[i, j] = T.if_then_else(
-                                    T.And(row < M, col < N),
-                                    T.cast(x[row, col], "float32"),
-                                    T.cast(_identity, "float32"),
-                                )
-                else:
-                    for i, j in T.Parallel(block_m, block_n):
-                        row = pid_m * block_m + i
-                        col = tile_idx * block_n + j
-                        tile_shared[i, j] = T.if_then_else(
-                            row < M,
-                            T.cast(x[row, col], "float32"),
-                            T.cast(_identity, "float32"),
-                        )
-
+                for i, j in T.Parallel(block_m, block_n):
+                    row = pid_m * block_m + i
+                    col = tile_idx * block_n + j
+                    in_bounds = T.And(row < M, col < N) if _needs_mask else row < M
+                    tile_shared[i, j] = T.if_then_else(
+                        in_bounds,
+                        T.cast(x[row, col], "float32"),
+                        T.cast(_identity, "float32"),
+                    )
                 T.sync_threads()
 
-                # Copy to fragment and scan
                 for i, j in T.Parallel(block_m, block_n):
                     tile_frag[i, j] = tile_shared[i, j]
                 T.sync_threads()
@@ -525,12 +490,12 @@ def _parallel_scan_local_kernel(M: int, N: int, op_kind: str, dtype: str):
                 T.cumsum(tile_frag, dim=1)
                 T.sync_threads()
 
-                # Copy back
+                # Back through shared memory: the tile_sums writer below reads
+                # column block_n - 1, which lives in another thread's registers.
                 for i, j in T.Parallel(block_m, block_n):
                     tile_shared[i, j] = tile_frag[i, j]
                 T.sync_threads()
 
-                # Write results
                 for i, j in T.Parallel(block_m, block_n):
                     row = pid_m * block_m + i
                     col = tile_idx * block_n + j
@@ -549,12 +514,11 @@ def _parallel_scan_local_kernel(M: int, N: int, op_kind: str, dtype: str):
 
 @functools.lru_cache(maxsize=32)
 def _parallel_scan_carry_kernel(M: int, n_tiles: int):
-    """Pass 2: Exclusive cumsum on tile boundary values (small array M x n_tiles).
+    """Pass 2: exclusive scan of the per-tile totals.
 
-    Uses sequential scan since n_tiles is typically small (e.g., 128-256).
-    Output is exclusive scan: out[i, 0] = 0, out[i, j] = cumsum(in[i, :j])
-
-    Each thread processes one complete row to avoid data races.
+    ``out[i, 0] = 0``, ``out[i, j] = sum(in[i, :j])``.  Scanned serially since
+    ``n_tiles`` is small (128-256); one thread owns one row, so the writes
+    cannot race.
     """
     @tilelang.jit(out_idx=[1])
     def _func(threads):
@@ -567,15 +531,9 @@ def _parallel_scan_carry_kernel(M: int, n_tiles: int):
                 tx = T.get_thread_binding()
                 row = pid * threads + tx
 
-                # Give every row a unique thread owner.  The block index alone
-                # cannot identify a thread, so using it as ``row`` would make
-                # every thread in the block race on the same output locations.
                 with T.If(row < M), T.Then():
-                    # Exclusive scan: first element is 0
                     tile_carries[row, 0] = T.float32(0.0)
-                    # Mutable accumulator for loop-carried state
                     running_sum = T.alloc_var("float32", init=0.0)
-                    # Sequential loop over tiles
                     for j in T.Serial(n_tiles - 1):
                         running_sum = running_sum + tile_sums[row, j]
                         tile_carries[row, j + 1] = running_sum
@@ -587,7 +545,7 @@ def _parallel_scan_carry_kernel(M: int, n_tiles: int):
 
 @functools.lru_cache(maxsize=32)
 def _parallel_scan_propagate_kernel(M: int, N: int, dtype: str):
-    """Pass 3: Add carry values and cast to output dtype."""
+    """Pass 3: add each tile's carry and cast to the output dtype."""
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
 
     @tilelang.jit(out_idx=[2])
@@ -601,25 +559,13 @@ def _parallel_scan_propagate_kernel(M: int, N: int, dtype: str):
             y_final: T.Tensor[(M, N_padded), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), n_tiles, threads=threads) as (pid_m, tile_idx):
-                tile_shared = T.alloc_shared((block_m, block_n + _SMEM_PAD), "float32")
-
-                # Load y_local
                 for i, j in T.Parallel(block_m, block_n):
                     row = pid_m * block_m + i
                     col = tile_idx * block_n + j
                     with T.If(row < M), T.Then():
-                        tile_shared[i, j] = y_local[row, col]
-
-                T.sync_threads()
-
-                # Add carry and write
-                for i, j in T.Parallel(block_m, block_n):
-                    row = pid_m * block_m + i
-                    col = tile_idx * block_n + j
-                    with T.If(row < M), T.Then():
-                        carry = tile_carries[row, tile_idx]
-                        result_f32 = tile_shared[i, j] + carry
-                        y_final[row, col] = T.cast(result_f32, dtype)
+                        y_final[row, col] = T.cast(
+                            y_local[row, col] + tile_carries[row, tile_idx], dtype
+                        )
 
         return main
 
