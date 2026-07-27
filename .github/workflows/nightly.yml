@@ -85,7 +85,10 @@ jobs:
           # kill costs only that file's results. py-spy captures the stack of
           # a hung child before the runner kills it.
           set -o pipefail
-          python3 -m pip install -q -c constraints.txt py-spy
+          # Best-effort: on a network failure the run proceeds without stack
+          # dumps (the runner records the absence) instead of dying here.
+          python3 -m pip install -q -c constraints.txt py-spy \
+            || echo "::warning::py-spy install failed; hang stack dumps disabled"
           python3 scripts/ci/run_benchmarks.py benchmarks/ops \
             --junit-xml bench_results.xml \
             --timeout-per-file 900 \
