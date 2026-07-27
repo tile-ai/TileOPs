@@ -410,13 +410,19 @@ def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
         pytest.param(64, 16384, torch.float16),  # parallel branch — regression case
     ],
 )
-def test_cumsum_torch_compile_fullgraph(M: int, N: int, dtype: torch.dtype) -> None:
-    """torch.compile(fullgraph=True) must succeed for both sequential and parallel branches.
+def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype) -> None:
+    """torch.compile(fullgraph=True) must succeed on a warm kernel cache.
 
     N=512 exercises _cumulative_fwd_wrapped (sequential custom_op).
     N=16384 exercises _cumulative_parallel_fwd_wrapped (parallel custom_op) —
     this is the regression case: without the custom_op boundary, torch.compile
     raises 'unsupported Function.call' when tracing the raw JIT callables.
+
+    Not compile-contract evidence (see tests/compile_contract.py): the
+    contract covers a *cold* ``torch.compile(op, fullgraph=True)``, which
+    would trace CumulativeKernel construction inside the graph. This test
+    pre-warms the cache instead, so CumsumFwdOp must not declare
+    ``torch_compile_fullgraph`` in the manifest on its strength.
     """
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 

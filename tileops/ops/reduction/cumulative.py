@@ -79,9 +79,11 @@ class CumulativeOp(Op):
     ) -> Kernel:
         """Return a kernel built for (M, N, dtype), caching by specialization.
 
-        Note: Not decorated with @torch.compiler.disable to allow torch.compile(fullgraph=True).
-        Pre-warming the cache before compilation ensures kernel construction happens outside
-        the compiled region.
+        Deliberately not decorated with ``@torch.compiler.disable``, which
+        ``torch.compile(fullgraph=True)`` rejects. On a cache miss this builds a
+        Kernel, so a caller compiling with ``fullgraph=True`` must warm the cache
+        for every (M, N, dtype, device) it will feed the compiled callable —
+        otherwise construction is traced inside the compiled region.
         """
         key = (M, N, dtype, device_index)
         if key not in self._kernel_cache:
