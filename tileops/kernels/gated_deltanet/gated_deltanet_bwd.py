@@ -251,9 +251,10 @@ def _dh_recurrence_bwd_tl(
     Reads dh_local from bwd_parallel, propagates dh backward, and computes
     corrections for dk, du, dg that depend on dh_buf from other chunks.
 
-    Outputs: dk_correction_partial, du_correction, dg_correction_partial.
-    The partial dk/dg outputs must be reduced over the V-tile dimension by
-    the caller. This keeps the per-CTA state buffer small enough for d128.
+    Outputs: dk_correction_partial, du_correction, dg_correction_partial,
+    dw_correction_partial. The partial dk/dg/dw outputs must be reduced over
+    the V-tile dimension by the caller. This keeps the per-CTA state buffer
+    small enough for d128.
     """
     accum_dtype = "float32"
     block_C = chunk_size
@@ -264,7 +265,7 @@ def _dh_recurrence_bwd_tl(
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
-        out_idx=[-3, -2, -1],
+        out_idx=[-4, -3, -2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
@@ -282,6 +283,7 @@ def _dh_recurrence_bwd_tl(
             dk_corr_partial: T.Tensor([batch, head, num_v_tiles, seq_len, dim_k], dtype),
             du_corr: T.Tensor([batch, head, seq_len, dim_v], dtype),
             dg_corr_partial: T.Tensor([batch, head, num_v_tiles, seq_len], dtype),
+            dw_corr_partial: T.Tensor([batch, head, num_v_tiles, seq_len, dim_k], dtype),
         ):
             with T.Kernel(num_v_tiles, batch, head, threads=threads) as (vid, bid, hid):
                 # Shared buffers
@@ -293,6 +295,7 @@ def _dh_recurrence_bwd_tl(
                 k_scaled = T.alloc_shared([block_C, dim_k], dtype)
                 dP = T.alloc_shared([block_C, dim_k], dtype)
                 dg_c = T.alloc_shared([block_C], dtype)
+                du_corr_c = T.alloc_shared([block_C, BV], dtype)
                 # dh_buf carries gradient from the next chunk (backward)
                 dh_buf = T.alloc_shared([dim_k, BV], dtype)
                 dh_h_tmp = T.alloc_shared([dim_k, BV], dtype)
@@ -337,6 +340,10 @@ def _dh_recurrence_bwd_tl(
                     T.gemm(k_scaled, dh_buf, du_corr_frag)
                     T.copy(
                         du_corr_frag,
+                        du_corr_c,
+                    )
+                    T.copy(
+                        du_corr_c,
                         du_corr[
                             bid,
                             hid,
@@ -345,6 +352,17 @@ def _dh_recurrence_bwd_tl(
                         ],
                         disable_tma=True,
                     )
+
+                    # Reuse resident du_corr and S_start to form the V-tile
+                    # contribution to dw_correction.
+                    T.clear(dP_frag)
+                    T.gemm(du_corr_c, h_c, dP_frag, transpose_B=True)
+                    for n, kk in T.Parallel(block_C, dim_k):
+                        dw_corr_partial[
+                            bid, hid, vid, t_bwd * block_C + n, kk
+                        ] = -dP_frag[n, kk] * T.exp2(
+                            (g_c[n] + g_c[block_C - 1]) * _LOG2E
+                        )
 
                     # dk_correction = (v_new @ dh_buf^T) * exp(g_last - g)
                     T.clear(dP_frag)
@@ -401,9 +419,9 @@ def _reduce_dh_recurrence_partials_tl(
 ):
     """Reduce V-tiled dh-recurrence correction partials.
 
-    ``dk`` and ``dg`` corrections are additive across V tiles. Keeping this
-    reduction inside TileLang avoids generic torch reductions in the full
-    backward hot path.
+    ``dk``, ``dg``, and ``dw`` corrections are additive across V tiles.
+    Keeping this reduction inside TileLang avoids generic torch reductions in
+    the full backward hot path.
     """
     block_C = chunk_size
     BV = dim_v if block_v <= 0 else block_v
@@ -412,7 +430,7 @@ def _reduce_dh_recurrence_partials_tl(
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
-        out_idx=[-2, -1],
+        out_idx=[-3, -2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
@@ -423,15 +441,26 @@ def _reduce_dh_recurrence_partials_tl(
         def reduce_dh_recurrence_partials(
             dk_partial: T.Tensor([batch, head, num_v_tiles, seq_len, dim_k], dtype),
             dg_partial: T.Tensor([batch, head, num_v_tiles, seq_len], dtype),
+            dw_partial: T.Tensor([batch, head, num_v_tiles, seq_len, dim_k], dtype),
             dk: T.Tensor([batch, head, seq_len, dim_k], dtype),
             dg: T.Tensor([batch, head, seq_len], dtype),
+            dw: T.Tensor([batch, head, seq_len, dim_k], dtype),
         ):
             with T.Kernel(batch, head, seq_len // block_C, threads=threads) as (bid, hid, cid):
                 for n, kk in T.Parallel(block_C, dim_k):
-                    acc = T.alloc_var(T.float32, init=0.0)
+                    dk_acc = T.alloc_var(T.float32, init=0.0)
+                    dw_acc = T.alloc_var(T.float32, init=0.0)
                     for vid in T.Serial(num_v_tiles):
-                        acc += T.cast(dk_partial[bid, hid, vid, cid * block_C + n, kk], "float32")
-                    dk[bid, hid, cid * block_C + n, kk] = T.cast(acc, dtype)
+                        dk_acc += T.cast(
+                            dk_partial[bid, hid, vid, cid * block_C + n, kk],
+                            "float32",
+                        )
+                        dw_acc += T.cast(
+                            dw_partial[bid, hid, vid, cid * block_C + n, kk],
+                            "float32",
+                        )
+                    dk[bid, hid, cid * block_C + n, kk] = T.cast(dk_acc, dtype)
+                    dw[bid, hid, cid * block_C + n, kk] = T.cast(dw_acc, dtype)
 
                 for n in T.Parallel(block_C):
                     acc = T.alloc_var(T.float32, init=0.0)
@@ -497,66 +526,6 @@ def _merge_bwd_outputs_tl(
                     dg[bid, hid, offset + n] = T.cast(acc, dtype)
 
         return merge_bwd_outputs
-
-    return _func
-
-
-@functools.lru_cache(maxsize=32)
-def _compute_dw_correction_tl(
-    batch: int,
-    head: int,
-    seq_len: int,
-    chunk_size: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: str = "float32",
-):
-    """Backpropagate future-state du into w for each independent chunk."""
-    accum_dtype = "float32"
-    block_C = chunk_size
-    num_chunks = seq_len // block_C
-
-    @tilelang.jit(
-        out_idx=[-1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
-        },
-        compile_flags=["-O3", "-DENABLE_BF16"],
-    )
-    def _func(threads=128):
-        @T.prim_func
-        def compute_dw_correction(
-            du_corr: T.Tensor([batch, head, seq_len, dim_v], dtype),
-            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], dtype),
-            g: T.Tensor([batch, head, seq_len], dtype),
-            dw_corr: T.Tensor([batch, head, seq_len, dim_k], dtype),
-        ):
-            with T.Kernel(batch, head, num_chunks, threads=threads) as (bid, hid, cid):
-                offset = cid * block_C
-                du_s = T.alloc_shared([block_C, dim_v], dtype)
-                state_s = T.alloc_shared([dim_k, dim_v], dtype)
-                g_s = T.alloc_shared([block_C], dtype)
-                dw_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
-                T.copy(
-                    du_corr[bid, hid, offset : offset + block_C, :],
-                    du_s,
-                    disable_tma=True,
-                )
-                T.copy(S[bid, hid, cid, :, :], state_s, disable_tma=True)
-                T.copy(
-                    g[bid, hid, offset : offset + block_C],
-                    g_s,
-                    disable_tma=True,
-                )
-                T.clear(dw_frag)
-                T.gemm(du_s, state_s, dw_frag, transpose_B=True)
-                for i, j in T.Parallel(block_C, dim_k):
-                    dw_corr[bid, hid, offset + i, j] = (
-                        -dw_frag[i, j]
-                        * T.exp2((g_s[i] + g_s[block_C - 1]) * _LOG2E)
-                    )
-
-        return compute_dw_correction
 
     return _func
 
@@ -649,7 +618,7 @@ def _dh_correction_from_carry_tl(
     num_v_tiles = dim_v // BV
 
     @tilelang.jit(
-        out_idx=[-3, -2, -1],
+        out_idx=[-4, -3, -2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
@@ -668,6 +637,7 @@ def _dh_correction_from_carry_tl(
             dk_corr_partial: T.Tensor([batch, head, num_v_tiles, seq_len, dim_k], dtype),
             du_corr: T.Tensor([batch, head, seq_len, dim_v], dtype),
             dg_corr_partial: T.Tensor([batch, head, num_v_tiles, seq_len], dtype),
+            dw_corr_partial: T.Tensor([batch, head, num_v_tiles, seq_len, dim_k], dtype),
         ):
             with T.Kernel(num_v_tiles, num_chunks, batch * head, threads=threads) as (
                 vid,
@@ -683,6 +653,7 @@ def _dh_correction_from_carry_tl(
                 k_scaled = T.alloc_shared([block_C, dim_k], dtype)
                 dP = T.alloc_shared([block_C, dim_k], dtype)
                 dg_c = T.alloc_shared([block_C], dtype)
+                du_corr_c = T.alloc_shared([block_C, BV], dtype)
                 dh_buf = T.alloc_shared([dim_k, BV], dtype)
                 dh_h_tmp = T.alloc_shared([dim_k, BV], dtype)
                 du_corr_frag = T.alloc_fragment([block_C, BV], accum_dtype)
@@ -718,6 +689,10 @@ def _dh_correction_from_carry_tl(
                 T.gemm(k_scaled, dh_buf, du_corr_frag)
                 T.copy(
                     du_corr_frag,
+                    du_corr_c,
+                )
+                T.copy(
+                    du_corr_c,
                     du_corr[
                         bid,
                         hid,
@@ -726,6 +701,15 @@ def _dh_correction_from_carry_tl(
                     ],
                     disable_tma=True,
                 )
+
+                T.clear(dP_frag)
+                T.gemm(du_corr_c, h_c, dP_frag, transpose_B=True)
+                for n, kk in T.Parallel(block_C, dim_k):
+                    dw_corr_partial[
+                        bid, hid, vid, cid * block_C + n, kk
+                    ] = -dP_frag[n, kk] * T.exp2(
+                        (g_c[n] + g_last) * _LOG2E
+                    )
 
                 T.clear(dP_frag)
                 T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
@@ -1041,10 +1025,6 @@ def _gated_deltanet_bwd_wrapped_kernel(
     wu_bwd_fn = compute_w_u_bwd_full_tl(
         batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
     )(num_stages, threads)
-    dw_correction_fn = _compute_dw_correction_tl(
-        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
-    )(threads)
-
     Aw, _Au, w, u = fused_fn(k, v, g_cum, beta)
     dq, dk_partial, dg_partial, dw, du_partial, v_new, dh_local = \
         bwd_parallel_fn(do, q, k, g_cum, w, u, S)
@@ -1053,7 +1033,7 @@ def _gated_deltanet_bwd_wrapped_kernel(
             batch, head, seq_len, chunk_size, dim_k, dim_v, dtype,
             block_v=recurrence_block_v,
         )(num_stages, recurrence_threads)
-        dk_corr_partial, du_corr, dg_corr_partial = \
+        dk_corr_partial, du_corr, dg_corr_partial, dw_corr_partial = \
             dh_recurrence_bwd_fn(g_cum, k, v_new, S, dh_local)
     elif recurrence_split_carry == 1:
         dh_carry_after_scan_fn = _dh_carry_after_scan_tl(
@@ -1065,7 +1045,7 @@ def _gated_deltanet_bwd_wrapped_kernel(
             block_v=recurrence_block_v,
         )(recurrence_threads)
         dh_carry_after = dh_carry_after_scan_fn(g_cum, dh_local)
-        dk_corr_partial, du_corr, dg_corr_partial = \
+        dk_corr_partial, du_corr, dg_corr_partial, dw_corr_partial = \
             dh_correction_from_carry_fn(g_cum, k, v_new, S, dh_carry_after)
     else:
         num_chunks = seq_len // chunk_size
@@ -1091,11 +1071,11 @@ def _gated_deltanet_bwd_wrapped_kernel(
         segment_alpha, segment_local = dh_segment_summary_fn(g_cum, dh_local)
         segment_carry_after = dh_segment_boundary_scan_fn(segment_alpha, segment_local)
         dh_carry_after = dh_segment_local_carry_fn(g_cum, dh_local, segment_carry_after)
-        dk_corr_partial, du_corr, dg_corr_partial = \
+        dk_corr_partial, du_corr, dg_corr_partial, dw_corr_partial = \
             dh_correction_from_carry_fn(g_cum, k, v_new, S, dh_carry_after)
-    dk_corr, dg_corr = reduce_dh_partials_fn(dk_corr_partial, dg_corr_partial)
-
-    dw_corr = dw_correction_fn(du_corr, S, g_cum)
+    dk_corr, dg_corr, dw_corr = reduce_dh_partials_fn(
+        dk_corr_partial, dg_corr_partial, dw_corr_partial,
+    )
     dk_prepare, dv, dbeta, dg_prepare = wu_bwd_fn(
         dw, dw_corr, du_partial, du_corr, Aw, k, v, g_cum, beta,
     )
@@ -1168,7 +1148,7 @@ class GatedDeltaNetBwdKernel(Kernel):
         threads = 128 if use_split_carry else (256 if self.chunk_size >= 64 else 128)
         recurrence_threads = 128 if use_split_carry else threads
         recurrence_block_v = (
-            64 if use_split_carry
+            (128 if self.dim_v == 128 else 64) if use_split_carry
             else (32 if self.dim_v > 64 and self.dim_v % 32 == 0 else 0)
         )
         parallel_threads = 256 if use_split_carry else threads
