@@ -6,7 +6,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import LayerNormKernel
 
 from ..op_base import Op
-from .norm_base import ALIGNMENT, align_up, normalized_shape_to_n
+from .norm_base import normalized_shape_to_n
 
 __all__ = ["LayerNormFwdOp"]
 
@@ -63,7 +63,6 @@ class LayerNormFwdOp(Op):
         # Manifest declares ``eps: float | None`` with PyTorch default 1e-5.
         self.eps = 1e-5 if eps is None else float(eps)
         self.tune = tune
-        self.N_padded = align_up(self.N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel: Optional[Kernel] = None
         self._last_m: Optional[int] = None

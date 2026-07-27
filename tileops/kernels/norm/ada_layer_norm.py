@@ -83,10 +83,18 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
                             # Prefetch modulation tensors while reducing x.
                             # Predication zero-fills the padded tail.
                             T.async_copy(
-                                scale[pid_m * block_m, 0:N_padded], scale_shared
+                                scale[
+                                    pid_m * block_m : (pid_m + 1) * block_m,
+                                    0:N_padded,
+                                ],
+                                scale_shared,
                             )
                             T.async_copy(
-                                shift[pid_m * block_m, 0:N_padded], shift_shared
+                                shift[
+                                    pid_m * block_m : (pid_m + 1) * block_m,
+                                    0:N_padded,
+                                ],
+                                shift_shared,
                             )
                     else:
                         T.copy(x[pid_m * block_m, 0], shared_buf)
@@ -184,13 +192,25 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
                             x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
                         if use_cp_async:
                             T.async_copy(
-                                scale[pid_m * block_m, 0:N_padded], scale_shared
+                                scale[
+                                    pid_m * block_m : (pid_m + 1) * block_m,
+                                    0:N_padded,
+                                ],
+                                scale_shared,
                             )
                             T.async_copy(
-                                shift[pid_m * block_m, 0:N_padded], shift_shared
+                                shift[
+                                    pid_m * block_m : (pid_m + 1) * block_m,
+                                    0:N_padded,
+                                ],
+                                shift_shared,
                             )
                             T.async_copy(
-                                gate[pid_m * block_m, 0:N_padded], gate_shared
+                                gate[
+                                    pid_m * block_m : (pid_m + 1) * block_m,
+                                    0:N_padded,
+                                ],
+                                gate_shared,
                             )
                     else:
                         T.copy(x[pid_m * block_m, 0], shared_buf)

@@ -78,6 +78,28 @@ def test_ada_layer_norm_kernel_handles_natural_unaligned_shape(
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("block_m", [2, 4])
+def test_ada_layer_norm_async_copy_handles_row_tail(block_m: int) -> None:
+    """Regression: the async 2-D tile must support block_m > 1 and tail rows."""
+    m, n = 17, 1152
+    dtype = torch.float16
+    test = AdaLayerNormTest(m, n, dtype)
+    inputs = test.gen_inputs()
+    kernel = AdaLayerNormKernel(
+        m,
+        n,
+        test.eps,
+        dtype,
+        has_gate=False,
+        config={"block_m": block_m, "threads": 128},
+    )
+    actual = kernel(*inputs)
+    expected = test.ref_program(*inputs)
+    atol, rtol = _get_tolerances(dtype)
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+
+
 class AdaLayerNorm3DFixture(FixtureBase):
     PARAMS = [
         ("batch, seq, hidden, dtype", [
