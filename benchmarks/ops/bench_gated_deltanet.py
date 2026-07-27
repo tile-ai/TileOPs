@@ -210,28 +210,14 @@ class GatedDeltaNetVsFlaFwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
             # chunk_size=32
-            #(2, 1024, 4, 64, 64, 32, torch.float32, False),
-            #(2, 2048, 4, 64, 64, 32, torch.float32, False),
-            #(2, 4096, 4, 64, 64, 32, torch.float32, False),
-            #(2, 1024, 4, 64, 64, 32, torch.float16, False),
-            #(2, 2048, 4, 64, 64, 32, torch.float16, False),
             (2, 4096, 4, 64, 64, 32, torch.float16, False),
-            #(2, 1024, 4, 64, 64, 32, torch.bfloat16, False),
-            #(2, 2048, 4, 64, 64, 32, torch.bfloat16, False),
             (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
             # chunk_size=64
-            #(2, 1024, 4, 64, 64, 64, torch.float16, False),
             (2, 2048, 4, 64, 64, 64, torch.float16, False),
             (2, 4096, 4, 64, 64, 64, torch.float16, False),
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
             (2, 32768, 4, 64, 64, 64, torch.float16, False),
-            #(2, 1024, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 16384, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 32768, 4, 64, 64, 64, torch.bfloat16, False),
         ]),
     ]
 
@@ -293,26 +279,13 @@ class GatedDeltaNetVsFlaBwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
             # chunk_size=32
-            #(2, 1024, 4, 64, 64, 32, torch.float32, False),
-            #(2, 2048, 4, 64, 64, 32, torch.float32, False),
-            #(2, 4096, 4, 64, 64, 32, torch.float32, False),
-            #(2, 1024, 4, 64, 64, 32, torch.float16, False),
-            #(2, 2048, 4, 64, 64, 32, torch.float16, False),
             (2, 4096, 4, 64, 64, 32, torch.float16, False),
-            #(2, 1024, 4, 64, 64, 32, torch.bfloat16, False),
-            #(2, 2048, 4, 64, 64, 32, torch.bfloat16, False),
             (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
             # chunk_size=64
-            #(2, 1024, 4, 64, 64, 64, torch.float16, False),
             (2, 2048, 4, 64, 64, 64, torch.float16, False),
             (2, 4096, 4, 64, 64, 64, torch.float16, False),
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            #(2, 1024, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 16384, 4, 64, 64, 64, torch.bfloat16, False),
         ]),
     ]
 
@@ -397,26 +370,13 @@ class GatedDeltaNetVsFlaFwdBwdFixture(FixtureBase):
     PARAMS = [
         ("batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune", [
             # chunk_size=32
-            #(2, 1024, 4, 64, 64, 32, torch.float32, False),
-            #(2, 2048, 4, 64, 64, 32, torch.float32, False),
-            #(2, 4096, 4, 64, 64, 32, torch.float32, False),
-            #(2, 1024, 4, 64, 64, 32, torch.float16, False),
-            #(2, 2048, 4, 64, 64, 32, torch.float16, False),
             (2, 4096, 4, 64, 64, 32, torch.float16, False),
-            #(2, 1024, 4, 64, 64, 32, torch.bfloat16, False),
-            #(2, 2048, 4, 64, 64, 32, torch.bfloat16, False),
             (2, 4096, 4, 64, 64, 32, torch.bfloat16, False),
             # chunk_size=64
-            #(2, 1024, 4, 64, 64, 64, torch.float16, False),
             (2, 2048, 4, 64, 64, 64, torch.float16, False),
             (2, 4096, 4, 64, 64, 64, torch.float16, False),
             (2, 8192, 4, 64, 64, 64, torch.float16, False),
             (2, 16384, 4, 64, 64, 64, torch.float16, False),
-            #(2, 1024, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 2048, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 4096, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 8192, 4, 64, 64, 64, torch.bfloat16, False),
-            (2, 16384, 4, 64, 64, 64, torch.bfloat16, False),
         ]),
     ]
 

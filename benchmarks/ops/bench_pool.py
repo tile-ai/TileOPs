@@ -137,10 +137,10 @@ def test_avg_pool1d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL1D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("avg_pool1d", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("avg_pool1d", locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 class AvgPool2dBenchCase:
@@ -267,10 +267,10 @@ def test_avg_pool2d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL2D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("avg_pool2d", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("avg_pool2d", locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 class AvgPool3dBenchCase:
@@ -408,10 +408,10 @@ def test_avg_pool3d_bench(
     )
     bm = ManifestBenchmark(_AVG_POOL3D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("avg_pool3d", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("avg_pool3d", locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 class MaxPool2dBenchCase:
@@ -541,10 +541,10 @@ def test_max_pool2d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL2D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("max_pool2d", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("max_pool2d", locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 @pytest.mark.parametrize(
@@ -589,10 +589,10 @@ def test_max_pool2d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL2D_INDICES_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("max_pool2d_indices", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("max_pool2d_indices", locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 class MaxPool1dBenchCase:
@@ -718,10 +718,10 @@ def test_max_pool1d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL1D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("max_pool1d", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("max_pool1d", locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 @pytest.mark.parametrize(
@@ -764,10 +764,10 @@ def test_max_pool1d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL1D_INDICES_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("max_pool1d_indices", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("max_pool1d_indices", locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 class MaxPool3dBenchCase:
@@ -911,10 +911,10 @@ def test_max_pool3d_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL3D_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("max_pool3d", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("max_pool3d", locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 @pytest.mark.parametrize(
@@ -961,7 +961,7 @@ def test_max_pool3d_indices_bench(
     )
     bm = ManifestBenchmark(_MAX_POOL3D_INDICES_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record("max_pool3d_indices", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record("max_pool3d_indices", locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")

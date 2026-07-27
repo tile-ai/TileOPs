@@ -1,10 +1,23 @@
-from typing import Optional
+"""Benchmarks for the Engram gate-conv and decode ops.
+
+Workload shapes and dtypes come from the ops manifest; roofline FLOP and
+byte counts come from each op's ``eval_roofline()`` via
+:class:`ManifestBenchmark`.
+
+One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
+``load_workloads("<OpName>")`` call to its manifest entry.
+"""
 
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    workload_field_params,
+)
+from tileops.manifest import load_workloads
 from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.engram_decode import EngramDecodeOp
 from workloads.engram import (
@@ -13,6 +26,10 @@ from workloads.engram import (
     EngramGateConvBwdTest,
     EngramGateConvFwdTest,
 )
+
+# Autotuning is a bench-run policy, not a workload property; manifest
+# workloads do not carry it.
+_TUNE = True
 
 
 def _rmsnorm(x, w, eps=1e-6):
@@ -54,45 +71,19 @@ def engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, eps=1e-6):
     )
 
 
-class EngramGateConvFwdBenchmark(BenchmarkBase[EngramGateConvFwdTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        M, T, d = t.M, t.seq_len, t.d
-        # 2x RMSNorm(d): ~4d each -> 8*M*T*d
-        # dot product (d): 2*M*T*d
-        # sigmoid: ~10*M*T
-        # gated mul: M*T*d
-        # RMSNorm(v_hat): 4*M*T*d
-        # conv (kernel=4): 4*2*M*T*d
-        # SiLU: ~10*M*T
-        # residual add: M*T*d
-        return M * T * (8 * d + 2 * d + d + 4 * d + 8 * d + d) + 20 * M * T
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        M, T, d = t.M, t.seq_len, t.d
-        elem = torch.tensor([], dtype=t.dtype).element_size()
-        # Read: H + k + v (3*M*T*d) + weights (2*d + 4*d)
-        # Write: Y + vhat (2*M*T*d) + alpha + rrms*3 (4*M*T * 4bytes)
-        return (5 * M * T * d) * elem + 4 * M * T * 4 + 6 * d * elem
+_ENGRAM_GATE_CONV_FWD_OP = "EngramGateConvFwdOp"
+_ENGRAM_GATE_CONV_FWD_PARAMS = workload_field_params(
+    load_workloads(_ENGRAM_GATE_CONV_FWD_OP), ("M", "seq_len", "d", "dtype"),
+)
 
 
-_ENGRAM_GATE_CONV_FWD_BENCH_PARAMS = [
-    pytest.param(1, 32, 256, torch.float16, True, id="fp16-small"),
-    pytest.param(2, 64, 512, torch.float16, True, id="fp16-mainstream"),
-    pytest.param(1, 128, 256, torch.bfloat16, True, id="bf16-long-seq"),
-    pytest.param(2, 16, 256, torch.bfloat16, True, id="bf16-batched"),
-]
-
-
-@pytest.mark.parametrize("M, seq_len, d, dtype, tune", _ENGRAM_GATE_CONV_FWD_BENCH_PARAMS)
-def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype, tune):
+@pytest.mark.parametrize("M, seq_len, d, dtype", _ENGRAM_GATE_CONV_FWD_PARAMS)
+def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
     test = EngramGateConvFwdTest(M, seq_len, d, dtype)
-    bm = EngramGateConvFwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = EngramGateConvFwdOp(M, seq_len, d, dtype, tune=tune)
+    op = EngramGateConvFwdOp(M, seq_len, d, dtype, tune=_TUNE)
+    bm = ManifestBenchmark(_ENGRAM_GATE_CONV_FWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -154,38 +145,19 @@ class _EngramGateConvBwdTestBaseline(EngramGateConvBwdTest):
         )
 
 
-class EngramGateConvBwdBenchmark(BenchmarkBase[EngramGateConvBwdTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        M, T, d = t.M, t.seq_len, t.d
-        fwd_flops = M * T * (8 * d + 2 * d + d + 4 * d + 8 * d + d) + 20 * M * T
-        return int(fwd_flops * 2.5)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        M, T, d = t.M, t.seq_len, t.d
-        elem = torch.tensor([], dtype=t.dtype).element_size()
-        read_bytes = 5 * M * T * d * elem + 6 * d * elem + 4 * M * T * 4
-        write_bytes = 3 * M * T * d * elem + 10 * d * 4 + M * T * d * 4
-        return read_bytes + write_bytes
+_ENGRAM_GATE_CONV_BWD_OP = "EngramGateConvBwdOp"
+_ENGRAM_GATE_CONV_BWD_PARAMS = workload_field_params(
+    load_workloads(_ENGRAM_GATE_CONV_BWD_OP), ("M", "seq_len", "d", "dtype"),
+)
 
 
-_ENGRAM_GATE_CONV_BWD_BENCH_PARAMS = [
-    pytest.param(1, 32, 256, torch.float16, True, id="fp16-small"),
-    pytest.param(2, 64, 512, torch.float16, True, id="fp16-mainstream"),
-    pytest.param(1, 128, 256, torch.bfloat16, True, id="bf16-long-seq"),
-    pytest.param(2, 16, 256, torch.bfloat16, True, id="bf16-batched"),
-]
-
-
-@pytest.mark.parametrize("M, seq_len, d, dtype, tune", _ENGRAM_GATE_CONV_BWD_BENCH_PARAMS)
-def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype, tune):
+@pytest.mark.parametrize("M, seq_len, d, dtype", _ENGRAM_GATE_CONV_BWD_PARAMS)
+def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
     test = _EngramGateConvBwdTestBaseline(M, seq_len, d, dtype)
-    bm = EngramGateConvBwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = EngramGateConvBwdOp(M, seq_len, d, dtype, tune=tune)
+    op = EngramGateConvBwdOp(M, seq_len, d, dtype, tune=_TUNE)
+    bm = ManifestBenchmark(_ENGRAM_GATE_CONV_BWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -254,51 +226,25 @@ def engram_decode_step_torch(
     return y_t.to(h_t.dtype), new_conv_state
 
 
-class EngramDecodeBenchmark(BenchmarkBase[EngramDecodeTest]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        B, d_mem, d, w = t.batch, t.d_mem, t.d, t.conv_kernel_size
-        # GEMV: 2 * B * d_mem * d (k) + 2 * B * d_mem * d (v)
-        # 2x RMSNorm(d): ~4d each -> 8*B*d
-        # dot product: 2*B*d, sigmoid: ~10*B, gated mul: B*d
-        # RMSNorm(v_hat): 4*B*d
-        # dilated conv (w taps): w*2*B*d
-        # SiLU + residual: ~10*B + B*d
-        return (4 * B * d_mem * d
-                + B * (8 * d + 2 * d + d + 4 * d + w * 2 * d + d)
-                + 20 * B)
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        B, d_mem, d, mcl, w = t.batch, t.d_mem, t.d, t.max_conv_len, t.conv_kernel_size
-        elem = torch.tensor([], dtype=t.dtype).element_size()
-        # Read: e_t (B*d_mem) + h_t (B*d) + conv_state (B*mcl*d) + W_K,W_V (2*d_mem*d)
-        #        + weights (2*d + w*d)
-        # Write: y_t (B*d) + new_conv_state (B*mcl*d)
-        return (B * d_mem + B * d + 2 * B * mcl * d + 2 * d_mem * d
-                + 2 * d + w * d + B * d) * elem
-
-
-_ENGRAM_DECODE_BENCH_PARAMS = [
-    pytest.param(1, 512, 256, 12, 4, 3, torch.float16, True, id="fp16-mainstream"),
-    pytest.param(4, 1024, 512, 20, 4, 5, torch.float16, True, id="fp16-large"),
-    pytest.param(8, 512, 256, 18, 4, 3, torch.bfloat16, True, id="bf16-batched"),
-]
+_ENGRAM_DECODE_OP = "EngramDecodeOp"
+_ENGRAM_DECODE_PARAMS = workload_field_params(
+    load_workloads(_ENGRAM_DECODE_OP),
+    ("batch", "d_mem", "d", "max_conv_len", "conv_kernel_size", "dilation", "dtype"),
+)
 
 
 @pytest.mark.parametrize(
-    "batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune",
-    _ENGRAM_DECODE_BENCH_PARAMS,
+    "batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype",
+    _ENGRAM_DECODE_PARAMS,
 )
-def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune):
+def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype):
     test = EngramDecodeTest(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
-    bm = EngramDecodeBenchmark(test)
     inputs = test.gen_inputs()
 
     op = EngramDecodeOp(
-        batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune=tune,
+        batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune=_TUNE,
     )
+    bm = ManifestBenchmark(_ENGRAM_DECODE_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -306,3 +252,7 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
         return engram_decode_step_torch(*args, max_conv_len=max_conv_len, dilation=dilation)
     result_bl = bm.profile(baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-vvs"])

@@ -44,7 +44,7 @@ FP8LightningIndexerOp:
     op: tileops/ops/fp8_lightning_indexer.py
     test: tests/ops/test_fp8_lightning_indexer.py
     bench: benchmarks/ops/bench_fp8_lightning_indexer.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 TopkSelectorOp:
   ref_api: "torch.topk"
@@ -80,4 +80,4 @@ TopkSelectorOp:
     op: tileops/ops/topk_selector.py
     test: tests/ops/test_topk_selector.py
     bench: benchmarks/ops/bench_topk_selector.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

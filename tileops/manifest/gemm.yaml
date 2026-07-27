@@ -152,4 +152,4 @@ GroupedGemmOp:
     op: tileops/ops/grouped_gemm.py
     test: tests/ops/test_grouped_gemm.py
     bench: benchmarks/ops/bench_grouped_gemm.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

@@ -58,55 +58,8 @@ class UnaryBenchmark(BenchmarkBase[UnaryBenchCase]):
         return self.workload.n_total * self.workload.dtype.itemsize * 2
 
 
-# Unary-like ops: leaky_relu, elu, hardtanh, softplus, clamp, nan_to_num
-
-def _unary_params():
-    params = []
-    for op_name in ("leaky_relu", "elu", "hardtanh", "softplus", "clamp", "nan_to_num"):
-        for shape in _UNARY_SHAPES:
-            for dtype in _DTYPES:
-                mark = pytest.mark.smoke if (shape == _UNARY_SHAPES[0] and dtype == torch.float16) else pytest.mark.full
-                params.append(pytest.param(op_name, shape, dtype, marks=mark))
-    return params
-
-
-class UnaryIndependentBenchFixture(FixtureBase):
-    PARAMS = [("op_name, shape, dtype", _unary_params())]
-
-
-_UNARY_OPS = {
-    "leaky_relu": (LeakyReluFwdOp, lambda x: F.leaky_relu(x, 0.01), {}),
-    "elu": (EluFwdOp, lambda x: F.elu(x, 1.0), {}),
-    "hardtanh": (HardtanhFwdOp, lambda x: F.hardtanh(x, -1.0, 1.0), {"min_val": -1.0, "max_val": 1.0}),
-    "softplus": (SoftplusFwdOp, lambda x: F.softplus(x, 1.0, 20.0), {}),
-    "clamp": (ClampScalarFwdOp, lambda x: torch.clamp(x, -0.5, 0.5), {"min": -0.5, "max": 0.5}),
-    "nan_to_num": (NanToNumFwdOp, lambda x: torch.nan_to_num(x, 0.0, 1e4, -1e4), {}),
-}
-
-
-@UnaryIndependentBenchFixture
-def test_unary_independent_bench(op_name: str, shape: tuple, dtype: torch.dtype) -> None:
-    n_total = prod(shape)
-    op_cls, baseline_fn, extra_kwargs = _UNARY_OPS[op_name]
-    test = UnaryBenchCase(shape, dtype)
-    bm = UnaryBenchmark(test)
-    inputs = test.gen_inputs()
-
-    if op_cls.__name__ == "ClampScalarFwdOp":
-        op = op_cls(input=shape, dtype=dtype, **extra_kwargs)
-    else:
-        op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op_name, locals(), result, tag="tileops")
-
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
-
-
-# Tensor-bound clamp ops (manifest-driven): ClampFwdOp, ClampMinFwdOp,
-# ClampMaxFwdOp. Workload shapes are loaded from tileops/manifest/ so the
-# bench coverage stays aligned with the spec (post-broadcast N_total ==
-# product(out_shape)). FLOP/byte counts come from each op's eval_roofline().
+# Tensor-bound clamp ops: ClampFwdOp, ClampMinFwdOp, ClampMaxFwdOp.
+# N_total is post-broadcast, i.e. product(out_shape).
 
 _CLAMP_FWD_OP = "ClampFwdOp"
 _CLAMP_MIN_OP = "ClampMinFwdOp"
@@ -263,195 +216,34 @@ def test_clamp_max_bench(
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# prelu (2 inputs: x + weight)
-
-_PRELU_SHAPES = [(1024, 128), (1024, 4096), (1024, 10240), (1024, 11008)]
-
-
-class PreluBenchCase:
-    def __init__(self, shape: tuple, num_channels: int, dtype: torch.dtype):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.num_channels = num_channels
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.shape, device="cuda", dtype=self.dtype)
-        weight = torch.randn(self.num_channels, device="cuda", dtype=self.dtype).abs() * 0.25
-        return x, weight
-
-
-class PreluBenchmark(BenchmarkBase[PreluBenchCase]):
-    def calculate_flops(self) -> Optional[float]:
-        return self.workload.n_total
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        return t.n_total * t.dtype.itemsize * 2 + t.num_channels * t.dtype.itemsize
-
-
-def _prelu_params():
-    params = []
-    for tokens, hidden in _PRELU_SHAPES:
-        for dtype in _DTYPES:
-            mark = pytest.mark.smoke if (hidden == _PRELU_SHAPES[0][1] and dtype == torch.float16) else pytest.mark.full
-            params.append(pytest.param((tokens, hidden), hidden, dtype, marks=mark))
-    return params
-
-
-class PreluBenchFixture(FixtureBase):
-    PARAMS = [("shape, num_channels, dtype", _prelu_params())]
-
-
-@PreluBenchFixture
-def test_prelu_bench(shape: tuple, num_channels: int, dtype: torch.dtype) -> None:
-    test = PreluBenchCase(shape, num_channels, dtype)
-    bm = PreluBenchmark(test)
-    x, weight = test.gen_inputs()
-
-    # PReLU shape convention: (batch, channels, spatial)
-    prelu_shape = (1, num_channels, shape[0])
-    n_total = prod(shape)
-    op = PreluFwdOp(shape=prelu_shape, dtype=dtype, num_channels=num_channels)
-    result = bm.profile(op, x.reshape(prelu_shape), weight)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    result_bl = bm.profile(F.prelu, x.reshape(prelu_shape), weight)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
-
-
-# where (3 inputs: cond, x, y)
-
-class WhereBenchCase:
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        cond = torch.rand(self.shape, device="cuda") > 0.5
-        x = torch.randn(self.shape, device="cuda", dtype=self.dtype)
-        y = torch.randn(self.shape, device="cuda", dtype=self.dtype)
-        return cond, x, y
-
-
-class WhereBenchmark(BenchmarkBase[WhereBenchCase]):
-    def calculate_flops(self) -> Optional[float]:
-        return self.workload.n_total
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        return t.n_total * (t.dtype.itemsize * 2 + 1) + t.n_total * t.dtype.itemsize
-
-
-def _shape_dtype_params(shapes):
-    params = []
-    for shape in shapes:
-        for dtype in _DTYPES:
-            mark = pytest.mark.smoke if (shape == shapes[0] and dtype == torch.float16) else pytest.mark.full
-            params.append(pytest.param(shape, dtype, marks=mark))
-    return params
-
-
-class WhereBenchFixture(FixtureBase):
-    PARAMS = [("shape, dtype", _shape_dtype_params(_UNARY_SHAPES))]
-
-
-@WhereBenchFixture
-def test_where_bench(shape: tuple, dtype: torch.dtype) -> None:
-    n_total = prod(shape)
-    test = WhereBenchCase(shape, dtype)
-    bm = WhereBenchmark(test)
-    cond, x, y = test.gen_inputs()
-
-    op = WhereFwdOp(condition=tuple(shape), input=tuple(shape), other=tuple(shape), dtype=dtype)
-    result = bm.profile(op, cond, x, y)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    result_bl = bm.profile(torch.where, cond, x, y)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
-
-
-# masked_fill (2 inputs: x + mask)
-
-class MaskedFillBenchCase:
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.shape, device="cuda", dtype=self.dtype)
-        mask = torch.rand(self.shape, device="cuda") > 0.5
-        return x, mask
-
-
-class MaskedFillBenchmark(BenchmarkBase[MaskedFillBenchCase]):
-    def calculate_flops(self) -> Optional[float]:
-        return self.workload.n_total
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        return t.n_total * (t.dtype.itemsize + 1) + t.n_total * t.dtype.itemsize
-
-
-class MaskedFillBenchFixture(FixtureBase):
-    PARAMS = [("shape, dtype", _shape_dtype_params(_UNARY_SHAPES))]
-
-
-@MaskedFillBenchFixture
-def test_masked_fill_bench(shape: tuple, dtype: torch.dtype) -> None:
-    n_total = prod(shape)
-    test = MaskedFillBenchCase(shape, dtype)
-    bm = MaskedFillBenchmark(test)
-    x, mask = test.gen_inputs()
-
-    op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-65000.0, dtype=dtype)
-    result = bm.profile(op, x, mask)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
-
-    def baseline_fn(x, mask):
-        return x.masked_fill(mask, -65000.0)
-
-    result_bl = bm.profile(baseline_fn, x, mask)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
-
-
 # alibi & sinusoidal (generative: no input tensors)
 
-class GenerativeBenchCase:
-    def __init__(self, seq_len: int, dim: int, dtype: torch.dtype):
-        self.n_total = seq_len * dim
-        self.seq_len = seq_len
-        self.dim = dim
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple:
-        return ()
+_ALIBI_OP = "AlibiFwdOp"
+_SINUSOIDAL_OP = "SinusoidalFwdOp"
 
 
-class GenerativeBenchmark(BenchmarkBase[GenerativeBenchCase]):
-    def calculate_flops(self) -> Optional[float]:
-        return self.workload.n_total
-
-    def calculate_memory(self) -> Optional[float]:
-        return self.workload.n_total * self.workload.dtype.itemsize
-
-
-def _generative_params():
-    alibi_shapes = [(512, 64), (2048, 64), (4096, 128)]
-    sinusoidal_shapes = [(512, 256), (2048, 300), (4096, 512)]
+def _generative_params(workloads: list, keys: tuple) -> list:
+    """Manifest workloads -> params; first workload smoke, rest full."""
     params = []
-    for op_name, shapes in [("alibi", alibi_shapes), ("sinusoidal", sinusoidal_shapes)]:
-        for seq_len, dim in shapes:
-            for dtype in _DTYPES:
-                mark = pytest.mark.smoke if (seq_len == shapes[0][0] and dtype == torch.float16) else pytest.mark.full
-                params.append(pytest.param(op_name, seq_len, dim, dtype, marks=mark))
+    for i, w in enumerate(workloads):
+        values = [w[k] for k in keys]
+        dtype = getattr(torch, w["dtypes"][0])
+        mark = pytest.mark.smoke if i == 0 else pytest.mark.full
+        params.append(pytest.param(*values, dtype, marks=mark,
+                                   id=w.get("label", f"w{i}")))
     return params
 
 
-class GenerativeBenchFixture(FixtureBase):
-    PARAMS = [("op_name, seq_len, dim, dtype", _generative_params())]
+class AlibiBenchFixture(FixtureBase):
+    PARAMS = [("seq_len, num_heads, dtype",
+               _generative_params(load_workloads(_ALIBI_OP),
+                                  ("seq_len", "num_heads")))]
+
+
+class SinusoidalBenchFixture(FixtureBase):
+    PARAMS = [("seq_len, d_model, dtype",
+               _generative_params(load_workloads(_SINUSOIDAL_OP),
+                                  ("seq_len", "d_model")))]
 
 
 def _alibi_reference(seq_len: int, num_heads: int, dtype: torch.dtype) -> torch.Tensor:
@@ -476,32 +268,41 @@ def _sinusoidal_reference(seq_len: int, d_model: int, dtype: torch.dtype) -> tor
     return pe.to(dtype)
 
 
-@GenerativeBenchFixture
-def test_generative_bench(op_name: str, seq_len: int, dim: int, dtype: torch.dtype) -> None:
-    test = GenerativeBenchCase(seq_len, dim, dtype)
+class _GenerativeWorkload:
+    """ShapeDtypeWorkload for the generative ops (no input tensors)."""
 
-    if op_name == "alibi":
-        # ALiBi outputs (num_heads, seq_len, seq_len); override n_total.
-        test.n_total = dim * seq_len * seq_len
-        shape = (dim, seq_len, seq_len)
-        op = AlibiFwdOp(seq_len=seq_len, num_heads=dim, dtype=dtype)
+    def __init__(self, shape: tuple, dtype: torch.dtype):
+        self.shape = shape
+        self.dtype = dtype
 
-        def baseline_fn():
-            return _alibi_reference(seq_len, dim, dtype)
-    else:
-        # Sinusoidal positional embedding: (seq_len, d_model).
-        shape = (seq_len, dim)
-        op = SinusoidalFwdOp(seq_len=seq_len, d_model=dim, dtype=dtype)
+    def gen_inputs(self) -> tuple:
+        return ()
 
-        def baseline_fn():
-            return _sinusoidal_reference(seq_len, dim, dtype)
 
-    bm = GenerativeBenchmark(test)
+@AlibiBenchFixture
+def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
+    op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads, dtype=dtype)
+    workload = _GenerativeWorkload((num_heads, seq_len, seq_len), dtype)
+    bm = ManifestBenchmark(_ALIBI_OP, op, workload)
+
     result = bm.profile(op)
-    BenchmarkReport.record(op_name, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(baseline_fn)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch-ref")
+    result_bl = bm.profile(lambda: _alibi_reference(seq_len, num_heads, dtype))
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+
+@SinusoidalBenchFixture
+def test_sinusoidal_bench(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
+    op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model, dtype=dtype)
+    workload = _GenerativeWorkload((seq_len, d_model), dtype)
+    bm = ManifestBenchmark(_SINUSOIDAL_OP, op, workload)
+
+    result = bm.profile(op)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(lambda: _sinusoidal_reference(seq_len, d_model, dtype))
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 # fp8 benchmarks: representative independent ops with e4m3fn / e5m2
@@ -544,21 +345,20 @@ _FP8_UNARY_OPS = {
 
 
 def _fp8_unary_params():
+    """Both fp8 dtypes per op (e5m2 takes the non-saturating cast path);
+    shape swept on one op, since all three share one kernel."""
+    ref_shape = _UNARY_SHAPES[0]
     params = []
     for op_name in ("leaky_relu", "elu", "clamp"):
-        for shape in _UNARY_SHAPES:
-            for dtype in _FP8_DTYPES:
-                mark = (
-                    pytest.mark.smoke
-                    if (shape == _UNARY_SHAPES[0] and dtype == torch.float8_e4m3fn)
-                    else pytest.mark.full
-                )
-                params.append(
-                    pytest.param(
-                        op_name, shape, dtype,
-                        marks=[mark, _UNSUPPORTED_FP8_SKIP],
-                    )
-                )
+        for dtype in _FP8_DTYPES:
+            mark = (pytest.mark.smoke if dtype == torch.float8_e4m3fn
+                    else pytest.mark.full)
+            params.append(pytest.param(
+                op_name, ref_shape, dtype, marks=[mark, _UNSUPPORTED_FP8_SKIP]))
+    for shape in _UNARY_SHAPES[1:]:
+        params.append(pytest.param(
+            "leaky_relu", shape, torch.float8_e4m3fn,
+            marks=[pytest.mark.full, _UNSUPPORTED_FP8_SKIP]))
     return params
 
 
@@ -644,19 +444,17 @@ class Fp8MaskedFillBenchmark(BenchmarkBase[Fp8MaskedFillBenchCase]):
 
 
 def _fp8_selection_params():
+    """Both fp8 dtypes per op at the reference shape; the selection kernels are
+    shape-agnostic beyond total element count."""
+    ref_shape = _UNARY_SHAPES[0]
     params = []
     for op_name in ("where", "masked_fill"):
-        for shape in _UNARY_SHAPES:
-            for dtype in _FP8_DTYPES:
-                mark = (
-                    pytest.mark.smoke
-                    if (shape == _UNARY_SHAPES[0] and dtype == torch.float8_e4m3fn)
-                    else pytest.mark.full
-                )
-                marks = [mark]
-                if op_name == "masked_fill":
-                    marks.append(_UNSUPPORTED_FP8_SKIP)
-                params.append(pytest.param(op_name, shape, dtype, marks=marks))
+        for dtype in _FP8_DTYPES:
+            marks = [pytest.mark.smoke if dtype == torch.float8_e4m3fn
+                     else pytest.mark.full]
+            if op_name == "masked_fill":
+                marks.append(_UNSUPPORTED_FP8_SKIP)
+            params.append(pytest.param(op_name, ref_shape, dtype, marks=marks))
     return params
 
 
@@ -671,10 +469,8 @@ def test_fp8_selection_bench(
     n_total = prod(shape)
 
     if op_name == "where":
-        # WhereFwdOp manifest does not declare fp8 dtype support, so this
-        # branch records only the torch.where baseline. Instantiating
-        # WhereFwdOp with an fp8 dtype here would violate the manifest
-        # contract; the manifest is the spec, not the code.
+        # WhereFwdOp declares no fp8 support, so record only the torch
+        # baseline — instantiating it with an fp8 dtype would break the spec.
         test = Fp8WhereBenchCase(shape, dtype)
         bm = Fp8WhereBenchmark(test)
         cond, x, y = test.gen_inputs()

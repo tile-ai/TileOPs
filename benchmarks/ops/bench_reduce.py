@@ -78,12 +78,18 @@ def test_sum_bench(
 # Mean benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_MEAN_OP))
-def test_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_MEAN_OP, include_extra=True),
+)
+def test_mean_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = MeanTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = MeanFwdOp(dtype=dtype, dim=-1)
+    op_params.setdefault("dim", -1)  # baseline below mirrors the op's dim
+    op = MeanFwdOp(dtype=dtype, **op_params)
     bm = ManifestBenchmark(_MEAN_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -93,8 +99,11 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        return x.float().mean(dim=-1).to(x.dtype)
+        return x.float().mean(dim=dim, keepdim=keepdim).to(x.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
@@ -103,12 +112,18 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
 # Amax benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_AMAX_OP))
-def test_amax_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_AMAX_OP, include_extra=True),
+)
+def test_amax_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = AmaxTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = AmaxFwdOp(dtype=dtype, dim=-1)
+    op_params.setdefault("dim", -1)
+    op = AmaxFwdOp(dtype=dtype, **op_params)
     bm = ManifestBenchmark(_AMAX_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -118,8 +133,11 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        return x.amax(dim=-1)
+        return x.amax(dim=dim, keepdim=keepdim)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
@@ -128,12 +146,18 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype) -> None:
 # Amin benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_AMIN_OP))
-def test_amin_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_AMIN_OP, include_extra=True),
+)
+def test_amin_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = AminTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = AminFwdOp(dtype=dtype, dim=-1)
+    op_params.setdefault("dim", -1)
+    op = AminFwdOp(dtype=dtype, **op_params)
     bm = ManifestBenchmark(_AMIN_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -143,8 +167,11 @@ def test_amin_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        return x.amin(dim=-1)
+        return x.amin(dim=dim, keepdim=keepdim)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
@@ -178,12 +205,18 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
 # Std benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_STD_OP))
-def test_std_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_STD_OP, include_extra=True),
+)
+def test_std_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = StdTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = StdFwdOp(dtype=dtype, dim=-1, correction=1)
+    op_params.setdefault("dim", -1)
+    op = StdFwdOp(dtype=dtype, correction=1, **op_params)
     bm = ManifestBenchmark(_STD_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -193,8 +226,11 @@ def test_std_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        return x.float().std(dim=-1, correction=1).to(x.dtype)
+        return x.float().std(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
@@ -203,12 +239,18 @@ def test_std_bench(shape: tuple, dtype: torch.dtype) -> None:
 # Var benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_VAR_OP))
-def test_var_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_VAR_OP, include_extra=True),
+)
+def test_var_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = VarTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = VarFwdOp(dtype=dtype, dim=-1, correction=1)
+    op_params.setdefault("dim", -1)
+    op = VarFwdOp(dtype=dtype, correction=1, **op_params)
     bm = ManifestBenchmark(_VAR_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -218,8 +260,11 @@ def test_var_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        return x.float().var(dim=-1, correction=1).to(x.dtype)
+        return x.float().var(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
@@ -228,12 +273,18 @@ def test_var_bench(shape: tuple, dtype: torch.dtype) -> None:
 # VarMean benchmarks
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_VAR_MEAN_OP))
-def test_var_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_VAR_MEAN_OP, include_extra=True),
+)
+def test_var_mean_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = VarMeanTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = VarMeanFwdOp(dtype=dtype, dim=-1, correction=1)
+    op_params.setdefault("dim", -1)
+    op = VarMeanFwdOp(dtype=dtype, correction=1, **op_params)
     bm = ManifestBenchmark(_VAR_MEAN_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -243,9 +294,12 @@ def test_var_mean_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        v = x.float().var(dim=-1, correction=1).to(x.dtype)
-        m = x.float().mean(dim=-1).to(x.dtype)
+        v = x.float().var(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
+        m = x.float().mean(dim=dim, keepdim=keepdim).to(x.dtype)
         return (v, m)
 
     result_bl = bm.profile(baseline_fn, *inputs)

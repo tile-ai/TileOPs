@@ -16,19 +16,12 @@ Strategies:
 Binary register_copy is NOT supported (incompatible with stride-based access).
 Boundary checks handled by TileLang LegalizeSafeMemoryAccess.
 
-fp8 dtype support (e4m3fn, e5m2):
-  Accumulation strategy: fp8 input → cast to fp16 → compute → cast back to fp8.
-  Direct fp8 arithmetic loses too much precision for non-trivial ops (sigmoid,
-  exp, etc.), so all computation is performed in fp16 as the accumulation dtype.
-  Default num_per_thread=16 for fp8 (1 byte × 16 = 128-bit memory alignment).
-  Default strategy is explicit_parallel (register_copy is unreliable for fp8).
-
-  Saturation semantics (matches NVIDIA spec):
-  - e4m3fn: no Inf/NaN representation, kernel uses T.Cast (saturating)
-    which clamps overflow to ±448.0 -- correct for this format.
-  - e5m2: has Inf/NaN representation, kernel produces fp16 output to
-    preserve non-finite values (Inf, NaN). The Op layer performs the final
-    non-saturating cast to e5m2 via PyTorch's .to() which preserves Inf/NaN.
+fp8 (e4m3fn, e5m2) accumulates in fp16 — direct fp8 arithmetic loses too much
+precision for sigmoid/exp and friends. Defaults: num_per_thread=16 (128-bit
+alignment) and explicit_parallel (register_copy is unreliable for fp8).
+Saturation follows the NVIDIA spec: e4m3fn has no Inf, so the kernel's
+saturating T.Cast clamping to ±448.0 is correct; e5m2 does, so the kernel emits
+fp16 and the Op layer does the final non-saturating cast.
 """
 
 import functools
@@ -236,23 +229,17 @@ def _get_fp8_output_dtypes(dtype: torch.dtype):
 def _clamp_to_dtype_range(value, dtype: torch.dtype):
     """Normalize *value* into the storage representation of *dtype*.
 
-    Mirrors PyTorch ``Tensor.masked_fill`` scalar coercion so the kernel
-    receives a literal that lands as the same bit pattern PyTorch would
-    write:
+    Mirrors PyTorch ``Tensor.masked_fill`` scalar coercion so the literal lands
+    as the same bit pattern PyTorch would write:
 
-    - bool: any non-zero coerces to ``1``, else ``0``.
-    - Signed int: truncate toward zero. The upstream validator
-      guarantees the value is in ``iinfo`` range; ``+/-Inf`` is mapped
-      to ``iinfo.max/min`` as defense-in-depth so a bypassed validator
-      cannot trigger ``OverflowError`` on ``int(inf)``.
-    - ``torch.uint8``: negatives in ``[-255, 0)`` wrap via
-      ``value & 0xFF`` (PyTorch ``masked_fill(mask, -1) -> 255``);
-      non-negatives truncate as for signed ints.
-    - ``fp16 / bf16 / fp32`` and ``fp8_e5m2`` (Inf-representable):
-      ``NaN`` and ``+/-Inf`` pass through; finite values clamp to
-      ``finfo``.
-    - ``fp8_e4m3fn`` (no Inf representation): ``+/-Inf`` saturates to
-      ``finfo.max/min`` to avoid a TVM ``FloatImm`` overflow.
+    - bool: non-zero → ``1``, else ``0``.
+    - Signed int: truncate toward zero; ``+/-Inf`` maps to ``iinfo.max/min``
+      so a bypassed validator cannot raise ``OverflowError`` on ``int(inf)``.
+    - ``uint8``: negatives wrap via ``& 0xFF``, non-negatives truncate.
+    - ``fp16/bf16/fp32`` and ``fp8_e5m2``: ``NaN`` / ``+-Inf`` pass through,
+      finite values clamp to ``finfo``.
+    - ``fp8_e4m3fn`` has no Inf, so ``+-Inf`` saturates to ``finfo.max/min``
+      to avoid a TVM ``FloatImm`` overflow.
     """
     if dtype == torch.bool:
         return 1 if bool(value) else 0
@@ -277,27 +264,12 @@ def _clamp_to_dtype_range(value, dtype: torch.dtype):
 def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
     """Wrap an op function with fp8 accumulation logic if *dtype* is fp8.
 
-    This shared helper eliminates duplicated fp8 cast-in / cast-out logic
-    across UnaryKernel, BinaryKernel, and FusedGatedKernel.
+    Both fp8 dtypes cast inputs to fp16 and compute there. e4m3fn casts the
+    result back via saturating ``T.Cast`` (correct — it has no Inf); e5m2
+    leaves the result in fp16 and the Op layer does the final non-saturating
+    cast, which preserves Inf/NaN.
 
-    fp8 accumulation strategy:
-    - e4m3fn (saturating): cast inputs to fp16, compute, T.Cast result back
-      to e4m3fn.  e4m3fn has no Inf representation so saturation is correct.
-    - e5m2 (non-saturating): cast inputs to fp16, compute, leave result as
-      fp16.  The Op layer does the final non-saturating cast to e5m2 via
-      PyTorch's ``.to()`` which preserves Inf/NaN.
-
-    For non-fp8 dtypes the original *base_op* is returned unchanged.
-
-    Args:
-        base_op: The element-wise callable (unary or binary).
-        dtype: ``torch.dtype`` of the kernel input.
-        dtype_str: TileLang dtype string (e.g. ``"float8_e4m3fn"``).
-        arity: Number of input operands (1 for unary, 2 for binary).
-
-    Returns:
-        A callable with the same arity that handles fp8 accumulation, or
-        *base_op* itself when no wrapping is needed.
+    Non-fp8 dtypes get *base_op* back unchanged.
     """
     if not _is_fp8(dtype):
         return base_op
@@ -1020,9 +992,7 @@ class BinaryKernel(Kernel):
         """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
 
         Covers a range of occupancy/register-pressure tradeoffs for
-        bandwidth-bound binary elementwise kernels. "strategy" is a
-        build-time config key (it selects the kernel body, not a JIT
-        parameter), so it is excluded from the sweep.
+        bandwidth-bound binary elementwise kernels.
         """
         if _is_fp8(self.dtype):
             # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
@@ -1067,9 +1037,6 @@ class BinaryKernel(Kernel):
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
         super().init_config(config, tune)
-        # Record the resolved strategy so ``self.config`` is the single
-        # source of truth (a coerced/downgraded request or an autotune
-        # result would otherwise leave the key stale or missing).
         self.config["strategy"] = self.strategy
         # Pre-compile and cache the kernel function for the chosen config
         # to avoid JIT lookup overhead on every forward() call.
@@ -1192,9 +1159,7 @@ class FusedGatedKernel(Kernel):
         """Search space: threads in {128, 256, 512} x num_per_thread in {2, 4, 8}.
 
         Covers a range of occupancy/register-pressure tradeoffs for
-        bandwidth-bound fused gated elementwise kernels. "strategy" is a
-        build-time config key (it selects the kernel body, not a JIT
-        parameter), so it is excluded from the sweep.
+        bandwidth-bound fused gated elementwise kernels.
         """
         if _is_fp8(self.dtype):
             # fp8 needs 128-bit alignment: npt >= 16 for 1-byte elements
@@ -1236,8 +1201,6 @@ class FusedGatedKernel(Kernel):
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
         super().init_config(config, tune)
-        # Record the resolved strategy so ``self.config`` is the single
-        # source of truth (an autotune result would otherwise drop the key).
         self.config["strategy"] = self.strategy
         # Pre-compile and cache the kernel function for the chosen config
         # to avoid JIT lookup overhead on every forward() call.
@@ -1332,13 +1295,10 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
         self, N_total, dtype, coalesced_shape, a_strides, b_strides,
         a_numel, b_numel, config=None, tune=False, alpha=1,
     ):
-        # PyTorch's torch.add / torch.sub reject a floating alpha when the
-        # input tensor is integral (or bool). Mirror that contract here so
+        # PyTorch rejects a floating alpha on an integral input; mirror that so
         # the kernel cannot silently truncate alpha through an fp32 cast.
-        # Out-of-range integer alphas are not rejected: PyTorch coerces the
-        # scalar via the input dtype, so values wrap silently (uint8
-        # alpha=-1 → 255; bool alpha=2 → True via low-bit). The kernel's
-        # T.cast(int(alpha), a.dtype) reproduces that wrap.
+        # Out-of-range integer alphas are NOT rejected — PyTorch wraps them via
+        # the input dtype (uint8 alpha=-1 → 255), which T.cast reproduces.
         if dtype in _BITWISE_DTYPES and float(alpha) != float(int(alpha)):
             raise ValueError(
                 "alpha must be an integer when input dtype is integral"

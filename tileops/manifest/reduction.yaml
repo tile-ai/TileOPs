@@ -131,6 +131,7 @@ LogSumExpFwdOp:
   - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
     # LM head logits
   - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -189,6 +190,7 @@ SumFwdOp:
   - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: 0, label: "hidden-state-reduce-dim0"}
     # Keepdim variant (exercises keepdim forwarding through the baseline)
   - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: -1, keepdim: true, label: "hidden-state-reduce-keepdim"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -237,6 +239,7 @@ MeanFwdOp:
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
     # Long sequence reduction
   - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -281,6 +284,7 @@ AmaxFwdOp:
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
     # Long sequence reduction
   - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -325,6 +329,7 @@ AminFwdOp:
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
     # Long sequence reduction
   - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -427,6 +432,7 @@ VarFwdOp:
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-var"}
     # Long sequence variance
   - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-var"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -472,6 +478,7 @@ StdFwdOp:
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-std"}
     # Long sequence std
   - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-std"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -520,6 +527,7 @@ VarMeanFwdOp:
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-var-mean"}
     # Long sequence var+mean
   - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-var-mean"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -568,6 +576,9 @@ ArgmaxFwdOp:
   - {x_shape: [4, 102400], dtypes: [float16, bfloat16], dim: -1, label: "lm-head-argmax"}
     # Hidden state argmax
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], dim: -1, label: "hidden-state-argmax"}
+    # Non-last-axis sentinel; ArgmaxFwdOp and ArgminFwdOp share ArgreduceKernel,
+    # so one op carries it.
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: 0, label: "3d-non-last-axis-argmax"}
 
   roofline:
     vars:
@@ -585,6 +596,7 @@ ArgmaxFwdOp:
     op: tileops/ops/reduction/argreduce.py
     test: tests/ops/test_argreduce.py
     bench: benchmarks/ops/bench_argreduce.py
+    bench_manifest_driven: true
 
 ArgminFwdOp:
   ref_api: "torch.argmin"
@@ -628,6 +640,7 @@ ArgminFwdOp:
     op: tileops/ops/reduction/argreduce.py
     test: tests/ops/test_argreduce.py
     bench: benchmarks/ops/bench_argreduce.py
+    bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------
 # reduction -- logical reductions (output dtype: bool)
@@ -660,6 +673,7 @@ AllFwdOp:
     # Mask validation (batch, seq_len)
   - {x_shape: [32, 4096], dtypes: [bool], label: "mask-validation-4k"}
   - {x_shape: [32, 32768], dtypes: [bool], label: "mask-validation-32k"}
+  - {x_shape: [4, 128, 4096], dtypes: [bool], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -706,6 +720,7 @@ AnyFwdOp:
     # Mask validation (batch, seq_len)
   - {x_shape: [32, 4096], dtypes: [bool], label: "mask-validation-4k"}
   - {x_shape: [32, 32768], dtypes: [bool], label: "mask-validation-32k"}
+  - {x_shape: [4, 128, 4096], dtypes: [bool], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -748,6 +763,7 @@ CountNonzeroFwdOp:
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "sparsity-hidden"}
     # Sparse attention mask
   - {x_shape: [32, 32768], dtypes: [float16], label: "sparsity-seq"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -802,6 +818,7 @@ L1NormFwdOp:
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-l1"}
     # Long sequence L1 norm
   - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-l1"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -852,6 +869,7 @@ L2NormFwdOp:
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-l2"}
     # Long sequence L2 norm
   - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-l2"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:
@@ -902,6 +920,7 @@ InfNormFwdOp:
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-inf"}
     # Long sequence inf norm
   - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-inf"}
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
 
   roofline:
     vars:

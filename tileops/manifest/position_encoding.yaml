@@ -37,7 +37,7 @@ RopeNeoxOp:
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 RopeNonNeoxOp:
   ref_api: "none"
@@ -72,7 +72,7 @@ RopeNonNeoxOp:
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 RopeLlama31Op:
   ref_api: "none"
@@ -111,7 +111,7 @@ RopeLlama31Op:
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 RopeYarnOp:
   ref_api: "none"
@@ -151,7 +151,7 @@ RopeYarnOp:
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 RopeLongRopeOp:
   ref_api: "none"
@@ -189,7 +189,7 @@ RopeLongRopeOp:
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 RopeNeoxPositionIdsOp:
   ref_api: "none"
@@ -226,4 +226,4 @@ RopeNeoxPositionIdsOp:
     op: tileops/ops/rope.py
     test: tests/ops/test_rope.py
     bench: benchmarks/ops/bench_rope.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

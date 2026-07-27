@@ -7,9 +7,7 @@ Baselines:
 Real model configurations:
   Model              E    K  scoring   renorm
   Kimi K2          384   8  sigmoid   True
-  DeepSeek-V3      256   8  sigmoid   True
   Qwen3-235B-A22B  128   8  softmax   False
-  Qwen3-30B-A3B    128   8  softmax   False
 """
 
 from typing import Optional
@@ -73,10 +71,6 @@ class FusedTopKBenchFixture(FixtureBase):
             (32,   384, 8, "sigmoid", True),
             (512,  384, 8, "sigmoid", True),
             (4096, 384, 8, "sigmoid", True),
-            (1,    256, 8, "sigmoid", True),
-            (32,   256, 8, "sigmoid", True),
-            (512,  256, 8, "sigmoid", True),
-            (4096, 256, 8, "sigmoid", True),
             (1,    128, 8, "softmax", False),
             (32,   128, 8, "softmax", False),
             (512,  128, 8, "softmax", False),
@@ -107,7 +101,7 @@ def test_fused_topk_bench(
     torch.cuda.synchronize()
 
     result = bm.profile(op, gating_output)
-    BenchmarkReport.record("fused_topk", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # vLLM baseline (optional)
     has_external = False
@@ -128,7 +122,7 @@ def test_fused_topk_bench(
         torch.cuda.synchronize()
 
         result_vllm = bm.profile(_vllm_fn, gating_output)
-        BenchmarkReport.record("fused_topk", locals(), result_vllm, tag="vllm")
+        BenchmarkReport.record(op, locals(), result_vllm, tag="vllm")
 
     # Fallback: torch reference baseline (only when no external baselines)
     if not has_external:
@@ -139,4 +133,4 @@ def test_fused_topk_bench(
         torch.cuda.synchronize()
 
         result_ref = bm.profile(_ref_fn, gating_output)
-        BenchmarkReport.record("fused_topk", locals(), result_ref, tag="torch-ref")
+        BenchmarkReport.record(op, locals(), result_ref, tag="torch-ref")

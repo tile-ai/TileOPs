@@ -106,15 +106,5 @@ def test_grouped_gemm(batch_sum: int, batch_count: int, N: int, K: int, dtype: t
     test.check(op, *test.gen_inputs())
 
 
-# Complete variant: forward (NT) + backward dA (NN) + backward dB (TN)
-
-class GroupedGemmCompleteFixture(FixtureBase):
-    PARAMS = [
-        ("batch_sum, batch_count, N, K, dtype, tune", [
-            pytest.param(16384, 4, 4864, 4096, torch.float16, False, marks=pytest.mark.smoke),
-        ]),
-    ]
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

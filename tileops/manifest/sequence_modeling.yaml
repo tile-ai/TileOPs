@@ -51,7 +51,7 @@ EngramGateConvFwdOp:
     op: tileops/ops/engram.py
     test: tests/ops/test_engram.py
     bench: benchmarks/ops/bench_engram.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 EngramGateConvBwdOp:
   ref_api: "none"
@@ -112,7 +112,7 @@ EngramGateConvBwdOp:
     op: tileops/ops/engram.py
     test: tests/ops/test_engram.py
     bench: benchmarks/ops/bench_engram.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 EngramDecodeOp:
   ref_api: "none"
@@ -165,7 +165,7 @@ EngramDecodeOp:
     op: tileops/ops/engram_decode.py
     test: tests/ops/test_engram.py
     bench: benchmarks/ops/bench_engram.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 FFTC2COp:
   ref_api: "torch.fft.fft"
@@ -239,7 +239,7 @@ MHCPreOp:
     op: tileops/ops/mhc.py
     test: tests/ops/test_mhc.py
     bench: benchmarks/ops/bench_mhc.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 MHCPostOp:
   ref_api: "none"
@@ -274,4 +274,4 @@ MHCPostOp:
     op: tileops/ops/mhc.py
     test: tests/ops/test_mhc.py
     bench: benchmarks/ops/bench_mhc.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

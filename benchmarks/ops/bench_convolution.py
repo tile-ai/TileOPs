@@ -1,391 +1,344 @@
-from typing import Optional
+"""Benchmarks for the convolution op family (1d/2d/3d, with and without bias).
+
+Workload shapes, channel counts, kernel sizes, strides, paddings, and dtypes
+are loaded from the ops manifest (``tileops/manifest/convolution.yaml``);
+FLOP/byte counts come from each op's ``eval_roofline()`` via
+:class:`ManifestBenchmark`.
+
+One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
+``load_workloads("<OpName>")`` call to its manifest entry.
+"""
+
+from typing import Callable, Optional
 
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tileops.ops import Conv1dBiasFwdOp, Conv2dBiasFwdOp, Conv3dBiasFwdOp
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from tileops.manifest import load_workloads
+from tileops.ops import (
+    Conv1dBiasFwdOp,
+    Conv1dFwdOp,
+    Conv2dBiasFwdOp,
+    Conv2dFwdOp,
+    Conv3dBiasFwdOp,
+    Conv3dFwdOp,
+)
+
+# Bench-local: autotuning is benchmark infrastructure, not a workload property.
+_TUNE = True
 
 
-class Conv1dBenchCase:
+class _ConvWorkload:
+    """Minimal :class:`ShapeDtypeWorkload` for the convolution family.
 
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        l_in: int,
-        c_out: int,
-        kernel_size: int,
-        stride: int,
-        padding: int,
-        dilation: int,
-        dtype: torch.dtype,
-    ) -> None:
-        self.n = n
-        self.c_in = c_in
-        self.l_in = l_in
-        self.c_out = c_out
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
+    Holds ``shape`` and ``dtype`` so :class:`ManifestBenchmark` can call
+    ``op.eval_roofline()`` after ``forward()`` has bound the dynamic vars.
+    """
+
+    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
+        self.shape = shape
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
-        weight = torch.randn(
-            self.c_out, self.c_in, self.kernel_size,
-            device="cuda", dtype=self.dtype,
-        ).contiguous()
-        bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
-        return x, weight, bias
 
-    def ref_program(
-        self,
+def _mark(idx: int):
+    """First manifest workload of an op is the smoke case; the rest are full."""
+    return pytest.mark.smoke if idx == 0 else pytest.mark.full
+
+
+def _conv_params(workloads: list[dict], kernel_keys: tuple[str, ...]) -> list:
+    """Build ``(input_shape, c_out, kernel_size, stride, padding, dtype)`` params.
+
+    ``kernel_keys`` names the manifest spatial-extent keys in order, e.g.
+    ``("kD", "kH", "kW")`` for 3d. Workload entries omitting ``stride`` /
+    ``padding`` fall back to the manifest signature defaults; scalar entries
+    are broadcast across the spatial dims the way PyTorch broadcasts them.
+    """
+    n_spatial = len(kernel_keys)
+
+    def _spatial(value) -> tuple[int, ...]:
+        if isinstance(value, (list, tuple)):
+            return tuple(value)
+        return (value,) * n_spatial
+
+    params = []
+    for idx, w in enumerate(workloads):
+        input_shape = tuple(w["input_shape"])
+        kernel_size = tuple(w[key] for key in kernel_keys)
+        stride = _spatial(w.get("stride", 1))
+        padding = _spatial(w.get("padding", 0))
+        dilation = _spatial(w.get("dilation", 1))
+        groups = w.get("groups", 1)
+        for dtype_name in w["dtypes"]:
+            params.append(pytest.param(
+                input_shape, w["C_out"], kernel_size, stride, padding,
+                dilation, groups, getattr(torch, dtype_name),
+                id=f"{w['label']}-{dtype_name}",
+                marks=_mark(idx),
+            ))
+    return params
+
+
+def _conv_inputs(
+    input_shape: tuple[int, ...],
+    c_out: int,
+    kernel_size: tuple[int, ...],
+    dtype: torch.dtype,
+    *,
+    groups: int,
+    with_bias: bool,
+) -> tuple[torch.Tensor, ...]:
+    """Generate ``(input, weight[, bias])`` for a convolution workload."""
+    c_in = input_shape[1]
+    x = torch.randn(input_shape, device="cuda", dtype=dtype).contiguous()
+    weight = torch.randn(
+        c_out, c_in // groups, *kernel_size, device="cuda", dtype=dtype,
+    ).contiguous()
+    if not with_bias:
+        return x, weight
+    bias = torch.zeros(c_out, device="cuda", dtype=dtype).contiguous()
+    return x, weight, bias
+
+
+def _torch_conv_baseline(
+    conv_fn: Callable,
+    stride: tuple[int, ...],
+    padding: tuple[int, ...],
+    dilation: tuple[int, ...],
+    groups: int,
+) -> Callable:
+    """Return a ``torch.nn.functional`` conv baseline bound to these params."""
+
+    def baseline_fn(
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return F.conv1d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            groups=1,
+        return conv_fn(
+            x, weight, bias=bias,
+            stride=stride, padding=padding,
+            dilation=dilation, groups=groups,
         )
 
-
-class Conv1dBenchmark(BenchmarkBase[Conv1dBenchCase]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        out_l = (t.l_in + 2 * t.padding - t.dilation * (t.kernel_size - 1) - 1) // t.stride + 1
-        return 2.0 * t.n * t.c_out * out_l * t.c_in * t.kernel_size
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        out_l = (t.l_in + 2 * t.padding - t.dilation * (t.kernel_size - 1) - 1) // t.stride + 1
-        bytes_ = (
-            t.n * t.c_in * t.l_in
-            + t.c_out * t.c_in * t.kernel_size
-            + t.n * t.c_out * out_l
-        ) * t.dtype.itemsize
-        return bytes_
+    return baseline_fn
 
 
-_CONV1D_BENCH_PARAMS = [
-    pytest.param(4, 256, 32000, 512, 1, 1, 0, 1, torch.float16, True, id="convtasnet-pointwise-k1-s1-fp16"),
-    pytest.param(4, 128, 4096, 256, 3, 1, 1, 1, torch.float16, True, id="seanet-k3-s1-fp16"),
-    pytest.param(4, 64, 16000, 128, 5, 2, 2, 1, torch.float16, True, id="audio-downsample-k5-s2-fp16"),
-    pytest.param(4, 128, 8192, 256, 7, 1, 3, 1, torch.float16, True, id="seanet-stem-k7-s1-fp16"),
-    pytest.param(2, 128, 4096, 256, 3, 2, 1, 1, torch.bfloat16, True, id="sequence-downsample-k3-s2-bf16"),
-    pytest.param(4, 128, 4096, 256, 3, 1, 2, 2, torch.float16, True, id="seanet-k3-s1-d2-fp16"),
-]
+def _profile_conv(
+    op,
+    bm: ManifestBenchmark,
+    inputs: tuple[torch.Tensor, ...],
+    baseline_fn: Callable,
+    params: dict,
+) -> None:
+    """Profile op and the torch baseline on the same inputs and record both."""
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, params, result, tag="tileops")
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, params, result_bl, tag="torch")
+
+
+# Conv1d
+
+_CONV1D_OP = "Conv1dFwdOp"
+_CONV1D_KERNEL_KEYS = ("kW",)
 
 
 @pytest.mark.parametrize(
-    "n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, dtype, tune",
-    _CONV1D_BENCH_PARAMS,
+    "input_shape, c_out, kernel_size, stride, padding, dilation, groups, dtype",
+    _conv_params(load_workloads(_CONV1D_OP), _CONV1D_KERNEL_KEYS),
 )
 def test_conv1d_bench(
-    n: int,
-    c_in: int,
-    l_in: int,
+    input_shape: tuple[int, ...],
     c_out: int,
-    kernel_size: int,
-    stride: int,
-    padding: int,
-    dilation: int,
+    kernel_size: tuple[int, ...],
+    stride: tuple[int, ...],
+    padding: tuple[int, ...],
+    dilation: tuple[int, ...],
+    groups: int,
     dtype: torch.dtype,
-    tune: bool,
 ) -> None:
-    test = Conv1dBenchCase(n, c_in, l_in, c_out, kernel_size, stride, padding, dilation, dtype)
-    bm = Conv1dBenchmark(test)
-    inputs = test.gen_inputs()
-    x, weight, bias = inputs
-
-    op = Conv1dBiasFwdOp(
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        groups=1,
-        tune=tune,
+    inputs = _conv_inputs(input_shape, c_out, kernel_size, dtype,
+                          groups=groups, with_bias=False)
+    op = Conv1dFwdOp(
+        stride=stride, padding=padding,
+        dilation=dilation, groups=groups, tune=_TUNE,
     )
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record("conv1d", locals(), result, tag="tileops")
-
-    result_bl = bm.profile(test.ref_program, x, weight, bias)
-    BenchmarkReport.record("conv1d", locals(), result_bl, tag="torch")
-
-
-class Conv2dBenchCase:
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h: int,
-        w: int,
-        c_out: int,
-        kernel_size: tuple[int, int],
-        stride: tuple[int, int],
-        padding: tuple[int, int],
-        dilation: tuple[int, int],
-        groups: int,
-        dtype: torch.dtype,
-    ) -> None:
-        self.n = n
-        self.c_in = c_in
-        self.h = h
-        self.w = w
-        self.c_out = c_out
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(self.n, self.c_in, self.h, self.w, device="cuda", dtype=self.dtype).contiguous()
-        weight = torch.randn(
-            self.c_out, self.c_in // self.groups, self.kernel_size[0], self.kernel_size[1],
-            device="cuda", dtype=self.dtype,
-        ).contiguous()
-        bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
-        return x, weight, bias
-
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        return F.conv2d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            groups=self.groups,
-        )
-
-class Conv2dBenchmark(BenchmarkBase[Conv2dBenchCase]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        out_h = (t.h + 2 * t.padding[0] - t.dilation[0] * (t.kernel_size[0] - 1) - 1) // t.stride[0] + 1
-        out_w = (t.w + 2 * t.padding[1] - t.dilation[1] * (t.kernel_size[1] - 1) - 1) // t.stride[1] + 1
-        c_in_g = t.c_in // t.groups
-        return 2.0 * t.n * t.c_out * out_h * out_w * c_in_g * t.kernel_size[0] * t.kernel_size[1]
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        out_h = (t.h + 2 * t.padding[0] - t.dilation[0] * (t.kernel_size[0] - 1) - 1) // t.stride[0] + 1
-        out_w = (t.w + 2 * t.padding[1] - t.dilation[1] * (t.kernel_size[1] - 1) - 1) // t.stride[1] + 1
-        c_in_g = t.c_in // t.groups
-        bytes_ = (
-            t.n * t.c_in * t.h * t.w
-            + t.c_out * c_in_g * t.kernel_size[0] * t.kernel_size[1]
-            + t.n * t.c_out * out_h * out_w
-        ) * t.dtype.itemsize
-        return bytes_
+    bm = ManifestBenchmark(_CONV1D_OP, op, _ConvWorkload(input_shape, dtype))
+    _profile_conv(
+        op, bm, inputs, _torch_conv_baseline(F.conv1d, stride, padding, dilation, groups),
+        {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,
+         "stride": stride, "padding": padding, "dilation": dilation,
+         "groups": groups, "dtype": dtype},
+    )
 
 
-_CONV2D_BENCH_PARAMS = [
-    pytest.param(2, 64, 56, 56, 64, (3, 3), (1, 1), (1, 1), (1, 1), 1, torch.float16, True, id="resnet-3x3-fp16"),
-    pytest.param(1, 3, 112, 112, 64, (3, 3), (2, 2), (1, 1), (1, 1), 1, torch.float16, True, id="stem-3x3-s2-fp16"),
-    pytest.param(1, 128, 56, 56, 256, (3, 3), (2, 2), (1, 1), (1, 1), 1, torch.float16, True, id="stage-transition-3x3-s2-fp16"),
-    pytest.param(1, 256, 112, 112, 512, (3, 3), (1, 1), (1, 1), (1, 1), 1, torch.float16, True, id="highres-3x3-s1-fp16"),
-    pytest.param(1, 64, 56, 56, 128, (5, 5), (1, 1), (2, 2), (1, 1), 1, torch.float16, True, id="midres-5x5-s1-fp16"),
-    pytest.param(1, 128, 56, 56, 256, (5, 5), (2, 2), (2, 2), (1, 1), 1, torch.float16, True, id="stage-transition-5x5-s2-fp16"),
-    pytest.param(1, 128, 28, 28, 128, (3, 3), (2, 2), (1, 1), (1, 1), 1, torch.bfloat16, True, id="stride2-bf16"),
-    pytest.param(2, 64, 56, 56, 256, (1, 1), (1, 1), (0, 0), (1, 1), 1, torch.float16, True, id="resnet-1x1-fp16"),
-    pytest.param(2, 128, 28, 28, 512, (1, 1), (1, 1), (0, 0), (1, 1), 1, torch.float16, True, id="bottleneck-expand-1x1-fp16"),
-    pytest.param(2, 512, 28, 28, 128, (1, 1), (1, 1), (0, 0), (1, 1), 1, torch.float16, True, id="bottleneck-reduce-1x1-fp16"),
-    pytest.param(1, 256, 14, 14, 1024, (1, 1), (1, 1), (0, 0), (1, 1), 1, torch.float16, True, id="late-stage-1x1-fp16"),
-    pytest.param(1, 512, 7, 7, 2048, (1, 1), (1, 1), (0, 0), (1, 1), 1, torch.float16, True, id="classifier-1x1-fp16"),
-    pytest.param(2, 64, 56, 56, 256, (1, 1), (1, 1), (0, 0), (1, 1), 1, torch.bfloat16, True, id="resnet-1x1-bf16"),
-    # DeepLabV3/DeepLabV3+ ASPP branch: 3x3 atrous conv on stride-16 encoder features.
-    pytest.param(1, 2048, 32, 32, 256, (3, 3), (1, 1), (12, 12), (12, 12), 1, torch.float16, True, id="deeplabv3-aspp-3x3-rate12-fp16"),
-    # MobileNetV2 inverted residual depthwise 3x3 convolution.
-    pytest.param(1, 32, 56, 56, 32, (3, 3), (1, 1), (1, 1), (1, 1), 32, torch.float16, True, id="mobilenetv2-depthwise-fp16"),
-    # ResNeXt bottleneck grouped 3x3 convolution.
-    pytest.param(1, 128, 28, 28, 256, (3, 3), (1, 1), (1, 1), (1, 1), 32, torch.float16, True, id="resnext-grouped-3x3-fp16"),
-]
+_CONV1D_BIAS_OP = "Conv1dBiasFwdOp"
 
 
 @pytest.mark.parametrize(
-    "n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype, tune",
-    _CONV2D_BENCH_PARAMS,
+    "input_shape, c_out, kernel_size, stride, padding, dilation, groups, dtype",
+    _conv_params(load_workloads(_CONV1D_BIAS_OP), _CONV1D_KERNEL_KEYS),
+)
+def test_conv1d_bias_bench(
+    input_shape: tuple[int, ...],
+    c_out: int,
+    kernel_size: tuple[int, ...],
+    stride: tuple[int, ...],
+    padding: tuple[int, ...],
+    dilation: tuple[int, ...],
+    groups: int,
+    dtype: torch.dtype,
+) -> None:
+    inputs = _conv_inputs(input_shape, c_out, kernel_size, dtype,
+                          groups=groups, with_bias=True)
+    op = Conv1dBiasFwdOp(
+        stride=stride, padding=padding,
+        dilation=dilation, groups=groups, tune=_TUNE,
+    )
+    bm = ManifestBenchmark(_CONV1D_BIAS_OP, op, _ConvWorkload(input_shape, dtype))
+    _profile_conv(
+        op, bm, inputs, _torch_conv_baseline(F.conv1d, stride, padding, dilation, groups),
+        {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,
+         "stride": stride, "padding": padding, "dilation": dilation,
+         "groups": groups, "dtype": dtype},
+    )
+
+
+# Conv2d
+
+_CONV2D_OP = "Conv2dFwdOp"
+_CONV2D_KERNEL_KEYS = ("kH", "kW")
+
+
+@pytest.mark.parametrize(
+    "input_shape, c_out, kernel_size, stride, padding, dilation, groups, dtype",
+    _conv_params(load_workloads(_CONV2D_OP), _CONV2D_KERNEL_KEYS),
 )
 def test_conv2d_bench(
-    n: int,
-    c_in: int,
-    h: int,
-    w: int,
+    input_shape: tuple[int, ...],
     c_out: int,
-    kernel_size: tuple[int, int],
-    stride: tuple[int, int],
-    padding: tuple[int, int],
-    dilation: tuple[int, int],
+    kernel_size: tuple[int, ...],
+    stride: tuple[int, ...],
+    padding: tuple[int, ...],
+    dilation: tuple[int, ...],
     groups: int,
     dtype: torch.dtype,
-    tune: bool,
 ) -> None:
-    test = Conv2dBenchCase(n, c_in, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype)
-    bm = Conv2dBenchmark(test)
-    inputs = test.gen_inputs()
-    x, weight, bias = inputs
-
-    op = Conv2dBiasFwdOp(
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        groups=groups,
-        tune=tune,
+    inputs = _conv_inputs(input_shape, c_out, kernel_size, dtype,
+                          groups=groups, with_bias=False)
+    op = Conv2dFwdOp(
+        stride=stride, padding=padding,
+        dilation=dilation, groups=groups, tune=_TUNE,
     )
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record("conv2d", locals(), result, tag="tileops")
-
-    result_bl = bm.profile(test.ref_program, x, weight, bias)
-    BenchmarkReport.record("conv2d", locals(), result_bl, tag="torch")
-
-
-class Conv3dBenchCase:
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        d: int,
-        h: int,
-        w: int,
-        c_out: int,
-        kernel_size: tuple[int, int, int],
-        stride: tuple[int, int, int],
-        padding: tuple[int, int, int],
-        dilation: tuple[int, int, int],
-        groups: int,
-        dtype: torch.dtype,
-    ) -> None:
-        self.n = n
-        self.c_in = c_in
-        self.d = d
-        self.h = h
-        self.w = w
-        self.c_out = c_out
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(
-            self.n, self.c_in, self.d, self.h, self.w,
-            device="cuda", dtype=self.dtype,
-        ).contiguous()
-        weight = torch.randn(
-            self.c_out,
-            self.c_in // self.groups,
-            self.kernel_size[0],
-            self.kernel_size[1],
-            self.kernel_size[2],
-            device="cuda", dtype=self.dtype,
-        ).contiguous()
-        bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
-        return x, weight, bias
-
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        return F.conv3d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            groups=self.groups,
-        )
-
-class Conv3dBenchmark(BenchmarkBase[Conv3dBenchCase]):
-
-    def calculate_flops(self) -> Optional[float]:
-        t = self.workload
-        out_d = (t.d + 2 * t.padding[0] - t.dilation[0] * (t.kernel_size[0] - 1) - 1) // t.stride[0] + 1
-        out_h = (t.h + 2 * t.padding[1] - t.dilation[1] * (t.kernel_size[1] - 1) - 1) // t.stride[1] + 1
-        out_w = (t.w + 2 * t.padding[2] - t.dilation[2] * (t.kernel_size[2] - 1) - 1) // t.stride[2] + 1
-        c_in_g = t.c_in // t.groups
-        return 2.0 * t.n * t.c_out * out_d * out_h * out_w * c_in_g * t.kernel_size[0] * t.kernel_size[1] * t.kernel_size[2]
-
-    def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        out_d = (t.d + 2 * t.padding[0] - t.dilation[0] * (t.kernel_size[0] - 1) - 1) // t.stride[0] + 1
-        out_h = (t.h + 2 * t.padding[1] - t.dilation[1] * (t.kernel_size[1] - 1) - 1) // t.stride[1] + 1
-        out_w = (t.w + 2 * t.padding[2] - t.dilation[2] * (t.kernel_size[2] - 1) - 1) // t.stride[2] + 1
-        c_in_g = t.c_in // t.groups
-        bytes_ = (
-            t.n * t.c_in * t.d * t.h * t.w
-            + t.c_out * c_in_g * t.kernel_size[0] * t.kernel_size[1] * t.kernel_size[2]
-            + t.n * t.c_out * out_d * out_h * out_w
-        ) * t.dtype.itemsize
-        return bytes_
+    bm = ManifestBenchmark(_CONV2D_OP, op, _ConvWorkload(input_shape, dtype))
+    _profile_conv(
+        op, bm, inputs, _torch_conv_baseline(F.conv2d, stride, padding, dilation, groups),
+        {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,
+         "stride": stride, "padding": padding, "dilation": dilation,
+         "groups": groups, "dtype": dtype},
+    )
 
 
-_CONV3D_BENCH_PARAMS = [
-    pytest.param(1, 3, 16, 112, 112, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), 1, torch.float16, True, id="r3d-stem-k3-s1-fp16"),
-    pytest.param(1, 64, 8, 56, 56, 128, (3, 3, 3), (2, 2, 2), (1, 1, 1), (1, 1, 1), 1, torch.float16, True, id="video-stage-downsample-k3-s2-fp16"),
-    pytest.param(1, 32, 32, 64, 64, 64, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), 1, torch.bfloat16, True, id="unet-encoder-k3-s1-bf16"),
-    # 3D U-Net + 3D ASPP medical segmentation branch: 3x3x3 atrous conv on low-resolution volume features.
-    pytest.param(1, 256, 8, 16, 16, 256, (3, 3, 3), (1, 1, 1), (6, 6, 6), (6, 6, 6), 1, torch.float16, True, id="3d-unet-aspp-3x3x3-rate6-fp16"),
-    # 3D-ResNeXt/video backbone grouped 3x3x3 convolution.
-    pytest.param(1, 64, 8, 28, 28, 128, (3, 3, 3), (1, 1, 1), (1, 1, 1), (1, 1, 1), 32, torch.float16, False, id="3d-resnext-grouped-k3-fp16"),
-]
+_CONV2D_BIAS_OP = "Conv2dBiasFwdOp"
 
 
 @pytest.mark.parametrize(
-    "n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype, tune",
-    _CONV3D_BENCH_PARAMS,
+    "input_shape, c_out, kernel_size, stride, padding, dilation, groups, dtype",
+    _conv_params(load_workloads(_CONV2D_BIAS_OP), _CONV2D_KERNEL_KEYS),
 )
-def test_conv3d_bench(
-    n: int,
-    c_in: int,
-    d: int,
-    h: int,
-    w: int,
+def test_conv2d_bias_bench(
+    input_shape: tuple[int, ...],
     c_out: int,
-    kernel_size: tuple[int, int, int],
-    stride: tuple[int, int, int],
-    padding: tuple[int, int, int],
-    dilation: tuple[int, int, int],
+    kernel_size: tuple[int, ...],
+    stride: tuple[int, ...],
+    padding: tuple[int, ...],
+    dilation: tuple[int, ...],
     groups: int,
     dtype: torch.dtype,
-    tune: bool,
 ) -> None:
-    test = Conv3dBenchCase(n, c_in, d, h, w, c_out, kernel_size, stride, padding, dilation, groups, dtype)
-    bm = Conv3dBenchmark(test)
-    inputs = test.gen_inputs()
-    x, weight, bias = inputs
-
-    op = Conv3dBiasFwdOp(
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        groups=groups,
-        tune=tune,
+    inputs = _conv_inputs(input_shape, c_out, kernel_size, dtype,
+                          groups=groups, with_bias=True)
+    op = Conv2dBiasFwdOp(
+        stride=stride, padding=padding,
+        dilation=dilation, groups=groups, tune=_TUNE,
     )
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record("conv3d", locals(), result, tag="tileops")
+    bm = ManifestBenchmark(_CONV2D_BIAS_OP, op, _ConvWorkload(input_shape, dtype))
+    _profile_conv(
+        op, bm, inputs, _torch_conv_baseline(F.conv2d, stride, padding, dilation, groups),
+        {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,
+         "stride": stride, "padding": padding, "dilation": dilation,
+         "groups": groups, "dtype": dtype},
+    )
 
-    result_bl = bm.profile(test.ref_program, x, weight, bias)
-    BenchmarkReport.record("conv3d", locals(), result_bl, tag="torch")
+
+# Conv3d
+
+_CONV3D_OP = "Conv3dFwdOp"
+_CONV3D_KERNEL_KEYS = ("kD", "kH", "kW")
+
+
+@pytest.mark.parametrize(
+    "input_shape, c_out, kernel_size, stride, padding, dilation, groups, dtype",
+    _conv_params(load_workloads(_CONV3D_OP), _CONV3D_KERNEL_KEYS),
+)
+def test_conv3d_bench(
+    input_shape: tuple[int, ...],
+    c_out: int,
+    kernel_size: tuple[int, ...],
+    stride: tuple[int, ...],
+    padding: tuple[int, ...],
+    dilation: tuple[int, ...],
+    groups: int,
+    dtype: torch.dtype,
+) -> None:
+    inputs = _conv_inputs(input_shape, c_out, kernel_size, dtype,
+                          groups=groups, with_bias=False)
+    op = Conv3dFwdOp(
+        stride=stride, padding=padding,
+        dilation=dilation, groups=groups, tune=_TUNE,
+    )
+    bm = ManifestBenchmark(_CONV3D_OP, op, _ConvWorkload(input_shape, dtype))
+    _profile_conv(
+        op, bm, inputs, _torch_conv_baseline(F.conv3d, stride, padding, dilation, groups),
+        {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,
+         "stride": stride, "padding": padding, "dilation": dilation,
+         "groups": groups, "dtype": dtype},
+    )
+
+
+_CONV3D_BIAS_OP = "Conv3dBiasFwdOp"
+
+
+@pytest.mark.parametrize(
+    "input_shape, c_out, kernel_size, stride, padding, dilation, groups, dtype",
+    _conv_params(load_workloads(_CONV3D_BIAS_OP), _CONV3D_KERNEL_KEYS),
+)
+def test_conv3d_bias_bench(
+    input_shape: tuple[int, ...],
+    c_out: int,
+    kernel_size: tuple[int, ...],
+    stride: tuple[int, ...],
+    padding: tuple[int, ...],
+    dilation: tuple[int, ...],
+    groups: int,
+    dtype: torch.dtype,
+) -> None:
+    inputs = _conv_inputs(input_shape, c_out, kernel_size, dtype,
+                          groups=groups, with_bias=True)
+    op = Conv3dBiasFwdOp(
+        stride=stride, padding=padding,
+        dilation=dilation, groups=groups, tune=_TUNE,
+    )
+    bm = ManifestBenchmark(_CONV3D_BIAS_OP, op, _ConvWorkload(input_shape, dtype))
+    _profile_conv(
+        op, bm, inputs, _torch_conv_baseline(F.conv3d, stride, padding, dilation, groups),
+        {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,
+         "stride": stride, "padding": padding, "dilation": dilation,
+         "groups": groups, "dtype": dtype},
+    )
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-vvs"])
