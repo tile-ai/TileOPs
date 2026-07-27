@@ -78,8 +78,8 @@ def test_native_crash_loses_only_the_crashing_file(tmp_path):
     cases = _cases(out_xml)
     assert "ops.bench_ok::test_ok" in cases
 
+    assert _error_node_count(out_xml, "bench_crash") == 1
     errors = [err for tc in cases.values() if (err := tc.find("error")) is not None]
-    assert len(errors) == 1
     assert "SIGABRT" in errors[0].attrib["message"]
 
 
@@ -142,6 +142,19 @@ def test_fragments_and_profile_logs_merge(tmp_path):
     assert "BETA-REPORT" in profile_log
 
 
+def _error_node_count(out_xml, needle: str) -> int:
+    """Count raw <error> nodes attributed to files matching needle."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.parse(out_xml).getroot()
+    return sum(
+        1
+        for case in root.iter("testcase")
+        if needle in (case.get("classname") or "")
+        for _ in case.findall("error")
+    )
+
+
 def test_teardown_crash_is_reported(tmp_path):
     """A child dying after its status report must not read as success."""
     bench_dir = _write_bench_dir(
@@ -158,7 +171,7 @@ def test_teardown_crash_is_reported(tmp_path):
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "died in teardown" in proc.stdout
-    assert any("bench_teardown_abort" in k for k in _cases(out_xml))
+    assert _error_node_count(out_xml, "bench_teardown_abort") == 1
 
 
 def test_teardown_deadline_enforced_during_next_file(tmp_path):

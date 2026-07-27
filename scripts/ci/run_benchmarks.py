@@ -313,7 +313,13 @@ def main() -> int:
                     suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
                     failed.append(rel)
                 else:
-                    lingering.append((child, time.monotonic() + args.teardown_timeout, bench_file))
+                    if rc >= 0:
+                        # A pre-status signal death (rc < 0) is already reaped
+                        # and recorded below; enqueue only status-reported
+                        # children so post-status deaths stay observable.
+                        lingering.append(
+                            (child, time.monotonic() + args.teardown_timeout, bench_file)
+                        )
                     sys.stdout.write(log_path.read_text(errors="replace"))
                     if rc < 0:
                         sig = signal.Signals(-rc)
