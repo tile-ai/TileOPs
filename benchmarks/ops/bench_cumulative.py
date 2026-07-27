@@ -50,7 +50,7 @@ def _make_op(shape: tuple, dtype: torch.dtype, op_kind: str):
         "cumprod": CumprodFwdOp,
     }
     cls = op_map[op_kind]
-    return cls(N=shape[-1], dtype=dtype, dim=-1)
+    return cls(dtype=dtype, dim=-1)
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMSUM_OP))

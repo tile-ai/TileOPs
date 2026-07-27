@@ -77,7 +77,11 @@ class CumulativeOp(Op):
     def _get_kernel(
         self, M: int, N: int, dtype: torch.dtype, device_index: int | None,
     ) -> Kernel:
-        """Return a kernel built for (M, N, dtype), caching by specialization."""
+        """Return a kernel built for (M, N, dtype), caching by specialization.
+
+        A cache miss builds a Kernel, so a ``fullgraph=True`` caller must warm
+        every (M, N, dtype, device) it will feed the compiled callable.
+        """
         key = (M, N, dtype, device_index)
         if key not in self._kernel_cache:
             self._kernel_cache[key] = self.kernel_map["cumulative_fwd"](
@@ -142,6 +146,9 @@ class CumsumFwdOp(CumulativeOp):
 
     Output has the same shape and dtype as ``x``. Alignment padding is
     handled inside the kernel via masked loads.
+
+    Shapes with ``M < 128 and N > 8192`` take a three-pass parallel scan for
+    SM utilization; every other shape takes the sequential scan.
 
     Args:
         dtype: Optional data type (float32, float16, or bfloat16).
