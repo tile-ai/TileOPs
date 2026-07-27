@@ -52,9 +52,7 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
 # Shared base class for all reduce ops
-# ---------------------------------------------------------------------------
 
 
 class _ReduceOpBase(Op):
@@ -115,9 +113,7 @@ class _ReduceOpBase(Op):
         self._kernel_cache: Dict[tuple, object] = {}
         self._last_roofline_mn: tuple[int, int] | None = None
 
-    # ------------------------------------------------------------------
     # Dim validation (subclasses may override)
-    # ------------------------------------------------------------------
 
     def _validate_dim(self) -> None:
         """Validate the ``dim`` parameter.
@@ -156,10 +152,8 @@ class _ReduceOpBase(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {self._kernel_key: self._kernel_cls}
 
-    # ------------------------------------------------------------------
     # Pad value (subclasses may override; used only when
     # _kernel_handles_padding is False)
-    # ------------------------------------------------------------------
 
     def _pad_value(self) -> float:
         """Return the identity element used when padding to alignment.
@@ -169,9 +163,7 @@ class _ReduceOpBase(Op):
         """
         return 0.0
 
-    # ------------------------------------------------------------------
     # Extra kernel kwargs (subclasses may override)
-    # ------------------------------------------------------------------
 
     def _build_kernel_kwargs(self) -> dict:
         """Return extra keyword arguments for the kernel constructor.
@@ -180,9 +172,7 @@ class _ReduceOpBase(Op):
         """
         return {}
 
-    # ------------------------------------------------------------------
     # Pre/post kernel hooks (subclasses may override)
-    # ------------------------------------------------------------------
 
     def _pre_kernel(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
         """Transform 2D input before kernel call.
@@ -196,10 +186,8 @@ class _ReduceOpBase(Op):
         """Transform kernel output.  Default: identity."""
         return y
 
-    # ------------------------------------------------------------------
     # Forward (subclasses with non-standard returns, e.g. VarMeanFwdOp,
     # must override)
-    # ------------------------------------------------------------------
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the reduce op on *x* along the configured dim."""
@@ -215,9 +203,7 @@ class _ReduceOpBase(Op):
         y = self._post_kernel(y, ctx)
         return self._reshape_output(y, orig_shape, dim_info)
 
-    # ------------------------------------------------------------------
     # Empty-dim no-op short-circuit
-    # ------------------------------------------------------------------
 
     def _noop_output_dtype(self) -> Optional[torch.dtype]:
         """Manifest-declared output dtype for the dtype-altering short-circuits.
@@ -244,9 +230,7 @@ class _ReduceOpBase(Op):
         if x.ndim == 0:
             raise ValueError("Input tensor must be at least 1D")
 
-    # ------------------------------------------------------------------
     # Scalar (0-D) input fast path
-    # ------------------------------------------------------------------
 
     def _validate_scalar_dim(self) -> None:
         """Validate that ``self.dim`` is an accepted form for a 0-D input.
@@ -409,9 +393,7 @@ class _ReduceOpBase(Op):
 
         return flops, mem_bytes
 
-    # ------------------------------------------------------------------
     # Kernel cache
-    # ------------------------------------------------------------------
 
     def _get_or_create_kernel(self, M: int, N: int) -> object:
         """Return a cached kernel for (M, N), creating one if needed."""
@@ -424,9 +406,7 @@ class _ReduceOpBase(Op):
             )
         return self._kernel_cache[key]
 
-    # ------------------------------------------------------------------
     # Input preparation (validate → transpose → reshape → pad)
-    # ------------------------------------------------------------------
 
     def _prepare_input(
         self, x: torch.Tensor,
@@ -493,9 +473,7 @@ class _ReduceOpBase(Op):
 
         return x, orig_shape, dim, kernel
 
-    # ------------------------------------------------------------------
     # Output reshape
-    # ------------------------------------------------------------------
 
     def _reshape_output(
         self, y: torch.Tensor, orig_shape: torch.Size, dim_info: Union[int, List[int]],
@@ -518,9 +496,7 @@ class _ReduceOpBase(Op):
             return y.squeeze() if len(reduced_shape) == 0 else y.reshape(reduced_shape)
 
 
-# ---------------------------------------------------------------------------
 # Simple reduce ops (sum, mean, amin, amax, prod)
-# ---------------------------------------------------------------------------
 
 
 class _SimpleReduceOp(_ReduceOpBase):
@@ -618,9 +594,7 @@ class ProdFwdOp(_SimpleReduceOp):
             )
 
 
-# ---------------------------------------------------------------------------
 # Welford-based ops (std, var, var_mean)
-# ---------------------------------------------------------------------------
 
 
 class _WelfordReduceOp(_ReduceOpBase):

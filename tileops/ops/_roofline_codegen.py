@@ -138,7 +138,7 @@ def _resolve_func_path(path: str) -> Callable[..., Any]:
     mod_path, _, attr = path.rpartition(".")
     try:
         mod = importlib.import_module(mod_path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ValueError(
             f"cannot resolve roofline.func {path!r}: import {mod_path!r} "
             f"failed ({exc})"
@@ -596,7 +596,7 @@ def _synthesize_inline_mode(
             f"({exc})"
         ) from exc
     local_ns: dict[str, Any] = {}
-    exec(code, globs, local_ns)  # noqa: S102
+    exec(code, globs, local_ns)
     fn = local_ns["eval_roofline"]
     fn.__name__ = "eval_roofline"
     fn.__qualname__ = f"{op_name}.eval_roofline"
@@ -646,11 +646,11 @@ def _lookup_manifest_entry(op_name: str) -> dict[str, Any] | None:
     """Return the manifest entry for *op_name* or ``None`` if absent."""
     try:
         from tileops.manifest import load_manifest
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     try:
         ops = load_manifest()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     entry = ops.get(op_name)
     if not isinstance(entry, dict):

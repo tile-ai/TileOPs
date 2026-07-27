@@ -89,7 +89,6 @@ class ReciprocalFwdOp(UnaryOp):
         self,
         N_total: int,
         dtype: torch.dtype,
-        strategy: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
@@ -102,17 +101,13 @@ class ReciprocalFwdOp(UnaryOp):
             # stays float32 (set by the kernel) per the manifest's
             # ``promote_int_to_float`` contract.
             super().__init__(
-                N_total, torch.float32, strategy=strategy,
-                kernel_map=kernel_map, tune=tune,
+                N_total, torch.float32, kernel_map=kernel_map, tune=tune,
             )
             self.dtype = dtype
         else:
-            super().__init__(
-                N_total, dtype, strategy=strategy,
-                kernel_map=kernel_map, tune=tune,
-            )
+            super().__init__(N_total, dtype, kernel_map=kernel_map, tune=tune)
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         if self.dtype in _MANIFEST_INT_DTYPES:
             self._validate_input(input)
             promoted = input.to(torch.float32)
@@ -172,7 +167,6 @@ class RoundFwdOp(_IntIdentityUnaryOp):
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype.
-        strategy: Kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """
@@ -180,7 +174,7 @@ class RoundFwdOp(_IntIdentityUnaryOp):
     _op_name = "round"
     kernel_cls = RoundFwdKernel
 
-    def forward(  # noqa: A002
+    def forward(
         self, input: torch.Tensor, decimals: int = 0,
     ) -> torch.Tensor:
         if decimals == 0:

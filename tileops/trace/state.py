@@ -184,7 +184,6 @@ class TraceState:
         self.declared_flows.append((src_name, dst_name))
 
 
-# ---------------------------------------------------------------------------
 # Always-emit build registry.
 #
 # ``trace.*`` markers always emit their placeholder into the kernel body and
@@ -192,7 +191,6 @@ class TraceState:
 # eagerly and single-threaded, so one build = one registry epoch: ``trace.lower``
 # reads the registry right after the build it transforms, then retires it via
 # begin_build_epoch(). The next marker lazily installs a fresh registry.
-# ---------------------------------------------------------------------------
 
 _BUILD_STATE: TraceState | None = None
 

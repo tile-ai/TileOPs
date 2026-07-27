@@ -2,7 +2,6 @@ from .deepseek_dsa_decode import SparseMlaKernel
 from .deepseek_mla_decode import MLADecodeKernel, MLADecodeWsKernel
 from .deepseek_nsa_cmp_fwd import NSACmpFwdVarlenKernel
 from .deepseek_nsa_fwd import NSAFwdVarlenKernel
-from .deepseek_nsa_mean_pooling_fwd import MeanPoolingFwdKernel
 from .deepseek_nsa_topk import NSATopkVarlenKernel
 from .gqa_bwd import (
     FlashAttnBwdPostprocessKernel,
@@ -79,7 +78,6 @@ __all__ = [
     "MHAFwdWgmmaPipelinedKernel",
     "MLADecodeKernel",
     "MLADecodeWsKernel",
-    "MeanPoolingFwdKernel",
     "NSACmpFwdVarlenKernel",
     "NSAFwdVarlenKernel",
     "NSATopkVarlenKernel",

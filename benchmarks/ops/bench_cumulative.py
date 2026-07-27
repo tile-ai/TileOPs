@@ -43,8 +43,7 @@ class CumulativeBenchTest(WorkloadBase):
 
 def _make_op(shape: tuple, dtype: torch.dtype, op_kind: str):
     """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.cumprod import CumprodFwdOp
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
+    from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 
     op_map = {
         "cumsum": CumsumFwdOp,

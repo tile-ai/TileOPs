@@ -6,7 +6,7 @@ Covers model-scale configurations (130M–2.7B) and workload types
 
 import torch
 
-from workloads.base import FixtureBase, WorkloadBase
+from workloads.workload_base import FixtureBase, WorkloadBase
 
 # ---------------------------------------------------------------------------
 # Model configs (Mamba-2 paper Table 1 / mamba_ssm reference)

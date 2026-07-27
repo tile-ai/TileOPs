@@ -142,8 +142,7 @@ def test_da_cumsum_fwd(batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_so
         has_dt_bias=has_dt_bias, dt_softplus=dt_softplus, dtype=dtype,
     )
     op = DaCumsumFwdOp(
-        batch, num_chunks, chunk_len, n_heads,
-        seq_len=num_chunks * chunk_len,
+        chunk_len=chunk_len,
         has_dt_bias=has_dt_bias,
         dt_softplus=dt_softplus,
         dtype=dtype,
@@ -237,7 +236,7 @@ class SSDChunkScanFwdTest(SSDChunkScanFwdWorkload, TestBase):
 @SSDChunkScanFwdFixture
 def test_ssd_chunk_scan_fwd(batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune):
     test = SSDChunkScanFwdTest(batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype)
-    op = SSDChunkScanFwdOp(batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune=tune)
+    op = SSDChunkScanFwdOp(tune=tune)
     inputs = test.gen_inputs()
     atol = 1e-3 if dtype == torch.float16 else 2e-3
     rtol = 1e-5
@@ -293,10 +292,7 @@ def test_ssd_chunk_state_fwd(
     test = SSDChunkStateFwdTest(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, has_seq_idx,
     )
-    op = SSDChunkStateFwdOp(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
-        has_seq_idx=has_seq_idx, tune=tune,
-    )
+    op = SSDChunkStateFwdOp(has_seq_idx=has_seq_idx, tune=tune)
     inputs = test.gen_inputs()
     atol = 1e-3 if dtype == torch.float16 else 1.6e-2
     rtol = 1e-3
@@ -322,7 +318,7 @@ def test_ssd_chunk_state_fwd_seq_end_negative():
     seq_idx = torch.ones(b, seq_len, dtype=torch.int32, device="cuda")
     seq_idx[:, :Q] = -1
 
-    op = SSDChunkStateFwdOp(b, c, Q, h, p, n, g, dtype, has_seq_idx=True)
+    op = SSDChunkStateFwdOp(has_seq_idx=True)
     out = op(x, Bmat, dt, dA_cumsum, seq_idx)
     ref = ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, g, seq_idx=seq_idx)
 
@@ -370,7 +366,7 @@ class SSDStatePassingFwdTest(SSDStatePassingFwdWorkload, TestBase):
 @SSDStatePassingFwdFixture
 def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune):
     test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
-    op = SSDStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=tune)
+    op = SSDStatePassingFwdOp(tune=tune)
     inputs = test.gen_inputs()
     atol = 1e-3 if dtype == torch.float16 else 1.6e-2
     rtol = 1e-3
@@ -388,9 +384,10 @@ def test_ssd_state_passing_fwd_vectorize(config, dtype):
     """Exercises the vectorize=True code path (lo/hi split per thread)."""
     batch, num_chunks, n_heads, d_state = 2, 4, 8, 128
     test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
-    op = SSDStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=False)
-    op.kernel.config = config
+    op = SSDStatePassingFwdOp(tune=False)
     inputs = test.gen_inputs()
+    op(*inputs)
+    op.kernel.config = config
     atol = 1e-3 if dtype == torch.float16 else 1.6e-2
     test.check(op, *inputs, atol=atol, rtol=1e-3)
 
@@ -457,7 +454,7 @@ class SSDDecodeTest(SSDDecodeWorkload, TestBase):
 @SSDDecodeFixture
 def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
     test = SSDDecodeTest(batch, n_heads, d_head, d_state, n_groups, dtype)
-    op = SSDDecodeOp(batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune)
+    op = SSDDecodeOp(tune=tune)
     A, dt, x, B_in, C_in, state = test.gen_inputs()
 
     # Run reference on a clone of state so the two runs start from the same point.
@@ -588,13 +585,6 @@ def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk
     dt_bias = torch.randn(n_heads,                          dtype=torch.float32,  device=dev) * 0.1
 
     op = Mamba2FwdOp(
-        batch=batch,
-        seqlen=seqlen,
-        n_heads=n_heads,
-        d_head=d_head,
-        d_state=d_state,
-        n_groups=n_groups,
-        dtype=dtype,
         chunk_size=chunk_size,
         dt_softplus=True,
         has_initial_states=False,

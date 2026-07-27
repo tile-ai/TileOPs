@@ -54,9 +54,7 @@ def make_inputs(T: int, E: int, top_k: int, N: int, K: int,
     return A, B, sizes, offsets, numel
 
 
-# ---------------------------------------------------------------------------
 # Smoke tests
-# ---------------------------------------------------------------------------
 
 @pytest.mark.smoke
 def test_import():
@@ -79,9 +77,7 @@ def test_output_shape(dtype):
     assert C.dtype == dtype
 
 
-# ---------------------------------------------------------------------------
 # Correctness tests vs MoeGroupedGemmNopadKernel
-# ---------------------------------------------------------------------------
 
 @pytest.mark.nightly
 @pytest.mark.parametrize("distribution", ["uniform", "skewed"])

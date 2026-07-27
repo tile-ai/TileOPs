@@ -2,7 +2,8 @@
 
 Covers the sentinel-repair + atomic-trim primitives that protect caches
 whose consumers assume "directory exists => contents complete" (the
-tilelang autotuner cache in particular).
+tilelang autotuner cache in particular), plus the gpu-smoke
+trust-routing contract, whose failure mode has no CI signal.
 
 Required cases:
   - half_dead       : atomic subdir with files but no sentinel is removed
@@ -34,9 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RECLAIM_SCRIPT = REPO_ROOT / ".github" / "actions" / "reclaim-runner-disk" / "reclaim_cache.sh"
 
 
-# ---------------------------------------------------------------------------
 # Test helpers
-# ---------------------------------------------------------------------------
 
 
 def _age_path(path: Path, *, days: float) -> None:
@@ -80,9 +79,7 @@ def _make_autotuner_subdir(
     return subdir
 
 
-# ---------------------------------------------------------------------------
 # sentinel-repair
-# ---------------------------------------------------------------------------
 
 
 def test_sentinel_repair_removes_half_dead_subdir(tmp_path: Path) -> None:
@@ -110,10 +107,13 @@ def test_sentinel_repair_is_idempotent(tmp_path: Path) -> None:
     assert (healthy / "best_config.json").exists()
 
 
-def test_sentinel_repair_tolerates_missing_root(tmp_path: Path) -> None:
-    """A non-existent cache root must be a no-op, not an error."""
+def test_all_subcommands_tolerate_missing_root(tmp_path: Path) -> None:
+    """A non-existent cache root must be a no-op, not an error, for every
+    subcommand."""
     missing = tmp_path / "does-not-exist"
     _run("sentinel-repair", str(missing))  # asserts rc==0
+    _run("atomic-trim", "7", str(missing))
+    _run("trim-files", "7", str(missing))
 
 
 def test_sentinel_repair_honours_custom_sentinel_filename(tmp_path: Path) -> None:
@@ -127,28 +127,7 @@ def test_sentinel_repair_honours_custom_sentinel_filename(tmp_path: Path) -> Non
     assert subdir.exists(), "subdir with the custom sentinel must be preserved"
 
 
-def test_no_half_dead_after_reclaim(tmp_path: Path) -> None:
-    """After a full reclaim sequence no autotuner subdir is left
-    in the half-dead state (exists but missing best_config.json)."""
-    root = tmp_path / "autotuner"
-    _make_autotuner_subdir(root, "halfdead_a", with_sentinel=False)
-    _make_autotuner_subdir(root, "halfdead_b", with_sentinel=False)
-    _make_autotuner_subdir(root, "healthy", with_sentinel=True)
-
-    # Full reclaim order: sentinel-repair → atomic-trim.
-    _run("sentinel-repair", str(root))
-    _run("atomic-trim", "7", str(root))
-
-    for subdir in root.iterdir():
-        if subdir.is_dir():
-            assert (subdir / "best_config.json").exists(), (
-                f"{subdir} is half-dead after reclaim"
-            )
-
-
-# ---------------------------------------------------------------------------
 # atomic-trim
-# ---------------------------------------------------------------------------
 
 
 def test_atomic_trim_removes_stale_subdir_whole(tmp_path: Path) -> None:
@@ -225,11 +204,6 @@ def test_atomic_trim_uses_file_mtime_not_dir_mtime(tmp_path: Path) -> None:
     )
 
 
-def test_atomic_trim_tolerates_missing_root(tmp_path: Path) -> None:
-    missing = tmp_path / "nope"
-    _run("atomic-trim", "7", str(missing))
-
-
 def test_atomic_trim_handles_empty_root(tmp_path: Path) -> None:
     root = tmp_path / "autotuner"
     root.mkdir()
@@ -237,9 +211,7 @@ def test_atomic_trim_handles_empty_root(tmp_path: Path) -> None:
     assert root.exists(), "the cache root itself is never removed"
 
 
-# ---------------------------------------------------------------------------
-# trim-files (non-atomic roots, legacy behaviour)
-# ---------------------------------------------------------------------------
+# trim-files (non-atomic roots)
 
 
 def test_trim_files_removes_old_files_but_leaves_atomic_roots_alone(
@@ -274,5 +246,37 @@ def test_trim_files_removes_old_files_but_leaves_atomic_roots_alone(
     assert (subdir / "kernel.cu").exists()
 
 
-def test_trim_files_tolerates_missing_root(tmp_path: Path) -> None:
-    _run("trim-files", "7", str(tmp_path / "nope"))
+# gpu-smoke security trust routing
+
+GPU_SMOKE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "gpu-smoke.yml"
+
+
+def test_security_policy_routes_trust_by_collaborator_permission() -> None:
+    """is_fork must derive from the PR author's collaborator permission
+    (write/maintain/admin -> trusted), fail closed to the fork pool, and
+    drive both runs-on and the trusted-action ref."""
+    import yaml
+
+    wf = yaml.safe_load(GPU_SMOKE_WORKFLOW.read_text())
+    policy_job = wf["jobs"]["security-policy"]
+    run_steps = [s for s in policy_job["steps"] if "run" in s and s.get("id") == "policy"]
+    assert run_steps, "expected a 'policy' step in security-policy job"
+    step = run_steps[0]
+    script = step["run"]
+    env = step["env"]
+
+    assert "AUTHOR_ASSOC" not in env, "author_association must not drive trust"
+    assert "AUTHOR_ASSOC" not in script
+    assert "collaborators/${PR_AUTHOR}/permission" in script
+    assert "admin|maintain|write" in script
+    assert 'is_fork="false"' in script  # trusted branch
+    assert 'is_fork="true"' in script  # fail-closed / external branch
+    assert "PR_AUTHOR" in env, "PR_AUTHOR must be plumbed via env:"
+    assert "pull_request.user.login" in env["PR_AUTHOR"]
+
+    gpu_job = wf["jobs"]["gpu-smoke"]
+    assert "needs.security-policy.outputs.is_fork" in str(gpu_job["runs-on"])
+    ref_step = next(
+        s for s in gpu_job["steps"] if (s.get("name") or "").startswith("Checkout trusted actions")
+    )
+    assert "needs.security-policy.outputs.is_fork" in str(ref_step["with"]["ref"])

@@ -6,7 +6,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention.gqa_decode import GQADecodeKernel
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
 from tileops.utils import is_hopper
-from workloads.attention.gqa_decode import (
+from workloads.attention.gqa import (
     GroupedQueryAttentionDecodeTest as _GroupedQueryAttentionDecodeTestWorkload,
 )
 

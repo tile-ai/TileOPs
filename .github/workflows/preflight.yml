@@ -280,6 +280,29 @@ jobs:
       - name: Run actionlint
         run: actionlint -color
 
+  compile-contract-gate:
+    # Always-on by design: no detect-changes path condition, so manifest-only
+    # and test-only PRs both run the declaration/evidence equality test.
+    needs: [validate-pr-title, ci-gate]
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install TileOPs (with dev extras)
+        run: pip install -e ".[dev]" -c constraints.txt
+
+      - name: Run manifest and compile-contract structural tests
+        run: python -m pytest -q tests/test_validate_manifest.py
+
   benchmark-contract-tests:
     # CPU-only contract tests for benchmark workload protocols.
     # Scoped to `benchmarks/tests/` so the GPU-bound `benchmarks/ops/`

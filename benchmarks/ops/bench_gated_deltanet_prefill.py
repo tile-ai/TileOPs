@@ -24,7 +24,7 @@ from benchmarks.ops.bench_gated_deltanet import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetPrefillFwdOp
-from workloads.gated_deltanet import GatedDeltaNetPrefillFwdTest
+from workloads.linear_attention import GatedDeltaNetPrefillFwdTest
 
 _OP_NAME = "GatedDeltaNetPrefillFwdOp"
 _TORCH_FALLBACK_MAX_SEQ_LEN = 4096
@@ -98,8 +98,6 @@ def _fla_prefill_fwd():
 
 def _normalize_gdn_prefill_layout(layout: str) -> str:
     layout = layout.lower()
-    if layout == "bhsd":
-        return "bhtd"
     if layout in ("bhtd", "bthd"):
         return layout
     raise ValueError(f"Unsupported layout: {layout}")
@@ -138,7 +136,7 @@ def _gdn_prefill_args(
     if layout == "bthd":
         batch, seq_len, heads, dim_k = workload["q_shape"]
         _, v_seq_len, v_heads, dim_v = workload["v_shape"]
-    elif layout in ("bhtd", "bhsd"):
+    elif layout == "bhtd":
         batch, heads, seq_len, dim_k = workload["q_shape"]
         _, v_heads, v_seq_len, dim_v = workload["v_shape"]
     else:
@@ -191,17 +189,7 @@ def test_gated_deltanet_prefill_fwd_bench(
     )
     inputs = test.gen_inputs()
 
-    op = GatedDeltaNetPrefillFwdOp(
-        batch,
-        heads,
-        seq_len,
-        dim_k,
-        dim_v,
-        chunk_size,
-        dtype,
-        tune=tune,
-        layout=layout,
-    )
+    op = GatedDeltaNetPrefillFwdOp(chunk_size=chunk_size, tune=tune, layout=layout)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
 

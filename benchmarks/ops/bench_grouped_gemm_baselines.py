@@ -43,19 +43,19 @@ from typing import Optional
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-import pytest  # noqa: E402
-import torch  # noqa: E402
+import pytest
+import torch
 
 # Triton is a hard dependency of this benchmark's baseline kernels; skip the
 # whole module (rather than error at collection) if it is absent.
-triton = pytest.importorskip("triton")  # noqa: E402
-tl = pytest.importorskip("triton.language")  # noqa: E402
+triton = pytest.importorskip("triton")
+tl = pytest.importorskip("triton.language")
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport  # noqa: E402
 from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel  # noqa: E402
 
 try:
-    import deep_gemm  # noqa: E402
+    import deep_gemm
 
     _HAS_DEEP_GEMM = True
 except Exception:  # pragma: no cover - environment dependent

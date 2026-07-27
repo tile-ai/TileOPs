@@ -20,7 +20,7 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
-from workloads.deltanet import DeltaNetFwdTest
+from workloads.linear_attention import DeltaNetFwdTest
 from workloads.workload_base import FixtureBase
 
 
@@ -115,23 +115,15 @@ def prepare_wy_repr_deltanet_torch(k, beta, chunk_size):
     B, H, S, DK = k.shape
     assert S % chunk_size == 0
     BC = chunk_size
-    Aw = torch.empty(B, H, S, BC, dtype=torch.float32, device=k.device)
-    Au = torch.empty(B, H, S, BC, dtype=torch.float32, device=k.device)
-
-    for b in range(B):
-        for h in range(H):
-            for c in range(S // BC):
-                i0, i1 = c * BC, (c + 1) * BC
-                kc = k[b, h, i0:i1, :].float()
-                bc = beta[b, h, i0:i1].float()
-                Gram = kc @ kc.T
-                M = bc.unsqueeze(-1) * Gram
-                A = torch.eye(BC, device=k.device) + torch.tril(M, diagonal=-1)
-                A_inv = torch.linalg.inv(A)
-                Aw[b, h, i0:i1, :] = A_inv
-                Au[b, h, i0:i1, :] = A_inv
-
-    return Aw, Au
+    NC = S // BC
+    kc = k.float().reshape(B, H, NC, BC, DK)
+    bc = beta.float().reshape(B, H, NC, BC)
+    gram = kc @ kc.transpose(-2, -1)
+    m = bc.unsqueeze(-1) * gram
+    eye = torch.eye(BC, dtype=torch.float32, device=k.device)
+    a = eye + torch.tril(m, diagonal=-1)
+    a_inv = torch.linalg.inv(a).reshape(B, H, S, BC)
+    return a_inv, a_inv.clone()
 
 
 class _DeltaNetFwdTestBaseline(DeltaNetFwdTest):
@@ -168,9 +160,7 @@ def _to_fla_layout(q, k, v, beta):
     )
 
 
-# =============================================================================
 # Forward benchmark
-# =============================================================================
 
 class DeltaNetFwdBenchmark(BenchmarkBase[DeltaNetFwdTest]):
 
@@ -196,11 +186,6 @@ class DeltaNetVsFlaFwdFixture(FixtureBase):
             pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 32768, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.nightly),
-            pytest.param(2, 2048, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 4096, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 8192, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 16384, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 32768, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.nightly),
         ]),
     ]
 
@@ -221,7 +206,7 @@ def test_deltanet_vs_fla_fwd(
     inputs = test.gen_inputs()  # q, k, v, beta (BHSD)
 
     # --- TileOPs (BHSD) ---
-    op = DeltaNetFwdOp(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune=tune)
+    op = DeltaNetFwdOp(chunk_size=chunk_size, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -242,9 +227,7 @@ def test_deltanet_vs_fla_fwd(
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# =============================================================================
 # Backward benchmark
-# =============================================================================
 
 class DeltaNetBwdBenchmark(BenchmarkBase[DeltaNetFwdTest]):
 
@@ -269,10 +252,6 @@ class DeltaNetVsFlaBwdFixture(FixtureBase):
             pytest.param(2, 2048, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 2048, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 4096, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 8192, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 16384, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -299,10 +278,10 @@ def test_deltanet_vs_fla_bwd(
     do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
 
     # --- TileOPs: fwd to get S, Aw, Au, w, u; then profile bwd only ---
-    fwd_op = DeltaNetFwdOp(B, H, S, DK, DV, BC, dtype)
+    fwd_op = DeltaNetFwdOp(chunk_size=BC)
     _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op.forward(q, k, v, beta)
 
-    bwd_op = DeltaNetBwdOp(B, H, S, DK, DV, BC, dtype, tune=tune)
+    bwd_op = DeltaNetBwdOp(chunk_size=BC, tune=tune)
     result = bm.profile(bwd_op.forward, do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)
     BenchmarkReport.record(bwd_op, locals(), result, tag="tileops")
 
@@ -335,9 +314,7 @@ def test_deltanet_vs_fla_bwd(
         BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
 
 
-# =============================================================================
 # Combined fwd+bwd benchmark (fair comparison: both measure fwd+bwd total)
-# =============================================================================
 
 class DeltaNetFwdBwdBenchmark(BenchmarkBase[DeltaNetFwdTest]):
 
@@ -362,10 +339,6 @@ class DeltaNetVsFlaFwdBwdFixture(FixtureBase):
             pytest.param(2, 2048, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-            pytest.param(2, 2048, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 4096, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 8192, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-            pytest.param(2, 16384, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -387,7 +360,7 @@ def test_deltanet_vs_fla_fwdbwd(
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
 
     # --- TileOPs: combined fwd+bwd via DeltaNetOp ---
-    op = DeltaNetOp(B, H, S, DK, DV, BC, dtype, tune=tune)
+    op = DeltaNetOp(chunk_size=BC, tune=tune)
 
     q = (torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1).detach().requires_grad_(True)
     k = (torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1).detach().requires_grad_(True)

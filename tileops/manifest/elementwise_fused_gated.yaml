@@ -16,19 +16,20 @@ SiluAndMulFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
     outputs:
       output: {dtype: "same_as(x)", shape: "[M, N]"}
     shape_rules:
-    - "x.shape[1] == 2 * output.shape[1]"
-    - "x.shape[0] == output.shape[0]"
+      - "x.shape[1] == 2 * output.shape[1]"
+      - "x.shape[0] == output.shape[0]"
 
   workloads:
     # SwiGLU FFN intermediate (Llama-3.1-8B, hidden_dim=14336)
-  - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "llama-3.1-8b-swiglu-prefill"}
-  - {x_shape: [1, 28672], dtypes: [bfloat16], label: "llama-3.1-8b-swiglu-decode"}
+    - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "llama-3.1-8b-swiglu-prefill"}
+    - {x_shape: [1, 28672], dtypes: [bfloat16], label: "llama-3.1-8b-swiglu-decode"}
 
   roofline:
     vars:
@@ -45,10 +46,10 @@ SiluAndMulFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       silu_and_mul: SiluAndMulFwdKernel
-    op: tileops/ops/elementwise/fused_gated.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_fused_gated.py
     bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 GeluAndMulFwdOp:
   # Composite expression: F.gelu(gate, approximate='none') * value where
@@ -58,18 +59,19 @@ GeluAndMulFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
     outputs:
       output: {dtype: "same_as(x)", shape: "[M, N]"}
     shape_rules:
-    - "x.shape[1] == 2 * output.shape[1]"
-    - "x.shape[0] == output.shape[0]"
+      - "x.shape[1] == 2 * output.shape[1]"
+      - "x.shape[0] == output.shape[0]"
 
   workloads:
-  - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "ffn-gelu-prefill"}
-  - {x_shape: [1, 28672], dtypes: [bfloat16], label: "ffn-gelu-decode"}
+    - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "ffn-gelu-prefill"}
+    - {x_shape: [1, 28672], dtypes: [bfloat16], label: "ffn-gelu-decode"}
 
   roofline:
     vars:
@@ -85,10 +87,10 @@ GeluAndMulFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       gelu_and_mul: GeluAndMulFwdKernel
-    op: tileops/ops/elementwise/fused_gated.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_fused_gated.py
     bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 GeluTanhAndMulFwdOp:
   # Composite expression: F.gelu(gate, approximate='tanh') * value where
@@ -98,18 +100,19 @@ GeluTanhAndMulFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       x: {dtype: "float16 | bfloat16 | float32", shape: "[M, two_N]"}
     outputs:
       output: {dtype: "same_as(x)", shape: "[M, N]"}
     shape_rules:
-    - "x.shape[1] == 2 * output.shape[1]"
-    - "x.shape[0] == output.shape[0]"
+      - "x.shape[1] == 2 * output.shape[1]"
+      - "x.shape[0] == output.shape[0]"
 
   workloads:
-  - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "ffn-gelu-tanh-prefill"}
-  - {x_shape: [1, 28672], dtypes: [bfloat16], label: "ffn-gelu-tanh-decode"}
+    - {x_shape: [2048, 28672], dtypes: [float16, bfloat16], label: "ffn-gelu-tanh-prefill"}
+    - {x_shape: [1, 28672], dtypes: [bfloat16], label: "ffn-gelu-tanh-decode"}
 
   roofline:
     vars:
@@ -126,7 +129,7 @@ GeluTanhAndMulFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       gelu_tanh_and_mul: GeluTanhAndMulFwdKernel
-    op: tileops/ops/elementwise/fused_gated.py
+    op: tileops/ops/elementwise/activations.py
     test: tests/ops/test_fused_gated.py
     bench: benchmarks/ops/bench_binary_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

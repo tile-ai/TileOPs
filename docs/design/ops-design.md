@@ -14,9 +14,9 @@ Op                          ← L1: thin base, shared by all ops
         └── ConcreteOp      ← L3: leaf class emitted by the scaffold
 ```
 
-- **L1 (`Op`, [`tileops/ops/op_base.py`](../../tileops/ops/op_base.py)):** provides `__call__`, `dispatch_kernel()`, `autotune()`, the default `_cache_key()`, and `NotImplementedError` stubs for the three codegen methods (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline` — `FIXME(staged-rollout)`, per PR #1012).
-- **L2 (`FamilyBase`):** per-family shared `forward()` pipeline (one per family). **Not produced by this playbook** — see [Family-Base Refactoring (Future Work)](#family-base-refactoring-future-work).
-- **L3 (`ConcreteOp`):** this playbook's target. New ops start by inheriting L1 directly (T2 shape). Once 2-3 ops accumulate in a family with identical `forward()` flow, extract an L2 base via refactoring.
+- **L1 (`Op`):** shared host-side plumbing (dispatch, kernel caching, autotune) plus the contracts for the three codegen methods (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`).
+- **L2 (`FamilyBase`):** per-family shared `forward()` pipeline (one per family). **Not produced by this playbook** — see [Family-Base Refactoring](#family-base-refactoring).
+- **L3 (`ConcreteOp`):** this playbook's target. New ops start by inheriting L1 directly (T2 shape); see [Family-Base Refactoring](#family-base-refactoring) for when a family graduates to L2.
 
 ### Execution timing
 
@@ -31,7 +31,7 @@ Op                          ← L1: thin base, shared by all ops
 
 ## Scaffolding an Op from a Manifest Entry
 
-The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). All examples are for `CumsumFwdOp` ([`tileops/manifest/`](../../tileops/manifest/), [`tileops/ops/reduction/cumsum.py`](../../tileops/ops/reduction/cumsum.py)).
+The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`ops-design-reference.md`](ops-design-reference.md). Examples scaffold the fictional `ExampleCumsumFwdOp` (cumulative-sum semantics) in T2 (L1-direct) form from an equally fictional manifest entry; nothing in them mirrors a shipped file.
 
 ### Step 1: File header + imports
 
@@ -43,7 +43,7 @@ The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step h
 """Cumulative sum operator (host-side Op layer).
 
 Provides:
-  - CumsumFwdOp: y = cumsum(x, dim=-1)
+  - ExampleCumsumFwdOp: y = cumsum(x, dim=-1)
 """
 
 import math
@@ -53,7 +53,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
-from tileops.kernels.reduction.cumulative import CumulativeKernel
+from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel
 
 from ..op_base import Op
 ```
@@ -69,10 +69,10 @@ from ..op_base import Op
 **Output.**
 
 ```python
-__all__ = ["CumsumFwdOp"]
+__all__ = ["ExampleCumsumFwdOp"]
 
 
-class CumsumFwdOp(Op):
+class ExampleCumsumFwdOp(Op):
     """Cumulative sum operator: y = cumsum(x, dim=-1).
 
     Output has the same shape and dtype as input.
@@ -87,7 +87,7 @@ class CumsumFwdOp(Op):
     """
 ```
 
-**Validation.** Class name ≡ manifest entry key, byte-exact (`CumsumFwdOp`). Every `Args:` entry appears as an `__init__` kwarg in Step 3; no extras.
+**Validation.** Class name ≡ manifest entry key, byte-exact (`ExampleCumsumFwdOp`). Every `Args:` entry appears as an `__init__` kwarg in Step 3; no extras.
 
 **Reference.** [Slot S5](ops-design-reference.md#slot-s5), [S6](ops-design-reference.md#slot-s6), [S7](ops-design-reference.md#slot-s7).
 
@@ -125,7 +125,7 @@ class CumsumFwdOp(Op):
         self._kernel_cache: Dict[tuple, Kernel] = {}
 ```
 
-**Validation.** Every `__init__` kwarg has a manifest source (`static_dims` or `signature.params` or `dtype`); no extras except `kernel_map` / `tune`. In particular, `M` is NOT a ctor kwarg — `CumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Keyword-only via `*`, no defaults on `static_dims` entries. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
+**Validation.** Every `__init__` kwarg has a manifest source (`static_dims` or `signature.params` or `dtype`); no extras except `kernel_map` / `tune`. In particular, `M` is NOT a ctor kwarg — `ExampleCumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Keyword-only via `*`, no defaults on `static_dims` entries. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
 
 **Reference.** [Slot S21](ops-design-reference.md#slot-s21), [S12](ops-design-reference.md#slot-s12), [S13](ops-design-reference.md#slot-s13).
 
@@ -138,7 +138,7 @@ class CumsumFwdOp(Op):
 ```python
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"cumulative_fwd": CumulativeKernel}
+        return {"example_cumsum_fwd": ExampleCumsumKernel}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._validate_dtypes(x)
@@ -162,7 +162,7 @@ class CumsumFwdOp(Op):
         self.M = M  # stored for eval_roofline
         key = (M,)
         if key not in self._kernel_cache:
-            self._kernel_cache[key] = self.kernel_map["cumulative_fwd"](
+            self._kernel_cache[key] = self.kernel_map["example_cumsum_fwd"](
                 M, self.N, "sum", self.dtype, tune=self.tune)
         kernel = self._kernel_cache[key]
         # Move reduction axis to last, reshape to (M, N), compute, restore.
@@ -186,7 +186,7 @@ class CumsumFwdOp(Op):
 **Output.**
 
 ```python
-class CumsumFwdOp(Op):
+class ExampleCumsumFwdOp(Op):
     ...
 
     def _infer_output_shapes(self, x_shape: tuple) -> Dict[str, tuple]:
@@ -208,7 +208,7 @@ class CumsumFwdOp(Op):
 **Output.**
 
 ```python
-class CumsumFwdOp(Op):
+class ExampleCumsumFwdOp(Op):
     ...
 
     def eval_roofline(self) -> tuple[int, int]:
@@ -228,8 +228,8 @@ class CumsumFwdOp(Op):
 **Output (append to `tileops/ops/reduction/__init__.py`):**
 
 ```python
-# --- CumulativeKernel ops ---
-from .cumsum import CumsumFwdOp
+# --- ExampleCumsumKernel ops ---
+from .example_cumsum import ExampleCumsumFwdOp
 ```
 
 …with a matching entry added to the module's `__all__` list.
@@ -258,82 +258,59 @@ This playbook emits exactly the 17 slots above. The following are **not** produc
 - **Family-specific protocol variables.** `_op_kind` (reduction), `_kernel_key`, `_kernel_cls` (norm + reduction T1 wrappers), `_kernel_handles_padding`, `_op_name`, `kernel_cls`. Kernel-dispatch-convention-dependent; cannot be mechanically derived from the manifest. See [Family-Base Protocol (Appendix)](ops-design-reference.md#base-class-protocol).
 - **Optional hooks.** `_pad_value`, `_validate_dim`, `_pre_kernel`, `_post_kernel`. Op-specific business logic (e.g., `ArgmaxFwdOp._pad_value = -inf`). See [Optional Hooks (Appendix)](ops-design-reference.md#optional-hooks-appendix).
 - **`_cache_key` override.** The default projection via `_static_axes` is correct but sometimes over-fragmenting. Override logic depends on what subset of the input shape the kernel actually depends on — kernel-math-specific.
-- **Family-base (T1) subclassing.** See [Family-Base Refactoring (Future Work)](#family-base-refactoring-future-work).
+- **Family-base (T1) subclassing.** See [Family-Base Refactoring](#family-base-refactoring).
 - **Kernel implementations themselves.** The playbook's scope is the Op (host) layer. See [Implementing a Kernel](#implementing-a-kernel) for the kernel-side interface surface.
+- **`torch_compile_fullgraph` declaration.** Requires registered compile-test evidence. Semantics: [manifest.md](manifest.md#torch_compile_fullgraph).
+- **Compile dispatch boundary.** See [Compile Dispatch Boundary](#compile-dispatch-boundary).
 
 ## Implementing a Kernel
 
-Brief reference surface for the device-side class that a scaffolded Op depends on. Kernel implementation is not covered by the scaffold-op skill.
+Kernel implementation is not covered by the scaffold-op skill. The device-side interface a scaffolded Op depends on — required `__init__` / `forward` / `kernel`, optional `default_config` / `autotune_configs` / `supported_archs` — is specified in [Kernel base class attributes](ops-design-reference.md#base-class-protocol).
 
-| Interface             | Required | Description                                                   |
-| --------------------- | -------- | ------------------------------------------------------------- |
-| `__init__(self, ...)` | yes      | Receives shape params and dtype; builds the TileLang program. |
-| `forward(self, ...)`  | yes      | Launches the compiled kernel; called by Op's `forward()`.     |
-| `kernel`              | yes      | Attribute. The TileLang program builder (JIT-compiled).       |
-| `default_config`      | no       | Property. Default tile configuration dict.                    |
-| `autotune_configs`    | no       | Class variable. Search space for autotuning.                  |
-| `supported_archs`     | no       | Class variable. List of supported GPU SM versions.            |
+## Compile Dispatch Boundary
 
-See [Kernel base class attributes](ops-design-reference.md#base-class-protocol) for the full attribute table.
+Contract for every op declaring `torch_compile_fullgraph` while resolving
+kernels at call time.
 
-## MoE Modular Protocol
+**Invariant.** A dynamo-traced `forward` MUST NOT construct a `Kernel` or
+enter a TileLang builder. Kernel-cache misses run TileLang JIT machinery
+(`inspect`-based signature handling) that dynamo cannot trace; an eager
+warm-up before `torch.compile` only hides the miss path and does not
+satisfy the cold-call contract.
 
-The MoE family uses a **strategy-pattern** layering that sits alongside but separate from the `Op` / `Kernel` hierarchy. Understanding where these classes fit prevents confusion when reading or extending MoE code.
+**Mechanism** (`tileops/ops/compile_boundary.py`; reference adopters:
+`pool.py`, `norm/batch_norm.py`):
 
-### Component overview
+1. `Op.dispatch_kernel` registers every op in a weak instance registry at
+   `__init__` time and stores `self._instance_key`.
+1. The family defines one `torch.library.custom_op` per output arity. Its
+   eager body resolves the instance from the registry and calls
+   `self._eager_forward` — cache lookup, Kernel construction, and launch
+   all run untraced. Its fake derives output shapes from
+   `_infer_output_shapes` and dtypes from the manifest contract.
+1. `forward` becomes a single dispatch call:
+   `return _family_fwd(input, self._instance_key)`; the previous body is
+   renamed `_eager_forward` unchanged.
 
-```
-tileops/ops/moe/abc.py
+**Constraints.**
 
-PrepareResult (dataclass)          — carries hidden_q, scale, topk_weights, topk_ids
-                                     from prepare() to apply()
+- The instance key is a **string**: dynamo bakes string custom-op
+  arguments as static constants, while an `int` key is generalized to an
+  unhashable `SymInt` once a second instance compiles through the same
+  frame. Stale-graph safety comes from dynamo's ID_MATCH guard holding a
+  weak reference to the compiled callable: a dead instance forces
+  recompilation, so a reused `id()` cannot resolve against a stale graph.
+- The boundary covers forward-only compilation. Declaring
+  `torch_compile_fullgraph` on an op whose compiled graph must
+  backpropagate additionally requires registering an autograd formula for
+  the dispatch custom op.
+- Ops that pre-build their kernel at `__init__` (constructor-known shapes)
+  do not need the boundary; the invariant still applies to their
+  `forward`.
 
-WeightedReduce (ABC)               — apply(output, expert_out, topk_weights, topk_ids)
-WeightedReduceNoOp(WeightedReduce) — no-op when reduction is already done inside forward()
+## Family-Base Refactoring
 
-FusedMoEPrepareAndFinalize (ABC)   — owns EP communication + optional quantization
-  prepare(hidden, topk_weights, topk_ids, num_experts, expert_map) → PrepareResult
-  finalize(output, expert_out, topk_weights, topk_ids, weight_and_reduce) → None
-
-FusedMoEExperts(Op, ABC)           — owns expert GEMM (permute + GEMM + unpermute)
-  workspace_shapes(M, N, K, topk, num_experts) → (shape1, shape2)
-  output_shape(T_prime, H) → (int, int)
-  forward(output, hidden_q, w1, w2, topk_weights, topk_ids,
-          num_experts, expert_map, workspace1, workspace2) → None
-
-FusedMoEExpertsModular(FusedMoEExperts, ABC) — extends FusedMoEExperts with pluggable reduction
-  make_weighted_reduce() → WeightedReduce
-```
-
-Concrete implementations live in `prepare_finalize/` and `experts/`:
-
-| Class                                    | Base                         | File                           |
-| ---------------------------------------- | ---------------------------- | ------------------------------ |
-| `MoEPrepareAndFinalizeNoDPEP`            | `FusedMoEPrepareAndFinalize` | `prepare_finalize/no_dp_ep.py` |
-| `FusedMoEExpertsNopadPersistent3WGFwdOp` | `FusedMoEExpertsModular`     | `experts/nopad.py`             |
-| `FusedMoEExpertsPaddedFwdOp`             | `FusedMoEExpertsModular`     | `experts/padded.py`            |
-
-### Relationship to `Op` and manifest entries
-
-`FusedMoEExperts` is itself an `Op` subclass (so concrete experts implementations are full Ops with `forward()`), while `FusedMoEPrepareAndFinalize` is a pluggable strategy object injected into `FusedMoe`. The manifest entry for each experts class (`FusedMoEExpertsNopadPersistent3WGFwdOp`, `FusedMoEExpertsPaddedFwdOp`) declares the expert-GEMM contract independently of the end-to-end routing op (`FusedMoeFwdOp`).
-
-`FusedMoe` wires the pieces together:
-
-```
-FusedMoe.forward()
-  1. FusedTopKOp                          → topk_weights, topk_ids
-  2. FusedMoEPrepareAndFinalize.prepare() → PrepareResult
-  3. FusedMoEExpertsModular.forward()     → expert_out
-  4. FusedMoEPrepareAndFinalize.finalize() → output
-```
-
-### Extension points
-
-To plug in a new EP or quantization backend, subclass `FusedMoEPrepareAndFinalize` and pass it as `FusedMoe(prepare_finalize=...)`. To swap the expert GEMM kernel, subclass `FusedMoEExpertsModular` and pass it as `FusedMoe(experts=...)`. Both defaults (`MoEPrepareAndFinalizeNoDPEP`, `FusedMoEExpertsNopadPersistent3WGFwdOp`) are created automatically when the arguments are omitted.
-
-## Family-Base Refactoring (Future Work)
-
-The scaffold emits T2 (L1-direct) ops only. Once a family accumulates 2-3 ops sharing an identical `forward()` flow, extract an L2 family base via refactoring; concrete ops then become T1 thin wrappers declaring family protocol variables (`_op_kind`, `_kernel_key`, `_kernel_cls`, …). This transformation is driven by a separate family-specific skill, not the scaffold-op. See [Development Path](ops-design-reference.md#development-path) for when to extract an L2 base and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the step-by-step process.
+The scaffold emits T2 (L1-direct) ops only; once a family accumulates 2-3 ops sharing an identical `forward()` flow, a separate family-specific refactoring (not scaffold-op) extracts an L2 base and rewrites the concrete ops as T1 thin wrappers — see [Development Path](ops-design-reference.md#development-path) for when to extract and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the process. Family bases MUST NOT normalize genuine per-op behavior differences.
 
 ## Further Reference
 

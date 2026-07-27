@@ -193,37 +193,31 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
 _FROZEN_UNARY_ACTIVATION_SIGNATURES = {
     "ReluFwdOp": (
         "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
-        "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
         "tune: bool = False)"
     ),
     "SiluFwdOp": (
         "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
-        "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
         "tune: bool = False)"
     ),
     "HardswishFwdOp": (
         "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
-        "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
         "tune: bool = False)"
     ),
     "HardsigmoidFwdOp": (
         "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
-        "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
         "tune: bool = False)"
     ),
     "MishFwdOp": (
         "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
-        "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
         "tune: bool = False)"
     ),
     "SeluFwdOp": (
         "(self, N_total: int, dtype: torch.dtype, inplace: bool = False, *, "
-        "strategy: Optional[str] = None, "
         "kernel_map: Optional[Dict[str, tileops.kernels.kernel_base.Kernel]] = None, "
         "tune: bool = False)"
     ),

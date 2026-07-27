@@ -30,9 +30,7 @@ __all__ = [
     "BatchNormFwdTrainKernel",
 ]
 
-# ---------------------------------------------------------------------------
 # Config helpers
-# ---------------------------------------------------------------------------
 
 # L threshold for the persistent (single global read) training path.
 # x_shared uses L * sizeof(dtype) bytes per block:
@@ -77,9 +75,7 @@ def _find_best_block_l(L: int) -> dict:
     )
 
 
-# ---------------------------------------------------------------------------
 # Training forward
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_train_kernel(
@@ -172,8 +168,10 @@ def _batch_norm_fwd_train_kernel(
                 # (Bessel's correction: biased_var * L / (L - 1)).
                 mom = T.cast(momentum, accum_dtype)
                 unbiased_var = var_val * T.cast(L, accum_dtype) / (T.cast(L, accum_dtype) - T.cast(1.0, accum_dtype))
-                running_mean[bc] = (T.cast(1.0, accum_dtype) - mom) * running_mean[bc] + mom * mean_val
-                running_var[bc] = (T.cast(1.0, accum_dtype) - mom) * running_var[bc] + mom * unbiased_var
+                # One writer per block: this running-stat RMW races if every thread runs it.
+                if T.get_thread_binding() == 0:
+                    running_mean[bc] = (T.cast(1.0, accum_dtype) - mom) * running_mean[bc] + mom * mean_val
+                    running_var[bc] = (T.cast(1.0, accum_dtype) - mom) * running_var[bc] + mom * unbiased_var
 
                 # Pass 2 – normalize.
                 if block_l >= L:
@@ -293,9 +291,7 @@ class BatchNormFwdTrainKernel(Kernel):
         return y, mean_out, rstd_out
 
 
-# ---------------------------------------------------------------------------
 # Inference forward
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_infer_kernel(
@@ -410,9 +406,7 @@ class BatchNormFwdInferKernel(Kernel):
         )(x, weight, bias, running_mean, running_var)
 
 
-# ---------------------------------------------------------------------------
 # Backward
-# ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_bwd_kernel(

@@ -34,9 +34,7 @@ from tileops.kernels.reduction._primitives import (
 __all__ = ["LogSumExpKernel"]
 
 
-# ---------------------------------------------------------------------------
 # Single-tile kernel (N fits in shared memory) -- original fast path
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=64)
@@ -101,9 +99,7 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
     return _func
 
 
-# ---------------------------------------------------------------------------
 # Multi-tile kernel (N tiled over shared memory)
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=64)
@@ -198,9 +194,7 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
     return _func
 
 
-# ---------------------------------------------------------------------------
 # Dispatch
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=64)
@@ -220,9 +214,7 @@ def _compute_padded_cols(N: int, tile_n: int) -> int:
     return num_tiles * tile_n
 
 
-# ---------------------------------------------------------------------------
 # custom_op wrappers for torch.compile compatibility
-# ---------------------------------------------------------------------------
 
 
 @torch.library.custom_op("top::logsumexp_fwd", mutates_args=())
@@ -243,9 +235,7 @@ def _(M, N, dtype_str, block_m, threads, tile_n, x):
     return torch.empty((M,), dtype=x.dtype, device=x.device)
 
 
-# ---------------------------------------------------------------------------
 # Kernel class
-# ---------------------------------------------------------------------------
 
 
 def _elem_bytes(dtype: torch.dtype) -> int:

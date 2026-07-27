@@ -66,7 +66,7 @@ Conv1dFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Conv1dBiasFwdOp:
   ref_api: "torch.nn.functional.conv1d"
@@ -119,7 +119,7 @@ Conv1dBiasFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Conv2dFwdOp:
   ref_api: "torch.nn.functional.conv2d"
@@ -169,6 +169,33 @@ Conv2dFwdOp:
     - {input_shape: [1, 256, 14, 14], C_out: 1024, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16], label: "late-stage-1x1-fp16"}
     - {input_shape: [1, 512, 7, 7], C_out: 2048, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [float16], label: "classifier-1x1-fp16"}
     - {input_shape: [2, 64, 56, 56], C_out: 256, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtypes: [bfloat16], label: "resnet-1x1-bf16"}
+    - input_shape: [1, 2048, 32, 32]
+      C_out: 256
+      kH: 3
+      kW: 3
+      stride: [1, 1]
+      padding: [12, 12]
+      dilation: [12, 12]
+      dtypes: [float16]
+      label: deeplabv3-aspp-3x3-rate12
+    - input_shape: [1, 32, 56, 56]
+      C_out: 32
+      kH: 3
+      kW: 3
+      stride: [1, 1]
+      padding: [1, 1]
+      groups: 32
+      dtypes: [float16]
+      label: mobilenetv2-depthwise
+    - input_shape: [1, 128, 28, 28]
+      C_out: 256
+      kH: 3
+      kW: 3
+      stride: [1, 1]
+      padding: [1, 1]
+      groups: 32
+      dtypes: [float16]
+      label: resnext-grouped-3x3
 
   roofline:
     flops: "2 * N * C_out * out_H * out_W * C_in_g * kH * kW"
@@ -183,7 +210,7 @@ Conv2dFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Conv2dBiasFwdOp:
   ref_api: "torch.nn.functional.conv2d"
@@ -250,7 +277,7 @@ Conv2dBiasFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Conv3dFwdOp:
   ref_api: "torch.nn.functional.conv3d"
@@ -296,6 +323,26 @@ Conv3dFwdOp:
     - {input_shape: [1, 3, 16, 112, 112], C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], dtypes: [float16], label: "r3d-stem-k3-s1-fp16"}
     - {input_shape: [1, 64, 8, 56, 56], C_out: 128, kD: 3, kH: 3, kW: 3, stride: [2, 2, 2], padding: [1, 1, 1], dtypes: [float16], label: "video-stage-downsample-k3-s2-fp16"}
     - {input_shape: [1, 32, 32, 64, 64], C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], dtypes: [bfloat16], label: "unet-encoder-k3-s1-bf16"}
+    - input_shape: [1, 256, 8, 16, 16]
+      C_out: 256
+      kD: 3
+      kH: 3
+      kW: 3
+      stride: [1, 1, 1]
+      padding: [6, 6, 6]
+      dilation: [6, 6, 6]
+      dtypes: [float16]
+      label: 3d-unet-aspp-3x3x3-rate6
+    - input_shape: [1, 64, 8, 28, 28]
+      C_out: 128
+      kD: 3
+      kH: 3
+      kW: 3
+      stride: [1, 1, 1]
+      padding: [1, 1, 1]
+      groups: 32
+      dtypes: [float16]
+      label: 3d-resnext-grouped-k3
 
   roofline:
     flops: "2 * N * C_out * out_D * out_H * out_W * C_in_g * kD * kH * kW"
@@ -309,7 +356,7 @@ Conv3dFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 Conv3dBiasFwdOp:
   ref_api: "torch.nn.functional.conv3d"
@@ -371,4 +418,4 @@ Conv3dBiasFwdOp:
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
     bench: benchmarks/ops/bench_convolution.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

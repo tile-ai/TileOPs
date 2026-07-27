@@ -12,6 +12,7 @@ Validates that torch.compile(op, fullgraph=True) produces correct output.
 import pytest
 import torch
 
+from tests.compile_contract import register_compile_contract
 from tests.test_base import FixtureBase, TestBase, exact_compare
 from tileops.ops.elementwise import (
     AbsFwdOp,
@@ -81,16 +82,23 @@ from tileops.ops.elementwise import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_dynamo():
-    """Reset torch._dynamo before each test to avoid recompile limit."""
-    torch._dynamo.reset()
+def _reset_dynamo(isolated_dynamo):
+    """Isolate dynamo state for every compile test in this module."""
     yield
-    torch._dynamo.reset()
 
 
-# ---------------------------------------------------------------------------
+def _register_table(table):
+    """Register the op_cls column of a parametrized compile-case table.
+
+    Keeps the contract-coverage registry derived from the same case data
+    the tests consume: call immediately after each table definition.
+    """
+    for case in table:
+        values = case.values if hasattr(case, "values") else case
+        register_compile_contract(values[0])
+
+
 # Unary compile test: relu
-# ---------------------------------------------------------------------------
 
 
 class ReluCompileFixture(FixtureBase):
@@ -114,6 +122,9 @@ class ReluCompileTest(TestBase):
         return torch.relu(x.float()).to(x.dtype)
 
 
+register_compile_contract(ReluFwdOp)
+
+
 @ReluCompileFixture
 def test_relu_compile(n_total, dtype):
     test = ReluCompileTest(n_total, dtype)
@@ -123,9 +134,7 @@ def test_relu_compile(n_total, dtype):
     test.check(compiled_op, *inputs, atol=1e-3, rtol=1e-3)
 
 
-# ---------------------------------------------------------------------------
 # Binary compile test: add
-# ---------------------------------------------------------------------------
 
 
 class AddCompileFixture(FixtureBase):
@@ -152,6 +161,9 @@ class AddCompileTest(TestBase):
         return (a.float() + b.float()).to(a.dtype)
 
 
+register_compile_contract(AddFwdOp)
+
+
 @AddCompileFixture
 def test_add_compile(a_shape, b_shape, dtype):
     test = AddCompileTest(a_shape, b_shape, dtype)
@@ -161,9 +173,7 @@ def test_add_compile(a_shape, b_shape, dtype):
     test.check(compiled_op, *inputs, atol=1e-3, rtol=1e-3)
 
 
-# ---------------------------------------------------------------------------
 # Comparison compile test: eq (bool output)
-# ---------------------------------------------------------------------------
 
 
 class EqCompileFixture(FixtureBase):
@@ -191,6 +201,9 @@ class EqCompileTest(TestBase):
         return a == b
 
 
+register_compile_contract(EqFwdOp)
+
+
 @EqCompileFixture
 def test_eq_compile(a_shape, b_shape, dtype):
     test = EqCompileTest(a_shape, b_shape, dtype)
@@ -200,9 +213,7 @@ def test_eq_compile(a_shape, b_shape, dtype):
     test.check(compiled_op, *inputs, compare=exact_compare)
 
 
-# ---------------------------------------------------------------------------
 # FusedGated compile test: silu_and_mul
-# ---------------------------------------------------------------------------
 
 
 class SiluAndMulCompileFixture(FixtureBase):
@@ -229,6 +240,9 @@ class SiluAndMulCompileTest(TestBase):
         return (torch.nn.functional.silu(gate) * value).to(x.dtype)
 
 
+register_compile_contract(SiluAndMulFwdOp)
+
+
 @SiluAndMulCompileFixture
 def test_silu_and_mul_compile(M, N, dtype):
     test = SiluAndMulCompileTest(M, N, dtype)
@@ -238,9 +252,7 @@ def test_silu_and_mul_compile(M, N, dtype):
     test.check(compiled_op, *inputs, atol=1e-2, rtol=1e-2)
 
 
-# ---------------------------------------------------------------------------
 # Additional unary compile tests: abs, sign
-# ---------------------------------------------------------------------------
 
 
 class AbsCompileFixture(FixtureBase):
@@ -261,6 +273,9 @@ class AbsCompileTest(TestBase):
 
     def ref_program(self, x):
         return torch.abs(x.float()).to(x.dtype)
+
+
+register_compile_contract(AbsFwdOp)
 
 
 @AbsCompileFixture
@@ -292,6 +307,9 @@ class SignCompileTest(TestBase):
         return torch.sign(x.float()).to(x.dtype)
 
 
+register_compile_contract(SignFwdOp)
+
+
 @SignCompileFixture
 def test_sign_compile(n_total, dtype):
     test = SignCompileTest(n_total, dtype)
@@ -301,9 +319,7 @@ def test_sign_compile(n_total, dtype):
     test.check(compiled_op, *inputs, atol=1e-3, rtol=1e-3)
 
 
-# ---------------------------------------------------------------------------
 # register_fake shape/dtype correctness
-# ---------------------------------------------------------------------------
 
 
 class FakeUnaryFixture(FixtureBase):
@@ -363,9 +379,7 @@ def test_register_fake_fused_gated_shape(M, N, dtype):
     assert out.dtype == dtype
 
 
-# ---------------------------------------------------------------------------
 # Exhaustive compile-smoke: every registered op
-# ---------------------------------------------------------------------------
 # These tests instantiate and torch.compile each op to verify that the
 # custom_op registration, register_fake, and CUDA codegen all succeed.
 # They are marked "smoke" so CI catches registration regressions early.
@@ -410,6 +424,9 @@ _UNARY_FLOAT_OPS = [
 ]
 
 
+_register_table(_UNARY_FLOAT_OPS)
+
+
 @pytest.mark.parametrize("op_cls, ref_fn, input_fn, name", _UNARY_FLOAT_OPS)
 def test_unary_float_compile(op_cls, ref_fn, input_fn, name):
     """Compile-smoke for remaining float unary ops."""
@@ -433,6 +450,9 @@ _UNARY_BOOL_OPS = [
 ]
 
 
+_register_table(_UNARY_BOOL_OPS)
+
+
 @pytest.mark.parametrize("op_cls, ref_fn, dtype, name", _UNARY_BOOL_OPS)
 def test_unary_bool_compile(op_cls, ref_fn, dtype, name):
     """Compile-smoke for unary ops with bool output."""
@@ -450,6 +470,9 @@ def test_unary_bool_compile(op_cls, ref_fn, dtype, name):
 
 
 # --- Unary bitwise op ---
+
+register_compile_contract(BitwiseNotFwdOp)
+
 
 @pytest.mark.full
 def test_bitwise_not_compile():
@@ -476,6 +499,9 @@ _BINARY_ARITH_OPS = [
 ]
 
 
+_register_table(_BINARY_ARITH_OPS)
+
+
 @pytest.mark.parametrize("op_cls, ref_fn, name", _BINARY_ARITH_OPS)
 def test_binary_arith_compile(op_cls, ref_fn, name):
     """Compile-smoke for remaining binary arithmetic ops."""
@@ -487,6 +513,9 @@ def test_binary_arith_compile(op_cls, ref_fn, name):
     out = compiled_op(a, b)
     ref = ref_fn(a, b)
     torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+
+register_compile_contract(PowFwdOp)
 
 
 @pytest.mark.full
@@ -505,6 +534,9 @@ def test_pow_compile():
 
 # --- Lerp (special binary with weight) ---
 
+register_compile_contract(LerpFwdOp)
+
+
 @pytest.mark.full
 def test_lerp_compile():
     """Compile-smoke for LerpFwdOp."""
@@ -516,6 +548,9 @@ def test_lerp_compile():
     out = compiled_op(a, b)
     ref = torch.lerp(a.float(), b.float(), 0.3).half()
     torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+
+register_compile_contract(LerpTensorFwdOp)
 
 
 @pytest.mark.full
@@ -546,6 +581,9 @@ _COMPARISON_OPS = [
 ]
 
 
+_register_table(_COMPARISON_OPS)
+
+
 @pytest.mark.parametrize("op_cls, ref_fn, name", _COMPARISON_OPS)
 def test_comparison_compile(op_cls, ref_fn, name):
     """Compile-smoke for remaining comparison ops (bool output)."""
@@ -566,6 +604,9 @@ _LOGICAL_OPS = [
     pytest.param(LogicalAndFwdOp, lambda a, b: (a != 0) & (b != 0), "logical_and", marks=pytest.mark.full),
     pytest.param(LogicalOrFwdOp, lambda a, b: (a != 0) | (b != 0), "logical_or", marks=pytest.mark.full),
 ]
+
+
+_register_table(_LOGICAL_OPS)
 
 
 @pytest.mark.parametrize("op_cls, ref_fn, name", _LOGICAL_OPS)
@@ -591,6 +632,9 @@ _BITWISE_BINARY_OPS = [
 ]
 
 
+_register_table(_BITWISE_BINARY_OPS)
+
+
 @pytest.mark.parametrize("op_cls, ref_fn, name", _BITWISE_BINARY_OPS)
 def test_bitwise_binary_compile(op_cls, ref_fn, name):
     """Compile-smoke for bitwise binary ops."""
@@ -604,12 +648,29 @@ def test_bitwise_binary_compile(op_cls, ref_fn, name):
     assert torch.equal(out, ref)
 
 
+@pytest.mark.parametrize("op_cls, ref_fn, name", _BITWISE_BINARY_OPS)
+def test_bool_bitwise_binary_compile(op_cls, ref_fn, name):
+    """Compile-smoke for bool bitwise ops using the uint8 storage path."""
+    shape = _SMALL
+    a = torch.randint(0, 2, shape, device="cuda").bool()
+    b = torch.randint(0, 2, shape, device="cuda").bool()
+    op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.bool)
+    compiled_op = torch.compile(op, fullgraph=True)
+    out = compiled_op(a, b)
+    ref = ref_fn(a, b)
+    assert out.dtype == torch.bool
+    assert torch.equal(out, ref)
+
+
 # --- Remaining fused gated ops ---
 
 _FUSED_GATED_OPS = [
     pytest.param(GeluAndMulFwdOp, "gelu_and_mul", marks=pytest.mark.full),
     pytest.param(GeluTanhAndMulFwdOp, "gelu_tanh_and_mul", marks=pytest.mark.full),
 ]
+
+
+_register_table(_FUSED_GATED_OPS)
 
 
 @pytest.mark.parametrize("op_cls, name", _FUSED_GATED_OPS)
@@ -625,6 +686,9 @@ def test_fused_gated_compile(op_cls, name):
 
 
 # --- Where op (cond, x, y -> out): same-shape and broadcasting ---
+
+register_compile_contract(WhereFwdOp)
+
 
 @pytest.mark.full
 def test_where_compile_same_shape():
@@ -665,6 +729,9 @@ def test_where_compile_broadcast():
 
 # --- ClampScalarFwdOp (input -> out, scalar min/max baked) ---
 
+register_compile_contract(ClampScalarFwdOp)
+
+
 @pytest.mark.full
 def test_clamp_scalar_compile():
     """Compile-smoke for ClampScalarFwdOp (Number min/max baked into __init__)."""
@@ -678,6 +745,9 @@ def test_clamp_scalar_compile():
 
 
 # --- Tensor-bound ClampFwdOp (input, min?, max? -> out) ---
+
+register_compile_contract(ClampFwdOp)
+
 
 @pytest.mark.full
 def test_clamp_tensor_compile_same_shape():
@@ -717,6 +787,9 @@ def test_clamp_tensor_compile_broadcast():
 
 # --- Single-bound Tensor clamp variants ---
 
+register_compile_contract(ClampMinFwdOp)
+
+
 @pytest.mark.full
 def test_clamp_min_compile_same_shape():
     """Compile-smoke for ClampMinFwdOp at same shape."""
@@ -743,6 +816,9 @@ def test_clamp_min_compile_broadcast():
     ref = torch.clamp(x.float(), min=lo.float()).to(_DTYPE)
     assert out.shape == ref.shape == input_shape
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+
+
+register_compile_contract(ClampMaxFwdOp)
 
 
 @pytest.mark.full
@@ -774,6 +850,9 @@ def test_clamp_max_compile_broadcast():
 
 
 # --- MaskedFillFwdOp (Tensor value) ---
+
+register_compile_contract(MaskedFillFwdOp)
+
 
 @pytest.mark.full
 def test_masked_fill_tensor_compile_same_shape():
@@ -813,6 +892,9 @@ def test_masked_fill_tensor_compile_broadcast():
 
 
 # --- MaskedFillScalarFwdOp (broadcast path now uses custom_op) ---
+
+register_compile_contract(MaskedFillScalarFwdOp)
+
 
 @pytest.mark.full
 def test_masked_fill_scalar_compile_same_shape():

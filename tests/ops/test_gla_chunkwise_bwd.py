@@ -2,55 +2,13 @@
 import pytest
 import torch
 
-from tests.ops.gla_test_utils import cosine_sim, get_tolerances
+from tests.ops.gla_test_utils import (
+    cosine_sim,
+    get_tolerances,
+    gla_fwd_chunked_torch,
+)
 from tests.test_base import FixtureBase
 from tileops.ops import GLABwdOp, GLAFwdOp
-
-
-def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
-    """Fully differentiable chunked GLA forward in float32."""
-    B, T, H, K = q.shape
-    V = v.shape[-1]
-    BC = chunk_size
-    NC = T // BC
-
-    if scale is None:
-        scale = K ** -0.5
-
-    q = q.float() * scale
-    k = k.float()
-    v = v.float()
-    g = g.float()
-
-    g_cum = g.reshape(B, NC, BC, H, K).cumsum(dim=2).reshape(B, T, H, K)
-
-    h = q.new_zeros(B, H, K, V)
-    mask = torch.tril(torch.ones(BC, BC, device=q.device, dtype=torch.float32))
-
-    o_chunks = []
-    for c in range(NC):
-        sl = slice(c * BC, (c + 1) * BC)
-        qc = q[:, sl, :, :]
-        kc = k[:, sl, :, :]
-        vc = v[:, sl, :, :]
-        gc = g_cum[:, sl, :, :]
-        g_last = gc[:, -1:, :, :]
-
-        q_gated = qc * torch.exp(gc)
-        o_inter = torch.einsum("bthk,bhkv->bthv", q_gated, h)
-
-        k_ungated = kc * torch.exp(-gc)
-        A = torch.einsum("bihk,bjhk->bhij", q_gated, k_ungated)
-        A = A * mask.unsqueeze(0).unsqueeze(0)
-        o_intra = torch.einsum("bhij,bjhv->bihv", A, vc)
-
-        o_chunks.append(o_inter + o_intra)
-
-        k_adj = kc * torch.exp(g_last - gc)
-        h = h * torch.exp(g_last).permute(0, 2, 3, 1).squeeze(-1).unsqueeze(-1)
-        h = h + torch.einsum("bthk,bthv->bhkv", k_adj, vc)
-
-    return torch.cat(o_chunks, dim=1)
 
 
 def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
@@ -72,9 +30,7 @@ try:
 except ImportError:
     chunk_gla = None
 
-# =============================================================================
 # Pure-torch differentiable forward (BTHD layout) for autograd-based reference
-# =============================================================================
 
 
 def _fla_autograd_bwd(
@@ -103,9 +59,7 @@ def _fla_autograd_bwd(
     return dq, dk, dv, dg
 
 
-# =============================================================================
 # Backward correctness tests
-# =============================================================================
 
 
 class GLABwdFixture(FixtureBase):
@@ -165,13 +119,16 @@ def test_gla_bwd(
             assert cos > 0.99, f"FLA vs ref {name} cosine too low: {cos:.6f}"
 
     # --- TileOPs kernel backward ---
-    fwd_op = GLAFwdOp(B, T, H, K, V, BC, scale=scale,
-                       output_final_state=False, dtype=dtype)
+    fwd_op = GLAFwdOp(
+        chunk_size=BC,
+        scale=scale,
+        output_final_state=False,
+    )
     o_fwd, _ = fwd_op.forward(q, k, v, g)
     h = fwd_op.kernel._h_out  # [B, NT+1, H, K, V] in fp32
 
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
-    bwd_op = GLABwdOp(B, T, H, K, V, BC, scale=scale, dtype=dtype, tune=tune)
+    bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
     op_dq, op_dk, op_dv, op_dg = bwd_op.forward(q, k, v, g, h, do, dht)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 

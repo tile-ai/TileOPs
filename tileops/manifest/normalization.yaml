@@ -50,7 +50,7 @@ RMSNormFwdOp:
       rms_norm: RMSNormKernel
     op: tileops/ops/norm/rms_norm.py
     test: tests/ops/test_rms_norm.py
-    bench: benchmarks/ops/bench_rms_norm.py
+    bench: benchmarks/ops/bench_norm.py
     bench_manifest_driven: true
 
 LayerNormFwdOp:
@@ -101,7 +101,7 @@ LayerNormFwdOp:
       layer_norm: LayerNormKernel
     op: tileops/ops/norm/layer_norm.py
     test: tests/ops/test_layer_norm.py
-    bench: benchmarks/ops/bench_layer_norm.py
+    bench: benchmarks/ops/bench_norm.py
     bench_manifest_driven: true
 
 AdaLayerNormFwdOp:
@@ -186,7 +186,7 @@ AdaLayerNormZeroFwdOp:
     bytes: "5 * M * N * elem_bytes"
 
   source:
-    kernel: tileops/kernels/norm/ada_layer_norm_zero.py
+    kernel: tileops/kernels/norm/ada_layer_norm.py
     kernel_map:
       ada_layer_norm: AdaLayerNormKernel
     op: tileops/ops/norm/ada_layer_norm_zero.py
@@ -240,7 +240,7 @@ FusedAddLayerNormFwdOp:
       fused_add_layer_norm: FusedAddLayerNormKernel
     op: tileops/ops/norm/fused_add_layer_norm.py
     test: tests/ops/test_fused_add_layer_norm.py
-    bench: benchmarks/ops/bench_fused_add_layer_norm.py
+    bench: benchmarks/ops/bench_norm.py
     bench_manifest_driven: true
 
 FusedAddRMSNormFwdOp:
@@ -290,12 +290,13 @@ FusedAddRMSNormFwdOp:
       fused_add_rms_norm: FusedAddRMSNormKernel
     op: tileops/ops/norm/fused_add_rms_norm.py
     test: tests/ops/test_fused_add_rms_norm.py
-    bench: benchmarks/ops/bench_fused_add_rms_norm.py
+    bench: benchmarks/ops/bench_norm.py
 
 # ---------------------------------------------------------------------------
 # norm — spatial-norm ops (operate over spatial/channel dims, shape: [N, C, *spatial])
 # ---------------------------------------------------------------------------
 
+    bench_manifest_driven: true
 BatchNormFwdOp:
   ref_api: "torch.nn.functional.batch_norm"
   family: normalization
@@ -448,7 +449,7 @@ GroupNormFwdOp:
     bench: benchmarks/ops/bench_group_norm.py
     bench_manifest_driven: true
 
-GroupNormFwdOpNoAffine:
+GroupNormNoAffineFwdOp:
   ref_api: "torch.nn.functional.group_norm"
   # No-affine variant: torch.nn.functional.group_norm(x, num_groups, weight=None,
   # bias=None, eps), matching torch.nn.GroupNorm(affine=False). Split from
@@ -544,7 +545,7 @@ InstanceNormFwdOp:
     bench: benchmarks/ops/bench_instance_norm.py
     bench_manifest_driven: true
 
-InstanceNormFwdOpNoAffine:
+InstanceNormNoAffineFwdOp:
   ref_api: "torch.nn.functional.instance_norm"
   # No-affine variant: torch.nn.functional.instance_norm(x, weight=None,
   # bias=None, ...), matching torch.nn.InstanceNorm*(affine=False) — the

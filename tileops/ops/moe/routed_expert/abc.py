@@ -1,4 +1,19 @@
-"""MoE modular interface — ABC definitions and shared data structures."""
+"""MoE modular interface — ABC definitions and shared data structures.
+
+Strategy-pattern layering alongside the Op/Kernel hierarchy. ``FusedMoe``
+wires the pipeline: ``FusedTopKOp`` -> ``FusedMoEPrepareAndFinalize.prepare``
+-> ``FusedMoEExpertsModular.forward`` -> ``FusedMoEPrepareAndFinalize.finalize``.
+
+- ``FusedMoEPrepareAndFinalize`` owns EP communication and optional
+  quantization; plug in a new backend by subclassing it and passing
+  ``FusedMoe(prepare_finalize=...)``.
+- ``FusedMoEExperts`` is a full ``Op`` (own manifest entry, own
+  ``forward``) owning the expert GEMM; swap it via
+  ``FusedMoe(experts=...)`` with a ``FusedMoEExpertsModular`` subclass.
+- ``WeightedReduce`` makes the final weighted reduction pluggable;
+  ``WeightedReduceNoOp`` when ``forward`` already reduced.
+- ``PrepareResult`` carries ``prepare()`` outputs to ``apply()``.
+"""
 
 from __future__ import annotations
 

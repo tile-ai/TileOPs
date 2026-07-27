@@ -24,6 +24,7 @@ from tileops.kernels.moe.moe_grouped_gemm_persistent_3wg_fused_act import (
     _DEFAULT_CONFIG as _FUSED_ACT_DEFAULT_CONFIG,
 )
 from tileops.ops.moe._activation import build_activation_op
+from tileops.utils import get_sm_version
 
 from .abc import (
     FusedMoEExpertsModular,
@@ -163,7 +164,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             fused_block_n = _FUSED_ACT_DEFAULT_CONFIG["block_n"]
             ok = (
                 torch.cuda.is_available()
-                and torch.cuda.get_device_capability()[0] >= 9
+                and get_sm_version() >= 90
                 and kernel_cls is GroupedGemmPersistent3WGKernel
                 and (gemm_override is None
                      or gemm_override is GroupedGemmPersistent3WGKernel)

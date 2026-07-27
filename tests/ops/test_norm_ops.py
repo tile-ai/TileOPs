@@ -8,9 +8,7 @@ Covers:
 import pytest
 import torch
 
-# ---------------------------------------------------------------------------
 # BatchNormFwdOp input validation
-# ---------------------------------------------------------------------------
 
 @pytest.mark.smoke
 
@@ -52,13 +50,10 @@ class TestBatchNormFwdValidation:
             op(x_wrong, rm, rv, weight, bias)
 
 
-# ---------------------------------------------------------------------------
 # BatchNorm torch.compile smoke tests
-# ---------------------------------------------------------------------------
 
 @pytest.mark.smoke
-
-
+@pytest.mark.usefixtures("isolated_dynamo")
 class TestBatchNormCustomOp:
 
     def test_fwd_torch_compile_smoke(self):

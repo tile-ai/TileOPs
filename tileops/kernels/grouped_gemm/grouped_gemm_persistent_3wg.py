@@ -291,11 +291,11 @@ def _make_pingpong_kernel(numel, num_experts, N, K, dtype, sm_count,
 
     @T.prim_func
     def _gemm_main_v2(
-        A: T.Tensor(A_shape, dtype),                        # type: ignore  # noqa: F821
-        B: T.Tensor((num_experts, N, K), dtype),            # type: ignore  # noqa: F821
-        true_sizes: T.Tensor((num_experts,), "int32"),      # noqa: F821
-        true_offsets: T.Tensor((num_experts,), "int32"),    # noqa: F821
-        C: T.Tensor((numel, N), dtype),                     # type: ignore  # noqa: F821
+        A: T.Tensor(A_shape, dtype),                        # type: ignore
+        B: T.Tensor((num_experts, N, K), dtype),            # type: ignore
+        true_sizes: T.Tensor((num_experts,), "int32"),
+        true_offsets: T.Tensor((num_experts,), "int32"),
+        C: T.Tensor((numel, N), dtype),                     # type: ignore
     ):
         with T.Kernel(sm_count, threads=threads) as (pid,):
             # ── Per-WG ring-buffered SMEM (num_stages slots) ──
@@ -709,11 +709,11 @@ def _make_cooperative_kernel(numel, num_experts, N, K, dtype, sm_count,
 
     @T.prim_func
     def _gemm_main_v2_coop(
-        A: T.Tensor(A_shape, dtype),                        # type: ignore  # noqa: F821
-        B: T.Tensor((num_experts, N, K), dtype),            # type: ignore  # noqa: F821
-        true_sizes: T.Tensor((num_experts,), "int32"),      # noqa: F821
-        true_offsets: T.Tensor((num_experts,), "int32"),    # noqa: F821
-        C: T.Tensor((numel, N), dtype),                     # type: ignore  # noqa: F821
+        A: T.Tensor(A_shape, dtype),                        # type: ignore
+        B: T.Tensor((num_experts, N, K), dtype),            # type: ignore
+        true_sizes: T.Tensor((num_experts,), "int32"),
+        true_offsets: T.Tensor((num_experts,), "int32"),
+        C: T.Tensor((numel, N), dtype),                     # type: ignore
     ):
         with T.Kernel(sm_count, threads=threads) as (pid,):
             # ── Split-A SMEM rings (zero-offset WGMMA) + shared B ring ──

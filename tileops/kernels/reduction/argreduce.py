@@ -28,9 +28,7 @@ __all__ = ["ArgreduceKernel"]
 _ARGREDUCE_KINDS = {"argmax", "argmin"}
 
 
-# ---------------------------------------------------------------------------
 # Argreduce kernel
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -109,9 +107,7 @@ def _argreduce_kernel(M: int, N: int, op_kind: str, dtype: str):
     return _func
 
 
-# ---------------------------------------------------------------------------
 # custom_op wrappers for torch.compile compatibility
-# ---------------------------------------------------------------------------
 
 
 @torch.library.custom_op("top::argreduce_fwd", mutates_args=())
@@ -132,9 +128,7 @@ def _(M, N, op_kind, dtype_str, block_m, threads, x):
     return torch.empty((M,), dtype=torch.int64, device=x.device)
 
 
-# ---------------------------------------------------------------------------
 # ArgreduceKernel class
-# ---------------------------------------------------------------------------
 
 
 class ArgreduceKernel(Kernel):

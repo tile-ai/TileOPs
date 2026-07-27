@@ -102,6 +102,8 @@ dtype_combos:
 
 **R20. `static_dims`.** For arbitrary-rank ops (no `shape` declaration), `static_dims` declares values the user commits to at Op construction time. Each entry maps an `__init__` keyword name to a single-axis shape expression `<tensor>.shape[<const_or_param>]`. See [`static_dims`](#static_dims) for full semantics, rules, and examples.
 
+**R21. Workload keys derive from the signature.** Single-tensor-input ops whose workloads carry a `*_shape` key: the shape key MUST be `{input}_shape`; every other key MUST be a `signature.params` name or reserved `dtypes` / `label`. Enforced by the validator and `workloads_to_params`. Multi-input aggregate keys (`kv_shape`) are family bench-file conventions, out of scope.
+
 ## `static_dims`
 
 `static_dims` declares what becomes statically known at the moment the user constructs the Op instance. It is **per-op**, not per-family.
@@ -192,7 +194,7 @@ SumFwdOp:
     inputs:  {x: {dtype: "..."}}
     outputs: {y: {dtype: "same_as(x)"}}
     params:
-      dim:     {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+      dim:     {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     # static_dims absent — equivalent to static_dims: {}
     shape_rules: [...]
@@ -201,7 +203,7 @@ SumFwdOp:
 The generated `__init__` has no shape kwargs:
 
 ```python
-def __init__(self, *, dtype, dim=-1, keepdim=False, ...):
+def __init__(self, *, dtype, dim=None, keepdim=False, ...):
     # ...
 ```
 
@@ -215,39 +217,48 @@ class SumFwdOp(Op):
         )  # all full-reductions with same numel share a kernel
 ```
 
-The base class emits a once-per-type runtime warning when the default `_cache_key` is invoked with empty `static_dims` and no subclass override. See [ops-design.md § Implementing an Op](ops-design.md#implementing-an-op).
+The base class emits a once-per-type runtime warning when the default `_cache_key` is invoked with empty `static_dims` and no subclass override. See [ops-design-reference.md § `_cache_key` override](ops-design-reference.md#optional-hooks-appendix).
 
 ## Manifest Key Format
 
-Each top-level entry is keyed by the **Python class name** of the Op — PascalCase with a mandatory direction suffix and `Op` suffix:
+Each top-level entry is keyed by the **Python class name** of the Op — PascalCase with an `Op` suffix and an optional direction suffix:
 
 ```
-{PascalCaseName}{Direction}Op
+{PascalCaseName}[{Direction}]Op
 ```
 
-- **PascalCaseName** — descriptive name in PascalCase (`RMSNorm`, `BatchNorm`, `Softmax`). Author chooses; no abbreviation rules.
-- **Direction** — mandatory: `Fwd` or `Bwd`.
+- **PascalCaseName** — descriptive name in PascalCase (`RMSNorm`, `BatchNorm`, `Softmax`). Author chooses; no abbreviation rules. Variant words are part of this name and always precede `{Direction}Op` (`GroupNormNoAffineFwdOp`, never `GroupNormFwdOpNoAffine`).
+- **Direction** — `Fwd` or `Bwd`. REQUIRED when the manifest carries both directions of the same op (a direction sibling exists); single-direction ops MAY omit it.
 - **Op** — literal suffix.
 
-Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `LinearFwdOp`.
+Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `DropoutOp`.
 
 Validator enforces `cls.__name__ == manifest_key` exactly — no heuristic resolution or case conversion.
 
 ## Entry Structure
 
-| Field       | Required | Description                                                   |
-| ----------- | -------- | ------------------------------------------------------------- |
-| `family`    | yes      | Op family. See [below](#family).                              |
-| `ref_api`   | yes      | External API reference, or `"none"` if no direct counterpart. |
-| `status`    | yes      | `spec-only` or `implemented`.                                 |
-| `signature` | yes      | Op interface. See [Signature](#signature).                    |
-| `workloads` | yes      | Benchmark shapes/dtypes.                                      |
-| `roofline`  | yes      | Performance model.                                            |
-| `source`    | yes      | Implementation paths.                                         |
+| Field                     | Required | Description                                                   |
+| ------------------------- | -------- | ------------------------------------------------------------- |
+| `family`                  | yes      | Op family. See [below](#family).                              |
+| `ref_api`                 | yes      | External API reference, or `"none"` if no direct counterpart. |
+| `status`                  | yes      | `spec-only` or `implemented`.                                 |
+| `torch_compile_fullgraph` | no       | Literal `true` only. See [below](#torch_compile_fullgraph).   |
+| `signature`               | yes      | Op interface. See [Signature](#signature).                    |
+| `workloads`               | yes      | Benchmark shapes/dtypes.                                      |
+| `roofline`                | yes      | Performance model.                                            |
+| `source`                  | yes      | Implementation paths.                                         |
 
 ### `family`
 
-Closed set: `elementwise`, `reduction`, `normalization`, `convolution`, `gemm`, `quantize`, `sampling`, `attention`, `moe`, `linear_attention`, `ssm`, `scan`.
+Lowercase snake_case family name. Determines which family file owns the entry (see [Layout](#layout)). Introducing a new family means adding a new family file — human-reviewed like any manifest change. The validator checks presence only.
+
+### `torch_compile_fullgraph`
+
+Optional; literal `true` only. Omit for "no promise" — `false` is invalid. Invalid on `status: spec-only`.
+
+`true` declares: for each manifest-supported configuration, the first call through `torch.compile(op, fullgraph=True)` succeeds with no prior eager call and is correct under the op's tolerance policy. Not promised: dynamic shapes, `dynamic=True`, absence of recompilation. Warm-up-dependent capture does not qualify.
+
+Every declared op MUST have a compile test registered in `tests/compile_contract.py`; CI holds declarations and registered evidence in exact set equality.
 
 ### `ref_api`
 
@@ -316,7 +327,7 @@ Op has Optional[Tensor] inputs?
    └─ 3+ → decompose the op first
 ```
 
-**Naming:** Variants follow the same PascalCase key format, with a descriptive suffix inserted before `{Direction}Op` (e.g., `MoEFusedMoeCbFwdOp` where `Cb` is the variant suffix).
+**Naming:** Variants follow the same PascalCase key format, with a descriptive suffix inserted before `{Direction}Op` (e.g., `Conv1dBiasFwdOp`, the `Bias` variant of `Conv1dFwdOp`).
 
 ### Workloads
 
@@ -343,28 +354,27 @@ are defined in [roofline.md](roofline.md).
 | `op`                    | yes      | Op class file path.                                                    |
 | `test`                  | yes      | Test file path.                                                        |
 | `bench`                 | yes      | Benchmark file path.                                                   |
-| `bench_manifest_driven` | no       | `true` = L4 is a hard CI error. Migration flag.                        |
+| `bench_manifest_driven` | \*       | Required `true` when `status: implemented`; makes L4 a hard CI error.  |
 
 #### kernel_map
 
-Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [ops-design-reference.md § Kernel Dispatch](ops-design-reference.md#kernel-dispatch-kernel_map).
+Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [ops-design-reference.md § S14 `default_kernel_map`](ops-design-reference.md#slot-s14).
 
 ```yaml
 # Single-kernel op
 source:
   kernel: tileops/kernels/norm/rms_norm.py
   kernel_map:
-    rms_norm: RmsNormKernel
+    rms_norm: RMSNormKernel
   op: tileops/ops/norm/rms_norm.py
 
 # Multi-kernel op
 source:
-  kernel:
-    - tileops/kernels/attention/gqa_bwd.py
+  kernel: tileops/kernels/attention/gqa_bwd.py
   kernel_map:
-    mha_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-    mha_bwd_kernel: MHABwdKernel
-    mha_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
+    gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
+    gqa_bwd_kernel: GQABwdKernel
+    gqa_bwd_postprocess_kernel: FlashAttnBwdPostprocessKernel
   op: tileops/ops/attention/mha.py
 ```
 
@@ -391,42 +401,42 @@ outputs:
   y: {dtype: "same_as(x)", shape: "[M, N]"}
 ```
 
-**Arbitrary rank — RMSNorm** \[R9, R13, R20\]:
+**Arbitrary rank — RMSNorm** \[R9, R13, R17\]:
 
 ```yaml
 inputs:
   x: {dtype: "float16 | bfloat16"}
   weight: {dtype: "same_as(x)"}
 outputs:
-  y: {dtype: "same_as(x)"}
+  output: {dtype: "same_as(x)"}
 params:
-  dim: {type: int, default: -1}
-  eps: {type: float, default: 1e-6}
-static_dims:
-  N: "x.shape[dim]"
+  normalized_shape: {type: "list[int] | tuple[int, ...]"}
+  eps: {type: "float | None", default: null}
 shape_rules:
-  - "y.shape == x.shape"
-  - "weight.shape == (x.shape[dim],)"
+  - "len(normalized_shape) > 0"
+  - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
+  - "weight.shape == tuple(normalized_shape)"
+  - "output.shape == x.shape"
 ```
 
 **Arbitrary rank — Reduce** \[R9, R13\]:
 
 ```yaml
 inputs:
-  x: {dtype: "float16 | bfloat16"}
+  x: {dtype: "float16 | bfloat16 | float32"}
 outputs:
-  y: {dtype: "same_as(x)"}
+  output: {dtype: "same_as(x)"}
 params:
-  dim: {type: "int | list[int] | tuple[int, ...] | None", default: -1}
+  dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
   keepdim: {type: bool, default: false}
 shape_rules:
   - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-  - "y.ndim == x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim)))"
-  - "y.shape[i] == (1 if i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))) and keepdim else x.shape[i])"
   - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
+  - "output.ndim == (x.ndim if keepdim else x.ndim - len({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+  # per-axis output-shape rules follow the same normalize-then-check pattern
 ```
 
-All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve input shape (no `keepdim`); use `shape_rules` to express `y.shape == x.shape`. count_nonzero has no `keepdim` (per R17). Authoring contract for `dim`: see R14 → [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
+All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve input shape (no `keepdim`); use `shape_rules` to express `output.shape == x.shape`. count_nonzero has no `keepdim` (per R17). Authoring contract for `dim`: see R14 → [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
 
 **Full entry — RMSNorm:**
 
@@ -441,32 +451,34 @@ RMSNormFwdOp:
       x: {dtype: "float16 | bfloat16"}
       weight: {dtype: "same_as(x)"}
     outputs:
-      y: {dtype: "same_as(x)"}
+      output: {dtype: "same_as(x)"}
     params:
-      dim: {type: int, default: -1}
-      eps: {type: float, default: 1e-6}
-    static_dims:
-      N: "x.shape[dim]"
+      normalized_shape: {type: "list[int] | tuple[int, ...]"}
+      eps: {type: "float | None", default: null}
     shape_rules:
-      - "y.shape == x.shape"
-      - "weight.shape == (x.shape[dim],)"
+      - "len(normalized_shape) > 0"
+      - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
+      - "weight.shape == tuple(normalized_shape)"
+      - "output.shape == x.shape"
 
   workloads:
-    - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
-    - {x_shape: [1, 4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
+    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-3.1-8b-prefill"}
+    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-3.1-8b-decode"}
 
   roofline:
     vars:
-      M: "product(x.shape[:dim])"
-      N: "x.shape[dim]"
+      M: "product(x.shape[:x.ndim - len(normalized_shape)])"
+      N: "product(normalized_shape)"
     flops: "4 * M * N"
     bytes: "(2 * M * N + N) * elem_bytes"
 
   source:
     kernel: tileops/kernels/norm/rms_norm.py
+    kernel_map:
+      rms_norm: RMSNormKernel
     op: tileops/ops/norm/rms_norm.py
     test: tests/ops/test_rms_norm.py
-    bench: benchmarks/ops/bench_rms_norm.py
+    bench: benchmarks/ops/bench_norm.py
 ```
 
 ## Benchmark Pattern
@@ -477,18 +489,15 @@ consumption.
 
 ### Workload entry schema
 
-Each entry under `workloads:` is a mapping. Shape keys take the form
-`<tensor_name>_shape` (e.g. `x_shape`, `q_shape`, `kv_shape`) — one per
-tensor input in the workload. `dtypes` and `label` are also reserved.
-Any other key becomes an **op-call parameter** forwarded to the op's
-`__init__`.
+Each entry under `workloads:` is a mapping. `dtypes` and `label` are
+reserved. Key rules: R21.
 
-| Key                   | Required | Meaning                                                                                                  |
-| --------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
-| `<tensor_name>_shape` | yes      | Shape for a tensor input (list of ints). Include one key per tensor input the workload exercises.        |
-| `dtypes`              | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                       |
-| `label`               | no       | Human-readable id used in the pytest param id and report tables.                                         |
-| *any other key*       | no       | Op param value (`dim`, `keepdim`, `correction`, …). Overrides the manifest's `signature.params` default. |
+| Key             | Required | Meaning                                                                                                                                                                                |
+| --------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{input}_shape` | yes\*    | Shape for the single tensor input (list of ints), named per R21. \*Multi-input families define their own aggregate shape keys (e.g. `q_shape`/`kv_shape`) in their family bench files. |
+| `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                                                                                                     |
+| `label`         | no       | Human-readable id used in the pytest param id and report tables.                                                                                                                       |
+| *any other key* | no       | Op param value (`dim`, `keepdim`, …). MUST be a declared `signature.params` name (R21); overrides its default.                                                                         |
 
 Example — parametrizing a reduction workload over a non-last `dim`:
 
@@ -510,7 +519,7 @@ workloads:
 | L3    | Dtype     | dtype strings are valid torch types, `same_as()` refs, or `promote_int_to_float()` refs                                     |
 | L4    | Benchmark | Bench file imports/calls `load_workloads` and `eval_roofline` (directly or via `workloads_to_params` / `ManifestBenchmark`) |
 
-`spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on a targeted entry + its variants.
+`spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on a targeted entry + its variants. L2 and L3 additionally run parity extensions against the implemented Op's `_infer_output_shapes` / `_validate_dtypes` methods; see [ops-design.md](ops-design.md).
 
 ```bash
 python scripts/validate_manifest.py

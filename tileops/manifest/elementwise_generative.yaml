@@ -16,15 +16,15 @@ AlibiFwdOp:
       num_heads: {type: int}
       dtype: {type: torch.dtype}
     shape_rules:
-    - "seq_len > 0"
-    - "num_heads > 0"
+      - "seq_len > 0"
+      - "num_heads > 0"
 
   workloads:
     # Llama-style attention bias dimensions
-  - {seq_len: 2048, num_heads: 32, dtype: float16, dtypes: [float16], label: "llama-prefill-2k-fp16"}
-  - {seq_len: 2048, num_heads: 32, dtype: bfloat16, dtypes: [bfloat16], label: "llama-prefill-2k-bf16"}
-  - {seq_len: 4096, num_heads: 32, dtype: float16, dtypes: [float16], label: "llama-prefill-4k-fp16"}
-  - {seq_len: 4096, num_heads: 32, dtype: bfloat16, dtypes: [bfloat16], label: "llama-prefill-4k-bf16"}
+    - {seq_len: 2048, num_heads: 32, dtype: float16, dtypes: [float16], label: "llama-prefill-2k-fp16"}
+    - {seq_len: 2048, num_heads: 32, dtype: bfloat16, dtypes: [bfloat16], label: "llama-prefill-2k-bf16"}
+    - {seq_len: 4096, num_heads: 32, dtype: float16, dtypes: [float16], label: "llama-prefill-4k-fp16"}
+    - {seq_len: 4096, num_heads: 32, dtype: bfloat16, dtypes: [bfloat16], label: "llama-prefill-4k-bf16"}
 
   roofline:
     vars:
@@ -44,7 +44,7 @@ AlibiFwdOp:
     op: tileops/ops/elementwise/alibi.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 SinusoidalFwdOp:
   # Sinusoidal positional encoding (Vaswani et al. 2017):
@@ -65,16 +65,16 @@ SinusoidalFwdOp:
       d_model: {type: int}
       dtype: {type: torch.dtype}
     shape_rules:
-    - "seq_len > 0"
-    - "d_model > 0"
-    - "d_model % 2 == 0"
+      - "seq_len > 0"
+      - "d_model > 0"
+      - "d_model % 2 == 0"
 
   workloads:
     # Transformer-style positional encodings
-  - {seq_len: 2048, d_model: 4096, dtype: float16, dtypes: [float16], label: "transformer-2k-4k-fp16"}
-  - {seq_len: 2048, d_model: 4096, dtype: bfloat16, dtypes: [bfloat16], label: "transformer-2k-4k-bf16"}
-  - {seq_len: 4096, d_model: 4096, dtype: float16, dtypes: [float16], label: "transformer-4k-4k-fp16"}
-  - {seq_len: 4096, d_model: 4096, dtype: bfloat16, dtypes: [bfloat16], label: "transformer-4k-4k-bf16"}
+    - {seq_len: 2048, d_model: 4096, dtype: float16, dtypes: [float16], label: "transformer-2k-4k-fp16"}
+    - {seq_len: 2048, d_model: 4096, dtype: bfloat16, dtypes: [bfloat16], label: "transformer-2k-4k-bf16"}
+    - {seq_len: 4096, d_model: 4096, dtype: float16, dtypes: [float16], label: "transformer-4k-4k-fp16"}
+    - {seq_len: 4096, d_model: 4096, dtype: bfloat16, dtypes: [bfloat16], label: "transformer-4k-4k-bf16"}
 
   roofline:
     vars:
@@ -92,4 +92,4 @@ SinusoidalFwdOp:
     op: tileops/ops/elementwise/sinusoidal.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_independent_elementwise.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

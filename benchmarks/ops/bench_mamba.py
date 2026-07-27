@@ -23,9 +23,7 @@ from workloads.mamba import (
     SSDStatePassingFwdWorkload,
 )
 
-# ---------------------------------------------------------------------------
 # Optional mamba_ssm Triton baselines
-# ---------------------------------------------------------------------------
 try:
     from mamba_ssm.ops.triton.ssd_chunk_state import _chunk_cumsum_fwd as _mamba_chunk_cumsum_fwd
 except ImportError:
@@ -114,8 +112,7 @@ def test_da_cumsum_fwd_bench(batch, num_chunks, chunk_len, n_heads, has_dt_bias,
     inputs = test.gen_inputs()  # (dt_raw, A, dt_bias)
 
     op = DaCumsumFwdOp(
-        batch, num_chunks, chunk_len, n_heads,
-        seq_len=num_chunks * chunk_len,
+        chunk_len=chunk_len,
         has_dt_bias=has_dt_bias,
         dt_softplus=dt_softplus,
         dtype=dtype,
@@ -253,7 +250,6 @@ class SSDChunkScanFwdBenchmark(BenchmarkBase[SSDChunkScanFwdWorkload]):
         return float(reads + writes)
 
 
-# ---------------------------------------------------------------------------
 # Benchmark parameters
 #
 # Model-to-shape mapping (Mamba-2 defaults):
@@ -265,7 +261,6 @@ class SSDChunkScanFwdBenchmark(BenchmarkBase[SSDChunkScanFwdWorkload]):
 #   1.3B -> n_heads=64   2.7B -> n_heads=80
 #
 # Schema: (batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune)
-# ---------------------------------------------------------------------------
 _SSD_CHUNK_SCAN_FWD_BENCH_PARAMS = [
     # ── unit-scale ──
     pytest.param(1, 2,  64, 4,  64,  32, 1, torch.float16,  False, id="b1-c2-L64-h4-p64-n32-fp16"),
@@ -276,21 +271,6 @@ _SSD_CHUNK_SCAN_FWD_BENCH_PARAMS = [
     pytest.param(1,  16, 256, 24, 64, 128, 1, torch.float16, True, id="latency-130m-4k"),
     pytest.param(8,  16, 256, 24, 64, 128, 1, torch.float16, True, id="serving-130m-4k"),
     pytest.param(4, 128, 256, 24, 64, 128, 1, torch.float16, True, id="longctx-130m-32k"),
-    # ── 370M (n_heads=32) ──
-    pytest.param(1,  16, 256, 32, 64, 128, 1, torch.float16, True, id="latency-370m-4k"),
-    pytest.param(8,  16, 256, 32, 64, 128, 1, torch.float16, True, id="serving-370m-4k"),
-    pytest.param(4, 128, 256, 32, 64, 128, 1, torch.float16, True, id="longctx-370m-32k"),
-    pytest.param(32,  8, 256, 32, 64, 128, 1, torch.float16, True, id="throughput-370m-2k"),
-    # ── 780M (n_heads=48) ──
-    pytest.param(1,  16, 256, 48, 64, 128, 1, torch.float16, True, id="latency-780m-4k"),
-    pytest.param(8,  16, 256, 48, 64, 128, 1, torch.float16, True, id="serving-780m-4k"),
-    pytest.param(4, 128, 256, 48, 64, 128, 1, torch.float16, True, id="longctx-780m-32k"),
-    pytest.param(16,  8, 256, 48, 64, 128, 1, torch.float16, True, id="throughput-780m-2k"),
-    # ── 1.3B (n_heads=64) ──
-    pytest.param(1,  16, 256, 64, 64, 128, 1, torch.float16, True, id="latency-1p3b-4k"),
-    pytest.param(8,  16, 256, 64, 64, 128, 1, torch.float16, True, id="serving-1p3b-4k"),
-    pytest.param(2, 128, 256, 64, 64, 128, 1, torch.float16, True, id="longctx-1p3b-32k"),
-    pytest.param(8,   8, 256, 64, 64, 128, 1, torch.float16, True, id="throughput-1p3b-2k"),
     # ── 2.7B (n_heads=80) ──
     pytest.param(1,  16, 256, 80, 64, 128, 1, torch.float16, True, id="latency-2p7b-4k"),
     pytest.param(4,  16, 256, 80, 64, 128, 1, torch.float16, True, id="serving-2p7b-4k"),
@@ -321,9 +301,7 @@ def test_ssd_chunk_scan_fwd_bench(
     inputs = test.gen_inputs()  # x, cb, dA_cumsum, C, prev_states, dt
 
     # ── TileOPs kernel ──
-    op = SSDChunkScanFwdOp(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune=tune,
-    )
+    op = SSDChunkScanFwdOp(tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -461,10 +439,7 @@ def test_ssd_chunk_state_fwd_bench(
     bm = SSDChunkStateFwdBenchmark(test)
     inputs = test.gen_inputs()
 
-    op = SSDChunkStateFwdOp(
-        batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype,
-        has_seq_idx=has_seq_idx, tune=tune,
-    )
+    op = SSDChunkStateFwdOp(has_seq_idx=has_seq_idx, tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -558,19 +533,6 @@ _SSD_STATE_PASSING_FWD_BENCH_PARAMS = [
     pytest.param(1,  16, 24, 128, torch.float16, True, id="latency-130m-4k"),
     pytest.param(8,  16, 24, 128, torch.float16, True, id="serving-130m-4k"),
     pytest.param(4, 128, 24, 128, torch.float16, True, id="longctx-130m-32k"),
-    # ── 370M (n_heads=32) ──
-    pytest.param(1,  16, 32, 128, torch.float16, True, id="latency-370m-4k"),
-    pytest.param(8,  16, 32, 128, torch.float16, True, id="serving-370m-4k"),
-    pytest.param(4, 128, 32, 128, torch.float16, True, id="longctx-370m-32k"),
-    pytest.param(32,  8, 32, 128, torch.float16, True, id="throughput-370m-2k"),
-    # ── 780M (n_heads=48) ──
-    pytest.param(1,  16, 48, 128, torch.float16, True, id="latency-780m-4k"),
-    pytest.param(8,  16, 48, 128, torch.float16, True, id="serving-780m-4k"),
-    pytest.param(4, 128, 48, 128, torch.float16, True, id="longctx-780m-32k"),
-    # ── 1.3B (n_heads=64) ──
-    pytest.param(1,  16, 64, 128, torch.float16, True, id="latency-1p3b-4k"),
-    pytest.param(8,  16, 64, 128, torch.float16, True, id="serving-1p3b-4k"),
-    pytest.param(2, 128, 64, 128, torch.float16, True, id="longctx-1p3b-32k"),
     # ── 2.7B (n_heads=80) ──
     pytest.param(1,  16, 80, 128, torch.float16, True, id="latency-2p7b-4k"),
     pytest.param(4,  16, 80, 128, torch.float16, True, id="serving-2p7b-4k"),
@@ -591,7 +553,7 @@ def test_ssd_state_passing_fwd_bench(
     inputs = test.gen_inputs()
     states, dA_chunk_cumsum, initial_states = inputs
 
-    op = SSDStatePassingFwdOp(batch, num_chunks, n_heads, d_state, dtype=dtype, tune=tune)
+    op = SSDStatePassingFwdOp(tune=tune)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -704,18 +666,6 @@ _SSD_DECODE_BENCH_PARAMS = [
     pytest.param(1,  24, 64, 128, 1, torch.float16, True, id="latency-130m"),
     pytest.param(8,  24, 64, 128, 1, torch.float16, True, id="serving-130m"),
     pytest.param(64, 24, 64, 128, 1, torch.float16, True, id="throughput-130m"),
-    # ── 370M (n_heads=32) ──
-    pytest.param(1,  32, 64, 128, 1, torch.float16, True, id="latency-370m"),
-    pytest.param(8,  32, 64, 128, 1, torch.float16, True, id="serving-370m"),
-    pytest.param(64, 32, 64, 128, 1, torch.float16, True, id="throughput-370m"),
-    # ── 780M (n_heads=48) ──
-    pytest.param(1,  48, 64, 128, 1, torch.float16, True, id="latency-780m"),
-    pytest.param(8,  48, 64, 128, 1, torch.float16, True, id="serving-780m"),
-    pytest.param(32, 48, 64, 128, 1, torch.float16, True, id="throughput-780m"),
-    # ── 1.3B (n_heads=64) ──
-    pytest.param(1,  64, 64, 128, 1, torch.float16, True, id="latency-1p3b"),
-    pytest.param(8,  64, 64, 128, 1, torch.float16, True, id="serving-1p3b"),
-    pytest.param(16, 64, 64, 128, 1, torch.float16, True, id="throughput-1p3b"),
     # ── 2.7B (n_heads=80) ──
     pytest.param(1,  80, 64, 128, 1, torch.float16, True, id="latency-2p7b"),
     pytest.param(4,  80, 64, 128, 1, torch.float16, True, id="serving-2p7b"),
@@ -740,7 +690,7 @@ def test_ssd_decode_bench(
     state_for_op = state.clone()
     state_bl = state.clone()
 
-    op = SSDDecodeOp(batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune)
+    op = SSDDecodeOp(tune=tune)
     result = bm.profile(op, A, dt, x, B_in, C_in, state_for_op)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

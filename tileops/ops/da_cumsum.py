@@ -34,11 +34,7 @@ class DaCumsumFwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        num_chunks: int,
         chunk_len: int,
-        n_heads: int,
-        seq_len: int,
         dtype: torch.dtype = torch.float32,
         dt_softplus: bool = False,
         has_dt_bias: bool = False,
@@ -47,29 +43,62 @@ class DaCumsumFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
-        self.batch = batch
-        self.num_chunks = num_chunks
+        self.batch = None
+        self.num_chunks = None
         self.chunk_len = chunk_len
-        self.n_heads = n_heads
-        self.seq_len = seq_len
+        self.n_heads = None
+        self.seq_len = None
         self.dtype = dtype
         self.dt_softplus = dt_softplus
         self.has_dt_bias = has_dt_bias
         self.dt_min = dt_min
         self.dt_max = dt_max
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["da_cumsum_fwd"](
-            batch, num_chunks, chunk_len, n_heads, seq_len, dtype,
-            dt_softplus=dt_softplus,
-            has_dt_bias=has_dt_bias,
-            dt_min=dt_min,
-            dt_max=dt_max,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"da_cumsum_fwd": DaCumsumFwdKernel}
+
+    def _get_kernel(
+        self,
+        batch: int,
+        num_chunks: int,
+        n_heads: int,
+        seq_len: int,
+        device_index: int | None,
+    ) -> Kernel:
+        key = (
+            batch,
+            num_chunks,
+            self.chunk_len,
+            n_heads,
+            seq_len,
+            self.dtype,
+            self.dt_softplus,
+            self.has_dt_bias,
+            self.dt_min,
+            self.dt_max,
+            device_index,
+            self.tune,
+        )
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["da_cumsum_fwd"](
+                batch,
+                num_chunks,
+                self.chunk_len,
+                n_heads,
+                seq_len,
+                self.dtype,
+                dt_softplus=self.dt_softplus,
+                has_dt_bias=self.has_dt_bias,
+                dt_min=self.dt_min,
+                dt_max=self.dt_max,
+                tune=self.tune,
+            )
+        return self._kernel_cache[key]
 
     def forward(
         self,
@@ -94,6 +123,24 @@ class DaCumsumFwdOp(Op):
             raise ValueError("dt must be a CUDA tensor")
         if dt.dtype != torch.float32:
             raise ValueError(f"Expected float32 dt, got {dt.dtype}")
+        if dt.ndim != 3:
+            raise ValueError("dt must have shape [batch, seq_len, n_heads]")
+        batch, seq_len, n_heads = dt.shape
+        if seq_len % self.chunk_len != 0:
+            raise ValueError(
+                f"seq_len ({seq_len}) must be divisible by chunk_len ({self.chunk_len})"
+            )
+        if A.shape != (n_heads,):
+            raise ValueError("A must have shape [n_heads]")
+        if self.has_dt_bias and dt_bias is not None and dt_bias.shape != (n_heads,):
+            raise ValueError("dt_bias must have shape [n_heads]")
+
+        self.batch = batch
+        self.seq_len = seq_len
+        self.n_heads = n_heads
+        self.num_chunks = seq_len // self.chunk_len
+        self.kernel = self._get_kernel(
+            batch, self.num_chunks, n_heads, seq_len, dt.device.index)
 
         dt = dt.contiguous()
         A = A.contiguous()

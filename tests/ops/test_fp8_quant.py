@@ -44,13 +44,7 @@ def _cosine_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
 def test_fp8_quant_op(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
                       in_dtype: torch.dtype, tune: bool) -> None:
     test = FP8QuantTest(batch, seq_len_kv, kv_group, index_dim, in_dtype)
-    op = FP8QuantOp(
-        batch=batch,
-        seq_len_kv=seq_len_kv,
-        kv_group=kv_group,
-        index_dim=index_dim,
-        in_dtype=in_dtype,
-        tune=tune)
+    op = FP8QuantOp(tune=tune)
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 

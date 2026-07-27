@@ -4,10 +4,8 @@ Measures latency, FLOPS, and DRAM bandwidth against PyTorch baselines.
 Workload shapes, dtypes, and roofline formulas are loaded from the ops
 manifest (``tileops/manifest/elementwise_unary_math.yaml``).
 
-Each op gets its own ``test_*_bench`` function so that the manifest
-validator's per-op AST check (see ``scripts/validate_manifest.py`` →
-``check_l4_benchmark``) can match ``load_workloads("<OpName>FwdOp")`` /
-``ManifestBenchmark("<OpName>FwdOp", ...)`` calls one-to-one. A shared
+One ``test_*_bench`` per op, so the validator's L4 AST check can tie each
+``load_workloads("<OpName>")`` call to its manifest entry. A shared
 ``_profile_and_record`` helper handles the profile + record pair so the
 per-op functions stay tiny and intentional.
 """
@@ -43,9 +41,7 @@ from tileops.ops.elementwise import (
     TruncFwdOp,
 )
 
-# ---------------------------------------------------------------------------
 # Workload + input generation
-# ---------------------------------------------------------------------------
 
 
 class _UnaryWorkload:
@@ -97,9 +93,7 @@ def _special_floats(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
     return (x,)
 
 
-# ---------------------------------------------------------------------------
-# Shared bench harness
-# ---------------------------------------------------------------------------
+# Shared workload and profiling helpers
 
 
 def _profile_and_record(
@@ -132,11 +126,9 @@ def _profile_and_record(
     BenchmarkReport.record(op, params, result_bl, tag="torch")
 
 
-# ===================================================================
 # Per-op constants and tests — one block per manifest entry so the
 # validator AST check ties each ``load_workloads(<OpName>)`` /
 # ``ManifestBenchmark(<OpName>, ...)`` call to its op.
-# ===================================================================
 
 _EXP_OP = "ExpFwdOp"
 
@@ -343,8 +335,8 @@ def test_expm1_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 
 # SigmoidFwdOp / TanhFwdOp are activation ops; their manifest source.bench
-# points to ``benchmarks/ops/bench_activation.py`` and is intentionally out
-# of scope for this file.
+# points to ``benchmarks/ops/bench_elementwise_manifest.py`` and is
+# intentionally out of scope for this file.
 
 _LOGICAL_NOT_OP = "LogicalNotFwdOp"
 

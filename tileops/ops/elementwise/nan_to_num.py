@@ -89,12 +89,12 @@ class NanToNumFwdOp(Op):
     def default_kernel_map(self):
         return {"nan_to_num": NanToNumFwdKernel}
 
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         orig_shape = input.shape
         result = self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
         if input.dtype != self.dtype:

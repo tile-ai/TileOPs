@@ -67,10 +67,10 @@ def _mark(idx: int, dtype: torch.dtype):
     return pytest.mark.smoke if idx == 0 and dtype is torch.float16 else pytest.mark.full
 
 
-def _shape_dtype_params(workloads: list[dict], shape_key: str = "input_shape") -> list:
+def _shape_dtype_params(workloads: list[dict]) -> list:
     params = []
     for idx, w in enumerate(workloads):
-        shape = tuple(w[shape_key])
+        shape = tuple(w["input_shape"])
         label = w.get("label", "x".join(str(dim) for dim in shape))
         for dtype_name in w["dtypes"]:
             dtype = _dtype(dtype_name)
@@ -280,6 +280,80 @@ class LerpTensorManifestWorkload:
         return x, end, weight
 
 
+def _numel(shape: tuple[int, ...]) -> int:
+    return prod(shape) if shape else 1
+
+
+def _broadcast_kind(
+    input_shape: tuple[int, ...],
+    other_shape: tuple[int, ...],
+    output_shape: tuple[int, ...],
+) -> str:
+    if input_shape == output_shape and other_shape == output_shape:
+        return "same_shape"
+    if _numel(input_shape) == 1 or _numel(other_shape) == 1:
+        return "scalar_broadcast"
+
+    def _one_side_kind(dense_shape: tuple[int, ...], rhs_shape: tuple[int, ...]) -> str | None:
+        if dense_shape != output_shape:
+            return None
+        if (
+            len(output_shape) >= 4
+            and len(rhs_shape) >= 3
+            and rhs_shape[-2:] == (1, 1)
+            and rhs_shape[-3] == output_shape[-3]
+            and all(dim == 1 for dim in rhs_shape[:-3])
+        ):
+            return "channel_broadcast"
+        if (
+            len(output_shape) >= 2
+            and len(rhs_shape) >= 1
+            and rhs_shape[-1] == output_shape[-1]
+            and all(dim == 1 for dim in rhs_shape[:-1])
+        ):
+            return "last_dim_broadcast"
+        return None
+
+    rhs_kind = _one_side_kind(input_shape, other_shape)
+    if rhs_kind is not None:
+        return rhs_kind
+    lhs_kind = _one_side_kind(other_shape, input_shape)
+    if lhs_kind is not None:
+        return "lhs_" + lhs_kind
+    return "broadcast"
+
+
+def _manifest_params(bm: ManifestBenchmark) -> dict:
+    workload = bm.workload
+    params = {}
+    for attr in (
+        "shape",
+        "input_shape",
+        "other_shape",
+        "condition_shape",
+        "mask_shape",
+        "min_shape",
+        "max_shape",
+        "weight_shape",
+        "end_shape",
+        "dtype",
+    ):
+        if hasattr(workload, attr):
+            params[attr] = getattr(workload, attr)
+
+    input_shape = params.get("input_shape")
+    other_shape = params.get("other_shape")
+    if input_shape is not None and other_shape is not None:
+        output_shape = params.get("shape") or tuple(
+            torch.broadcast_shapes(input_shape, other_shape)
+        )
+        params["output_shape"] = output_shape
+        params["broadcast_kind"] = _broadcast_kind(
+            input_shape, other_shape, output_shape,
+        )
+    return params
+
+
 def _record_unary(
     op,
     bm: ManifestBenchmark,
@@ -287,9 +361,9 @@ def _record_unary(
     baseline_fn: Callable,
 ) -> None:
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, _manifest_params(bm), result, tag="tileops")
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, _manifest_params(bm), result_bl, tag="torch")
 
 
 def _record_binary(
@@ -299,9 +373,9 @@ def _record_binary(
     baseline_fn: Callable,
 ) -> None:
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, _manifest_params(bm), result, tag="tileops")
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, _manifest_params(bm), result_bl, tag="torch")
 
 
 _RELU_OP = "ReluFwdOp"
@@ -420,7 +494,7 @@ def test_softplus_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> 
     _record_unary(op, bm, inputs, lambda x: F.softplus(x, 1.0, 20.0))
 
 
-@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_SIGMOID_OP), "x_shape"))
+@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_SIGMOID_OP)))
 def test_sigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = UnaryManifestWorkload(shape, dtype)
     inputs = test.gen_inputs()
@@ -429,7 +503,7 @@ def test_sigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> N
     _record_unary(op, bm, inputs, torch.sigmoid)
 
 
-@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_TANH_OP), "x_shape"))
+@pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_TANH_OP)))
 def test_tanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
     test = UnaryManifestWorkload(shape, dtype)
     inputs = test.gen_inputs()

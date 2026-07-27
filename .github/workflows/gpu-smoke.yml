@@ -144,6 +144,7 @@ jobs:
       skip_gpu_smoke: ${{ steps.policy.outputs.skip_gpu_smoke }}
       scope: ${{ steps.policy.outputs.scope }}
       pytest_targets: ${{ steps.policy.outputs.pytest_targets }}
+      full_tier_targets: ${{ steps.policy.outputs.full_tier_targets }}
       reason: ${{ steps.policy.outputs.reason }}
     steps:
       - name: Checkout test files
@@ -153,8 +154,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           fetch-depth: 1
+          # Whole tests/ tree: the policy step existence-checks changed
+          # test files before selecting them.
           sparse-checkout: |
-            tests/ops
+            tests
 
       - name: Determine GPU policy and pytest scope
         id: policy
@@ -182,6 +185,7 @@ jobs:
           skip_gpu_smoke="false"
           scope="full-smoke"
           pytest_targets="tests"
+          full_tier_targets=""
           reason="GPU smoke will run."
 
           # `is_fork` is the trust boundary that routes runs-on (resident shared-cache pool vs
@@ -218,6 +222,22 @@ jobs:
             echo "Changed files (${#changed_files[@]}):"
             printf ' - %s\n' "${changed_files[@]}"
 
+            # Changed test files (basename test_*.py, existing at head);
+            # the PR gate runs these under -m "smoke or full".
+            declare -A seen_full_targets=()
+            full_targets_list=()
+            for path in "${changed_files[@]}"; do
+              case "$path" in
+                tests/*/test_*.py|tests/test_*.py)
+                  if [[ -e "$path" && -z "${seen_full_targets[$path]:-}" ]]; then
+                    full_targets_list+=("$path")
+                    seen_full_targets["$path"]=1
+                  fi
+                  ;;
+              esac
+            done
+            full_tier_targets="${full_targets_list[*]}"
+
             # Fast path: if no Python files changed, GPU smoke is unnecessary.
             # For fork PRs, also check for high-risk files (workflow, build
             # config, etc.) that must still trigger GPU smoke even without
@@ -245,6 +265,7 @@ jobs:
                 echo "allow_fast_path=$allow_fast_path"
                 echo "scope=skip"
                 echo "pytest_targets="
+                echo "full_tier_targets="
                 echo "reason=$reason"
               } >> "$GITHUB_OUTPUT"
               exit 0
@@ -263,6 +284,7 @@ jobs:
                 echo "allow_fast_path=$allow_fast_path"
                 echo "scope=$scope"
                 echo "pytest_targets=$pytest_targets"
+                echo "full_tier_targets=$full_tier_targets"
                 echo "reason=$reason"
               } >> "$GITHUB_OUTPUT"
               exit 0
@@ -343,6 +365,7 @@ jobs:
             echo "skip_gpu_smoke=$skip_gpu_smoke"
             echo "scope=$scope"
             echo "pytest_targets=$pytest_targets"
+            echo "full_tier_targets=$full_tier_targets"
             echo "reason=$reason"
           } >> "$GITHUB_OUTPUT"
 
@@ -471,6 +494,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           TEST_SCOPE: ${{ needs.security-policy.outputs.scope }}
           PYTEST_TARGETS: ${{ needs.security-policy.outputs.pytest_targets }}
+          FULL_TIER_TARGETS: ${{ needs.security-policy.outputs.full_tier_targets }}
         run: |
           set -euo pipefail
           # Per-test hang guard: a stuck kernel (e.g. a cold-compile loop or a spinning CUDA
@@ -496,29 +520,88 @@ jobs:
 
           echo "Resolved test scope: ${TEST_SCOPE}"
           echo "Resolved pytest targets: ${PYTEST_TARGETS}"
+          echo "Diff-scoped full-tier targets: ${FULL_TIER_TARGETS:-<none>}"
           read -r -a TARGETS <<< "${PYTEST_TARGETS}"
+          read -r -a FULL_TARGETS <<< "${FULL_TIER_TARGETS:-}"
+
+          # Diff-scoped full-tier PR gate: changed test files run
+          # -m "smoke or full"; everything else stays smoke-only for latency.
+          # Residual gap (accepted): a PR breaking full-tier cases in files it
+          # does not touch is only caught by the push-to-main run — closing it
+          # would cost a full suite per PR. Push-tier failure triage: bisect
+          # PRs merged since the last green push run.
+          if [[ "$EVENT_NAME" == "pull_request" && "${#FULL_TARGETS[@]}" -gt 0 ]]; then
+            if [[ "$TEST_SCOPE" == "targeted" ]]; then
+              # Targeted scope already selects exactly these files; promote
+              # the single pass instead of running twice.
+              TEST_MARK_EXPR="smoke or full"
+              FULL_TARGETS=()
+            else
+              echo "Running diff-scoped pytest -m \"smoke or full\" on ${#FULL_TARGETS[@]} changed test file(s)"
+              diff_status=0
+              python3 -m pytest -q "${FULL_TARGETS[@]}" -m "smoke or full" \
+                --timeout=600 --timeout-method=thread \
+                --junit-xml=gpu_smoke_full_results.xml | tee gpu_smoke_full.log \
+                || diff_status=$?
+              # Exit 5 = no tests collected; not a failure.
+              if [[ "$diff_status" -ne 0 && "$diff_status" -ne 5 ]]; then
+                exit "$diff_status"
+              fi
+              # Already ran above; exclude from the smoke pass.
+              for full_target in "${FULL_TARGETS[@]}"; do
+                TARGETS+=("--ignore=${full_target}")
+              done
+            fi
+          fi
+
+          # Marker the baseline pass actually executes; the report step
+          # labels the tier from it.
+          echo "EXECUTED_MARK_EXPR=${TEST_MARK_EXPR}" >> "$GITHUB_ENV"
+
           echo "Running pytest -m \"${TEST_MARK_EXPR}\" on ${#TARGETS[@]} target(s)"
           python3 -m pytest -q "${TARGETS[@]}" -m "${TEST_MARK_EXPR}" \
             --timeout=600 --timeout-method=thread \
             --junit-xml=gpu_smoke_results.xml | tee gpu_smoke.log
 
       - name: Generate gpu-smoke report
-        if: ${{ always() && hashFiles('gpu_smoke_results.xml') != '' }}
+        if: ${{ always() && (hashFiles('gpu_smoke_results.xml') != '' || hashFiles('gpu_smoke_full_results.xml') != '') }}
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
-          REPORT_TARGET="smoke, full"
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            REPORT_TARGET="smoke"
+          # Set by Run tests once the tier is resolved; fall back to the
+          # event default only if Run tests died before resolving it.
+          if [[ -n "${EXECUTED_MARK_EXPR:-}" ]]; then
+            REPORT_TARGET="${EXECUTED_MARK_EXPR// or /, }"
+          else
+            REPORT_TARGET="smoke, full"
+            if [[ "$EVENT_NAME" == "pull_request" ]]; then
+              REPORT_TARGET="smoke"
+            fi
           fi
 
-          python3 scripts/gpu_smoke_report.py \
-            --test-xml gpu_smoke_results.xml \
-            --target "${REPORT_TARGET}" \
-            --output gpu_smoke_report.md \
-            || echo "::warning::gpu_smoke_report.py failed"
+          if [[ -f gpu_smoke_results.xml ]]; then
+            python3 scripts/gpu_smoke_report.py \
+              --test-xml gpu_smoke_results.xml \
+              --target "${REPORT_TARGET}" \
+              --output gpu_smoke_main_report.md \
+              || echo "::warning::gpu_smoke_report.py failed"
+          fi
+
+          if [[ -f gpu_smoke_full_results.xml ]]; then
+            python3 scripts/gpu_smoke_report.py \
+              --test-xml gpu_smoke_full_results.xml \
+              --target "smoke, full (diff-scoped changed test files)" \
+              --output gpu_smoke_diff_report.md \
+              || echo "::warning::gpu_smoke_report.py failed"
+          fi
+
+          for part in gpu_smoke_main_report.md gpu_smoke_diff_report.md; do
+            if [[ -f "$part" ]]; then
+              cat "$part" >> gpu_smoke_report.md
+            fi
+          done
 
       - name: Post gpu-smoke report to step summary
         if: ${{ always() && hashFiles('gpu_smoke_report.md') != '' }}
@@ -561,5 +644,7 @@ jobs:
           path: |
             gpu_smoke.log
             gpu_smoke_results.xml
+            gpu_smoke_full.log
+            gpu_smoke_full_results.xml
             gpu_smoke_report.md
           retention-days: 7

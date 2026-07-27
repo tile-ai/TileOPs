@@ -77,8 +77,41 @@ def load_workloads(op_name: str) -> list[dict[str, Any]]:
     return ops[op_name]["workloads"]
 
 
+# Workload keys reserved for benchmark parametrization: ``dtypes`` expands
+# a workload across dtypes, ``label`` names the generated test id.
+WORKLOAD_RESERVED_KEYS: frozenset[str] = frozenset({"dtypes", "label"})
+
+
+def single_input_workload_contract(
+    signature: dict[str, Any],
+) -> tuple[str, frozenset[str]] | None:
+    """Return ``(shape_key, allowed_workload_keys)`` for a signature with
+    exactly one tensor input; ``None`` for any other input arity.
+
+    The shape key is ``{input}_shape``; allowed keys are the shape key,
+    :data:`WORKLOAD_RESERVED_KEYS`, and the declared ``params`` names.
+    """
+    sig = signature if isinstance(signature, dict) else {}
+    inputs = sig.get("inputs")
+    if not isinstance(inputs, dict) or len(inputs) != 1:
+        return None
+    (input_name,) = inputs
+    if not isinstance(input_name, str):
+        return None
+    shape_key = f"{input_name}_shape"
+    params = sig.get("params")
+    param_names = (
+        frozenset(k for k in params if isinstance(k, str))
+        if isinstance(params, dict) else frozenset()
+    )
+    allowed = param_names | WORKLOAD_RESERVED_KEYS | {shape_key}
+    return shape_key, allowed
+
+
 __all__ = [
+    "WORKLOAD_RESERVED_KEYS",
     "load_manifest",
     "load_workloads",
     "manifest_files",
+    "single_input_workload_contract",
 ]

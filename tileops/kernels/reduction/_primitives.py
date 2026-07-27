@@ -192,9 +192,7 @@ def compute_tile_n(
     return tile_n_max
 
 
-# ---------------------------------------------------------------------------
 # Supported op_kind values for each macro factory
-# ---------------------------------------------------------------------------
 _REDUCE_KINDS = {"sum", "max", "min"}
 _SOFTMAX_KINDS = {"softmax", "log_softmax"}
 _SCAN_KINDS = {"sum", "prod"}

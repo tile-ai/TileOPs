@@ -14,6 +14,7 @@ ExpFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -23,8 +24,8 @@ ExpFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -46,6 +47,7 @@ LogFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -55,8 +57,8 @@ LogFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -78,6 +80,7 @@ SqrtFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -87,8 +90,8 @@ SqrtFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -110,6 +113,7 @@ RsqrtFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -119,8 +123,8 @@ RsqrtFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -142,6 +146,7 @@ AbsFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
@@ -151,8 +156,8 @@ AbsFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -174,6 +179,7 @@ NegFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
@@ -183,8 +189,8 @@ NegFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -206,6 +212,7 @@ ReciprocalFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
@@ -217,8 +224,8 @@ ReciprocalFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -240,6 +247,7 @@ SignFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
@@ -249,8 +257,8 @@ SignFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -273,6 +281,7 @@ SinFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -282,8 +291,8 @@ SinFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -305,6 +314,7 @@ CosFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -314,8 +324,8 @@ CosFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -337,6 +347,7 @@ FloorFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -346,8 +357,8 @@ FloorFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -369,6 +380,7 @@ CeilFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -378,8 +390,8 @@ CeilFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -401,6 +413,7 @@ RoundFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -412,8 +425,8 @@ RoundFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -435,6 +448,7 @@ TruncFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -444,8 +458,8 @@ TruncFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -467,6 +481,7 @@ ErfFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -476,8 +491,8 @@ ErfFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -499,6 +514,7 @@ Log1pFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -508,8 +524,8 @@ Log1pFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -532,6 +548,7 @@ Expm1FwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -541,8 +558,8 @@ Expm1FwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -565,6 +582,7 @@ SigmoidFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -574,8 +592,8 @@ SigmoidFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -599,6 +617,7 @@ TanhFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "float16 | bfloat16 | float32"}
@@ -608,8 +627,8 @@ TanhFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -633,6 +652,7 @@ LogicalNotFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -642,8 +662,8 @@ LogicalNotFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [bool, float16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [bool], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [bool, float16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [bool], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -666,6 +686,7 @@ BitwiseNotFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
@@ -675,8 +696,8 @@ BitwiseNotFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [int32, int64], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [int32], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [int32, int64], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [int32], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -698,6 +719,7 @@ IsnanFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -707,8 +729,8 @@ IsnanFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -721,7 +743,7 @@ IsnanFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       isnan: IsnanFwdKernel
-    op: tileops/ops/elementwise/predicates.py
+    op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
     bench_manifest_driven: true
@@ -731,6 +753,7 @@ IsinfFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -740,8 +763,8 @@ IsinfFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -754,7 +777,7 @@ IsinfFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       isinf: IsinfFwdKernel
-    op: tileops/ops/elementwise/predicates.py
+    op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
     bench_manifest_driven: true
@@ -764,6 +787,7 @@ IsfiniteFwdOp:
   family: elementwise
   status: implemented
 
+  torch_compile_fullgraph: true
   signature:
     inputs:
       input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
@@ -773,8 +797,8 @@ IsfiniteFwdOp:
     - "output.shape == input.shape"
 
   workloads:
-  - {x_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {x_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
+  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
 
   roofline:
     vars:
@@ -787,7 +811,7 @@ IsfiniteFwdOp:
     kernel: tileops/kernels/elementwise.py
     kernel_map:
       isfinite: IsfiniteFwdKernel
-    op: tileops/ops/elementwise/predicates.py
+    op: tileops/ops/elementwise/comparison.py
     test: tests/ops/test_special_elementwise.py
     bench: benchmarks/ops/bench_unary_elementwise.py
     bench_manifest_driven: true

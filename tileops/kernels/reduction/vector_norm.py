@@ -33,9 +33,7 @@ __all__ = ["VectorNormKernel"]
 _VECTOR_NORM_KINDS = {"l1", "l2", "inf"}
 
 
-# ---------------------------------------------------------------------------
 # Vector norm kernel
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)
@@ -193,9 +191,7 @@ def _vector_norm_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: 
     return _func
 
 
-# ---------------------------------------------------------------------------
 # custom_op wrappers for torch.compile compatibility
-# ---------------------------------------------------------------------------
 
 
 @torch.library.custom_op("top::vector_norm_fwd", mutates_args=())
@@ -237,9 +233,7 @@ def _(M, N, op_kind, dtype_str, tile_n, block_m, threads, x):
     return torch.empty((M,), dtype=x.dtype, device=x.device)
 
 
-# ---------------------------------------------------------------------------
 # VectorNormKernel class
-# ---------------------------------------------------------------------------
 
 
 class VectorNormKernel(Kernel):

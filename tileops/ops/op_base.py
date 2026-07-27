@@ -7,6 +7,8 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
+from .compile_boundary import register_instance
+
 # Module-level dedup for empty-static_dims warnings; keyed by Op subclass.
 _EMPTY_STATIC_DIMS_WARNED: set = set()
 
@@ -190,6 +192,9 @@ class Op(ABC):
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Resolve and install the kernel map (auto-discovery entry point)."""
         self._install_kernel_map(kernel_map)
+        # Conforming __init__s all pass through here — the zero-boilerplate
+        # registration point for the compile dispatch boundary.
+        self._instance_key = register_instance(self)
 
     def autotune(self) -> None:
         """Autotune all kernels of the op"""

@@ -148,6 +148,7 @@ class EngramGateConvBwdFixture(FixtureBase):
             pytest.param(1, 32, 256, torch.bfloat16, False, marks=pytest.mark.smoke),
             pytest.param(2, 64, 512, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 16, 256, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(2, 512, 256, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -160,6 +161,14 @@ def test_engram_gate_conv_bwd(M, seq_len, d, dtype, tune):
     atol = 2e-1 if dtype == torch.float16 else 3e-1
     rtol = 2e-1
     test.check(op, *inputs, atol=atol, rtol=rtol)
+
+    # A data race varies run to run; allclose can still pass, so require two runs to match.
+    run1 = [o.clone() for o in op(*inputs)]
+    run2 = [o.clone() for o in op(*inputs)]
+    for i, name in ((0, "dH"), (1, "dk"), (2, "dv")):
+        max_err = (run1[i].float() - run2[i].float()).abs().max()
+        assert torch.equal(run1[i], run2[i]), \
+            f"{name} non-deterministic across runs (data race): max_err={max_err:.4e}"
 
 
 def _rmsnorm_decode(x, w, eps=1e-6):
@@ -295,7 +304,6 @@ def test_engram_decode_multi_step():
         assert y_err < 0.1, f"Step {step}: y max_err={y_err:.6f}"
         assert s_err < 0.05, f"Step {step}: state max_err={s_err:.6f}"
 
-    print(f"Multi-step decode test passed ({num_steps} steps, w={conv_kernel_size}, δ={dilation}).")
 
 
 if __name__ == "__main__":

@@ -45,9 +45,7 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _setup_vllm_distributed(tp_size: int) -> tuple[int, int]:
     """Initialize torch.distributed + vLLM model parallel groups.
@@ -101,9 +99,7 @@ def _teardown_vllm_distributed():
         dist.destroy_process_group()
 
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 class TPFixture:
     """Fixture for shared expert TP tests."""
@@ -128,9 +124,7 @@ class TPFixture:
         return wrapper
 
 
-# ---------------------------------------------------------------------------
 # Test: TileOPs SharedFusedMoE TP vs vLLM DeepseekV2MLP TP
-# ---------------------------------------------------------------------------
 
 @TPFixture()
 def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
@@ -216,10 +210,6 @@ def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
         # ── Compare ───────────────────────────────────────────────────────────────
         # bf16 kernel vs bf16 kernel: both go through same TP shard path → tight tolerance
         torch.testing.assert_close(tileops_out, vllm_out, rtol=1e-2, atol=1e-2)
-
-        if rank == 0:
-            print(f"PASS: SharedFusedMoE TP vs vLLM DeepseekV2MLP "
-                  f"[T={T}, H={H}, F_s={F_s}, tp_size={tp_size}]")
 
         dist.barrier()
     finally:

@@ -40,7 +40,7 @@ class MaskedFillFwdOp(Op):
 
     def __init__(
         self,
-        input: tuple,  # noqa: A002
+        input: tuple,
         mask: tuple,
         value: tuple,
         dtype: torch.dtype,
@@ -89,7 +89,7 @@ class MaskedFillFwdOp(Op):
         return t.contiguous().view(-1)
 
     def _eager_forward(
-        self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,  # noqa: A002
+        self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,
     ) -> torch.Tensor:
         # Broadcast input/mask to out_shape, pack mask as uint8, reshape
         # the 0-dim value to (1,), and dispatch the TileLang kernel.
@@ -108,7 +108,7 @@ class MaskedFillFwdOp(Op):
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
-        self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,  # noqa: A002
+        self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,
     ) -> torch.Tensor:
         if not (input.is_cuda and mask.is_cuda and value.is_cuda):
             raise ValueError("Inputs must be CUDA tensors")
@@ -167,7 +167,7 @@ class MaskedFillScalarFwdOp(Op):
 
     def __init__(
         self,
-        input: tuple,  # noqa: A002
+        input: tuple,
         mask: tuple,
         value: bool | int | float = 0,
         dtype: torch.dtype = torch.float32,
@@ -191,8 +191,6 @@ class MaskedFillScalarFwdOp(Op):
         self.mask_shape = tuple(mask)
         self.dtype = dtype
         self.value = value
-        # Backwards-compat alias.
-        self.fill_value = value
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.mask_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
         _validate_scalar_param_repr(
@@ -219,7 +217,7 @@ class MaskedFillScalarFwdOp(Op):
             t = t.expand(target_shape)
         return t.contiguous().view(-1)
 
-    def _eager_forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def _eager_forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         out_shape = self.out_shape if self.out_shape else (1,)
         x_flat = self._expand_flat(input, out_shape)
         if self._bool_storage:
@@ -232,7 +230,7 @@ class MaskedFillScalarFwdOp(Op):
         result = result.view(self.out_shape if self.out_shape else ())
         return _apply_fp8_post_cast(result, self.kernel)
 
-    def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
         if input.dtype != self.dtype:

@@ -6,7 +6,9 @@ import torch
 
 from tileops.kernels.elementwise import (
     EluFwdKernel,
+    GeluAndMulFwdKernel,
     GeluFwdKernel,
+    GeluTanhAndMulFwdKernel,
     GeluTanhFwdKernel,
     HardsigmoidFwdKernel,
     HardswishFwdKernel,
@@ -16,6 +18,7 @@ from tileops.kernels.elementwise import (
     ReluFwdKernel,
     SeluFwdKernel,
     SigmoidFwdKernel,
+    SiluAndMulFwdKernel,
     SiluFwdKernel,
     SoftplusFwdKernel,
     TanhFwdKernel,
@@ -23,6 +26,7 @@ from tileops.kernels.elementwise import (
 from tileops.kernels.kernel_base import Kernel
 
 from ._base import (
+    FusedGatedOp,
     UnaryOp,
     _GeluApproximateBase,
     _ParametricActivationOp,
@@ -51,7 +55,6 @@ class GeluFwdOp(_GeluApproximateBase):
             the erf-based ``GeluFwdKernel``. ``'tanh'`` routes to
             ``GeluTanhFwdKernel`` (the fused tanh approximation
             ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``).
-        strategy: Optional kernel strategy override.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune the kernel.
     """
@@ -320,3 +323,25 @@ class SoftplusFwdOp(_ParametricActivationOp):
     @property
     def default_kernel_map(self):
         return {"softplus": SoftplusFwdKernel}
+
+
+class SiluAndMulFwdOp(FusedGatedOp):
+    """SiLU-and-Mul: y = silu(gate) * value."""
+
+    _op_name = "silu_and_mul"
+    kernel_cls = SiluAndMulFwdKernel
+
+
+class GeluAndMulFwdOp(FusedGatedOp):
+    """GELU-and-Mul: y = gelu(gate) * value (exact GELU)."""
+
+    _op_name = "gelu_and_mul"
+    kernel_cls = GeluAndMulFwdKernel
+
+
+class GeluTanhAndMulFwdOp(FusedGatedOp):
+    """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value (tanh approximation)."""
+
+    _op_name = "gelu_tanh_and_mul"
+    kernel_cls = GeluTanhAndMulFwdKernel
+    FLOPS_PER_ELEM = 10

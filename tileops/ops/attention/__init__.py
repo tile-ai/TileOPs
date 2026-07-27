@@ -1,7 +1,6 @@
 from .deepseek_dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from .deepseek_mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from .deepseek_nsa import (
-    MeanPoolingForwardOp,
     NSACmpFwdVarlenOp,
     NSAFwdVarlenOp,
     NSATopkVarlenOp,
@@ -35,7 +34,6 @@ __all__ = [
     "GroupedQueryAttentionPrefillVarlenFwdOp",
     "GroupedQueryAttentionSlidingWindowFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
-    "MeanPoolingForwardOp",
     "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
     "MultiHeadAttentionDecodeWithKVCacheFwdOp",

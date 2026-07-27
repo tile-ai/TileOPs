@@ -27,8 +27,8 @@ TileOPs is a GPU operator library for LLM training and inference, built on [Tile
 
 Every operator is split into two layers with a strict boundary:
 
-- **Op** (L2) — stateless Python entry point. Handles validation, dtype casting, and memory layout. Compatible with CUDA-Graph and `torch.compile`.
-- **Kernel** (L1) — TileLang GPU implementation with hardware-specific optimizations (Ampere, Hopper).
+- **Op** (L2) — stateless Python entry point. Handles validation, dtype casting, and memory layout. CUDA-Graph compatible; `torch.compile(fullgraph=True)` support is declared per op in the manifest.
+- **Kernel** (L1) — TileLang GPU implementation with hardware-specific optimizations (Hopper).
 
 This separation keeps user-facing behavior independent of GPU strategy, allowing agents and developers to modify either layer without side effects on the other.
 
@@ -41,21 +41,15 @@ This separation keeps user-facing behavior independent of GPU strategy, allowing
 
 ## Installation
 
-TileOPs can be installed from PyPI or built from source. A CUDA-capable GPU is required.
+TileOPs is under active development and is installed from source; PyPI releases will begin with the first stable release. A CUDA-capable GPU is required.
 
 ### Prerequisites
 
 - Python >= 3.10
-- PyTorch >= 2.1
-- CUDA Toolkit
+- PyTorch >= 2.1, < 2.11 (CI validates 2.10)
+- CUDA Toolkit 12.x
 - NVIDIA GPU: **Hopper** (SM_90)
-- [TileLang](https://github.com/tile-ai/tilelang) == 0.1.9
-
-### From PyPI
-
-```bash
-pip install tileops
-```
+- [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.9, < 0.2.0 (CI validates 0.1.11)
 
 ### From source
 
@@ -84,12 +78,12 @@ from tileops.ops import GemmOp
 M, N, K = 1024, 1024, 512
 dtype = torch.float16
 
-gemm = GemmOp(M, N, K, dtype=dtype)
+gemm = GemmOp()  # shapes and dtype are inferred at call time
 
-A = torch.randn(M, K, device="cuda", dtype=dtype)
-B = torch.randn(K, N, device="cuda", dtype=dtype)
+a = torch.randn(M, K, device="cuda", dtype=dtype)
+b = torch.randn(N, K, device="cuda", dtype=dtype)  # trans_b=True by default
 
-C = gemm(A, B)
+d = gemm(a, b)  # equals a @ b.T
 ```
 
 ## Documentation

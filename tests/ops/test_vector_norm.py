@@ -10,11 +10,9 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
-from workloads.vector_norm import L1NormTest as _L1NormWorkload
+from workloads.reduction import L1NormTest as _L1NormWorkload
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 class VectorNormBasicFixture(FixtureBase):
@@ -87,9 +85,7 @@ class VectorNorm1DFixture(FixtureBase):
     ]
 
 
-# ---------------------------------------------------------------------------
 # TestBase helpers — inherit gen_inputs() from workload classes
-# ---------------------------------------------------------------------------
 
 
 # Map op_kind to the ord parameter for torch.linalg.vector_norm
@@ -157,9 +153,7 @@ def _make_op(
     kernel_map=None,
 ):
     """Create the appropriate Op for the given op_kind."""
-    from tileops.ops.reduction.inf_norm import InfNormFwdOp
-    from tileops.ops.reduction.l1_norm import L1NormFwdOp
-    from tileops.ops.reduction.l2_norm import L2NormFwdOp
+    from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 
     op_map = {
         "l1": L1NormFwdOp,
@@ -170,9 +164,7 @@ def _make_op(
     return cls(dtype=dtype, dim=dim, keepdim=keepdim, kernel_map=kernel_map)
 
 
-# ---------------------------------------------------------------------------
 # L1NormFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @VectorNormBasicFixture
@@ -224,9 +216,7 @@ def test_l1_1d(n: int, dtype: torch.dtype) -> None:
     allclose_compare(y.view_as(ref), ref, atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # L2NormFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @VectorNormBasicFixture
@@ -278,9 +268,7 @@ def test_l2_1d(n: int, dtype: torch.dtype) -> None:
     allclose_compare(y.view_as(ref), ref, atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # InfNormFwdOp tests
-# ---------------------------------------------------------------------------
 
 
 @VectorNormBasicFixture
@@ -332,9 +320,7 @@ def test_inf_1d(n: int, dtype: torch.dtype) -> None:
     allclose_compare(y.view_as(ref), ref, atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # NaN propagation regression tests (inf norm)
-# ---------------------------------------------------------------------------
 
 
 class VectorNormNaNFixture(FixtureBase):
@@ -373,9 +359,7 @@ def test_inf_nan_propagation(m: int, n: int, dtype: torch.dtype) -> None:
     allclose_compare(y[2:], ref[2:], atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Spec tests: dim=0, dim=1, keepdim=True
-# ---------------------------------------------------------------------------
 
 
 class VectorNormSpecFixture(FixtureBase):
@@ -444,9 +428,7 @@ def test_spec_dim0_keepdim(op_kind: str, dtype: torch.dtype) -> None:
     allclose_compare(y, ref, atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Dtype smoke tests
-# ---------------------------------------------------------------------------
 
 _DTYPE_SMOKE_M, _DTYPE_SMOKE_N = 64, 512
 
@@ -545,9 +527,7 @@ def test_inf_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ---------------------------------------------------------------------------
 # Empty-dim full-reduction (dim=[])
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke

@@ -55,14 +55,10 @@ def gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, chunk_size):
     dq, dk, dv, dg, dbeta = torch.autograd.grad(loss, [q_, k_, v_, g_, beta_])
     return dq, dk, dv, dg, dbeta
 
-# =============================================================================
 # Autograd-based reference: differentiable forward → torch.autograd.grad
-# =============================================================================
 
 
-# =============================================================================
 # Backward correctness tests
-# =============================================================================
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
@@ -108,7 +104,7 @@ def test_gated_deltanet_bwd(
 
     # Forward to get S for backward kernel
     from tileops.ops import GatedDeltaNetFwdOp
-    fwd_op = GatedDeltaNetFwdOp(B, H, S, DK, DV, BC, dtype)
+    fwd_op = GatedDeltaNetFwdOp(chunk_size=BC)
     _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, g, beta)
     do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
 
@@ -117,7 +113,7 @@ def test_gated_deltanet_bwd(
     ref_outputs = (ref_dq, ref_dk, ref_dv, ref_dg, ref_dbeta)
 
     # Kernel
-    op = GatedDeltaNetBwdOp(B, H, S, DK, DV, BC, dtype, tune=tune)
+    op = GatedDeltaNetBwdOp(chunk_size=BC, tune=tune)
     op_outputs = op.forward(do, q, k, v, g, beta, S_fwd)
 
     tols = _get_tolerances(dtype)

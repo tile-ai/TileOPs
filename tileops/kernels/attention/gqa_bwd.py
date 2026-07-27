@@ -160,7 +160,6 @@ def _mha_bwd_kernel(batch: int,
                 k_shared = T.alloc_shared([block_m, dim], dtype)
                 dst_shared = T.alloc_shared([block_m, block_n], dtype)
                 # should not store k to local if dim is large
-                # k_local = T.alloc_fragment([block_m, dim], dtype)
                 # k_local_t = T.alloc_fragment([block_m, dim], dtype)
                 # v_local = T.alloc_fragment([block_m, dim], dtype)
                 q_frag = T.alloc_shared([block_n, dim], dtype)
@@ -324,7 +323,6 @@ def _mha_bwd_wgmma_pipelined_kernel(batch: int,
                 k_shared = T.alloc_shared([block_m, dim], dtype)
                 dst_shared = T.alloc_shared([block_m, block_n], dtype)
                 # should not store k to local if dim is large
-                # k_local = T.alloc_fragment([block_m, dim], dtype)
                 # k_local_t = T.alloc_fragment([block_m, dim], dtype)
                 # v_local = T.alloc_fragment([block_m, dim], dtype)
                 q_frag = T.alloc_shared([block_n, dim], dtype)

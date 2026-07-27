@@ -1,16 +1,11 @@
 """Synthesize ``_validate_dtypes`` bodies from manifest signatures.
 
-The L1 ``Op`` base declares ``_validate_dtypes`` as a staged-rollout stub
-that raises ``NotImplementedError``. Per ``docs/design/ops-design.md``
-§Step 5, every concrete op with ``status: implemented`` must override
-the stub with a body derived from its manifest ``signature.inputs``
-dtype unions and ``same_as`` references.
-
-This module provides a single codegen entry point — ``synthesize_validate_dtypes``
-— that emits an equivalent function from the manifest signature, and an
-``Op.__init_subclass__`` hook (installed in ``tileops.ops.op_base``) that
-auto-applies the generated method to subclasses that do not supply their
-own override.
+The L1 ``Op`` base declares ``_validate_dtypes`` as a stub; per
+docs/design/ops-design.md §Step 5 every ``status: implemented`` op must
+override it from its manifest ``signature.inputs``.
+``synthesize_validate_dtypes`` emits that body, and an
+``Op.__init_subclass__`` hook (in ``tileops.ops.op_base``) installs it on
+subclasses that supply no override.
 
 Manifest constructs handled:
 
@@ -220,11 +215,8 @@ def synthesize_validate_dtypes(
     combos = _parse_dtype_combos(
         op_name, sig.get("dtype_combos"), input_names,
     )
-    # When dtype_combos is present, every row enumerates every declared
-    # input (manifest validator R6, scripts/validate_manifest.py R6
-    # combo-row completeness check). The observed combo key is built
-    # over the full input_names tuple, with same_as-bound inputs included
-    # at their resolved concrete dtype.
+    # R6 guarantees every combo row enumerates every declared input, so the
+    # observed key spans all of input_names, same_as-bound ones resolved.
     combo_keys: set[tuple] | None = None
     if combos is not None:
         input_names_set = set(input_names)
@@ -250,12 +242,9 @@ def synthesize_validate_dtypes(
             tuple(row[n] for n in input_names) for row in combos
         }
 
-    # Generate the validator with explicit named parameters via ``exec``
-    # so its native ``inspect.signature`` reports the manifest inputs and
-    # no per-call ``inspect.Signature.bind`` is paid on the hot path.
-    # ``_validate_dtypes`` is invoked on every ``forward()``; using a
-    # ``**kwargs`` body with a wrapper that calls ``Signature.bind`` per
-    # call adds measurable overhead.
+    # ``exec`` with explicit named params so ``inspect.signature`` reports the
+    # manifest inputs natively. A ``**kwargs`` body would need a per-call
+    # ``Signature.bind``, which is measurable on this ``forward()`` hot path.
     closure: dict[str, Any] = {
         "per_input": per_input,
         "input_names": input_names,
@@ -318,11 +307,11 @@ def _lookup_manifest_entry(op_name: str) -> dict[str, Any] | None:
     """
     try:
         from tileops.manifest import load_manifest
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     try:
         ops = load_manifest()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     entry = ops.get(op_name)
     if not isinstance(entry, dict):
@@ -345,7 +334,11 @@ def maybe_install_validator(cls: type) -> None:
     - Resolved status is ``"implemented"`` (spec-only entries
       intentionally leave the L1 stub in place).
     - The class did not already define ``_validate_dtypes`` in its own
-      ``__dict__`` (manual overrides are honored verbatim).
+      ``__dict__`` (manual overrides are honored verbatim). Note this
+      differs from ``_roofline_codegen.maybe_install_eval_roofline``,
+      which honors an override anywhere above L1 in the MRO: a manual
+      ``_validate_dtypes`` on an intermediate family base is shadowed by
+      the synthesized one, so bind it in the concrete class body.
     - The manifest signature has a non-empty ``inputs`` mapping the
       codegen recognizes.
     """

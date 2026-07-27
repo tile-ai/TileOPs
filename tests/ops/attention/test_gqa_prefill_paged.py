@@ -64,11 +64,7 @@ def _apply_neox_rope_position_ids(
     rotary_dim: int | None = None,
 ) -> torch.Tensor:
     op = RopeNeoxPositionIdsOp(
-        num_tokens=x.shape[0],
-        num_heads=x.shape[1],
-        head_dim=x.shape[2],
         max_position=max_position,
-        dtype=x.dtype,
         rotary_dim=rotary_dim,
     )
     return op(x, position_ids)

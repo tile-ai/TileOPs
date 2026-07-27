@@ -3,7 +3,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
-from workloads.fused_add_rms_norm import FusedAddRMSNormTest as _FusedAddRMSNormTestWorkload
+from workloads.normalization import FusedAddRMSNormTest as _FusedAddRMSNormTestWorkload
 
 
 class FusedAddRMSNormTest(_FusedAddRMSNormTestWorkload, TestBase):

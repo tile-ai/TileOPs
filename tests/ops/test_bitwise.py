@@ -16,9 +16,7 @@ from tileops.ops.elementwise import (
     BitwiseXorFwdOp,
 )
 
-# ---------------------------------------------------------------------------
 # Shared helpers
-# ---------------------------------------------------------------------------
 
 
 def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
@@ -45,9 +43,7 @@ class BitwiseTest(TestBase):
         return self.ref_fn(a, b)
 
 
-# ---------------------------------------------------------------------------
 # BitwiseAnd op
-# ---------------------------------------------------------------------------
 
 
 class BitwiseAndFixture(FixtureBase):
@@ -67,9 +63,7 @@ def test_bitwise_and_op(n_total: int) -> None:
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
-# ---------------------------------------------------------------------------
 # BitwiseOr op
-# ---------------------------------------------------------------------------
 
 
 class BitwiseOrFixture(FixtureBase):
@@ -89,9 +83,7 @@ def test_bitwise_or_op(n_total: int) -> None:
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
-# ---------------------------------------------------------------------------
 # BitwiseXor op
-# ---------------------------------------------------------------------------
 
 
 class BitwiseXorFixture(FixtureBase):
@@ -111,9 +103,7 @@ def test_bitwise_xor_op(n_total: int) -> None:
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
-# ---------------------------------------------------------------------------
 # Broadcast pattern tests for binary bitwise ops (L3)
-# ---------------------------------------------------------------------------
 
 _BROADCAST_PATTERNS = [
     ((2, 64, 128), (1, 1, 128)),   # bias-add
@@ -153,9 +143,37 @@ def test_bitwise_broadcast(
     _exact_compare(out, ref)
 
 
-# ---------------------------------------------------------------------------
+class BoolBitwiseFixture(FixtureBase):
+    PARAMS = [
+        ("op_name, op_cls, ref_fn, a_shape, b_shape", [
+            pytest.param(
+                name, cls, ref, a_s, b_s,
+                marks=pytest.mark.smoke if a_s == b_s else pytest.mark.full,
+            )
+            for a_s, b_s in [
+                ((2048, 4096), (2048, 4096)),
+                ((2, 512, 768), (1, 1, 768)),
+            ]
+            for name, cls, ref in _BITWISE_OPS
+        ]),
+    ]
+
+
+@BoolBitwiseFixture
+def test_bool_bitwise_fast_path(
+    op_name, op_cls, ref_fn, a_shape, b_shape,
+) -> None:
+    a = torch.randint(0, 2, a_shape, device="cuda").bool()
+    b = torch.randint(0, 2, b_shape, device="cuda").bool()
+    op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=torch.bool)
+    ref = ref_fn(a, b)
+    with torch.no_grad():
+        out = op(a, b)
+    assert out.dtype == torch.bool
+    _exact_compare(out, ref)
+
+
 # BitwiseNot op
-# ---------------------------------------------------------------------------
 
 
 class BitwiseFixture(FixtureBase):
@@ -174,7 +192,7 @@ class BitwiseFixture(FixtureBase):
 
 
 class BitwiseNotTest(TestBase):
-    """Test harness for bitwise_not."""
+    """Test fixture for bitwise_not."""
 
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total
@@ -212,9 +230,7 @@ def test_bitwise_not_rejects_float_dtype(dtype: torch.dtype) -> None:
         BitwiseNotFwdKernel(N_total=16, dtype=dtype)
 
 
-# ---------------------------------------------------------------------------
 # Dtype rejection tests for binary bitwise ops
-# ---------------------------------------------------------------------------
 
 
 class BitwiseBinaryRejectFixture(FixtureBase):

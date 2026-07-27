@@ -8,8 +8,9 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.elementwise import ReluFwdKernel
 from tileops.ops.elementwise import ReluFwdOp
-from workloads.activation import ReluTest as _ReluTestWorkload
+from workloads.elementwise import ReluTest as _ReluTestWorkload
 
 
 class ReluTest(_ReluTestWorkload, TestBase):
@@ -60,16 +61,16 @@ class ReluStrategyFixture(FixtureBase):
 
 @ReluStrategyFixture
 def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None:
-    """Verify all 3 unary strategies produce correct results."""
+    """All 3 unary strategies selected via the config dict produce correct results."""
     test = ReluTest(n_total, dtype)
-    op = ReluFwdOp(N_total=n_total, dtype=dtype, strategy=strategy)
+    kernel = ReluFwdKernel(n_total, dtype, config={"strategy": strategy})
+    assert kernel.strategy == strategy
+    assert kernel.config["strategy"] == strategy
     atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(kernel, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-# ===========================================================================
 # Template-based activation ops
-# ===========================================================================
 
 
 class ActivationFixture(FixtureBase):
@@ -93,7 +94,7 @@ class ActivationEdgeFixture(FixtureBase):
 
 
 class UnaryActivationTest(TestBase):
-    """Generic test harness for a single-input, single-output unary op."""
+    """Generic test fixture for a single-input, single-output unary op."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None, ref_fn=None):
         self.n_total = n_total
@@ -190,9 +191,7 @@ def test_activation_rejects_non_float_dtype() -> None:
         GeluFwdKernel(N_total=16, dtype=torch.int32)
 
 
-# ---------------------------------------------------------------------------
 # L4 edge-case tests (fp32, 4K)
-# ---------------------------------------------------------------------------
 
 
 @ActivationEdgeFixture
@@ -223,9 +222,7 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_activation_test(n_total, dtype, _extreme, torch.tanh, TanhFwdOp)
 
 
-# ===========================================================================
 # Independent activation ops
-# ===========================================================================
 
 
 @ActivationFixture
@@ -299,7 +296,6 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
     else:
         tol = {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
-    print("All checks passed for PreluFwdOp.")
 
 
 @pytest.mark.smoke
@@ -316,7 +312,6 @@ def test_prelu_batch_dim() -> None:
     op = PreluFwdOp(shape=shape, dtype=dtype, num_channels=C)
     out = op(x, weight)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
-    print("All checks passed for PreluFwdOp batch-dim.")
 
 
 @pytest.mark.smoke

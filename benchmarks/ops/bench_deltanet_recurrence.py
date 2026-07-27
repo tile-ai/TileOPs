@@ -7,7 +7,7 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBe
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import DeltaNetDecodeOp
-from workloads.deltanet import DeltaNetDecodeTest
+from workloads.linear_attention import DeltaNetDecodeTest
 from workloads.workload_base import FixtureBase
 
 _OP_NAME = "DeltaNetDecodeOp"
@@ -98,7 +98,7 @@ def test_deltanet_decode_bench(
     test = _DeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
     inputs = test.gen_inputs()
 
-    op = DeltaNetDecodeOp(batch, heads, dim_k, dim_v, dtype, tune=tune)
+    op = DeltaNetDecodeOp(tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

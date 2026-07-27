@@ -10,9 +10,8 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
-from tileops.ops.reduction.argmax import ArgmaxFwdOp
-from tileops.ops.reduction.argmin import ArgminFwdOp
-from workloads.argreduce import ArgmaxTest, ArgminTest
+from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
+from workloads.reduction import ArgmaxTest, ArgminTest
 
 _ARGMAX_OP = "ArgmaxFwdOp"
 _ARGMIN_OP = "ArgminFwdOp"
@@ -32,9 +31,7 @@ def _is_unsupported_large_argreduce_error(exc: Exception) -> bool:
     )
 
 
-# ===================================================================
 # Argmax benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype, extra", workloads_to_params(_ARGMAX_OP, include_extra=True))
@@ -67,9 +64,7 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # Argmin benchmarks
-# ===================================================================
 
 
 @pytest.mark.parametrize("shape, dtype, extra", workloads_to_params(_ARGMIN_OP, include_extra=True))

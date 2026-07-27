@@ -9,7 +9,6 @@ from .attention import (
     GroupedQueryAttentionPrefillVarlenFwdOp,
     GroupedQueryAttentionSlidingWindowFwdOp,
     GroupedQueryAttentionSlidingWindowVarlenFwdOp,
-    MeanPoolingForwardOp,
     MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadAttentionDecodeWithKVCacheFwdOp,
@@ -63,7 +62,18 @@ from .norm import (
     RMSNormFwdOp,
 )
 from .op_base import Op
-from .pool import AvgPool1dFwdOp, AvgPool2dFwdOp, AvgPool3dFwdOp
+from .pool import (
+    AvgPool1dFwdOp,
+    AvgPool2dFwdOp,
+    AvgPool3dFwdOp,
+    MaxPool1dFwdOp,
+    MaxPool1dIndicesFwdOp,
+    MaxPool2dFwdOp,
+    MaxPool2dIndicesFwdOp,
+    MaxPool3dFwdOp,
+    MaxPool3dIndicesFwdOp,
+    MeanPoolingForwardOp,
+)
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---
 from .reduction import (
@@ -160,6 +170,12 @@ __all__ = [
     "LayerNormFwdOp",
     "MHCPostOp",
     "MHCPreOp",
+    "MaxPool1dFwdOp",
+    "MaxPool1dIndicesFwdOp",
+    "MaxPool2dFwdOp",
+    "MaxPool2dIndicesFwdOp",
+    "MaxPool3dFwdOp",
+    "MaxPool3dIndicesFwdOp",
     "MeanPoolingForwardOp",
     "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",

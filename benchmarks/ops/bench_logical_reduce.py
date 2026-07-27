@@ -8,31 +8,31 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
-from tileops.ops.reduction.all_op import AllFwdOp
-from tileops.ops.reduction.any_op import AnyFwdOp
-from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
-from workloads.logical_reduce import AllTest, AnyTest, CountNonzeroTest
+from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
+from workloads.reduction import AllTest, AnyTest, CountNonzeroTest
 
-# ===================================================================
 # Op name constants
-# ===================================================================
 
 _ANY_OP = "AnyFwdOp"
 _ALL_OP = "AllFwdOp"
 _COUNT_NONZERO_OP = "CountNonzeroFwdOp"
 
 
-# ===================================================================
 # Any benchmarks
-# ===================================================================
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ANY_OP))
-def test_any_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_ANY_OP, include_extra=True),
+)
+def test_any_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = AnyTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = AnyFwdOp(dtype=dtype, dim=-1)
+    op_params.setdefault("dim", -1)
+    op = AnyFwdOp(dtype=dtype, **op_params)
     bm = ManifestBenchmark(_ANY_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -42,24 +42,31 @@ def test_any_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        return x.bool().any(dim=-1)
+        return x.bool().any(dim=dim, keepdim=keepdim)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # All benchmarks
-# ===================================================================
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_ALL_OP))
-def test_all_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_ALL_OP, include_extra=True),
+)
+def test_all_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = AllTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = AllFwdOp(dtype=dtype, dim=-1)
+    op_params.setdefault("dim", -1)
+    op = AllFwdOp(dtype=dtype, **op_params)
     bm = ManifestBenchmark(_ALL_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -69,24 +76,31 @@ def test_all_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+    keepdim = op_params.get("keepdim", False)
+
     def baseline_fn(x):
-        return x.bool().all(dim=-1)
+        return x.bool().all(dim=dim, keepdim=keepdim)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
-# ===================================================================
 # CountNonzero benchmarks
-# ===================================================================
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(_COUNT_NONZERO_OP))
-def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "shape, dtype, op_params",
+    workloads_to_params(_COUNT_NONZERO_OP, include_extra=True),
+)
+def test_count_nonzero_bench(
+    shape: tuple, dtype: torch.dtype, op_params: dict
+) -> None:
     test = CountNonzeroTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
+    op_params.setdefault("dim", -1)
+    op = CountNonzeroFwdOp(dtype=dtype, **op_params)
     bm = ManifestBenchmark(_COUNT_NONZERO_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -96,8 +110,10 @@ def test_count_nonzero_bench(shape: tuple, dtype: torch.dtype) -> None:
         raise
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
+    dim = op_params["dim"]
+
     def baseline_fn(x):
-        return torch.count_nonzero(x, dim=-1).to(torch.int64)
+        return torch.count_nonzero(x, dim=dim).to(torch.int64)
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")

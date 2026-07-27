@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GatedDeltaNetFwdOp
-from workloads.gated_deltanet import (
+from workloads.linear_attention import (
     GatedDeltaNetFwdTest as _GatedDeltaNetFwdTestWorkload,
 )
 
@@ -106,14 +106,10 @@ class GatedDeltaNetFwdTest(_GatedDeltaNetFwdTestWorkload, TestBase):
         return o.to(self.dtype)
 
 
-# =============================================================================
 # Torch reference implementations (test-only)
-# =============================================================================
 
 
-# =============================================================================
 # Forward correctness tests
-# =============================================================================
 
 def _get_tolerances(dtype: torch.dtype) -> dict:
     # Tolerances are looser than docs/design/testing.md defaults (fp16: 1e-3, bf16: 1.6e-2)
@@ -160,7 +156,7 @@ def test_gated_deltanet_fwd(
 ) -> None:
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
-    op = GatedDeltaNetFwdOp(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, tune=tune)
+    op = GatedDeltaNetFwdOp(chunk_size=chunk_size, tune=tune)
     tols = _get_tolerances(dtype)
     inputs = test.gen_inputs()
     ref_o = test.ref_program(*inputs)

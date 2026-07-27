@@ -48,13 +48,13 @@ def _make_scan_kernel_nopad(numel: int, num_experts: int, top_k: int):
 
         @T.prim_func
         def _scan_main(
-            flat_ids: T.Tensor([numel], "int32"),                              # noqa: F821
-            expert_first_token_offset: T.Tensor([num_experts + 1], "int64"),  # noqa: F821
-            true_offsets: T.Tensor([num_experts], "int32"),                    # noqa: F821
-            true_sizes: T.Tensor([num_experts], "int32"),                      # noqa: F821
-            permuted_idx: T.Tensor([numel], "int32"),                          # noqa: F821
-            fwd_idx: T.Tensor([numel], "int32"),                               # noqa: F821
-            write_offsets: T.Tensor([num_experts], "int32"),                   # noqa: F821
+            flat_ids: T.Tensor([numel], "int32"),
+            expert_first_token_offset: T.Tensor([num_experts + 1], "int64"),
+            true_offsets: T.Tensor([num_experts], "int32"),
+            true_sizes: T.Tensor([num_experts], "int32"),
+            permuted_idx: T.Tensor([numel], "int32"),
+            fwd_idx: T.Tensor([numel], "int32"),
+            write_offsets: T.Tensor([num_experts], "int32"),
         ):
             with T.Kernel(1, threads=threads) as (_,):
                 tx = T.get_thread_binding()
@@ -137,14 +137,14 @@ def _make_scan_kernel_nopad_ep(
 
         @T.prim_func
         def _scan_ep_main(
-            flat_ids: T.Tensor([numel], "int32"),                                      # noqa: F821
-            expert_map: T.Tensor([num_experts_global], "int32"),                       # noqa: F821
-            expert_first_token_offset: T.Tensor([num_experts_local + 1], "int64"),    # noqa: F821
-            true_offsets: T.Tensor([num_experts_local], "int32"),                      # noqa: F821
-            true_sizes: T.Tensor([num_experts_local], "int32"),                        # noqa: F821
-            permuted_idx: T.Tensor([numel], "int32"),                                  # noqa: F821
-            fwd_idx: T.Tensor([numel], "int32"),                                       # noqa: F821
-            write_offsets: T.Tensor([num_experts_local], "int32"),                     # noqa: F821
+            flat_ids: T.Tensor([numel], "int32"),
+            expert_map: T.Tensor([num_experts_global], "int32"),
+            expert_first_token_offset: T.Tensor([num_experts_local + 1], "int64"),
+            true_offsets: T.Tensor([num_experts_local], "int32"),
+            true_sizes: T.Tensor([num_experts_local], "int32"),
+            permuted_idx: T.Tensor([numel], "int32"),
+            fwd_idx: T.Tensor([numel], "int32"),
+            write_offsets: T.Tensor([num_experts_local], "int32"),
         ):
             with T.Kernel(1, threads=threads) as (_,):
                 tx = T.get_thread_binding()
@@ -240,9 +240,9 @@ def _make_gather_kernel_nopad(num_tokens: int, numel: int, hidden_size: int, dty
 
         @T.prim_func
         def _gather_main(
-            hidden_states: T.Tensor([num_tokens, hidden_size], dtype),  # noqa: F821
-            permuted_idx: T.Tensor([numel], "int32"),                   # noqa: F821
-            perm_h: T.Tensor([numel, hidden_size], dtype),              # noqa: F821
+            hidden_states: T.Tensor([num_tokens, hidden_size], dtype),
+            permuted_idx: T.Tensor([numel], "int32"),
+            perm_h: T.Tensor([numel, hidden_size], dtype),
         ):
             with T.Kernel(grid, threads=threads) as (bid,):
                 for r in T.serial(ROWS_PER_BLOCK):

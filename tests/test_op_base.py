@@ -1,13 +1,15 @@
 """Tests for tileops.ops.op_base.
 
-Covers ``Op._cache_key`` default behavior and the runtime warning fired when
-a subclass with empty ``_static_axes`` does not override ``_cache_key``.
+Covers ``Op._cache_key`` default behavior, the runtime warning fired when
+a subclass with empty ``_static_axes`` does not override ``_cache_key``,
+composite kernel-map overrides, and ``Op.autotune`` kernel discovery.
 """
 
 import warnings
 
 import pytest
 
+from tileops.kernels.kernel_base import Kernel
 from tileops.ops import op_base
 from tileops.ops.op_base import Op
 
@@ -148,3 +150,37 @@ class TestCompositeKernelMapOverride:
         op.dispatch_kernel(override)
         override["extra"] = object()
         assert "extra" not in op.kernel_map
+
+
+class TestAutotune:
+    """``Op.autotune`` tunes every Kernel-typed attribute and nothing else."""
+
+    def test_autotune_dispatches_to_each_kernel_attribute(self):
+        tuned: list[str] = []
+
+        class FakeKernel(Kernel):
+            def __init__(self, name):
+                super().__init__()
+                self.name = name
+
+            def forward(self):
+                return None
+
+            def autotune(self, warmup=25, rep=50):
+                tuned.append(self.name)
+
+        class FakeOp(Op):
+            def __init__(self):
+                self.k1 = FakeKernel("k1")
+                self.k2 = FakeKernel("k2")
+                self.not_a_kernel = object()
+
+            def forward(self, *a, **kw):
+                return None
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        FakeOp().autotune()
+        assert sorted(tuned) == ["k1", "k2"]

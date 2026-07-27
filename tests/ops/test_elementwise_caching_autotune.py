@@ -40,9 +40,7 @@ from tileops.kernels.elementwise import (
 N = 2048  # small enough for fast tests
 
 
-# ---------------------------------------------------------------------------
 # 1. UnaryKernel caching: _compiled_fn exists after init
-# ---------------------------------------------------------------------------
 
 
 class TestUnaryCaching:
@@ -70,14 +68,12 @@ class TestUnaryCaching:
     @pytest.mark.full
     def test_unary_direct_strategy_caching(self):
         """Direct strategy kernels should also cache _compiled_fn."""
-        k = ReluFwdKernel(N, torch.float16, strategy="direct")
+        k = ReluFwdKernel(N, torch.float16, config={"strategy": "direct"})
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 
 
-# ---------------------------------------------------------------------------
 # 2. FusedGatedKernel caching: _compiled_fn exists after init
-# ---------------------------------------------------------------------------
 
 
 class TestFusedGatedCaching:
@@ -103,9 +99,7 @@ class TestFusedGatedCaching:
         assert k._compiled_fn is fn1
 
 
-# ---------------------------------------------------------------------------
 # 3. Custom kernel caching: _compiled_fn exists after init
-# ---------------------------------------------------------------------------
 
 
 class TestCustomKernelCaching:
@@ -178,9 +172,7 @@ class TestCustomKernelCaching:
         assert k._compiled_fn is not None
 
 
-# ---------------------------------------------------------------------------
 # 4. autotune_configs defined with >= 3 configs
-# ---------------------------------------------------------------------------
 
 
 class TestAutotuneConfigs:
@@ -218,9 +210,7 @@ class TestAutotuneConfigs:
         assert len(configs) >= 3
 
 
-# ---------------------------------------------------------------------------
 # 5. Correctness: caching does not change results
-# ---------------------------------------------------------------------------
 
 
 class TestCachingCorrectness:

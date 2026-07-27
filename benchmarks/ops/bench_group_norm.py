@@ -1,39 +1,17 @@
-from typing import Optional
-
 import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.group_norm import (
     GroupNormFwdOp,
-    GroupNormFwdOpNoAffine,
+    GroupNormNoAffineFwdOp,
 )
-from workloads.group_norm import GroupNormTest
+from workloads.normalization import GroupNormTest
 
 _OP_NAME = "GroupNormFwdOp"
-_OP_NAME_NO_AFFINE = "GroupNormFwdOpNoAffine"
-
-
-class GroupNormBenchmark(BenchmarkBase[GroupNormTest]):
-
-    _roofline_cache: Optional[tuple[float, float]] = None
-
-    def __init__(self, test, op):
-        super().__init__(test)
-        self._op = op
-
-    def _get_roofline(self) -> tuple[float, float]:
-        if self._roofline_cache is None:
-            self._roofline_cache = self._op.eval_roofline()
-        return self._roofline_cache
-
-    def calculate_flops(self) -> Optional[float]:
-        return self._get_roofline()[0]
-
-    def calculate_memory(self) -> Optional[float]:
-        return self._get_roofline()[1]
+_OP_NAME_NO_AFFINE = "GroupNormNoAffineFwdOp"
 
 
 def _build_params(workloads):
@@ -66,7 +44,7 @@ def test_group_norm_bench(n: int, c: int, spatial: tuple, num_groups: int,
     x, weight, bias = test.gen_inputs()
 
     op = GroupNormFwdOp(num_groups=num_groups, tune=tune)
-    bm = GroupNormBenchmark(test, op)
+    bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, x, weight, bias)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
@@ -86,8 +64,8 @@ def test_group_norm_no_affine_bench(n: int, c: int, spatial: tuple,
     test = GroupNormTest(n, c, spatial, num_groups, dtype)
     x, _, _ = test.gen_inputs()
 
-    op = GroupNormFwdOpNoAffine(num_groups=num_groups, tune=tune)
-    bm = GroupNormBenchmark(test, op)
+    op = GroupNormNoAffineFwdOp(num_groups=num_groups, tune=tune)
+    bm = ManifestBenchmark(_OP_NAME_NO_AFFINE, op, test)
     result = bm.profile(op, x)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

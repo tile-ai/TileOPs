@@ -9,19 +9,9 @@ op modules and the manifest can name the InstanceNorm-specific kernel
 without duplicating the TileLang body.
 """
 
-from .group_norm import GroupNormKernel, GroupNormNoAffineKernel
+from .group_norm import GroupNormNoAffineKernel
 
-__all__ = ["InstanceNormKernel", "InstanceNormNoAffineKernel"]
-
-
-class InstanceNormKernel(GroupNormKernel):
-    """InstanceNorm forward kernel with affine scale/shift.
-
-    Alias of :class:`GroupNormKernel` invoked with ``G = C``; the underlying
-    row-wise kernel is identical. Defined here so that
-    :mod:`tileops.ops.norm.instance_norm` and the manifest can refer to an
-    InstanceNorm-specific kernel symbol.
-    """
+__all__ = ["InstanceNormNoAffineKernel"]
 
 
 class InstanceNormNoAffineKernel(GroupNormNoAffineKernel):

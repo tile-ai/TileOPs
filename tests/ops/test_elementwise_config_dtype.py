@@ -1,5 +1,6 @@
 """Regression tests for elementwise dtype/config consistency."""
 
+import inspect
 from unittest.mock import patch
 
 import pytest
@@ -24,9 +25,7 @@ from tileops.kernels.elementwise import (
     SiluAndMulFwdKernel,
 )
 
-# ---------------------------------------------------------------------------
 # Fix 1: npt 3-way check in default_config
-# ---------------------------------------------------------------------------
 
 
 INDEPENDENT_KERNELS_SIMPLE = [LeakyReluFwdKernel, EluFwdKernel, HardtanhFwdKernel]
@@ -69,9 +68,7 @@ def test_prelu_preserves_dtype_driven_default_npt(dtype, expected_npt):
     assert kernel.default_config["num_per_thread"] == expected_npt
 
 
-# ---------------------------------------------------------------------------
 # Fix 2: OUTPUT_DTYPE consistency (all should be torch.dtype, not string)
-# ---------------------------------------------------------------------------
 
 
 COMPARISON_KERNELS = [EqFwdKernel, NeFwdKernel, GtFwdKernel, LtFwdKernel, GeFwdKernel, LeFwdKernel]
@@ -91,9 +88,7 @@ def test_bool_like_elementwise_kernels_expose_torch_dtype_output(kernel_cls):
     assert torch.bool == kernel_cls.OUTPUT_DTYPE
 
 
-# ---------------------------------------------------------------------------
 # Fix 3: output_dtype attribute on all three base kernel types
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.full
@@ -140,8 +135,12 @@ def test_unary_default_config_preserves_strategy_npt_split():
         patch.object(ReluFwdKernel, "_build_kernel", return_value=None),
         patch.object(ReluFwdKernel, "init_config"),
     ):
-        explicit = ReluFwdKernel(N_total=1024, dtype=torch.float16, strategy="explicit_parallel")
-        register = ReluFwdKernel(N_total=1024, dtype=torch.float16, strategy="register_copy")
+        explicit = ReluFwdKernel(
+            N_total=1024, dtype=torch.float16, config={"strategy": "explicit_parallel"},
+        )
+        register = ReluFwdKernel(
+            N_total=1024, dtype=torch.float16, config={"strategy": "register_copy"},
+        )
     assert explicit.default_config["num_per_thread"] == 4
     assert register.default_config["num_per_thread"] == 8
 
@@ -162,8 +161,8 @@ def test_binary_default_config_preserves_strategy_npt_split():
         patch.object(AddFwdKernel, "_build_kernel", return_value=None),
         patch.object(AddFwdKernel, "init_config"),
     ):
-        explicit = AddFwdKernel(strategy="explicit_parallel", **common_kwargs)
-        register = AddFwdKernel(strategy="register_copy", **common_kwargs)
+        explicit = AddFwdKernel(config={"strategy": "explicit_parallel"}, **common_kwargs)
+        register = AddFwdKernel(config={"strategy": "register_copy"}, **common_kwargs)
     assert explicit.default_config["num_per_thread"] == 4
     assert register.default_config["num_per_thread"] == 8
 
@@ -181,11 +180,61 @@ def test_fused_gated_explicit_uses_occupancy_config():
         patch.object(SiluAndMulFwdKernel, "_build_kernel", return_value=None),
         patch.object(SiluAndMulFwdKernel, "init_config"),
     ):
-        direct = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.float16, strategy="direct")
-        explicit_fp16 = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.float16, strategy="explicit_parallel")
-        explicit_bf16 = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.bfloat16, strategy="explicit_parallel")
-        explicit_fp32 = SiluAndMulFwdKernel(M=32, N=1024, dtype=torch.float32, strategy="explicit_parallel")
+        direct = SiluAndMulFwdKernel(
+            M=32, N=1024, dtype=torch.float16, config={"strategy": "direct"},
+        )
+        explicit_fp16 = SiluAndMulFwdKernel(
+            M=32, N=1024, dtype=torch.float16, config={"strategy": "explicit_parallel"},
+        )
+        explicit_bf16 = SiluAndMulFwdKernel(
+            M=32, N=1024, dtype=torch.bfloat16, config={"strategy": "explicit_parallel"},
+        )
+        explicit_fp32 = SiluAndMulFwdKernel(
+            M=32, N=1024, dtype=torch.float32, config={"strategy": "explicit_parallel"},
+        )
     assert direct.default_config["num_per_thread"] == 8
-    assert explicit_fp16.default_config == {"threads": 128, "num_per_thread": 8}
-    assert explicit_bf16.default_config == {"threads": 128, "num_per_thread": 8}
-    assert explicit_fp32.default_config == {"threads": 256, "num_per_thread": 4}
+    assert explicit_fp16.default_config == {
+        "strategy": "explicit_parallel", "threads": 128, "num_per_thread": 8,
+    }
+    assert explicit_bf16.default_config == {
+        "strategy": "explicit_parallel", "threads": 128, "num_per_thread": 8,
+    }
+    assert explicit_fp32.default_config == {
+        "strategy": "explicit_parallel", "threads": 256, "num_per_thread": 4,
+    }
+
+
+# Strategy lives in the kernel config dict, not in op/kernel ctor kwargs
+
+
+@pytest.mark.smoke
+def test_elementwise_ops_do_not_expose_strategy_kwarg():
+    """No elementwise Op constructor exposes a ``strategy`` parameter.
+
+    Strategy selection is a kernel-config concern (``config={"strategy": ...}``
+    on the kernel); the op layer must not re-expose it as ctor plumbing.
+    """
+    import tileops.ops.elementwise as ew
+    from tileops.ops.op_base import Op
+
+    checked = 0
+    for name in dir(ew):
+        obj = getattr(ew, name)
+        if not (isinstance(obj, type) and issubclass(obj, Op)):
+            continue
+        params = inspect.signature(obj.__init__).parameters
+        assert "strategy" not in params, (
+            f"{name}.__init__ still exposes a strategy kwarg"
+        )
+        checked += 1
+    assert checked > 0, "Test bug: no Op classes discovered"
+
+
+@pytest.mark.smoke
+def test_elementwise_kernels_do_not_expose_strategy_kwarg():
+    """Kernel ctors take strategy via config, not as a dedicated kwarg."""
+    for kernel_cls in (ReluFwdKernel, AddFwdKernel, SiluAndMulFwdKernel):
+        params = inspect.signature(kernel_cls.__init__).parameters
+        assert "strategy" not in params, (
+            f"{kernel_cls.__name__}.__init__ still exposes a strategy kwarg"
+        )

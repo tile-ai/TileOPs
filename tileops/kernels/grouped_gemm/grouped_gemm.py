@@ -66,9 +66,9 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                     A: T.Tensor(A_shape, dtype),  # type: ignore
                     B: T.Tensor(B_shape, dtype),  # type: ignore
                     C: T.Tensor(C_shape, dtype),  # type: ignore
-                    batch_sizes: T.Tensor([batch_count], "int32"),  # noqa: F821
-                    batch_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
-                    batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
+                    batch_sizes: T.Tensor([batch_count], "int32"),
+                    batch_offsets: T.Tensor([batch_count], "int32"),
+                    batch_padded_offsets: T.Tensor([batch_count], "int32"),
             ):
                 with T.Kernel(_num_pid_m * _num_pid_n, threads=threads) as (pid,):
                     A_shared = T.alloc_shared(A_shared_shape, dtype)
@@ -144,9 +144,9 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                     A: T.Tensor(A_shape, dtype),  # type: ignore
                     B: T.Tensor(B_shape, dtype),  # type: ignore
                     C: T.Tensor(C_shape, dtype),  # type: ignore
-                    batch_sizes: T.Tensor([batch_count], "int32"),  # noqa: F821
-                    batch_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
-                    batch_padded_offsets: T.Tensor([batch_count], "int32"),  # noqa: F821
+                    batch_sizes: T.Tensor([batch_count], "int32"),
+                    batch_offsets: T.Tensor([batch_count], "int32"),
+                    batch_padded_offsets: T.Tensor([batch_count], "int32"),
             ):
                 with T.Kernel(
                         batch_count, T.ceildiv(N, block_n) * T.ceildiv(K, block_k),

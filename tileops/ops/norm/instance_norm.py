@@ -27,7 +27,7 @@ from tileops.kernels.norm import (
 from ..op_base import Op
 from .norm_base import ALIGNMENT, align_up
 
-__all__ = ["InstanceNormFwdOp", "InstanceNormFwdOpNoAffine"]
+__all__ = ["InstanceNormFwdOp", "InstanceNormNoAffineFwdOp"]
 
 # Largest candidate block_m in InstanceNormNoAffineKernel.autotune_configs.
 # The op pads M to a multiple of this value so the kernel's full-tile
@@ -220,9 +220,9 @@ class InstanceNormFwdOp(Op):
         Args:
             x: Input tensor of shape ``(N, C, *spatial)`` on CUDA.
             weight: Affine scale of shape ``(C,)`` on CUDA. Required; the
-                affine-free path is :class:`InstanceNormFwdOpNoAffine`.
+                affine-free path is :class:`InstanceNormNoAffineFwdOp`.
             bias: Affine shift of shape ``(C,)`` on CUDA. Required; the
-                affine-free path is :class:`InstanceNormFwdOpNoAffine`.
+                affine-free path is :class:`InstanceNormNoAffineFwdOp`.
 
         Returns:
             Normalized tensor of the same shape as *x*.
@@ -233,12 +233,12 @@ class InstanceNormFwdOp(Op):
         """
         if not isinstance(weight, torch.Tensor):
             raise ValueError(
-                "weight is required; use InstanceNormFwdOpNoAffine for the "
+                "weight is required; use InstanceNormNoAffineFwdOp for the "
                 "affine-free path"
             )
         if not isinstance(bias, torch.Tensor):
             raise ValueError(
-                "bias is required; use InstanceNormFwdOpNoAffine for the "
+                "bias is required; use InstanceNormNoAffineFwdOp for the "
                 "affine-free path"
             )
         self._validate_dtypes(x, weight, bias)
@@ -291,7 +291,7 @@ class InstanceNormFwdOp(Op):
         return y
 
 
-class InstanceNormFwdOpNoAffine(Op):
+class InstanceNormNoAffineFwdOp(Op):
     """Instance Normalization forward without affine scale/shift.
 
     Computes instance normalization without the trailing weight/bias affine:
@@ -357,7 +357,7 @@ class InstanceNormFwdOpNoAffine(Op):
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
             raise RuntimeError(
-                "InstanceNormFwdOpNoAffine.eval_roofline() requires a prior forward() call"
+                "InstanceNormNoAffineFwdOp.eval_roofline() requires a prior forward() call"
             )
         N, C, spatial_size, dtype = self._last_roofline_spec
         elem_bytes = dtype.itemsize

@@ -50,7 +50,7 @@ compiled kernel back to its maps without relying on object identity.
 
 # Importing tilelang first populates sys.path for the bundled tvm package.
 import tilelang  # noqa: F401  (loads tvm before the tvm imports below)
-import tilelang.language as T  # noqa: F401
+import tilelang.language as T
 import tvm.tirx as tx
 from tvm.tirx.stmt_functor import ir_transform, post_order_visit
 

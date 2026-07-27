@@ -99,12 +99,12 @@ def _persistent_grouped_gemm_kernel(
 
             @T.prim_func
             def _gemm_main(
-                A: T.Tensor(A_shape, dtype),                       # type: ignore  # noqa: F821
-                B: T.Tensor((num_experts, N, K), dtype),           # type: ignore  # noqa: F821
-                true_sizes: T.Tensor((num_experts,), "int32"),     # noqa: F821
-                true_offsets: T.Tensor((num_experts,), "int32"),   # noqa: F821
-                C: T.Tensor((numel, N), dtype),                    # type: ignore  # noqa: F821
-                tile_counter: T.Tensor((1,), "int32"),             # noqa: F821
+                A: T.Tensor(A_shape, dtype),                       # type: ignore
+                B: T.Tensor((num_experts, N, K), dtype),           # type: ignore
+                true_sizes: T.Tensor((num_experts,), "int32"),
+                true_offsets: T.Tensor((num_experts,), "int32"),
+                C: T.Tensor((numel, N), dtype),                    # type: ignore
+                tile_counter: T.Tensor((1,), "int32"),
             ):
                 with T.Kernel(sm_count, threads=threads) as (pid,):
                     # ── Double-buffered SMEM ──
@@ -310,7 +310,7 @@ def _persistent_grouped_gemm_kernel(
             pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
             compile_flags=["-O3", "-DENABLE_BF16"],
         )
-        def _func(block_m, block_n, block_k, num_stages, threads, group_size_m):  # noqa: F811
+        def _func(block_m, block_n, block_k, num_stages, threads, group_size_m):
             _num_pid_n = math.ceil(N / block_n)
             _max_tiles = numel // block_m + num_experts
             _total_ctas_ub = _max_tiles * _num_pid_n
@@ -319,12 +319,12 @@ def _persistent_grouped_gemm_kernel(
 
             @T.prim_func
             def _gemm_main(
-                A: T.Tensor(A_shape, dtype),                         # type: ignore  # noqa: F821
-                B: T.Tensor((num_experts, N, K), dtype),             # type: ignore  # noqa: F821
-                true_sizes: T.Tensor((num_experts,), "int32"),       # noqa: F821
-                true_offsets: T.Tensor((num_experts,), "int32"),     # noqa: F821
-                C: T.Tensor((numel, N), dtype),                      # type: ignore  # noqa: F821
-                tile_counter: T.Tensor((1,), "int32"),               # noqa: F821
+                A: T.Tensor(A_shape, dtype),                         # type: ignore
+                B: T.Tensor((num_experts, N, K), dtype),             # type: ignore
+                true_sizes: T.Tensor((num_experts,), "int32"),
+                true_offsets: T.Tensor((num_experts,), "int32"),
+                C: T.Tensor((numel, N), dtype),                      # type: ignore
+                tile_counter: T.Tensor((1,), "int32"),
             ):
                 with T.Kernel(sm_count, threads=threads) as (pid,):
                     A_shared = T.alloc_shared((block_m, block_k), dtype)

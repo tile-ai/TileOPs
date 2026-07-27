@@ -9,7 +9,7 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import gqa_decode_paged_args, manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.gqa_decode_paged import GroupedQueryAttentionDecodePagedTest
+from workloads.attention.gqa import GroupedQueryAttentionDecodePagedTest
 
 _OP_NAME = "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp"
 
@@ -58,7 +58,7 @@ def _fa3_gqa_decode_paged(test, k, v):
     if test.page_size % 256 != 0:
         return None
     try:
-        from flash_attn_interface import flash_attn_with_kvcache  # noqa: PLC0415
+        from flash_attn_interface import flash_attn_with_kvcache
     except ImportError:
         return None
 
@@ -84,7 +84,7 @@ def _flashinfer_gqa_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
     FlashInfer decode kernel supports group_size (Q/KV head ratio) up to 8.
     """
     try:
-        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper  # noqa: PLC0415
+        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
     except ImportError:
         return None
 
