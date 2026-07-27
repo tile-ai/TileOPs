@@ -130,25 +130,17 @@ def prepare_wy_repr_gated_torch(k, g_cum, beta, chunk_size):
     B, H, S, DK = k.shape
     assert S % chunk_size == 0
     BC = chunk_size
-    Aw = torch.empty(B, H, S, BC, dtype=torch.float32, device=k.device)
-    Au = torch.empty(B, H, S, BC, dtype=torch.float32, device=k.device)
-
-    for b in range(B):
-        for h in range(H):
-            for c in range(S // BC):
-                i0, i1 = c * BC, (c + 1) * BC
-                kc = k[b, h, i0:i1, :].float()
-                gc = g_cum[b, h, i0:i1].float()
-                bc = beta[b, h, i0:i1].float()
-                Gram = kc @ kc.T
-                Gamma = torch.exp(gc.unsqueeze(1) - gc.unsqueeze(0))
-                M = bc.unsqueeze(-1) * (Gamma * Gram)
-                A_g = torch.eye(BC, device=k.device) + torch.tril(M, diagonal=-1)
-                A_g_inv = torch.linalg.inv(A_g)
-                Aw[b, h, i0:i1, :] = A_g_inv
-                Au[b, h, i0:i1, :] = A_g_inv
-
-    return Aw, Au
+    NC = S // BC
+    kc = k.float().reshape(B, H, NC, BC, DK)
+    gc = g_cum.float().reshape(B, H, NC, BC)
+    bc = beta.float().reshape(B, H, NC, BC)
+    gram = kc @ kc.transpose(-2, -1)
+    gamma = torch.exp(gc.unsqueeze(-1) - gc.unsqueeze(-2))
+    m = bc.unsqueeze(-1) * (gamma * gram)
+    eye = torch.eye(BC, dtype=torch.float32, device=k.device)
+    a_g = eye + torch.tril(m, diagonal=-1)
+    a_g_inv = torch.linalg.inv(a_g).reshape(B, H, S, BC)
+    return a_g_inv, a_g_inv.clone()
 
 
 class _GatedDeltaNetFwdTestBaseline(GatedDeltaNetFwdTest):
