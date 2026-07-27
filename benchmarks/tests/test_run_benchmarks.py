@@ -30,7 +30,9 @@ def _write_bench_dir(tmp_path: Path, files: dict[str, str]) -> Path:
     return bench_dir
 
 
-def _run_runner(tmp_path: Path, bench_dir: Path, timeout_per_file: str) -> tuple:
+def _run_runner(
+    tmp_path: Path, bench_dir: Path, timeout_per_file: str, extra: list | None = None
+) -> tuple:
     out_xml = tmp_path / "bench_results.xml"
     dump_dir = tmp_path / "dumps"
     proc = subprocess.run(
@@ -44,6 +46,7 @@ def _run_runner(tmp_path: Path, bench_dir: Path, timeout_per_file: str) -> tuple
             timeout_per_file,
             "--dump-dir",
             str(dump_dir),
+            *(extra or []),
         ],
         cwd=tmp_path,
         capture_output=True,
@@ -137,3 +140,50 @@ def test_fragments_and_profile_logs_merge(tmp_path):
     profile_log = (tmp_path / "profile_run.log").read_text()
     assert "ALPHA-REPORT" in profile_log
     assert "BETA-REPORT" in profile_log
+
+
+def test_teardown_crash_is_reported(tmp_path):
+    """A child dying after its status report must not read as success."""
+    bench_dir = _write_bench_dir(
+        tmp_path,
+        {
+            "bench_teardown_abort.py": (
+                "import atexit, os\n"
+                "atexit.register(os.abort)\n"
+                "def test_ok():\n    pass\n"
+            ),
+        },
+    )
+    proc, out_xml, _ = _run_runner(tmp_path, bench_dir, timeout_per_file="120")
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "died in teardown" in proc.stdout
+    assert any("bench_teardown_abort" in k for k in _cases(out_xml))
+
+
+def test_teardown_deadline_enforced_during_next_file(tmp_path):
+    """A teardown-stuck child is killed while the next file runs, not after."""
+    bench_dir = _write_bench_dir(
+        tmp_path,
+        {
+            "bench_a_slow_teardown.py": (
+                "import atexit, time\n"
+                "atexit.register(time.sleep, 60)\n"
+                "def test_ok():\n    pass\n"
+            ),
+            "bench_b_next.py": (
+                "import time\n"
+                "def test_next():\n    time.sleep(8)\n"
+            ),
+        },
+    )
+    proc, out_xml, _ = _run_runner(
+        tmp_path, bench_dir, timeout_per_file="120",
+        extra=["--teardown-timeout", "2", "--prewarm", "0"],
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    out = proc.stdout
+    assert "stuck in teardown" in out
+    assert out.index("stuck in teardown") < out.index("bench_b_next.py finished")
+    assert any("bench_a_slow_teardown" in k for k in _cases(out_xml))

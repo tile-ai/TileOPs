@@ -80,7 +80,7 @@ class Child:
         """Return the pytest exit code, negated signal on death, None on timeout.
 
         Returns as soon as the child reports through the status pipe;
-        interpreter teardown continues in the background (reap()).
+        interpreter teardown continues in the background.
         """
         readable, _, _ = select.select([self.status_fd], [], [], timeout_s)
         if not readable:
@@ -92,15 +92,22 @@ class Child:
         # EOF without a status report: the child died; reap the reason.
         return self.proc.wait()
 
-    def poll_teardown(self, deadline: float) -> bool:
-        """Return True once the child is gone; kill it past its deadline."""
-        if self.proc.poll() is not None:
-            return True
+    def poll_teardown(self, deadline: float) -> str | None:
+        """Return the teardown outcome once the child is gone, else None.
+
+        Outcomes: "" for a normal exit, otherwise a message describing a
+        teardown crash (unexpected signal) or a deadline kill.
+        """
+        rc = self.proc.poll()
+        if rc is not None:
+            if rc < 0:
+                sig = signal.Signals(-rc)
+                return f"died in teardown: signal {sig.value} ({sig.name})"
+            return ""
         if time.monotonic() < deadline:
-            return False
-        print(f"WARNING: pid {self.proc.pid} stuck in teardown; killed", flush=True)
+            return None
         self.kill()
-        return True
+        return "stuck in teardown; killed at deadline"
 
     def kill(self) -> None:
         """Kill the child's whole process group and reap it."""
@@ -111,15 +118,26 @@ class Child:
             os.close(self.status_fd)
 
 
-def _reap_lingering(lingering: list[tuple[Child, float]], block: bool) -> None:
-    """Drop finished children; kill any past its teardown deadline.
+def _reap_lingering(
+    lingering: list[tuple[Child, float, str]], block: bool
+) -> list[tuple[str, str]]:
+    """Drop finished children, killing any past its teardown deadline.
 
-    With block=True, wait out the remaining deadlines (end of run).
+    Returns (bench_file, message) for every abnormal teardown. With
+    block=True, waits out the remaining deadlines (end of run).
     """
-    while lingering:
-        lingering[:] = [(c, d) for c, d in lingering if not c.poll_teardown(d)]
+    anomalies: list[tuple[str, str]] = []
+    while True:
+        remaining = []
+        for child, deadline, bench_file in lingering:
+            outcome = child.poll_teardown(deadline)
+            if outcome is None:
+                remaining.append((child, deadline, bench_file))
+            elif outcome:
+                anomalies.append((bench_file, outcome))
+        lingering[:] = remaining
         if not lingering or not block:
-            return
+            return anomalies
         time.sleep(1.0)
 
 
@@ -212,6 +230,12 @@ def main() -> int:
     )
     parser.add_argument("--dump-dir", default="bench_stack_dumps", help="stack dump directory")
     parser.add_argument(
+        "--teardown-timeout",
+        type=float,
+        default=TEARDOWN_TIMEOUT_S,
+        help="seconds a reported child may spend in interpreter teardown",
+    )
+    parser.add_argument(
         "--prewarm",
         type=int,
         default=4,
@@ -223,7 +247,14 @@ def main() -> int:
     suites: list[ET.Element] = []
     profile_parts: list[str] = []
     failed: list[str] = []
-    lingering: list[tuple[Child, float]] = []
+    lingering: list[tuple[Child, float, str]] = []
+
+    def note_anomalies(anomalies: list[tuple[str, str]]) -> None:
+        for anomaly_file, message in anomalies:
+            rel_a = os.path.relpath(anomaly_file)
+            print(f"TEARDOWN: {rel_a}: {message}", flush=True)
+            suites.append(_synthetic_suite(anomaly_file, message, ""))
+            failed.append(rel_a)
 
     with tempfile.TemporaryDirectory(prefix="bench_runner_") as work:
         work_dir = Path(work)
@@ -258,7 +289,14 @@ def main() -> int:
 
                 start = time.monotonic()
                 child.release()
-                rc = child.wait_result(args.timeout_per_file)
+                # Poll in short steps so lingering teardown deadlines are
+                # enforced while this file runs, not after it.
+                file_deadline = start + args.timeout_per_file
+                while True:
+                    rc = child.wait_result(min(1.0, max(0.0, file_deadline - time.monotonic())))
+                    note_anomalies(_reap_lingering(lingering, block=False))
+                    if rc is not None or time.monotonic() >= file_deadline:
+                        break
                 elapsed = time.monotonic() - start
 
                 if rc is None:
@@ -275,7 +313,7 @@ def main() -> int:
                     suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
                     failed.append(rel)
                 else:
-                    lingering.append((child, time.monotonic() + TEARDOWN_TIMEOUT_S))
+                    lingering.append((child, time.monotonic() + args.teardown_timeout, bench_file))
                     sys.stdout.write(log_path.read_text(errors="replace"))
                     if rc < 0:
                         sig = signal.Signals(-rc)
@@ -294,11 +332,10 @@ def main() -> int:
                         failed.append(rel)
                 print(f"--- {rel} finished in {elapsed:.0f}s ---", flush=True)
                 _absorb_profile_log(profile_parts)
-                _reap_lingering(lingering, block=False)
         finally:
             for leftover in pending:
                 leftover.kill()
-            _reap_lingering(lingering, block=True)
+            note_anomalies(_reap_lingering(lingering, block=True))
 
     merged = ET.Element("testsuites")
     merged.extend(suites)
