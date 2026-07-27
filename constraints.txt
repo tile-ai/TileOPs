@@ -1,4 +1,5 @@
-# Version lock for CI / runner builds. Pins versions only; membership lives in pyproject.
+# Version lock for CI / runner builds. Pins versions only; membership lives in pyproject
+# (project dependencies) or the runner Dockerfile install lists (CI-only tooling).
 # torch/torchvision/torchaudio bare (no `+cu129`): the CUDA variant comes from the install
 # index, not this pin, so the same lock also fits the CPU preflight. Do not add `+cu129`.
 # torchvision/torchaudio are pinned to vllm 0.19.1's exact requirements (the newest vllm on
