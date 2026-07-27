@@ -1465,6 +1465,11 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.seqlen_kv = seqlen_kv
         self.dim = dim
         self.page_size = page_size
+        if page_size <= 0:
+            raise ValueError("page_size must be positive")
+        block_n = min(128, page_size)
+        if page_size % block_n != 0:
+            raise ValueError("page_size must be divisible by the paged decode block_N")
         self.dtype = dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
         self.softcap = _score_softcap(softcap)

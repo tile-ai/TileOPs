@@ -194,7 +194,6 @@ def test_gqa_decode_paged_bs1_dispatch() -> None:
         pytest.param(1, torch.bfloat16, 128, 256, None, id="bf16"),
         pytest.param(1, torch.float16, 64, 256, None, id="head-dim"),
         pytest.param(1, torch.float16, 128, 16, None, id="small-page"),
-        pytest.param(1, torch.float16, 128, 192, None, id="non-divisible-page"),
         pytest.param(1, torch.float16, 128, 256, 2.0, id="softcap"),
     ],
 )
@@ -210,6 +209,14 @@ def test_gqa_decode_paged_bs1_dispatch_fallbacks(
         batch, 32, 4, 8192, dim, page_size, dtype, softcap=softcap)
     assert not op._uses_bs1_fast_path()
     assert op.kernel.__class__.__name__ == "GQADecodePagedKernel"
+
+
+@pytest.mark.smoke
+def test_gqa_decode_paged_rejects_non_divisible_page() -> None:
+    """Reject page layouts that neither current paged kernel can address correctly."""
+    with pytest.raises(ValueError, match="page_size must be divisible"):
+        GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
+            1, 32, 4, 8256, 128, 192, torch.float16)
 
 
 if __name__ == "__main__":
