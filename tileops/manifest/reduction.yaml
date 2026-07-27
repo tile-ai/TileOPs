@@ -576,6 +576,9 @@ ArgmaxFwdOp:
   - {x_shape: [4, 102400], dtypes: [float16, bfloat16], dim: -1, label: "lm-head-argmax"}
     # Hidden state argmax
   - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], dim: -1, label: "hidden-state-argmax"}
+    # Non-last-axis sentinel; ArgmaxFwdOp and ArgminFwdOp share ArgreduceKernel,
+    # so one op carries it.
+  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: 0, label: "3d-non-last-axis-argmax"}
 
   roofline:
     vars:

@@ -375,12 +375,13 @@ _FUSED_BASELINES = {
 }
 
 
-def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str) -> None:
+def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str,
+                         params: dict) -> None:
     inputs = test.gen_inputs()
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, params, result, tag="tileops")
     result_bl = bm.profile(_FUSED_BASELINES[baseline_key], *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, params, result_bl, tag="torch-ref")
 
 
 @SiluAndMulBenchFixture
@@ -388,7 +389,8 @@ def test_silu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
     op = SiluAndMulFwdOp(M=M, N=N, dtype=dtype)
     bm = ManifestBenchmark(_SILU_AND_MUL_OP, op, test)
-    _profile_fused_gated(bm, op, test, "silu_and_mul")
+    _profile_fused_gated(bm, op, test, "silu_and_mul",
+                         {"M": M, "N": N, "dtype": dtype})
 
 
 @GeluAndMulBenchFixture
@@ -396,7 +398,8 @@ def test_gelu_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
     op = GeluAndMulFwdOp(M=M, N=N, dtype=dtype)
     bm = ManifestBenchmark(_GELU_AND_MUL_OP, op, test)
-    _profile_fused_gated(bm, op, test, "gelu_and_mul")
+    _profile_fused_gated(bm, op, test, "gelu_and_mul",
+                         {"M": M, "N": N, "dtype": dtype})
 
 
 @GeluTanhAndMulBenchFixture
@@ -404,7 +407,8 @@ def test_gelu_tanh_and_mul_bench(M: int, N: int, dtype: torch.dtype) -> None:
     test = FusedGatedBenchCase(M, N, dtype)
     op = GeluTanhAndMulFwdOp(M=M, N=N, dtype=dtype)
     bm = ManifestBenchmark(_GELU_TANH_AND_MUL_OP, op, test)
-    _profile_fused_gated(bm, op, test, "gelu_tanh_and_mul")
+    _profile_fused_gated(bm, op, test, "gelu_tanh_and_mul",
+                         {"M": M, "N": N, "dtype": dtype})
 
 
 # Fused gated strategy benchmark (direct vs explicit_parallel)
@@ -420,24 +424,29 @@ _STRATEGY_KERNELS = [
 
 
 def _strategy_params():
-    """Default-strategy sentinel: both strategies across the shape axis and the
-    dtype axis on one kernel.
+    """Default-strategy sentinel: shape and dtype axes on the first kernel, plus
+    one reference-point direct-vs-explicit sentinel per remaining kernel.
 
-    The direct/explicit_parallel trade-off is a property of the shared fused-gated
-    kernel body, so sweeping all three ops re-measures one conclusion three times.
+    The three ops share the fused-gated wrapper but bind different activation
+    bodies, whose instruction and register cost can flip the direct-vs-explicit
+    result — so each kernel keeps a sentinel, without re-sweeping shapes.
     """
-    op_name, kernel_cls = _STRATEGY_KERNELS[0]
+    (sweep_op, sweep_cls), sentinels = _STRATEGY_KERNELS[0], _STRATEGY_KERNELS[1:]
     ref_shape, ref_dtype = _STRATEGY_SHAPES[0], torch.float16
     params = []
     for strategy in ("direct", "explicit_parallel"):
         for M, N in _STRATEGY_SHAPES:
             mark = (pytest.mark.smoke if ref_shape == (M, N)
                     else pytest.mark.full)
-            params.append(
-                pytest.param(op_name, M, N, ref_dtype, kernel_cls, strategy, marks=mark))
+            params.append(pytest.param(
+                sweep_op, M, N, ref_dtype, sweep_cls, strategy, marks=mark))
         for dtype in _STRATEGY_DTYPES[1:]:
             params.append(pytest.param(
-                op_name, *ref_shape, dtype, kernel_cls, strategy,
+                sweep_op, *ref_shape, dtype, sweep_cls, strategy,
+                marks=pytest.mark.full))
+        for op_name, kernel_cls in sentinels:
+            params.append(pytest.param(
+                op_name, *ref_shape, ref_dtype, kernel_cls, strategy,
                 marks=pytest.mark.full))
     return params
 
