@@ -198,10 +198,10 @@ def test_binary_arith_bench(
 
     op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op_name, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # Comparison ops (6)
@@ -243,10 +243,10 @@ def test_comparison_bench(
 
     op = _CMP_OPS[op_name](a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(f"cmp_{op_name}", locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(f"cmp_{op_name}", locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # Logical ops (2)
@@ -277,12 +277,12 @@ def test_logical_bench(
 
     op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op_name, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline uses bool tensors
     a_bool, b_bool = inputs[0].bool(), inputs[1].bool()
     result_bl = bm.profile(baseline_fn, a_bool, b_bool)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # Bitwise ops (3)
@@ -313,10 +313,10 @@ def test_bitwise_bench(
 
     op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
     result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op_name, locals(), result, tag="tileops")
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op_name, locals(), result_bl, tag="torch")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # Fused gated ops (2)
