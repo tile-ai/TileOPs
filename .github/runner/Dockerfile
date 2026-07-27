@@ -51,7 +51,7 @@ ENV MAX_JOBS=${MAX_JOBS} NVCC_THREADS=${NVCC_THREADS} TORCH_CUDA_ARCH_LIST=9.0
 # the final post-bench stack.
 FROM runtime AS post-fa3
 RUN python -m pip install --no-cache-dir -c /tmp/constraints.txt \
-        "pytest==9.0.2" "pytest-xdist>=3.0" "ruff==0.14.13" pytest-timeout py-spy
+        pytest pytest-xdist ruff pytest-timeout py-spy
 # FlashAttention-3 (Hopper) has no PyPI wheel — build it from the repo's hopper/ dir.
 # Fetch ONLY the csrc/cutlass submodule the build needs: a full --recursive also pulls the AMD
 # composable_kernel submodule, which the sm_90 build never uses and which is large and

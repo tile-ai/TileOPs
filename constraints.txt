@@ -21,8 +21,10 @@ typing_extensions==4.15.0
 Cython==3.2.4
 z3-solver==4.15.4.0
 torch_c_dlpack_ext==0.1.5
-# CI test plugin: per-test hang guard for the GPU jobs. Pinned here so the runtime install is
-# deterministic; the runner image should bake it (follow-up) and drop the per-job install.
+# CI tooling: versions locked here; the runner image install lists carry bare names.
+pytest==9.0.2
+pytest-xdist==3.8.0
+ruff==0.14.13
 pytest-timeout==2.3.1
-# CI debug tool: stack dump of a hung benchmark child before the runner kills it.
+# Stack dump of a hung benchmark child before the runner kills it.
 py-spy==0.4.2
