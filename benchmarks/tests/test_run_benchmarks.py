@@ -107,7 +107,9 @@ def test_hung_file_is_killed_dumped_and_reported(tmp_path):
 
 
 @pytest.mark.smoke
-def test_fragments_profile_logs_and_collection_ignores_merge(tmp_path):
+def test_fragments_and_profile_logs_merge(tmp_path):
+    """Module-level crashes stay contained: discovery never imports bench
+    modules, so a file aborting at import only loses itself."""
     bench_dir = _write_bench_dir(
         tmp_path,
         {
@@ -121,17 +123,16 @@ def test_fragments_profile_logs_and_collection_ignores_merge(tmp_path):
                 "    with open('profile_run.log', 'w') as f:\n"
                 "        f.write('BETA-REPORT')\n"
             ),
-            "bench_ignored.py": "def test_ignored():\n    assert False\n",
+            "bench_import_abort.py": "import os\nos.abort()\n",
         },
     )
-    (bench_dir / "conftest.py").write_text('collect_ignore_glob = ["bench_ignored*.py"]\n')
     proc, out_xml, _ = _run_runner(tmp_path, bench_dir, timeout_per_file="120")
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 1, proc.stdout + proc.stderr
     cases = _cases(out_xml)
     assert "ops.bench_alpha::test_alpha" in cases
     assert "ops.bench_beta::test_beta" in cases
-    assert not any("bench_ignored" in key for key in cases)
+    assert any("bench_import_abort" in key for key in cases)
 
     profile_log = (tmp_path / "profile_run.log").read_text()
     assert "ALPHA-REPORT" in profile_log

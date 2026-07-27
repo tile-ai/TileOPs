@@ -35,7 +35,7 @@ jobs:
   # =========================================================================
   benchmark:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    timeout-minutes: 120
+    timeout-minutes: 150
     runs-on: [self-hosted, tile-ops, nightly]
     env:
       # Keep the long benchmark suite from fragmenting CUDA allocator segments
@@ -88,7 +88,7 @@ jobs:
           python3 -m pip install -q -c constraints.txt py-spy
           python3 scripts/ci/run_benchmarks.py benchmarks/ops \
             --junit-xml bench_results.xml \
-            --timeout-per-file 1800 \
+            --timeout-per-file 900 \
             --dump-dir bench_stack_dumps | tee tileops_benchmarks.log
 
           if [ -f profile_run.log ]; then

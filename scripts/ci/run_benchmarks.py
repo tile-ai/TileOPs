@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
 """Run each benchmark file in its own pytest process and merge the results.
 
-One native failure (hang, segfault, OOM kill) then costs a single file's
-results: every other file's junit fragment survives into the merged report,
-a hung child leaves a py-spy stack dump before it is killed, and the
-per-file profile_run.log reports are concatenated into the usual single
-file.
-
-The next few files' processes start importing while the current file still
-owns the GPU and each begins testing only when this parent releases it, so
-per-file isolation hides almost all of the per-process import cost. This
-parent must stay free of torch/tilelang imports: each child creates its
-CUDA context in a fresh process.
+A native failure (hang, segfault, OOM kill) costs one file: other fragments
+survive into the merged report and a hung child leaves a py-spy stack dump.
+Upcoming children import while the current file owns the GPU, hiding startup
+cost. This parent must never import torch: children need fresh processes.
 """
 
 from __future__ import annotations
@@ -32,20 +25,13 @@ from pathlib import Path
 
 LOG_TAIL_LINES = 80
 PY_SPY_TIMEOUT_S = 120
-COLLECT_TIMEOUT_S = 1800
 TEARDOWN_TIMEOUT_S = 120
 
-# Child preamble; sys.argv[1] is the status pipe fd, sys.argv[2:] the pytest
-# arguments, sys.argv[3] the bench file. Constraints the code cannot show:
-# - prctl(PR_SET_PTRACER, parent): without it, yama ptrace_scope=1 blocks
-#   the parent's py-spy.
-# - The collect-only pass runs while another file's benchmark owns the GPU;
-#   it must stay GPU-silent (imports only — no CUDA context, no
-#   allocations, no kernel launches). CUDA initialization happens in the
-#   real pytest run, after the stdin line grants GPU ownership.
-# - The exit code goes through the status pipe as soon as the junit
-#   fragment is written; interpreter teardown (seconds of torch/tilelang
-#   atexit work) stays off the critical path.
+# Child preamble; argv[1] = status pipe fd, argv[2:] = pytest args, argv[3]
+# = the bench file. prctl(PR_SET_PTRACER, parent) lets py-spy attach under
+# yama ptrace_scope=1. The collect-only pass runs while another file owns
+# the GPU, so it must stay GPU-silent; CUDA init happens after the stdin
+# grant. The exit code leaves via the pipe before interpreter teardown.
 _CHILD = """\
 import ctypes, os, sys
 
@@ -59,26 +45,6 @@ rc = int(pytest.main(sys.argv[2:]))
 os.write(int(sys.argv[1]), str(rc).encode())
 sys.exit(rc)
 """
-
-_COLLECT = """\
-import os, sys
-
-import pytest
-
-
-class Collector:
-    def pytest_collection_finish(self, session):
-        files = dict.fromkeys(str(item.path) for item in session.items)
-        with open(sys.argv[2], "w") as out:
-            out.write("".join(f + "\\n" for f in files))
-
-
-sys.stdin.readline()
-rc = int(pytest.main(["--collect-only", "-q", *sys.argv[3:]], plugins=[Collector()]))
-os.write(int(sys.argv[1]), str(rc).encode())
-sys.exit(rc)
-"""
-
 
 class Child:
     """One bench child process plus its status pipe."""
@@ -120,20 +86,21 @@ class Child:
         if not readable:
             return None
         data = os.read(self.status_fd, 16)
+        os.close(self.status_fd)
         if data:
             return int(data)
         # EOF without a status report: the child died; reap the reason.
         return self.proc.wait()
 
-    def reap(self) -> None:
-        """Wait out teardown; kill a child stuck in native teardown."""
-        with contextlib.suppress(OSError):
-            os.close(self.status_fd)
-        try:
-            self.proc.wait(timeout=TEARDOWN_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            print(f"WARNING: pid {self.proc.pid} stuck in teardown; killed", flush=True)
-            self.kill()
+    def poll_teardown(self, deadline: float) -> bool:
+        """Return True once the child is gone; kill it past its deadline."""
+        if self.proc.poll() is not None:
+            return True
+        if time.monotonic() < deadline:
+            return False
+        print(f"WARNING: pid {self.proc.pid} stuck in teardown; killed", flush=True)
+        self.kill()
+        return True
 
     def kill(self) -> None:
         """Kill the child's whole process group and reap it."""
@@ -142,6 +109,18 @@ class Child:
         self.proc.wait()
         with contextlib.suppress(OSError):
             os.close(self.status_fd)
+
+
+def _reap_lingering(lingering: list[tuple[Child, float]], block: bool) -> None:
+    """Drop finished children; kill any past its teardown deadline.
+
+    With block=True, wait out the remaining deadlines (end of run).
+    """
+    while lingering:
+        lingering[:] = [(c, d) for c, d in lingering if not c.poll_teardown(d)]
+        if not lingering or not block:
+            return
+        time.sleep(1.0)
 
 
 def _dump_stack(pid: int, dump_path: Path) -> None:
@@ -170,22 +149,24 @@ def _dump_stack(pid: int, dump_path: Path) -> None:
     dump_path.write_text("py-spy dump failed:\n" + "\n".join(errors) + "\n")
 
 
-def _collect_bench_files(
-    targets: list[str], log_path: Path, lingering: list[Child]
-) -> list[str]:
-    """Return the absolute bench file paths pytest collects under targets."""
-    out_file = log_path.with_suffix(".files")
-    child = Child(_COLLECT, [str(out_file), *targets], log_path)
-    child.release()
-    rc = child.wait_result(COLLECT_TIMEOUT_S)
-    if rc is None:
-        child.kill()
-    else:
-        lingering.append(child)
-    if rc != 0 or not out_file.exists():
-        sys.stdout.write(log_path.read_text(errors="replace"))
-        raise SystemExit(f"benchmark collection failed (pytest exit {rc})")
-    return out_file.read_text().splitlines()
+def _discover_bench_files(targets: list[str]) -> list[str]:
+    """Return bench_*.py files under targets by filesystem walk.
+
+    Discovery must not import benchmark modules: a module-level crash or
+    hang would take down the whole run before any isolation exists. A
+    spawned file with nothing to run exits with pytest code 5 (skipped).
+    """
+    files: dict[str, None] = {}
+    for target in targets:
+        path = Path(target)
+        if path.is_file():
+            files[str(path)] = None
+        elif path.is_dir():
+            for f in sorted(path.rglob("bench_*.py")):
+                files[str(f)] = None
+        else:
+            raise SystemExit(f"no such benchmark target: {target}")
+    return list(files)
 
 
 def _synthetic_suite(bench_file: str, message: str, log_tail: str) -> ET.Element:
@@ -242,14 +223,14 @@ def main() -> int:
     suites: list[ET.Element] = []
     profile_parts: list[str] = []
     failed: list[str] = []
-    lingering: list[Child] = []
+    lingering: list[tuple[Child, float]] = []
 
     with tempfile.TemporaryDirectory(prefix="bench_runner_") as work:
         work_dir = Path(work)
-        bench_files = _collect_bench_files(args.targets, work_dir / "collect.log", lingering)
+        bench_files = _discover_bench_files(args.targets)
         if not bench_files:
-            raise SystemExit("no benchmark files collected")
-        print(f"collected {len(bench_files)} benchmark files", flush=True)
+            raise SystemExit("no benchmark files found")
+        print(f"discovered {len(bench_files)} benchmark files", flush=True)
 
         def spawn_at(index: int) -> Child:
             fragment = work_dir / f"{index:03d}.xml"
@@ -294,7 +275,7 @@ def main() -> int:
                     suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
                     failed.append(rel)
                 else:
-                    lingering.append(child)
+                    lingering.append((child, time.monotonic() + TEARDOWN_TIMEOUT_S))
                     sys.stdout.write(log_path.read_text(errors="replace"))
                     if rc < 0:
                         sig = signal.Signals(-rc)
@@ -313,11 +294,11 @@ def main() -> int:
                         failed.append(rel)
                 print(f"--- {rel} finished in {elapsed:.0f}s ---", flush=True)
                 _absorb_profile_log(profile_parts)
+                _reap_lingering(lingering, block=False)
         finally:
             for leftover in pending:
                 leftover.kill()
-            for child in lingering:
-                child.reap()
+            _reap_lingering(lingering, block=True)
 
     merged = ET.Element("testsuites")
     merged.extend(suites)
