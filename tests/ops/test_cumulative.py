@@ -317,6 +317,7 @@ def test_cumprod_dim_axis1(
         pytest.param(64, 16384, torch.float32, marks=pytest.mark.smoke),   # block_n=128 path
         pytest.param(64, 32768, torch.bfloat16, marks=pytest.mark.smoke),  # block_n=256 path
         pytest.param(32, 16384, torch.float16, marks=pytest.mark.smoke),   # Different M
+        pytest.param(64, 8200, torch.float32, marks=pytest.mark.smoke),    # N%block_n!=0: exercises _needs_mask partial-tail branch
     ],
 )
 def test_cumsum_parallel_scan(M: int, N: int, dtype: torch.dtype) -> None:
