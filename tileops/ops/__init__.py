@@ -9,7 +9,6 @@ from .attention import (
     GroupedQueryAttentionPrefillVarlenFwdOp,
     GroupedQueryAttentionSlidingWindowFwdOp,
     GroupedQueryAttentionSlidingWindowVarlenFwdOp,
-    MeanPoolingForwardOp,
     MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadAttentionDecodeWithKVCacheFwdOp,
@@ -73,6 +72,7 @@ from .pool import (
     MaxPool2dIndicesFwdOp,
     MaxPool3dFwdOp,
     MaxPool3dIndicesFwdOp,
+    MeanPoolingForwardOp,
 )
 
 # --- Reduction ops (uncomment as sub-category PRs land) ---

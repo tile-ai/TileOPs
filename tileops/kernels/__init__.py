@@ -20,7 +20,6 @@ from .attention import (
     GQASlidingWindowFwdWgmmaPipelinedKernel,
     GQASlidingWindowVarlenFwdKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
-    MeanPoolingFwdKernel,
     MHABwdKernel,
     MHABwdWgmmaPipelinedKernel,
     MHADecodeKernel,
@@ -95,6 +94,7 @@ from .pool import (
     MaxPool2dWithIndicesKernel,
     MaxPool3dKernel,
     MaxPool3dWithIndicesKernel,
+    MeanPoolingFwdKernel,
 )
 from .rope import (
     RopeLlama31Kernel,

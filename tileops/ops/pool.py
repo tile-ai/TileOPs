@@ -16,6 +16,7 @@ from tileops.kernels.pool import (
     MaxPool2dWithIndicesKernel,
     MaxPool3dKernel,
     MaxPool3dWithIndicesKernel,
+    MeanPoolingFwdKernel,
 )
 from tileops.kernels.pool.common import (
     _normalize_pool_dims,
@@ -36,7 +37,45 @@ __all__ = [
     "MaxPool2dIndicesFwdOp",
     "MaxPool3dFwdOp",
     "MaxPool3dIndicesFwdOp",
+    "MeanPoolingForwardOp",
 ]
+
+
+class MeanPoolingForwardOp(Op):
+
+    def __init__(
+        self,
+        batch_size: int,
+        seq_len: int,
+        heads: int,
+        dim: int,
+        chunk_size: int,
+        chunks_per_bacth: int,
+        seq_num: int,
+        use_offsets: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        tune: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+    ) -> None:
+        params = {k: v for k, v in locals().items() if k not in ('self', 'kernel_map')}
+        for key, value in params.items():
+            setattr(self, key, value)
+
+        self.dispatch_kernel(kernel_map)
+        self.kernel = self.kernel_map["mean_pooling_fwd_kernel"](**params)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {"mean_pooling_fwd_kernel": MeanPoolingFwdKernel}
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        offsets: torch.Tensor,
+        indices: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.kernel(x, offsets, indices=indices)
 
 
 def _device_index(tensor: torch.Tensor) -> int | None:
