@@ -1,5 +1,6 @@
 import contextlib
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -291,30 +292,59 @@ def bench_kernel(
                 # Untrustworthy trace → CUDA-events fallback; genuine CUDA
                 # errors and OOM propagate.
                 if n_regions != n_repeat:
+                    # Count actual CUDA kernels for diagnostics
+                    n_cuda_kernels = sum(
+                        1 for evt in profiler.profiler.kineto_results.events()
+                        if evt.device_type() == DeviceType.CUDA and not evt.is_user_annotation()
+                    )
+                    _logger.debug(
+                        "CUPTI projection mismatch: %d annotation windows vs %d repeats "
+                        "(%d CUDA kernels captured). This may indicate torch.profiler "
+                        "instability in the current environment. Falling back to CUDA events.",
+                        n_regions, n_repeat, n_cuda_kernels,
+                    )
                     raise _CuptiProjectionError(
-                        f"{n_regions}/{n_repeat} annotation windows projected"
+                        f"{n_regions}/{n_repeat} annotation windows projected, "
+                        f"{n_cuda_kernels} CUDA kernels captured"
                     )
                 trial_means.append((total_us / n_repeat) * 1e-3)
         _bench_meta.timing = "cupti"
     except _CuptiProjectionError as exc:
+        # Check if cuda-events fallback is allowed
+        allow_fallback = os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "1") == "1"
+
+        if not allow_fallback:
+            raise RuntimeError(
+                f"CUPTI profiling failed: {exc}. "
+                "CUDA-events fallback is disabled (TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0). "
+                "This prevents generating inaccurate benchmark data with ~7x inflated latency. "
+                "To debug: run with TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1 and check logs."
+            ) from exc
+
         _logger.warning(
             "CUPTI projection failed (%s); falling back to CUDA-events "
-            "timing, which includes launch overhead", exc,
+            "timing, which includes ~50-60us launch overhead per call. "
+            "Latency will be inflated by ~6-7x for fast kernels (<10us). "
+            "Set TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0 to prevent fallback.", exc,
         )
         trial_means = []
 
     # Fallback to CUDA events if CUPTI failed
     if not trial_means:
         _bench_meta.timing = "cuda-events"
+        # Mimic CUPTI behavior: flush L2 before measurement window
         for _ in range(n_trials):
             start_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
             end_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
+
             for i in range(n_repeat):
                 cache.zero_()
+                torch.cuda.synchronize()  # Drain flush before measurement
                 start_events[i].record()
                 _run(i)
                 end_events[i].record()
             torch.cuda.synchronize()
+
             times = [s.elapsed_time(e) for s, e in zip(start_events, end_events, strict=True)]
             trial_means.append(sum(times) / len(times))
 
