@@ -3,6 +3,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase
+from tileops.kernels.gated_deltanet.gated_deltanet_bwd import GatedDeltaNetBwdKernel
 from tileops.ops import GatedDeltaNetBwdOp
 
 
@@ -79,6 +80,7 @@ class GatedDeltaNetBwdFixture(FixtureBase):
             pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
             pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
             pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
+            pytest.param(1, 128, 2, 128, 128, 64, torch.float16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -121,6 +123,67 @@ def test_gated_deltanet_bwd(
     for name, ref_out, op_out in zip(names, ref_outputs, op_outputs, strict=True):
         torch.testing.assert_close(
             op_out, ref_out.to(dtype), **tols,
+            msg=lambda m, n=name: f"{n}: {m}",
+        )
+        if dtype == torch.float16 and dim_k == 128 and dim_v == 128:
+            diff_norm = torch.linalg.vector_norm(
+                op_out.float() - ref_out.float()
+            )
+            ref_norm = torch.linalg.vector_norm(ref_out.float()).clamp_min(1e-12)
+            relative_l2 = float((diff_norm / ref_norm).item())
+            assert relative_l2 < 1.5e-2, (
+                f"{name}: relative L2 error {relative_l2:.6f} exceeds 0.015; "
+                "this usually indicates a missing prepare-A gradient path"
+            )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("split_mode", [1, 2])
+def test_gated_deltanet_bwd_split_carry_matches_default_d128(split_mode: int) -> None:
+    torch.manual_seed(456)
+    B, H, S, DK, DV, BC = 1, 2, 128, 128, 128, 64
+    dtype = torch.float16
+    q = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
+    k = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
+    v = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
+    g = -torch.rand(B, H, S, device="cuda", dtype=dtype)
+    beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
+    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
+
+    from tileops.ops import GatedDeltaNetFwdOp
+
+    fwd_op = GatedDeltaNetFwdOp(chunk_size=BC)
+    _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, g, beta)
+
+    common_config = {
+        "num_stages": 2,
+        "threads": 128,
+        "parallel_threads": 256,
+        "recurrence_threads": 128,
+        "recurrence_block_v": 64,
+    }
+    baseline = GatedDeltaNetBwdKernel(
+        B, H, S, BC, DK, DV, "float16",
+        config={**common_config, "recurrence_split_carry": 0},
+    )
+    split = GatedDeltaNetBwdKernel(
+        B, H, S, BC, DK, DV, "float16",
+        config={**common_config, "recurrence_split_carry": split_mode},
+    )
+    baseline_outputs = baseline.forward(do, q, k, v, g, beta, S_fwd)
+    split_outputs = split.forward(do, q, k, v, g, beta, S_fwd)
+
+    for name, expected, actual in zip(
+        ["dq", "dk", "dv", "dg", "dbeta"],
+        baseline_outputs,
+        split_outputs,
+        strict=True,
+    ):
+        torch.testing.assert_close(
+            actual,
+            expected,
+            atol=1e-2,
+            rtol=1e-2,
             msg=lambda m, n=name: f"{n}: {m}",
         )
 
