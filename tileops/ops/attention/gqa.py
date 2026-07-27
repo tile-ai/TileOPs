@@ -1498,7 +1498,8 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
             return False
         # The TMA producer must load a complete WGMMA N tile without crossing
         # a potentially non-contiguous page boundary.
-        if self.page_size < 64 or self.page_size % 64 != 0:
+        block_n = min(128, self.page_size)
+        if self.page_size < 64 or self.page_size % block_n != 0:
             return False
         return 1 <= self.heads // self.heads_kv <= 64
 

@@ -194,6 +194,7 @@ def test_gqa_decode_paged_bs1_dispatch() -> None:
         pytest.param(1, torch.bfloat16, 128, 256, None, id="bf16"),
         pytest.param(1, torch.float16, 64, 256, None, id="head-dim"),
         pytest.param(1, torch.float16, 128, 16, None, id="small-page"),
+        pytest.param(1, torch.float16, 128, 192, None, id="non-divisible-page"),
         pytest.param(1, torch.float16, 128, 256, 2.0, id="softcap"),
     ],
 )
