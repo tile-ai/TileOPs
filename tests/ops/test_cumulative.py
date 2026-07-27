@@ -322,7 +322,7 @@ def test_cumprod_dim_axis1(
 )
 def test_cumsum_parallel_scan(M: int, N: int, dtype: torch.dtype) -> None:
     """Test parallel scan backend for small-M, large-N workloads."""
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
+    from tileops.ops.reduction.cumulative import CumsumFwdOp
 
     device = torch.device("cuda")
     x = torch.randn(M, N, dtype=dtype, device=device)
@@ -340,7 +340,7 @@ def test_cumsum_parallel_scan(M: int, N: int, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("M, N", [(1, 32768), (127, 16384)])
 def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
     """Test carry propagation and per-row ownership across multiple tiles."""
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
+    from tileops.ops.reduction.cumulative import CumsumFwdOp
 
     device = torch.device("cuda")
     row_values = torch.arange(1, M + 1, dtype=torch.float32, device=device).unsqueeze(1)
@@ -376,7 +376,7 @@ def test_cumsum_torch_compile_fullgraph(M: int, N: int, dtype: torch.dtype) -> N
     this is the regression case: without the custom_op boundary, torch.compile
     raises 'unsupported Function.call' when tracing the raw JIT callables.
     """
-    from tileops.ops.reduction.cumsum import CumsumFwdOp
+    from tileops.ops.reduction.cumulative import CumsumFwdOp
 
     op = CumsumFwdOp(dtype=dtype, dim=-1)
     x = torch.randn(M, N, dtype=dtype, device="cuda")
