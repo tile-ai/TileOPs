@@ -104,6 +104,24 @@ def test_gqa_decode_paged_op(
 
 
 @pytest.mark.smoke
+def test_gqa_decode_paged_non_divisible_128_page_split() -> None:
+    """page_size=192 uses 64-token tiles without skipping page tails."""
+    batch, heads, heads_kv, seqlen_kv, dim, page_size = 1, 16, 4, 3072, 128, 192
+    test = GroupedQueryAttentionDecodePagedTest(
+        batch, heads, heads_kv, seqlen_kv, dim, page_size, torch.float16)
+    q, k, v, real_seqlen_kv, block_table = test.gen_inputs()
+    real_seqlen_kv.fill_(seqlen_kv)
+    block_table.copy_(torch.arange(
+        seqlen_kv // page_size, device="cuda", dtype=torch.int32).flip(0).unsqueeze(0))
+    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
+        batch, heads, heads_kv, seqlen_kv, dim, page_size, torch.float16)
+    assert op.kernel.config["block_N"] == 64
+    test.check(
+        op, q, k, v, real_seqlen_kv, block_table,
+        compare=test._maxdiff_cosine_compare)
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("sm_scale, softcap", [
     pytest.param(0.25, None, id="custom-sm-scale"),
     pytest.param(None, 2.0, id="softcap"),

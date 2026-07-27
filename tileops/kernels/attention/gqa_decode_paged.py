@@ -462,8 +462,11 @@ class GQADecodePagedKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # block_N must be <= page_size so num_blockn_in_page = page_size // block_N >= 1 (no div by zero)
+        # Each KV tile must stay within one physical page. Prefer the widest
+        # supported tile that divides the page exactly.
         block_N = min(128, self.page_size)
+        if self.page_size >= 64 and self.page_size % block_N != 0:
+            block_N = 64
         return {"block_H": 64, "block_N": block_N, "num_split": 16, "num_stages": 2, "threads": 128}
 
     @property
@@ -481,7 +484,8 @@ class GQADecodePagedKernel(Kernel):
             'num_split': c[2],
             'num_stages': c[3],
             'threads': c[4]
-        } for c in _configs if c[0] <= self.page_size]
+        } for c in _configs
+                   if c[0] <= self.page_size and self.page_size % c[0] == 0]
         return configs
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
