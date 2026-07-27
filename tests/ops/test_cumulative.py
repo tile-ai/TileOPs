@@ -332,8 +332,50 @@ def test_cumsum_parallel_scan(M: int, N: int, dtype: torch.dtype) -> None:
 
     # Verify correctness
     ref = x.float().cumsum(dim=-1).to(dtype)
-    assert torch.allclose(y, ref, atol=1e-2, rtol=1e-2), \
+    assert torch.allclose(y, ref, **_tol(dtype)), \
         f"Parallel scan failed for shape ({M}, {N}), max_diff={torch.abs(y - ref).max()}"
+
+    # Verify that the parallel backend was actually selected
+    kernel = op._get_kernel(M, N, dtype, x.device.index)
+    assert kernel.use_parallel, \
+        f"Expected parallel backend for shape ({M}, {N}) but got sequential"
+    expected_block_n = 256 if N > 16384 else 128
+    assert kernel.config["block_n"] == expected_block_n, \
+        f"Expected block_n={expected_block_n} for N={N}, got {kernel.config['block_n']}"
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "M, N, expected_backend",
+    [
+        (64, 8192, "sequential"),   # Boundary: N=8192 should use sequential
+        (128, 16384, "sequential"), # Boundary: M=128 should use sequential
+    ],
+)
+def test_cumsum_dispatch_boundary(M: int, N: int, expected_backend: str) -> None:
+    """Verify dispatch predicate boundaries select the correct backend."""
+    from tileops.ops.reduction.cumulative import CumsumFwdOp
+
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    x = torch.randn(M, N, dtype=dtype, device=device)
+
+    op = CumsumFwdOp(dtype=dtype, dim=-1)
+    y = op(x)
+
+    # Verify correctness
+    ref = x.float().cumsum(dim=-1).to(dtype)
+    assert torch.allclose(y, ref, **_tol(dtype)), \
+        f"Boundary test failed for shape ({M}, {N}), max_diff={torch.abs(y - ref).max()}"
+
+    # Verify the expected backend was selected
+    kernel = op._get_kernel(M, N, dtype, x.device.index)
+    if expected_backend == "parallel":
+        assert kernel.use_parallel, \
+            f"Expected parallel backend for ({M}, {N}) but got sequential"
+    else:
+        assert not kernel.use_parallel, \
+            f"Expected sequential backend for ({M}, {N}) but got parallel"
 
 
 @pytest.mark.smoke
@@ -389,7 +431,7 @@ def test_cumsum_torch_compile_fullgraph(M: int, N: int, dtype: torch.dtype) -> N
     y = compiled(x)
 
     ref = x.float().cumsum(dim=-1).to(dtype)
-    assert torch.allclose(y, ref, atol=1e-2, rtol=1e-2), \
+    assert torch.allclose(y, ref, **_tol(dtype)), \
         f"Compiled output mismatch for shape ({M},{N}): max_diff={torch.abs(y - ref).max()}"
 
 

@@ -381,8 +381,7 @@ class CumulativeKernel(Kernel):
         if self.use_parallel:
             # Parallel scan config: larger tiles for better parallelism
             block_n = 256 if self.N > 16384 else 128
-            block_m = 16
-            elem_size = torch.tensor([], dtype=self.dtype).element_size()
+            block_m = max(1, min(16, self.M))
             smem_per_row = (block_n + _SMEM_PAD) * 4  # float32 intermediate
             max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
             block_m = min(block_m, max_block_m)

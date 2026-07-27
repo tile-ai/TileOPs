@@ -148,6 +148,11 @@ class CumsumFwdOp(CumulativeOp):
     Output has the same shape and dtype as ``x``. Alignment padding is
     handled inside the kernel via masked loads.
 
+    The implementation automatically selects between two backends based on
+    input shape: a sequential scan for most workloads, or a parallel three-pass
+    scan (local prefix + carry propagation + final adjustment) for small-M,
+    large-N cases (M < 128 and N > 8192) to improve SM utilization.
+
     Args:
         dtype: Optional data type (float32, float16, or bfloat16).
             Preferred API infers it from ``x``.
