@@ -4,6 +4,8 @@ Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
 Workload shapes and roofline formulas are loaded from the ops manifest (tileops/manifest/).
 """
 
+import os
+
 import pytest
 import torch
 
@@ -28,6 +30,9 @@ _INF_NORM_OP = "InfNormFwdOp"
 def test_l1_norm_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
+    # Force CUPTI profiling for L1 norm (fast kernel, CUDA events too inaccurate)
+    os.environ["TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK"] = "0"
+
     test = L1NormTest(shape, dtype)
     inputs = test.gen_inputs()
 
@@ -64,6 +69,9 @@ def test_l1_norm_bench(
 def test_l2_norm_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
+    # Force CUPTI profiling for L2 norm (fast kernel, CUDA events too inaccurate)
+    os.environ["TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK"] = "0"
+
     test = L2NormTest(shape, dtype)
     inputs = test.gen_inputs()
 
