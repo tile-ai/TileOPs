@@ -69,6 +69,28 @@ def _validate_attention_dtype(dtype: torch.dtype) -> None:
         raise ValueError(f"Expected dtype torch.float16 or torch.bfloat16, got {dtype}")
 
 
+def _supports_gqa_decode_bs1(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    dtype: torch.dtype,
+    softcap: float,
+) -> bool:
+    """Return whether the common Hopper batch=1 GQA decode contract is satisfied."""
+    if not (
+        batch == 1
+        and is_hopper()
+        and dtype == torch.float16
+        and dim == 128
+        and softcap == 0.0
+    ):
+        return False
+    if heads_kv <= 0 or heads % heads_kv != 0:
+        return False
+    return 1 <= heads // heads_kv <= 64
+
+
 def _supports_gqa_ws_noncausal(
     batch: int,
     heads: int,
@@ -1417,12 +1439,14 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
         one wgmma tile routes to GQADecodeBs1Kernel, which then switches on the runtime KV
         length in forward().
         """
-        if not (self.batch == 1 and is_hopper() and self.dtype == torch.float16
-                and self.dim == 128 and self.softcap == 0.0):
-            return False
-        if self.heads % self.heads_kv != 0:
-            return False
-        return 1 <= self.heads // self.heads_kv <= 64
+        return _supports_gqa_decode_bs1(
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.dim,
+            self.dtype,
+            self.softcap,
+        )
 
     def _select_decode_kernel_key(self) -> str:
         if self._uses_bs1_fast_path():
@@ -1468,6 +1492,11 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         if page_size <= 0:
             raise ValueError("page_size must be positive")
         block_n = min(128, page_size)
+        # FIXME(staged-rollout): reject page layouts unsupported by the generic fallback.
+        #
+        # Broken invariant: unsupported batch=1 page layouts should fall back to generic decode.
+        # Why: generic paged address translation currently requires page_size to divide block_N.
+        # Cleanup: remove this guard once generic paged decode supports page-aligned ragged tiling.
         if page_size % block_n != 0:
             raise ValueError("page_size must be divisible by the paged decode block_N")
         self.dtype = dtype
@@ -1496,17 +1525,14 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         return kernel_map
 
     def _uses_bs1_fast_path(self) -> bool:
-        if not (self.batch == 1 and is_hopper() and self.dtype == torch.float16
-                and self.dim == 128 and self.softcap == 0.0):
-            return False
-        if self.heads % self.heads_kv != 0:
-            return False
-        # The TMA producer must load a complete WGMMA N tile without crossing
-        # a potentially non-contiguous page boundary.
-        block_n = min(128, self.page_size)
-        if self.page_size < 64 or self.page_size % block_n != 0:
-            return False
-        return 1 <= self.heads // self.heads_kv <= 64
+        return _supports_gqa_decode_bs1(
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.dim,
+            self.dtype,
+            self.softcap,
+        ) and GQADecodePagedBs1Kernel.block_n_for_page_size(self.page_size) is not None
 
     def _select_decode_kernel_key(self) -> str:
         if self._uses_bs1_fast_path():
