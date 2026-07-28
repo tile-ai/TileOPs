@@ -3,7 +3,10 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.norm.ada_layer_norm import AdaLayerNormKernel
+from tileops.kernels.norm.ada_layer_norm import (
+    AdaLayerNormKernel,
+    _should_use_cp_async,
+)
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from workloads.normalization import AdaLayerNormTest as _AdaLayerNormTestWorkload
 
@@ -94,6 +97,67 @@ def test_ada_layer_norm_async_copy_handles_row_tail(block_m: int) -> None:
         has_gate=False,
         config={"block_m": block_m, "threads": 128},
     )
+    actual = kernel(*inputs)
+    expected = test.ref_program(*inputs)
+    atol, rtol = _get_tolerances(dtype)
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+def test_ada_layer_norm_async_policy_edges() -> None:
+    cases = [
+        (511, torch.float16, False),
+        (512, torch.float16, False),
+        (513, torch.float16, False),
+        (514, torch.float16, True),
+        (1918, torch.float16, True),
+        (1919, torch.float16, False),
+        (1920, torch.float16, True),
+        (513, torch.float32, True),
+        (1919, torch.float32, True),
+    ]
+    for n, dtype, expected_async in cases:
+        assert (
+            _should_use_cp_async(n, dtype, has_gate=False)
+            is expected_async
+        )
+
+
+@pytest.mark.smoke
+def test_ada_layer_norm_async_policy_shared_memory_limit() -> None:
+    cases = [
+        (8190, torch.float16, False, True),
+        (8194, torch.float16, False, False),
+        (6142, torch.float16, True, True),
+        (6146, torch.float16, True, False),
+        (4094, torch.float32, False, True),
+        (4098, torch.float32, False, False),
+    ]
+    for n, dtype, has_gate, expected_async in cases:
+        assert (
+            _should_use_cp_async(n, dtype, has_gate)
+            is expected_async
+        )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "n, dtype",
+    [
+        pytest.param(511, torch.float16, id="fp16-below"),
+        pytest.param(514, torch.float16, id="fp16-lower-inside"),
+        pytest.param(1919, torch.float16, id="fp16-row-bytes-outside"),
+        pytest.param(1920, torch.float16, id="fp16-former-upper-bound"),
+        pytest.param(513, torch.float32, id="fp32-lower-inside"),
+    ],
+)
+def test_ada_layer_norm_async_policy_edge_correctness(
+    n: int, dtype: torch.dtype,
+) -> None:
+    m = 4
+    test = AdaLayerNormTest(m, n, dtype)
+    inputs = test.gen_inputs()
+    kernel = AdaLayerNormKernel(m, n, test.eps, dtype, has_gate=False)
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
     atol, rtol = _get_tolerances(dtype)
