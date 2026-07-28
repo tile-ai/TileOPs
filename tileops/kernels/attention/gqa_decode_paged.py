@@ -16,6 +16,29 @@ from tileops.kernels.online_softmax import (
 
 __all__ = ["GQADecodePagedKernel"]
 
+
+def gqa_decode_paged_block_ns(page_size: int) -> tuple[int, ...]:
+    """Return page-contained N tiles supported by generic paged decode."""
+    if page_size <= 0:
+        raise ValueError("page_size must be positive")
+
+    block_ns = tuple(
+        block_n
+        for block_n in (128, 64)
+        if block_n <= page_size and page_size % block_n == 0
+    )
+    if block_ns:
+        return block_ns
+    if page_size < 64:
+        return (page_size,)
+    raise ValueError(f"page_size={page_size} matches no supported block_N")
+
+
+def gqa_decode_paged_block_n(page_size: int) -> int:
+    """Return the widest page-contained N tile supported by generic paged decode."""
+    return gqa_decode_paged_block_ns(page_size)[0]
+
+
 # JIT kernel: no-split variant (paged)
 
 
@@ -93,8 +116,7 @@ def _gqa_decode_no_split_paged_kernel(
                     T.copy(
                         K[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
                           cur_kv_head, :], K_shared)
-                    # Match prefill's pipeline: issue both KV loads before QK
-                    # so the next iteration's copies can overlap the GEMMs.
+                    # Issue both K/V loads before QK so copies can overlap the GEMMs.
                     T.copy(
                         V[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
                           cur_kv_head, :], V_shared)
@@ -233,7 +255,7 @@ def _gqa_decode_split_paged_kernel(
                     T.copy(
                         K[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
                           cur_kv_head, :], K_shared)
-                    # Keep K/V in one producer stage, as in the prefill kernel.
+                    # Issue both K/V loads before QK so copies can overlap the GEMMs.
                     T.copy(
                         V[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
                           cur_kv_head, :], V_shared)
@@ -402,6 +424,13 @@ class GQADecodePagedKernel(Kernel):
         self.dtype = dtype
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
+        self._supported_block_ns = gqa_decode_paged_block_ns(page_size)
+        if config is not None:
+            block_n = config.get("block_N")
+            if block_n is not None and block_n not in self._supported_block_ns:
+                raise ValueError(
+                    f"block_N={block_n} is not supported for page_size={page_size}"
+                )
 
         self.no_split_jit = _gqa_decode_no_split_paged_kernel(
             self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.page_size,
@@ -462,16 +491,12 @@ class GQADecodePagedKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Each KV tile must stay within one physical page. Prefer the widest
-        # supported tile that divides the page exactly.
-        block_N = min(128, self.page_size)
-        if self.page_size >= 64 and self.page_size % block_N != 0:
-            block_N = 64
+        block_N = gqa_decode_paged_block_n(self.page_size)
         return {"block_H": 64, "block_N": block_N, "num_split": 16, "num_stages": 2, "threads": 128}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_N = [64, 128]
+        block_N = self._supported_block_ns
         block_H = [64]
         num_split = [2, 4, 8]
         num_stages = [1, 2, 3]
@@ -484,8 +509,7 @@ class GQADecodePagedKernel(Kernel):
             'num_split': c[2],
             'num_stages': c[3],
             'threads': c[4]
-        } for c in _configs
-                   if c[0] <= self.page_size and self.page_size % c[0] == 0]
+        } for c in _configs]
         return configs
 
     def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
