@@ -38,7 +38,6 @@ def gqa_decode_paged_block_n(page_size: int) -> int:
     """Return the widest page-contained N tile supported by generic paged decode."""
     return gqa_decode_paged_block_ns(page_size)[0]
 
-
 # JIT kernel: no-split variant (paged)
 
 

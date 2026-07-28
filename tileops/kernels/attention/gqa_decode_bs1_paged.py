@@ -15,7 +15,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.gqa_decode_paged import _gqa_decode_paged_no_split_op
+from tileops.kernels.attention.gqa_decode_paged import (
+    _gqa_decode_paged_no_split_op,
+    gqa_decode_paged_block_n,
+)
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import LOG2E
 
@@ -250,11 +253,8 @@ class GQADecodePagedBs1Kernel(Kernel):
     @staticmethod
     def block_n_for_page_size(page_size: int) -> Optional[int]:
         """Return a page-contained WGMMA N tile, or None when the fast path is unsafe."""
-        if page_size == 64:
-            return 64
-        if page_size >= 128 and page_size % 128 == 0:
-            return 128
-        return None
+        block_n = gqa_decode_paged_block_n(page_size)
+        return block_n if block_n in (64, 128) and page_size % block_n == 0 else None
 
     def __init__(
         self,

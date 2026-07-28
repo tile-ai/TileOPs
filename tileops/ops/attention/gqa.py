@@ -30,6 +30,7 @@ from tileops.kernels.attention import (
     GQASlidingWindowVarlenFwdKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
+from tileops.kernels.attention.gqa_decode_paged import gqa_decode_paged_block_n
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import is_h200, is_hopper
 
@@ -1491,7 +1492,7 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.page_size = page_size
         if page_size <= 0:
             raise ValueError("page_size must be positive")
-        block_n = min(128, page_size)
+        block_n = gqa_decode_paged_block_n(page_size)
         # FIXME(staged-rollout): reject page layouts unsupported by the generic fallback.
         #
         # Broken invariant: unsupported batch=1 page layouts should fall back to generic decode.
@@ -1525,6 +1526,7 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         return kernel_map
 
     def _uses_bs1_fast_path(self) -> bool:
+        """Use the paged Hopper fast path only when its TMA tile stays within one page."""
         return _supports_gqa_decode_bs1(
             self.batch,
             self.heads,
