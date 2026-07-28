@@ -30,7 +30,6 @@ from tileops.kernels.attention import (
     GQASlidingWindowVarlenFwdKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
-from tileops.kernels.attention.gqa_decode_paged import gqa_decode_paged_block_n
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import is_h200, is_hopper
 
@@ -1492,14 +1491,6 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.page_size = page_size
         if page_size <= 0:
             raise ValueError("page_size must be positive")
-        block_n = gqa_decode_paged_block_n(page_size)
-        # FIXME(staged-rollout): reject page layouts unsupported by the generic fallback.
-        #
-        # Broken invariant: unsupported batch=1 page layouts should fall back to generic decode.
-        # Why: generic paged address translation currently requires page_size to divide block_N.
-        # Cleanup: remove this guard once generic paged decode supports page-aligned ragged tiling.
-        if page_size % block_n != 0:
-            raise ValueError("page_size must be divisible by the paged decode block_N")
         self.dtype = dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
         self.softcap = _score_softcap(softcap)

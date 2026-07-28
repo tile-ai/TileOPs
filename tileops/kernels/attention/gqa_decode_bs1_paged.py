@@ -25,8 +25,9 @@ from tileops.kernels.online_softmax import LOG2E
 from .gqa_decode_bs1_common import (
     COMPILE_FLAGS,
     RING_DEPTH,
+    GQADecodeBs1KernelMixin,
     make_gqa_decode_bs1_combine,
-    make_gqa_decode_bs1_consumer,
+    make_gqa_decode_bs1_split,
 )
 
 __all__ = ["GQADecodePagedBs1Kernel"]
@@ -40,7 +41,6 @@ def _gqa_decode_paged_bs1_ctx_kernel(
     scale = score_scale * LOG2E
     accum_dtype = "float"
     kv_group_num = heads // groups
-    ns = RING_DEPTH
 
     @tilelang.jit(
         out_idx=[-1],
@@ -55,14 +55,39 @@ def _gqa_decode_paged_bs1_ctx_kernel(
         shape_o = [batch, heads, dim]
         part_shape = [batch, heads, ctx_splits, dim]
         lse_shape = [batch, heads, ctx_splits]
-        consumer = make_gqa_decode_bs1_consumer(
+
+        @T.macro
+        def load_kv(K, V, block_table, bid, hid, base, k, Ks, Vs, ready):
+            logical_block = base // block_N + k
+            blocks_per_page = page_size // block_N
+            page_idx = logical_block // blocks_per_page
+            block_in_page = logical_block % blocks_per_page
+            physical_block = block_table[bid, page_idx] * blocks_per_page + block_in_page
+            T.tma_copy(
+                K[physical_block * block_N : (physical_block + 1) * block_N, hid, :],
+                Ks[k % RING_DEPTH, :, :],
+                barrier=ready[k % RING_DEPTH],
+            )
+            T.tma_copy(
+                V[physical_block * block_N : (physical_block + 1) * block_N, hid, :],
+                Vs[k % RING_DEPTH, :, :],
+                barrier=ready[k % RING_DEPTH],
+            )
+
+        split = make_gqa_decode_bs1_split(
+            batch,
+            groups,
             block_M,
             block_N,
             dim,
+            dtype,
             scale,
             kv_group_num,
-            ns,
+            ctx_splits,
+            threads,
             accum_dtype,
+            True,
+            load_kv,
         )
         combine = make_gqa_decode_bs1_combine(
             batch,
@@ -72,95 +97,6 @@ def _gqa_decode_paged_bs1_ctx_kernel(
             dtype,
             accum_dtype,
         )
-
-        @T.macro
-        def _split(
-            Q: T.Tensor(shape_q, dtype),
-            K: T.Tensor(shape_k, dtype),
-            V: T.Tensor(shape_k, dtype),
-            real_seqlen_kv: T.Tensor([batch], T.int32),
-            block_table: T.Tensor([batch, seqlen_kv // page_size], T.int32),
-            glse: T.Tensor(lse_shape, accum_dtype),
-            Output_partial: T.Tensor(part_shape, accum_dtype),
-        ):
-            with T.Kernel(batch, groups, ctx_splits, threads=threads) as (bid, hid, sid):
-                Qs = T.alloc_shared([block_M, dim], dtype)
-                Ks = T.alloc_shared([ns, block_N, dim], dtype)
-                Vs = T.alloc_shared([ns, block_N, dim], dtype)
-                Ps = T.alloc_shared([block_M, block_N], dtype)
-                T.annotate_layout(
-                    {
-                        Qs: tilelang.layout.make_swizzled_layout(Qs),
-                        Ks: tilelang.layout.make_swizzled_layout(Ks),
-                        Vs: tilelang.layout.make_swizzled_layout(Vs),
-                        Ps: tilelang.layout.make_swizzled_layout(Ps),
-                    }
-                )
-                ready = T.alloc_barrier([32] * ns)  # producer -> consumer
-                free = T.alloc_barrier([128] * ns)  # consumer -> producer
-                acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
-                acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
-                sm = T.alloc_fragment([block_M], accum_dtype)
-                smp = T.alloc_fragment([block_M], accum_dtype)
-                alpha = T.alloc_fragment([block_M], accum_dtype)
-                ss = T.alloc_fragment([block_M], accum_dtype)
-                logsum = T.alloc_fragment([block_M], accum_dtype)
-
-                # Redistribute over the real length so every split holds a full tile.
-                seqlen_kv_b = real_seqlen_kv[bid]
-                base_len = seqlen_kv_b // (ctx_splits * block_N) * block_N
-                this_len = T.if_then_else(
-                    sid == ctx_splits - 1, seqlen_kv_b - (ctx_splits - 1) * base_len, base_len
-                )
-                base = base_len * sid
-                loop_range = T.ceildiv(this_len, block_N)
-                tx = T.get_thread_binding()
-
-                if tx >= 128:  # producer
-                    for k in T.serial(loop_range):
-                        T.mbarrier_wait_parity(free[k % ns], ((k // ns) % ns) ^ 1)
-                        logical_block = base // block_N + k
-                        blocks_per_page = page_size // block_N
-                        page_idx = logical_block // blocks_per_page
-                        block_in_page = logical_block % blocks_per_page
-                        physical_block = (
-                            block_table[bid, page_idx] * blocks_per_page + block_in_page
-                        )
-                        T.tma_copy(
-                            K[physical_block * block_N : (physical_block + 1) * block_N, hid, :],
-                            Ks[k % ns, :, :],
-                            barrier=ready[k % ns],
-                        )
-                        T.tma_copy(
-                            V[physical_block * block_N : (physical_block + 1) * block_N, hid, :],
-                            Vs[k % ns, :, :],
-                            barrier=ready[k % ns],
-                        )
-                        T.mbarrier_arrive(ready[k % ns])
-                else:  # consumer
-                    consumer(
-                        Q,
-                        bid,
-                        hid,
-                        sid,
-                        this_len,
-                        loop_range,
-                        Qs,
-                        Ks,
-                        Vs,
-                        Ps,
-                        ready,
-                        free,
-                        acc_s,
-                        acc_o,
-                        sm,
-                        smp,
-                        alpha,
-                        ss,
-                        logsum,
-                        glse,
-                        Output_partial,
-                    )
 
         @T.prim_func
         def gqa_decode_paged_bs1_ctx(
@@ -173,7 +109,7 @@ def _gqa_decode_paged_bs1_ctx_kernel(
             Output_partial: T.Tensor(part_shape, accum_dtype),
             Output: T.Tensor(shape_o, dtype),
         ):
-            _split(Q, K, V, real_seqlen_kv, block_table, glse, Output_partial)
+            split(Q, K, V, block_table, real_seqlen_kv, glse, Output_partial)
             combine(glse, Output_partial, Output)
 
         return gqa_decode_paged_bs1_ctx
@@ -237,7 +173,7 @@ def _(
     return torch.empty_like(Q)
 
 
-class GQADecodePagedBs1Kernel(Kernel):
+class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
     """Hopper warp-specialized batch=1 paged GQA decode kernel.
 
     ``forward`` dispatches on the runtime ``real_seqlen_kv``: >= 1024 runs the context-only
@@ -246,15 +182,16 @@ class GQADecodePagedBs1Kernel(Kernel):
 
     supported_archs: list[int] = [90]
 
-    _MIN_CTX = 1024
-    # Powers of two TileLang lowers cleanly; the largest dividing the KV length balances slices.
-    _CTX_SPLIT_CANDIDATES = (32, 16, 8)
-
     @staticmethod
     def block_n_for_page_size(page_size: int) -> Optional[int]:
         """Return a page-contained WGMMA N tile, or None when the fast path is unsafe."""
-        block_n = gqa_decode_paged_block_n(page_size)
-        return block_n if block_n in (64, 128) and page_size % block_n == 0 else None
+        try:
+            block_n = gqa_decode_paged_block_n(page_size)
+        except ValueError:
+            return None
+        if page_size == 64 or block_n == 128:
+            return block_n
+        return None
 
     def __init__(
         self,
@@ -299,16 +236,6 @@ class GQADecodePagedBs1Kernel(Kernel):
             )
         return {"block_M": 64, "block_N": block_n, "threads": 160}
 
-    def _select_tier(self, real_seqlen_kv: int) -> str:
-        return "ctx" if real_seqlen_kv >= self._MIN_CTX else "no_split"
-
-    def _ctx_splits_for(self, real_seqlen_kv: int) -> int:
-        block_N = self.config["block_N"]
-        for cs in self._CTX_SPLIT_CANDIDATES:
-            if real_seqlen_kv % (cs * block_N) == 0:
-                return cs
-        return self._CTX_SPLIT_CANDIDATES[-1]
-
     def forward(
         self,
         Q: torch.Tensor,
@@ -342,12 +269,7 @@ class GQADecodePagedBs1Kernel(Kernel):
             )
 
         ctx_splits = self._ctx_splits_for(real_max)
-        glse = torch.empty(
-            (self.batch, self.heads, ctx_splits), dtype=torch.float32, device=Q.device
-        )
-        Output_partial = torch.empty(
-            (self.batch, self.heads, ctx_splits, self.dim), dtype=torch.float32, device=Q.device
-        )
+        glse, Output_partial = self._allocate_partials(Q, ctx_splits)
         return _gqa_decode_paged_bs1_ctx_op(
             self.batch,
             self.heads,

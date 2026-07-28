@@ -1,6 +1,8 @@
 """Shared macros for Hopper batch=1 GQA decode kernels."""
 
+import tilelang
 import tilelang.language as T
+import torch
 
 RING_DEPTH = 2
 
@@ -16,6 +18,40 @@ COMPILE_FLAGS = [
     "--expt-extended-lambda",
     "-DNDEBUG",
 ]
+
+
+class GQADecodeBs1KernelMixin:
+    """Shared runtime policy for contiguous and paged Hopper batch=1 decode."""
+
+    _MIN_CTX = 1024
+    _CTX_SPLIT_CANDIDATES = (32, 16, 8)
+
+    def _select_tier(self, real_seqlen_kv: int) -> str:
+        return "ctx" if real_seqlen_kv >= self._MIN_CTX else "no_split"
+
+    def _ctx_splits_for(self, real_seqlen_kv: int) -> int:
+        block_n = self.config["block_N"]
+        for ctx_splits in self._CTX_SPLIT_CANDIDATES:
+            if real_seqlen_kv % (ctx_splits * block_n) == 0:
+                return ctx_splits
+        return self._CTX_SPLIT_CANDIDATES[-1]
+
+    def _allocate_partials(
+        self,
+        q: torch.Tensor,
+        ctx_splits: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        glse = torch.empty(
+            (self.batch, self.heads, ctx_splits),
+            dtype=torch.float32,
+            device=q.device,
+        )
+        output_partial = torch.empty(
+            (self.batch, self.heads, ctx_splits, self.dim),
+            dtype=torch.float32,
+            device=q.device,
+        )
+        return glse, output_partial
 
 
 def make_gqa_decode_bs1_consumer(
@@ -108,6 +144,117 @@ def make_gqa_decode_bs1_consumer(
                 Output_partial[bid, hid * kv_group_num + i, sid, j] = acc_o[i, j]
 
     return consumer
+
+
+def make_gqa_decode_bs1_split(
+    batch: int,
+    groups: int,
+    block_m: int,
+    block_n: int,
+    dim: int,
+    dtype: str,
+    scale: float,
+    kv_group_num: int,
+    ctx_splits: int,
+    threads: int,
+    accum_dtype: str,
+    real_seqlen_is_buffer: bool,
+    load_kv,
+):
+    """Create the shared context-split schedule around a layout-specific KV loader."""
+    consumer = make_gqa_decode_bs1_consumer(
+        block_m,
+        block_n,
+        dim,
+        scale,
+        kv_group_num,
+        RING_DEPTH,
+        accum_dtype,
+    )
+
+    @T.macro
+    def split(Q, K, V, kv_layout, real_seqlen_kv, glse, output_partial):
+        with T.Kernel(batch, groups, ctx_splits, threads=threads) as (bid, hid, sid):
+            qs = T.alloc_shared([block_m, dim], dtype)
+            ks = T.alloc_shared([RING_DEPTH, block_n, dim], dtype)
+            vs = T.alloc_shared([RING_DEPTH, block_n, dim], dtype)
+            ps = T.alloc_shared([block_m, block_n], dtype)
+            T.annotate_layout(
+                {
+                    qs: tilelang.layout.make_swizzled_layout(qs),
+                    ks: tilelang.layout.make_swizzled_layout(ks),
+                    vs: tilelang.layout.make_swizzled_layout(vs),
+                    ps: tilelang.layout.make_swizzled_layout(ps),
+                }
+            )
+            ready = T.alloc_barrier([32] * RING_DEPTH)
+            free = T.alloc_barrier([128] * RING_DEPTH)
+            acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
+            acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
+            sm = T.alloc_fragment([block_m], accum_dtype)
+            smp = T.alloc_fragment([block_m], accum_dtype)
+            alpha = T.alloc_fragment([block_m], accum_dtype)
+            ss = T.alloc_fragment([block_m], accum_dtype)
+            logsum = T.alloc_fragment([block_m], accum_dtype)
+
+            seqlen_kv_b = (
+                real_seqlen_kv[bid] if real_seqlen_is_buffer else real_seqlen_kv
+            )
+            base_len = seqlen_kv_b // (ctx_splits * block_n) * block_n
+            this_len = T.if_then_else(
+                sid == ctx_splits - 1,
+                seqlen_kv_b - (ctx_splits - 1) * base_len,
+                base_len,
+            )
+            base = base_len * sid
+            loop_range = T.ceildiv(this_len, block_n)
+            tx = T.get_thread_binding()
+
+            if tx >= 128:
+                for k in T.serial(loop_range):
+                    T.mbarrier_wait_parity(
+                        free[k % RING_DEPTH],
+                        ((k // RING_DEPTH) % RING_DEPTH) ^ 1,
+                    )
+                    load_kv(
+                        K,
+                        V,
+                        kv_layout,
+                        bid,
+                        hid,
+                        base,
+                        k,
+                        ks,
+                        vs,
+                        ready,
+                    )
+                    T.mbarrier_arrive(ready[k % RING_DEPTH])
+            else:
+                consumer(
+                    Q,
+                    bid,
+                    hid,
+                    sid,
+                    this_len,
+                    loop_range,
+                    qs,
+                    ks,
+                    vs,
+                    ps,
+                    ready,
+                    free,
+                    acc_s,
+                    acc_o,
+                    sm,
+                    smp,
+                    alpha,
+                    ss,
+                    logsum,
+                    glse,
+                    output_partial,
+                )
+
+    return split
 
 
 def make_gqa_decode_bs1_combine(
