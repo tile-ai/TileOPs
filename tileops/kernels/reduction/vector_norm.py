@@ -65,7 +65,6 @@ def _vector_norm_kernel(M: int, N: int, op_kind: str, dtype: str):
             out: T.Tensor[(M,), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                shared_buf = T.alloc_shared((block_m, N_padded), dtype)
                 x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                 transformed = T.alloc_fragment((block_m, N_padded), "float32")
                 acc = T.alloc_fragment((block_m,), "float32")
@@ -79,12 +78,10 @@ def _vector_norm_kernel(M: int, N: int, op_kind: str, dtype: str):
                             T.cast(0.0, "float32"),
                         )
                 else:
-                    # Load via shared memory
-                    T.copy(x[pid_m * block_m, 0], shared_buf)
-
-                    # Cast to fp32
+                    # Optimization: fused load and cast - load directly to fp32 fragment
+                    # This saves one intermediate buffer copy
                     for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                        x_f32[i, j] = T.cast(x[pid_m * block_m + i, j], "float32")
 
                 if op_kind == "l1":
                     # l1 norm: sum(|x|)
@@ -93,8 +90,10 @@ def _vector_norm_kernel(M: int, N: int, op_kind: str, dtype: str):
                     T.reduce_sum(transformed, acc, dim=1)
                 elif op_kind == "l2":
                     # l2 norm: sqrt(sum(x^2))
+                    # Optimization B: inline square computation to potentially reduce memory traffic
                     for i, j in T.Parallel(block_m, N_padded):
-                        transformed[i, j] = x_f32[i, j] * x_f32[i, j]
+                        val = x_f32[i, j]
+                        transformed[i, j] = val * val
                     T.reduce_sum(transformed, acc, dim=1)
                     for i in T.Parallel(block_m):
                         acc[i] = T.sqrt(acc[i])
