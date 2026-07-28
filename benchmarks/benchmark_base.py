@@ -90,57 +90,38 @@ _bench_results = threading.local()
 _bench_meta = threading.local()
 
 
-class _CuptiProjectionError(Exception):
-    """CUPTI trace lacked a projected annotation window for every repeat."""
-
-
-# Name of the ``record_function`` annotation wrapping the timed call. Kineto
-# projects this scope onto the device timeline. The L2-flush ``cache.zero_()``
-# is synchronized to completion before the window opens (see ``bench_kernel``),
-# so its device event cannot fall inside a window regardless of how the
-# projection behaves; kernels the timed call launches do.
-_KERNEL_REGION = "tileops_bench_kernel"
+class _CuptiSamplingError(Exception):
+    """CUPTI trace lacked CUDA kernel samples for the measured window."""
 
 
 def _sum_kernel_time_us(kineto_results):
-    """Sum device time of the kernels the timed call launched.
+    """Sum sampled business-kernel device time from a CUPTI collection window.
 
-    Sums only kernels inside a :data:`_KERNEL_REGION` annotation window, so the
-    L2-flush fill is excluded and the kernel under test is counted regardless of
-    its name. A call launching several kernels contributes all of them.
+    The measured CUPTI window is continuous across the repeat loop and includes
+    the L2 flush launches. Filter those fill kernels by name, then sum every
+    remaining CUDA kernel sample. A call launching several kernels contributes
+    all of them.
 
     Iterates the C++ Kineto events directly to bypass ``key_averages()``, which
     is ~16x slower (~130ms of Python parsing/tree-building) for large traces.
 
     Returns:
-        ``(total_us, n_regions)``: summed kernel time in microseconds and the
-        number of annotation windows. The caller checks ``n_regions ==
-        n_repeat`` to confirm the scope projected on every iteration.
+        ``(total_us, n_kernels)``: summed kernel time in microseconds and the
+        number of sampled business CUDA kernels.
     """
-    import bisect
-
-    windows: list[tuple[int, int]] = []
-    kernels: list[tuple[int, int]] = []  # (start_ns, duration_ns)
+    total_us = 0.0
+    n_kernels = 0
     for evt in kineto_results.events():
         if evt.device_type() != DeviceType.CUDA:
             continue
         if evt.is_user_annotation():
-            if evt.name() == _KERNEL_REGION:
-                windows.append((evt.start_ns(), evt.end_ns()))
             continue
-        kernels.append((evt.start_ns(), evt.duration_ns()))
-
-    windows.sort()
-    starts = [w[0] for w in windows]
-    ends = [w[1] for w in windows]
-    total_us = 0.0
-    for start_ns, dur_ns in kernels:
-        # Count only kernels that fall inside a timed-call window; everything
-        # outside (notably the L2-flush fill) is excluded.
-        idx = bisect.bisect_right(starts, start_ns) - 1
-        if idx >= 0 and start_ns < ends[idx]:
-            total_us += dur_ns / 1000.0
-    return total_us, len(windows)
+        name = evt.name()
+        if "vectorized_elementwise" in name and "FillFunctor" in name:
+            continue
+        total_us += evt.duration_ns() / 1000.0
+        n_kernels += 1
+    return total_us, n_kernels
 
 
 # L2 cache flush buffer (sized to actual L2, allocated lazily)
@@ -264,52 +245,41 @@ def bench_kernel(
         _run(i)
     torch.cuda.synchronize()
 
-    # One plain profiler context per trial; torch.profiler.schedule is avoided
-    # because queued launches leak across its warmup/active boundary.
-    # Kineto's window projection may include a flush merely enqueued before
-    # the window, so the flush is drained (sync) before the timed call and
-    # the call is drained before the next flush; the syncs add host-side
-    # latency only.
+    # One continuous CUPTI collection window per trial. torch.profiler.schedule
+    # is avoided because queued launches leak across its warmup/active boundary,
+    # and per-repeat dynamic collection toggling introduces extra CUPTI enable
+    # boundaries. The syncs drain the L2 flush before the sampled call and drain
+    # the call before the next flush; they add host-side latency only.
     trial_means: list[float] = []
     try:
         with _native_output_suppressor():
             for _ in range(n_trials):
                 with torch.profiler.profile(
-                    # CPU activity is required for Kineto to project the
-                    # annotation window; it never adds device time.
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA,
-                    ],
+                    activities=[torch.profiler.ProfilerActivity.CUDA],
                 ) as profiler:
                     for i in range(n_repeat):
                         cache.zero_()
                         torch.cuda.synchronize()
-                        with torch.profiler.record_function(_KERNEL_REGION):
-                            _run(i)
+                        _run(i)
                         torch.cuda.synchronize()
-                total_us, n_regions = _sum_kernel_time_us(profiler.profiler.kineto_results)
-                # Untrustworthy trace → CUDA-events fallback; genuine CUDA
-                # errors and OOM propagate.
-                if n_regions != n_repeat:
-                    # Count actual CUDA kernels for diagnostics
-                    n_cuda_kernels = sum(
-                        1 for evt in profiler.profiler.kineto_results.events()
-                        if evt.device_type() == DeviceType.CUDA and not evt.is_user_annotation()
-                    )
+                total_us, n_kernels = _sum_kernel_time_us(
+                    profiler.profiler.kineto_results
+                )
+                if n_kernels == 0:
                     _logger.debug(
-                        "CUPTI projection mismatch: %d annotation windows vs %d repeats "
-                        "(%d CUDA kernels captured). This may indicate torch.profiler "
-                        "instability in the current environment. Falling back to CUDA events.",
-                        n_regions, n_repeat, n_cuda_kernels,
+                        "CUPTI captured no business CUDA kernels in the measured "
+                        "window; falling back to CUDA events."
                     )
-                    raise _CuptiProjectionError(
-                        f"{n_regions}/{n_repeat} annotation windows projected, "
-                        f"{n_cuda_kernels} CUDA kernels captured"
+                    raise _CuptiSamplingError(
+                        "no business CUDA kernels captured in CUPTI window"
                     )
-                trial_means.append((total_us / n_repeat) * 1e-3)
+                # Single-kernel ops may occasionally produce fewer samples than
+                # repeats in a valid CUPTI collection window. Average over the
+                # sampled business runs; multi-kernel calls still use n_repeat.
+                n_sampled_runs = min(n_kernels, n_repeat)
+                trial_means.append((total_us / n_sampled_runs) * 1e-3)
         _bench_meta.timing = "cupti"
-    except _CuptiProjectionError as exc:
+    except _CuptiSamplingError as exc:
         # Check if cuda-events fallback is allowed
         allow_fallback = os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "1") == "1"
 
@@ -322,7 +292,7 @@ def bench_kernel(
             ) from exc
 
         _logger.warning(
-            "CUPTI projection failed (%s); falling back to CUDA-events "
+            "CUPTI sampling failed (%s); falling back to CUDA-events "
             "timing, which includes ~50-60us launch overhead per call. "
             "Latency will be inflated by ~6-7x for fast kernels (<10us). "
             "Set TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0 to prevent fallback.", exc,

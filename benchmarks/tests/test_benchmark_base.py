@@ -222,8 +222,8 @@ def test_multi_input_op_raises_keyerror():
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_projection_failure_falls_back_to_cuda_events():
-    """A callable launching no CUDA kernel projects no annotation windows;
+def test_empty_cupti_sample_falls_back_to_cuda_events():
+    """A callable launching no CUDA kernel has no CUPTI business-kernel sample;
     bench_kernel must fall back and mark the deviating timing method."""
     latency = bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2, n_trials=1)
     assert latency >= 0.0
