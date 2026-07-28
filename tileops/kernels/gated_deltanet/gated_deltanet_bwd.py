@@ -250,6 +250,97 @@ def _bwd_parallel_tl(
 # Split kernel: dh_recurrence_bwd (sequential backward over chunks)
 
 
+def _make_dh_correction_from_carry_macro(
+    block_C: int,
+    dim_k: int,
+    BV: int,
+    accum_dtype: str,
+):
+    """Create the shared chunk correction macro for an incoming successor carry."""
+
+    @T.macro
+    def correction_from_carry(
+        g_c,
+        k_c,
+        v_new_c,
+        h_c,
+        dh_buf,
+        k_scaled,
+        dP,
+        dg_c,
+        du_corr_c,
+        dh_h_tmp,
+        du_corr_frag,
+        dP_frag,
+        d_g_pos,
+        d_g_last_partial,
+        d_g_last_scalar1,
+        d_g_last_scalar2,
+        dk_corr_partial,
+        du_corr,
+        dg_corr_partial,
+        dw_corr_partial,
+        bid,
+        hid,
+        vid,
+        chunk_offset,
+        v_offset,
+    ):
+        for pn, sk in T.Parallel(block_C, dim_k):
+            k_scaled[pn, sk] = k_c[pn, sk] * T.exp2((g_c[block_C - 1] - g_c[pn]) * _LOG2E)
+
+        T.clear(du_corr_frag)
+        T.gemm(k_scaled, dh_buf, du_corr_frag)
+        T.copy(du_corr_frag, du_corr_c)
+        T.copy(
+            du_corr_c,
+            du_corr[
+                bid,
+                hid,
+                chunk_offset : chunk_offset + block_C,
+                v_offset : v_offset + BV,
+            ],
+            disable_tma=True,
+        )
+
+        T.clear(dP_frag)
+        T.gemm(du_corr_c, h_c, dP_frag, transpose_B=True)
+        for n, kk in T.Parallel(block_C, dim_k):
+            dw_corr_partial[bid, hid, vid, chunk_offset + n, kk] = -dP_frag[n, kk] * T.exp2(
+                (g_c[n] + g_c[block_C - 1]) * _LOG2E
+            )
+
+        T.clear(dP_frag)
+        T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
+        T.copy(dP_frag, dP)
+        for n, kk in T.Parallel(block_C, dim_k):
+            dk_corr_partial[bid, hid, vid, chunk_offset + n, kk] = dP[n, kk] * T.exp2(
+                (g_c[block_C - 1] - g_c[n]) * _LOG2E
+            )
+
+        for n, kk in T.Parallel(block_C, dim_k):
+            dP[n, kk] = dP[n, kk] * k_scaled[n, kk]
+        T.reduce_sum(dP, d_g_pos, dim=1)
+        for n in T.Parallel(block_C):
+            dg_c[n] = -d_g_pos[n]
+
+        for i, j in T.Parallel(dim_k, BV):
+            dh_h_tmp[i, j] = dh_buf[i, j] * h_c[i, j]
+        T.reduce_sum(dh_h_tmp, d_g_last_partial, dim=1)
+        T.reduce_sum(d_g_last_partial, d_g_last_scalar1, dim=0)
+        T.reduce_sum(d_g_pos, d_g_last_scalar2, dim=0)
+        dg_c[block_C - 1] = (
+            dg_c[block_C - 1]
+            + d_g_last_scalar1[0] * T.exp2(g_c[block_C - 1] * _LOG2E)
+            + d_g_last_scalar2[0]
+        )
+
+        for i in T.Parallel(block_C):
+            dg_corr_partial[bid, hid, vid, chunk_offset + i] = dg_c[i]
+
+    return correction_from_carry
+
+
 @functools.lru_cache(maxsize=32)
 def _dh_recurrence_bwd_tl(
     batch: int,
@@ -289,6 +380,13 @@ def _dh_recurrence_bwd_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(num_stages, threads=256):
+        correction_from_carry = _make_dh_correction_from_carry_macro(
+            block_C,
+            dim_k,
+            BV,
+            accum_dtype,
+        )
+
         @T.prim_func
         def dh_recurrence_bwd_kernel(
             g: T.Tensor([batch, head, seq_len], dtype),
@@ -316,6 +414,10 @@ def _dh_recurrence_bwd_tl(
                 # dh_buf carries gradient from the next chunk (backward)
                 dh_buf = T.alloc_shared([dim_k, BV], dtype)
                 dh_h_tmp = T.alloc_shared([dim_k, BV], dtype)
+                d_g_pos = T.alloc_shared([block_C], dtype)
+                d_g_last_partial = T.alloc_shared([dim_k], dtype)
+                d_g_last_scalar1 = T.alloc_shared([1], accum_dtype)
+                d_g_last_scalar2 = T.alloc_shared([1], accum_dtype)
                 # Fragments
                 dh_frag = T.alloc_fragment([dim_k, BV], accum_dtype)
                 du_corr_frag = T.alloc_fragment([block_C, BV], accum_dtype)
@@ -354,83 +456,39 @@ def _dh_recurrence_bwd_tl(
                         disable_tma=True,
                     )
 
-                    # k_scaled = k * exp(g_last - g)
-                    for pn, sk in T.Parallel(block_C, dim_k):
-                        k_scaled[pn, sk] = k_c[pn, sk] * T.exp2(
-                            (g_c[block_C - 1] - g_c[pn]) * _LOG2E
-                        )
-
                     # dh = dh_local + dh_buf * exp(g_last)
                     for i, j in T.Parallel(dim_k, BV):
                         dh_frag[i, j] = dh_loc[i, j] + dh_buf[i, j] * T.exp2(
                             g_c[block_C - 1] * _LOG2E
                         )
 
-                    # du_correction = k_scaled @ dh_buf
-                    T.clear(du_corr_frag)
-                    T.gemm(k_scaled, dh_buf, du_corr_frag)
-                    T.copy(
+                    correction_from_carry(
+                        g_c,
+                        k_c,
+                        v_new_c,
+                        h_c,
+                        dh_buf,
+                        k_scaled,
+                        dP,
+                        dg_c,
+                        du_corr_c,
+                        dh_h_tmp,
                         du_corr_frag,
-                        du_corr_c,
+                        dP_frag,
+                        d_g_pos,
+                        d_g_last_partial,
+                        d_g_last_scalar1,
+                        d_g_last_scalar2,
+                        dk_corr_partial,
+                        du_corr,
+                        dg_corr_partial,
+                        dw_corr_partial,
+                        bid,
+                        hid,
+                        vid,
+                        t_bwd * block_C,
+                        v_offset,
                     )
-                    T.copy(
-                        du_corr_c,
-                        du_corr[
-                            bid,
-                            hid,
-                            t_bwd * block_C : (t_bwd + 1) * block_C,
-                            v_offset : v_offset + BV,
-                        ],
-                        disable_tma=True,
-                    )
-
-                    # Reuse resident du_corr and S_start to form the V-tile
-                    # contribution to dw_correction.
-                    T.clear(dP_frag)
-                    T.gemm(du_corr_c, h_c, dP_frag, transpose_B=True)
-                    for n, kk in T.Parallel(block_C, dim_k):
-                        dw_corr_partial[bid, hid, vid, t_bwd * block_C + n, kk] = -dP_frag[
-                            n, kk
-                        ] * T.exp2((g_c[n] + g_c[block_C - 1]) * _LOG2E)
-
-                    # dk_correction = (v_new @ dh_buf^T) * exp(g_last - g)
-                    T.clear(dP_frag)
-                    T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
-                    T.copy(dP_frag, dP)
-                    for n, kk in T.Parallel(block_C, dim_k):
-                        dk_corr_partial[bid, hid, vid, t_bwd * block_C + n, kk] = dP[
-                            n, kk
-                        ] * T.exp2((g_c[block_C - 1] - g_c[n]) * _LOG2E)
-
-                    # dg_correction: per-position and g_last terms
-                    # Per-position: -sum_k(dP * k_scaled) per row n
-                    for n, kk in T.Parallel(block_C, dim_k):
-                        dP[n, kk] = dP[n, kk] * k_scaled[n, kk]
-                    d_g_pos = T.alloc_shared([block_C], dtype)
-                    T.reduce_sum(dP, d_g_pos, dim=1)
-                    for n in T.Parallel(block_C):
-                        dg_c[n] = -d_g_pos[n]
-
-                    # g_last term 1: sum(dh_buf * h_c) * exp_g_last
-                    for i, j in T.Parallel(dim_k, BV):
-                        dh_h_tmp[i, j] = dh_buf[i, j] * h_c[i, j]
-                    d_g_last_partial = T.alloc_shared([dim_k], dtype)
-                    T.reduce_sum(dh_h_tmp, d_g_last_partial, dim=1)
-                    d_g_last_scalar1 = T.alloc_shared([1], accum_dtype)
-                    T.reduce_sum(d_g_last_partial, d_g_last_scalar1, dim=0)
-
-                    # g_last term 2: sum_n(d_g_pos)
-                    d_g_last_scalar2 = T.alloc_shared([1], accum_dtype)
-                    T.reduce_sum(d_g_pos, d_g_last_scalar2, dim=0)
-                    dg_c[block_C - 1] = (
-                        dg_c[block_C - 1]
-                        + d_g_last_scalar1[0] * T.exp2(g_c[block_C - 1] * _LOG2E)
-                        + d_g_last_scalar2[0]
-                    )
-
-                    # Write dg_correction
-                    for i in T.Parallel(block_C):
-                        dg_corr_partial[bid, hid, vid, t_bwd * block_C + i] = dg_c[i]
 
                     # Carry dh to next iteration
                     T.copy(dh_frag, dh_buf)
@@ -592,6 +650,13 @@ def _dh_correction_from_carry_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads=256):
+        correction_from_carry = _make_dh_correction_from_carry_macro(
+            block_C,
+            dim_k,
+            BV,
+            accum_dtype,
+        )
+
         @T.prim_func
         def dh_correction_from_carry_kernel(
             g: T.Tensor([batch, head, seq_len], dtype),
@@ -644,61 +709,33 @@ def _dh_correction_from_carry_tl(
                 T.copy(S[bid, hid, cid, :, v_offset : v_offset + BV], h_c, disable_tma=True)
                 T.copy(dh_carry_after[bid, hid, vid, cid, :, :], dh_buf, disable_tma=True)
 
-                g_last = g_c[block_C - 1]
-                exp_g_last = T.exp2(g_last * _LOG2E)
-
-                for pn, sk in T.Parallel(block_C, dim_k):
-                    k_scaled[pn, sk] = k_c[pn, sk] * T.exp2((g_last - g_c[pn]) * _LOG2E)
-
-                T.clear(du_corr_frag)
-                T.gemm(k_scaled, dh_buf, du_corr_frag)
-                T.copy(
+                correction_from_carry(
+                    g_c,
+                    k_c,
+                    v_new_c,
+                    h_c,
+                    dh_buf,
+                    k_scaled,
+                    dP,
+                    dg_c,
+                    du_corr_c,
+                    dh_h_tmp,
                     du_corr_frag,
-                    du_corr_c,
+                    dP_frag,
+                    d_g_pos,
+                    d_g_last_partial,
+                    d_g_last_scalar1,
+                    d_g_last_scalar2,
+                    dk_corr_partial,
+                    du_corr,
+                    dg_corr_partial,
+                    dw_corr_partial,
+                    bid,
+                    hid,
+                    vid,
+                    cid * block_C,
+                    v_offset,
                 )
-                T.copy(
-                    du_corr_c,
-                    du_corr[
-                        bid,
-                        hid,
-                        cid * block_C : (cid + 1) * block_C,
-                        v_offset : v_offset + BV,
-                    ],
-                    disable_tma=True,
-                )
-
-                T.clear(dP_frag)
-                T.gemm(du_corr_c, h_c, dP_frag, transpose_B=True)
-                for n, kk in T.Parallel(block_C, dim_k):
-                    dw_corr_partial[bid, hid, vid, cid * block_C + n, kk] = -dP_frag[
-                        n, kk
-                    ] * T.exp2((g_c[n] + g_last) * _LOG2E)
-
-                T.clear(dP_frag)
-                T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
-                T.copy(dP_frag, dP)
-                for n, kk in T.Parallel(block_C, dim_k):
-                    dk_corr_partial[bid, hid, vid, cid * block_C + n, kk] = dP[n, kk] * T.exp2(
-                        (g_last - g_c[n]) * _LOG2E
-                    )
-
-                for n, kk in T.Parallel(block_C, dim_k):
-                    dP[n, kk] = dP[n, kk] * k_scaled[n, kk]
-                T.reduce_sum(dP, d_g_pos, dim=1)
-                for n in T.Parallel(block_C):
-                    dg_c[n] = -d_g_pos[n]
-
-                for i, j in T.Parallel(dim_k, BV):
-                    dh_h_tmp[i, j] = dh_buf[i, j] * h_c[i, j]
-                T.reduce_sum(dh_h_tmp, d_g_last_partial, dim=1)
-                T.reduce_sum(d_g_last_partial, d_g_last_scalar1, dim=0)
-                T.reduce_sum(d_g_pos, d_g_last_scalar2, dim=0)
-                dg_c[block_C - 1] = (
-                    dg_c[block_C - 1] + d_g_last_scalar1[0] * exp_g_last + d_g_last_scalar2[0]
-                )
-
-                for i in T.Parallel(block_C):
-                    dg_corr_partial[bid, hid, vid, cid * block_C + i] = dg_c[i]
 
         return dh_correction_from_carry_kernel
 
