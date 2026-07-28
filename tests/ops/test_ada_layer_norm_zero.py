@@ -82,9 +82,12 @@ def test_ada_layer_norm_zero_kernel_handles_natural_unaligned_shape(
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("block_m", [2, 4])
-def test_ada_layer_norm_zero_async_copy_handles_row_tail(block_m: int) -> None:
+@pytest.mark.parametrize("n", [514, 1152])
+def test_ada_layer_norm_zero_async_copy_handles_row_tail(
+    block_m: int, n: int,
+) -> None:
     """Regression: the async 2-D tile must support block_m > 1 and tail rows."""
-    m, n = 17, 1152
+    m = 17
     dtype = torch.float16
     test = AdaLayerNormZeroTest(m, n, dtype)
     inputs = test.gen_inputs()
@@ -96,6 +99,7 @@ def test_ada_layer_norm_zero_async_copy_handles_row_tail(block_m: int) -> None:
         has_gate=True,
         config={"block_m": block_m, "threads": 128},
     )
+    assert kernel.use_cp_async
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
     atol, rtol = _get_tolerances(dtype)
