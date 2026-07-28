@@ -10,6 +10,7 @@ Into a single kernel where Aw/Au stay in shared memory:
 
 This eliminates the Aw/Au global memory round-trip between the two kernels.
 """
+
 import functools
 import math
 
@@ -33,17 +34,18 @@ def fused_prepare_compute_w_u_tl(
     write_duplicate_A: bool = True,
     fast_math: bool = False,
 ):
-    """Fused TileLang kernel: (k, v, g, beta) -> (Aw, Au, w, u) per chunk.
+    """Fused TileLang kernel for chunk-local A, w, and u preparation.
 
-    Backward recompute can skip the duplicate ``Au`` store because ``Aw`` and
-    ``Au`` contain the same matrix and only one copy is consumed.
+    Forward returns ``(Aw, Au, w, u)`` because its public ABI exposes both
+    identical A tensors. Backward recompute can request ``(A, w, u)`` and
+    avoid allocating or writing an unused duplicate.
     """
     accum_dtype = "float32"
     block_C = chunk_size
     num_rounds = int(math.ceil(math.log2(chunk_size))) if chunk_size > 1 else 0
 
     @tilelang.jit(
-        out_idx=[-4, -3, -2, -1],
+        out_idx=[-4, -3, -2, -1] if write_duplicate_A else [-3, -2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: fast_math,
         },
@@ -78,10 +80,16 @@ def fused_prepare_compute_w_u_tl(
                 u_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
 
                 # Load inputs
-                T.copy(k[bid, hid, by * block_C : (by + 1) * block_C, :], k_shared, disable_tma=True)
-                T.copy(v[bid, hid, by * block_C : (by + 1) * block_C, :], v_shared, disable_tma=True)
+                T.copy(
+                    k[bid, hid, by * block_C : (by + 1) * block_C, :], k_shared, disable_tma=True
+                )
+                T.copy(
+                    v[bid, hid, by * block_C : (by + 1) * block_C, :], v_shared, disable_tma=True
+                )
                 T.copy(g[bid, hid, by * block_C : (by + 1) * block_C], g_shared, disable_tma=True)
-                T.copy(beta[bid, hid, by * block_C : (by + 1) * block_C], beta_shared, disable_tma=True)
+                T.copy(
+                    beta[bid, hid, by * block_C : (by + 1) * block_C], beta_shared, disable_tma=True
+                )
 
                 # KKT = k @ k^T (without beta, paper: diag(β)·KK^T not (k*β)(k*β)^T)
                 T.clear(gram_frag)
@@ -94,11 +102,13 @@ def fused_prepare_compute_w_u_tl(
                 for i, j in T.Parallel(block_C, block_C):
                     P_shared[i, j] = T.if_then_else(
                         i > j,
-                        -gram_frag[i, j] * beta_shared[i] * T.exp2((g_shared[i] - g_shared[j]) * _LOG2E),
-                        T.float32(0.0))
+                        -gram_frag[i, j]
+                        * beta_shared[i]
+                        * T.exp2((g_shared[i] - g_shared[j]) * _LOG2E),
+                        T.float32(0.0),
+                    )
                 for i, j in T.Parallel(block_C, block_C):
-                    S_shared[i, j] = T.if_then_else(
-                        i == j, T.float32(1.0), T.float32(0.0))
+                    S_shared[i, j] = T.if_then_else(i == j, T.float32(1.0), T.float32(0.0))
 
                 for _r in T.Serial(num_rounds):
                     T.clear(temp_frag)
@@ -111,7 +121,9 @@ def fused_prepare_compute_w_u_tl(
 
                 # S_shared = A_g^{-1}; write to both Aw and Au (same matrix)
                 T.copy(S_shared, temp_frag)
-                T.copy(temp_frag, Aw[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
+                T.copy(
+                    temp_frag, Aw[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True
+                )
                 if write_duplicate_A:
                     T.copy(
                         temp_frag,
@@ -137,19 +149,35 @@ def fused_prepare_compute_w_u_tl(
                 T.gemm(S_shared, v_beta_shared, u_frag)
                 T.copy(u_frag, u[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
 
+        if write_duplicate_A:
+
+            @T.prim_func
+            def fused_prepare_compute_w_u(
+                k: T.Tensor([batch, head, seq_len, dim_k], dtype),
+                v: T.Tensor([batch, head, seq_len, dim_v], dtype),
+                g: T.Tensor([batch, head, seq_len], dtype),
+                beta: T.Tensor([batch, head, seq_len], dtype),
+                Aw: T.Tensor([batch, head, seq_len, chunk_size], dtype),
+                Au: T.Tensor([batch, head, seq_len, chunk_size], dtype),
+                w: T.Tensor([batch, head, seq_len, dim_k], dtype),
+                u: T.Tensor([batch, head, seq_len, dim_v], dtype),
+            ):
+                _fused_body(k, v, g, beta, Aw, Au, w, u)
+
+            return fused_prepare_compute_w_u
+
         @T.prim_func
-        def fused_prepare_compute_w_u(
+        def fused_prepare_compute_w_u_single_A(
             k: T.Tensor([batch, head, seq_len, dim_k], dtype),
             v: T.Tensor([batch, head, seq_len, dim_v], dtype),
             g: T.Tensor([batch, head, seq_len], dtype),
             beta: T.Tensor([batch, head, seq_len], dtype),
-            Aw: T.Tensor([batch, head, seq_len, chunk_size], dtype),
-            Au: T.Tensor([batch, head, seq_len, chunk_size], dtype),
+            A: T.Tensor([batch, head, seq_len, chunk_size], dtype),
             w: T.Tensor([batch, head, seq_len, dim_k], dtype),
             u: T.Tensor([batch, head, seq_len, dim_v], dtype),
         ):
-            _fused_body(k, v, g, beta, Aw, Au, w, u)
+            _fused_body(k, v, g, beta, A, A, w, u)
 
-        return fused_prepare_compute_w_u
+        return fused_prepare_compute_w_u_single_A
 
     return _fused_func
