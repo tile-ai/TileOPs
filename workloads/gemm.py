@@ -88,8 +88,8 @@ def quantize_weight_int4(
         raise ValueError(f"K must be even for nibble packing, got {k}")
 
     grouped = weight.float().reshape(n, k // group_size, group_size)
-    group_min = grouped.amin(dim=-1)
-    group_max = grouped.amax(dim=-1)
+    group_min = grouped.amin(dim=-1).clamp_max(0)
+    group_max = grouped.amax(dim=-1).clamp_min(0)
     scale = ((group_max - group_min) / 15.0).clamp_min(1e-12)
     zero = torch.round(-group_min / scale).clamp(0, 15).to(torch.uint8)
     quantized = (

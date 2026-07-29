@@ -22,42 +22,6 @@ class W4A16BenchmarkCase:
     weight_metadata_mib: float | None = None
 
 
-FEASIBILITY_CASES = (
-    W4A16BenchmarkCase(
-        128,
-        2112,
-        7168,
-        "feasibility-prefill-contracting",
-        "prefill-contracting-projection",
-        "medium-M large-K/small-N case for validating 3WG dequant + WGMMA pipeline",
-    ),
-    W4A16BenchmarkCase(
-        128,
-        7168,
-        2048,
-        "feasibility-prefill-expanding",
-        "prefill-expanding-projection",
-        "opposite aspect ratio to test Tensor Core throughput and scheduling",
-    ),
-    W4A16BenchmarkCase(
-        1,
-        7168,
-        2048,
-        "feasibility-decode-short-k",
-        "decode-short-k",
-        "small-K decode case where launch/depack overhead can dominate",
-    ),
-    W4A16BenchmarkCase(
-        1,
-        8192,
-        8192,
-        "feasibility-decode-medium-k",
-        "decode-medium-k",
-        "medium-K decode case testing weight bandwidth and W4 capacity benefit",
-    ),
-)
-
-
 DECODE_AKO_CASES = (
     W4A16BenchmarkCase(
         1,
