@@ -1,13 +1,12 @@
 from typing import Dict, Optional, Sequence
 
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import LayerNormKernel
 
 from ..op_base import Op
-from .norm_base import ALIGNMENT, align_up, normalized_shape_to_n
+from .norm_base import normalized_shape_to_n
 
 __all__ = ["LayerNormFwdOp"]
 
@@ -31,10 +30,12 @@ class LayerNormFwdOp(Op):
 
     Note:
         Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
-        Handles non-contiguous inputs and non-power-of-two hidden dims by
-        padding to 256-element alignment. The leading-dims product ``M``
-        is bound on the first forward call; if a subsequent call uses a
-        different ``M``, the kernel is rebuilt for the new value.
+        Handles non-contiguous inputs and non-power-of-two hidden dims. For
+        non-aligned hidden dims, boundary handling is performed inside the
+        kernel rather than by allocating padded tensors in the Op layer. The
+        leading-dims product ``M`` is bound on the first forward call; if a
+        subsequent call uses a different ``M``, the kernel is rebuilt for the
+        new value.
 
     Args:
         normalized_shape: Trailing-axis shape tuple over which the
@@ -62,7 +63,6 @@ class LayerNormFwdOp(Op):
         # Manifest declares ``eps: float | None`` with PyTorch default 1e-5.
         self.eps = 1e-5 if eps is None else float(eps)
         self.tune = tune
-        self.N_padded = align_up(self.N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel: Optional[Kernel] = None
         self._last_m: Optional[int] = None
@@ -149,16 +149,6 @@ class LayerNormFwdOp(Op):
             )
         self._last_m = m_actual
 
-        # Pad hidden dim to 256-element alignment if needed
-        if self.N_padded != self.N:
-            x = F.pad(x, (0, self.N_padded - self.N))
-            weight = F.pad(weight, (0, self.N_padded - self.N))
-            bias = F.pad(bias, (0, self.N_padded - self.N))
-
         y = self.kernel(x, weight, bias)
-
-        # Trim padding
-        if self.N_padded != self.N:
-            y = y[:, :self.N]
 
         return y.reshape(orig_shape)

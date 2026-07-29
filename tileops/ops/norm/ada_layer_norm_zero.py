@@ -1,13 +1,11 @@
 from typing import Dict, Optional
 
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import AdaLayerNormKernel
 
 from ..op_base import Op
-from .norm_base import ALIGNMENT, align_up
 
 __all__ = ["AdaLayerNormZeroFwdOp"]
 
@@ -33,8 +31,7 @@ class AdaLayerNormZeroFwdOp(Op):
 
     Note:
         Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
-        Handles non-contiguous inputs and non-power-of-two hidden dims
-        by padding to 256-element alignment.
+        Handles non-contiguous inputs and non-power-of-two hidden dims.
 
     Args:
         M: Optional committed row count for strict compatibility. Preferred
@@ -169,21 +166,8 @@ class AdaLayerNormZeroFwdOp(Op):
         dtype = expected_dtype
         assert dtype is not None
         self.dtype = dtype
-        N_padded = align_up(N, ALIGNMENT)
-
-        # Pad hidden dim to 256-element alignment if needed
-        if N_padded != N:
-            x = F.pad(x, (0, N_padded - N))
-            scale = F.pad(scale, (0, N_padded - N))
-            shift = F.pad(shift, (0, N_padded - N))
-            gate = F.pad(gate, (0, N_padded - N))
-
         kernel = self._get_kernel(M_actual, N, dtype, x.device.index)
         y = kernel(x, scale, shift, gate)
         self._last_roofline_mn = (M_actual, N)
-
-        # Trim padding
-        if N_padded != N:
-            y = y[:, :N]
 
         return y.reshape(orig_shape)
