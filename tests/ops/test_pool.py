@@ -1,4 +1,5 @@
 import inspect
+import re
 from typing import Callable, Optional, Tuple
 
 import pytest
@@ -1738,6 +1739,12 @@ class AdaptiveAvgPool2dFixture(FixtureBase):
                 pytest.param(
                     1, 16, 10, 10, 4, torch.bfloat16, False,
                     marks=pytest.mark.full, id="full-scalar-output-size-bf16"),
+                pytest.param(
+                    1, 16, 10, 10, [6, 6], torch.float16, False,
+                    marks=pytest.mark.full, id="full-list-output-size-fp16"),
+                pytest.param(
+                    1, 8, 9, 11, (None, None), torch.float16, False,
+                    marks=pytest.mark.full, id="full-all-none-identity-fp16"),
             ],
         ),
     ]
@@ -1773,13 +1780,20 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                 pytest.param(
                     1, 16, 10, 10, 4, torch.bfloat16, False,
                     marks=pytest.mark.full, id="full-scalar-output-size-bf16"),
+                pytest.param(
+                    1, 16, 10, 10, [6, 6], torch.float16, False,
+                    marks=pytest.mark.full, id="full-list-output-size-fp16"),
             ],
         ),
     ]
 
 
 class AdaptiveAvgPool2dTest(TestBase):
-    def __init__(self, output_size, dtype: torch.dtype) -> None:
+    def __init__(
+        self,
+        output_size: int | tuple[int | None, int | None],
+        dtype: torch.dtype,
+    ) -> None:
         self.output_size = output_size
         self.dtype = dtype
 
@@ -1792,7 +1806,12 @@ class AdaptiveAvgPool2dTest(TestBase):
 
 
 class AdaptiveMaxPool2dTest(TestBase):
-    def __init__(self, output_size, dtype: torch.dtype, return_indices: bool) -> None:
+    def __init__(
+        self,
+        output_size: int | tuple[int | None, int | None],
+        dtype: torch.dtype,
+        return_indices: bool,
+    ) -> None:
         self.output_size = output_size
         self.dtype = dtype
         self.return_indices = return_indices
@@ -1801,7 +1820,7 @@ class AdaptiveMaxPool2dTest(TestBase):
         x = torch.randn(*shape, device="cuda", dtype=self.dtype).contiguous()
         return (x,)
 
-    def ref_program(self, input: torch.Tensor):
+    def ref_program(self, input: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         return F.adaptive_max_pool2d(
             input, self.output_size, return_indices=self.return_indices
         )
@@ -1813,7 +1832,7 @@ def test_adaptive_avg_pool2d(
     c_in: int,
     h_in: int,
     w_in: int,
-    output_size,
+    output_size: int | tuple[int | None, int | None],
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
@@ -1830,7 +1849,7 @@ def test_adaptive_max_pool2d(
     c_in: int,
     h_in: int,
     w_in: int,
-    output_size,
+    output_size: int | tuple[int | None, int | None],
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
@@ -1890,18 +1909,33 @@ def test_adaptive_max_pool2d_tied_maxima_indices() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("output_size", "error"),
+    ("output_size", "error", "match"),
     [
-        pytest.param(0, ValueError, id="zero"),
-        pytest.param((3, 0), ValueError, id="zero-entry"),
-        pytest.param((2, 2, 2), TypeError, id="len-3-tuple"),
-        pytest.param("3", TypeError, id="string"),
-        pytest.param(True, TypeError, id="bool"),
-        pytest.param((3.0, 3), TypeError, id="float-entry"),
+        pytest.param(
+            0, ValueError, "output_size entries must be positive or None", id="zero"),
+        pytest.param(
+            (3, 0), ValueError, "output_size entries must be positive or None",
+            id="zero-entry"),
+        pytest.param(
+            (2, 2, 2), TypeError,
+            re.escape("output_size must be an int or a tuple of (int | None, int | None)"),
+            id="len-3-tuple"),
+        pytest.param(
+            "3", TypeError,
+            re.escape("output_size must be an int or a tuple of (int | None, int | None)"),
+            id="string"),
+        pytest.param(
+            True, TypeError,
+            re.escape("output_size must be an int or a tuple of (int | None, int | None)"),
+            id="bool"),
+        pytest.param(
+            (3.0, 3), TypeError,
+            re.escape("output_size must be an int or a tuple of (int | None, int | None)"),
+            id="float-entry"),
     ],
 )
-def test_adaptive_pool_rejects_invalid_output_size(output_size, error: type) -> None:
-    with pytest.raises(error):
+def test_adaptive_pool_rejects_invalid_output_size(output_size, error: type, match: str) -> None:
+    with pytest.raises(error, match=match):
         AdaptiveAvgPool2dFwdOp(output_size)
 
 
