@@ -1,18 +1,10 @@
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
-from benchmarks.ops.gemm_w4a16_benchmark_utils import (
-    DECODE_CASES,
-    StaticGemmW4A16Benchmark,
-    W4A16BenchmarkCase,
-    dense_a16_memory_bytes,
-    make_marlin_w4a16_callable,
-    marlin_w4a16_memory_bytes,
-    w4a16_memory_bytes,
-)
+from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
 from tests.ops.test_gemm import GemmFp8Test, GemmTest, GemmW4A16Test
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8Op, GemmOp, GemmW4A16Op
@@ -20,6 +12,7 @@ from tileops.ops import GemmFp8Op, GemmOp, GemmW4A16Op
 _OP_NAME = "GemmOp"
 _FP8_OP_NAME = "GemmFp8Op"
 _W4A16_OP_NAME = "GemmW4A16Op"
+_W4A16_GROUP_SIZE = 128
 
 _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
@@ -27,6 +20,105 @@ _DTYPE_MAP = {
     "float8_e4m3fn": torch.float8_e4m3fn,
     "float8_e5m2": torch.float8_e5m2,
 }
+
+
+@dataclass(frozen=True)
+class _W4A16BenchmarkCase:
+    m: int
+    n: int
+    k: int
+    label: str
+    scenario: str
+    purpose: str
+    weight_metadata_mib: float | None = None
+
+
+_W4A16_DECODE_CASES = (
+    _W4A16BenchmarkCase(
+        1,
+        8192,
+        8192,
+        "decode-l2-resident-ish",
+        "decode-medium-k",
+        "medium K; packed W4 weight + metadata fits within H200 L2, exposing launch/depack/sync overhead",
+        34.5,
+    ),
+    _W4A16BenchmarkCase(
+        1,
+        8192,
+        16384,
+        "decode-hbm-streaming-threshold",
+        "decode-over-l2",
+        "just over H200 L2, entering real HBM streaming and validating TMA/buffering behavior",
+        69.0,
+    ),
+    _W4A16BenchmarkCase(
+        1,
+        7168,
+        20480,
+        "decode-non-power2-low-cta",
+        "decode-non-power2-n",
+        "non-power-of-two N with only 112 N64 CTAs, exposing occupancy and scheduling limits",
+        75.5,
+    ),
+    _W4A16BenchmarkCase(
+        1,
+        8192,
+        81920,
+        "decode-long-k-pressure",
+        "decode-long-k-stress",
+        "very long K far beyond L2, amplifying HBM streaming, depack overlap, activation reuse, and split-K effects",
+        345.0,
+    ),
+)
+
+
+class _StaticGemmW4A16Benchmark(BenchmarkBase[GemmW4A16Test]):
+    def __init__(self, test: GemmW4A16Test, memory_bytes: int) -> None:
+        super().__init__(test)
+        self._memory_bytes = memory_bytes
+
+    def calculate_flops(self) -> float:
+        return float(2 * self.workload.m * self.workload.n * self.workload.k)
+
+    def calculate_memory(self) -> float:
+        return float(self._memory_bytes)
+
+
+def _w4a16_memory_bytes(
+    m: int,
+    n: int,
+    k: int,
+    dtype: torch.dtype = torch.float16,
+    group_size: int = _W4A16_GROUP_SIZE,
+) -> int:
+    groups = k // group_size
+    elem_bytes = dtype.itemsize
+    return m * k * elem_bytes + n * k // 2 + n * groups * (4 + 1) + m * n * elem_bytes
+
+
+def _dense_a16_memory_bytes(
+    m: int,
+    n: int,
+    k: int,
+    dtype: torch.dtype = torch.float16,
+) -> int:
+    elem_bytes = dtype.itemsize
+    return (m * k + n * k + m * n) * elem_bytes
+
+
+def _marlin_w4a16_memory_bytes(
+    m: int,
+    n: int,
+    k: int,
+    dtype: torch.dtype = torch.float16,
+    group_size: int = _W4A16_GROUP_SIZE,
+) -> int:
+    elem_bytes = dtype.itemsize
+    qweight_bytes = (k // 16) * (n * 2) * torch.int32.itemsize
+    scale_bytes = (k // group_size) * n * elem_bytes
+    zero_bytes = (k // group_size) * (n // 8) * torch.int32.itemsize
+    return m * k * elem_bytes + qweight_bytes + scale_bytes + zero_bytes + m * n * elem_bytes
 
 
 def _flashinfer_fp8_blockscale_ref(test: GemmFp8Test, *inputs: torch.Tensor) -> torch.Tensor:
@@ -80,6 +172,72 @@ def _flashinfer_fp8_per_tensor_unsupported_reason(device: torch.device) -> Optio
             f"but the current device is sm{major}{minor}"
         )
     return None
+
+
+def _make_marlin_w4a16_callable(
+    m: int,
+    n: int,
+    k: int,
+    use_fp32_reduce: bool,
+) -> tuple[Callable[..., torch.Tensor], tuple[Any, ...]]:
+    from vllm import _custom_ops as ops
+    from vllm.model_executor.layers.quantization.utils.marlin_utils import (
+        marlin_make_workspace_new,
+    )
+    from vllm.scalar_type import scalar_types
+
+    if k % 16 or k % _W4A16_GROUP_SIZE or n % 64:
+        raise ValueError("Marlin W4A16 benchmark requires K % 128 == 0 and N % 64 == 0")
+
+    device = torch.device("cuda")
+    activation = torch.randn((m, k), dtype=torch.float16, device=device)
+    qweight = torch.randint(
+        -(2**31),
+        2**31 - 1,
+        (k // 16, n * 2),
+        dtype=torch.int32,
+        device=device,
+    )
+    scales = torch.rand((k // _W4A16_GROUP_SIZE, n), dtype=torch.float16, device=device)
+    zeros = torch.randint(
+        -(2**31),
+        2**31 - 1,
+        (k // _W4A16_GROUP_SIZE, n // 8),
+        dtype=torch.int32,
+        device=device,
+    )
+    workspace = marlin_make_workspace_new(device)
+
+    def marlin(
+        a: torch.Tensor,
+        packed: torch.Tensor,
+        weight_scales: torch.Tensor,
+        weight_zeros: torch.Tensor,
+        locks: torch.Tensor,
+    ) -> torch.Tensor:
+        return ops.marlin_gemm(
+            a=a,
+            c=None,
+            b_q_weight=packed,
+            b_bias=None,
+            b_scales=weight_scales,
+            a_scales=None,
+            global_scale=None,
+            b_zeros=weight_zeros,
+            g_idx=None,
+            perm=None,
+            workspace=locks,
+            b_q_type=scalar_types.uint4,
+            size_m=m,
+            size_n=n,
+            size_k=k,
+            is_k_full=True,
+            use_atomic_add=False,
+            use_fp32_reduce=use_fp32_reduce,
+            is_zp_float=False,
+        )
+
+    return marlin, (activation, qweight, scales, zeros, workspace)
 
 
 def _manifest_params() -> list:
@@ -238,16 +396,16 @@ def test_gemm_w4a16_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    dense_bm = StaticGemmW4A16Benchmark(test, dense_a16_memory_bytes(m, n, k, dtype=dtype))
+    dense_bm = _StaticGemmW4A16Benchmark(test, _dense_a16_memory_bytes(m, n, k, dtype=dtype))
     result_bl = dense_bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-dequantized-matmul")
 
 
 @pytest.mark.parametrize(
     "case",
-    [pytest.param(case, id=case.label) for case in DECODE_CASES],
+    [pytest.param(case, id=case.label) for case in _W4A16_DECODE_CASES],
 )
-def test_gemm_w4a16_decode_bench(case: W4A16BenchmarkCase) -> None:
+def test_gemm_w4a16_decode_bench(case: _W4A16BenchmarkCase) -> None:
     """W4A16 decode comparison suite.
 
     This is intentionally not a complete public manifest benchmark. The suite
@@ -271,23 +429,25 @@ def test_gemm_w4a16_decode_bench(case: W4A16BenchmarkCase) -> None:
     inputs = test.gen_inputs()
     op = GemmW4A16Op()
 
-    w4_bm = StaticGemmW4A16Benchmark(test, w4a16_memory_bytes(m, n, k, dtype=dtype))
+    w4_bm = _StaticGemmW4A16Benchmark(test, _w4a16_memory_bytes(m, n, k, dtype=dtype))
     result = w4_bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops-w4a16")
 
-    dense_bm = StaticGemmW4A16Benchmark(test, dense_a16_memory_bytes(m, n, k, dtype=dtype))
+    dense_bm = _StaticGemmW4A16Benchmark(test, _dense_a16_memory_bytes(m, n, k, dtype=dtype))
     result_dense = dense_bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_dense, tag="torch-dequantized-a16")
 
     for reduce_mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
         try:
-            marlin, marlin_inputs = make_marlin_w4a16_callable(
+            marlin, marlin_inputs = _make_marlin_w4a16_callable(
                 m, n, k, use_fp32_reduce=use_fp32_reduce
             )
         except (ImportError, ModuleNotFoundError) as exc:
             print(f"  [skip] marlin-{reduce_mode}: {exc}")
             continue
-        marlin_bm = StaticGemmW4A16Benchmark(test, marlin_w4a16_memory_bytes(m, n, k, dtype=dtype))
+        marlin_bm = _StaticGemmW4A16Benchmark(
+            test, _marlin_w4a16_memory_bytes(m, n, k, dtype=dtype)
+        )
         actual = marlin(*marlin_inputs)
         if actual.shape != (m, n) or not torch.isfinite(actual).all():
             raise RuntimeError("Marlin W4A16 baseline smoke check failed")
