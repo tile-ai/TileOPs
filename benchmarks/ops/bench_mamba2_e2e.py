@@ -14,9 +14,8 @@ from typing import Optional
 import pytest
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
-from tests.ops.test_mamba import mamba2_fwd_ref as _mamba2_fwd_ref
 from tileops.ops.mamba2_fwd import Mamba2FwdOp
-from workloads.mamba2_e2e import Mamba2FwdFixture, Mamba2FwdTest
+from workloads.mamba2_e2e import Mamba2FwdFixture, Mamba2FwdTest, mamba2_fwd_ref
 
 # Optional mamba_ssm Triton baseline
 try:
@@ -115,7 +114,7 @@ def test_mamba2_fwd_bench(batch, seqlen, n_heads, d_head, d_state, n_groups,
         BenchmarkReport.record(op, locals(), result_mamba, tag="mamba")
     else:
         def _torch_wrapper(x, dt, A, B, C):
-            return _mamba2_fwd_ref(x, dt, A, B, C, dt_bias, chunk_size, dt_softplus)
+            return mamba2_fwd_ref(x, dt, A, B, C, dt_bias, chunk_size, dt_softplus)
 
         result_torch = bm.profile(_torch_wrapper, x, dt, A, B, C)
         BenchmarkReport.record(op, locals(), result_torch, tag="torch-ref")

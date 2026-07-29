@@ -4,10 +4,9 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
-from tests.ops.test_gemm import GemmFp8Test, GemmTest
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8Op, GemmOp, GemmW4A16Op
-from workloads.gemm import GemmW4A16Workload
+from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload
 
 _OP_NAME = "GemmOp"
 _FP8_OP_NAME = "GemmFp8Op"
@@ -20,6 +19,44 @@ _DTYPE_MAP = {
     "float8_e4m3fn": torch.float8_e4m3fn,
     "float8_e5m2": torch.float8_e5m2,
 }
+
+
+class _GemmBenchmarkWorkload(GemmWorkload):
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        return self.m, self.n, self.k
+
+    def torch_matmul(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        if self.trans_a:
+            a = a.T
+        if self.trans_b:
+            b = b.T
+        return torch.matmul(a, b)
+
+
+class _GemmFp8BenchmarkWorkload(GemmFp8Workload):
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        return self.m, self.n, self.k
+
+    def _expand_scale(self, scale: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
+        if tuple(scale.shape) == (1, 1):
+            return scale.expand(rows, cols)
+        scale_cols = (cols + 127) // 128
+        if tuple(scale.shape) != (rows, scale_cols):
+            raise ValueError(
+                f"unsupported FP8 scale shape {tuple(scale.shape)} for {(rows, cols)}")
+        return scale.repeat_interleave(128, dim=1)[:, :cols]
+
+    def torch_scaled_matmul(self, *inputs: torch.Tensor) -> torch.Tensor:
+        a, b, scale_a, scale_b = inputs[:4]
+        bias = inputs[4] if len(inputs) == 5 else None
+        a_f = a.float() * self._expand_scale(scale_a, self.m, self.k)
+        b_f = b.float() * self._expand_scale(scale_b, self.n, self.k)
+        out = torch.matmul(a_f, b_f.T)
+        if bias is not None:
+            out = out + bias.float()
+        return out.to(self.out_dtype)
 
 
 class _GemmW4A16BenchmarkWorkload(GemmW4A16Workload):
@@ -38,7 +75,9 @@ class _GemmW4A16BenchmarkWorkload(GemmW4A16Workload):
         return torch.matmul(activation, self.dequantized_weight.T)
 
 
-def _flashinfer_fp8_blockscale_ref(test: GemmFp8Test, *inputs: torch.Tensor) -> torch.Tensor:
+def _flashinfer_fp8_blockscale_ref(
+    workload: _GemmFp8BenchmarkWorkload, *inputs: torch.Tensor
+) -> torch.Tensor:
     from flashinfer.gemm import fp8_blockscale_gemm_sm90
 
     a, b, scale_a, scale_b = inputs[:4]
@@ -46,21 +85,24 @@ def _flashinfer_fp8_blockscale_ref(test: GemmFp8Test, *inputs: torch.Tensor) -> 
         raise ValueError("FlashInfer FP8 blockscale GEMM baseline does not support bias.")
     if a.dtype != torch.float8_e4m3fn or b.dtype != torch.float8_e4m3fn:
         raise ValueError("FlashInfer FP8 blockscale GEMM baseline requires float8_e4m3fn.")
-    if test.out_dtype != torch.bfloat16:
+    if workload.out_dtype != torch.bfloat16:
         raise ValueError("FlashInfer FP8 blockscale GEMM baseline requires bfloat16 output.")
-    if test.k % 128 != 0:
+    if workload.k % 128 != 0:
         raise ValueError("FlashInfer FP8 blockscale GEMM baseline requires k divisible by 128.")
-    if scale_a.shape != (test.m, test.k // 128) or scale_b.shape != (test.n, test.k // 128):
+    if scale_a.shape != (workload.m, workload.k // 128) or scale_b.shape != (
+        workload.n, workload.k // 128
+    ):
         raise ValueError(
             "FlashInfer FP8 blockscale GEMM baseline requires exact "
-            f"scale shapes {(test.m, test.k // 128)} and {(test.n, test.k // 128)}, "
+            f"scale shapes {(workload.m, workload.k // 128)} "
+            f"and {(workload.n, workload.k // 128)}, "
             f"got {tuple(scale_a.shape)} and {tuple(scale_b.shape)}"
         )
-    return fp8_blockscale_gemm_sm90(a, b, scale_a, scale_b, out_dtype=test.out_dtype)
+    return fp8_blockscale_gemm_sm90(a, b, scale_a, scale_b, out_dtype=workload.out_dtype)
 
 
 def _prepare_flashinfer_fp8_per_tensor(
-    test: GemmFp8Test, *inputs: torch.Tensor
+    workload: _GemmFp8BenchmarkWorkload, *inputs: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     import flashinfer
 
@@ -69,7 +111,7 @@ def _prepare_flashinfer_fp8_per_tensor(
         raise ValueError("FlashInfer FP8 per-tensor GEMM baseline does not support bias.")
     if a.dtype != torch.float8_e4m3fn or b.dtype != torch.float8_e4m3fn:
         raise ValueError("FlashInfer FP8 per-tensor GEMM baseline requires float8_e4m3fn.")
-    if test.out_dtype != torch.bfloat16:
+    if workload.out_dtype != torch.bfloat16:
         raise ValueError("FlashInfer FP8 per-tensor GEMM baseline requires bfloat16 output.")
     if scale_a.shape != (1, 1) or scale_b.shape != (1, 1):
         raise ValueError(
@@ -226,18 +268,18 @@ def test_gemm_bench(
     dtype_str: str,
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
-    test = GemmTest(m, n, k, dtype, trans_a, trans_b)
-    a, b = test.gen_inputs()
+    workload = _GemmBenchmarkWorkload(m, n, k, dtype, trans_a, trans_b)
+    a, b = workload.gen_inputs()
 
     op = GemmOp(trans_a=trans_a, trans_b=trans_b)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(_OP_NAME, op, workload)
 
     # The benchmark framework warms up internally; eval_roofline() is read
     # lazily after profiling, by which point forward() has bound the dims.
     result = bm.profile(op, a, b)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, a, b)
+    result_bl = bm.profile(workload.torch_matmul, a, b)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-cublas")
 
 
@@ -251,16 +293,16 @@ def test_gemm_fp8_bench(
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
     out_dtype = torch.bfloat16
-    test = GemmFp8Test(m, n, k, dtype, scale_mode, out_dtype=out_dtype)
-    inputs = test.gen_inputs()
+    workload = _GemmFp8BenchmarkWorkload(m, n, k, dtype, scale_mode, out_dtype=out_dtype)
+    inputs = workload.gen_inputs()
 
     op = GemmFp8Op(out_dtype=out_dtype)
-    bm = ManifestBenchmark(_FP8_OP_NAME, op, test)
+    bm = ManifestBenchmark(_FP8_OP_NAME, op, workload)
 
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(workload.torch_scaled_matmul, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-scaled-mm")
 
     if scale_mode == "per_tensor":
@@ -269,7 +311,7 @@ def test_gemm_fp8_bench(
             print(f"  [skip] flashinfer-mm-fp8: {unsupported_reason}")
             return
         flashinfer = pytest.importorskip("flashinfer")
-        prepared_b, alpha = _prepare_flashinfer_fp8_per_tensor(test, *inputs)
+        prepared_b, alpha = _prepare_flashinfer_fp8_per_tensor(workload, *inputs)
         try:
             result_flashinfer = bm.profile(
                 lambda a: flashinfer.mm_fp8(a, prepared_b, alpha, out_dtype=out_dtype),
@@ -285,7 +327,7 @@ def test_gemm_fp8_bench(
     if scale_mode == "block128":
         pytest.importorskip("flashinfer")
         result_flashinfer = bm.profile(
-            lambda *args: _flashinfer_fp8_blockscale_ref(test, *args), *inputs
+            lambda *args: _flashinfer_fp8_blockscale_ref(workload, *args), *inputs
         )
         BenchmarkReport.record(
             op, locals(), result_flashinfer, tag="flashinfer-fp8-blockscale-sm90"
