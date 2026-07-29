@@ -1,8 +1,9 @@
 # pool.yaml -- manifest entries for the 'pool' family.
 #
 # Source of truth for pooling op interfaces. These entries are generated from
-# PyTorch functional reference APIs and intentionally remain spec-only until
-# the existing TileOPs pool implementation is aligned to this contract.
+# PyTorch functional reference APIs. The 1d/2d/3d pooling entries are
+# implemented; the adaptive 2D pooling entries remain spec-only pending
+# kernel implementation.
 
 AvgPool1dFwdOp:
   ref_api: "torch.nn.functional.avg_pool1d"
@@ -612,3 +613,147 @@ MaxPool3dIndicesFwdOp:
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
     bench_manifest_driven: true
+
+AdaptiveAvgPool2dFwdOp:
+  ref_api: "torch.nn.functional.adaptive_avg_pool2d"
+  family: pool
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16", shape: "[N, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
+    params:
+      output_size: {type: "int | tuple[int | None, int | None]"}
+    shape_rules:
+      - "_oH == (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
+      - "H_out == (H_in if _oH is None else _oH)"
+      - "W_out == (W_in if _oW is None else _oW)"
+      - "H_out > 0 and W_out > 0"
+
+  workloads:
+    # Real-model sources: ResNet-50 applies a global adaptive average pool to
+    # its final 7x7 feature map before the FC layer; SPP-style heads pool
+    # arbitrary feature maps to a fixed grid; the non-divisible case stresses
+    # PyTorch adaptive bin-boundary semantics.
+    - {input_shape: [8, 2048, 7, 7], output_size: [1, 1], dtypes: [float16], label: "resnet-global"}
+    - {input_shape: [2, 128, 56, 56], output_size: [6, 6], dtypes: [float16], label: "spp-6x6"}
+    - {input_shape: [2, 64, 55, 57], output_size: [7, 7], dtypes: [bfloat16], label: "nondiv-7x7"}
+
+  roofline:
+    vars:
+      oH: "output_size[0] if isinstance(output_size, (tuple, list)) else output_size"
+      oW: "output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      out_H: "H_in if oH is None else oH"
+      out_W: "W_in if oW is None else oW"
+      kH: "(H_in + out_H - 1) // out_H"
+      kW: "(W_in + out_W - 1) // out_W"
+    flops: "N * C * out_H * out_W * kH * kW"
+    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/pool/adaptive_avg_pool2d.py
+    kernel_map:
+      adaptive_avg_pool2d_kernel: AdaptiveAvgPool2dKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: false
+
+AdaptiveMaxPool2dFwdOp:
+  ref_api: "torch.nn.functional.adaptive_max_pool2d"
+  # Equivalent to torch.nn.functional.adaptive_max_pool2d (return_indices=False)
+  family: pool
+  status: spec-only
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16", shape: "[N, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
+    params:
+      output_size: {type: "int | tuple[int | None, int | None]"}
+    shape_rules:
+      - "_oH == (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
+      - "H_out == (H_in if _oH is None else _oH)"
+      - "W_out == (W_in if _oW is None else _oW)"
+      - "H_out > 0 and W_out > 0"
+
+  workloads:
+    # Same model sources as AdaptiveAvgPool2dFwdOp; adaptive max pooling shows
+    # up in SPP-style detection/segmentation heads with the same grid shapes.
+    - {input_shape: [8, 2048, 7, 7], output_size: [1, 1], dtypes: [float16], label: "global-1x1"}
+    - {input_shape: [2, 128, 56, 56], output_size: [6, 6], dtypes: [float16], label: "spp-6x6"}
+    - {input_shape: [2, 64, 55, 57], output_size: [7, 7], dtypes: [bfloat16], label: "nondiv-7x7"}
+
+  roofline:
+    vars:
+      oH: "output_size[0] if isinstance(output_size, (tuple, list)) else output_size"
+      oW: "output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      out_H: "H_in if oH is None else oH"
+      out_W: "W_in if oW is None else oW"
+      kH: "(H_in + out_H - 1) // out_H"
+      kW: "(W_in + out_W - 1) // out_W"
+    flops: "N * C * out_H * out_W * kH * kW"
+    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
+
+  source:
+    kernel: tileops/kernels/pool/adaptive_max_pool2d.py
+    kernel_map:
+      adaptive_max_pool2d_kernel: AdaptiveMaxPool2dKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: false
+
+AdaptiveMaxPool2dIndicesFwdOp:
+  ref_api: "torch.nn.functional.adaptive_max_pool2d"
+  # Equivalent to torch.nn.functional.adaptive_max_pool2d (return_indices=True)
+  family: pool
+  status: spec-only
+  variant_of: AdaptiveMaxPool2dFwdOp
+
+  signature:
+    inputs:
+      input: {dtype: "float16 | bfloat16", shape: "[N, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
+      indices: {dtype: "int64", shape: "[N, C, H_out, W_out]"}
+    params:
+      output_size: {type: "int | tuple[int | None, int | None]"}
+    shape_rules:
+      - "_oH == (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
+      - "H_out == (H_in if _oH is None else _oH)"
+      - "W_out == (W_in if _oW is None else _oW)"
+      - "H_out > 0 and W_out > 0"
+
+  workloads:
+    # Same model sources as AdaptiveMaxPool2dFwdOp; indices output is consumed
+    # by unpooling or argmax-tracking paths rather than changing input shapes.
+    - {input_shape: [8, 2048, 7, 7], output_size: [1, 1], dtypes: [float16], label: "global-1x1"}
+    - {input_shape: [2, 128, 56, 56], output_size: [6, 6], dtypes: [float16], label: "spp-6x6"}
+    - {input_shape: [2, 64, 55, 57], output_size: [7, 7], dtypes: [bfloat16], label: "nondiv-7x7"}
+
+  roofline:
+    vars:
+      oH: "output_size[0] if isinstance(output_size, (tuple, list)) else output_size"
+      oW: "output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      out_H: "H_in if oH is None else oH"
+      out_W: "W_in if oW is None else oW"
+      kH: "(H_in + out_H - 1) // out_H"
+      kW: "(W_in + out_W - 1) // out_W"
+    flops: "N * C * out_H * out_W * kH * kW"
+    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes + N * C * out_H * out_W * 8"
+
+  source:
+    kernel: tileops/kernels/pool/adaptive_max_pool2d.py
+    kernel_map:
+      adaptive_max_pool2d_with_indices_kernel: AdaptiveMaxPool2dWithIndicesKernel
+    op: tileops/ops/pool.py
+    test: tests/ops/test_pool.py
+    bench: benchmarks/ops/bench_pool.py
+    bench_manifest_driven: false
