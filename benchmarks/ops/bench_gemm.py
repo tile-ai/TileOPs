@@ -74,7 +74,7 @@ def _flashinfer_fp8_per_tensor_unsupported_reason(device: torch.device) -> Optio
     return None
 
 
-def _make_marlin_w4a16_callable(
+def _prepare_marlin_w4a16_baseline(
     m: int,
     n: int,
     k: int,
@@ -108,7 +108,7 @@ def _make_marlin_w4a16_callable(
     )
     workspace = marlin_make_workspace_new(device)
 
-    def marlin(
+    def _run_marlin(
         a: torch.Tensor,
         packed: torch.Tensor,
         weight_scales: torch.Tensor,
@@ -137,7 +137,7 @@ def _make_marlin_w4a16_callable(
             is_zp_float=False,
         )
 
-    return marlin, (activation, qweight, scales, zeros, workspace)
+    return _run_marlin, (activation, qweight, scales, zeros, workspace)
 
 
 def _manifest_params() -> list:
@@ -338,7 +338,7 @@ def test_gemm_w4a16_decode_bench(m: int, n: int, k: int) -> None:
 
     for reduce_mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
         try:
-            marlin, marlin_inputs = _make_marlin_w4a16_callable(
+            marlin, marlin_inputs = _prepare_marlin_w4a16_baseline(
                 m, n, k, use_fp32_reduce=use_fp32_reduce
             )
         except (ImportError, ModuleNotFoundError) as exc:
