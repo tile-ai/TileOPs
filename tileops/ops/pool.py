@@ -918,7 +918,11 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
 def _normalize_output_size(
     output_size: int | Tuple[Optional[int], Optional[int]],
 ) -> Tuple[Optional[int], Optional[int]]:
-    """Normalize adaptive-pool ``output_size`` to a 2-tuple of ``int | None``."""
+    """Normalize adaptive-pool ``output_size`` to a 2-tuple of ``int | None``.
+
+    Accepts an int or a 2-element tuple/list of ``int | None`` (PyTorch-style
+    leniency for list inputs); ``None`` entries resolve to the input size.
+    """
     if isinstance(output_size, bool):
         raise TypeError(
             "output_size must be an int or a tuple of (int | None, int | None)"
