@@ -1,0 +1,393 @@
+import functools
+import itertools
+from typing import Optional, Tuple
+
+import tilelang
+import tilelang.language as T
+import torch
+
+from tileops.kernels.kernel_base import Kernel
+
+__all__ = ["AdaptiveMaxPool2dKernel", "AdaptiveMaxPool2dWithIndicesKernel"]
+
+
+@functools.lru_cache(maxsize=32)
+def _adaptive_max_pool2d_kernel(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    out_h: int,
+    out_w: int,
+    dtype: str = "float16",
+):
+    accum_dtype = "float"
+    total_output = n * c_in * out_h * out_w
+    # Static upper bounds for the adaptive bin extents (compile-time constants;
+    # TileLang rejects dynamic T.serial bounds). Note ceil(in/out) alone is NOT
+    # a valid bound: e.g. in=55/out=7 has a bin of 9 > ceil(55/7) = 8, and
+    # expansion in=8/out=12 has bins of 2 > 1.
+    max_kh = max(
+        ((o + 1) * h_in + out_h - 1) // out_h - (o * h_in) // out_h
+        for o in range(out_h)
+    )
+    max_kw = max(
+        ((o + 1) * w_in + out_w - 1) // out_w - (o * w_in) // out_w
+        for o in range(out_w)
+    )
+
+    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _adaptive_max_pool2d_func(block_m: int, threads: int):
+        @T.prim_func
+        def _adaptive_max_pool2d_main(
+            x: T.Tensor((n, c_in, h_in, w_in), dtype),  # type: ignore
+            out: T.Tensor((n, c_in, out_h, out_w), dtype),  # type: ignore
+        ):
+            with T.Kernel(T.ceildiv(total_output, block_m), threads=threads) as bx:
+                for i in T.Parallel(block_m):
+                    out_idx = bx * block_m + i
+                    if out_idx < total_output:
+                        ow = out_idx % out_w
+                        spatial_idx = out_idx // out_w
+                        oh = spatial_idx % out_h
+                        channel_batch_idx = spatial_idx // out_h
+                        c_idx = channel_batch_idx % c_in
+                        batch = channel_batch_idx // c_in
+
+                        # PyTorch adaptive bins partition each spatial axis as
+                        # [floor(o*in/out), ceil((o+1)*in/out)); bins are always
+                        # non-empty, including output_size > input_size.
+                        ih_start = (oh * h_in) // out_h
+                        ih_end = ((oh + 1) * h_in + out_h - 1) // out_h
+                        iw_start = (ow * w_in) // out_w
+                        iw_end = ((ow + 1) * w_in + out_w - 1) // out_w
+
+                        max_val = T.alloc_var(T.float32)
+                        has_nan = T.alloc_var(T.bool)
+                        max_val = T.cast(float("-inf"), accum_dtype)
+                        has_nan = False
+                        # Static-bound loops (TileLang rejects dynamic T.serial
+                        # bounds); guard skips lanes outside this output's bin.
+                        for kh in T.serial(max_kh):
+                            for kw in T.serial(max_kw):
+                                if ih_start + kh < ih_end and iw_start + kw < iw_end:
+                                    val = T.cast(
+                                        x[batch, c_idx, ih_start + kh, iw_start + kw],
+                                        accum_dtype,
+                                    )
+                                    has_nan = has_nan | T.isnan(val)
+                                    max_val = T.max(max_val, val)
+
+                        result = T.if_then_else(
+                            has_nan,
+                            T.cast(float("nan"), accum_dtype),
+                            max_val,
+                        )
+                        out[batch, c_idx, oh, ow] = T.cast(result, dtype)
+
+        return _adaptive_max_pool2d_main
+
+    return _adaptive_max_pool2d_func
+
+
+@torch.library.custom_op("top::adaptive_max_pool2d_wrapped_kernel", mutates_args=())
+def _adaptive_max_pool2d_wrapped_kernel(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    out_h: int,
+    out_w: int,
+    dtype: str,
+    block_m: int,
+    threads: int,
+    x: torch.Tensor,
+) -> torch.Tensor:
+    return _adaptive_max_pool2d_kernel(
+        n, c_in, h_in, w_in, out_h, out_w, dtype
+    )(block_m, threads)(x)
+
+
+@_adaptive_max_pool2d_wrapped_kernel.register_fake
+def _(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    out_h: int,
+    out_w: int,
+    dtype: str,
+    block_m: int,
+    threads: int,
+    x: torch.Tensor,
+) -> torch.Tensor:
+    _ = (dtype, block_m, threads)
+    return torch.empty((n, c_in, out_h, out_w), dtype=x.dtype, device=x.device)
+
+
+class AdaptiveMaxPool2dKernel(Kernel):
+    """Adaptive max pooling forward kernel for NCHW inputs (return_indices=False)."""
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        h_in: int,
+        w_in: int,
+        out_h: int,
+        out_w: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        if dtype not in {torch.float16, torch.bfloat16}:
+            raise ValueError(
+                f"AdaptiveMaxPool2dKernel supports float16 and bfloat16, got {dtype}"
+            )
+        self.n = n
+        self.c_in = c_in
+        self.h_in = h_in
+        self.w_in = w_in
+        self.out_h = out_h
+        self.out_w = out_w
+        self.dtype = dtype
+        self.kernel = _adaptive_max_pool2d_kernel(
+            n, c_in, h_in, w_in, out_h, out_w, self.dtype_str
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 256,
+            "threads": 256,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [
+            {"block_m": block_m, "threads": threads}
+            for block_m, threads in itertools.product([128, 256, 512], [128, 256, 512])
+        ]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return _adaptive_max_pool2d_wrapped_kernel(
+            self.n,
+            self.c_in,
+            self.h_in,
+            self.w_in,
+            self.out_h,
+            self.out_w,
+            self.dtype_str,
+            self.config["block_m"],
+            self.config["threads"],
+            x,
+        )
+
+
+@functools.lru_cache(maxsize=32)
+def _adaptive_max_pool2d_with_indices_kernel(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    out_h: int,
+    out_w: int,
+    dtype: str = "float16",
+):
+    accum_dtype = "float"
+    total_output = n * c_in * out_h * out_w
+    # Static upper bounds for the adaptive bin extents (compile-time constants;
+    # TileLang rejects dynamic T.serial bounds). Note ceil(in/out) alone is NOT
+    # a valid bound: e.g. in=55/out=7 has a bin of 9 > ceil(55/7) = 8, and
+    # expansion in=8/out=12 has bins of 2 > 1.
+    max_kh = max(
+        ((o + 1) * h_in + out_h - 1) // out_h - (o * h_in) // out_h
+        for o in range(out_h)
+    )
+    max_kw = max(
+        ((o + 1) * w_in + out_w - 1) // out_w - (o * w_in) // out_w
+        for o in range(out_w)
+    )
+
+    @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _adaptive_max_pool2d_with_indices_func(block_m: int, threads: int):
+        @T.prim_func
+        def _adaptive_max_pool2d_with_indices_main(
+            x: T.Tensor((n, c_in, h_in, w_in), dtype),  # type: ignore
+            out: T.Tensor((n, c_in, out_h, out_w), dtype),  # type: ignore
+            indices: T.Tensor((n, c_in, out_h, out_w), "int64"),  # type: ignore
+        ):
+            with T.Kernel(T.ceildiv(total_output, block_m), threads=threads) as bx:
+                for i in T.Parallel(block_m):
+                    out_idx = bx * block_m + i
+                    if out_idx < total_output:
+                        ow = out_idx % out_w
+                        spatial_idx = out_idx // out_w
+                        oh = spatial_idx % out_h
+                        channel_batch_idx = spatial_idx // out_h
+                        c_idx = channel_batch_idx % c_in
+                        batch = channel_batch_idx // c_in
+
+                        # PyTorch adaptive bins partition each spatial axis as
+                        # [floor(o*in/out), ceil((o+1)*in/out)); bins are always
+                        # non-empty, including output_size > input_size.
+                        ih_start = (oh * h_in) // out_h
+                        ih_end = ((oh + 1) * h_in + out_h - 1) // out_h
+                        iw_start = (ow * w_in) // out_w
+                        iw_end = ((ow + 1) * w_in + out_w - 1) // out_w
+
+                        max_val = T.alloc_var(T.float32)
+                        has_nan = T.alloc_var(T.bool)
+                        max_idx = T.alloc_var(T.int64)
+                        nan_idx = T.alloc_var(T.int64)
+                        first_valid = T.alloc_var(T.bool)
+                        max_val = T.cast(float("-inf"), accum_dtype)
+                        has_nan = False
+                        max_idx = T.cast(0, "int64")
+                        nan_idx = T.cast(0, "int64")
+                        first_valid = True
+                        # Static-bound loops (TileLang rejects dynamic T.serial
+                        # bounds); guard skips lanes outside this output's bin.
+                        for kh in T.serial(max_kh):
+                            for kw in T.serial(max_kw):
+                                if ih_start + kh < ih_end and iw_start + kw < iw_end:
+                                    ih = ih_start + kh
+                                    iw = iw_start + kw
+                                    val = T.cast(x[batch, c_idx, ih, iw], accum_dtype)
+                                    flat_idx = T.cast(ih * w_in + iw, "int64")
+                                    is_nan = T.isnan(val)
+                                    if is_nan:
+                                        # PyTorch records the last NaN visited in
+                                        # a pooling window.
+                                        nan_idx = flat_idx
+                                        has_nan = True
+                                    elif first_valid:
+                                        max_val = val
+                                        max_idx = flat_idx
+                                        first_valid = False
+                                    elif val > max_val:
+                                        max_val = val
+                                        max_idx = flat_idx
+
+                        result = T.if_then_else(
+                            has_nan,
+                            T.cast(float("nan"), accum_dtype),
+                            max_val,
+                        )
+                        out[batch, c_idx, oh, ow] = T.cast(result, dtype)
+                        indices[batch, c_idx, oh, ow] = T.if_then_else(
+                            has_nan,
+                            nan_idx,
+                            max_idx,
+                        )
+
+        return _adaptive_max_pool2d_with_indices_main
+
+    return _adaptive_max_pool2d_with_indices_func
+
+
+@torch.library.custom_op(
+    "top::adaptive_max_pool2d_with_indices_wrapped_kernel", mutates_args=()
+)
+def _adaptive_max_pool2d_with_indices_wrapped_kernel(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    out_h: int,
+    out_w: int,
+    dtype: str,
+    block_m: int,
+    threads: int,
+    x: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return _adaptive_max_pool2d_with_indices_kernel(
+        n, c_in, h_in, w_in, out_h, out_w, dtype
+    )(block_m, threads)(x)
+
+
+@_adaptive_max_pool2d_with_indices_wrapped_kernel.register_fake
+def _(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    out_h: int,
+    out_w: int,
+    dtype: str,
+    block_m: int,
+    threads: int,
+    x: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    _ = (dtype, block_m, threads)
+    return (
+        torch.empty((n, c_in, out_h, out_w), dtype=x.dtype, device=x.device),
+        torch.empty((n, c_in, out_h, out_w), dtype=torch.int64, device=x.device),
+    )
+
+
+class AdaptiveMaxPool2dWithIndicesKernel(Kernel):
+    """Adaptive max pooling forward-with-indices kernel for NCHW inputs."""
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        h_in: int,
+        w_in: int,
+        out_h: int,
+        out_w: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        if dtype not in {torch.float16, torch.bfloat16}:
+            raise ValueError(
+                f"AdaptiveMaxPool2dWithIndicesKernel supports float16 and bfloat16, got {dtype}"
+            )
+        self.n = n
+        self.c_in = c_in
+        self.h_in = h_in
+        self.w_in = w_in
+        self.out_h = out_h
+        self.out_w = out_w
+        self.dtype = dtype
+        self.kernel = _adaptive_max_pool2d_with_indices_kernel(
+            n, c_in, h_in, w_in, out_h, out_w, self.dtype_str
+        )
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 256,
+            "threads": 256,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [
+            {"block_m": block_m, "threads": threads}
+            for block_m, threads in itertools.product([128, 256, 512], [128, 256, 512])
+        ]
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return _adaptive_max_pool2d_with_indices_wrapped_kernel(
+            self.n,
+            self.c_in,
+            self.h_in,
+            self.w_in,
+            self.out_h,
+            self.out_w,
+            self.dtype_str,
+            self.config["block_m"],
+            self.config["threads"],
+            x,
+        )
