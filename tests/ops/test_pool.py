@@ -1453,6 +1453,12 @@ _MAX_POOL_CTOR_PARAMS = (
     ("tune", False),
 )
 
+_ADAPTIVE_POOL_CTOR_PARAMS = (
+    ("output_size", _EMPTY),
+    ("kernel_map", None),
+    ("tune", False),
+)
+
 # Manifest-pinned constructor contract: parameter names, order, and defaults.
 _POOL_CTOR_SNAPSHOTS: list = [
     pytest.param(AvgPool1dFwdOp, _AVG_POOL_CTOR_PARAMS_1D, id="avg-pool1d"),
@@ -1464,6 +1470,11 @@ _POOL_CTOR_SNAPSHOTS: list = [
     pytest.param(MaxPool2dIndicesFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool2d-indices"),
     pytest.param(MaxPool3dFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool3d"),
     pytest.param(MaxPool3dIndicesFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool3d-indices"),
+    pytest.param(AdaptiveAvgPool2dFwdOp, _ADAPTIVE_POOL_CTOR_PARAMS, id="adaptive-avg-pool2d"),
+    pytest.param(AdaptiveMaxPool2dFwdOp, _ADAPTIVE_POOL_CTOR_PARAMS, id="adaptive-max-pool2d"),
+    pytest.param(
+        AdaptiveMaxPool2dIndicesFwdOp, _ADAPTIVE_POOL_CTOR_PARAMS,
+        id="adaptive-max-pool2d-indices"),
 ]
 
 
@@ -1530,6 +1541,7 @@ def test_max_pool_forward_return_annotation_snapshot(op_cls: type, expected_retu
         MaxPool1dFwdOp, MaxPool1dIndicesFwdOp,
         MaxPool2dFwdOp, MaxPool2dIndicesFwdOp,
         MaxPool3dFwdOp, MaxPool3dIndicesFwdOp,
+        AdaptiveAvgPool2dFwdOp, AdaptiveMaxPool2dFwdOp, AdaptiveMaxPool2dIndicesFwdOp,
     ],
 )
 def test_pool_codegen_slots_are_class_local(op_cls: type) -> None:
@@ -1626,6 +1638,19 @@ _POOL_INFER_SHAPE_SNAPSHOTS: list = [
         MaxPool3dIndicesFwdOp, {"kernel_size": 3, "stride": 2, "padding": 1},
         (2, 4, 8, 16, 16), {"output": (2, 4, 4, 8, 8), "indices": (2, 4, 4, 8, 8)},
         id="max-pool3d-indices"),
+    pytest.param(
+        AdaptiveAvgPool2dFwdOp, {"output_size": (4, 4)},
+        (2, 4, 16, 16), {"output": (2, 4, 4, 4)}, id="adaptive-avg-pool2d"),
+    pytest.param(
+        AdaptiveMaxPool2dFwdOp, {"output_size": (4, 4)},
+        (2, 4, 16, 16), {"output": (2, 4, 4, 4)}, id="adaptive-max-pool2d"),
+    pytest.param(
+        AdaptiveMaxPool2dIndicesFwdOp, {"output_size": (4, 4)},
+        (2, 4, 16, 16), {"output": (2, 4, 4, 4), "indices": (2, 4, 4, 4)},
+        id="adaptive-max-pool2d-indices"),
+    pytest.param(
+        AdaptiveAvgPool2dFwdOp, {"output_size": (None, 4)},
+        (4, 16, 16), {"output": (4, 16, 4)}, id="adaptive-avg-pool2d-chw-none"),
 ]
 
 
@@ -1949,6 +1974,69 @@ def test_adaptive_pool_rejects_invalid_input() -> None:
         op(torch.randn(1, 4, 8, 8, device="cuda", dtype=torch.float32))
     with pytest.raises(ValueError, match="CUDA"):
         op(torch.randn(1, 4, 8, 8, dtype=torch.float16))
+
+
+_ADAPTIVE_POOL_COMPILE_CASES = [
+    pytest.param(
+        AdaptiveAvgPool2dFwdOp, (2, 4, 16, 16), False, id="adaptive-avg-pool2d"),
+    pytest.param(
+        AdaptiveMaxPool2dFwdOp, (2, 4, 16, 16), False, id="adaptive-max-pool2d"),
+    pytest.param(
+        AdaptiveMaxPool2dIndicesFwdOp, (2, 4, 16, 16), True,
+        id="adaptive-max-pool2d-indices"),
+]
+for _case in _ADAPTIVE_POOL_COMPILE_CASES:
+    register_compile_contract(_case.values[0])
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.usefixtures("isolated_dynamo")
+@pytest.mark.parametrize(
+    ("op_cls", "x_shape", "return_indices"),
+    _ADAPTIVE_POOL_COMPILE_CASES,
+)
+def test_adaptive_pool_compile_fullgraph(
+    op_cls: type,
+    x_shape: tuple[int, ...],
+    return_indices: bool,
+) -> None:
+    op = op_cls(output_size=(4, 4))
+    x = torch.randn(*x_shape, device="cuda", dtype=torch.float16)
+    out = torch.compile(op, fullgraph=True)(x)  # cold start: no eager warmup
+    if op_cls is AdaptiveAvgPool2dFwdOp:
+        ref = F.adaptive_avg_pool2d(x, (4, 4))
+        torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
+    elif return_indices:
+        ref_out, ref_idx = F.adaptive_max_pool2d(x, (4, 4), return_indices=True)
+        torch.testing.assert_close(out[0], ref_out, atol=0, rtol=0)
+        assert torch.equal(out[1], ref_idx)
+    else:
+        ref = F.adaptive_max_pool2d(x, (4, 4))
+        torch.testing.assert_close(out, ref, atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    ("op_cls", "expected_flops", "expected_bytes"),
+    [
+        # input (1, 2, 8, 8) fp16, output_size (2, 2): out (1, 2, 2, 2), kH=kW=4.
+        # flops = 1*2*2*2*4*4 = 128; bytes = (1*2*64 + 1*2*4) * 2 [+ 1*2*4*8].
+        pytest.param(AdaptiveAvgPool2dFwdOp, 128, 272, id="adaptive-avg-pool2d"),
+        pytest.param(AdaptiveMaxPool2dFwdOp, 128, 272, id="adaptive-max-pool2d"),
+        pytest.param(AdaptiveMaxPool2dIndicesFwdOp, 128, 336, id="adaptive-max-pool2d-indices"),
+    ],
+)
+def test_adaptive_pool_eval_roofline_snapshot(
+    op_cls: type,
+    expected_flops: int,
+    expected_bytes: int,
+) -> None:
+    op = op_cls(output_size=(2, 2))
+    x = torch.randn(1, 2, 8, 8, device="cuda", dtype=torch.float16)
+    op(x)
+    assert op.eval_roofline() == (expected_flops, expected_bytes)
 
 
 if __name__ == "__main__":
