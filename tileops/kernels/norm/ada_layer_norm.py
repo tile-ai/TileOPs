@@ -57,6 +57,9 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
     N_padded = _align_up(N, ALIGNMENT)
     needs_pad = N_padded != N
     pad_count = N_padded - N  # number of zero-padded elements per row
+    # The async policy guarantees that each source row is a whole number of
+    # 4-byte cp.async transactions.
+    async_copy_elems = 1 if dtype == "float32" else 2
 
     @tilelang.jit(out_idx=[4] if not has_gate else [5])
     def _func(block_m, threads):
@@ -94,13 +97,28 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
 
         @T.macro
         def prefetch_modulation(src, dst, pid_m):
-            T.async_copy(
-                src[
-                    pid_m * block_m : (pid_m + 1) * block_m,
-                    0:N_padded,
-                ],
-                dst,
-            )
+            for i, j in T.Parallel(block_m, N_padded // async_copy_elems):
+                row = pid_m * block_m + i
+                col = j * async_copy_elems
+                T.ptx_cp_async(
+                    T.tvm_access_ptr(
+                        T.type_annotation(dtype),
+                        dst.data,
+                        i * N_padded + col,
+                        async_copy_elems,
+                        2,
+                    ),
+                    T.tvm_access_ptr(
+                        T.type_annotation(dtype),
+                        src.data,
+                        row * N + col,
+                        async_copy_elems,
+                        1,
+                    ),
+                    async_copy_elems,
+                    predicate=T.And(row < M, col + async_copy_elems <= N),
+                )
+            T.ptx_commit_group()
 
         @T.macro
         def load_aligned_modulation(src, shared_buf, local, pid_m):
