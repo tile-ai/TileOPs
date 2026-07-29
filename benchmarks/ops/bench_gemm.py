@@ -21,34 +21,6 @@ _DTYPE_MAP = {
 }
 
 
-_W4A16_DECODE_CASES = (
-    pytest.param(
-        1,
-        8192,
-        8192,
-        id="decode-l2-resident-ish",
-    ),
-    pytest.param(
-        1,
-        8192,
-        16384,
-        id="decode-hbm-streaming-threshold",
-    ),
-    pytest.param(
-        1,
-        7168,
-        20480,
-        id="decode-non-power2-low-cta",
-    ),
-    pytest.param(
-        1,
-        8192,
-        81920,
-        id="decode-long-k-pressure",
-    ),
-)
-
-
 def _flashinfer_fp8_blockscale_ref(test: GemmFp8Test, *inputs: torch.Tensor) -> torch.Tensor:
     from flashinfer.gemm import fp8_blockscale_gemm_sm90
 
@@ -330,7 +302,12 @@ def test_gemm_w4a16_bench(
 
 @pytest.mark.parametrize(
     "m, n, k",
-    _W4A16_DECODE_CASES,
+    [
+        pytest.param(1, 8192, 8192, id="decode-l2-resident-ish"),
+        pytest.param(1, 8192, 16384, id="decode-hbm-streaming-threshold"),
+        pytest.param(1, 7168, 20480, id="decode-non-power2-low-cta"),
+        pytest.param(1, 8192, 81920, id="decode-long-k-pressure"),
+    ],
 )
 def test_gemm_w4a16_decode_bench(m: int, n: int, k: int) -> None:
     """W4A16 decode comparison suite.
