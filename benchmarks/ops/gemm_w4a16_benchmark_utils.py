@@ -22,12 +22,12 @@ class W4A16BenchmarkCase:
     weight_metadata_mib: float | None = None
 
 
-DECODE_AKO_CASES = (
+DECODE_CASES = (
     W4A16BenchmarkCase(
         1,
         8192,
         8192,
-        "decode-ako-l2-resident-ish",
+        "decode-l2-resident-ish",
         "decode-medium-k",
         "medium K; packed W4 weight + metadata fits within H200 L2, exposing launch/depack/sync overhead",
         34.5,
@@ -36,7 +36,7 @@ DECODE_AKO_CASES = (
         1,
         8192,
         16384,
-        "decode-ako-hbm-streaming-threshold",
+        "decode-hbm-streaming-threshold",
         "decode-over-l2",
         "just over H200 L2, entering real HBM streaming and validating TMA/buffering behavior",
         69.0,
@@ -45,7 +45,7 @@ DECODE_AKO_CASES = (
         1,
         7168,
         20480,
-        "decode-ako-non-power2-low-cta",
+        "decode-non-power2-low-cta",
         "decode-non-power2-n",
         "non-power-of-two N with only 112 N64 CTAs, exposing occupancy and scheduling limits",
         75.5,
@@ -54,7 +54,7 @@ DECODE_AKO_CASES = (
         1,
         8192,
         81920,
-        "decode-ako-long-k-pressure",
+        "decode-long-k-pressure",
         "decode-long-k-stress",
         "very long K far beyond L2, amplifying HBM streaming, depack overlap, activation reuse, and split-K effects",
         345.0,
