@@ -1,10 +1,9 @@
-from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tests.ops.test_gemm import GemmFp8Test, GemmTest, GemmW4A16Test
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8Op, GemmOp, GemmW4A16Op
@@ -22,103 +21,32 @@ _DTYPE_MAP = {
 }
 
 
-@dataclass(frozen=True)
-class _W4A16BenchmarkCase:
-    m: int
-    n: int
-    k: int
-    label: str
-    scenario: str
-    purpose: str
-    weight_metadata_mib: float | None = None
-
-
 _W4A16_DECODE_CASES = (
-    _W4A16BenchmarkCase(
+    pytest.param(
         1,
         8192,
         8192,
-        "decode-l2-resident-ish",
-        "decode-medium-k",
-        "medium K; packed W4 weight + metadata fits within H200 L2, exposing launch/depack/sync overhead",
-        34.5,
+        id="decode-l2-resident-ish",
     ),
-    _W4A16BenchmarkCase(
+    pytest.param(
         1,
         8192,
         16384,
-        "decode-hbm-streaming-threshold",
-        "decode-over-l2",
-        "just over H200 L2, entering real HBM streaming and validating TMA/buffering behavior",
-        69.0,
+        id="decode-hbm-streaming-threshold",
     ),
-    _W4A16BenchmarkCase(
+    pytest.param(
         1,
         7168,
         20480,
-        "decode-non-power2-low-cta",
-        "decode-non-power2-n",
-        "non-power-of-two N with only 112 N64 CTAs, exposing occupancy and scheduling limits",
-        75.5,
+        id="decode-non-power2-low-cta",
     ),
-    _W4A16BenchmarkCase(
+    pytest.param(
         1,
         8192,
         81920,
-        "decode-long-k-pressure",
-        "decode-long-k-stress",
-        "very long K far beyond L2, amplifying HBM streaming, depack overlap, activation reuse, and split-K effects",
-        345.0,
+        id="decode-long-k-pressure",
     ),
 )
-
-
-class _StaticGemmW4A16Benchmark(BenchmarkBase[GemmW4A16Test]):
-    def __init__(self, test: GemmW4A16Test, memory_bytes: int) -> None:
-        super().__init__(test)
-        self._memory_bytes = memory_bytes
-
-    def calculate_flops(self) -> float:
-        return float(2 * self.workload.m * self.workload.n * self.workload.k)
-
-    def calculate_memory(self) -> float:
-        return float(self._memory_bytes)
-
-
-def _w4a16_memory_bytes(
-    m: int,
-    n: int,
-    k: int,
-    dtype: torch.dtype = torch.float16,
-    group_size: int = _W4A16_GROUP_SIZE,
-) -> int:
-    groups = k // group_size
-    elem_bytes = dtype.itemsize
-    return m * k * elem_bytes + n * k // 2 + n * groups * (4 + 1) + m * n * elem_bytes
-
-
-def _dense_a16_memory_bytes(
-    m: int,
-    n: int,
-    k: int,
-    dtype: torch.dtype = torch.float16,
-) -> int:
-    elem_bytes = dtype.itemsize
-    return (m * k + n * k + m * n) * elem_bytes
-
-
-def _marlin_w4a16_memory_bytes(
-    m: int,
-    n: int,
-    k: int,
-    dtype: torch.dtype = torch.float16,
-    group_size: int = _W4A16_GROUP_SIZE,
-) -> int:
-    elem_bytes = dtype.itemsize
-    qweight_bytes = (k // 16) * (n * 2) * torch.int32.itemsize
-    scale_bytes = (k // group_size) * n * elem_bytes
-    zero_bytes = (k // group_size) * (n // 8) * torch.int32.itemsize
-    return m * k * elem_bytes + qweight_bytes + scale_bytes + zero_bytes + m * n * elem_bytes
 
 
 def _flashinfer_fp8_blockscale_ref(test: GemmFp8Test, *inputs: torch.Tensor) -> torch.Tensor:
@@ -396,16 +324,15 @@ def test_gemm_w4a16_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    dense_bm = _StaticGemmW4A16Benchmark(test, _dense_a16_memory_bytes(m, n, k, dtype=dtype))
-    result_bl = dense_bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-dequantized-matmul")
 
 
 @pytest.mark.parametrize(
-    "case",
-    [pytest.param(case, id=case.label) for case in _W4A16_DECODE_CASES],
+    "m, n, k",
+    _W4A16_DECODE_CASES,
 )
-def test_gemm_w4a16_decode_bench(case: _W4A16BenchmarkCase) -> None:
+def test_gemm_w4a16_decode_bench(m: int, n: int, k: int) -> None:
     """W4A16 decode comparison suite.
 
     This is intentionally not a complete public manifest benchmark. The suite
@@ -420,21 +347,16 @@ def test_gemm_w4a16_decode_bench(case: _W4A16BenchmarkCase) -> None:
     stand in for common model layers by itself.
     """
     dtype = torch.float16
-    m, n, k = case.m, case.n, case.k
-    scenario = case.scenario
-    purpose = case.purpose
-    weight_metadata_mib = case.weight_metadata_mib
 
     test = GemmW4A16Test(m, n, k, dtype)
     inputs = test.gen_inputs()
     op = GemmW4A16Op()
+    bm = ManifestBenchmark(_W4A16_OP_NAME, op, test)
 
-    w4_bm = _StaticGemmW4A16Benchmark(test, _w4a16_memory_bytes(m, n, k, dtype=dtype))
-    result = w4_bm.profile(op, *inputs)
+    result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops-w4a16")
 
-    dense_bm = _StaticGemmW4A16Benchmark(test, _dense_a16_memory_bytes(m, n, k, dtype=dtype))
-    result_dense = dense_bm.profile(test.ref_program, *inputs)
+    result_dense = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_dense, tag="torch-dequantized-a16")
 
     for reduce_mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
@@ -445,14 +367,11 @@ def test_gemm_w4a16_decode_bench(case: _W4A16BenchmarkCase) -> None:
         except (ImportError, ModuleNotFoundError) as exc:
             print(f"  [skip] marlin-{reduce_mode}: {exc}")
             continue
-        marlin_bm = _StaticGemmW4A16Benchmark(
-            test, _marlin_w4a16_memory_bytes(m, n, k, dtype=dtype)
-        )
         actual = marlin(*marlin_inputs)
         if actual.shape != (m, n) or not torch.isfinite(actual).all():
             raise RuntimeError("Marlin W4A16 baseline smoke check failed")
         torch.cuda.synchronize()
-        result_marlin = marlin_bm.profile(marlin, *marlin_inputs)
+        result_marlin = bm.profile(marlin, *marlin_inputs)
         BenchmarkReport.record(op, locals(), result_marlin, tag=f"marlin-{reduce_mode}")
 
 
