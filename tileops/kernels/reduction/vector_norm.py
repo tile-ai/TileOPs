@@ -80,8 +80,17 @@ def _vector_norm_kernel(M: int, N: int, op_kind: str, dtype: str):
                 else:
                     # Optimization: fused load and cast - load directly to fp32 fragment
                     # This saves one intermediate buffer copy
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(x[pid_m * block_m + i, j], "float32")
+                    # Need to guard M-dimension tail when M % block_m != 0
+                    if M % block_m != 0:
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.if_then_else(
+                                pid_m * block_m + i < M,
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(0.0, "float32"),
+                            )
+                    else:
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_f32[i, j] = T.cast(x[pid_m * block_m + i, j], "float32")
 
                 if op_kind == "l1":
                     # l1 norm: sum(|x|)
