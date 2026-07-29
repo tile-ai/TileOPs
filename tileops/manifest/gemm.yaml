@@ -131,8 +131,10 @@ GemmW4A16Op:
     - "output.shape == (activation.shape[0], packed_weight.shape[0])"
 
   workloads:
-  - {m: 64, n: 64, k: 128, dtypes: [float16], label: "smoke-square-64x64x128"}
-  - {m: 128, n: 256, k: 256, dtypes: [float16], label: "smoke-rect-128x256x256"}
+  # Decode-oriented coverage. The small non-decode shapes are compile/smoke
+  # checks only; they are not intended to claim full GEMM performance coverage.
+  - {m: 64, n: 64, k: 128, dtypes: [float16], label: "compile-smoke-square-64x64x128"}
+  - {m: 128, n: 256, k: 256, dtypes: [float16], label: "compile-smoke-rect-128x256x256"}
   - {m: 1, n: 8192, k: 8192, dtypes: [float16], label: "decode-l2-resident-ish"}
   - {m: 1, n: 8192, k: 16384, dtypes: [float16], label: "decode-hbm-streaming-threshold"}
   - {m: 1, n: 7168, k: 20480, dtypes: [float16], label: "decode-non-power2-low-cta"}
