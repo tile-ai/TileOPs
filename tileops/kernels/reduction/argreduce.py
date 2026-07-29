@@ -60,44 +60,44 @@ def _argreduce_kernel(M: int, N: int, op_kind: str, dtype: str):
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                # Key improvement: Don't materialize full x_f32 tensor!
+                # Only allocate accumulators for reduction state
                 row_extreme = T.alloc_fragment((block_m,), "float32")
                 out_idx = T.alloc_fragment((block_m,), "int64")
 
                 # Load via shared memory
                 T.copy(x[pid_m * block_m, 0], shared_buf)
 
-                # Cast to fp32
-                for i, j in T.Parallel(block_m, N_padded):
-                    x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-
+                # Single-pass pair reduction: find value and index simultaneously
+                # Initialize accumulators
                 if op_kind == "argmax":
-                    # For argmax: negate padded positions so they never win
-                    # Padded positions are filled with -inf by the Op layer,
-                    # so they already cannot win a max.
-                    # Find row-wise max value using T.reduce_max
                     T.fill(row_extreme, -T.infinity("float32"))
-                    T.reduce_max(x_f32, row_extreme, dim=1, clear=False)
                 else:
-                    # For argmin: padded positions are filled with +inf by Op layer,
-                    # so they cannot win a min.
-                    # Find row-wise min = -max(-x)
-                    neg_x = T.alloc_fragment((block_m, N_padded), "float32")
-                    for i, j in T.Parallel(block_m, N_padded):
-                        neg_x[i, j] = -x_f32[i, j]
-                    T.fill(row_extreme, -T.infinity("float32"))
-                    T.reduce_max(neg_x, row_extreme, dim=1, clear=False)
-                    # Negate back to get min value
-                    for i in T.Parallel(block_m):
-                        row_extreme[i] = -row_extreme[i]
-
-                # Serial scan to find index of first occurrence matching extreme
+                    T.fill(row_extreme, T.infinity("float32"))
                 T.fill(out_idx, T.cast(0, "int64"))
+
+                # Stream through data once, maintaining (value, index) pair
+                # NOTE: Still using Serial scan due to TileLang limitations:
+                # - T.atomic_min() fails (register copy bug)
+                # - No T.reduce_with_index() primitive
+                # - No warp shuffle primitives
+                # But at least we avoid materializing full N_padded×block_m tensor
                 for i in T.Parallel(block_m):
                     for j in T.Serial(N):
-                        if x_f32[i, j] == row_extreme[i]:
+                        # Cast on-the-fly, don't store
+                        val_f32 = T.cast(shared_buf[i, j], "float32")
+
+                        # Pair reduction combine logic
+                        if op_kind == "argmax":
+                            should_update = (val_f32 > row_extreme[i]) or \
+                                          (val_f32 == row_extreme[i] and j < out_idx[i])
+                        else:  # argmin
+                            should_update = (val_f32 < row_extreme[i]) or \
+                                          (val_f32 == row_extreme[i] and j < out_idx[i])
+
+                        if should_update:
+                            row_extreme[i] = val_f32
                             out_idx[i] = T.cast(j, "int64")
-                            T.loop_break()
 
                 # Write output
                 T.copy(out_idx, out[pid_m * block_m])
@@ -231,7 +231,8 @@ class ArgreduceKernel(Kernel):
                 f"(N_padded={self.N_padded}, dtype={self.dtype}). "
                 f"Reduce the reduction dimension or use a dtype with smaller element size."
             )
-        threads_list = [128, 256]
+        # Extended thread count and block_m options for better tuning
+        threads_list = [128, 256, 512]
         configs = []
         for threads in threads_list:
             max_block_m = max_block_m_smem
@@ -239,7 +240,8 @@ class ArgreduceKernel(Kernel):
                 # TileLang layout constraint: only needed when heavy padding
                 max_block_m_layout = (2 * threads) // self.N_padded
                 max_block_m = min(max_block_m_smem, max(max_block_m_layout, 1))
-            for bm in [1, 2, 4, 8]:
+            # Expand block_m options to include 16 and 32 for better coalescing
+            for bm in [1, 2, 4, 8, 16, 32]:
                 if bm <= max_block_m:
                     configs.append({"block_m": bm, "threads": threads})
         return configs
