@@ -247,6 +247,7 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), atol=7e-2, rtol=5e-2)
 
 
+@pytest.mark.smoke
 def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
     weight = torch.tensor(
         [
