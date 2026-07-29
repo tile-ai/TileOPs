@@ -299,57 +299,21 @@ def test_gemm_w4a16_bench(
     result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-dequantized-matmul")
 
-
-@pytest.mark.parametrize(
-    "m, n, k",
-    [
-        pytest.param(1, 8192, 8192, id="decode-l2-resident-ish"),
-        pytest.param(1, 8192, 16384, id="decode-hbm-streaming-threshold"),
-        pytest.param(1, 7168, 20480, id="decode-non-power2-low-cta"),
-        pytest.param(1, 8192, 81920, id="decode-long-k-pressure"),
-    ],
-)
-def test_gemm_w4a16_decode_bench(m: int, n: int, k: int) -> None:
-    """W4A16 decode comparison suite.
-
-    This is intentionally not a complete public manifest benchmark. The suite
-    fixes M=1, FP16 activation/output, affine UINT4 weights, group size 128,
-    FP32 accumulation, pre-packed weights, and TileOps' cold-cache bench_kernel
-    protocol. Quantization and repacking are outside the timed region.
-
-    The long-K case (1,8192,81920) is the main mechanism stress test: it exceeds
-    L2 by a wide margin, elongates the K dependency chain, and makes load,
-    depack, compute overlap, activation reuse, and split-K policy visible in
-    latency. The first three cases are retained so the stress test does not
-    stand in for common model layers by itself.
-    """
-    dtype = torch.float16
-
-    test = GemmW4A16Test(m, n, k, dtype)
-    inputs = test.gen_inputs()
-    op = GemmW4A16Op()
-    bm = ManifestBenchmark(_W4A16_OP_NAME, op, test)
-
-    result = bm.profile(op, *inputs)
-    BenchmarkReport.record(op, locals(), result, tag="tileops-w4a16")
-
-    result_dense = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_dense, tag="torch-dequantized-a16")
-
-    for reduce_mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
-        try:
-            marlin, marlin_inputs = _prepare_marlin_w4a16_baseline(
-                m, n, k, use_fp32_reduce=use_fp32_reduce
-            )
-        except (ImportError, ModuleNotFoundError) as exc:
-            print(f"  [skip] marlin-{reduce_mode}: {exc}")
-            continue
-        actual = marlin(*marlin_inputs)
-        if actual.shape != (m, n) or not torch.isfinite(actual).all():
-            raise RuntimeError("Marlin W4A16 baseline smoke check failed")
-        torch.cuda.synchronize()
-        result_marlin = bm.profile(marlin, *marlin_inputs)
-        BenchmarkReport.record(op, locals(), result_marlin, tag=f"marlin-{reduce_mode}")
+    if m == 1:
+        for reduce_mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
+            try:
+                marlin, marlin_inputs = _prepare_marlin_w4a16_baseline(
+                    m, n, k, use_fp32_reduce=use_fp32_reduce
+                )
+            except (ImportError, ModuleNotFoundError) as exc:
+                print(f"  [skip] marlin-{reduce_mode}: {exc}")
+                continue
+            actual = marlin(*marlin_inputs)
+            if actual.shape != (m, n) or not torch.isfinite(actual).all():
+                raise RuntimeError("Marlin W4A16 baseline smoke check failed")
+            torch.cuda.synchronize()
+            result_marlin = bm.profile(marlin, *marlin_inputs)
+            BenchmarkReport.record(op, locals(), result_marlin, tag=f"marlin-{reduce_mode}")
 
 
 if __name__ == "__main__":
