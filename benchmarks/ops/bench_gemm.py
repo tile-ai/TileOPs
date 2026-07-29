@@ -4,9 +4,10 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
-from tests.ops.test_gemm import GemmFp8Test, GemmTest, GemmW4A16Test
+from tests.ops.test_gemm import GemmFp8Test, GemmTest
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8Op, GemmOp, GemmW4A16Op
+from workloads.gemm import GemmW4A16Workload
 
 _OP_NAME = "GemmOp"
 _FP8_OP_NAME = "GemmFp8Op"
@@ -19,6 +20,22 @@ _DTYPE_MAP = {
     "float8_e4m3fn": torch.float8_e4m3fn,
     "float8_e5m2": torch.float8_e5m2,
 }
+
+
+class _GemmW4A16BenchmarkWorkload(GemmW4A16Workload):
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        return self.m, self.n, self.k
+
+    def torch_dequantized_matmul(
+        self,
+        activation: torch.Tensor,
+        packed_weight: torch.Tensor,
+        weight_scale: torch.Tensor,
+        weight_zero: torch.Tensor,
+    ) -> torch.Tensor:
+        del packed_weight, weight_scale, weight_zero
+        return torch.matmul(activation, self.dequantized_weight.T)
 
 
 def _flashinfer_fp8_blockscale_ref(test: GemmFp8Test, *inputs: torch.Tensor) -> torch.Tensor:
@@ -287,16 +304,16 @@ def test_gemm_w4a16_bench(
     dtype_str: str,
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
-    test = GemmW4A16Test(m, n, k, dtype, group_size=group_size)
-    inputs = test.gen_inputs()
+    workload = _GemmW4A16BenchmarkWorkload(m, n, k, dtype, group_size=group_size)
+    inputs = workload.gen_inputs()
 
     op = GemmW4A16Op(group_size=group_size)
-    bm = ManifestBenchmark(_W4A16_OP_NAME, op, test)
+    bm = ManifestBenchmark(_W4A16_OP_NAME, op, workload)
 
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(workload.torch_dequantized_matmul, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-dequantized-matmul")
 
     if m == 1:
