@@ -63,6 +63,9 @@ from .norm import (
 )
 from .op_base import Op
 from .pool import (
+    AdaptiveAvgPool2dFwdOp,
+    AdaptiveMaxPool2dFwdOp,
+    AdaptiveMaxPool2dIndicesFwdOp,
     AvgPool1dFwdOp,
     AvgPool2dFwdOp,
     AvgPool3dFwdOp,
@@ -122,6 +125,9 @@ __all__ = [
     "AvgPool3dFwdOp",
     "AdaLayerNormFwdOp",
     "AdaLayerNormZeroFwdOp",
+    "AdaptiveAvgPool2dFwdOp",
+    "AdaptiveMaxPool2dFwdOp",
+    "AdaptiveMaxPool2dIndicesFwdOp",
     "BatchNormBwdOp",
     "BatchNormFwdOp",
     "BmmFp8Op",
