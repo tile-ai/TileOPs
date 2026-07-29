@@ -15,7 +15,8 @@ import pytest
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.mamba2_fwd import Mamba2FwdOp
-from workloads.mamba2_e2e import Mamba2FwdFixture, Mamba2FwdTest, mamba2_fwd_ref
+from tileops.testing.mamba2_reference import mamba2_fwd_ref
+from workloads.mamba2_e2e import Mamba2FwdFixture, Mamba2FwdTest
 
 # Optional mamba_ssm Triton baseline
 try:

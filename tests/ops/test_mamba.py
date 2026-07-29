@@ -10,6 +10,7 @@ from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.ssd_decode import SSDDecodeOp
 from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
+from tileops.testing.mamba2_reference import mamba2_fwd_ref
 from workloads.mamba import (
     DaCumsumFwdFixture,
     DaCumsumFwdWorkload,
@@ -22,7 +23,6 @@ from workloads.mamba import (
     SSDStatePassingFwdFixture,
     SSDStatePassingFwdWorkload,
 )
-from workloads.mamba2_e2e import mamba2_fwd_ref
 
 
 def da_cumsum_fwd_ref(
