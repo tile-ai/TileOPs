@@ -106,9 +106,16 @@ GatedDeltaNetDecodeOp:
     - "new_state.shape == (B, H, DK, DV)"
 
   workloads:
-  - {q_shape: [1, 4, 64], k_shape: [1, 4, 64], v_shape: [1, 4, 64], g_shape: [1, 4], beta_shape: [1, 4], state_shape: [1, 4, 64, 64], dtypes: [float16, bfloat16, float32], label: "gdn-decode-smoke-d64"}
-  - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], g_shape: [1, 32], beta_shape: [1, 32], state_shape: [1, 32, 128, 128], dtypes: [bfloat16, float32], label: "gdn-decode-b1-h32-d128"}
-  - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], g_shape: [8, 32], beta_shape: [8, 32], state_shape: [8, 32, 128, 128], dtypes: [bfloat16, float32], label: "gdn-decode-b8-h32-d128"}
+    # Model-informed bf16 serving rows. H=32/48/64 cover Qwen3.5 recurrent
+    # head counts; H=8/16 cover representative tensor-parallel local shards.
+  - {q_shape: [1, 8, 128], k_shape: [1, 8, 128], v_shape: [1, 8, 128], g_shape: [1, 8], beta_shape: [1, 8], state_shape: [1, 8, 128, 128], dtypes: [bfloat16], label: "gdn-decode-serving-b1-h8-d128"}
+  - {q_shape: [1, 16, 128], k_shape: [1, 16, 128], v_shape: [1, 16, 128], g_shape: [1, 16], beta_shape: [1, 16], state_shape: [1, 16, 128, 128], dtypes: [bfloat16], label: "gdn-decode-serving-b1-h16-d128"}
+  - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], g_shape: [1, 32], beta_shape: [1, 32], state_shape: [1, 32, 128, 128], dtypes: [bfloat16], label: "gdn-decode-serving-b1-h32-d128"}
+  - {q_shape: [1, 48, 128], k_shape: [1, 48, 128], v_shape: [1, 48, 128], g_shape: [1, 48], beta_shape: [1, 48], state_shape: [1, 48, 128, 128], dtypes: [bfloat16], label: "gdn-decode-serving-b1-h48-d128"}
+  - {q_shape: [1, 64, 128], k_shape: [1, 64, 128], v_shape: [1, 64, 128], g_shape: [1, 64], beta_shape: [1, 64], state_shape: [1, 64, 128, 128], dtypes: [bfloat16], label: "gdn-decode-serving-b1-h64-d128"}
+  - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], g_shape: [8, 32], beta_shape: [8, 32], state_shape: [8, 32, 128, 128], dtypes: [bfloat16], label: "gdn-decode-serving-b8-h32-d128"}
+  - {q_shape: [8, 48, 128], k_shape: [8, 48, 128], v_shape: [8, 48, 128], g_shape: [8, 48], beta_shape: [8, 48], state_shape: [8, 48, 128, 128], dtypes: [bfloat16], label: "gdn-decode-serving-b8-h48-d128"}
+  - {q_shape: [8, 64, 128], k_shape: [8, 64, 128], v_shape: [8, 64, 128], g_shape: [8, 64], beta_shape: [8, 64], state_shape: [8, 64, 128, 128], dtypes: [bfloat16], label: "gdn-decode-serving-b8-h64-d128"}
 
   roofline:
     func: "tileops.perf.formulas.gated_deltanet_decode_roofline"
@@ -152,9 +159,14 @@ DeltaNetDecodeOp:
     - "new_state.shape == (B, H, DK, DV)"
 
   workloads:
-  - {q_shape: [1, 4, 64], k_shape: [1, 4, 64], v_shape: [1, 4, 64], beta_shape: [1, 4], state_shape: [1, 4, 64, 64], dtypes: [float16, bfloat16, float32], label: "delta-decode-smoke-d64"}
-  - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], beta_shape: [1, 32], state_shape: [1, 32, 128, 128], dtypes: [bfloat16, float32], label: "delta-decode-b1-h32-d128"}
-  - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], beta_shape: [8, 32], state_shape: [8, 32, 128, 128], dtypes: [bfloat16, float32], label: "delta-decode-b8-h32-d128"}
+  - {q_shape: [1, 8, 128], k_shape: [1, 8, 128], v_shape: [1, 8, 128], beta_shape: [1, 8], state_shape: [1, 8, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b1-h8-d128"}
+  - {q_shape: [1, 16, 128], k_shape: [1, 16, 128], v_shape: [1, 16, 128], beta_shape: [1, 16], state_shape: [1, 16, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b1-h16-d128"}
+  - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], beta_shape: [1, 32], state_shape: [1, 32, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b1-h32-d128"}
+  - {q_shape: [1, 48, 128], k_shape: [1, 48, 128], v_shape: [1, 48, 128], beta_shape: [1, 48], state_shape: [1, 48, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b1-h48-d128"}
+  - {q_shape: [1, 64, 128], k_shape: [1, 64, 128], v_shape: [1, 64, 128], beta_shape: [1, 64], state_shape: [1, 64, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b1-h64-d128"}
+  - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], beta_shape: [8, 32], state_shape: [8, 32, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b8-h32-d128"}
+  - {q_shape: [8, 48, 128], k_shape: [8, 48, 128], v_shape: [8, 48, 128], beta_shape: [8, 48], state_shape: [8, 48, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b8-h48-d128"}
+  - {q_shape: [8, 64, 128], k_shape: [8, 64, 128], v_shape: [8, 64, 128], beta_shape: [8, 64], state_shape: [8, 64, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b8-h64-d128"}
 
   roofline:
     func: "tileops.perf.formulas.deltanet_decode_roofline"
@@ -199,9 +211,14 @@ GLADecodeOp:
     - "new_state.shape == (B, H, DK, DV)"
 
   workloads:
-  - {q_shape: [1, 4, 64], k_shape: [1, 4, 64], v_shape: [1, 4, 64], gk_shape: [1, 4, 64], state_shape: [1, 4, 64, 64], scale: 0.125, dtypes: [float16, bfloat16, float32], label: "gla-decode-smoke-d64"}
-  - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], gk_shape: [1, 32, 128], state_shape: [1, 32, 128, 128], scale: 0.08838834764831845, dtypes: [float16, bfloat16, float32], label: "gla-decode-b1-h32-d128"}
-  - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], gk_shape: [8, 32, 128], state_shape: [8, 32, 128, 128], scale: 0.08838834764831845, dtypes: [float16, bfloat16, float32], label: "gla-decode-b8-h32-d128"}
+  - {q_shape: [1, 8, 128], k_shape: [1, 8, 128], v_shape: [1, 8, 128], gk_shape: [1, 8, 128], state_shape: [1, 8, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h8-d128"}
+  - {q_shape: [1, 16, 128], k_shape: [1, 16, 128], v_shape: [1, 16, 128], gk_shape: [1, 16, 128], state_shape: [1, 16, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h16-d128"}
+  - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], gk_shape: [1, 32, 128], state_shape: [1, 32, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h32-d128"}
+  - {q_shape: [1, 48, 128], k_shape: [1, 48, 128], v_shape: [1, 48, 128], gk_shape: [1, 48, 128], state_shape: [1, 48, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h48-d128"}
+  - {q_shape: [1, 64, 128], k_shape: [1, 64, 128], v_shape: [1, 64, 128], gk_shape: [1, 64, 128], state_shape: [1, 64, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h64-d128"}
+  - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], gk_shape: [8, 32, 128], state_shape: [8, 32, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b8-h32-d128"}
+  - {q_shape: [8, 48, 128], k_shape: [8, 48, 128], v_shape: [8, 48, 128], gk_shape: [8, 48, 128], state_shape: [8, 48, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b8-h48-d128"}
+  - {q_shape: [8, 64, 128], k_shape: [8, 64, 128], v_shape: [8, 64, 128], gk_shape: [8, 64, 128], state_shape: [8, 64, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b8-h64-d128"}
 
   roofline:
     func: "tileops.perf.formulas.gla_decode_roofline"
