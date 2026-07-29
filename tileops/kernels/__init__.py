@@ -82,6 +82,9 @@ from .norm import (
     RMSNormKernel,
 )
 from .pool import (
+    AdaptiveAvgPool2dKernel,
+    AdaptiveMaxPool2dKernel,
+    AdaptiveMaxPool2dWithIndicesKernel,
     AvgPool1dKernel,
     AvgPool1dSpatialKernel,
     AvgPool2dKernel,
@@ -107,6 +110,9 @@ from .rope import (
 from .topk_selector import TopkSelectorKernel
 
 __all__ = [
+    "AdaptiveAvgPool2dKernel",
+    "AdaptiveMaxPool2dKernel",
+    "AdaptiveMaxPool2dWithIndicesKernel",
     "AvgPool1dKernel",
     "AvgPool1dSpatialKernel",
     "AvgPool2dKernel",
