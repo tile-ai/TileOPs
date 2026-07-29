@@ -1834,7 +1834,7 @@ def test_adaptive_max_pool2d(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    # 同一配置同时覆盖 return_indices=False / True 两个 Op。
+    # Exercise both the plain and the return_indices op on the same config.
     for return_indices in (False, True):
         test = AdaptiveMaxPool2dTest(output_size, dtype, return_indices)
         op_cls = (
@@ -1876,7 +1876,8 @@ def test_adaptive_max_pool2d_indices_unbatched_and_batched(with_batch: bool) -> 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_adaptive_max_pool2d_tied_maxima_indices() -> None:
-    # bin 内并列最大值：索引必须与 PyTorch 完全一致（行主序首个）。
+    # Tied maxima inside a bin: indices must match PyTorch exactly (first in
+    # row-major order).
     x = torch.tensor(
         [[[[1.0, 3.0, 0.0], [3.0, 2.0, 1.0], [0.0, 1.0, 2.0]]]],
         device="cuda", dtype=torch.float16,
