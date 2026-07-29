@@ -132,6 +132,7 @@ def _flashinfer_gqa_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
 _GQA_DECODE_PAGED_BENCH_PARAMS = manifest_params(
     load_workloads(_OP_NAME),
     gqa_decode_paged_args,
+    tune=False,
 )
 
 
