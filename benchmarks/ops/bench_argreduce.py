@@ -9,7 +9,12 @@ hard-code op parameters that are declared on manifest workload entries.
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+    workloads_to_params,
+)
 from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 from workloads.reduction import ArgmaxWorkload, ArgminWorkload
 
@@ -34,7 +39,7 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
         return x.argmax(dim=dim)
 
     bm.compare(
-        {"tileops": op, "torch": baseline_fn},
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
         *inputs,
         record_as=op,
         params={"shape": shape, "dtype": dtype, "dim": dim},
@@ -58,7 +63,7 @@ def test_argmin_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
         return x.argmin(dim=dim)
 
     bm.compare(
-        {"tileops": op, "torch": baseline_fn},
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
         *inputs,
         record_as=op,
         params={"shape": shape, "dtype": dtype, "dim": dim},

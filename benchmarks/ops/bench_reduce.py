@@ -7,7 +7,12 @@ Workload shapes and roofline formulas are loaded from the ops manifest (src/tile
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+    workloads_to_params,
+)
 from tileops.ops.reduction.reduce import (
     AmaxFwdOp,
     AminFwdOp,
@@ -62,7 +67,12 @@ def test_sum_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         return x.float().sum(dim=dim, keepdim=keepdim).to(x.dtype)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -90,7 +100,12 @@ def test_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         return x.float().mean(dim=dim, keepdim=keepdim).to(x.dtype)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -118,7 +133,12 @@ def test_amax_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         return x.amax(dim=dim, keepdim=keepdim)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -146,7 +166,12 @@ def test_amin_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         return x.amin(dim=dim, keepdim=keepdim)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -168,7 +193,12 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
         return x.float().prod(dim=-1).to(x.dtype)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -196,7 +226,12 @@ def test_std_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         return x.float().std(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -224,7 +259,12 @@ def test_var_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
         return x.float().var(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
@@ -254,7 +294,12 @@ def test_var_mean_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
         return (v, m)
 
     try:
-        bm.compare({"tileops": op, "torch": baseline_fn}, *inputs, record_as=op, params=locals())
+        bm.compare(
+            {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+            *inputs,
+            record_as=op,
+            params=locals(),
+        )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")

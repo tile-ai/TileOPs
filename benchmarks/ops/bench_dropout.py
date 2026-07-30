@@ -10,7 +10,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+    workloads_to_params,
+)
 from tileops.ops.dropout import DropoutFwdOp
 from workloads.elementwise import ShapedRandnWorkload
 
@@ -34,4 +39,9 @@ def test_dropout_bench(shape: tuple, dtype: torch.dtype) -> None:
     op = DropoutFwdOp(p=test.p, seed=42)
     bm = ManifestBenchmark(_OP_NAME, op, test)
 
-    bm.compare({"tileops": op, "torch": test.ref_program}, x, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(test.ref_program)},
+        x,
+        record_as=op,
+        params=locals(),
+    )

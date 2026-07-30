@@ -3,7 +3,11 @@ from typing import List, Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import (
+    BenchmarkBase,
+    BenchmarkReport,
+    torch_inductor_baseline,
+)
 from tileops.ops import MeanPoolingForwardOp
 from workloads.nsa_utils import prepare_chunk_indices
 from workloads.pool import MeanPoolingWorkload
@@ -127,6 +131,12 @@ def test_mean_pooling_bench(
 
     op = MeanPoolingForwardOp(**params)
 
+    # The offsets path is not fullgraph-compilable, so it keeps the eager baseline.
     bm.compare(
-        {"tileops": op, "torch-ref": test.ref_program}, *inputs, record_as=op, params=locals()
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(test.ref_program)}
+        if use_offsets == 0
+        else {"tileops": op, "torch-ref": test.ref_program},
+        *inputs,
+        record_as=op,
+        params=locals(),
     )

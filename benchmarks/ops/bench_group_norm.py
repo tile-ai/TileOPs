@@ -2,12 +2,16 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, torch_inductor_baseline
 from tileops.manifest import load_workloads
-from tileops.ops.norm.group_norm import GroupNormFwdOp
+from tileops.ops.norm.group_norm import (
+    GroupNormFwdOp,
+    GroupNormNoAffineFwdOp,
+)
 from workloads.normalization import GroupNormWorkload
 
 _OP_NAME = "GroupNormFwdOp"
+_OP_NAME_NO_AFFINE = "GroupNormNoAffineFwdOp"
 
 
 def _build_params(workloads):
@@ -27,9 +31,8 @@ def _build_params(workloads):
     return params
 
 
-_WORKLOADS = load_workloads(_OP_NAME)
-_AFFINE_PARAMS = _build_params([w for w in _WORKLOADS if "weight_shape" in w])
-_NO_AFFINE_PARAMS = _build_params([w for w in _WORKLOADS if "weight_shape" not in w])
+_AFFINE_PARAMS = _build_params(load_workloads(_OP_NAME))
+_NO_AFFINE_PARAMS = _build_params(load_workloads(_OP_NAME_NO_AFFINE))
 
 
 @pytest.mark.parametrize("n, c, spatial, num_groups, dtype, tune", _AFFINE_PARAMS)
@@ -47,7 +50,12 @@ def test_group_norm_bench(
         return F.group_norm(x, num_groups, weight=weight, bias=bias, eps=1e-5)
 
     bm.compare(
-        {"tileops": op, "torch": baseline_fn}, x, weight, bias, record_as=op, params=locals()
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_fn)},
+        x,
+        weight,
+        bias,
+        record_as=op,
+        params=locals(),
     )
 
 
@@ -58,10 +66,15 @@ def test_group_norm_no_affine_bench(
     test = GroupNormWorkload(n, c, spatial, num_groups, dtype)
     x, _, _ = test.gen_inputs()
 
-    op = GroupNormFwdOp(num_groups=num_groups, tune=tune)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    op = GroupNormNoAffineFwdOp(num_groups=num_groups, tune=tune)
+    bm = ManifestBenchmark(_OP_NAME_NO_AFFINE, op, test)
 
     def baseline_no_affine(x):
         return F.group_norm(x, num_groups, weight=None, bias=None, eps=1e-5)
 
-    bm.compare({"tileops": op, "torch": baseline_no_affine}, x, record_as=op, params=locals())
+    bm.compare(
+        {"tileops": op, "torch-inductor": torch_inductor_baseline(baseline_no_affine)},
+        x,
+        record_as=op,
+        params=locals(),
+    )
