@@ -1,6 +1,5 @@
 """Arg-reduction operators (argmax, argmin)."""
 
-from math import prod
 from typing import Dict, Optional
 
 from tileops.kernels.kernel_base import Kernel
@@ -11,78 +10,7 @@ from .reduce import _ReduceOpBase
 __all__ = ["ArgmaxFwdOp", "ArgminFwdOp"]
 
 
-class _ArgreduceOpBase(_ReduceOpBase):
-    """Prepare argreduce inputs without materializing a transposed tensor.
-
-    A contiguous non-last-axis input is flattened in its existing layout and
-    the product of trailing dimensions is passed to :class:`ArgreduceKernel`
-    as ``inner_stride``.  Truly non-contiguous inputs retain the compatibility
-    fallback through ``movedim(...).contiguous()``.
-    """
-
-    def _get_or_create_strided_kernel(
-        self,
-        M: int,
-        N: int,
-        inner_stride: int,
-    ) -> object:
-        key = (M, N, inner_stride)
-        if key not in self._kernel_cache:
-            kernel_cls = self.kernel_map[self._kernel_key]
-            self._kernel_cache[key] = kernel_cls(
-                M,
-                N,
-                self._op_kind,
-                self.dtype,
-                inner_stride=inner_stride,
-                tune=self._tune,
-                **self._build_kernel_kwargs(),
-            )
-        return self._kernel_cache[key]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run argreduce with stride-aware input/output traversal."""
-        self._validate_input_tensor(x)
-        orig_shape = x.shape
-
-        if self.dim is None:
-            # torch.argmax/argmin(dim=None) use logical contiguous order.
-            N = x.numel()
-            M = 1
-            dim_info = list(range(x.ndim))
-            x_flat = x.contiguous().reshape(-1)
-            inner_stride = 1
-        else:
-            if self.dim < -x.ndim or self.dim >= x.ndim:
-                raise IndexError(
-                    f"Dimension out of range (expected to be in range of "
-                    f"[{-x.ndim}, {x.ndim - 1}], but got {self.dim})"
-                )
-            dim = self.dim % x.ndim
-            N = x.shape[dim]
-            M = prod(s for i, s in enumerate(x.shape) if i != dim)
-            dim_info = dim
-
-            if x.is_contiguous():
-                # Keep the original layout.  Adjacent output threads read
-                # adjacent elements for non-last-axis reductions.
-                inner_stride = prod(x.shape[dim + 1 :])
-                x_flat = x.reshape(-1)
-            else:
-                # Storage strides are not part of the public Kernel contract;
-                # compact unusual views once, then use the contiguous path.
-                if dim != x.ndim - 1:
-                    x = x.movedim(dim, -1)
-                x_flat = x.contiguous().reshape(-1)
-                inner_stride = 1
-
-        self._last_roofline_mn = (M, N)
-        kernel = self._get_or_create_strided_kernel(M, N, inner_stride)
-        y = kernel(x_flat)
-        return self._reshape_output(y, orig_shape, dim_info)
-
-
-class ArgmaxFwdOp(_ArgreduceOpBase):
+class ArgmaxFwdOp(_ReduceOpBase):
     """Argmax reduction along an arbitrary dim, returning int64 indices.
 
     Construction: ``ArgmaxFwdOp(dim=None, keepdim=False)``.  M and N are
@@ -102,6 +30,7 @@ class ArgmaxFwdOp(_ArgreduceOpBase):
     _op_kind = "argmax"
     _kernel_key = "argreduce"
     _kernel_cls = ArgreduceKernel
+    _kernel_handles_padding = True
 
     def __init__(
         self,
@@ -136,7 +65,7 @@ class ArgmaxFwdOp(_ArgreduceOpBase):
 
 
 
-class ArgminFwdOp(_ArgreduceOpBase):
+class ArgminFwdOp(_ReduceOpBase):
     """Argmin reduction along an arbitrary dim, returning int64 indices.
 
     Construction: ``ArgminFwdOp(dim=None, keepdim=False)``.  M and N are
@@ -156,6 +85,7 @@ class ArgminFwdOp(_ArgreduceOpBase):
     _op_kind = "argmin"
     _kernel_key = "argreduce"
     _kernel_cls = ArgreduceKernel
+    _kernel_handles_padding = True
 
     def __init__(
         self,

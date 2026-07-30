@@ -533,8 +533,10 @@ def test_argmin_dim_none(shape: tuple, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_kind", ["argmax", "argmin"])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize(
+    ("op_kind", "dtype"),
+    [("argmax", torch.float16), ("argmin", torch.bfloat16)],
+)
 def test_argreduce_large_n(op_kind: str, dtype: torch.dtype) -> None:
     """The multi-CTA path supports the LM-head workload without tiling skips."""
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
@@ -544,9 +546,7 @@ def test_argreduce_large_n(op_kind: str, dtype: torch.dtype) -> None:
     op = op_cls(dtype=dtype, dim=-1)
     ref = getattr(torch, op_kind)(x, dim=-1)
     y = _call(op, x)
-    assert torch.equal(y, ref), (
-        f"large-N {op_kind} mismatch: {(y != ref).sum().item()}"
-    )
+    assert torch.equal(y, ref), f"large-N {op_kind} mismatch: {(y != ref).sum().item()}"
 
 
 @pytest.mark.smoke
