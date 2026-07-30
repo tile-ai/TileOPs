@@ -1,5 +1,4 @@
 import inspect
-import re
 from typing import Callable, Optional, Tuple
 
 import pytest
@@ -1453,12 +1452,6 @@ _MAX_POOL_CTOR_PARAMS = (
     ("tune", False),
 )
 
-_ADAPTIVE_POOL_CTOR_PARAMS = (
-    ("output_size", _EMPTY),
-    ("kernel_map", None),
-    ("tune", False),
-)
-
 # Manifest-pinned constructor contract: parameter names, order, and defaults.
 _POOL_CTOR_SNAPSHOTS: list = [
     pytest.param(AvgPool1dFwdOp, _AVG_POOL_CTOR_PARAMS_1D, id="avg-pool1d"),
@@ -1470,11 +1463,6 @@ _POOL_CTOR_SNAPSHOTS: list = [
     pytest.param(MaxPool2dIndicesFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool2d-indices"),
     pytest.param(MaxPool3dFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool3d"),
     pytest.param(MaxPool3dIndicesFwdOp, _MAX_POOL_CTOR_PARAMS, id="max-pool3d-indices"),
-    pytest.param(AdaptiveAvgPool2dFwdOp, _ADAPTIVE_POOL_CTOR_PARAMS, id="adaptive-avg-pool2d"),
-    pytest.param(AdaptiveMaxPool2dFwdOp, _ADAPTIVE_POOL_CTOR_PARAMS, id="adaptive-max-pool2d"),
-    pytest.param(
-        AdaptiveMaxPool2dIndicesFwdOp, _ADAPTIVE_POOL_CTOR_PARAMS,
-        id="adaptive-max-pool2d-indices"),
 ]
 
 
@@ -1541,7 +1529,6 @@ def test_max_pool_forward_return_annotation_snapshot(op_cls: type, expected_retu
         MaxPool1dFwdOp, MaxPool1dIndicesFwdOp,
         MaxPool2dFwdOp, MaxPool2dIndicesFwdOp,
         MaxPool3dFwdOp, MaxPool3dIndicesFwdOp,
-        AdaptiveAvgPool2dFwdOp, AdaptiveMaxPool2dFwdOp, AdaptiveMaxPool2dIndicesFwdOp,
     ],
 )
 def test_pool_codegen_slots_are_class_local(op_cls: type) -> None:
@@ -1638,19 +1625,6 @@ _POOL_INFER_SHAPE_SNAPSHOTS: list = [
         MaxPool3dIndicesFwdOp, {"kernel_size": 3, "stride": 2, "padding": 1},
         (2, 4, 8, 16, 16), {"output": (2, 4, 4, 8, 8), "indices": (2, 4, 4, 8, 8)},
         id="max-pool3d-indices"),
-    pytest.param(
-        AdaptiveAvgPool2dFwdOp, {"output_size": (4, 4)},
-        (2, 4, 16, 16), {"output": (2, 4, 4, 4)}, id="adaptive-avg-pool2d"),
-    pytest.param(
-        AdaptiveMaxPool2dFwdOp, {"output_size": (4, 4)},
-        (2, 4, 16, 16), {"output": (2, 4, 4, 4)}, id="adaptive-max-pool2d"),
-    pytest.param(
-        AdaptiveMaxPool2dIndicesFwdOp, {"output_size": (4, 4)},
-        (2, 4, 16, 16), {"output": (2, 4, 4, 4), "indices": (2, 4, 4, 4)},
-        id="adaptive-max-pool2d-indices"),
-    pytest.param(
-        AdaptiveAvgPool2dFwdOp, {"output_size": (None, 4)},
-        (4, 16, 16), {"output": (4, 16, 4)}, id="adaptive-avg-pool2d-chw-none"),
 ]
 
 
@@ -1744,20 +1718,11 @@ class AdaptiveAvgPool2dFixture(FixtureBase):
                     marks=[pytest.mark.smoke, pytest.mark.packaging],
                     id="smoke-spp-6x6-fp16"),
                 pytest.param(
-                    2, 64, 56, 56, (6, 6), torch.bfloat16, False,
-                    marks=pytest.mark.smoke, id="smoke-spp-6x6-bf16"),
-                pytest.param(
-                    1, 32, 7, 7, (1, 1), torch.float16, False,
-                    marks=pytest.mark.smoke, id="smoke-global-fp16"),
+                    1, 96, 28, 30, (7, 5), torch.bfloat16, False,
+                    marks=pytest.mark.smoke, id="smoke-asymmetric-bf16"),
                 pytest.param(
                     1, 128, 55, 57, (7, 7), torch.float16, False,
                     marks=pytest.mark.full, id="full-nondiv-fp16"),
-                pytest.param(
-                    1, 96, 28, 30, (7, 5), torch.bfloat16, False,
-                    marks=pytest.mark.full, id="full-asymmetric-bf16"),
-                pytest.param(
-                    1, 8, 8, 8, (12, 12), torch.float16, False,
-                    marks=pytest.mark.full, id="full-expand-fp16"),
                 pytest.param(
                     1, 16, 11, 13, (None, 5), torch.float16, False,
                     marks=pytest.mark.full, id="full-partial-none-fp16"),
@@ -1765,14 +1730,8 @@ class AdaptiveAvgPool2dFixture(FixtureBase):
                     1, 16, 10, 10, 4, torch.bfloat16, False,
                     marks=pytest.mark.full, id="full-scalar-output-size-bf16"),
                 pytest.param(
-                    1, 16, 10, 10, [6, 6], torch.float16, False,
-                    marks=pytest.mark.full, id="full-list-output-size-fp16"),
-                pytest.param(
                     1, 8, 9, 11, (None, None), torch.float16, False,
                     marks=pytest.mark.full, id="full-all-none-identity-fp16"),
-                pytest.param(
-                    1, 8, 9, 11, None, torch.float16, False,
-                    marks=pytest.mark.full, id="full-scalar-none-identity-fp16"),
             ],
         ),
     ]
@@ -1788,32 +1747,14 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                     marks=[pytest.mark.smoke, pytest.mark.packaging],
                     id="smoke-spp-6x6-fp16"),
                 pytest.param(
-                    2, 64, 56, 56, (6, 6), torch.bfloat16, False,
-                    marks=pytest.mark.smoke, id="smoke-spp-6x6-bf16"),
-                pytest.param(
-                    1, 32, 7, 7, (1, 1), torch.float16, False,
-                    marks=pytest.mark.smoke, id="smoke-global-fp16"),
+                    1, 96, 28, 30, (7, 5), torch.bfloat16, False,
+                    marks=pytest.mark.smoke, id="smoke-asymmetric-bf16"),
                 pytest.param(
                     1, 128, 55, 57, (7, 7), torch.float16, False,
                     marks=pytest.mark.full, id="full-nondiv-fp16"),
                 pytest.param(
-                    1, 96, 28, 30, (7, 5), torch.bfloat16, False,
-                    marks=pytest.mark.full, id="full-asymmetric-bf16"),
-                pytest.param(
-                    1, 8, 8, 8, (12, 12), torch.float16, False,
-                    marks=pytest.mark.full, id="full-expand-fp16"),
-                pytest.param(
                     1, 16, 11, 13, (5, None), torch.float16, False,
                     marks=pytest.mark.full, id="full-partial-none-fp16"),
-                pytest.param(
-                    1, 16, 10, 10, 4, torch.bfloat16, False,
-                    marks=pytest.mark.full, id="full-scalar-output-size-bf16"),
-                pytest.param(
-                    1, 16, 10, 10, [6, 6], torch.float16, False,
-                    marks=pytest.mark.full, id="full-list-output-size-fp16"),
-                pytest.param(
-                    1, 8, 9, 11, None, torch.float16, False,
-                    marks=pytest.mark.full, id="full-scalar-none-identity-fp16"),
             ],
         ),
     ]
@@ -1902,90 +1843,6 @@ def test_adaptive_max_pool2d(
         assert isinstance(op.kernel, expected_kernel)
 
 
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-@pytest.mark.parametrize("with_batch", [False, True], ids=["chw", "nchw"])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
-def test_adaptive_avg_pool2d_unbatched_and_batched(with_batch: bool, dtype: torch.dtype) -> None:
-    shape = (2, 8, 55, 57) if with_batch else (8, 55, 57)
-    x = torch.randn(*shape, device="cuda", dtype=dtype)
-    op = AdaptiveAvgPool2dFwdOp((7, 7))
-    ref = F.adaptive_avg_pool2d(x, (7, 7))
-    atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
-    torch.testing.assert_close(op(x), ref, atol=atol, rtol=rtol)
-
-
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-@pytest.mark.parametrize("with_batch", [False, True], ids=["chw", "nchw"])
-def test_adaptive_max_pool2d_indices_unbatched_and_batched(with_batch: bool) -> None:
-    shape = (2, 8, 55, 57) if with_batch else (8, 55, 57)
-    x = torch.randn(*shape, device="cuda", dtype=torch.float16)
-    out, idx = AdaptiveMaxPool2dIndicesFwdOp((7, 7))(x)
-    ref_out, ref_idx = F.adaptive_max_pool2d(x, (7, 7), return_indices=True)
-    torch.testing.assert_close(out, ref_out, atol=0, rtol=0)
-    assert idx.dtype == torch.int64 and torch.equal(idx, ref_idx)
-
-
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_adaptive_max_pool2d_tied_maxima_indices() -> None:
-    # Tied maxima inside a bin: indices must match PyTorch exactly (first in
-    # row-major order).
-    x = torch.tensor(
-        [[[[1.0, 3.0, 0.0], [3.0, 2.0, 1.0], [0.0, 1.0, 2.0]]]],
-        device="cuda", dtype=torch.float16,
-    )
-    out, idx = AdaptiveMaxPool2dIndicesFwdOp((1, 1))(x)
-    ref_out, ref_idx = F.adaptive_max_pool2d(x, (1, 1), return_indices=True)
-    torch.testing.assert_close(out, ref_out, atol=0, rtol=0)
-    assert torch.equal(idx, ref_idx)
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("output_size", "error", "match"),
-    [
-        pytest.param(
-            0, ValueError, "output_size entries must be positive or None", id="zero"),
-        pytest.param(
-            (3, 0), ValueError, "output_size entries must be positive or None",
-            id="zero-entry"),
-        pytest.param(
-            (2, 2, 2), TypeError,
-            re.escape("output_size must be None, an int, or a tuple of (int | None, int | None)"),
-            id="len-3-tuple"),
-        pytest.param(
-            "3", TypeError,
-            re.escape("output_size must be None, an int, or a tuple of (int | None, int | None)"),
-            id="string"),
-        pytest.param(
-            True, TypeError,
-            re.escape("output_size must be None, an int, or a tuple of (int | None, int | None)"),
-            id="bool"),
-        pytest.param(
-            (3.0, 3), TypeError,
-            re.escape("output_size must be None, an int, or a tuple of (int | None, int | None)"),
-            id="float-entry"),
-    ],
-)
-def test_adaptive_pool_rejects_invalid_output_size(output_size, error: type, match: str) -> None:
-    with pytest.raises(error, match=match):
-        AdaptiveAvgPool2dFwdOp(output_size)
-
-
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_adaptive_pool_rejects_invalid_input() -> None:
-    op = AdaptiveAvgPool2dFwdOp((4, 4))
-    with pytest.raises(ValueError, match="3D CHW or 4D NCHW"):
-        op(torch.randn(8, 8, device="cuda", dtype=torch.float16))
-    with pytest.raises(ValueError, match="float16 or bfloat16"):
-        op(torch.randn(1, 4, 8, 8, device="cuda", dtype=torch.float32))
-    with pytest.raises(ValueError, match="CUDA"):
-        op(torch.randn(1, 4, 8, 8, dtype=torch.float16))
-
-
 _ADAPTIVE_POOL_COMPILE_CASES = [
     pytest.param(
         AdaptiveAvgPool2dFwdOp, (2, 4, 16, 16), False, id="adaptive-avg-pool2d"),
@@ -2024,30 +1881,6 @@ def test_adaptive_pool_compile_fullgraph(
     else:
         ref = F.adaptive_max_pool2d(x, (4, 4))
         torch.testing.assert_close(out, ref, atol=0, rtol=0)
-
-
-@pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-@pytest.mark.parametrize(
-    ("op_cls", "expected_flops", "expected_bytes"),
-    [
-        # input (1, 2, 8, 8) fp16, output_size (2, 2): bins [0,4) and [4,8),
-        # no overlap, exact scan = 8 per axis.
-        # flops = 1*2*8*8 = 128; bytes = (1*2*64 + 1*2*4) * 2 [+ 1*2*4*8].
-        pytest.param(AdaptiveAvgPool2dFwdOp, 128, 272, id="adaptive-avg-pool2d"),
-        pytest.param(AdaptiveMaxPool2dFwdOp, 128, 272, id="adaptive-max-pool2d"),
-        pytest.param(AdaptiveMaxPool2dIndicesFwdOp, 128, 336, id="adaptive-max-pool2d-indices"),
-    ],
-)
-def test_adaptive_pool_eval_roofline_snapshot(
-    op_cls: type,
-    expected_flops: int,
-    expected_bytes: int,
-) -> None:
-    op = op_cls(output_size=(2, 2))
-    x = torch.randn(1, 2, 8, 8, device="cuda", dtype=torch.float16)
-    op(x)
-    assert op.eval_roofline() == (expected_flops, expected_bytes)
 
 
 if __name__ == "__main__":

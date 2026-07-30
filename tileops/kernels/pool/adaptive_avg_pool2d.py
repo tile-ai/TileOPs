@@ -11,7 +11,7 @@ from tileops.kernels.kernel_base import Kernel
 __all__ = ["AdaptiveAvgPool2dKernel"]
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=32)
 def _adaptive_avg_pool2d_kernel(
     n: int,
     c_in: int,

@@ -312,6 +312,26 @@ satisfy the cold-call contract.
 
 The scaffold emits T2 (L1-direct) ops only; once a family accumulates 2-3 ops sharing an identical `forward()` flow, a separate family-specific refactoring (not scaffold-op) extracts an L2 base and rewrites the concrete ops as T1 thin wrappers — see [Development Path](ops-design-reference.md#development-path) for when to extract and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the process. Family bases MUST NOT normalize genuine per-op behavior differences.
 
+### Adaptive 2D pool protocol
+
+`_AdaptivePool2dFwdOpBase` owns the common adaptive-pooling flow for the
+average, max-value, and max-with-indices variants. It normalizes CHW input to
+NCHW for the kernel, resolves `None` output dimensions, caches kernels by the
+resolved shape/dtype/device/tuning tuple, and restores the original rank on
+return.
+
+Concrete adaptive-pool Ops provide two class variables:
+
+- `_kernel_slot` selects the manifest-declared `kernel_map` entry.
+- `_returns_indices` selects the value-only or `(output, indices)` shape and
+  post-processing path; it defaults to `False` and is enabled only by the
+  indices variant.
+
+Each concrete class still declares its own `default_kernel_map`,
+`_validate_dtypes`, and `eval_roofline`. Keeping those slots class-local lets
+manifest code generation resolve each public Op independently rather than
+silently inheriting another variant's contract.
+
 ## Further Reference
 
 - [Slot Rules](ops-design-reference.md#slot-rules) — full Rule / Derivation / Example / Common mistakes per slot
