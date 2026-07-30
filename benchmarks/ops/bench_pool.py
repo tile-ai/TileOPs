@@ -853,9 +853,9 @@ class AdaptiveMaxPool2dBenchCase:
         )
 
 
-def _adaptive_pool2d_bench_params(op_name: str) -> list:
+def _adaptive_pool2d_bench_params_from_workloads(workloads) -> list:
     params = []
-    for workload in load_workloads(op_name):
+    for workload in workloads:
         n, c_in, h_in, w_in = workload["input_shape"]
         output_size = tuple(workload["output_size"])
         label = workload.get("label", f"{n}x{c_in}x{h_in}x{w_in}")
@@ -878,7 +878,7 @@ def _adaptive_pool2d_bench_params(op_name: str) -> list:
 
 @pytest.mark.parametrize(
     "n, c_in, h_in, w_in, output_size, dtype, tune",
-    _adaptive_pool2d_bench_params(_ADAPTIVE_AVG_POOL2D_OP_NAME),
+    _adaptive_pool2d_bench_params_from_workloads(load_workloads(_ADAPTIVE_AVG_POOL2D_OP_NAME)),
 )
 def test_adaptive_avg_pool2d_bench(
     n: int,
@@ -903,7 +903,7 @@ def test_adaptive_avg_pool2d_bench(
 
 @pytest.mark.parametrize(
     "n, c_in, h_in, w_in, output_size, dtype, tune",
-    _adaptive_pool2d_bench_params(_ADAPTIVE_MAX_POOL2D_OP_NAME),
+    _adaptive_pool2d_bench_params_from_workloads(load_workloads(_ADAPTIVE_MAX_POOL2D_OP_NAME)),
 )
 def test_adaptive_max_pool2d_bench(
     n: int,
@@ -928,7 +928,7 @@ def test_adaptive_max_pool2d_bench(
 
 @pytest.mark.parametrize(
     "n, c_in, h_in, w_in, output_size, dtype, tune",
-    _adaptive_pool2d_bench_params(_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME),
+    _adaptive_pool2d_bench_params_from_workloads(load_workloads(_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME)),
 )
 def test_adaptive_max_pool2d_indices_bench(
     n: int,

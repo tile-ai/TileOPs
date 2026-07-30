@@ -1005,8 +1005,12 @@ class _AdaptivePool2dFwdOpBase(Op):
         self._last_roofline_spec: Optional[tuple] = None
 
     def _resolve_out_dims(self, h_in: int, w_in: int) -> tuple[int, int]:
-        out_h = h_in if self.output_size[0] is None else self.output_size[0]
-        out_w = w_in if self.output_size[1] is None else self.output_size[1]
+        # Manifest parity probes call _infer_output_shapes on a mock self
+        # without __init__; a missing output_size acts as (None, None),
+        # i.e. pool to the input spatial size.
+        output_size = getattr(self, "output_size", (None, None))
+        out_h = h_in if output_size[0] is None else output_size[0]
+        out_w = w_in if output_size[1] is None else output_size[1]
         return out_h, out_w
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
