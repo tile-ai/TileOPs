@@ -414,6 +414,16 @@ def _ratio_emoji(ratio: float) -> str:
     return _RED
 
 
+def _strongest_baseline_ratio(bl_rows: list[tuple[str, float | None]]) -> float | None:
+    """Return the fastest baseline ratio for a config.
+
+    Ratio is ``baseline_latency / tileops_latency``. Smaller means the baseline
+    is faster and therefore the stronger competitor for table coloring.
+    """
+    ratios = [ratio for _, ratio in bl_rows if ratio is not None]
+    return min(ratios, default=None)
+
+
 def generate_report(
     test_ops: dict | None,
     bench_ops: dict | None,
@@ -606,8 +616,7 @@ def generate_report(
                         r_str = f"{bratio:.1%}" if bratio else "-"
                         via_parts.append(f"{btag} {r_str}")
                     via_str = ", ".join(via_parts)
-                    # Use the best (highest) ratio for the emoji
-                    best_ratio = max((r for _, r in bl_rows if r), default=None)
+                    best_ratio = _strongest_baseline_ratio(bl_rows)
                     emoji = _ratio_emoji(best_ratio) if best_ratio else ""
                     lines.append(f"| {emoji} | {op} | {cfg['name']} "
                                  f"| {lat_str} | {tflops_str} | {bw_str} "

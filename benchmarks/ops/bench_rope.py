@@ -11,6 +11,8 @@ Baselines build their cos/sin tables outside the timed window, so only the
 rotation itself is measured.
 """
 
+import math
+
 import pytest
 import torch
 
@@ -83,27 +85,111 @@ def _position_ids_params(workloads: list[dict]) -> list:
 
 
 def _rope_tables(seq_len: int, head_dim: int, dtype: torch.dtype):
-    """Half-split cos/sin tables, shape ``(seq_len, head_dim)``.
+    cos, sin = _rope_half_tables(seq_len, head_dim)
+    return torch.cat([cos] * 2, dim=-1).to(dtype), torch.cat([sin] * 2, dim=-1).to(dtype)
 
-    Frequency values are variant-specific, but the timed rotation cost depends
-    only on table geometry, which every RoPE variant shares — so one baseline
-    serves all of them.
-    """
+
+def _rope_half_tables(
+    seq_len: int,
+    head_dim: int,
+    *,
+    variant: str = "neox",
+) -> tuple[torch.Tensor, torch.Tensor]:
     half = head_dim // 2
-    freqs = 1.0 / (
-        _BASE ** (torch.arange(0, half, device="cuda", dtype=torch.float32) / half)
+    dim = torch.arange(0, half, device="cuda", dtype=torch.float32)
+    if variant == "llama31":
+        freqs = _llama31_inv_freqs(dim, half)
+    elif variant == "yarn":
+        freqs = _yarn_inv_freqs(dim, half)
+    elif variant == "longrope":
+        freqs = _longrope_inv_freqs(dim, half)
+    else:
+        freqs = 1.0 / (_BASE ** (dim / half))
+    angles = torch.outer(torch.arange(seq_len, device="cuda", dtype=torch.float32), freqs)
+    return torch.cos(angles), torch.sin(angles)
+
+
+def _llama31_inv_freqs(dim: torch.Tensor, half: int) -> torch.Tensor:
+    freqs = 1.0 / (_BASE ** (dim / half))
+    wavelen = 2 * math.pi / freqs
+    low_freq_wavelen = 8192.0
+    high_freq_wavelen = 8192.0 / 4.0
+    smooth = (8192.0 / wavelen - 1.0) / 3.0
+    blended = (1.0 - smooth) * freqs / 8.0 + smooth * freqs
+    return torch.where(
+        wavelen < high_freq_wavelen,
+        freqs,
+        torch.where(wavelen > low_freq_wavelen, freqs / 8.0, blended),
     )
-    angles = torch.outer(
-        torch.arange(seq_len, device="cuda", dtype=torch.float32), freqs,
-    )
-    return (torch.cat([torch.cos(angles)] * 2, dim=-1).to(dtype),
-            torch.cat([torch.sin(angles)] * 2, dim=-1).to(dtype))
+
+
+def _yarn_find_correction_dim(num_rotations: float, dim: int) -> float:
+    return dim * math.log(4096 / (num_rotations * 2 * math.pi)) / (2 * math.log(_BASE))
+
+
+def _yarn_inv_freqs(dim: torch.Tensor, half: int) -> torch.Tensor:
+    beta_fast = 32.0
+    beta_slow = 1.0
+    scale = 16.0
+    low = max(math.floor(_yarn_find_correction_dim(beta_fast, half)), 0)
+    high = min(math.ceil(_yarn_find_correction_dim(beta_slow, half)), half - 1)
+    if low == high:
+        high += 1
+    freq_extra = 1.0 / (_BASE ** (dim / half))
+    freq_inter = 1.0 / ((scale * _BASE) ** (dim / half))
+    inv_freq_mask = 1.0 - torch.clamp((dim - low) / (high - low), 0.0, 1.0)
+    return freq_inter * (1.0 - inv_freq_mask) + freq_extra * inv_freq_mask
+
+
+def _longrope_inv_freqs(dim: torch.Tensor, half: int) -> torch.Tensor:
+    # Manifest workloads use RopeLongRopeOp defaults: no rescale factors and
+    # equal max/original position lengths, so the scale amplitude remains 1.
+    return 1.0 / (_BASE ** (dim / half))
 
 
 def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     half = x.shape[-1] // 2
     x1, x2 = x[..., :half], x[..., half:]
     return x * cos + torch.cat((-x2, x1), dim=-1) * sin
+
+
+def _rotate_interleaved(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+) -> torch.Tensor:
+    x_even, x_odd = x[..., ::2], x[..., 1::2]
+    out = torch.empty_like(x)
+    out[..., ::2] = x_even * cos - x_odd * sin
+    out[..., 1::2] = x_odd * cos + x_even * sin
+    return out
+
+
+def _rope_reference(
+    x: torch.Tensor,
+    layout: str,
+    *,
+    variant: str,
+    interleave: bool = False,
+) -> torch.Tensor:
+    seq_len = x.shape[0] if layout == "1d" else x.shape[1]
+    cos_half, sin_half = _rope_half_tables(seq_len, x.shape[-1], variant=variant)
+    if interleave:
+        if layout != "1d":
+            cos_half, sin_half = (
+                t.view(1, seq_len, 1, x.shape[-1] // 2) for t in (cos_half, sin_half)
+            )
+        return _rotate_interleaved(x, cos_half.to(x.dtype), sin_half.to(x.dtype))
+
+    cos = torch.cat([cos_half] * 2, dim=-1).to(x.dtype)
+    sin = torch.cat([sin_half] * 2, dim=-1).to(x.dtype)
+    if layout != "1d":
+        cos, sin = (t.view(1, seq_len, 1, x.shape[-1]) for t in (cos, sin))
+    return _rotate(x, cos, sin)
+
+
+def _assert_flashinfer_close(actual: torch.Tensor, expected: torch.Tensor) -> None:
+    torch.testing.assert_close(actual, expected, rtol=5e-2, atol=5e-2)
 
 
 def _flashinfer_module():
@@ -140,15 +226,14 @@ def _flashinfer_flat_qk_pos_ids(
     return q.reshape(q.shape[0], -1), k.reshape(k.shape[0], -1), pos_ids, output_shape
 
 
-def _rope_cos_sin_cache(seq_len: int, head_dim: int) -> torch.Tensor:
-    half = head_dim // 2
-    freqs = 1.0 / (
-        _BASE ** (torch.arange(0, half, device="cuda", dtype=torch.float32) / half)
-    )
-    angles = torch.outer(
-        torch.arange(seq_len, device="cuda", dtype=torch.float32), freqs,
-    )
-    return torch.cat([torch.cos(angles), torch.sin(angles)], dim=-1)
+def _rope_cos_sin_cache(
+    seq_len: int,
+    head_dim: int,
+    *,
+    variant: str = "neox",
+) -> torch.Tensor:
+    cos, sin = _rope_half_tables(seq_len, head_dim, variant=variant)
+    return torch.cat([cos, sin], dim=-1)
 
 
 def _record_flashinfer_rope(
@@ -164,31 +249,29 @@ def _record_flashinfer_rope(
 ) -> None:
     q, k, pos_ids, output_shape = _flashinfer_qk_pos_ids(x, layout)
     if variant == "llama31":
-        result_fi = bm.profile(
-            lambda q, k, p: flashinfer.apply_llama31_rope_pos_ids(
+        def flashinfer_baseline(q, k, p):
+            return flashinfer.apply_llama31_rope_pos_ids(
                 q,
                 k,
                 p,
                 interleave=interleave,
                 rope_theta=_BASE,
-            )[0].reshape(output_shape),
-            q,
-            k,
-            pos_ids,
-        )
+            )[0].reshape(output_shape)
     else:
-        result_fi = bm.profile(
-            lambda q, k, p: flashinfer.apply_rope_pos_ids(
+        def flashinfer_baseline(q, k, p):
+            return flashinfer.apply_rope_pos_ids(
                 q,
                 k,
                 p,
                 interleave=interleave,
                 rope_theta=_BASE,
-            )[0].reshape(output_shape),
-            q,
-            k,
-            pos_ids,
-        )
+            )[0].reshape(output_shape)
+
+    _assert_flashinfer_close(
+        flashinfer_baseline(q, k, pos_ids),
+        _rope_reference(x, layout, variant=variant, interleave=interleave),
+    )
+    result_fi = bm.profile(flashinfer_baseline, q, k, pos_ids)
     BenchmarkReport.record(op, params, result_fi, tag="flashinfer")
 
 
@@ -200,24 +283,28 @@ def _record_flashinfer_cached_rope(
     x: torch.Tensor,
     layout: str,
     *,
+    variant: str,
     is_neox: bool = True,
 ) -> None:
     seq_len = x.shape[0] if layout == "1d" else x.shape[1]
     q, k, pos_ids, output_shape = _flashinfer_flat_qk_pos_ids(x, layout)
-    cos_sin_cache = _rope_cos_sin_cache(seq_len, x.shape[-1])
-    result_fi = bm.profile(
-        lambda p, q, k: flashinfer.apply_rope_with_cos_sin_cache(
+    cos_sin_cache = _rope_cos_sin_cache(seq_len, x.shape[-1], variant=variant)
+
+    def flashinfer_baseline(p, q, k):
+        return flashinfer.apply_rope_with_cos_sin_cache(
             p,
             q,
             k,
             x.shape[-1],
             cos_sin_cache,
             is_neox=is_neox,
-        )[0].reshape(output_shape),
-        pos_ids,
-        q,
-        k,
+        )[0].reshape(output_shape)
+
+    _assert_flashinfer_close(
+        flashinfer_baseline(pos_ids, q, k),
+        _rope_reference(x, layout, variant=variant, interleave=(not is_neox)),
     )
+    result_fi = bm.profile(flashinfer_baseline, pos_ids, q, k)
     BenchmarkReport.record(op, params, result_fi, tag="flashinfer")
 
 
@@ -241,14 +328,14 @@ def _profile_rope(op, bm: ManifestBenchmark, shape: tuple[int, ...],
         else:
             _record_flashinfer_cached_rope(
                 flashinfer, op, bm, params, x, layout,
+                variant=variant,
                 is_neox=(not interleave),
             )
 
-    seq_len = shape[0] if layout == "1d" else shape[1]
-    cos, sin = _rope_tables(seq_len, shape[-1], dtype)
-    if layout != "1d":
-        cos, sin = (t.view(1, seq_len, 1, shape[-1]) for t in (cos, sin))
-    result_bl = bm.profile(lambda t: _rotate(t, cos, sin), x)
+    result_bl = bm.profile(
+        lambda t: _rope_reference(t, layout, variant=variant, interleave=interleave),
+        x,
+    )
     BenchmarkReport.record(op, params, result_bl, tag="torch_ref")
 
 
@@ -350,17 +437,22 @@ def test_rope_neox_position_ids_bench(
     flashinfer = _flashinfer_module()
     if flashinfer is not None:
         k = x.new_empty((num_tokens, 0, head_dim))
-        result_fi = bm.profile(
-            lambda t, k, p: flashinfer.apply_rope_pos_ids(
+        def flashinfer_baseline(t, k, p):
+            return flashinfer.apply_rope_pos_ids(
                 t,
                 k,
                 p,
                 rope_theta=_BASE,
-            )[0],
-            x,
-            k,
-            position_ids,
-        )
+            )[0]
+
+        cos, sin = _rope_tables(max_position, head_dim, dtype)
+
+        def expected_fn(t: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
+            idx = pos.long()
+            return _rotate(t, cos[idx].unsqueeze(1), sin[idx].unsqueeze(1))
+
+        _assert_flashinfer_close(flashinfer_baseline(x, k, position_ids), expected_fn(x, position_ids))
+        result_fi = bm.profile(flashinfer_baseline, x, k, position_ids)
         BenchmarkReport.record(op, params, result_fi, tag="flashinfer")
 
     cos, sin = _rope_tables(max_position, head_dim, dtype)
