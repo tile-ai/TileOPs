@@ -37,7 +37,7 @@ def test_fft_bench(shape: tuple, dtype: torch.dtype) -> None:
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-cufft")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cufft")
 
 
 if __name__ == "__main__":

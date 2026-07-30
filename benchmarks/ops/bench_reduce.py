@@ -7,7 +7,12 @@ Workload shapes and roofline formulas are loaded from the ops manifest (tileops/
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+    workloads_to_params,
+)
 from tileops.ops.reduction.reduce import (
     AmaxFwdOp,
     AminFwdOp,
@@ -71,8 +76,8 @@ def test_sum_bench(
     def baseline_fn(x):
         return x.float().sum(dim=dim, keepdim=keepdim).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Mean benchmarks
@@ -105,8 +110,8 @@ def test_mean_bench(
     def baseline_fn(x):
         return x.float().mean(dim=dim, keepdim=keepdim).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Amax benchmarks
@@ -139,8 +144,8 @@ def test_amax_bench(
     def baseline_fn(x):
         return x.amax(dim=dim, keepdim=keepdim)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Amin benchmarks
@@ -173,8 +178,8 @@ def test_amin_bench(
     def baseline_fn(x):
         return x.amin(dim=dim, keepdim=keepdim)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Prod benchmarks
@@ -198,8 +203,8 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
     def baseline_fn(x):
         return x.float().prod(dim=-1).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Std benchmarks
@@ -232,8 +237,8 @@ def test_std_bench(
     def baseline_fn(x):
         return x.float().std(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Var benchmarks
@@ -266,8 +271,8 @@ def test_var_bench(
     def baseline_fn(x):
         return x.float().var(dim=dim, keepdim=keepdim, correction=1).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # VarMean benchmarks
@@ -302,8 +307,8 @@ def test_var_mean_bench(
         m = x.float().mean(dim=dim, keepdim=keepdim).to(x.dtype)
         return (v, m)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 if __name__ == "__main__":

@@ -140,7 +140,7 @@ def test_avg_pool1d_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cudnn")
 
 
 class AvgPool2dBenchCase:
@@ -270,7 +270,7 @@ def test_avg_pool2d_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cudnn")
 
 
 class AvgPool3dBenchCase:
@@ -411,7 +411,7 @@ def test_avg_pool3d_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cudnn")
 
 
 class MaxPool2dBenchCase:
@@ -544,7 +544,7 @@ def test_max_pool2d_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cudnn")
 
 
 @pytest.mark.parametrize(
@@ -592,7 +592,7 @@ def test_max_pool2d_indices_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cudnn")
 
 
 class MaxPool1dBenchCase:
@@ -721,7 +721,7 @@ def test_max_pool1d_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cudnn")
 
 
 @pytest.mark.parametrize(
@@ -767,7 +767,7 @@ def test_max_pool1d_indices_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cudnn")
 
 
 class MaxPool3dBenchCase:
@@ -914,7 +914,7 @@ def test_max_pool3d_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cudnn")
 
 
 @pytest.mark.parametrize(
@@ -964,4 +964,4 @@ def test_max_pool3d_indices_bench(
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cudnn")

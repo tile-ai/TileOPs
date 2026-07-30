@@ -15,6 +15,7 @@ from benchmarks.benchmark_base import (
     BenchmarkBase,
     BenchmarkReport,
     ManifestBenchmark,
+    torch_inductor_baseline,
 )
 from tileops.kernels.elementwise import (
     GeluAndMulFwdKernel,
@@ -200,8 +201,8 @@ def test_binary_arith_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Comparison ops (6)
@@ -245,8 +246,8 @@ def test_comparison_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Logical ops (2)
@@ -281,8 +282,8 @@ def test_logical_bench(
 
     # Baseline uses bool tensors
     a_bool, b_bool = inputs[0].bool(), inputs[1].bool()
-    result_bl = bm.profile(baseline_fn, a_bool, b_bool)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), a_bool, b_bool)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Bitwise ops (3)
@@ -315,8 +316,8 @@ def test_bitwise_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Fused gated ops (2)
@@ -380,8 +381,11 @@ def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str,
     inputs = test.gen_inputs()
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, params, result, tag="tileops")
-    result_bl = bm.profile(_FUSED_BASELINES[baseline_key], *inputs)
-    BenchmarkReport.record(op, params, result_bl, tag="torch-ref")
+    result_bl = bm.profile(
+        torch_inductor_baseline(_FUSED_BASELINES[baseline_key]),
+        *inputs,
+    )
+    BenchmarkReport.record(op, params, result_bl, tag="torch_inductor")
 
 
 @SiluAndMulBenchFixture
@@ -475,8 +479,10 @@ def test_fused_gated_strategy_bench(
     BenchmarkReport.record(f"{op_name}_strategy", locals(), result, tag=f"tileops-{strategy}")
 
     baseline_fn = _FUSED_BASELINES[op_name]
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(f"{op_name}_strategy", locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(
+        f"{op_name}_strategy", locals(), result_bl, tag="torch_inductor",
+    )
 
 
 # Broadcast benchmark (bias-add pattern)
@@ -575,8 +581,10 @@ def test_broadcast_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(f"{op_name}_bcast", locals(), result, tag="tileops")
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(f"{op_name}_bcast", locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(
+        f"{op_name}_bcast", locals(), result_bl, tag="torch_inductor",
+    )
 
 
 if __name__ == "__main__":

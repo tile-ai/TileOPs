@@ -110,7 +110,7 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     result_bl = bm.profile(
         lambda x, rm, rv, w, b: _torch_bn_fwd(x, w, b, rm, rv), *inputs,
     )
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-cudnn")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cudnn")
 
 
 @pytest.mark.parametrize("N, C, spatial, dtype", _manifest_bwd_params())
@@ -127,7 +127,7 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(_torch_bn_bwd, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-autograd")
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_cudnn")
 
 
 if __name__ == "__main__":

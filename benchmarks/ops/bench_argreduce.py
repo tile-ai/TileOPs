@@ -9,7 +9,12 @@ hard-code op parameters that are declared on manifest workload entries.
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+    workloads_to_params,
+)
 from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 from workloads.reduction import ArgmaxTest, ArgminTest
 
@@ -60,8 +65,8 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     def baseline_fn(x):
         return x.argmax(dim=dim)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Argmin benchmarks
@@ -93,8 +98,8 @@ def test_argmin_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
     def baseline_fn(x):
         return x.argmin(dim=dim)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 if __name__ == "__main__":

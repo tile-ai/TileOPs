@@ -17,6 +17,7 @@ from benchmarks.benchmark_base import (
     ShapeDtypeWorkload,
     _bench_meta,
     bench_kernel,
+    torch_inductor_baseline,
     workloads_to_params,
 )
 
@@ -341,3 +342,19 @@ def test_record_string_name_omits_config_field():
     BenchmarkReport.record("FA3Baseline", params={}, result=_result(), tag="FA3")
     records = BenchmarkReport._records["FA3Baseline"]
     assert "config" not in records[0]
+
+
+def test_torch_inductor_baseline_uses_fullgraph_compile(monkeypatch):
+    calls = []
+
+    def baseline(x):
+        return x
+
+    def fake_compile(fn, **kwargs):
+        calls.append((fn, kwargs))
+        return "compiled-baseline"
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    assert torch_inductor_baseline(baseline) == "compiled-baseline"
+    assert calls == [(baseline, {"fullgraph": True})]

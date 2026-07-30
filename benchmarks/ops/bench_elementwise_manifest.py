@@ -12,7 +12,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, torch_inductor_baseline
 from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
     AddFwdOp,
@@ -362,8 +362,8 @@ def _record_unary(
 ) -> None:
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, _manifest_params(bm), result, tag="tileops")
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, _manifest_params(bm), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, _manifest_params(bm), result_bl, tag="torch_inductor")
 
 
 def _record_binary(
@@ -374,8 +374,8 @@ def _record_binary(
 ) -> None:
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, _manifest_params(bm), result, tag="tileops")
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, _manifest_params(bm), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, _manifest_params(bm), result_bl, tag="torch_inductor")
 
 
 _RELU_OP = "ReluFwdOp"
@@ -548,8 +548,8 @@ def test_prelu_manifest_bench(
     bm = ManifestBenchmark(_PRELU_OP, op, test)
     result = bm.profile(op, x, weight)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
-    result_bl = bm.profile(F.prelu, x, weight)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(F.prelu), x, weight)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 _MASKED_FILL_OP = "MaskedFillFwdOp"
@@ -572,8 +572,13 @@ def test_masked_fill_tensor_manifest_bench(
     bm = ManifestBenchmark(_MASKED_FILL_OP, op, test)
     result = bm.profile(op, x, mask, value)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
-    result_bl = bm.profile(lambda a, m, v: a.masked_fill(m, v), x, mask, value)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(
+        torch_inductor_baseline(lambda a, m, v: a.masked_fill(m, v)),
+        x,
+        mask,
+        value,
+    )
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 @pytest.mark.parametrize(
@@ -590,8 +595,12 @@ def test_masked_fill_scalar_manifest_bench(
     bm = ManifestBenchmark(_MASKED_FILL_SCALAR_OP, op, test)
     result = bm.profile(op, x, mask)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
-    result_bl = bm.profile(lambda a, m: a.masked_fill(m, -100.0), x, mask)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(
+        torch_inductor_baseline(lambda a, m: a.masked_fill(m, -100.0)),
+        x,
+        mask,
+    )
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 _ADD_OP = "AddFwdOp"
@@ -841,8 +850,8 @@ def test_where_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> Non
     bm = ManifestBenchmark(_WHERE_OP, op, test)
     result = bm.profile(op, cond, x, other)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
-    result_bl = bm.profile(torch.where, cond, x, other)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(torch.where), cond, x, other)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_LERP_TENSOR_OP)))
@@ -853,8 +862,8 @@ def test_lerp_tensor_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
     bm = ManifestBenchmark(_LERP_TENSOR_OP, op, test)
     result = bm.profile(op, x, end, weight)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
-    result_bl = bm.profile(torch.lerp, x, end, weight)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(torch.lerp), x, end, weight)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 if __name__ == "__main__":

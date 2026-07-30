@@ -3,7 +3,11 @@ from typing import Optional
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
+from benchmarks.benchmark_base import (
+    BenchmarkBase,
+    BenchmarkReport,
+    torch_inductor_baseline,
+)
 from tileops.ops import MeanPoolingForwardOp
 from workloads.mean_pooling import MeanPoolingTest
 from workloads.nsa_utils import prepare_chunk_indices
@@ -129,8 +133,12 @@ def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int,
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    if use_offsets == 0:
+        result_bl = bm.profile(torch_inductor_baseline(test.ref_program), *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
+    else:
+        result_bl = bm.profile(test.ref_program, *inputs)
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch_ref")
 
 
 if __name__ == "__main__":
