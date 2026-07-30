@@ -532,5 +532,43 @@ def test_argmin_dim_none(shape: tuple, dtype: torch.dtype) -> None:
     )
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["argmax", "argmin"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_argreduce_large_n(op_kind: str, dtype: torch.dtype) -> None:
+    """The multi-CTA path supports the LM-head workload without tiling skips."""
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
+
+    x = torch.randn(4, 102400, dtype=dtype, device="cuda")
+    op_cls = ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp
+    op = op_cls(dtype=dtype, dim=-1)
+    ref = getattr(torch, op_kind)(x, dim=-1)
+    y = _call(op, x)
+    assert torch.equal(y, ref), (
+        f"large-N {op_kind} mismatch: {(y != ref).sum().item()}"
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["argmax", "argmin"])
+def test_argreduce_first_index_and_nan_semantics(op_kind: str) -> None:
+    """Pair reduction preserves PyTorch's first-index and NaN behavior."""
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
+
+    x = torch.tensor(
+        [
+            [1.0, float("nan"), 3.0, float("nan"), 3.0],
+            [2.0, 2.0, -1.0, -1.0, 0.0],
+        ],
+        dtype=torch.float32,
+        device="cuda",
+    )
+    op_cls = ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp
+    op = op_cls(dtype=x.dtype, dim=-1)
+    ref = getattr(torch, op_kind)(x, dim=-1)
+    y = _call(op, x)
+    assert torch.equal(y, ref)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
