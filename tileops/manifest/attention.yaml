@@ -537,6 +537,7 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
     kernel: tileops/kernels/attention/gqa_decode_paged.py
     kernel_map:
       gqa_decode_paged_kernel: GQADecodePagedKernel
+      gqa_decode_paged_bs1_kernel: GQADecodePagedBs1Kernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_decode_paged.py
     bench: benchmarks/ops/attention/bench_gqa_decode_paged.py

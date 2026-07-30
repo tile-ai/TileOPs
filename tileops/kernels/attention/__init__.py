@@ -13,6 +13,7 @@ from .gqa_bwd import (
 )
 from .gqa_decode import GQADecodeKernel
 from .gqa_decode_bs1 import GQADecodeBs1Kernel
+from .gqa_decode_bs1_paged import GQADecodePagedBs1Kernel
 from .gqa_decode_paged import GQADecodePagedKernel
 from .gqa_fwd import (
     GQAFwdKernel,
@@ -50,6 +51,7 @@ __all__ = [
     "GQABwdWgmmaPipelinedKernel",
     "GQADecodeBs1Kernel",
     "GQADecodeKernel",
+    "GQADecodePagedBs1Kernel",
     "GQADecodePagedKernel",
     "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel",
     "GQAFwdKernel",

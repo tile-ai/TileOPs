@@ -38,7 +38,6 @@ def gqa_decode_paged_block_n(page_size: int) -> int:
     """Return the widest page-contained N tile supported by generic paged decode."""
     return gqa_decode_paged_block_ns(page_size)[0]
 
-
 # JIT kernel: no-split variant (paged)
 
 
@@ -135,6 +134,9 @@ def _gqa_decode_no_split_paged_kernel(
                     online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
+                    T.copy(
+                        V[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
+                          cur_kv_head, :], V_shared)
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] = T.if_then_else(logsum[i] == 0, 0, acc_o[i, j] / logsum[i])
@@ -276,6 +278,9 @@ def _gqa_decode_split_paged_kernel(
                     online_softmax(acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum)
                     T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
+                    T.copy(
+                        V[blockn_num_offset * block_N:(blockn_num_offset + 1) * block_N,
+                          cur_kv_head, :], V_shared)
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, dim):
                     # When loop_range was 0 (split entirely beyond real_seqlen_kv), logsum=0 -> avoid 0/0
@@ -431,6 +436,16 @@ class GQADecodePagedKernel(Kernel):
                 raise ValueError(
                     f"block_N={block_n} is not supported for page_size={page_size}"
                 )
+        if self.groups <= 0:
+            raise ValueError("groups must be positive")
+        if self.heads % self.groups != 0:
+            raise ValueError("heads must be divisible by groups")
+        if self.seqlen_kv <= 0:
+            raise ValueError("seqlen_kv must be positive")
+        if self.page_size <= 0:
+            raise ValueError("page_size must be positive")
+        if self.seqlen_kv % self.page_size != 0:
+            raise ValueError("seqlen_kv must be divisible by page_size")
 
         self.no_split_jit = _gqa_decode_no_split_paged_kernel(
             self.batch, self.heads, self.groups, self.seqlen_kv, self.dim, self.page_size,

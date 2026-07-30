@@ -11,6 +11,7 @@ from tileops.kernels.attention import (
     GQABwdWgmmaPipelinedKernel,
     GQADecodeBs1Kernel,
     GQADecodeKernel,
+    GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
     GQAFwdKernel,
@@ -66,6 +67,28 @@ def _gqa_ws_causal_total_work_items(batch: int, heads: int, heads_kv: int, seq_l
 def _validate_attention_dtype(dtype: torch.dtype) -> None:
     if dtype not in (torch.float16, torch.bfloat16):
         raise ValueError(f"Expected dtype torch.float16 or torch.bfloat16, got {dtype}")
+
+
+def _supports_gqa_decode_bs1(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    dtype: torch.dtype,
+    softcap: float,
+) -> bool:
+    """Return whether the common Hopper batch=1 GQA decode contract is satisfied."""
+    if not (
+        batch == 1
+        and is_hopper()
+        and dtype == torch.float16
+        and dim == 128
+        and softcap == 0.0
+    ):
+        return False
+    if heads_kv <= 0 or heads % heads_kv != 0:
+        return False
+    return 1 <= heads // heads_kv <= 64
 
 
 def _supports_gqa_ws_noncausal(
@@ -1416,12 +1439,14 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
         one wgmma tile routes to GQADecodeBs1Kernel, which then switches on the runtime KV
         length in forward().
         """
-        if not (self.batch == 1 and is_hopper() and self.dtype == torch.float16
-                and self.dim == 128 and self.softcap == 0.0):
-            return False
-        if self.heads % self.heads_kv != 0:
-            return False
-        return 1 <= self.heads // self.heads_kv <= 64
+        return _supports_gqa_decode_bs1(
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.dim,
+            self.dtype,
+            self.softcap,
+        )
 
     def _select_decode_kernel_key(self) -> str:
         if self._uses_bs1_fast_path():
@@ -1464,12 +1489,14 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.seqlen_kv = seqlen_kv
         self.dim = dim
         self.page_size = page_size
+        if page_size <= 0:
+            raise ValueError("page_size must be positive")
         self.dtype = dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
         self.softcap = _score_softcap(softcap)
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_decode_paged_kernel"](
+        self.kernel = self.kernel_map[self._select_decode_kernel_key()](
             batch,
             heads,
             heads_kv,
@@ -1484,7 +1511,26 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_decode_paged_kernel": GQADecodePagedKernel}
+        kernel_map: Dict[str, Kernel] = {"gqa_decode_paged_kernel": GQADecodePagedKernel}
+        if is_hopper():
+            kernel_map["gqa_decode_paged_bs1_kernel"] = GQADecodePagedBs1Kernel
+        return kernel_map
+
+    def _uses_bs1_fast_path(self) -> bool:
+        """Use the paged Hopper fast path only when its TMA tile stays within one page."""
+        return _supports_gqa_decode_bs1(
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.dim,
+            self.dtype,
+            self.softcap,
+        ) and GQADecodePagedBs1Kernel.block_n_for_page_size(self.page_size) is not None
+
+    def _select_decode_kernel_key(self) -> str:
+        if self._uses_bs1_fast_path():
+            return "gqa_decode_paged_bs1_kernel"
+        return "gqa_decode_paged_kernel"
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
