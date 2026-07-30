@@ -619,7 +619,8 @@ AdaptiveAvgPool2dFwdOp:
   # Declared on the batched NCHW form (pool-family convention). The Op layer
   # also accepts unbatched CHW input, unsqueezed to NCHW internally.
   family: pool
-  status: spec-only
+  status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -669,7 +670,7 @@ AdaptiveAvgPool2dFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 AdaptiveMaxPool2dFwdOp:
   ref_api: "torch.nn.functional.adaptive_max_pool2d"
@@ -677,7 +678,8 @@ AdaptiveMaxPool2dFwdOp:
   # Declared on the batched NCHW form (pool-family convention). The Op layer
   # also accepts unbatched CHW input, unsqueezed to NCHW internally.
   family: pool
-  status: spec-only
+  status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -725,7 +727,7 @@ AdaptiveMaxPool2dFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 AdaptiveMaxPool2dIndicesFwdOp:
   ref_api: "torch.nn.functional.adaptive_max_pool2d"
@@ -733,7 +735,8 @@ AdaptiveMaxPool2dIndicesFwdOp:
   # Declared on the batched NCHW form (pool-family convention). The Op layer
   # also accepts unbatched CHW input, unsqueezed to NCHW internally.
   family: pool
-  status: spec-only
+  status: implemented
+  torch_compile_fullgraph: true
   variant_of: AdaptiveMaxPool2dFwdOp
 
   signature:
@@ -783,4 +786,4 @@ AdaptiveMaxPool2dIndicesFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
