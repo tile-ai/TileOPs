@@ -1,9 +1,8 @@
 # pool.yaml -- manifest entries for the 'pool' family.
 #
 # Source of truth for pooling op interfaces. These entries are generated from
-# PyTorch functional reference APIs. The 1d/2d/3d pooling entries are
-# implemented; the adaptive 2D pooling entries remain spec-only pending
-# kernel implementation.
+# PyTorch functional reference APIs. All entries (1d/2d/3d pooling and
+# adaptive 2D pooling) are implemented.
 
 AvgPool1dFwdOp:
   ref_api: "torch.nn.functional.avg_pool1d"
