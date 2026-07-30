@@ -962,9 +962,11 @@ def _adaptive_pool2d_roofline(op: "_AdaptivePool2dFwdOpBase", *, indices: bool) 
         )
     n, c_in, h_in, w_in, out_h, out_w, dtype = op._last_roofline_spec
     elem_bytes = torch.empty((), dtype=dtype).element_size()
-    k_h = (h_in + out_h - 1) // out_h
-    k_w = (w_in + out_w - 1) // out_w
-    flops = n * c_in * out_h * out_w * k_h * k_w
+    # Exact adaptive-bin scan: bins are [floor(o*in/out), ceil((o+1)*in/out))
+    # and adjacent bins overlap by one row/col unless out | j*in.
+    scan_h = h_in + sum(1 for j in range(1, out_h) if (j * h_in) % out_h != 0)
+    scan_w = w_in + sum(1 for o in range(1, out_w) if (o * w_in) % out_w != 0)
+    flops = n * c_in * scan_h * scan_w
     bytes_ = (n * c_in * h_in * w_in + n * c_in * out_h * out_w) * elem_bytes
     if indices:
         bytes_ += n * c_in * out_h * out_w * 8

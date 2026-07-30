@@ -2021,8 +2021,9 @@ def test_adaptive_pool_compile_fullgraph(
 @pytest.mark.parametrize(
     ("op_cls", "expected_flops", "expected_bytes"),
     [
-        # input (1, 2, 8, 8) fp16, output_size (2, 2): out (1, 2, 2, 2), kH=kW=4.
-        # flops = 1*2*2*2*4*4 = 128; bytes = (1*2*64 + 1*2*4) * 2 [+ 1*2*4*8].
+        # input (1, 2, 8, 8) fp16, output_size (2, 2): bins [0,4) and [4,8),
+        # no overlap, exact scan = 8 per axis.
+        # flops = 1*2*8*8 = 128; bytes = (1*2*64 + 1*2*4) * 2 [+ 1*2*4*8].
         pytest.param(AdaptiveAvgPool2dFwdOp, 128, 272, id="adaptive-avg-pool2d"),
         pytest.param(AdaptiveMaxPool2dFwdOp, 128, 272, id="adaptive-max-pool2d"),
         pytest.param(AdaptiveMaxPool2dIndicesFwdOp, 128, 336, id="adaptive-max-pool2d-indices"),
