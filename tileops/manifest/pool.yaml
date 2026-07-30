@@ -627,11 +627,11 @@ AdaptiveAvgPool2dFwdOp:
     outputs:
       output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
     params:
-      output_size: {type: "int | tuple[int | None, int | None]"}
+      output_size: {type: "int | None | tuple[int | None, int | None]"}
     shape_rules:
-      - "isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
-      - "_oH == (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
-      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
+      - "output_size is None or isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
+      - "_oH == (None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
+      - "_oW == (None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size))"
       - "H_out == (H_in if _oH is None else _oH)"
       - "W_out == (W_in if _oW is None else _oW)"
       - "H_out > 0 and W_out > 0"
@@ -647,8 +647,8 @@ AdaptiveAvgPool2dFwdOp:
 
   roofline:
     vars:
-      oH: "output_size[0] if isinstance(output_size, (tuple, list)) else output_size"
-      oW: "output_size[1] if isinstance(output_size, (tuple, list)) else output_size"
+      oH: "None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      oW: "None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
       out_H: "H_in if oH is None else oH"
       out_W: "W_in if oW is None else oW"
       # Exact adaptive-bin scan: bins are [floor(o*in/out), ceil((o+1)*in/out))
@@ -681,11 +681,11 @@ AdaptiveMaxPool2dFwdOp:
     outputs:
       output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
     params:
-      output_size: {type: "int | tuple[int | None, int | None]"}
+      output_size: {type: "int | None | tuple[int | None, int | None]"}
     shape_rules:
-      - "isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
-      - "_oH == (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
-      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
+      - "output_size is None or isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
+      - "_oH == (None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
+      - "_oW == (None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size))"
       - "H_out == (H_in if _oH is None else _oH)"
       - "W_out == (W_in if _oW is None else _oW)"
       - "H_out > 0 and W_out > 0"
@@ -699,8 +699,8 @@ AdaptiveMaxPool2dFwdOp:
 
   roofline:
     vars:
-      oH: "output_size[0] if isinstance(output_size, (tuple, list)) else output_size"
-      oW: "output_size[1] if isinstance(output_size, (tuple, list)) else output_size"
+      oH: "None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      oW: "None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
       out_H: "H_in if oH is None else oH"
       out_W: "W_in if oW is None else oW"
       # Exact adaptive-bin scan: bins are [floor(o*in/out), ceil((o+1)*in/out))
@@ -735,11 +735,11 @@ AdaptiveMaxPool2dIndicesFwdOp:
       output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
       indices: {dtype: "int64", shape: "[N, C, H_out, W_out]"}
     params:
-      output_size: {type: "int | tuple[int | None, int | None]"}
+      output_size: {type: "int | None | tuple[int | None, int | None]"}
     shape_rules:
-      - "isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
-      - "_oH == (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
-      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
+      - "output_size is None or isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
+      - "_oH == (None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
+      - "_oW == (None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size))"
       - "H_out == (H_in if _oH is None else _oH)"
       - "W_out == (W_in if _oW is None else _oW)"
       - "H_out > 0 and W_out > 0"
@@ -753,8 +753,8 @@ AdaptiveMaxPool2dIndicesFwdOp:
 
   roofline:
     vars:
-      oH: "output_size[0] if isinstance(output_size, (tuple, list)) else output_size"
-      oW: "output_size[1] if isinstance(output_size, (tuple, list)) else output_size"
+      oH: "None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      oW: "None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
       out_H: "H_in if oH is None else oH"
       out_W: "W_in if oW is None else oW"
       # Exact adaptive-bin scan: bins are [floor(o*in/out), ceil((o+1)*in/out))
