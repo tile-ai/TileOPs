@@ -616,6 +616,8 @@ MaxPool3dIndicesFwdOp:
 
 AdaptiveAvgPool2dFwdOp:
   ref_api: "torch.nn.functional.adaptive_avg_pool2d"
+  # Declared on the batched NCHW form (pool-family convention). The Op layer
+  # also accepts unbatched CHW input, unsqueezed to NCHW internally.
   family: pool
   status: spec-only
 
@@ -627,8 +629,9 @@ AdaptiveAvgPool2dFwdOp:
     params:
       output_size: {type: "int | tuple[int | None, int | None]"}
     shape_rules:
+      - "isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
       - "_oH == (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
-      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
+      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
       - "H_out == (H_in if _oH is None else _oH)"
       - "W_out == (W_in if _oW is None else _oW)"
       - "H_out > 0 and W_out > 0"
@@ -645,12 +648,14 @@ AdaptiveAvgPool2dFwdOp:
   roofline:
     vars:
       oH: "output_size[0] if isinstance(output_size, (tuple, list)) else output_size"
-      oW: "output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      oW: "output_size[1] if isinstance(output_size, (tuple, list)) else output_size"
       out_H: "H_in if oH is None else oH"
       out_W: "W_in if oW is None else oW"
-      kH: "(H_in + out_H - 1) // out_H"
-      kW: "(W_in + out_W - 1) // out_W"
-    flops: "N * C * out_H * out_W * kH * kW"
+      # Exact adaptive-bin scan: bins are [floor(o*in/out), ceil((o+1)*in/out))
+      # and adjacent bins overlap by one row/col unless out | j*in.
+      scan_H: "H_in + sum(1 for j in range(1, out_H) if (j * H_in) % out_H != 0)"
+      scan_W: "W_in + sum(1 for o in range(1, out_W) if (o * W_in) % out_W != 0)"
+    flops: "N * C * scan_H * scan_W"
     bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
 
   source:
@@ -665,6 +670,8 @@ AdaptiveAvgPool2dFwdOp:
 AdaptiveMaxPool2dFwdOp:
   ref_api: "torch.nn.functional.adaptive_max_pool2d"
   # Equivalent to torch.nn.functional.adaptive_max_pool2d (return_indices=False)
+  # Declared on the batched NCHW form (pool-family convention). The Op layer
+  # also accepts unbatched CHW input, unsqueezed to NCHW internally.
   family: pool
   status: spec-only
 
@@ -676,8 +683,9 @@ AdaptiveMaxPool2dFwdOp:
     params:
       output_size: {type: "int | tuple[int | None, int | None]"}
     shape_rules:
+      - "isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
       - "_oH == (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
-      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
+      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
       - "H_out == (H_in if _oH is None else _oH)"
       - "W_out == (W_in if _oW is None else _oW)"
       - "H_out > 0 and W_out > 0"
@@ -692,12 +700,14 @@ AdaptiveMaxPool2dFwdOp:
   roofline:
     vars:
       oH: "output_size[0] if isinstance(output_size, (tuple, list)) else output_size"
-      oW: "output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      oW: "output_size[1] if isinstance(output_size, (tuple, list)) else output_size"
       out_H: "H_in if oH is None else oH"
       out_W: "W_in if oW is None else oW"
-      kH: "(H_in + out_H - 1) // out_H"
-      kW: "(W_in + out_W - 1) // out_W"
-    flops: "N * C * out_H * out_W * kH * kW"
+      # Exact adaptive-bin scan: bins are [floor(o*in/out), ceil((o+1)*in/out))
+      # and adjacent bins overlap by one row/col unless out | j*in.
+      scan_H: "H_in + sum(1 for j in range(1, out_H) if (j * H_in) % out_H != 0)"
+      scan_W: "W_in + sum(1 for o in range(1, out_W) if (o * W_in) % out_W != 0)"
+    flops: "N * C * scan_H * scan_W"
     bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
 
   source:
@@ -712,6 +722,8 @@ AdaptiveMaxPool2dFwdOp:
 AdaptiveMaxPool2dIndicesFwdOp:
   ref_api: "torch.nn.functional.adaptive_max_pool2d"
   # Equivalent to torch.nn.functional.adaptive_max_pool2d (return_indices=True)
+  # Declared on the batched NCHW form (pool-family convention). The Op layer
+  # also accepts unbatched CHW input, unsqueezed to NCHW internally.
   family: pool
   status: spec-only
   variant_of: AdaptiveMaxPool2dFwdOp
@@ -725,8 +737,9 @@ AdaptiveMaxPool2dIndicesFwdOp:
     params:
       output_size: {type: "int | tuple[int | None, int | None]"}
     shape_rules:
+      - "isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
       - "_oH == (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
-      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
+      - "_oW == (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
       - "H_out == (H_in if _oH is None else _oH)"
       - "W_out == (W_in if _oW is None else _oW)"
       - "H_out > 0 and W_out > 0"
@@ -741,12 +754,14 @@ AdaptiveMaxPool2dIndicesFwdOp:
   roofline:
     vars:
       oH: "output_size[0] if isinstance(output_size, (tuple, list)) else output_size"
-      oW: "output_size[1] if isinstance(output_size, (tuple, list)) and len(output_size) > 1 else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
+      oW: "output_size[1] if isinstance(output_size, (tuple, list)) else output_size"
       out_H: "H_in if oH is None else oH"
       out_W: "W_in if oW is None else oW"
-      kH: "(H_in + out_H - 1) // out_H"
-      kW: "(W_in + out_W - 1) // out_W"
-    flops: "N * C * out_H * out_W * kH * kW"
+      # Exact adaptive-bin scan: bins are [floor(o*in/out), ceil((o+1)*in/out))
+      # and adjacent bins overlap by one row/col unless out | j*in.
+      scan_H: "H_in + sum(1 for j in range(1, out_H) if (j * H_in) % out_H != 0)"
+      scan_W: "W_in + sum(1 for o in range(1, out_W) if (o * W_in) % out_W != 0)"
+    flops: "N * C * scan_H * scan_W"
     bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes + N * C * out_H * out_W * 8"
 
   source:
