@@ -8,12 +8,13 @@ from tileops.kernels.gemm import (
     GemmKernel,
     GemvKernel,
 )
+from tileops.kernels.gemm_w4a16 import GROUP_SIZE, GemmW4A16Kernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
 from .op_base import Op
 
-__all__ = ["GemmFp8Op", "GemmOp"]
+__all__ = ["GemmFp8Op", "GemmOp", "GemmW4A16Op"]
 
 
 class GemmOp(Op):
@@ -87,8 +88,14 @@ class GemmOp(Op):
 
     def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
         """Project onto the dims the kernel actually specializes on."""
-        return (self.m, self.n, self.k, self.trans_a, self.trans_b,
-                None if self.dtype is None else str(self.dtype))
+        return (
+            self.m,
+            self.n,
+            self.k,
+            self.trans_a,
+            self.trans_b,
+            None if self.dtype is None else str(self.dtype),
+        )
 
     def _get_kernel(self, m: int, n: int, k: int, dtype: torch.dtype) -> Tuple[str, Kernel]:
         """Return ``(mode, kernel)`` for the given dims, building/caching lazily.
@@ -97,8 +104,8 @@ class GemmOp(Op):
         ``"gemm"`` — the hand-written warp-specialized ``GemmKernel`` (SM90),
         covering all four ``(trans_a, trans_b)`` layouts.
         """
-        gemv_lhs_row = (m == 1 and not self.trans_a and self.trans_b)
-        gemv_rhs_col = (n == 1 and not self.trans_a and not self.trans_b)
+        gemv_lhs_row = m == 1 and not self.trans_a and self.trans_b
+        gemv_rhs_col = n == 1 and not self.trans_a and not self.trans_b
         gemv_cls = self.kernel_map.get("gemv_kernel")
         if (gemv_lhs_row or gemv_rhs_col) and gemv_cls is not None:
             mode = "lhs_row" if gemv_lhs_row else "rhs_col"
@@ -114,7 +121,8 @@ class GemmOp(Op):
         kernel = self._kernel_cache.get(key)
         if kernel is None:
             kernel = self.kernel_map["gemm_kernel"](
-                m, n, k, dtype, tune=self._tune, trans_a=self.trans_a, trans_b=self.trans_b)
+                m, n, k, dtype, tune=self._tune, trans_a=self.trans_a, trans_b=self.trans_b
+            )
             self._kernel_cache[key] = kernel
         return "gemm", kernel
 
@@ -173,8 +181,7 @@ class GemmFp8Op(Op):
         if isinstance(out_dtype, str):
             out_dtype = getattr(torch, out_dtype)
         if out_dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError(
-                f"GemmFp8Op outputs torch.float16 or torch.bfloat16, got {out_dtype}")
+            raise ValueError(f"GemmFp8Op outputs torch.float16 or torch.bfloat16, got {out_dtype}")
         self.out_dtype = out_dtype
         self._tune = tune
         self.dispatch_kernel(kernel_map)
@@ -203,21 +210,20 @@ class GemmFp8Op(Op):
         bias: Optional[torch.Tensor] = None,
     ) -> None:
         if a.dtype != torch.float8_e4m3fn:
-            raise ValueError(
-                f"GemmFp8Op only supports torch.float8_e4m3fn, got {a.dtype}")
+            raise ValueError(f"GemmFp8Op only supports torch.float8_e4m3fn, got {a.dtype}")
         if b.dtype != a.dtype:
             raise ValueError(f"GemmFp8Op expects b dtype {a.dtype}, got {b.dtype}")
         if scale_a.dtype != torch.float32 or scale_b.dtype != torch.float32:
             raise ValueError("GemmFp8Op expects scale_a and scale_b to be torch.float32")
-        out_dtype = getattr(torch, self.out_dtype) if isinstance(self.out_dtype, str) else self.out_dtype
+        out_dtype = (
+            getattr(torch, self.out_dtype) if isinstance(self.out_dtype, str) else self.out_dtype
+        )
         if bias is not None and bias.dtype != out_dtype:
-            raise ValueError(
-                f"GemmFp8Op expects bias dtype {out_dtype}, got {bias.dtype}")
+            raise ValueError(f"GemmFp8Op expects bias dtype {out_dtype}, got {bias.dtype}")
 
     def _infer_mnk(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[int, int, int]:
         if a.ndim != 2 or b.ndim != 2:
-            raise ValueError(
-                f"GemmFp8Op expects 2D a/b, got a.ndim={a.ndim}, b.ndim={b.ndim}")
+            raise ValueError(f"GemmFp8Op expects 2D a/b, got a.ndim={a.ndim}, b.ndim={b.ndim}")
         m, k = a.shape
         n, k_b = b.shape
         if k != k_b:
@@ -253,10 +259,7 @@ class GemmFp8Op(Op):
             )
         per_tensor = (tuple(scale_a.shape), tuple(scale_b.shape)) == ((1, 1), (1, 1))
         scale_k = (k + 127) // 128
-        block128 = (
-            tuple(scale_a.shape) == (m, scale_k)
-            and tuple(scale_b.shape) == (n, scale_k)
-        )
+        block128 = tuple(scale_a.shape) == (m, scale_k) and tuple(scale_b.shape) == (n, scale_k)
         if not per_tensor and not block128:
             raise ValueError(
                 "GemmFp8Op supports scale shapes (1, 1)/(1, 1) or "
@@ -299,8 +302,7 @@ class GemmFp8Op(Op):
         key = (kernel_name, m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype)
         kernel = self._kernel_cache.get(key)
         if kernel is None:
-            kernel = self.kernel_map[kernel_name](
-                m, n, k, dtype, self.out_dtype, tune=self._tune)
+            kernel = self.kernel_map[kernel_name](m, n, k, dtype, self.out_dtype, tune=self._tune)
             self._kernel_cache[key] = kernel
         return kernel
 
@@ -334,12 +336,176 @@ class GemmFp8Op(Op):
             self.has_bias = bias is not None
             kernel_name = self._select_kernel_name(scale_a, scale_b, m, n, k)
             kernel = self._get_kernel(
-                kernel_name, m, n, k, a.dtype, tuple(scale_a.shape), tuple(scale_b.shape))
+                kernel_name, m, n, k, a.dtype, tuple(scale_a.shape), tuple(scale_b.shape)
+            )
             self.kernel = kernel
             self._active = kernel
             self._active_sig = sig
 
         return self._active(a, b, scale_a, scale_b, bias)
+
+    def autotune(self) -> None:
+        for kernel in self._kernel_cache.values():
+            kernel.autotune()
+
+
+class GemmW4A16Op(Op):
+    """Dense W4A16 NT GEMM with group-wise affine weight dequantization.
+
+    Public layout is ``activation=[M, K]`` and ``packed_weight=[N, K / 2]``.
+    Two unsigned INT4 values are packed per byte: the low nibble stores even K
+    and the high nibble stores odd K. ``weight_scale`` and ``weight_zero`` are
+    group128 metadata with shape ``[N, K / 128]``. The kernel dequantizes the
+    current W4 tile into A16 shared memory and computes ``activation @ W.T``.
+    """
+
+    def __init__(
+        self,
+        group_size: int = GROUP_SIZE,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        if group_size != GROUP_SIZE:
+            raise ValueError(
+                f"GemmW4A16Op currently supports group_size={GROUP_SIZE}, got {group_size}"
+            )
+        self.group_size = group_size
+        self._tune = tune
+        self.dispatch_kernel(kernel_map)
+        self._kernel_cache: Dict[Hashable, Kernel] = {}
+        self._active_sig: Optional[tuple] = None
+        self._active: Optional[Kernel] = None
+        self.m: Optional[int] = None
+        self.n: Optional[int] = None
+        self.k: Optional[int] = None
+        self.dtype: Optional[torch.dtype] = None
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {"gemm_w4a16_kernel": GemmW4A16Kernel}
+
+    def _validate_dtypes(
+        self,
+        activation: torch.Tensor,
+        packed_weight: torch.Tensor,
+        weight_scale: torch.Tensor,
+        weight_zero: torch.Tensor,
+    ) -> None:
+        if activation.dtype != torch.float16:
+            raise ValueError(
+                f"GemmW4A16Op currently supports float16 activation, got {activation.dtype}"
+            )
+        if packed_weight.dtype != torch.uint8:
+            raise ValueError(f"GemmW4A16Op expects uint8 packed_weight, got {packed_weight.dtype}")
+        if weight_scale.dtype != torch.float32:
+            raise ValueError(f"GemmW4A16Op expects float32 weight_scale, got {weight_scale.dtype}")
+        if weight_zero.dtype != torch.uint8:
+            raise ValueError(f"GemmW4A16Op expects uint8 weight_zero, got {weight_zero.dtype}")
+
+    def _infer_mnk(
+        self,
+        activation: torch.Tensor,
+        packed_weight: torch.Tensor,
+    ) -> Tuple[int, int, int]:
+        if activation.ndim != 2 or packed_weight.ndim != 2:
+            raise ValueError(
+                "GemmW4A16Op expects rank-2 activation and packed_weight, got "
+                f"{activation.ndim} and {packed_weight.ndim}"
+            )
+        m, k = activation.shape
+        n, packed_k = packed_weight.shape
+        if k % 2 != 0:
+            raise ValueError(f"GemmW4A16Op expects even K for W4 packing, got {k}")
+        if packed_k != k // 2:
+            raise ValueError(
+                "GemmW4A16Op packed_weight shape mismatch: expected second dim "
+                f"{k // 2}, got {packed_k}"
+            )
+        if k % self.group_size != 0:
+            raise ValueError(
+                f"GemmW4A16Op expects K divisible by group_size={self.group_size}, got {k}"
+            )
+        return m, n, k
+
+    def _infer_output_shapes(
+        self,
+        activation_shape: Tuple[int, ...],
+        packed_weight_shape: Tuple[int, ...],
+        weight_scale_shape: Tuple[int, ...],
+        weight_zero_shape: Tuple[int, ...],
+    ) -> dict[str, Tuple[int, int]]:
+        return {"output": (activation_shape[0], packed_weight_shape[0])}
+
+    def _validate_shapes(
+        self,
+        activation: torch.Tensor,
+        packed_weight: torch.Tensor,
+        weight_scale: torch.Tensor,
+        weight_zero: torch.Tensor,
+    ) -> tuple[int, int, int]:
+        m, n, k = self._infer_mnk(activation, packed_weight)
+        groups = k // self.group_size
+        metadata_shape = (n, groups)
+        if tuple(weight_scale.shape) != metadata_shape:
+            raise ValueError(
+                f"GemmW4A16Op weight_scale must have shape {metadata_shape}, "
+                f"got {tuple(weight_scale.shape)}"
+            )
+        if tuple(weight_zero.shape) != metadata_shape:
+            raise ValueError(
+                f"GemmW4A16Op weight_zero must have shape {metadata_shape}, "
+                f"got {tuple(weight_zero.shape)}"
+            )
+        return m, n, k
+
+    def _get_kernel(
+        self,
+        m: int,
+        n: int,
+        k: int,
+        dtype: torch.dtype,
+    ) -> Kernel:
+        key = (m, n, k, dtype, self.group_size)
+        kernel = self._kernel_cache.get(key)
+        if kernel is None:
+            kernel = self.kernel_map["gemm_w4a16_kernel"](
+                m, n, k, dtype, tune=self._tune, group_size=self.group_size
+            )
+            self._kernel_cache[key] = kernel
+        return kernel
+
+    def forward(
+        self,
+        activation: torch.Tensor,
+        packed_weight: torch.Tensor,
+        weight_scale: torch.Tensor,
+        weight_zero: torch.Tensor,
+    ) -> torch.Tensor:
+        sig = (
+            activation.shape,
+            packed_weight.shape,
+            weight_scale.shape,
+            weight_zero.shape,
+            activation.dtype,
+            packed_weight.dtype,
+            weight_scale.dtype,
+            weight_zero.dtype,
+            self.group_size,
+        )
+        if sig != self._active_sig:
+            self._validate_dtypes(activation, packed_weight, weight_scale, weight_zero)
+            m, n, k = self._validate_shapes(activation, packed_weight, weight_scale, weight_zero)
+            self.m, self.n, self.k = m, n, k
+            self.dtype = activation.dtype
+            self.packed_weight_shape = tuple(packed_weight.shape)
+            self.weight_scale_shape = tuple(weight_scale.shape)
+            self.weight_zero_shape = tuple(weight_zero.shape)
+            kernel = self._get_kernel(m, n, k, activation.dtype)
+            self.kernel = kernel
+            self._active = kernel
+            self._active_sig = sig
+
+        return self._active(activation, packed_weight, weight_scale, weight_zero)
 
     def autotune(self) -> None:
         for kernel in self._kernel_cache.values():
