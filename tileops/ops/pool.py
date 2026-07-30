@@ -916,16 +916,19 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
 
 
 def _normalize_output_size(
-    output_size: int | Tuple[Optional[int], Optional[int]],
+    output_size: int | None | Tuple[Optional[int], Optional[int]],
 ) -> Tuple[Optional[int], Optional[int]]:
     """Normalize adaptive-pool ``output_size`` to a 2-tuple of ``int | None``.
 
-    Accepts an int or a 2-element tuple/list of ``int | None`` (PyTorch-style
-    leniency for list inputs); ``None`` entries resolve to the input size.
+    Accepts ``None``, an int, or a 2-element tuple/list of ``int | None``
+    (PyTorch-style leniency for list inputs); ``None`` entries — including a
+    scalar ``None`` — resolve to the input size.
     """
+    if output_size is None:
+        return (None, None)
     if isinstance(output_size, bool):
         raise TypeError(
-            "output_size must be an int or a tuple of (int | None, int | None)"
+            "output_size must be None, an int, or a tuple of (int | None, int | None)"
         )
     if isinstance(output_size, int):
         output_size = (output_size, output_size)
@@ -938,7 +941,7 @@ def _normalize_output_size(
         )
     ):
         raise TypeError(
-            "output_size must be an int or a tuple of (int | None, int | None)"
+            "output_size must be None, an int, or a tuple of (int | None, int | None)"
         )
     if any(v is not None and v <= 0 for v in output_size):
         raise ValueError("output_size entries must be positive or None")
@@ -987,7 +990,7 @@ class _AdaptivePool2dFwdOpBase(Op):
 
     def __init__(
         self,
-        output_size: int | Tuple[Optional[int], Optional[int]],
+        output_size: int | None | Tuple[Optional[int], Optional[int]],
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -1094,7 +1097,7 @@ class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
 
     def __init__(
         self,
-        output_size: int | Tuple[Optional[int], Optional[int]],
+        output_size: int | None | Tuple[Optional[int], Optional[int]],
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -1118,7 +1121,7 @@ class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
 
     def __init__(
         self,
-        output_size: int | Tuple[Optional[int], Optional[int]],
+        output_size: int | None | Tuple[Optional[int], Optional[int]],
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -1143,7 +1146,7 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
 
     def __init__(
         self,
-        output_size: int | Tuple[Optional[int], Optional[int]],
+        output_size: int | None | Tuple[Optional[int], Optional[int]],
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:

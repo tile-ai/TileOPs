@@ -1770,6 +1770,9 @@ class AdaptiveAvgPool2dFixture(FixtureBase):
                 pytest.param(
                     1, 8, 9, 11, (None, None), torch.float16, False,
                     marks=pytest.mark.full, id="full-all-none-identity-fp16"),
+                pytest.param(
+                    1, 8, 9, 11, None, torch.float16, False,
+                    marks=pytest.mark.full, id="full-scalar-none-identity-fp16"),
             ],
         ),
     ]
@@ -1808,6 +1811,9 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                 pytest.param(
                     1, 16, 10, 10, [6, 6], torch.float16, False,
                     marks=pytest.mark.full, id="full-list-output-size-fp16"),
+                pytest.param(
+                    1, 8, 9, 11, None, torch.float16, False,
+                    marks=pytest.mark.full, id="full-scalar-none-identity-fp16"),
             ],
         ),
     ]
@@ -1816,7 +1822,7 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
 class AdaptiveAvgPool2dTest(TestBase):
     def __init__(
         self,
-        output_size: int | tuple[int | None, int | None],
+        output_size: int | None | tuple[int | None, int | None],
         dtype: torch.dtype,
     ) -> None:
         self.output_size = output_size
@@ -1827,13 +1833,15 @@ class AdaptiveAvgPool2dTest(TestBase):
         return (x,)
 
     def ref_program(self, input: torch.Tensor) -> torch.Tensor:
-        return F.adaptive_avg_pool2d(input, self.output_size)
+        # torch 2.10 rejects scalar None; (None, None) is the same semantics.
+        output_size = (None, None) if self.output_size is None else self.output_size
+        return F.adaptive_avg_pool2d(input, output_size)
 
 
 class AdaptiveMaxPool2dTest(TestBase):
     def __init__(
         self,
-        output_size: int | tuple[int | None, int | None],
+        output_size: int | None | tuple[int | None, int | None],
         dtype: torch.dtype,
         return_indices: bool,
     ) -> None:
@@ -1846,8 +1854,10 @@ class AdaptiveMaxPool2dTest(TestBase):
         return (x,)
 
     def ref_program(self, input: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        # torch 2.10 rejects scalar None; (None, None) is the same semantics.
+        output_size = (None, None) if self.output_size is None else self.output_size
         return F.adaptive_max_pool2d(
-            input, self.output_size, return_indices=self.return_indices
+            input, output_size, return_indices=self.return_indices
         )
 
 
@@ -1857,7 +1867,7 @@ def test_adaptive_avg_pool2d(
     c_in: int,
     h_in: int,
     w_in: int,
-    output_size: int | tuple[int | None, int | None],
+    output_size: int | None | tuple[int | None, int | None],
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
@@ -1874,7 +1884,7 @@ def test_adaptive_max_pool2d(
     c_in: int,
     h_in: int,
     w_in: int,
-    output_size: int | tuple[int | None, int | None],
+    output_size: int | None | tuple[int | None, int | None],
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
@@ -1943,19 +1953,19 @@ def test_adaptive_max_pool2d_tied_maxima_indices() -> None:
             id="zero-entry"),
         pytest.param(
             (2, 2, 2), TypeError,
-            re.escape("output_size must be an int or a tuple of (int | None, int | None)"),
+            re.escape("output_size must be None, an int, or a tuple of (int | None, int | None)"),
             id="len-3-tuple"),
         pytest.param(
             "3", TypeError,
-            re.escape("output_size must be an int or a tuple of (int | None, int | None)"),
+            re.escape("output_size must be None, an int, or a tuple of (int | None, int | None)"),
             id="string"),
         pytest.param(
             True, TypeError,
-            re.escape("output_size must be an int or a tuple of (int | None, int | None)"),
+            re.escape("output_size must be None, an int, or a tuple of (int | None, int | None)"),
             id="bool"),
         pytest.param(
             (3.0, 3), TypeError,
-            re.escape("output_size must be an int or a tuple of (int | None, int | None)"),
+            re.escape("output_size must be None, an int, or a tuple of (int | None, int | None)"),
             id="float-entry"),
     ],
 )
