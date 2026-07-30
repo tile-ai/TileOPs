@@ -60,7 +60,11 @@ class DispatchedExpertMLPFwdOp(Op):
         self.dtype = dtype
         self.activation = activation
 
-        kernel_cls = gemm_kernel or GroupedGemmPersistent3WGKernel
+        requested_kernel_cls = (kernel_map or {}).get(
+            "moe_grouped_gemm_kernel",
+            gemm_kernel or GroupedGemmPersistent3WGKernel,
+        )
+        kernel_cls = requested_kernel_cls
         block_n = _3WG_DEFAULT_CONFIG["block_n"]
         block_k = _3WG_DEFAULT_CONFIG["block_k"]
         gate_up_n = ffn_size * 2
@@ -80,7 +84,13 @@ class DispatchedExpertMLPFwdOp(Op):
                 )
                 kernel_cls = MoeGroupedGemmNopadKernel
 
-        gemm_override = (kernel_map or {}).get("moe_grouped_gemm_kernel")
+        # Resolve the GEMM implementation exactly once. In particular, the
+        # caller's original override must not be merged after an alignment
+        # fallback and silently reinstate an ineligible kernel.
+        effective_gemm_kernel_map = {
+            **(kernel_map or {}),
+            "moe_grouped_gemm_kernel": kernel_cls,
+        }
         self.use_fused_activation = use_fused_activation
         if use_fused_activation:
             fused_block_n = _FUSED_ACT_DEFAULT_CONFIG["block_n"]
@@ -88,10 +98,6 @@ class DispatchedExpertMLPFwdOp(Op):
                 torch.cuda.is_available()
                 and torch.cuda.get_device_capability()[0] >= 9
                 and kernel_cls is GroupedGemmPersistent3WGKernel
-                and (
-                    gemm_override is None
-                    or gemm_override is GroupedGemmPersistent3WGKernel
-                )
                 and activation in ("silu_and_mul", "gelu_and_mul")
                 and ffn_size % fused_block_n == 0
             )
@@ -120,7 +126,7 @@ class DispatchedExpertMLPFwdOp(Op):
                 k=hidden_size,
                 dtype=dtype,
                 activation=activation,
-                kernel_map=kernel_map,
+                kernel_map=effective_gemm_kernel_map,
             )
             self._activation_op = None
         else:
@@ -130,7 +136,7 @@ class DispatchedExpertMLPFwdOp(Op):
                 n=ffn_size * 2,
                 k=hidden_size,
                 dtype=dtype,
-                kernel_map={"moe_grouped_gemm_kernel": kernel_cls, **(kernel_map or {})},
+                kernel_map=effective_gemm_kernel_map,
             )
             self._activation_op = build_activation_op(
                 activation,
@@ -145,7 +151,7 @@ class DispatchedExpertMLPFwdOp(Op):
             n=hidden_size,
             k=ffn_size,
             dtype=dtype,
-            kernel_map={"moe_grouped_gemm_kernel": kernel_cls, **(kernel_map or {})},
+            kernel_map=effective_gemm_kernel_map,
         )
 
     @property
@@ -179,18 +185,14 @@ class DispatchedExpertMLPFwdOp(Op):
         true_offsets: Tensor,
         valid_rows: Tensor | None,
     ) -> Tensor:
-        gate_up = self._gemm_gate_up(
-            expert_input, w_gate_up, true_sizes, true_offsets
-        )
+        gate_up = self._gemm_gate_up(expert_input, w_gate_up, true_sizes, true_offsets)
         act = (
             gate_up
             if self.use_fused_activation
             else (
                 self._activation_op(gate_up)
                 if valid_rows is None
-                else self._activation_op.kernel.forward_rows(
-                    gate_up, valid_rows
-                )
+                else self._activation_op.kernel.forward_rows(gate_up, valid_rows)
             )
         )
         return self._gemm_down(act, w_down, true_sizes, true_offsets)
@@ -209,13 +211,11 @@ class DispatchedExpertMLPFwdOp(Op):
         """
         if batch.capacity != self.num_pairs:
             raise ValueError(
-                f"batch capacity must equal num_pairs={self.num_pairs}, "
-                f"got {batch.capacity}"
+                f"batch capacity must equal num_pairs={self.num_pairs}, got {batch.capacity}"
             )
         if batch.hidden.shape[1] != self.hidden_size:
             raise ValueError(
-                f"batch hidden size must equal {self.hidden_size}, "
-                f"got {batch.hidden.shape[1]}"
+                f"batch hidden size must equal {self.hidden_size}, got {batch.hidden.shape[1]}"
             )
         if batch.expert_offsets.numel() != self.num_experts + 1:
             raise ValueError(

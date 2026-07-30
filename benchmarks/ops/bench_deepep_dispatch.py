@@ -15,25 +15,15 @@ import os
 
 import torch
 import torch.distributed as dist
+from _moe_bench_utils import (
+    make_routing_inputs,
+    measure_dispatch,
+)
 
 from tileops.ops.moe import DeepEPDispatchAdapter
 
 WARMUP = 10
 ITERS = 50
-
-
-def _time_ms(fn) -> float:
-    for _ in range(WARMUP):
-        fn()
-    torch.cuda.synchronize()
-    begin = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    begin.record()
-    for _ in range(ITERS):
-        fn()
-    end.record()
-    torch.cuda.synchronize()
-    return begin.elapsed_time(end) / ITERS
 
 
 def main() -> None:
@@ -81,25 +71,20 @@ def main() -> None:
 
     for num_tokens in args.tokens:
         torch.manual_seed(2026 + rank)
-        hidden = torch.randn(
+        hidden, topk_ids, topk_weights = make_routing_inputs(
             num_tokens,
             args.hidden_size,
-            dtype=torch.bfloat16,
-            device="cuda",
+            args.top_k,
+            args.num_experts,
+            topk_dtype=torch.int64,
         )
-        topk_ids = (
-            torch.rand(num_tokens, args.num_experts, device="cuda")
-            .topk(args.top_k, dim=-1)
-            .indices.to(torch.int64)
-        )
-        topk_weights = torch.softmax(torch.randn(num_tokens, args.top_k, device="cuda"), dim=-1)
         offsets = torch.empty(
             args.num_experts // world_size + 1,
             dtype=torch.int32,
             device="cuda",
         )
 
-        def run(
+        def run_fresh(
             hidden=hidden,
             topk_ids=topk_ids,
             topk_weights=topk_weights,
@@ -112,33 +97,39 @@ def main() -> None:
                 expert_offsets=offsets,
             )
 
-        result = run()
-        dispatch_fresh_ms = _time_ms(run)
-        cached_offsets = torch.empty_like(offsets)
-
-        def run_cached(
-            hidden=hidden,
-            topk_weights=topk_weights,
-            offsets=cached_offsets,
-            cached_handle=result.combine_handle,
+        def make_cached(
+            result,
+            offsets=offsets,
+            cached_hidden=hidden,
+            cached_weights=topk_weights,
         ):
-            return adapter.dispatch(
-                hidden,
-                None,
-                topk_weights,
-                expert_offsets=offsets,
-                cached_handle=cached_handle,
+            cached_offsets = torch.empty_like(offsets)
+
+            def run_cached():
+                return adapter.dispatch(
+                    cached_hidden,
+                    None,
+                    cached_weights,
+                    expert_offsets=cached_offsets,
+                    cached_handle=result.combine_handle,
+                )
+
+            return run_cached
+
+        def validate_cached(result, cached_result):
+            torch.testing.assert_close(
+                cached_result.batch.expert_offsets,
+                result.batch.expert_offsets,
             )
 
-        cached_result = run_cached()
-        dispatch_cached_ms = _time_ms(run_cached)
-        torch.testing.assert_close(
-            cached_result.batch.expert_offsets,
-            result.batch.expert_offsets,
+        result, fresh_ms, cached_ms = measure_dispatch(
+            run_fresh,
+            warmup=WARMUP,
+            iters=ITERS,
+            make_cached=make_cached,
+            validate_cached=validate_cached,
         )
-        valid_rows = int(result.batch.valid_rows.item())
-        physical_rows = result.batch.capacity
-        sent_pairs = num_tokens * args.top_k
+        assert cached_ms is not None
         record = {
             "rank": rank,
             "world_size": world_size,
@@ -147,15 +138,14 @@ def main() -> None:
             "num_experts": args.num_experts,
             "num_local_experts": args.num_experts // world_size,
             "hidden_size": args.hidden_size,
-            "sent_pairs": sent_pairs,
-            "received_pairs": valid_rows,
-            "physical_rows": physical_rows,
-            "dispatch_fresh_allocating_ms": round(dispatch_fresh_ms, 4),
-            "dispatch_cached_allocating_ms": round(dispatch_cached_ms, 4),
+            "sent_pairs": num_tokens * args.top_k,
+            "received_pairs": int(result.batch.valid_rows.item()),
+            "physical_rows": result.batch.capacity,
+            "dispatch_fresh_allocating_ms": round(fresh_ms, 4),
+            "dispatch_cached_allocating_ms": round(cached_ms, 4),
         }
         print(json.dumps(record), flush=True)
         dist.barrier(group)
-
     dist.destroy_process_group()
 
 
