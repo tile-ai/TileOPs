@@ -647,6 +647,10 @@ AdaptiveAvgPool2dFwdOp:
 
   roofline:
     vars:
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      H_in: "input.shape[2]"
+      W_in: "input.shape[3]"
       oH: "None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
       oW: "None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
       out_H: "H_in if oH is None else oH"
@@ -699,6 +703,10 @@ AdaptiveMaxPool2dFwdOp:
 
   roofline:
     vars:
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      H_in: "input.shape[2]"
+      W_in: "input.shape[3]"
       oH: "None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
       oW: "None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
       out_H: "H_in if oH is None else oH"
@@ -753,6 +761,10 @@ AdaptiveMaxPool2dIndicesFwdOp:
 
   roofline:
     vars:
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      H_in: "input.shape[2]"
+      W_in: "input.shape[3]"
       oH: "None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
       oW: "None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
       out_H: "H_in if oH is None else oH"
