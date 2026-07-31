@@ -15,7 +15,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
 
-# Oracle, tolerance and roofline names, plus any vendor's timing baseline.
+# Oracle, tolerance and roofline names — none of them belong to this layer.
 NOT_IN_WORKLOADS = ("ref_program", "check", "calculate_flops", "calculate_memory")
 
 
@@ -44,5 +44,4 @@ def test_tests_do_not_author_gen_inputs() -> None:
 
 @pytest.mark.smoke
 def test_workloads_carry_inputs_only() -> None:
-    forbidden = lambda n: n in NOT_IN_WORKLOADS or n.endswith("_baseline")  # noqa: E731
-    assert _methods_named(REPO_ROOT / "workloads", forbidden) == {}
+    assert _methods_named(REPO_ROOT / "workloads", NOT_IN_WORKLOADS.__contains__) == {}

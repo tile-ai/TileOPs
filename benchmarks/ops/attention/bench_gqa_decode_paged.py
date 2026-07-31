@@ -15,9 +15,9 @@ _OP_NAME = "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp"
 
 
 class _GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodePagedTest):
-    """Adds baseline torch_baseline for benchmark profiling."""
+    """Adds baseline ref_program for benchmark profiling."""
 
-    def torch_baseline(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                     real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
         """Reassemble paged K/V to logical layout per batch, then GQA (expand to heads) + SDPA."""
         batch, _, dim = q.shape
@@ -167,7 +167,7 @@ def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
     if fa3_fn is None and fi_fn is None:
-        result_bl = bm.profile(test.torch_baseline, *inputs)
+        result_bl = bm.profile(test.ref_program, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 

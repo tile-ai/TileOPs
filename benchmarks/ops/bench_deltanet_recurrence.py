@@ -40,9 +40,9 @@ def deltanet_decode_torch(
 
 
 class _DeltaNetDecodeTestBaseline(DeltaNetDecodeTest):
-    """Adds baseline torch_baseline for benchmark profiling."""
+    """Adds baseline ref_program for benchmark profiling."""
 
-    def torch_baseline(
+    def ref_program(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -103,7 +103,7 @@ def test_deltanet_decode_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 

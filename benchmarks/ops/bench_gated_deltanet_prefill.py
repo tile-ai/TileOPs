@@ -39,7 +39,7 @@ except ImportError:
 class _GatedDeltaNetPrefillFwdTestBaseline(GatedDeltaNetPrefillFwdTest):
     """Adds a pure-torch fallback baseline for benchmark profiling."""
 
-    def torch_baseline(
+    def ref_program(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -201,7 +201,7 @@ def test_gated_deltanet_prefill_fwd_bench(
         BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         BenchmarkReport.record(op, locals(), result, tag="tileops")
-        result_ref = bm.profile(test.torch_baseline, *inputs)
+        result_ref = bm.profile(test.ref_program, *inputs)
         BenchmarkReport.record(op, locals(), result_ref, tag="torch-ref")
 
 

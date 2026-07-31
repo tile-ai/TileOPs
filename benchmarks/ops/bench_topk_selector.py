@@ -23,9 +23,9 @@ _TUNE = True
 
 
 class _TopkSelectorTestBaseline(TopkSelectorTest):
-    """Adds baseline torch_baseline for benchmark profiling."""
+    """Adds baseline ref_program for benchmark profiling."""
 
-    def torch_baseline(self, index_score: torch.Tensor, starts: torch.Tensor,
+    def ref_program(self, index_score: torch.Tensor, starts: torch.Tensor,
                     ends: torch.Tensor) -> torch.Tensor:
         # index_score: (batch, seq_len, seq_len_kv, kv_group); topk over seq_len_kv (dim=2)
         indexes_ref = torch.topk(index_score, self.topk, dim=2)[1]
@@ -55,7 +55,7 @@ def test_topk_selector_bench(batch: int, seq_len: int, seq_len_kv: int, kv_group
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 

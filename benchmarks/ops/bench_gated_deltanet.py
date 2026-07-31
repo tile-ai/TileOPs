@@ -144,9 +144,9 @@ def prepare_wy_repr_gated_torch(k, g_cum, beta, chunk_size):
 
 
 class _GatedDeltaNetFwdTestBaseline(GatedDeltaNetFwdTest):
-    """Adds baseline torch_baseline for benchmark profiling."""
+    """Adds baseline ref_program for benchmark profiling."""
 
-    def torch_baseline(
+    def ref_program(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -247,7 +247,7 @@ def test_gated_deltanet_vs_fla_fwd(
         BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         # --- Torch reference baseline ---
-        result_bl = bm.profile(test.torch_baseline, *inputs)
+        result_bl = bm.profile(test.ref_program, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 

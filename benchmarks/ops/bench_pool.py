@@ -79,7 +79,7 @@ def _avg_pool1d_bench_params() -> list:
 class _AvgPool1dBenchCase(  # noqa: N801
     AvgPool1dBenchCase
 ):
-    def torch_baseline(self, x: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.avg_pool1d(
             x,
             kernel_size=self.kernel_size,
@@ -93,7 +93,7 @@ class _AvgPool1dBenchCase(  # noqa: N801
 class _AvgPool2dBenchCase(  # noqa: N801
     AvgPool2dBenchCase
 ):
-    def torch_baseline(self, x: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.avg_pool2d(
             x,
             kernel_size=self.kernel_size,
@@ -108,7 +108,7 @@ class _AvgPool2dBenchCase(  # noqa: N801
 class _AvgPool3dBenchCase(  # noqa: N801
     AvgPool3dBenchCase
 ):
-    def torch_baseline(self, x: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.avg_pool3d(
             x,
             kernel_size=self.kernel_size,
@@ -123,7 +123,7 @@ class _AvgPool3dBenchCase(  # noqa: N801
 class _MaxPool2dBenchCase(  # noqa: N801
     MaxPool2dBenchCase
 ):
-    def torch_baseline(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         return F.max_pool2d(
             x,
             kernel_size=self.kernel_size,
@@ -138,7 +138,7 @@ class _MaxPool2dBenchCase(  # noqa: N801
 class _MaxPool1dBenchCase(  # noqa: N801
     MaxPool1dBenchCase
 ):
-    def torch_baseline(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         return F.max_pool1d(
             x,
             kernel_size=self.kernel_size,
@@ -153,7 +153,7 @@ class _MaxPool1dBenchCase(  # noqa: N801
 class _MaxPool3dBenchCase(  # noqa: N801
     MaxPool3dBenchCase
 ):
-    def torch_baseline(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         return F.max_pool3d(
             x,
             kernel_size=self.kernel_size,
@@ -198,7 +198,7 @@ def test_avg_pool1d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -283,7 +283,7 @@ def test_avg_pool2d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -371,7 +371,7 @@ def test_avg_pool3d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -459,7 +459,7 @@ def test_max_pool2d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -507,7 +507,7 @@ def test_max_pool2d_indices_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -595,7 +595,7 @@ def test_max_pool1d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -641,7 +641,7 @@ def test_max_pool1d_indices_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -735,7 +735,7 @@ def test_max_pool3d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -785,5 +785,5 @@ def test_max_pool3d_indices_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")

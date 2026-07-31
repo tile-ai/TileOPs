@@ -135,9 +135,9 @@ def ref_engram_gate_conv_bwd(dY, H, k, v, rms_w_h, rms_w_v, conv_w,
 
 
 class _EngramGateConvBwdTestBaseline(EngramGateConvBwdTest):
-    """Adds baseline torch_baseline for benchmark profiling."""
+    """Adds baseline ref_program for benchmark profiling."""
 
-    def torch_baseline(self, dY, H, k, v, rms_w_h, rms_w_v, conv_w,
+    def ref_program(self, dY, H, k, v, rms_w_h, rms_w_v, conv_w,
                     vhat, alpha, rrms_h, rrms_k, rrms_v):
         return ref_engram_gate_conv_bwd(
             dY, H, k, v, rms_w_h, rms_w_v, conv_w,
@@ -163,7 +163,7 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
 
     @torch.enable_grad()
     def ref_with_grad(*args):
-        return test.torch_baseline(*args)
+        return test.ref_program(*args)
 
     result_bl = bm.profile(ref_with_grad, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")

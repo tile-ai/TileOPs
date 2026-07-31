@@ -32,7 +32,7 @@ def _make_op(shape: tuple, dtype: torch.dtype, op_kind: str):
 
 
 class _CumulativeBenchmarkWorkload(CumulativeWorkload):
-    def torch_baseline(self, x: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         x_f32 = x.float()
         if self.op_kind == "cumsum":
             return x_f32.cumsum(dim=-1).to(x.dtype)
@@ -50,7 +50,7 @@ def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
@@ -64,7 +64,7 @@ def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 

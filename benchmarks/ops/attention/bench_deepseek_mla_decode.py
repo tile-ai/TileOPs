@@ -13,9 +13,9 @@ _OP_NAME = "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp"
 
 
 class _MlaDecodeTestBaseline(MlaDecodeTest):
-    """Adds baseline torch_baseline for benchmark profiling."""
+    """Adds baseline ref_program for benchmark profiling."""
 
-    def torch_baseline(self, q: torch.Tensor, q_pe: torch.Tensor, kv: torch.Tensor,
+    def ref_program(self, q: torch.Tensor, q_pe: torch.Tensor, kv: torch.Tensor,
                     k_pe: torch.Tensor) -> torch.Tensor:
         """
         Inputs:
@@ -77,7 +77,7 @@ def test_mla_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 

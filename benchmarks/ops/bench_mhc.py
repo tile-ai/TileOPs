@@ -29,9 +29,9 @@ _SINKHORN_EPS = 0.02
 
 
 class _MHCPreTestBaseline(MHCPreTest):
-    """Adds baseline torch_baseline for benchmark profiling."""
+    """Adds baseline ref_program for benchmark profiling."""
 
-    def torch_baseline(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor,
+    def ref_program(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor,
                     alpha_pre, alpha_post, alpha_res,
                     sinkhorn_repeat: int, eps: float) -> tuple[torch.Tensor, torch.Tensor]:
         batch = self.batch
@@ -109,14 +109,14 @@ def test_mhc_pre_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
 class _MHCPostTestBaseline(MHCPostTest):
-    """Adds baseline torch_baseline for benchmark profiling."""
+    """Adds baseline ref_program for benchmark profiling."""
 
-    def torch_baseline(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
+    def ref_program(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
                     x_res: torch.Tensor) -> torch.Tensor:
         batch = self.batch
         n_expand = self.n_expand
@@ -144,7 +144,7 @@ def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, *inputs)
+    result_bl = bm.profile(test.ref_program, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 

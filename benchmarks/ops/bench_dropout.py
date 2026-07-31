@@ -22,7 +22,7 @@ class _DropoutBenchmarkWorkload(ShapedRandnWorkload):
         super().__init__(shape, dtype)
         self.p = p
 
-    def torch_baseline(self, x: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.dropout(x, p=self.p, training=True)
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_OP_NAME))
@@ -35,7 +35,7 @@ def test_dropout_bench(shape: tuple, dtype: torch.dtype) -> None:
     result = bm.profile(op, x)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.torch_baseline, x)
+    result_bl = bm.profile(test.ref_program, x)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 

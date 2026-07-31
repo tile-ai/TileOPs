@@ -61,7 +61,7 @@ Nightly performance guard. Independent baselines — cannot modify op/tests/work
 - **MUST NOT WRITE**: correctness assertions, kernel code
 - **MUST NOT** (import rule, not a write rule): import from [`tests/`](../../tests/), or import ref/oracle functions from [`workloads/`](../../workloads/). Buys decoupling, not cross-validation — no baseline output is compared against the test oracle. It keeps nightly benchmarks alive across test-side refactors, and keeps baseline timings stable when an oracle is edited.
 
-Import the op's workload from [`workloads/`](../../workloads/); a benchmark MUST NOT author `gen_inputs`. If the op has no workload, add it there in its own PR rather than copying inputs locally. Subclassing an imported workload to attach a baseline method is fine — the baseline is this stage's own content, named `torch_baseline` / `<vendor>_baseline` to keep it distinct from the test stage's `ref_program`.
+Import the op's workload from [`workloads/`](../../workloads/); a benchmark MUST NOT author `gen_inputs`. If the op has no workload, add it there in its own PR rather than copying inputs locally. Subclassing an imported workload to attach a baseline method is fine — the baseline is this stage's own content.
 
 → Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
 
