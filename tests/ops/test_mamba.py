@@ -10,6 +10,7 @@ from tileops.ops.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.ssd_decode import SSDDecodeOp
 from tileops.ops.ssd_state_passing import SSDStatePassingFwdOp
+from tileops.testing.mamba2_reference import mamba2_fwd_ref
 from workloads.mamba import (
     DaCumsumFwdFixture,
     DaCumsumFwdWorkload,
@@ -468,102 +469,6 @@ def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
     rtol = 1e-3
     allclose_compare(y_op, y_ref, atol=atol, rtol=rtol)
     allclose_compare(state, state_ref, atol=atol, rtol=rtol)
-
-
-def mamba2_fwd_ref(
-    x: torch.Tensor,
-    dt: torch.Tensor,
-    A: torch.Tensor,
-    B: torch.Tensor,
-    C: torch.Tensor,
-    dt_bias: torch.Tensor | None,
-    chunk_size: int,
-    dt_softplus: bool,
-) -> torch.Tensor:
-    """Pure-PyTorch reference for the Mamba-2 SSD forward pass.
-
-    Computes the same result as mamba_chunk_scan_combined from mamba_ssm:
-      out[l,p] = exp(dA[l]) * C[l] @ prev_state
-               + sum_{s<=l} (C[l]@B[s]) * exp(dA[l]-dA[s]) * dt[s] * x[s,p]
-
-    Inputs:
-        x:           (B, S, H, P)     dtype
-        dt:          (B, S, H)        float32
-        A:           (H,)             float32  (log-space, <= 0)
-        B:           (B, S, G, N)     dtype
-        C:           (B, S, G, N)     dtype
-        dt_bias:     (H,)             float32, optional
-        chunk_size:  int
-        dt_softplus: bool
-
-    Returns:
-        y: (B, S, H, P)  float32
-    """
-    b, S, h, p = x.shape
-    n = B.shape[-1]
-    g = B.shape[2]
-    hpg = h // g
-    Q = chunk_size
-    num_chunks = S // Q
-
-    # Step 1: DaCumsum
-    dt_val = dt.float()
-    if dt_bias is not None:
-        dt_val = dt_val + dt_bias.float()
-    if dt_softplus:
-        dt_val = F.softplus(dt_val)
-    dt_val = torch.clamp(dt_val, min=0.0)
-    dt_chunked = dt_val.reshape(b, num_chunks, Q, h).permute(0, 3, 1, 2)  # (B, H, C, Q)
-    dA = dt_chunked * A.float().view(1, h, 1, 1)
-    dA_cumsum = dA.cumsum(dim=-1)  # (B, H, C, Q)
-
-    # Step 2: CB = C[l] @ B[s]^T per chunk, lower-triangular, group-owned
-    B_c = B.float().reshape(b, num_chunks, Q, g, n)  # (B, C, Q, G, N)
-    C_c = C.float().reshape(b, num_chunks, Q, g, n)  # (B, C, Q, G, N)
-    cb = torch.einsum("bcqgn,bcsgn->bcgqs", C_c, B_c)  # (B, C, G, Q, Q)
-    mask = torch.ones(Q, Q, device=x.device, dtype=torch.bool).tril()
-    cb = cb * mask.view(1, 1, 1, Q, Q)
-
-    # Step 3: SSDChunkState
-    decay = torch.exp(dA_cumsum[:, :, :, -1:] - dA_cumsum)   # (B, H, C, Q)
-    decay_c = decay.permute(0, 2, 3, 1)                       # (B, C, Q, H)
-    dt_c = dt_chunked.permute(0, 2, 3, 1)                     # (B, C, Q, H)
-    x_c = x.float().reshape(b, num_chunks, Q, h, p)           # (B, C, Q, H, P)
-    B_heads = B_c[:, :, :, torch.arange(h, device=x.device) // hpg, :]
-    wx = x_c * (decay_c * dt_c).unsqueeze(-1)                 # (B, C, Q, H, P)
-    chunk_states = torch.einsum("bcqhp,bcqhn->bchpn", wx, B_heads)  # (B, C, H, P, N)
-
-    # Step 4: SSDStatePassing
-    exp_dA_chunk = torch.exp(dA_cumsum[:, :, :, -1])  # (B, H, C)
-    s = torch.zeros(b, h, p, n, device=x.device, dtype=torch.float32)
-    prev_states_list = []
-    for ci in range(num_chunks):
-        prev_states_list.append(s.unsqueeze(1))
-        scale = exp_dA_chunk[:, :, ci].view(b, h, 1, 1)
-        s = scale * s + chunk_states[:, ci]
-    prev_states = torch.cat(prev_states_list, dim=1)  # (B, C, H, P, N)  kept in float32 (accum_dtype)
-
-    # Step 5: SSDChunkScan
-    dA_c = dA_cumsum.permute(0, 2, 3, 1)  # (B, C, Q, H)
-    C_heads = C_c[:, :, :, torch.arange(h, device=x.device) // hpg, :]
-
-    # History: exp(dA[l]) * C[l] @ prev_state  -> (B, C, Q, H, P)
-    y_hist = torch.einsum("bcqhn,bchpn->bcqhp", C_heads, prev_states.float())
-    y_hist = y_hist * torch.exp(dA_c).unsqueeze(-1)
-
-    # Intra: sum_s cb[l,s] * exp(dA[l]-dA[s]) * dt[s] * x[s]  -> (B, C, Q, H, P)
-    dA_l = dA_cumsum.unsqueeze(-1)   # (B, H, C, Q, 1)
-    dA_s = dA_cumsum.unsqueeze(-2)   # (B, H, C, 1, Q)
-    decay_ls = torch.exp(dA_l - dA_s).masked_fill(
-        ~mask.view(1, 1, 1, Q, Q), 0.0
-    ).permute(0, 2, 1, 3, 4)  # (B, C, H, Q, Q)
-    cb_heads = cb[:, :, torch.arange(h, device=x.device) // hpg, :, :]  # (B, C, H, Q, Q)
-    lcb = cb_heads * decay_ls * dt_c.permute(0, 1, 3, 2).unsqueeze(-2)   # (B, C, H, Q, Q)
-    wx_t = x_c.permute(0, 1, 3, 2, 4)   # (B, C, H, Q, P)
-    # y_intra result is (B, C, H, Q, P); permute to (B, C, Q, H, P)
-    y_intra = torch.einsum("bchls,bchsp->bchlp", lcb, wx_t).permute(0, 1, 3, 2, 4)
-
-    return (y_hist + y_intra).reshape(b, S, h, p)
 
 
 @pytest.mark.smoke

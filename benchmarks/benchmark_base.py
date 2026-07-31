@@ -543,14 +543,16 @@ def workload_field_params(workloads: list, keys: tuple) -> list:
         )
     return params
 
-class ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload]):
+class ManifestBenchmark(BenchmarkBase[Any]):
     """Generic benchmark that reads FLOP/memory counts from an Op instance.
 
-    Accepts an op name, an instantiated Op, and any workload satisfying
-    :class:`ShapeDtypeWorkload`.  The op must implement ``eval_roofline()``.
-    Dynamic-shape ops may bind roofline variables during ``forward()``, so
-    this helper calls ``op.eval_roofline()`` only while building a result
-    after profiling has executed the op.
+    Accepts an op name, an instantiated Op, and the workload that produced
+    the inputs.  Roofline numbers come from ``op.eval_roofline()``, so the
+    workload needs no ``shape`` / ``dtype`` metadata — it is retained only
+    for subclasses that read their own fields off it.  Dynamic-shape ops may
+    bind roofline variables during ``forward()``, so this helper calls
+    ``op.eval_roofline()`` only while building a result after profiling has
+    executed the op.
 
     Usage::
 
@@ -563,7 +565,7 @@ class ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload]):
         self,
         op_name: str,
         op: Any,
-        workload: ShapeDtypeWorkload,
+        workload: Any,
     ):
         super().__init__(workload)
         self._op_name = op_name
