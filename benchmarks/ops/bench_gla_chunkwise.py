@@ -241,7 +241,9 @@ def test_gla_bwd_bench(
         # --- Torch autograd reference baseline ---
         def torch_bwd():
             return gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
-        result_bl = bm.profile(torch_bwd)
+        # torch_bwd builds its forward graph inside the timed callable, so it
+        # needs the autograd-enabled path; profile() runs under no_grad.
+        result_bl = bm.profile_autograd(torch_bwd)
         BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
 
 
