@@ -1,13 +1,8 @@
-"""Structural gates for the workloads layer's contract.
+"""Structural gates for the workloads layer.
 
-Input generation lives in ``workloads/<family>.py`` so both the test stage and
-the benchmark stage can import it. A workload authored inside ``tests/`` is
-unreachable from ``benchmarks/``, which may neither import ``tests`` nor write
-``workloads/`` — the benchmark's only remaining option is a second copy.
-
-The shared layer carries inputs and nothing else. An oracle, a tolerance or a
-baseline placed there becomes a surface both stages read, which is the coupling
-the stage boundary exists to prevent.
+Input construction lives in ``workloads/<family>.py`` so both the test stage and
+the benchmark stage can import it, and that layer carries inputs only — an
+oracle or a baseline placed there becomes a surface both stages share.
 
 See docs/design/trust-model.md §Test and §Workloads Layer.
 """
@@ -18,86 +13,36 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TESTS_DIR = REPO_ROOT / "tests"
-WORKLOADS_DIR = REPO_ROOT / "workloads"
+SELF = Path(__file__).resolve()
 
-# Exact names that mark a correctness oracle, a tolerance, or roofline maths.
-FORBIDDEN_IN_WORKLOADS = frozenset(
-    {"ref_program", "check", "calculate_flops", "calculate_memory"}
-)
-# Any timing baseline, whatever the vendor: torch_baseline, flashinfer_baseline...
-BASELINE_SUFFIX = "_baseline"
+# Oracle, tolerance and roofline names, plus any vendor's timing baseline.
+NOT_IN_WORKLOADS = ("ref_program", "check", "calculate_flops", "calculate_memory")
 
 
-def _python_files(root: Path) -> list[Path]:
-    here = Path(__file__).resolve()
-    return sorted(
-        path for path in root.rglob("*.py")
-        if path.name != "__init__.py" and path.resolve() != here
-    )
-
-
-def _is_forbidden(name: str, forbidden: frozenset[str], baselines: bool) -> bool:
-    return name in forbidden or (baselines and name.endswith(BASELINE_SUFFIX))
-
-
-def _defined_names(node: ast.AST) -> list[tuple[str, int]]:
-    """Every name a body binds to a callable, however it is spelled.
-
-    Covers ``def``, ``async def``, and the alias forms ``name = fn`` and
-    ``name: T = fn`` that would otherwise slip past a def-only scan.
-    """
-    bound = []
-    for child in getattr(node, "body", []):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            bound.append((child.name, child.lineno))
-        elif isinstance(child, ast.Assign):
-            for target in child.targets:
-                if isinstance(target, ast.Name):
-                    bound.append((target.id, child.lineno))
-        elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
-            bound.append((child.target.id, child.lineno))
-    return bound
-
-
-def _offending_definitions(
-    path: Path, forbidden: frozenset[str], *, baselines: bool = False
-) -> list[str]:
-    """Forbidden names bound at module level or inside any class in ``path``."""
-    tree = ast.parse(path.read_text(), filename=str(path))
-    hits = [
-        f"module-level {name} (line {lineno})"
-        for name, lineno in _defined_names(tree)
-        if _is_forbidden(name, forbidden, baselines)
-    ]
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
+def _methods_named(root: Path, wanted) -> dict[str, list[str]]:
+    """Map each file under ``root`` to the wanted methods any class defines."""
+    offenders = {}
+    for path in sorted(root.rglob("*.py")):
+        if path.name == "__init__.py" or path.resolve() == SELF:
             continue
-        hits += [
-            f"{node.name}.{name} (line {lineno})"
-            for name, lineno in _defined_names(node)
-            if _is_forbidden(name, forbidden, baselines)
+        hits = [
+            f"{node.name}.{m.name} (line {m.lineno})"
+            for node in ast.walk(ast.parse(path.read_text(), filename=str(path)))
+            if isinstance(node, ast.ClassDef)
+            for m in node.body
+            if isinstance(m, ast.FunctionDef) and wanted(m.name)
         ]
-    return hits
+        if hits:
+            offenders[str(path.relative_to(REPO_ROOT))] = hits
+    return offenders
 
 
 @pytest.mark.smoke
 def test_tests_do_not_author_gen_inputs() -> None:
-    offenders = {
-        str(path.relative_to(REPO_ROOT)): names
-        for path in _python_files(TESTS_DIR)
-        if (names := _offending_definitions(path, frozenset({"gen_inputs"})))
-    }
-
-    assert offenders == {}
+    assert _methods_named(REPO_ROOT / "tests", lambda n: n == "gen_inputs") == {}
 
 
 @pytest.mark.smoke
 def test_workloads_carry_inputs_only() -> None:
-    offenders = {
-        str(path.relative_to(REPO_ROOT)): names
-        for path in _python_files(WORKLOADS_DIR)
-        if (names := _offending_definitions(path, FORBIDDEN_IN_WORKLOADS, baselines=True))
-    }
-
-    assert offenders == {}
+    forbidden = lambda n: n in NOT_IN_WORKLOADS or n.endswith("_baseline")  # noqa: E731
+    assert _methods_named(REPO_ROOT / "workloads", forbidden) == {}

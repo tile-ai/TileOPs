@@ -11,11 +11,8 @@ Manifest → Test → Implementation → Benchmark
 Each stage declares its trust contract using these headings:
 
 - **OWNS** — what this stage authors. Required.
-- **MUST PROVIDE** — what this stage must author *for a downstream stage*, and where it must land. Required whenever a downstream stage is forbidden from writing that content itself.
 - **MUST NOT WRITE** — content this stage must not author, in any file. Required.
 - **MUST NOT** — structural couplings (typically forbidden imports) that would defeat stage independence. Optional.
-
-Every **MUST NOT WRITE** that blocks a downstream stage from content it needs MUST be paired with a **MUST PROVIDE** on the stage that owns it. A prohibition without a matching obligation does not remove the need — it converts it into a local re-implementation in the stage that was blocked, which is the coupling the prohibition was meant to prevent, minus the shared definition.
 
 Reads are not policed; the trust model controls writes and import-level coupling, not file access. Per-stage rules live in each [domain rule file](../../.claude/domain-rules/).
 
@@ -39,8 +36,9 @@ Full enumeration: [.claude/rules/manifest-trust-model.md](../../.claude/rules/ma
 PR-level correctness verification. QA writes tests against manifest spec.
 
 - **OWNS**: ref_program, tolerances, assertions, [`tests/`](../../tests/), [`workloads/`](../../workloads/)
-- **MUST PROVIDE**: every op's inputs constructible from [`workloads/<family>.py`](../../workloads/) — a class per op, or one parameterized class a family shares. Test classes compose it (`class FooTest(FooWorkload, TestBase)`); they do not define `gen_inputs` inline. The benchmark stage cannot write this layer, so an op whose workload is missing here leaves its benchmark no legal way to build inputs.
 - **MUST NOT WRITE**: kernel code, benchmark logic, or performance measurements
+
+Input construction lives in [`workloads/<family>.py`](../../workloads/); test classes compose it (`class FooTest(FooWorkload, TestBase)`) rather than defining `gen_inputs` inline. The benchmark stage may not write this layer, so a workload left inside `tests/` is unreachable from a benchmark.
 
 → Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Tests](testing.md#tests)
 
@@ -63,9 +61,7 @@ Nightly performance guard. Independent baselines — cannot modify op/tests/work
 - **MUST NOT WRITE**: correctness assertions, kernel code
 - **MUST NOT** (import rule, not a write rule): import from [`tests/`](../../tests/), or import ref/oracle functions from [`workloads/`](../../workloads/). Buys decoupling, not cross-validation — no baseline output is compared against the test oracle. It keeps nightly benchmarks alive across test-side refactors, and keeps baseline timings stable when an oracle is edited.
 
-Importing a workload class from [`workloads/`](../../workloads/) for input generation is the intended path, not an exception. A benchmark MUST NOT author `gen_inputs`: a missing workload is a test-stage **MUST PROVIDE** gap, closed by a `workloads/`-only PR, not by a local copy. Subclassing an imported workload to attach a benchmark-local baseline method is allowed — that method is this stage's own content.
-
-Baselines MUST prefer an independent external implementation; a benchmark-local one is the fallback. Name it for what it is (`torch_baseline`, `flashinfer_baseline`) — `ref_program` is the test stage's correctness oracle and does not belong in this stage.
+Import the op's workload from [`workloads/`](../../workloads/); a benchmark MUST NOT author `gen_inputs`. If the op has no workload, add it there in its own PR rather than copying inputs locally. Subclassing an imported workload to attach a baseline method is fine — the baseline is this stage's own content, named `torch_baseline` / `<vendor>_baseline` to keep it distinct from the test stage's `ref_program`.
 
 → Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
 
@@ -75,7 +71,7 @@ Shared input-definition layer — not a development stage. Test stage OWNS it (Q
 
 **Provides**: `WorkloadBase` (gen_inputs), `FixtureMeta`/`FixtureBase` (parametrize), per-op workload subclasses.
 
-**Must contain**: input construction for every op — the test stage's **MUST PROVIDE** obligation. One class per op or one parameterized class per family, whichever the inputs justify. Both downstream stages import from here; it is the only layer they share.
+**Must contain**: input construction for every op — one class per op, or one parameterized class a family shares. This is the only layer both downstream stages import.
 
 **Must not contain**: ref_program, check/tolerance logic, calculate_flops/memory, benchmark baselines. Reason: anything placed here couples the two stages that import it. Correctness logic belongs to the test stage, timing baselines to the benchmark stage.
 
