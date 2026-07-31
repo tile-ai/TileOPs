@@ -13,9 +13,9 @@ _OP_NAME = "MultiHeadAttentionDecodeWithKVCacheFwdOp"
 
 
 class _MhaDecodeTestBaseline(MhaDecodeTest):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Adds baseline torch_baseline for benchmark profiling."""
 
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    def torch_baseline(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         q_bhsd = q.transpose(1, 2)  # [B, H, S_q, D]
         k_bhsd = k.transpose(1, 2)  # [B, H, S_kv, D]
         v_bhsd = v.transpose(1, 2)  # [B, H, S_kv, D]
@@ -92,7 +92,7 @@ def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: to
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
     if fa3_fn is None and fi_fn is None:
-        result_bl = bm.profile(test.ref_program, *inputs)
+        result_bl = bm.profile(test.torch_baseline, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
 

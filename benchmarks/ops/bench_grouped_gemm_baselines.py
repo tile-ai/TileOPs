@@ -53,6 +53,7 @@ tl = pytest.importorskip("triton.language")
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport  # noqa: E402
 from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel  # noqa: E402
+from workloads.grouped_gemm import GroupedGemmUniformWorkload  # noqa: E402
 
 try:
     import deep_gemm
@@ -266,22 +267,12 @@ def _set_triton_allocator():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def gen_inputs(numel, E, N, K):
-    """Uniform routing: every expert gets ``numel // E`` rows (a multiple of 128).
-
-    Returns the shared bf16 tensors plus the per-expert metadata each baseline needs.
-    """
-    assert numel % E == 0, f"numel={numel} not divisible by E={E}"
-    per = numel // E
-    torch.manual_seed(42)
-    dev = "cuda"
-
-    A = torch.randn(numel, K, dtype=_DTYPE, device=dev) * 0.02
-    B = torch.randn(E, N, K, dtype=_DTYPE, device=dev) * 0.02  # NT: C = A @ B[e]^T
-
-    sizes = torch.full((E,), per, dtype=torch.int32, device=dev)
-    offsets = torch.zeros(E, dtype=torch.int32, device=dev)
-    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+def gen_baseline_inputs(numel, E, N, K):
+    """Shared workload tensors plus the derived tables each baseline needs."""
+    workload = GroupedGemmUniformWorkload(numel, E, N, K, _DTYPE)
+    A, B, sizes, offsets = workload.gen_baseline_inputs()
+    per = workload.rows_per_expert
+    dev = A.device
     m_indices = torch.arange(E, device=dev, dtype=torch.int32).repeat_interleave(per)
     offs_cumsum = torch.cumsum(sizes, dim=0).to(torch.int32)  # torch._grouped_mm: no leading 0
     return A, B, sizes, offsets, m_indices, offs_cumsum, per
@@ -480,7 +471,7 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
     group_a = group_c = group_c_tma = None
     group_b_kn = group_b_nk = None
     try:
-        A, B, sizes, offsets, m_indices, offs_cumsum, per = gen_inputs(numel, E, N, K)
+        A, B, sizes, offsets, m_indices, offs_cumsum, per = gen_baseline_inputs(numel, E, N, K)
         B_KN = B.transpose(1, 2).contiguous()  # [E, K, N] for torch & non-TMA triton
         workload = _GroupedGemmBaselineWorkload(numel, E, N, K, _DTYPE, label)
         bm = GroupedGemmBaselinesBenchmark(workload)

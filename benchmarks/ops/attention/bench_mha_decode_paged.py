@@ -14,9 +14,9 @@ _OP_NAME = "MultiHeadAttentionDecodePagedWithKVCacheFwdOp"
 
 
 class _MhaDecodePagedTestBaseline(MhaDecodePagedTest):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Adds baseline torch_baseline for benchmark profiling."""
 
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+    def torch_baseline(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                     real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
         """Reassemble paged K/V to logical layout per batch, then SDPA."""
         batch, seqlen_q, heads, dim = q.shape
@@ -149,7 +149,7 @@ def test_mha_decode_paged_bench(batch: int, heads: int, seqlen_q: int, seqlen_kv
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
     if fa3_fn is None and fi_fn is None:
-        result_bl = bm.profile(test.ref_program, *inputs)
+        result_bl = bm.profile(test.torch_baseline, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 

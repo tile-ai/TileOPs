@@ -10,9 +10,9 @@ from workloads.nsa_utils import prepare_chunk_indices
 
 
 class _MeanPoolingTestBaseline(MeanPoolingTest):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Adds baseline torch_baseline for benchmark profiling."""
 
-    def ref_program(self, x: torch.Tensor, offsets: torch.Tensor,
+    def torch_baseline(self, x: torch.Tensor, offsets: torch.Tensor,
                     indices: torch.Tensor) -> torch.Tensor:
         _ = indices
         batch_size, seq_len, heads, dim = x.shape
@@ -129,7 +129,7 @@ def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int,
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 

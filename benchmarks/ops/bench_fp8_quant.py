@@ -23,9 +23,9 @@ _TUNE = True
 
 
 class _FP8QuantTestBaseline(FP8QuantTest):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Adds baseline torch_baseline for benchmark profiling."""
 
-    def ref_program(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def torch_baseline(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # input_tensor: (batch, seq_len_kv, kv_group, index_dim)
         amax_value = torch.abs(input_tensor).amax(dim=-1, keepdim=True).clamp(min=1e-4)
         scale_tensor = amax_value / 448.0
@@ -52,7 +52,7 @@ def test_fp8_quant_bench(batch: int, seq_len_kv: int, kv_group: int, index_dim: 
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 

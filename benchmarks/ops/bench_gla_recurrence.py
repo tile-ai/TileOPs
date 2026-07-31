@@ -45,9 +45,9 @@ def gla_decode_torch(
 
 
 class _GLADecodeTestBaseline(GLADecodeTest):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Adds baseline torch_baseline for benchmark profiling."""
 
-    def ref_program(
+    def torch_baseline(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -140,7 +140,7 @@ def test_gla_decode_bench(
         BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         # --- Torch reference baseline ---
-        result_bl = bm.profile(test.ref_program, *inputs)
+        result_bl = bm.profile(test.torch_baseline, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 

@@ -109,7 +109,7 @@ def test_avg_pool1d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -194,7 +194,7 @@ def test_avg_pool2d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -282,7 +282,7 @@ def test_avg_pool3d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -370,7 +370,7 @@ def test_max_pool2d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -418,7 +418,7 @@ def test_max_pool2d_indices_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -506,7 +506,7 @@ def test_max_pool1d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -552,7 +552,7 @@ def test_max_pool1d_indices_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -646,7 +646,7 @@ def test_max_pool3d_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
@@ -696,5 +696,5 @@ def test_max_pool3d_indices_bench(
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")

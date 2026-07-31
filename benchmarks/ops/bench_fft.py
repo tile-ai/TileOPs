@@ -13,9 +13,9 @@ _OP_NAME = "FFTC2COp"
 
 
 class _FFTTestBaseline(FFTTest):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Adds baseline torch_baseline for benchmark profiling."""
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+    def torch_baseline(self, x: torch.Tensor) -> torch.Tensor:
         return torch.fft.fft(x, dim=-1)
 
 
@@ -36,7 +36,7 @@ def test_fft_bench(shape: tuple, dtype: torch.dtype) -> None:
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-cufft")
 
 

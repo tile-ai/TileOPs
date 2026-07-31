@@ -12,9 +12,9 @@ _OP_NAME = "GroupedQueryAttentionDecodeWithKVCacheFwdOp"
 
 
 class _GroupedQueryAttentionDecodeTestBaseline(GroupedQueryAttentionDecodeTest):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Adds baseline torch_baseline for benchmark profiling."""
 
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    def torch_baseline(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         q_bhsd = q.unsqueeze(1).transpose(1, 2)  # [B, H, 1, D]
         groups = self.heads // self.heads_kv
         k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
@@ -165,7 +165,7 @@ def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int
         BenchmarkReport.record(op, locals(), result_fi, tag="flashinfer")
 
     if fa3_fn is None and fi_fn is None:
-        result_bl = bm.profile(test.ref_program, *inputs)
+        result_bl = bm.profile(test.torch_baseline, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch-sdpa")
 
 

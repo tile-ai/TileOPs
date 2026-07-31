@@ -30,9 +30,9 @@ _TUNE = True
 
 
 class _GroupedGemmTestBaseline(GroupedGemmTest):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Adds baseline torch_baseline for benchmark profiling."""
 
-    def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
+    def torch_baseline(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
                     batch_offsets: torch.Tensor,
                     batch_padded_offsets: torch.Tensor) -> torch.Tensor:
         if not self.transpose_a:
@@ -119,7 +119,7 @@ def test_grouped_gemm_bench(batch_sum: int, batch_count: int, N: int, K: int,
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(name, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(name, locals(), result_bl, tag="torch-ref")
 
 

@@ -127,9 +127,9 @@ def prepare_wy_repr_deltanet_torch(k, beta, chunk_size):
 
 
 class _DeltaNetFwdTestBaseline(DeltaNetFwdTest):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Adds baseline torch_baseline for benchmark profiling."""
 
-    def ref_program(
+    def torch_baseline(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -223,7 +223,7 @@ def test_deltanet_vs_fla_fwd(
         BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         # --- Torch reference baseline ---
-        result_bl = bm.profile(test.ref_program, *inputs)
+        result_bl = bm.profile(test.torch_baseline, *inputs)
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 

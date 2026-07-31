@@ -19,9 +19,9 @@ _CONFIG = None
 
 
 class _FP8LightningIndexerBaseline(FP8LightningIndexerWorkload):
-    """Adds baseline ref_program for benchmark profiling."""
+    """Adds baseline torch_baseline for benchmark profiling."""
 
-    def ref_program(self, q: torch.Tensor, kv: torch.Tensor, weights: torch.Tensor,
+    def torch_baseline(self, q: torch.Tensor, kv: torch.Tensor, weights: torch.Tensor,
                     cu_seqlen_ks: torch.Tensor, cu_seqlen_ke: torch.Tensor) -> tuple[torch.Tensor]:
         k = kv
         q = q.float()
@@ -88,7 +88,7 @@ def test_fp8_lightning_indexer_bench(batch: int, seq_len: int, heads: int, index
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
+    result_bl = bm.profile(test.torch_baseline, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
