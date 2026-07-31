@@ -1,7 +1,7 @@
 ## Boundary
 
 - **OWNS**: `tests/`, `workloads/` (test stage creates workload definitions first)
-- Input construction goes in `workloads/<family>.py`; compose it (`class FooTest(FooWorkload, TestBase)`) instead of defining `gen_inputs` inline. Oracle callables (`ref_fn`, `ref_program`) stay on the test class — a workload holding one becomes a surface the benchmark stage shares. Enforced by `tests/test_workload_placement.py`.
+- Input construction goes in `workloads/<family>.py`; compose it (`class FooTest(FooWorkload, TestBase)`) instead of defining `gen_inputs` inline. Oracle callables stay on the test class. Enforced by `tests/test_workload_placement.py`.
 - **MUST NOT WRITE**: `tileops/ops/`, `tileops/kernels/`, `benchmarks/`, `tileops/manifest/`
 
 → [trust-model.md §Test](../../docs/design/trust-model.md#test) | [testing.md §Tests](../../docs/design/testing.md#tests)

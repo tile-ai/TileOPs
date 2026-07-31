@@ -2,10 +2,10 @@
 
 - **OWNS**: `benchmarks/`
 - **MUST NOT WRITE**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `workloads/`, `tileops/manifest/`
-- **MUST NOT**: import from `tests/` (enforced by `benchmarks/ruff.toml`), or import ref/oracle functions from `workloads/`. Reads of any other file are unrestricted.
-- **MUST NOT**: author `gen_inputs` — import the op's workload from `workloads/`; if it has none, add it there in its own PR. Subclassing an imported workload to attach a baseline is fine.
+- **MUST NOT**: import from `tests/`, or import ref/oracle functions from `workloads/`. Reads of any other file are unrestricted.
+- **MUST NOT**: author `gen_inputs`. Import the op's workload from `workloads/`; if it has none, add it there in its own PR instead of copying locally. Subclassing an imported workload to attach a baseline is fine.
 
-Enforced by `benchmarks/tests/test_benchmark_boundaries.py`.
+Both enforced by `benchmarks/tests/test_benchmark_boundaries.py`.
 
 → [trust-model.md §Benchmark](../../docs/design/trust-model.md#benchmark) | [testing.md §Benchmarks](../../docs/design/testing.md#benchmarks)
 

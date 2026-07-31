@@ -38,7 +38,7 @@ PR-level correctness verification. QA writes tests against manifest spec.
 - **OWNS**: ref_program, tolerances, assertions, [`tests/`](../../tests/), [`workloads/`](../../workloads/)
 - **MUST NOT WRITE**: kernel code, benchmark logic, or performance measurements
 
-Input construction lives in [`workloads/<family>.py`](../../workloads/); test classes compose it (`class FooTest(FooWorkload, TestBase)`) rather than defining `gen_inputs` inline. The benchmark stage may not write this layer, so a workload left inside `tests/` is unreachable from a benchmark.
+Input construction belongs in [`workloads/`](../../workloads/), not in a test class: the benchmark stage may not write that layer, so a workload left inside `tests/` is unreachable from a benchmark and gets copied.
 
 → Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Tests](testing.md#tests)
 
@@ -60,8 +60,6 @@ Nightly performance guard. Independent baselines — cannot modify op/tests/work
 - **OWNS**: profiling, baseline comparisons, [`benchmarks/`](../../benchmarks/)
 - **MUST NOT WRITE**: correctness assertions, kernel code
 - **MUST NOT** (import rule, not a write rule): import from [`tests/`](../../tests/), or import ref/oracle functions from [`workloads/`](../../workloads/). Buys decoupling, not cross-validation — no baseline output is compared against the test oracle. It keeps nightly benchmarks alive across test-side refactors, and keeps baseline timings stable when an oracle is edited.
-
-Import the op's workload from [`workloads/`](../../workloads/); a benchmark MUST NOT author `gen_inputs`. If the op has no workload, add it there in its own PR rather than copying inputs locally. Subclassing an imported workload to attach a baseline method is fine — the baseline is this stage's own content.
 
 → Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
 
