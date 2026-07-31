@@ -39,7 +39,7 @@ Full enumeration: [.claude/rules/manifest-trust-model.md](../../.claude/rules/ma
 PR-level correctness verification. QA writes tests against manifest spec.
 
 - **OWNS**: ref_program, tolerances, assertions, [`tests/`](../../tests/), [`workloads/`](../../workloads/)
-- **MUST PROVIDE**: one input-generating workload class per op, in [`workloads/<family>.py`](../../workloads/). Test classes compose it (`class FooTest(FooWorkload, TestBase)`); they do not define `gen_inputs` inline. The benchmark stage cannot write this layer, so an op whose workload is missing here leaves its benchmark no legal way to build inputs.
+- **MUST PROVIDE**: every op's inputs constructible from [`workloads/<family>.py`](../../workloads/) — a class per op, or one parameterized class a family shares. Test classes compose it (`class FooTest(FooWorkload, TestBase)`); they do not define `gen_inputs` inline. The benchmark stage cannot write this layer, so an op whose workload is missing here leaves its benchmark no legal way to build inputs.
 - **MUST NOT WRITE**: kernel code, benchmark logic, or performance measurements
 
 → Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Tests](testing.md#tests)
@@ -75,7 +75,7 @@ Shared input-definition layer — not a development stage. Test stage OWNS it (Q
 
 **Provides**: `WorkloadBase` (gen_inputs), `FixtureMeta`/`FixtureBase` (parametrize), per-op workload subclasses.
 
-**Must contain**: one input-generating class per op — the test stage's **MUST PROVIDE** obligation. Both downstream stages import from here; it is the only layer they share.
+**Must contain**: input construction for every op — the test stage's **MUST PROVIDE** obligation. One class per op or one parameterized class per family, whichever the inputs justify. Both downstream stages import from here; it is the only layer they share.
 
 **Must not contain**: ref_program, check/tolerance logic, calculate_flops/memory, benchmark baselines. Reason: anything placed here couples the two stages that import it. Correctness logic belongs to the test stage, timing baselines to the benchmark stage.
 
