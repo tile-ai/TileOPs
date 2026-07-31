@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, torch_inductor_baseline
 from tileops.manifest import load_workloads
 from tileops.ops.norm.instance_norm import (
     InstanceNormFwdOp,
@@ -46,8 +46,8 @@ def test_instance_norm_bench(n: int, c: int, spatial: tuple,
     def baseline_fn(x, weight, bias):
         return F.instance_norm(x, weight=weight, bias=bias, eps=1e-5)
 
-    result_bl = bm.profile(baseline_fn, x, weight, bias)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), x, weight, bias)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 @pytest.mark.parametrize("n, c, spatial, dtype, tune", _NO_AFFINE_PARAMS)
@@ -68,8 +68,8 @@ def test_instance_norm_no_affine_bench(n: int, c: int, spatial: tuple,
     def baseline_no_affine(x):
         return F.instance_norm(x, weight=None, bias=None, eps=1e-5)
 
-    result_bl = bm.profile(baseline_no_affine, x)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_no_affine), x)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 if __name__ == "__main__":

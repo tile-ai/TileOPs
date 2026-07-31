@@ -543,6 +543,17 @@ def workload_field_params(workloads: list, keys: tuple) -> list:
         )
     return params
 
+
+def torch_inductor_baseline(fn: Callable) -> Callable:
+    """Compile a benchmark-local PyTorch baseline with TorchInductor.
+
+    The baseline implementation itself stays in the benchmark file so tests do
+    not become performance oracles. This helper only centralizes the compile
+    policy used by common-op benchmark baselines.
+    """
+    return torch.compile(fn, fullgraph=True)
+
+
 class ManifestBenchmark(BenchmarkBase[ShapeDtypeWorkload]):
     """Generic benchmark that reads FLOP/memory counts from an Op instance.
 

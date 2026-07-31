@@ -11,6 +11,7 @@ import torch
 from benchmarks.benchmark_base import (
     BenchmarkReport,
     ManifestBenchmark,
+    torch_inductor_baseline,
     workloads_to_params,
 )
 from workloads.workload_base import WorkloadBase
@@ -63,8 +64,8 @@ def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(test.ref_program), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMPROD_OP))
@@ -77,8 +78,8 @@ def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(test.ref_program, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(test.ref_program), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 if __name__ == "__main__":

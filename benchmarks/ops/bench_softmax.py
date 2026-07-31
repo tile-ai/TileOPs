@@ -8,7 +8,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+    workloads_to_params,
+)
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 from workloads.reduction import (
     LogSoftmaxTest,
@@ -44,8 +49,8 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     def baseline_fn(x):
         return F.softmax(x, dim=-1)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # LogSoftmax benchmarks
@@ -69,8 +74,8 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
     def baseline_fn(x):
         return F.log_softmax(x, dim=-1)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # LogSumExp benchmarks
@@ -103,8 +108,8 @@ def test_logsumexp_bench(
     def baseline_fn(x):
         return torch.logsumexp(x, dim=dim, keepdim=keepdim)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 if __name__ == "__main__":

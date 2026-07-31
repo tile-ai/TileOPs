@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, torch_inductor_baseline
 from tileops.manifest import load_workloads
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
@@ -39,8 +39,8 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
         normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=test.eps)
         return scale * normed + shift
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 @pytest.mark.parametrize("m, n, dtype", _to_params(load_workloads(_ADA_ZERO_OP_NAME)))
@@ -58,8 +58,8 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
         normed = F.layer_norm(x, (n,), weight=None, bias=None, eps=test.eps)
         return gate * (scale * normed + shift)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 if __name__ == "__main__":

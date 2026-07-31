@@ -11,7 +11,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBenchmark
+from benchmarks.benchmark_base import (
+    BenchmarkBase,
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+)
 from tileops.manifest import load_workloads
 from tileops.ops.elementwise import (
     AlibiFwdOp,
@@ -158,8 +163,8 @@ def test_clamp_tensor_bench(
     def baseline_fn(x, t_min, t_max):
         return torch.clamp(x, t_min, t_max)
 
-    result_bl = bm.profile(baseline_fn, x, t_min, t_max)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), x, t_min, t_max)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 @pytest.mark.parametrize(
@@ -185,8 +190,8 @@ def test_clamp_min_bench(
     def baseline_fn(x, t_min):
         return torch.maximum(x, t_min)
 
-    result_bl = bm.profile(baseline_fn, x, t_min)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), x, t_min)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 @pytest.mark.parametrize(
@@ -212,8 +217,8 @@ def test_clamp_max_bench(
     def baseline_fn(x, t_max):
         return torch.minimum(x, t_max)
 
-    result_bl = bm.profile(baseline_fn, x, t_max)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), x, t_max)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # alibi & sinusoidal (generative: no input tensors)
@@ -288,8 +293,10 @@ def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     result = bm.profile(op)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(lambda: _alibi_reference(seq_len, num_heads, dtype))
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    result_bl = bm.profile(
+        torch_inductor_baseline(lambda: _alibi_reference(seq_len, num_heads, dtype)),
+    )
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 @SinusoidalBenchFixture
@@ -301,8 +308,10 @@ def test_sinusoidal_bench(seq_len: int, d_model: int, dtype: torch.dtype) -> Non
     result = bm.profile(op)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(lambda: _sinusoidal_reference(seq_len, d_model, dtype))
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+    result_bl = bm.profile(
+        torch_inductor_baseline(lambda: _sinusoidal_reference(seq_len, d_model, dtype)),
+    )
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # fp8 benchmarks: representative independent ops with e4m3fn / e5m2
@@ -388,7 +397,7 @@ def test_fp8_unary_independent_bench(
         return baseline_fn(x.to(torch.float16)).to(dtype)
 
     result_bl = bm.profile(baseline, *inputs)
-    BenchmarkReport.record(f"{op_name}_fp8", locals(), result_bl, tag="torch-ref")
+    BenchmarkReport.record(f"{op_name}_fp8", locals(), result_bl, tag="torch_ref")
 
 
 # fp8 where / masked_fill (selection ops - pass fp8 through directly)
@@ -480,7 +489,7 @@ def test_fp8_selection_bench(
             return torch.where(cond, x, y)
 
         result_bl = bm.profile(baseline, cond, x, y)
-        BenchmarkReport.record("where_fp8", locals(), result_bl, tag="torch-ref")
+        BenchmarkReport.record("where_fp8", locals(), result_bl, tag="torch_ref")
     else:
         test = Fp8MaskedFillBenchCase(shape, dtype)
         bm = Fp8MaskedFillBenchmark(test)
@@ -494,7 +503,7 @@ def test_fp8_selection_bench(
             return x.to(torch.float16).masked_fill(mask, -100.0).to(dtype)
 
         result_bl = bm.profile(baseline, x, mask)
-        BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+        BenchmarkReport.record(op, locals(), result_bl, tag="torch_ref")
 
 
 if __name__ == "__main__":

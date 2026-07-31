@@ -15,7 +15,12 @@ from typing import Callable
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+    workloads_to_params,
+)
 from tileops.ops.elementwise import (
     AbsFwdOp,
     BitwiseNotFwdOp,
@@ -122,8 +127,8 @@ def _profile_and_record(
         raise
     BenchmarkReport.record(op, params, result, tag="tileops")
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, params, result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, params, result_bl, tag="torch_inductor")
 
 
 # Per-op constants and tests — one block per manifest entry so the

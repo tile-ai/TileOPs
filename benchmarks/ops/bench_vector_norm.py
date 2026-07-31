@@ -7,7 +7,12 @@ Workload shapes and roofline formulas are loaded from the ops manifest (tileops/
 import pytest
 import torch
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import (
+    BenchmarkReport,
+    ManifestBenchmark,
+    torch_inductor_baseline,
+    workloads_to_params,
+)
 from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 from workloads.reduction import InfNormTest, L1NormTest, L2NormTest
 
@@ -50,8 +55,8 @@ def test_l1_norm_bench(
             x.float(), ord=1, dim=dim, keepdim=keepdim,
         ).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # L2 Norm benchmarks
@@ -86,8 +91,8 @@ def test_l2_norm_bench(
             x.float(), ord=2, dim=dim, keepdim=keepdim,
         ).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 # Inf Norm benchmarks
@@ -122,8 +127,8 @@ def test_inf_norm_bench(
             x.float(), ord=float("inf"), dim=dim, keepdim=keepdim,
         ).to(x.dtype)
 
-    result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+    result_bl = bm.profile(torch_inductor_baseline(baseline_fn), *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch_inductor")
 
 
 if __name__ == "__main__":

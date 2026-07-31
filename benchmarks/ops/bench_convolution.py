@@ -136,7 +136,7 @@ def _profile_conv(
     BenchmarkReport.record(op, params, result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn, *inputs)
-    BenchmarkReport.record(op, params, result_bl, tag="torch")
+    BenchmarkReport.record(op, params, result_bl, tag="torch_cudnn")
 
 
 # Conv1d
