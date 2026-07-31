@@ -31,7 +31,7 @@ _TUNE = True
 
 
 class _ConvWorkload:
-    """Minimal :class:`ShapeDtypeWorkload` for the convolution family.
+    """Minimal shape/dtype descriptor for the convolution family.
 
     Holds ``shape`` and ``dtype`` so :class:`ManifestBenchmark` can call
     ``op.eval_roofline()`` after ``forward()`` has bound the dynamic vars.

@@ -233,7 +233,7 @@ class TensorClampBenchCase:
 
 
 class _GenerativeWorkload:
-    """ShapeDtypeWorkload for the generative ops (no input tensors)."""
+    """Shape/dtype descriptor for the generative ops (no input tensors)."""
 
     def __init__(self, shape: tuple, dtype: torch.dtype):
         self.shape = shape

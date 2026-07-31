@@ -82,13 +82,10 @@ Shared input-definition layer — not a development stage. Test stage OWNS it (Q
 ```
 WorkloadBase (workloads/workload_base.py)  # gen_inputs() only — abstract contract
   ├── TestBase (tests/test_base.py)     # adds ref_program(), check()
-  └── concrete subclasses typically define shape + dtype
+  └── concrete subclasses per op        # the test stage's MUST PROVIDE artifact
 
-# Public benchmark interface (capability protocols)
-ShapeDtypeWorkload                      # shape + dtype metadata
-InputGeneratingWorkload                 # gen_inputs()
-BenchmarkWorkload                       # both (when a workload defines shape, dtype, gen_inputs)
-BenchmarkBase[W] (benchmarks/)          # generic over workload type
+BenchmarkBase[W] (benchmarks/)          # generic over workload type; reads
+                                        # roofline off the op, not the workload
 ```
 
 → Cross-refs: [architecture.md](architecture.md), [testing.md](testing.md)

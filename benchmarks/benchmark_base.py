@@ -11,9 +11,7 @@ from typing import (
     Callable,
     Generic,
     Optional,
-    Protocol,
     TypeVar,
-    runtime_checkable,
 )
 
 import pytest
@@ -38,42 +36,6 @@ def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
             "tensor input; multi-input ops use their own bench files."
         )
     return contract
-
-
-# Benchmark capability protocols
-
-
-@runtime_checkable
-class ShapeDtypeWorkload(Protocol):
-    """Structural type for workloads that carry shape and dtype metadata.
-
-    Any object with ``shape`` and ``dtype`` satisfies this protocol.
-    Used by helpers that only need tensor metadata, not input generation
-    capability.
-    """
-
-    shape: tuple[int, ...]
-    dtype: torch.dtype
-
-
-@runtime_checkable
-class InputGeneratingWorkload(Protocol):
-    """Structural type for workloads that can generate benchmark inputs."""
-
-    def gen_inputs(self) -> tuple[Any, ...]: ...
-
-
-@runtime_checkable
-class BenchmarkWorkload(ShapeDtypeWorkload, InputGeneratingWorkload, Protocol):
-    """Full benchmark workload: shape/dtype metadata + input generation.
-
-    This is the standard contract for benchmark workloads that need both
-    roofline metadata extraction and input tensor generation.
-    Workloads satisfy this protocol when they define ``shape`` and ``dtype``
-    metadata in addition to implementing ``gen_inputs()``.
-    """
-
-    ...
 
 
 W = TypeVar("W")

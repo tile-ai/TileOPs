@@ -45,7 +45,7 @@ from tileops.ops.elementwise import (
 
 
 class _UnaryWorkload:
-    """Minimal :class:`ShapeDtypeWorkload` for unary elementwise ops.
+    """Minimal shape/dtype descriptor for unary elementwise ops.
 
     Holds ``shape`` and ``dtype`` so that :class:`ManifestBenchmark` can call
     ``op.eval_roofline()`` after ``forward()`` has bound the dynamic vars.
