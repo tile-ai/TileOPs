@@ -1,7 +1,7 @@
 """Workload definitions for elementwise op workloads with custom generators."""
 
 from math import prod
-from typing import Callable, Optional
+from typing import Optional
 
 import torch
 
@@ -239,23 +239,23 @@ class Fp8MaskedFillBenchCase:
 
 
 class BinaryBenchCase:
-    """Minimal workload for binary ops."""
+    """Two same-shape tensors drawn from a named value domain."""
 
     def __init__(
         self,
         shape: tuple,
         dtype: torch.dtype,
         output_dtype: torch.dtype,
-        gen_inputs: Callable,
+        domain: str = "normal",
     ):
         self.shape = shape
         self.n_total = prod(shape)
         self.dtype = dtype
         self.output_dtype = output_dtype
-        self._gen_inputs = gen_inputs
+        self.domain = domain
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._gen_inputs(self.shape, self.dtype)
+        return PAIR_DOMAINS[self.domain](self.shape, self.dtype)
 
 
 class FusedGatedBenchCase:
@@ -281,17 +281,17 @@ class BroadcastBenchCase:
         b_shape: tuple,
         dtype: torch.dtype,
         output_dtype: torch.dtype,
-        gen_inputs: Callable,
+        domain: str = "normal",
     ):
         self.a_shape = a_shape
         self.b_shape = b_shape
         self.n_total = prod(a_shape)  # output size = broadcast result
         self.dtype = dtype
         self.output_dtype = output_dtype
-        self._gen_inputs = gen_inputs
+        self.domain = domain
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._gen_inputs(self.a_shape, self.b_shape, self.dtype)
+        return BROADCAST_DOMAINS[self.domain](self.a_shape, self.b_shape, self.dtype)
 class AddBroadcastWorkload(WorkloadBase):
     def __init__(self, a_shape: tuple, b_shape: tuple, dtype: torch.dtype):
         self.a_shape = a_shape
@@ -561,3 +561,17 @@ def draw_special_floats(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]
     flat[quarter:2 * quarter] = float("inf")
     flat[2 * quarter:3 * quarter] = float("-inf")
     return (x,)
+
+
+# Domain名 -> draw。持有映射的是这一层,调用方只给名字,静态可见。
+PAIR_DOMAINS = {
+    "normal": draw_normal_pair,
+    "positive": draw_positive_pair,
+    "int": draw_int_pair,
+    "bool": draw_bool_pair,
+}
+
+BROADCAST_DOMAINS = {
+    "normal": draw_normal_broadcast_pair,
+    "positive": draw_positive_broadcast_pair,
+}

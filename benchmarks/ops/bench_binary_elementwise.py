@@ -29,14 +29,19 @@ from tileops.ops.elementwise import (
     DivFwdOp,
     EqFwdOp,
     FloorDivideFwdOp,
+    GeFwdOp,
     GeluAndMulFwdOp,
     GeluTanhAndMulFwdOp,
+    GtFwdOp,
+    LeFwdOp,
     LerpFwdOp,
     LogicalAndFwdOp,
     LogicalOrFwdOp,
+    LtFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
     MulFwdOp,
+    NeFwdOp,
     PowFwdOp,
     RemainderFwdOp,
     SiluAndMulFwdOp,
@@ -46,12 +51,6 @@ from workloads.elementwise import (
     BinaryBenchCase,
     BroadcastBenchCase,
     FusedGatedBenchCase,
-    draw_bool_pair,
-    draw_int_pair,
-    draw_normal_broadcast_pair,
-    draw_normal_pair,
-    draw_positive_broadcast_pair,
-    draw_positive_pair,
 )
 from workloads.workload_base import FixtureBase
 
@@ -98,37 +97,37 @@ class BinaryArithBenchFixture(FixtureBase):
     PARAMS = [
         ("op_name, shape, dtype, output_dtype, op_cls, baseline_fn, gen_inputs", [
             # sub
-            pytest.param("sub", _SHAPES[0], torch.float16, torch.float16, SubFwdOp, torch.sub, draw_normal_pair, marks=pytest.mark.smoke),
-            pytest.param("sub", _SHAPES[1], torch.float16, torch.float16, SubFwdOp, torch.sub, draw_normal_pair, marks=pytest.mark.full),
-            pytest.param("sub", _SHAPES[2], torch.float16, torch.float16, SubFwdOp, torch.sub, draw_normal_pair, marks=pytest.mark.full),
+            pytest.param("sub", _SHAPES[0], torch.float16, torch.float16, SubFwdOp, torch.sub, "normal", marks=pytest.mark.smoke),
+            pytest.param("sub", _SHAPES[1], torch.float16, torch.float16, SubFwdOp, torch.sub, "normal", marks=pytest.mark.full),
+            pytest.param("sub", _SHAPES[2], torch.float16, torch.float16, SubFwdOp, torch.sub, "normal", marks=pytest.mark.full),
             # mul
-            pytest.param("mul", _SHAPES[0], torch.float16, torch.float16, MulFwdOp, torch.mul, draw_normal_pair, marks=pytest.mark.smoke),
-            pytest.param("mul", _SHAPES[1], torch.float16, torch.float16, MulFwdOp, torch.mul, draw_normal_pair, marks=pytest.mark.full),
-            pytest.param("mul", _SHAPES[2], torch.float16, torch.float16, MulFwdOp, torch.mul, draw_normal_pair, marks=pytest.mark.full),
+            pytest.param("mul", _SHAPES[0], torch.float16, torch.float16, MulFwdOp, torch.mul, "normal", marks=pytest.mark.smoke),
+            pytest.param("mul", _SHAPES[1], torch.float16, torch.float16, MulFwdOp, torch.mul, "normal", marks=pytest.mark.full),
+            pytest.param("mul", _SHAPES[2], torch.float16, torch.float16, MulFwdOp, torch.mul, "normal", marks=pytest.mark.full),
             # div
-            pytest.param("div", _SHAPES[0], torch.float16, torch.float16, DivFwdOp, torch.div, draw_positive_pair, marks=pytest.mark.smoke),
-            pytest.param("div", _SHAPES[1], torch.float16, torch.float16, DivFwdOp, torch.div, draw_positive_pair, marks=pytest.mark.full),
-            pytest.param("div", _SHAPES[2], torch.float16, torch.float16, DivFwdOp, torch.div, draw_positive_pair, marks=pytest.mark.full),
+            pytest.param("div", _SHAPES[0], torch.float16, torch.float16, DivFwdOp, torch.div, "positive", marks=pytest.mark.smoke),
+            pytest.param("div", _SHAPES[1], torch.float16, torch.float16, DivFwdOp, torch.div, "positive", marks=pytest.mark.full),
+            pytest.param("div", _SHAPES[2], torch.float16, torch.float16, DivFwdOp, torch.div, "positive", marks=pytest.mark.full),
             # remainder
-            pytest.param("remainder", _SHAPES[0], torch.float16, torch.float16, RemainderFwdOp, torch.remainder, draw_positive_pair, marks=pytest.mark.smoke),
-            pytest.param("remainder", _SHAPES[1], torch.float16, torch.float16, RemainderFwdOp, torch.remainder, draw_positive_pair, marks=pytest.mark.full),
+            pytest.param("remainder", _SHAPES[0], torch.float16, torch.float16, RemainderFwdOp, torch.remainder, "positive", marks=pytest.mark.smoke),
+            pytest.param("remainder", _SHAPES[1], torch.float16, torch.float16, RemainderFwdOp, torch.remainder, "positive", marks=pytest.mark.full),
             # pow
-            pytest.param("pow", _SHAPES[0], torch.float16, torch.float16, PowFwdOp, torch.pow, draw_positive_pair, marks=pytest.mark.smoke),
-            pytest.param("pow", _SHAPES[1], torch.float16, torch.float16, PowFwdOp, torch.pow, draw_positive_pair, marks=pytest.mark.full),
+            pytest.param("pow", _SHAPES[0], torch.float16, torch.float16, PowFwdOp, torch.pow, "positive", marks=pytest.mark.smoke),
+            pytest.param("pow", _SHAPES[1], torch.float16, torch.float16, PowFwdOp, torch.pow, "positive", marks=pytest.mark.full),
             # floor_divide
-            pytest.param("floor_divide", _SHAPES[0], torch.float16, torch.float16, FloorDivideFwdOp, torch.floor_divide, draw_positive_pair, marks=pytest.mark.smoke),
-            pytest.param("floor_divide", _SHAPES[1], torch.float16, torch.float16, FloorDivideFwdOp, torch.floor_divide, draw_positive_pair, marks=pytest.mark.full),
+            pytest.param("floor_divide", _SHAPES[0], torch.float16, torch.float16, FloorDivideFwdOp, torch.floor_divide, "positive", marks=pytest.mark.smoke),
+            pytest.param("floor_divide", _SHAPES[1], torch.float16, torch.float16, FloorDivideFwdOp, torch.floor_divide, "positive", marks=pytest.mark.full),
             # lerp (weight=0.5 default)
-            pytest.param("lerp", _SHAPES[0], torch.float16, torch.float16, LerpFwdOp, lambda a, b: torch.lerp(a, b, 0.5), draw_normal_pair, marks=pytest.mark.smoke),
-            pytest.param("lerp", _SHAPES[1], torch.float16, torch.float16, LerpFwdOp, lambda a, b: torch.lerp(a, b, 0.5), draw_normal_pair, marks=pytest.mark.full),
+            pytest.param("lerp", _SHAPES[0], torch.float16, torch.float16, LerpFwdOp, lambda a, b: torch.lerp(a, b, 0.5), "normal", marks=pytest.mark.smoke),
+            pytest.param("lerp", _SHAPES[1], torch.float16, torch.float16, LerpFwdOp, lambda a, b: torch.lerp(a, b, 0.5), "normal", marks=pytest.mark.full),
             # maximum
-            pytest.param("maximum", _SHAPES[0], torch.float16, torch.float16, MaximumFwdOp, torch.maximum, draw_normal_pair, marks=pytest.mark.smoke),
-            pytest.param("maximum", _SHAPES[1], torch.float16, torch.float16, MaximumFwdOp, torch.maximum, draw_normal_pair, marks=pytest.mark.full),
-            pytest.param("maximum", _SHAPES[2], torch.float16, torch.float16, MaximumFwdOp, torch.maximum, draw_normal_pair, marks=pytest.mark.full),
+            pytest.param("maximum", _SHAPES[0], torch.float16, torch.float16, MaximumFwdOp, torch.maximum, "normal", marks=pytest.mark.smoke),
+            pytest.param("maximum", _SHAPES[1], torch.float16, torch.float16, MaximumFwdOp, torch.maximum, "normal", marks=pytest.mark.full),
+            pytest.param("maximum", _SHAPES[2], torch.float16, torch.float16, MaximumFwdOp, torch.maximum, "normal", marks=pytest.mark.full),
             # minimum
-            pytest.param("minimum", _SHAPES[0], torch.float16, torch.float16, MinimumFwdOp, torch.minimum, draw_normal_pair, marks=pytest.mark.smoke),
-            pytest.param("minimum", _SHAPES[1], torch.float16, torch.float16, MinimumFwdOp, torch.minimum, draw_normal_pair, marks=pytest.mark.full),
-            pytest.param("minimum", _SHAPES[2], torch.float16, torch.float16, MinimumFwdOp, torch.minimum, draw_normal_pair, marks=pytest.mark.full),
+            pytest.param("minimum", _SHAPES[0], torch.float16, torch.float16, MinimumFwdOp, torch.minimum, "normal", marks=pytest.mark.smoke),
+            pytest.param("minimum", _SHAPES[1], torch.float16, torch.float16, MinimumFwdOp, torch.minimum, "normal", marks=pytest.mark.full),
+            pytest.param("minimum", _SHAPES[2], torch.float16, torch.float16, MinimumFwdOp, torch.minimum, "normal", marks=pytest.mark.full),
         ]),
     ]
 
@@ -173,11 +172,11 @@ class ComparisonBenchFixture(FixtureBase):
 
 
 _CMP_OPS = {
-    "eq": EqFwdOp, "ne": __import__("tileops.ops.elementwise", fromlist=["NeFwdOp"]).NeFwdOp,
-    "gt": __import__("tileops.ops.elementwise", fromlist=["GtFwdOp"]).GtFwdOp,
-    "lt": __import__("tileops.ops.elementwise", fromlist=["LtFwdOp"]).LtFwdOp,
-    "ge": __import__("tileops.ops.elementwise", fromlist=["GeFwdOp"]).GeFwdOp,
-    "le": __import__("tileops.ops.elementwise", fromlist=["LeFwdOp"]).LeFwdOp,
+    "eq": EqFwdOp, "ne": NeFwdOp,
+    "gt": GtFwdOp,
+    "lt": LtFwdOp,
+    "ge": GeFwdOp,
+    "le": LeFwdOp,
 }
 
 
@@ -188,7 +187,7 @@ def test_comparison_bench(
     dtype: torch.dtype,
     baseline_fn,
 ) -> None:
-    test = BinaryBenchCase(shape, dtype, torch.bool, draw_normal_pair)
+    test = BinaryBenchCase(shape, dtype, torch.bool, "normal")
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -222,7 +221,7 @@ def test_logical_bench(
     op_cls,
     baseline_fn,
 ) -> None:
-    test = BinaryBenchCase(shape, dtype, torch.bool, draw_bool_pair)
+    test = BinaryBenchCase(shape, dtype, torch.bool, "bool")
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -258,7 +257,7 @@ def test_bitwise_bench(
     baseline_fn,
 ) -> None:
     dtype = torch.int32
-    test = BinaryBenchCase(shape, dtype, dtype, draw_int_pair)
+    test = BinaryBenchCase(shape, dtype, dtype, "int")
     bm = BinaryBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -457,17 +456,17 @@ class BroadcastBenchFixture(FixtureBase):
     PARAMS = [
         ("op_name, a_shape, b_shape, dtype, op_cls, baseline_fn, gen_inputs", [
             # sub — bias-add pattern
-            pytest.param("sub", *_BROADCAST_SHAPES[0], torch.float16, SubFwdOp, torch.sub, draw_normal_broadcast_pair, marks=pytest.mark.smoke),
-            pytest.param("sub", *_BROADCAST_SHAPES[1], torch.float16, SubFwdOp, torch.sub, draw_normal_broadcast_pair, marks=pytest.mark.full),
-            pytest.param("sub", *_BROADCAST_SHAPES[2], torch.float16, SubFwdOp, torch.sub, draw_normal_broadcast_pair, marks=pytest.mark.full),
+            pytest.param("sub", *_BROADCAST_SHAPES[0], torch.float16, SubFwdOp, torch.sub, "normal", marks=pytest.mark.smoke),
+            pytest.param("sub", *_BROADCAST_SHAPES[1], torch.float16, SubFwdOp, torch.sub, "normal", marks=pytest.mark.full),
+            pytest.param("sub", *_BROADCAST_SHAPES[2], torch.float16, SubFwdOp, torch.sub, "normal", marks=pytest.mark.full),
             # mul — bias-add pattern
-            pytest.param("mul", *_BROADCAST_SHAPES[0], torch.float16, MulFwdOp, torch.mul, draw_normal_broadcast_pair, marks=pytest.mark.full),
-            pytest.param("mul", *_BROADCAST_SHAPES[1], torch.float16, MulFwdOp, torch.mul, draw_normal_broadcast_pair, marks=pytest.mark.full),
-            pytest.param("mul", *_BROADCAST_SHAPES[2], torch.float16, MulFwdOp, torch.mul, draw_normal_broadcast_pair, marks=pytest.mark.full),
+            pytest.param("mul", *_BROADCAST_SHAPES[0], torch.float16, MulFwdOp, torch.mul, "normal", marks=pytest.mark.full),
+            pytest.param("mul", *_BROADCAST_SHAPES[1], torch.float16, MulFwdOp, torch.mul, "normal", marks=pytest.mark.full),
+            pytest.param("mul", *_BROADCAST_SHAPES[2], torch.float16, MulFwdOp, torch.mul, "normal", marks=pytest.mark.full),
             # div — bias-add pattern
-            pytest.param("div", *_BROADCAST_SHAPES[0], torch.float16, DivFwdOp, torch.div, draw_positive_broadcast_pair, marks=pytest.mark.full),
-            pytest.param("div", *_BROADCAST_SHAPES[1], torch.float16, DivFwdOp, torch.div, draw_positive_broadcast_pair, marks=pytest.mark.full),
-            pytest.param("div", *_BROADCAST_SHAPES[2], torch.float16, DivFwdOp, torch.div, draw_positive_broadcast_pair, marks=pytest.mark.full),
+            pytest.param("div", *_BROADCAST_SHAPES[0], torch.float16, DivFwdOp, torch.div, "positive", marks=pytest.mark.full),
+            pytest.param("div", *_BROADCAST_SHAPES[1], torch.float16, DivFwdOp, torch.div, "positive", marks=pytest.mark.full),
+            pytest.param("div", *_BROADCAST_SHAPES[2], torch.float16, DivFwdOp, torch.div, "positive", marks=pytest.mark.full),
         ]),
     ]
 
