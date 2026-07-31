@@ -22,10 +22,6 @@ _DTYPE_MAP = {
 
 
 class _GemmBenchmarkWorkload(GemmWorkload):
-    @property
-    def shape(self) -> tuple[int, int, int]:
-        return self.m, self.n, self.k
-
     def torch_matmul(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if self.trans_a:
             a = a.T
@@ -35,10 +31,6 @@ class _GemmBenchmarkWorkload(GemmWorkload):
 
 
 class _GemmFp8BenchmarkWorkload(GemmFp8Workload):
-    @property
-    def shape(self) -> tuple[int, int, int]:
-        return self.m, self.n, self.k
-
     def _expand_scale(self, scale: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
         if tuple(scale.shape) == (1, 1):
             return scale.expand(rows, cols)
@@ -60,10 +52,6 @@ class _GemmFp8BenchmarkWorkload(GemmFp8Workload):
 
 
 class _GemmW4A16BenchmarkWorkload(GemmW4A16Workload):
-    @property
-    def shape(self) -> tuple[int, int, int]:
-        return self.m, self.n, self.k
-
     def torch_dequantized_matmul(
         self,
         activation: torch.Tensor,

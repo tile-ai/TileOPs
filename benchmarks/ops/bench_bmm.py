@@ -17,20 +17,7 @@ _DTYPE_MAP = {
 }
 
 
-class _BmmBenchmarkWorkload(BmmWorkload):
-    @property
-    def shape(self) -> tuple[int, int, int, int]:
-        return self.batch, self.m, self.n, self.k
-
-    def torch_bmm(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return torch.bmm(a, b)
-
-
 class _BmmFp8BenchmarkWorkload(BmmFp8Workload):
-    @property
-    def shape(self) -> tuple[int, int, int, int]:
-        return self.batch, self.m, self.n, self.k
-
     def torch_fp32_bmm_ref(self, *inputs: torch.Tensor) -> torch.Tensor:
         a, b, scale_a, scale_b = inputs
         if scale_a.dim() != 0 or scale_b.dim() != 0:
@@ -95,7 +82,7 @@ def _manifest_fp8_params() -> list:
 @pytest.mark.parametrize("batch, m, n, k, dtype_str", _manifest_params())
 def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype_str: str) -> None:
     dtype = _DTYPE_MAP[dtype_str]
-    workload = _BmmBenchmarkWorkload(batch, m, n, k, dtype)
+    workload = BmmWorkload(batch, m, n, k, dtype)
     a, b = workload.gen_inputs()
 
     op = BmmFwdOp(tune=True)
@@ -106,7 +93,7 @@ def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype_str: str) -> None:
     result = bm.profile(op, a, b)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
-    result_bl = bm.profile(workload.torch_bmm, a, b)
+    result_bl = bm.profile(torch.bmm, a, b)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-cublas")
 
 
