@@ -484,3 +484,80 @@ class GatedRandnWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         return (torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda"),)
+
+
+# Value domains. A benchmark or test names the domain its op requires;
+# the draw itself belongs to this layer so both stages get the same tensors.
+
+
+def draw_normal_pair(shape: tuple, dtype: torch.dtype):
+    a = torch.randn(*shape, device="cuda", dtype=dtype)
+    b = torch.randn(*shape, device="cuda", dtype=dtype)
+    return a, b
+
+
+def draw_positive_pair(shape: tuple, dtype: torch.dtype):
+    a = torch.rand(*shape, device="cuda", dtype=dtype) + 0.1
+    b = torch.rand(*shape, device="cuda", dtype=dtype) + 0.1
+    return a, b
+
+
+def draw_int_pair(shape: tuple, dtype: torch.dtype):
+    a = torch.randint(-1000, 1000, shape, device="cuda", dtype=torch.int32)
+    b = torch.randint(-1000, 1000, shape, device="cuda", dtype=torch.int32)
+    return a, b
+
+
+def draw_bool_pair(shape: tuple, dtype: torch.dtype):
+    a = (torch.randn(*shape, device="cuda", dtype=dtype) > 0).to(dtype)
+    b = (torch.randn(*shape, device="cuda", dtype=dtype) > 0).to(dtype)
+    return a, b
+
+
+def draw_normal_broadcast_pair(a_shape, b_shape, dtype):
+    a = torch.randn(*a_shape, device="cuda", dtype=dtype)
+    b = torch.randn(*b_shape, device="cuda", dtype=dtype)
+    return a, b
+
+
+def draw_positive_broadcast_pair(a_shape, b_shape, dtype):
+    a = torch.rand(*a_shape, device="cuda", dtype=dtype) + 0.1
+    b = torch.rand(*b_shape, device="cuda", dtype=dtype) + 0.1
+    return a, b
+
+
+def draw_normal(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    return (torch.randn(shape, device="cuda", dtype=dtype),)
+
+
+def draw_positive_away_from_zero(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    # Domain restriction for log / sqrt / rsqrt / log1p / reciprocal.
+    return (torch.rand(shape, device="cuda", dtype=dtype) + 0.5,)
+
+
+def draw_bool(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    if dtype == torch.bool:
+        x = torch.randint(0, 2, shape, device="cuda", dtype=torch.bool)
+    else:
+        x = torch.randn(shape, device="cuda", dtype=dtype)
+        mask = torch.rand(shape, device="cuda") > 0.5
+        x[mask] = 0
+    return (x,)
+
+
+def draw_int(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    info = torch.iinfo(dtype)
+    lo = max(info.min, -1024)
+    hi = min(info.max, 1024)
+    return (torch.randint(lo, hi, shape, device="cuda", dtype=dtype),)
+
+
+def draw_special_floats(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
+    # Mix of normal floats, +/-inf, and NaN — exercises isnan/isinf/isfinite.
+    x = torch.randn(shape, device="cuda", dtype=dtype)
+    flat = x.view(-1)
+    quarter = flat.numel() // 4
+    flat[:quarter] = float("nan")
+    flat[quarter:2 * quarter] = float("inf")
+    flat[2 * quarter:3 * quarter] = float("-inf")
+    return (x,)
