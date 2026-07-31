@@ -1,6 +1,7 @@
 ## Boundary
 
 - **OWNS**: `tests/`, `workloads/` (test stage creates workload definitions first)
+- **MUST PROVIDE**: one input-generating class per op in `workloads/<family>.py`. Compose it in the test (`class FooTest(FooWorkload, TestBase)`); never define `gen_inputs` inline in `tests/`. The benchmark stage cannot write this layer and has no other legal source of inputs.
 - **MUST NOT WRITE**: `tileops/ops/`, `tileops/kernels/`, `benchmarks/`, `tileops/manifest/`
 
 → [trust-model.md §Test](../../docs/design/trust-model.md#test) | [testing.md §Tests](../../docs/design/testing.md#tests)

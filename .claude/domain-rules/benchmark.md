@@ -2,7 +2,11 @@
 
 - **OWNS**: `benchmarks/`
 - **MUST NOT WRITE**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `workloads/`, `tileops/manifest/`
-- **MUST NOT** (oracle-leakage rule): import oracle/ref functions from `tests/` or `workloads/`. Reads of any other file are unrestricted.
+- **MUST NOT**: import from `tests/`, or import ref/oracle functions from `workloads/`. Reads of any other file are unrestricted.
+- **MUST NOT**: author `gen_inputs`. Import the op's workload class from `workloads/`. If none exists, that is a test-stage gap — open a `workloads/`-only PR, do not copy the inputs locally. Subclassing an imported workload to attach a baseline method is allowed.
+- Name benchmark-local baselines `torch_baseline` / `<vendor>_baseline`. `ref_program` names the test stage's correctness oracle and must not appear in `benchmarks/`.
+
+Enforced by `benchmarks/tests/test_benchmark_import_boundaries.py`.
 
 → [trust-model.md §Benchmark](../../docs/design/trust-model.md#benchmark) | [testing.md §Benchmarks](../../docs/design/testing.md#benchmarks)
 
