@@ -57,6 +57,15 @@ from tileops.ops.elementwise import (
     TanhFwdOp,
     WhereFwdOp,
 )
+from workloads.elementwise import (
+    BinaryManifestWorkload,
+    LerpTensorManifestWorkload,
+    MaskedFillScalarManifestWorkload,
+    MaskedFillTensorManifestWorkload,
+    PreluManifestWorkload,
+    UnaryManifestWorkload,
+    WhereManifestWorkload,
+)
 
 
 def _dtype(name: str) -> torch.dtype:
@@ -100,76 +109,6 @@ def _binary_params(workloads: list[dict], rhs_key: str = "other_shape") -> list:
     return params
 
 
-class UnaryManifestWorkload:
-    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
-
-
-class BinaryManifestWorkload:
-    def __init__(
-        self,
-        input_shape: tuple[int, ...],
-        other_shape: tuple[int, ...],
-        dtype: torch.dtype,
-        *,
-        positive: bool = False,
-        integer: bool = False,
-        logical: bool = False,
-    ):
-        self.input_shape = input_shape
-        self.other_shape = other_shape
-        self.a_shape = input_shape
-        self.b_shape = other_shape
-        self.shape = tuple(torch.broadcast_shapes(input_shape, other_shape))
-        self.n_total = prod(self.shape)
-        self.dtype = dtype
-        self.positive = positive
-        self.integer = integer
-        self.logical = logical
-
-    def _tensor(self, shape: tuple[int, ...]) -> torch.Tensor:
-        if self.dtype is torch.bool:
-            return torch.randint(0, 2, shape, device="cuda", dtype=torch.bool)
-        if self.integer:
-            return torch.randint(-1000, 1000, shape, device="cuda", dtype=self.dtype)
-        if self.positive:
-            return torch.rand(shape, device="cuda", dtype=self.dtype) + 0.1
-        if self.logical:
-            return (torch.randn(shape, device="cuda", dtype=self.dtype) > 0).to(self.dtype)
-        return torch.randn(shape, device="cuda", dtype=self.dtype)
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._tensor(self.input_shape), self._tensor(self.other_shape)
-
-
-class PreluManifestWorkload:
-    def __init__(
-        self,
-        input_shape: tuple[int, ...],
-        weight_shape: tuple[int, ...],
-        dtype: torch.dtype,
-    ):
-        self.input_shape = input_shape
-        self.weight_shape = weight_shape
-        self.shape = input_shape
-        self.n_total = prod(input_shape)
-        self.dtype = dtype
-
-    @property
-    def num_channels(self) -> int:
-        return self.weight_shape[0] if self.weight_shape else 1
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        weight = torch.rand(self.weight_shape, device="cuda", dtype=self.dtype)
-        return x, weight
-
-
 def _prelu_params(workloads: list[dict]) -> list:
     params = []
     for idx, w in enumerate(workloads):
@@ -188,28 +127,6 @@ def _prelu_params(workloads: list[dict]) -> list:
                 )
             )
     return params
-
-
-class MaskedFillTensorManifestWorkload:
-    def __init__(
-        self,
-        input_shape: tuple[int, ...],
-        mask_shape: tuple[int, ...],
-        value_shape: tuple[int, ...],
-        dtype: torch.dtype,
-    ):
-        self.input_shape = input_shape
-        self.mask_shape = mask_shape
-        self.value_shape = value_shape
-        self.shape = tuple(torch.broadcast_shapes(input_shape, mask_shape))
-        self.n_total = prod(self.shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        mask = torch.rand(self.mask_shape, device="cuda") > 0.5
-        value = torch.full(self.value_shape, -100.0, device="cuda", dtype=self.dtype)
-        return x, mask, value
 
 
 def _masked_fill_tensor_params(workloads: list[dict]) -> list:
@@ -232,52 +149,6 @@ def _masked_fill_tensor_params(workloads: list[dict]) -> list:
                 )
             )
     return params
-
-
-class MaskedFillScalarManifestWorkload:
-    def __init__(self, input_shape: tuple[int, ...], dtype: torch.dtype):
-        self.input_shape = input_shape
-        self.mask_shape = input_shape
-        self.shape = input_shape
-        self.n_total = prod(input_shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        mask = torch.rand(self.mask_shape, device="cuda") > 0.5
-        return x, mask
-
-
-class WhereManifestWorkload:
-    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
-        self.condition_shape = shape
-        self.input_shape = shape
-        self.other_shape = shape
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        cond = torch.rand(self.condition_shape, device="cuda") > 0.5
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        y = torch.randn(self.other_shape, device="cuda", dtype=self.dtype)
-        return cond, x, y
-
-
-class LerpTensorManifestWorkload:
-    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
-        self.input_shape = shape
-        self.end_shape = shape
-        self.weight_shape = shape
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        end = torch.randn(self.end_shape, device="cuda", dtype=self.dtype)
-        weight = torch.rand(self.weight_shape, device="cuda", dtype=self.dtype)
-        return x, end, weight
 
 
 def _numel(shape: tuple[int, ...]) -> int:

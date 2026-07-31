@@ -184,6 +184,7 @@ def _native_output_suppressor():
 
 # NVIDIA SOL-ExecBench–style benchmark
 
+
 def bench_kernel(
     fn: Callable,
     args: tuple[Any, ...] = (),
@@ -542,6 +543,7 @@ def workload_field_params(workloads: list, keys: tuple) -> list:
             )
         )
     return params
+
 
 class ManifestBenchmark(BenchmarkBase[Any]):
     """Generic benchmark that reads FLOP/memory counts from an Op instance.

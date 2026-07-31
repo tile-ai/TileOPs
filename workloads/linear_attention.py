@@ -184,3 +184,22 @@ class GatedDeltaNetDecodeTest(WorkloadBase):
         beta = torch.rand(B, H, device="cuda", dtype=self.dtype) * 0.5
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=self.dtype) * 0.1
         return q, k, v, g, beta, state
+
+
+class GLAChunkwiseWorkload(WorkloadBase):
+    def __init__(self, batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype):
+        self.batch = batch
+        self.seq_len = seq_len
+        self.heads = heads
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.chunk_size = chunk_size
+        self.dtype = dtype
+
+    def gen_inputs(self):
+        B, T, H, K, V = self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v
+        q = torch.randn(B, T, H, K, device="cuda", dtype=self.dtype) * 0.1
+        k = torch.randn(B, T, H, K, device="cuda", dtype=self.dtype) * 0.1
+        v = torch.randn(B, T, H, V, device="cuda", dtype=self.dtype) * 0.1
+        g = -torch.rand(B, T, H, K, device="cuda", dtype=self.dtype)
+        return q, k, v, g

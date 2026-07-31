@@ -54,8 +54,6 @@ _FP8_LIGHTNING_INDEXER_OP = "FP8LightningIndexerOp"
 _SHAPE_KEYS = (
     "batch", "seq_len", "heads", "index_dim", "seq_len_kv", "kv_group", "clean_logits",
 )
-
-
 def _indexer_params() -> list:
     """Params from manifest workloads, deduped on shape.
 

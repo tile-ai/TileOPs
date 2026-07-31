@@ -8,8 +8,6 @@ BENCHMARK_DIRS = (
     REPO_ROOT / "benchmarks" / "ops",
     REPO_ROOT / "benchmarks" / "kernels",
 )
-
-
 def _production_benchmark_files() -> list[Path]:
     files: list[Path] = []
     for bench_dir in BENCHMARK_DIRS:

@@ -42,6 +42,11 @@ from tileops.ops.elementwise import (
     SiluAndMulFwdOp,
     SubFwdOp,
 )
+from workloads.elementwise import (
+    BinaryBenchCase,
+    BroadcastBenchCase,
+    FusedGatedBenchCase,
+)
 from workloads.workload_base import FixtureBase
 
 # DNN-realistic shapes: (tokens, hidden_dim). The third entry is non-pow2
@@ -50,26 +55,6 @@ _SHAPES = ((1024, 4096), (1024, 10240), (1024, 11008))
 
 
 # Workloads
-
-
-class BinaryBenchCase:
-    """Minimal workload for binary ops."""
-
-    def __init__(
-        self,
-        shape: tuple,
-        dtype: torch.dtype,
-        output_dtype: torch.dtype,
-        gen_inputs: Callable,
-    ):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-        self.output_dtype = output_dtype
-        self._gen_inputs = gen_inputs
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._gen_inputs(self.shape, self.dtype)
 
 
 class BinaryBenchmark(BenchmarkBase[BinaryBenchCase]):
@@ -83,20 +68,6 @@ class BinaryBenchmark(BenchmarkBase[BinaryBenchCase]):
         in_bytes = t.dtype.itemsize
         out_bytes = t.output_dtype.itemsize
         return t.n_total * (2 * in_bytes + out_bytes)
-
-
-class FusedGatedBenchCase:
-    """Minimal workload for fused gated ops."""
-
-    def __init__(self, M: int, N: int, dtype: torch.dtype):
-        self.M = M
-        self.N = N
-        self.n_total = M * N
-        self.dtype = dtype
-        self.output_dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(self.M, 2 * self.N, device="cuda", dtype=self.dtype),)
 
 
 class FusedGatedBenchmark(BenchmarkBase[FusedGatedBenchCase]):
@@ -488,28 +459,6 @@ _BROADCAST_SHAPES = [
     ((1024, 10240), (1, 10240)),
     ((1024, 11008), (1, 11008)),
 ]
-
-
-class BroadcastBenchCase:
-    """Workload for broadcast binary ops with asymmetric shapes."""
-
-    def __init__(
-        self,
-        a_shape: tuple,
-        b_shape: tuple,
-        dtype: torch.dtype,
-        output_dtype: torch.dtype,
-        gen_inputs: Callable,
-    ):
-        self.a_shape = a_shape
-        self.b_shape = b_shape
-        self.n_total = prod(a_shape)  # output size = broadcast result
-        self.dtype = dtype
-        self.output_dtype = output_dtype
-        self._gen_inputs = gen_inputs
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._gen_inputs(self.a_shape, self.b_shape, self.dtype)
 
 
 class BroadcastBenchmark(BenchmarkBase[BroadcastBenchCase]):

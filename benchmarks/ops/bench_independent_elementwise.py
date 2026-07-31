@@ -29,6 +29,14 @@ from tileops.ops.elementwise import (
     SoftplusFwdOp,
     WhereFwdOp,
 )
+from workloads.elementwise import (
+    Fp8MaskedFillBenchCase,
+    Fp8UnaryBenchCase,
+    Fp8WhereBenchCase,
+    TensorClampBenchCase,
+    UnaryBenchCase,
+    _GenerativeWorkload,
+)
 from workloads.workload_base import FixtureBase
 
 # DNN-realistic shapes: (tokens, hidden_dim).
@@ -39,15 +47,6 @@ _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 
 # Benchmark base classes
-
-class UnaryBenchCase:
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
 
 
 class UnaryBenchmark(BenchmarkBase[UnaryBenchCase]):
@@ -64,48 +63,6 @@ class UnaryBenchmark(BenchmarkBase[UnaryBenchCase]):
 _CLAMP_FWD_OP = "ClampFwdOp"
 _CLAMP_MIN_OP = "ClampMinFwdOp"
 _CLAMP_MAX_OP = "ClampMaxFwdOp"
-
-
-class TensorClampBenchCase:
-    """Workload adapter for Tensor-bound clamp ops.
-
-    Holds the post-broadcast output shape so :class:`ManifestBenchmark`
-    can read a single ``n_total`` while the bench builds per-operand
-    tensors from the manifest-declared ``input_shape`` / ``min_shape`` /
-    ``max_shape`` keys.
-    """
-
-    def __init__(
-        self,
-        input_shape: tuple,
-        dtype: torch.dtype,
-        min_shape: Optional[tuple] = None,
-        max_shape: Optional[tuple] = None,
-    ):
-        self.input_shape = input_shape
-        self.min_shape = min_shape
-        self.max_shape = max_shape
-        broadcast_args = [input_shape]
-        if min_shape is not None:
-            broadcast_args.append(min_shape)
-        if max_shape is not None:
-            broadcast_args.append(max_shape)
-        self.shape = tuple(torch.broadcast_shapes(*broadcast_args))
-        self.n_total = prod(self.shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        tensors: list[torch.Tensor] = [x]
-        if self.min_shape is not None:
-            tensors.append(
-                torch.randn(self.min_shape, device="cuda", dtype=self.dtype) - 0.5
-            )
-        if self.max_shape is not None:
-            tensors.append(
-                torch.randn(self.max_shape, device="cuda", dtype=self.dtype) + 0.5
-            )
-        return tuple(tensors)
 
 
 def _workloads_to_clamp_params(
@@ -268,17 +225,6 @@ def _sinusoidal_reference(seq_len: int, d_model: int, dtype: torch.dtype) -> tor
     return pe.to(dtype)
 
 
-class _GenerativeWorkload:
-    """ShapeDtypeWorkload for the generative ops (no input tensors)."""
-
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple:
-        return ()
-
-
 @AlibiBenchFixture
 def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads, dtype=dtype)
@@ -315,19 +261,6 @@ _UNSUPPORTED_FP8_SKIP = pytest.mark.skip(
         "benchmark is kept as an explicit unsupported case"
     )
 )
-
-
-class Fp8UnaryBenchCase:
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0
-        return (x.to(self.dtype),)
-
-
 class Fp8UnaryBenchmark(BenchmarkBase[Fp8UnaryBenchCase]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
@@ -394,23 +327,6 @@ def test_fp8_unary_independent_bench(
 # fp8 where / masked_fill (selection ops - pass fp8 through directly)
 
 
-class Fp8WhereBenchCase:
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        cond = torch.rand(self.shape, device="cuda") > 0.5
-        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
-            self.dtype
-        )
-        y = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
-            self.dtype
-        )
-        return cond, x, y
-
-
 class Fp8WhereBenchmark(BenchmarkBase[Fp8WhereBenchCase]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
@@ -418,20 +334,6 @@ class Fp8WhereBenchmark(BenchmarkBase[Fp8WhereBenchCase]):
     def calculate_memory(self) -> Optional[float]:
         # cond (1B) + fp8 x (1B) + fp8 y (1B) + fp8 out (1B)
         return self.workload.n_total * 4
-
-
-class Fp8MaskedFillBenchCase:
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
-            self.dtype
-        )
-        mask = torch.rand(self.shape, device="cuda") > 0.5
-        return x, mask
 
 
 class Fp8MaskedFillBenchmark(BenchmarkBase[Fp8MaskedFillBenchCase]):

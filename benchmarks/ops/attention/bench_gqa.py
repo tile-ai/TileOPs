@@ -491,7 +491,6 @@ def test_gqa_prefill_varlen_fwd_bench(
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
-
 def _fp8_paged_cache_inputs(
     test: GQAPrefillPagedWithKVCacheFwdTest,
 ) -> tuple[torch.Tensor, ...]:

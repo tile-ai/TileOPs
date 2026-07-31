@@ -28,9 +28,6 @@ from workloads.moe import MoePermuteTest as MoePermuteNopadWorkload
 
 _OP_NAME = "MoePermuteNopadFwdOp"
 
-# Test class
-
-
 # Benchmark class
 
 

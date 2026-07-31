@@ -89,6 +89,8 @@ def _supports_tma() -> bool:
 # Triton 08-grouped-gemm tutorial, ported (fp16 -> bf16).
 # Upstream: triton-lang/triton python/tutorials/08-grouped-gemm.py
 # ─────────────────────────────────────────────────────────────────────────────
+
+
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "NUM_SM": 84}),
@@ -100,6 +102,8 @@ def _supports_tma() -> bool:
     ],
     key=["group_size"],
 )
+
+
 @triton.jit
 def _grouped_matmul_kernel(
     group_a_ptrs,
@@ -170,6 +174,8 @@ _TMA_CONFIGS = [
 
 @triton.autotune(_TMA_CONFIGS, key=["group_size"])
 @triton.jit
+
+
 def _grouped_matmul_tma_kernel(
     group_a_ptrs,
     group_b_ptrs,
@@ -258,6 +264,8 @@ def _set_triton_allocator():
 # ─────────────────────────────────────────────────────────────────────────────
 # Input generation (uniform routing).
 # ─────────────────────────────────────────────────────────────────────────────
+
+
 def gen_inputs(numel, E, N, K):
     """Uniform routing: every expert gets ``numel // E`` rows (a multiple of 128).
 
@@ -377,6 +385,8 @@ CASES = [
 # ─────────────────────────────────────────────────────────────────────────────
 # Framework benchmark: FLOP / memory model for the grouped GEMM.
 # ─────────────────────────────────────────────────────────────────────────────
+
+
 @dataclass(frozen=True)
 class _GroupedGemmBaselineWorkload:
     """Shape carrier for the grouped-GEMM roofline (uniform routing)."""
@@ -411,6 +421,8 @@ class GroupedGemmBaselinesBenchmark(BenchmarkBase[_GroupedGemmBaselineWorkload])
 # Session-scoped GPU clock warmup: pin the SM clock before the first case so
 # case 0 is not a cold-start outlier (the framework's per-call warmup is short).
 # ─────────────────────────────────────────────────────────────────────────────
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _pin_gpu_clock():
     if torch.cuda.is_available():

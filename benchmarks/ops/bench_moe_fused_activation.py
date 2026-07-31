@@ -43,7 +43,7 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.moe import FusedMoEExpertsNopadPersistent3WGFwdOp
-from workloads.workload_base import WorkloadBase
+from workloads.moe import MoeFusedActivationWorkload
 
 # Shape constants
 # Model reference: Qwen2.5/Mistral-scale MoE configuration
@@ -58,56 +58,12 @@ ACTIVATION  = "silu_and_mul"
 
 # Workload
 
-class MoEFusedActWorkload(WorkloadBase):
-    """Workload descriptor for fused vs unfused activation benchmark."""
-
-    def __init__(self, num_tokens: int):
-        self.num_tokens  = num_tokens
-        self.hidden_size = HIDDEN_SIZE
-        self.ffn_size    = FFN_SIZE
-        self.num_experts = NUM_EXPERTS
-        self.top_k       = TOP_K
-        self.dtype       = DTYPE
-        # Primary shape: (num_tokens, hidden_size) — the token tensor footprint.
-        self.shape: tuple[int, int] = (num_tokens, HIDDEN_SIZE)
-
-    def gen_inputs(self) -> tuple[Any, ...]:
-        torch.manual_seed(42)
-        dev = "cuda"
-        hidden = torch.randn(
-            self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev,
-        )
-        w_gate_up = torch.randn(
-            self.num_experts, self.ffn_size * 2, self.hidden_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
-        w_down = torch.randn(
-            self.num_experts, self.hidden_size, self.ffn_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
-        topk_weights = torch.softmax(
-            torch.randn(self.num_tokens, self.top_k, dtype=torch.float32, device=dev),
-            dim=-1,
-        )
-        topk_ids = torch.randint(
-            0, self.num_experts,
-            (self.num_tokens, self.top_k), dtype=torch.int32, device=dev,
-        )
-        return hidden, w_gate_up, w_down, topk_weights, topk_ids
-
-    def ref_program(self, *args: Any) -> torch.Tensor:
-        """Per-expert PyTorch reference: gate_up GEMM → silu_and_mul → down GEMM → weighted reduce.
-
-        Delegates to _torch_ref_fn() which is also used as the torch-ref timing baseline.
-        """
-        return _torch_ref_fn(self, *args)
-
 
 # Torch reference helper (always available — no external dependency)
 
 
 def _torch_ref_fn(
-    workload: "MoEFusedActWorkload",
+    workload: "MoeFusedActivationWorkload",
     hidden: torch.Tensor,
     w_gate_up: torch.Tensor,
     w_down: torch.Tensor,
@@ -143,7 +99,8 @@ def _torch_ref_fn(
 
 # Benchmark class
 
-class MoEFusedActBenchmark(BenchmarkBase[MoEFusedActWorkload]):
+
+class MoEFusedActBenchmark(BenchmarkBase[MoeFusedActivationWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -158,6 +115,7 @@ class MoEFusedActBenchmark(BenchmarkBase[MoEFusedActWorkload]):
 
 
 # Benchmark test
+
 
 @pytest.mark.parametrize(
     "regime, num_tokens",
@@ -176,7 +134,9 @@ def test_moe_fused_activation_bench(regime: str, num_tokens: int) -> None:
             f"device capability is SM{cap[0]}{cap[1]}."
         )
 
-    workload = MoEFusedActWorkload(num_tokens)
+    workload = MoeFusedActivationWorkload(
+        num_tokens, HIDDEN_SIZE, FFN_SIZE, NUM_EXPERTS, TOP_K, DTYPE
+    )
     inputs   = workload.gen_inputs()
     hidden, w_gate_up, w_down, topk_weights, topk_ids = inputs
 

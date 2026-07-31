@@ -34,67 +34,10 @@ except ImportError:
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.moe import FusedTopKOp, SharedFusedMoE
-from workloads.workload_base import FixtureBase, WorkloadBase
+from workloads.moe import SharedFusedMoeWorkload
+from workloads.workload_base import FixtureBase
 
 # Test / fixture types
-
-
-class SharedFusedMoEBenchTest(WorkloadBase):
-    def __init__(
-        self,
-        num_tokens,
-        num_experts,
-        top_k,
-        hidden_size,
-        ffn_size,
-        shared_ffn_size,
-        scoring_func,
-        renormalize,
-        with_correction_bias,
-        routed_scaling_factor,
-        dtype,
-    ):
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.hidden_size = hidden_size
-        self.ffn_size = ffn_size
-        self.shared_ffn_size = shared_ffn_size
-        self.scoring_func = scoring_func
-        self.renormalize = renormalize
-        self.with_correction_bias = with_correction_bias
-        self.routed_scaling_factor = routed_scaling_factor
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        torch.manual_seed(42)
-        dev = "cuda"
-        hidden = torch.randn(
-            self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev
-        )
-        gating = torch.randn(
-            self.num_tokens, self.num_experts, dtype=self.dtype, device=dev
-        )
-        correction_bias = (
-            torch.randn(self.num_experts, dtype=torch.float32, device=dev) * 0.1
-            if self.with_correction_bias else None
-        )
-        w_gate_up = torch.randn(
-            self.num_experts, self.ffn_size * 2, self.hidden_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
-        w_down = torch.randn(
-            self.num_experts, self.hidden_size, self.ffn_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
-        # Shared expert weights: gate+up concatenated [2*Fs, H], down [H, Fs]
-        shared_w_gate_up = torch.randn(
-            self.shared_ffn_size * 2, self.hidden_size, dtype=self.dtype, device=dev
-        ) * 0.02
-        shared_w_down = torch.randn(
-            self.hidden_size, self.shared_ffn_size, dtype=self.dtype, device=dev
-        ) * 0.02
-        return hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down
 
 
 class SharedFusedMoEBenchFixture(FixtureBase):
@@ -133,7 +76,7 @@ class SharedFusedMoEBenchFixture(FixtureBase):
 # Benchmark class
 
 
-class SharedFusedMoEBenchmark(BenchmarkBase[SharedFusedMoEBenchTest]):
+class SharedFusedMoEBenchmark(BenchmarkBase[SharedFusedMoeWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -171,7 +114,7 @@ def test_shared_fused_moe_bench(
     scoring_func, renormalize, with_correction_bias,
     routed_scaling_factor, dtype,
 ) -> None:
-    test = SharedFusedMoEBenchTest(
+    test = SharedFusedMoeWorkload(
         num_tokens, num_experts, top_k, hidden_size, ffn_size, shared_ffn_size,
         scoring_func, renormalize, with_correction_bias,
         routed_scaling_factor, dtype,

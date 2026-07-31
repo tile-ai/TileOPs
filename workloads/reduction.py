@@ -146,3 +146,17 @@ def _make_logical_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
             x[1] = 1.0
 
     return x
+
+
+class CumulativeWorkload(WorkloadBase):
+    def __init__(self, shape: tuple, dtype: torch.dtype, op_kind: str):
+        self.shape = shape
+        self.dtype = dtype
+        self.op_kind = op_kind
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        if self.op_kind == "cumprod":
+            x = torch.rand(*self.shape, dtype=self.dtype, device="cuda") * 0.01 + 0.99
+        else:
+            x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        return (x,)
