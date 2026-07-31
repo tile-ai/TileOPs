@@ -24,30 +24,11 @@ except ImportError:
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteNopadFwdOp
-from workloads.workload_base import WorkloadBase
+from workloads.moe import MoePermuteTest as MoePermuteNopadWorkload
 
 _OP_NAME = "MoePermuteNopadFwdOp"
 
 # Test class
-
-
-class MoePermuteNopadTest(WorkloadBase):
-    def __init__(self, total_tokens, top_k, num_experts, hidden_size, dtype):
-        self.total_tokens = total_tokens
-        self.top_k = top_k
-        self.num_experts = num_experts
-        self.hidden_size = hidden_size
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        torch.manual_seed(42)
-        dev = "cuda"
-        hidden_states = torch.randn(self.total_tokens, self.hidden_size, dtype=self.dtype, device=dev)
-        topk_ids = torch.randint(0, self.num_experts, (self.total_tokens, self.top_k), dtype=torch.int32, device=dev)
-        return hidden_states, topk_ids
-
-    def ref_program(self, *args):
-        return None
 
 
 # Benchmark class
@@ -83,12 +64,13 @@ def test_moe_permute_nopad_bench(
     total_tokens: int, top_k: int, num_experts: int, hidden_size: int
 ) -> None:
     dtype = torch.bfloat16
-    test = MoePermuteNopadTest(total_tokens, top_k, num_experts, hidden_size, dtype)
-    hidden_states, topk_ids = test.gen_inputs()
+    workload = MoePermuteNopadWorkload(total_tokens, top_k, num_experts, hidden_size, dtype)
+    torch.manual_seed(42)
+    hidden_states, topk_ids = workload.gen_inputs()
 
     # TileOPs
     op = MoePermuteNopadFwdOp(num_experts=num_experts, dtype=dtype)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(_OP_NAME, op, workload)
     op(hidden_states, topk_ids)  # warmup / JIT compile
     torch.cuda.synchronize()
 
