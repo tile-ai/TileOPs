@@ -30,7 +30,7 @@ from tileops.ops.elementwise import (
     SqrtFwdOp,
     TruncFwdOp,
 )
-from workloads.elementwise import UnaryMathWorkload
+from workloads.elementwise import RandnFlatWorkload
 
 
 class MathFixture(FixtureBase):
@@ -55,7 +55,7 @@ class MathEdgeFixture(FixtureBase):
     ]
 
 
-class UnaryMathTest(UnaryMathWorkload, TestBase):
+class UnaryMathTest(RandnFlatWorkload, TestBase):
     """Generic test fixture for a single-input, single-output unary op."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None, ref_fn=None):

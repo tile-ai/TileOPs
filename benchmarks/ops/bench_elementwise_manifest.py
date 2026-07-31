@@ -63,7 +63,7 @@ from workloads.elementwise import (
     MaskedFillScalarManifestWorkload,
     MaskedFillTensorManifestWorkload,
     PreluManifestWorkload,
-    UnaryManifestWorkload,
+    ShapedRandnWorkload,
     WhereManifestWorkload,
 )
 
@@ -268,7 +268,7 @@ _NAN_TO_NUM_OP = "NanToNumFwdOp"
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_RELU_OP)))
 def test_relu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = ReluFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_RELU_OP, op, test)
@@ -277,7 +277,7 @@ def test_relu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_GELU_OP)))
 def test_gelu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = GeluFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_GELU_OP, op, test)
@@ -286,7 +286,7 @@ def test_gelu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_SILU_OP)))
 def test_silu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = SiluFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_SILU_OP, op, test)
@@ -295,7 +295,7 @@ def test_silu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_HARDSWISH_OP)))
 def test_hardswish_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = HardswishFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_HARDSWISH_OP, op, test)
@@ -304,7 +304,7 @@ def test_hardswish_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) ->
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_HARDSIGMOID_OP)))
 def test_hardsigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = HardsigmoidFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_HARDSIGMOID_OP, op, test)
@@ -313,7 +313,7 @@ def test_hardsigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) 
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_MISH_OP)))
 def test_mish_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = MishFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_MISH_OP, op, test)
@@ -322,7 +322,7 @@ def test_mish_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_SELU_OP)))
 def test_selu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = SeluFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_SELU_OP, op, test)
@@ -331,7 +331,7 @@ def test_selu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_LEAKY_RELU_OP)))
 def test_leaky_relu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = LeakyReluFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_LEAKY_RELU_OP, op, test)
@@ -340,7 +340,7 @@ def test_leaky_relu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_ELU_OP)))
 def test_elu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = EluFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_ELU_OP, op, test)
@@ -349,7 +349,7 @@ def test_elu_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_HARDTANH_OP)))
 def test_hardtanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = HardtanhFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_HARDTANH_OP, op, test)
@@ -358,7 +358,7 @@ def test_hardtanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> 
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_SOFTPLUS_OP)))
 def test_softplus_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = SoftplusFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_SOFTPLUS_OP, op, test)
@@ -367,7 +367,7 @@ def test_softplus_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> 
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_SIGMOID_OP)))
 def test_sigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = SigmoidFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_SIGMOID_OP, op, test)
@@ -376,7 +376,7 @@ def test_sigmoid_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> N
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_TANH_OP)))
 def test_tanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = TanhFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_TANH_OP, op, test)
@@ -385,7 +385,7 @@ def test_tanh_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_CLAMP_SCALAR_OP)))
 def test_clamp_scalar_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = ClampScalarFwdOp(input=shape, dtype=dtype, min=-0.5, max=0.5)
     bm = ManifestBenchmark(_CLAMP_SCALAR_OP, op, test)
@@ -394,7 +394,7 @@ def test_clamp_scalar_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype)
 
 @pytest.mark.parametrize("shape, dtype", _shape_dtype_params(load_workloads(_NAN_TO_NUM_OP)))
 def test_nan_to_num_manifest_bench(shape: tuple[int, ...], dtype: torch.dtype) -> None:
-    test = UnaryManifestWorkload(shape, dtype)
+    test = ShapedRandnWorkload(shape, dtype)
     inputs = test.gen_inputs()
     op = NanToNumFwdOp(N_total=test.n_total, dtype=dtype)
     bm = ManifestBenchmark(_NAN_TO_NUM_OP, op, test)

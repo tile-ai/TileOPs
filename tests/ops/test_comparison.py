@@ -9,7 +9,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
-from workloads.elementwise import ComparisonWorkload
+from workloads.elementwise import RandnPairWorkload
 
 # Shared helpers
 
@@ -22,7 +22,7 @@ def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     )
 
 
-class ComparisonTest(ComparisonWorkload, TestBase):
+class ComparisonTest(RandnPairWorkload, TestBase):
     """Reusable test body for comparison ops."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):

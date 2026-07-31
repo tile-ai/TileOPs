@@ -176,21 +176,3 @@ class BatchNormFwdTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         return _make_tensors(self.N, self.C, self.spatial, self.dtype)
-
-
-class WelfordNonAlignedWorkload(WorkloadBase):
-    def __init__(
-        self,
-        shape: tuple,
-        dtype: torch.dtype,
-        op_kind: str,
-        correction: int = 1,
-    ):
-        self.shape = shape
-        self.dtype = dtype
-        self.op_kind = op_kind
-        self.correction = correction
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)

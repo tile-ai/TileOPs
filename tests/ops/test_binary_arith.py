@@ -34,17 +34,13 @@ from tileops.ops.elementwise import (
 from tileops.ops.elementwise.arithmetic import _DIV_KERNEL_BY_ROUNDING_MODE
 from workloads.elementwise import (
     AddBroadcastWorkload,
-    BinaryPositiveWorkload,
-    BinarySameShapeWorkload,
-    FloorDivideWorkload,
-    LerpWorkload,
+    PositivePairWorkload,
     PowPositiveWorkload,
-    RemainderWorkload,
+    RandnPairWorkload,
 )
-from workloads.elementwise import AddSameShapeTest as _AddSameShapeTestWorkload
 
 
-class AddSameShapeTest(_AddSameShapeTestWorkload, TestBase):
+class AddSameShapeTest(RandnPairWorkload, TestBase):
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return (a.float() + b.float()).to(a.dtype)
 
@@ -264,7 +260,7 @@ def test_add_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None
 # Generic binary test helper
 
 
-class BinarySameShapeTest(BinarySameShapeWorkload, TestBase):
+class BinarySameShapeTest(RandnPairWorkload, TestBase):
     """Reusable test body for binary same-shape ops."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
@@ -275,7 +271,7 @@ class BinarySameShapeTest(BinarySameShapeWorkload, TestBase):
         return self.ref_fn(a.float(), b.float()).to(a.dtype)
 
 
-class BinaryPositiveTest(BinaryPositiveWorkload, TestBase):
+class BinaryPositiveTest(PositivePairWorkload, TestBase):
     """Test body for ops that need positive inputs (div, remainder, pow, etc.)."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
@@ -289,7 +285,7 @@ class BinaryPositiveTest(BinaryPositiveWorkload, TestBase):
 # Same-shape correctness for simple binary arith ops
 
 
-class RemainderTest(RemainderWorkload, TestBase):
+class RemainderTest(PositivePairWorkload, TestBase):
     """Remainder reference matches the kernel: fp32 division+floor, native multiply-subtract."""
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -358,7 +354,7 @@ class FloorDivideFixture(FixtureBase):
     ]
 
 
-class FloorDivideTest(FloorDivideWorkload, TestBase):
+class FloorDivideTest(PositivePairWorkload, TestBase):
     """Floor divide reference matches the kernel: fp32 division+floor, cast back."""
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -389,7 +385,11 @@ class LerpFixture(FixtureBase):
     ]
 
 
-class LerpTest(LerpWorkload, TestBase):
+class LerpTest(RandnPairWorkload, TestBase):
+    def __init__(self, n_total: int, dtype, weight: float = 0.5):
+        super().__init__(n_total, dtype)
+        self.weight = weight
+
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return torch.lerp(a.float(), b.float(), self.weight).to(a.dtype)

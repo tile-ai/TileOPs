@@ -33,8 +33,8 @@ from workloads.elementwise import (
     Fp8MaskedFillBenchCase,
     Fp8UnaryBenchCase,
     Fp8WhereBenchCase,
+    ShapedRandnWorkload,
     TensorClampBenchCase,
-    UnaryBenchCase,
     _GenerativeWorkload,
 )
 from workloads.workload_base import FixtureBase
@@ -49,7 +49,7 @@ _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 # Benchmark base classes
 
 
-class UnaryBenchmark(BenchmarkBase[UnaryBenchCase]):
+class UnaryBenchmark(BenchmarkBase[ShapedRandnWorkload]):
     def calculate_flops(self) -> Optional[float]:
         return self.workload.n_total
 

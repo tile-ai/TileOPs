@@ -80,11 +80,9 @@ from tileops.ops.elementwise import (
     WhereFwdOp,
 )
 from workloads.elementwise import (
-    AbsCompileWorkload,
     AddCompileWorkload,
     EqCompileWorkload,
-    ReluCompileWorkload,
-    SignCompileWorkload,
+    RandnFlatWorkload,
     SiluAndMulCompileWorkload,
 )
 
@@ -118,7 +116,7 @@ class ReluCompileFixture(FixtureBase):
     ]
 
 
-class ReluCompileTest(ReluCompileWorkload, TestBase):
+class ReluCompileTest(RandnFlatWorkload, TestBase):
     def ref_program(self, x):
         return torch.relu(x.float()).to(x.dtype)
 
@@ -233,7 +231,7 @@ class AbsCompileFixture(FixtureBase):
     ]
 
 
-class AbsCompileTest(AbsCompileWorkload, TestBase):
+class AbsCompileTest(RandnFlatWorkload, TestBase):
     def ref_program(self, x):
         return torch.abs(x.float()).to(x.dtype)
 
@@ -258,7 +256,7 @@ class SignCompileFixture(FixtureBase):
     ]
 
 
-class SignCompileTest(SignCompileWorkload, TestBase):
+class SignCompileTest(RandnFlatWorkload, TestBase):
     def ref_program(self, x):
         return torch.sign(x.float()).to(x.dtype)
 

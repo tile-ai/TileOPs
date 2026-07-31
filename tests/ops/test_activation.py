@@ -10,8 +10,8 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.elementwise import ReluFwdKernel
 from tileops.ops.elementwise import ReluFwdOp
+from workloads.elementwise import RandnFlatWorkload
 from workloads.elementwise import ReluTest as _ReluTestWorkload
-from workloads.elementwise import UnaryActivationWorkload
 
 
 class ReluTest(_ReluTestWorkload, TestBase):
@@ -94,7 +94,7 @@ class ActivationEdgeFixture(FixtureBase):
     ]
 
 
-class UnaryActivationTest(UnaryActivationWorkload, TestBase):
+class UnaryActivationTest(RandnFlatWorkload, TestBase):
     """Generic test fixture for a single-input, single-output unary op."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None, ref_fn=None):

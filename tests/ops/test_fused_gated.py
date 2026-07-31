@@ -15,7 +15,7 @@ from tileops.kernels.elementwise import (
     SiluAndMulFwdKernel,
 )
 from tileops.ops.elementwise import GeluAndMulFwdOp, GeluTanhAndMulFwdOp, SiluAndMulFwdOp
-from workloads.elementwise import GeluAndMulWorkload, GeluTanhAndMulWorkload, SiluAndMulWorkload
+from workloads.elementwise import GatedRandnWorkload
 
 # SiluAndMul
 
@@ -32,7 +32,7 @@ class SiluAndMulFixture(FixtureBase):
     ]
 
 
-class SiluAndMulTest(SiluAndMulWorkload, TestBase):
+class SiluAndMulTest(GatedRandnWorkload, TestBase):
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         x_f32 = x.float()
@@ -94,7 +94,7 @@ class GeluAndMulFixture(FixtureBase):
     ]
 
 
-class GeluAndMulTest(GeluAndMulWorkload, TestBase):
+class GeluAndMulTest(GatedRandnWorkload, TestBase):
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         x_f32 = x.float()
@@ -125,7 +125,7 @@ class GeluTanhAndMulFixture(FixtureBase):
     ]
 
 
-class GeluTanhAndMulTest(GeluTanhAndMulWorkload, TestBase):
+class GeluTanhAndMulTest(GatedRandnWorkload, TestBase):
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         x_f32 = x.float()

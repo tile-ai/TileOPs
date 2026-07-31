@@ -12,12 +12,16 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
 from tileops.ops.dropout import DropoutOp
-from workloads.elementwise import DropoutWorkload
+from workloads.elementwise import ShapedRandnWorkload
 
 _OP_NAME = "DropoutOp"
 
 
-class _DropoutBenchmarkWorkload(DropoutWorkload):
+class _DropoutBenchmarkWorkload(ShapedRandnWorkload):
+    def __init__(self, shape: tuple, dtype, p: float = 0.5):
+        super().__init__(shape, dtype)
+        self.p = p
+
     def torch_baseline(self, x: torch.Tensor) -> torch.Tensor:
         return F.dropout(x, p=self.p, training=True)
 
