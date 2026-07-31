@@ -32,6 +32,7 @@ from workloads.attention.gqa import (
 from workloads.attention.gqa import (
     GroupedQueryAttentionFwdTest as _GroupedQueryAttentionFwdTestWorkload,
 )
+from workloads.attention.gqa import uniform_packed_prefill_inputs
 
 _PREFILL_TOLERANCE = {
     torch.float16: (5e-3, 1e-5),
@@ -98,33 +99,6 @@ def _gqa_prefill_ref(
     output = torch.matmul(probs, v_bhsd)
     assert output.shape == (batch, heads, seq_len_q, dim)
     return output.transpose(1, 2).to(q.dtype).contiguous()
-
-
-def _uniform_packed_prefill_inputs(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-           torch.Tensor, torch.Tensor]:
-    batch, seq_len_q, _, _ = q.shape
-    _, seq_len_kv, heads_kv, _ = k.shape
-    cu_q = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_q
-    cu_kv = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_kv
-    q_scale = torch.ones((batch, heads_kv), device=q.device, dtype=torch.float32)
-    k_scale = torch.ones_like(q_scale)
-    v_scale = torch.ones_like(q_scale)
-    return (
-        q.reshape(batch * seq_len_q, q.shape[2], q.shape[3]).contiguous(),
-        k.reshape(batch * seq_len_kv, heads_kv, k.shape[3]).contiguous(),
-        v.reshape(batch * seq_len_kv, heads_kv, v.shape[3]).contiguous(),
-        cu_q,
-        cu_kv,
-        q_scale,
-        k_scale,
-        v_scale,
-    )
-
-
 def _ones_prefill_scales(
     batch: int,
     heads_kv: int,
@@ -232,7 +206,7 @@ def test_gqa_prefill_fwd(batch: int, seq_len_q: int, seq_len_kv: int, heads: int
     v = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
     ref = _gqa_prefill_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=causal)
 
-    packed_inputs = _uniform_packed_prefill_inputs(q, k, v)
+    packed_inputs = uniform_packed_prefill_inputs(q, k, v)
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=batch,
         heads=heads,
@@ -260,7 +234,7 @@ def test_gqa_prefill_fwd_dense_backend_matches_reference() -> None:
                     dtype=torch.float16).contiguous()
     ref = _gqa_prefill_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True)
 
-    packed_inputs = _uniform_packed_prefill_inputs(q, k, v)
+    packed_inputs = uniform_packed_prefill_inputs(q, k, v)
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=batch,
         heads=heads,
@@ -288,7 +262,7 @@ def test_gqa_prefill_fwd_uses_bottom_right_causal_mask() -> None:
     v[:, :128, :, 0] = 1
     v[:, 128:, :, 0] = 100
 
-    packed_inputs = _uniform_packed_prefill_inputs(q.contiguous(), k.contiguous(),
+    packed_inputs = uniform_packed_prefill_inputs(q.contiguous(), k.contiguous(),
                                                    v.contiguous())
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=batch,
@@ -615,7 +589,7 @@ def test_gqa_prefill_fwd_respects_sm_scale() -> None:
     ref = _gqa_prefill_ref(
         q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True, sm_scale=sm_scale)
 
-    packed_inputs = _uniform_packed_prefill_inputs(q, k, v)
+    packed_inputs = uniform_packed_prefill_inputs(q, k, v)
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=batch,
         heads=heads,
@@ -645,7 +619,7 @@ def test_gqa_prefill_fwd_respects_softcap() -> None:
     ref = _gqa_prefill_ref(
         q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True, softcap=softcap)
 
-    packed_inputs = _uniform_packed_prefill_inputs(q, k, v)
+    packed_inputs = uniform_packed_prefill_inputs(q, k, v)
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=batch,
         heads=heads,
@@ -693,7 +667,7 @@ def test_gqa_prefill_fwd_ws_path_matches_reference(
         softcap=softcap,
     )
 
-    packed_inputs = _uniform_packed_prefill_inputs(q, k, v)
+    packed_inputs = uniform_packed_prefill_inputs(q, k, v)
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=batch,
         heads=heads,

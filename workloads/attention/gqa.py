@@ -416,3 +416,28 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdTest(WorkloadBase):
         max_seqlen_q = max(self.seqlens_q)
 
         return q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q
+
+
+def uniform_packed_prefill_inputs(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+           torch.Tensor, torch.Tensor]:
+    batch, seq_len_q, _, _ = q.shape
+    _, seq_len_kv, heads_kv, _ = k.shape
+    cu_q = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_q
+    cu_kv = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_kv
+    q_scale = torch.ones((batch, heads_kv), device=q.device, dtype=torch.float32)
+    k_scale = torch.ones_like(q_scale)
+    v_scale = torch.ones_like(q_scale)
+    return (
+        q.reshape(batch * seq_len_q, q.shape[2], q.shape[3]).contiguous(),
+        k.reshape(batch * seq_len_kv, heads_kv, k.shape[3]).contiguous(),
+        v.reshape(batch * seq_len_kv, heads_kv, v.shape[3]).contiguous(),
+        cu_q,
+        cu_kv,
+        q_scale,
+        k_scale,
+        v_scale,
+    )
