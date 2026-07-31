@@ -12,40 +12,7 @@ import torch
 
 from tests.test_base import FixtureBase
 from tileops.ops.moe import MoeGroupedGemmNopadFwdOp
-from workloads.workload_base import WorkloadBase
-
-
-def _make_sizes_offsets(numel: int, num_experts: int, distribution: str, device: str):
-    """Build (true_sizes, true_offsets) for a fixed token-to-expert distribution.
-
-    Args:
-        numel: Total token-expert pairs (T * top_k).
-        num_experts: Number of experts E.
-        distribution: "uniform" — evenly split; "skewed" — most tokens on first
-            20% of experts (one-token floor for the rest).
-        device: CUDA device string.
-
-    Returns:
-        true_sizes [E] int32, true_offsets [E] int32.
-    """
-    if distribution == "uniform":
-        base = max(1, numel // num_experts)
-        sizes = torch.full((num_experts,), base, dtype=torch.int32, device=device)
-        sizes[-1] = numel - base * (num_experts - 1)
-    elif distribution == "skewed":
-        sizes = torch.ones(num_experts, dtype=torch.int32, device=device)
-        extra = numel - num_experts
-        top_experts = max(1, num_experts // 5)
-        per_top = extra // top_experts
-        sizes[:top_experts] += per_top
-        sizes[0] += extra - per_top * top_experts
-    else:
-        raise ValueError(f"unknown distribution: {distribution}")
-
-    offsets = torch.zeros(num_experts, dtype=torch.int32, device=device)
-    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
-    assert int(sizes.sum().item()) == numel
-    return sizes, offsets
+from workloads.moe import MoeGroupedGemmNopadWorkload
 
 
 def _ref_grouped_gemm_nopad(
@@ -83,29 +50,6 @@ def _ref_grouped_gemm_nopad(
     return c
 
 
-class MoeGroupedGemmNopadTest(WorkloadBase):
-    """Generates inputs for the tight grouped-GEMM op."""
-
-    def __init__(self, numel, num_experts, n, k, distribution, dtype):
-        self.numel = numel
-        self.num_experts = num_experts
-        self.n = n
-        self.k = k
-        self.distribution = distribution
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        torch.manual_seed(42)
-        dev = "cuda"
-        true_sizes, true_offsets = _make_sizes_offsets(
-            self.numel, self.num_experts, self.distribution, dev
-        )
-        # Small scale keeps fp16 accumulation well within the parity tolerance.
-        a = torch.randn(self.numel, self.k, dtype=self.dtype, device=dev) * 0.02
-        b = torch.randn(self.num_experts, self.n, self.k, dtype=self.dtype, device=dev) * 0.02
-        return a, b, true_sizes, true_offsets
-
-
 class MoeGroupedGemmNopadFixture(FixtureBase):
     PARAMS = [
         ("numel, num_experts, n, k, distribution, dtype", [
@@ -130,7 +74,9 @@ class MoeGroupedGemmNopadFixture(FixtureBase):
 
 @MoeGroupedGemmNopadFixture
 def test_moe_grouped_gemm_nopad_op(numel, num_experts, n, k, distribution, dtype):
-    test = MoeGroupedGemmNopadTest(numel, num_experts, n, k, distribution, dtype)
+    test = MoeGroupedGemmNopadWorkload(
+        numel, num_experts, n, k, dtype, distribution=distribution
+    )
     a, b, true_sizes, true_offsets = test.gen_inputs()
 
     op = MoeGroupedGemmNopadFwdOp(numel, num_experts, n, k, dtype=dtype)

@@ -14,35 +14,9 @@ import torch
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoeGroupedGemmNopadFwdOp
-from workloads.workload_base import WorkloadBase
+from workloads.moe import MoeGroupedGemmNopadWorkload
 
 _OP_NAME = "MoeGroupedGemmNopadFwdOp"
-
-
-class MoeGroupedGemmNopadTest(WorkloadBase):
-    """Manifest-shaped inputs: tight A, expert weights B, uniform per-expert sizes."""
-
-    def __init__(self, numel: int, num_experts: int, n: int, k: int, dtype: torch.dtype):
-        self.numel = numel
-        self.num_experts = num_experts
-        self.n = n
-        self.k = k
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        torch.manual_seed(42)
-        dev = "cuda"
-        base = max(1, self.numel // self.num_experts)
-        sizes = torch.full((self.num_experts,), base, dtype=torch.int32, device=dev)
-        sizes[-1] = self.numel - base * (self.num_experts - 1)
-        offsets = torch.zeros(self.num_experts, dtype=torch.int32, device=dev)
-        offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
-        a = torch.randn(self.numel, self.k, dtype=self.dtype, device=dev) * 0.02
-        b = torch.randn(self.num_experts, self.n, self.k, dtype=self.dtype, device=dev) * 0.02
-        return a, b, sizes, offsets
-
-    def ref_program(self, *args):
-        return None
 
 
 _DTYPE_MAP = {
@@ -72,11 +46,11 @@ def test_moe_grouped_gemm_nopad_bench(
     numel: int, num_experts: int, n: int, k: int, dtype_str: str,
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
-    test = MoeGroupedGemmNopadTest(numel, num_experts, n, k, dtype)
-    a, b, true_sizes, true_offsets = test.gen_inputs()
+    workload = MoeGroupedGemmNopadWorkload(numel, num_experts, n, k, dtype)
+    a, b, true_sizes, true_offsets = workload.gen_inputs()
 
     op = MoeGroupedGemmNopadFwdOp(numel, num_experts, n, k, dtype=dtype)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(_OP_NAME, op, workload)
 
     # Warmup: trigger JIT compilation before timed profiling.
     op(a, b, true_sizes, true_offsets)
