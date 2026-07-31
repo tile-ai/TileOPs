@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from workloads.reduction import CumulativeWorkload
 
 # Fixtures
 
@@ -85,25 +86,8 @@ class Cumulative1DFixture(FixtureBase):
 # TestBase helpers
 
 
-class CumulativeTest(TestBase):
+class CumulativeTest(CumulativeWorkload, TestBase):
     """Parameterized test helper for cumulative ops."""
-
-    def __init__(
-        self, m: int, n: int, dtype: torch.dtype, op_kind: str, use_small_range: bool = False
-    ):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.op_kind = op_kind
-        self.use_small_range = use_small_range
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self.use_small_range:
-            # For cumprod, use small values to avoid overflow
-            x = torch.rand(self.m, self.n, dtype=self.dtype, device="cuda") * 0.01 + 0.99
-        else:
-            x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         x_f32 = x.float()
@@ -137,7 +121,7 @@ def _cumprod_tol(dtype: torch.dtype) -> dict:
 def test_cumsum_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
-    test = CumulativeTest(m, n, dtype, "cumsum")
+    test = CumulativeTest((m, n), dtype, "cumsum")
     op = CumsumFwdOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
@@ -214,7 +198,7 @@ def test_cumsum_dynamic_shape_kernel_cache() -> None:
 def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumulative import CumprodFwdOp
 
-    test = CumulativeTest(m, n, dtype, "cumprod", use_small_range=True)
+    test = CumulativeTest((m, n), dtype, "cumprod", use_small_range=True)
     op = CumprodFwdOp(dtype=dtype)
     test.check(op, *test.gen_inputs(), **_cumprod_tol(dtype))
 

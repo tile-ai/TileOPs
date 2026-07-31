@@ -12,28 +12,13 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from workloads.normalization import WelfordNonAlignedWorkload
 
 # Test helpers
 
 
-class WelfordNonAlignedTest(TestBase):
+class WelfordNonAlignedTest(WelfordNonAlignedWorkload, TestBase):
     """Test helper for Welford ops with non-aligned N values."""
-
-    def __init__(
-        self,
-        shape: tuple,
-        dtype: torch.dtype,
-        op_kind: str,
-        correction: int = 1,
-    ):
-        self.shape = shape
-        self.dtype = dtype
-        self.op_kind = op_kind
-        self.correction = correction
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
-        return (x,)
 
     def ref_program(self, x: torch.Tensor) -> object:
         x_f32 = x.float()

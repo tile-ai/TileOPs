@@ -149,13 +149,28 @@ def _make_logical_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
 
 
 class CumulativeWorkload(WorkloadBase):
-    def __init__(self, shape: tuple, dtype: torch.dtype, op_kind: str):
-        self.shape = shape
+    """Inputs for cumsum / cumprod over the last dimension.
+
+    ``cumprod`` defaults to a narrow band around 1.0 so a long scan stays in
+    range; pass ``use_small_range`` explicitly to override.
+    """
+
+    def __init__(
+        self,
+        shape: tuple[int, ...],
+        dtype: torch.dtype,
+        op_kind: str,
+        use_small_range: bool | None = None,
+    ):
+        self.shape = tuple(shape)
         self.dtype = dtype
         self.op_kind = op_kind
+        self.use_small_range = (
+            op_kind == "cumprod" if use_small_range is None else use_small_range
+        )
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self.op_kind == "cumprod":
+        if self.use_small_range:
             x = torch.rand(*self.shape, dtype=self.dtype, device="cuda") * 0.01 + 0.99
         else:
             x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")

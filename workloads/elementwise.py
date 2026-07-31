@@ -339,3 +339,292 @@ class BroadcastBenchCase:
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         return self._gen_inputs(self.a_shape, self.b_shape, self.dtype)
+
+
+class UnaryActivationWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None):
+        self.n_total = n_total
+        self.dtype = dtype
+        self._gen_fn = gen_fn
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        if self._gen_fn is not None:
+            return (self._gen_fn(self.n_total, self.dtype),)
+        return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)
+
+
+class AddBroadcastWorkload(WorkloadBase):
+    def __init__(self, a_shape: tuple, b_shape: tuple, dtype: torch.dtype):
+        self.a_shape = a_shape
+        self.b_shape = b_shape
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
+        b = torch.randn(self.b_shape, dtype=self.dtype, device="cuda")
+        return a, b
+
+
+class RemainderWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
+        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
+        return a, b
+
+
+class PowPositiveWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.5
+        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") * 2.0
+        return a, b
+
+
+class FloorDivideWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
+        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
+        return a, b
+
+
+class LerpWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype, weight: float = 0.5):
+        self.n_total = n_total
+        self.dtype = dtype
+        self.weight = weight
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
+        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
+        return a, b
+
+
+class BitwiseNotWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        if self.dtype == torch.bool:
+            x = torch.rand(self.n_total, device="cuda") > 0.5
+        elif self.dtype == torch.uint8:
+            x = torch.randint(0, 256, (self.n_total,), device="cuda", dtype=self.dtype)
+        else:
+            x = torch.randint(-128, 128, (self.n_total,), device="cuda", dtype=self.dtype)
+        return (x,)
+
+
+class ReluCompileWorkload(WorkloadBase):
+    def __init__(self, n_total, dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self):
+        return (torch.randn(self.n_total, dtype=self.dtype, device="cuda"),)
+
+
+class AddCompileWorkload(WorkloadBase):
+    def __init__(self, a_shape, b_shape, dtype):
+        self.a_shape = a_shape
+        self.b_shape = b_shape
+        self.dtype = dtype
+
+    def gen_inputs(self):
+        a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
+        b = torch.randn(self.b_shape, dtype=self.dtype, device="cuda")
+        return a, b
+
+
+class EqCompileWorkload(WorkloadBase):
+    def __init__(self, a_shape, b_shape, dtype):
+        self.a_shape = a_shape
+        self.b_shape = b_shape
+        self.dtype = dtype
+
+    def gen_inputs(self):
+        a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
+        b = a.clone()
+        mask = torch.rand_like(a, dtype=torch.float32) > 0.5
+        b[mask] = torch.randn_like(b[mask])
+        return a, b
+
+
+class SiluAndMulCompileWorkload(WorkloadBase):
+    def __init__(self, M, N, dtype):
+        self.M = M
+        self.N = N
+        self.dtype = dtype
+
+    def gen_inputs(self):
+        x = torch.randn(self.M, 2 * self.N, dtype=self.dtype, device="cuda")
+        return (x,)
+
+
+class AbsCompileWorkload(WorkloadBase):
+    def __init__(self, n_total, dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self):
+        return (torch.randn(self.n_total, dtype=self.dtype, device="cuda"),)
+
+
+class SignCompileWorkload(WorkloadBase):
+    def __init__(self, n_total, dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self):
+        return (torch.randn(self.n_total, dtype=self.dtype, device="cuda"),)
+
+
+class SiluAndMulWorkload(WorkloadBase):
+    def __init__(self, m: int, n: int, dtype: torch.dtype):
+        self.m = m
+        self.n = n
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
+        return (x,)
+
+
+class GeluAndMulWorkload(WorkloadBase):
+    def __init__(self, m: int, n: int, dtype: torch.dtype):
+        self.m = m
+        self.n = n
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
+        return (x,)
+
+
+class GeluTanhAndMulWorkload(WorkloadBase):
+    def __init__(self, m: int, n: int, dtype: torch.dtype):
+        self.m = m
+        self.n = n
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
+        return (x,)
+
+
+class LogicalNotWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        if self.dtype == torch.bool:
+            x = torch.rand(self.n_total, device="cuda") > 0.5
+            return (x,)
+
+        if self.dtype == torch.uint8:
+            x = torch.randint(0, 8, (self.n_total,), device="cuda", dtype=self.dtype)
+        elif self.dtype in (torch.int8, torch.int16, torch.int32, torch.int64):
+            x = torch.randint(-4, 4, (self.n_total,), device="cuda", dtype=self.dtype)
+        else:
+            x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
+
+        mask = torch.rand(self.n_total, device="cuda") > 0.5
+        x[mask] = 0
+        return (x,)
+
+
+class BinarySameShapeWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
+        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
+        return a, b
+
+
+class BinaryPositiveWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
+        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
+        return a, b
+
+
+class BitwiseWorkload(WorkloadBase):
+    def __init__(self, n_total: int):
+        self.n_total = n_total
+        self.dtype = torch.int32
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device="cuda")
+        b = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device="cuda")
+        return a, b
+
+
+class ComparisonWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
+        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
+        return a, b
+
+
+class LogicalWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda") > 0
+        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda") > 0
+        a = a.to(self.dtype)
+        b = b.to(self.dtype)
+        return a, b
+
+
+class SpecialWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None):
+        self.n_total = n_total
+        self.dtype = dtype
+        self._gen_fn = gen_fn
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        if self._gen_fn is not None:
+            return (self._gen_fn(self.n_total, self.dtype),)
+        x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
+        quarter = self.n_total // 4
+        x[:quarter] = float("nan")
+        x[quarter:2 * quarter] = float("inf")
+        x[2 * quarter:3 * quarter] = float("-inf")
+        return (x,)
+
+
+class UnaryMathWorkload(WorkloadBase):
+    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None):
+        self.n_total = n_total
+        self.dtype = dtype
+        self._gen_fn = gen_fn
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        if self._gen_fn is not None:
+            return (self._gen_fn(self.n_total, self.dtype),)
+        return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)

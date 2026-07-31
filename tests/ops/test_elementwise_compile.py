@@ -79,6 +79,14 @@ from tileops.ops.elementwise import (
     TruncFwdOp,
     WhereFwdOp,
 )
+from workloads.elementwise import (
+    AbsCompileWorkload,
+    AddCompileWorkload,
+    EqCompileWorkload,
+    ReluCompileWorkload,
+    SignCompileWorkload,
+    SiluAndMulCompileWorkload,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -110,14 +118,7 @@ class ReluCompileFixture(FixtureBase):
     ]
 
 
-class ReluCompileTest(TestBase):
-    def __init__(self, n_total, dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        return (torch.randn(self.n_total, dtype=self.dtype, device="cuda"),)
-
+class ReluCompileTest(ReluCompileWorkload, TestBase):
     def ref_program(self, x):
         return torch.relu(x.float()).to(x.dtype)
 
@@ -146,17 +147,7 @@ class AddCompileFixture(FixtureBase):
     ]
 
 
-class AddCompileTest(TestBase):
-    def __init__(self, a_shape, b_shape, dtype):
-        self.a_shape = a_shape
-        self.b_shape = b_shape
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.b_shape, dtype=self.dtype, device="cuda")
-        return a, b
-
+class AddCompileTest(AddCompileWorkload, TestBase):
     def ref_program(self, a, b):
         return (a.float() + b.float()).to(a.dtype)
 
@@ -184,19 +175,7 @@ class EqCompileFixture(FixtureBase):
     ]
 
 
-class EqCompileTest(TestBase):
-    def __init__(self, a_shape, b_shape, dtype):
-        self.a_shape = a_shape
-        self.b_shape = b_shape
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
-        b = a.clone()
-        mask = torch.rand_like(a, dtype=torch.float32) > 0.5
-        b[mask] = torch.randn_like(b[mask])
-        return a, b
-
+class EqCompileTest(EqCompileWorkload, TestBase):
     def ref_program(self, a, b):
         return a == b
 
@@ -224,16 +203,7 @@ class SiluAndMulCompileFixture(FixtureBase):
     ]
 
 
-class SiluAndMulCompileTest(TestBase):
-    def __init__(self, M, N, dtype):
-        self.M = M
-        self.N = N
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        x = torch.randn(self.M, 2 * self.N, dtype=self.dtype, device="cuda")
-        return (x,)
-
+class SiluAndMulCompileTest(SiluAndMulCompileWorkload, TestBase):
     def ref_program(self, x):
         gate = x[:, :self.N].float()
         value = x[:, self.N:].float()
@@ -263,14 +233,7 @@ class AbsCompileFixture(FixtureBase):
     ]
 
 
-class AbsCompileTest(TestBase):
-    def __init__(self, n_total, dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        return (torch.randn(self.n_total, dtype=self.dtype, device="cuda"),)
-
+class AbsCompileTest(AbsCompileWorkload, TestBase):
     def ref_program(self, x):
         return torch.abs(x.float()).to(x.dtype)
 
@@ -295,14 +258,7 @@ class SignCompileFixture(FixtureBase):
     ]
 
 
-class SignCompileTest(TestBase):
-    def __init__(self, n_total, dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        return (torch.randn(self.n_total, dtype=self.dtype, device="cuda"),)
-
+class SignCompileTest(SignCompileWorkload, TestBase):
     def ref_program(self, x):
         return torch.sign(x.float()).to(x.dtype)
 
