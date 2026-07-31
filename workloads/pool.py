@@ -3,7 +3,6 @@
 from typing import Optional
 
 import torch
-import torch.nn.functional as F
 
 from workloads.workload_base import WorkloadBase  # noqa: F401
 
@@ -34,17 +33,6 @@ class AvgPool1dBenchCase:
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
         return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return F.avg_pool1d(
-            x,
-            kernel_size=self.kernel_size,
-            stride=self.stride,
-            padding=self.padding,
-            ceil_mode=self.ceil_mode,
-            count_include_pad=self.count_include_pad,
-        )
-
 
 class AvgPool2dBenchCase:
     def __init__(
@@ -78,18 +66,6 @@ class AvgPool2dBenchCase:
             self.n, self.c_in, self.h_in, self.w_in, device="cuda", dtype=self.dtype
         ).contiguous()
         return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return F.avg_pool2d(
-            x,
-            kernel_size=self.kernel_size,
-            stride=self.stride,
-            padding=self.padding,
-            ceil_mode=self.ceil_mode,
-            count_include_pad=self.count_include_pad,
-            divisor_override=self.divisor_override,
-        )
-
 
 class AvgPool3dBenchCase:
     def __init__(
@@ -132,18 +108,6 @@ class AvgPool3dBenchCase:
         ).contiguous()
         return (x,)
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return F.avg_pool3d(
-            x,
-            kernel_size=self.kernel_size,
-            stride=self.stride,
-            padding=self.padding,
-            ceil_mode=self.ceil_mode,
-            count_include_pad=self.count_include_pad,
-            divisor_override=self.divisor_override,
-        )
-
-
 class MaxPool2dBenchCase:
     def __init__(
         self,
@@ -177,18 +141,6 @@ class MaxPool2dBenchCase:
         ).contiguous()
         return (x,)
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        return F.max_pool2d(
-            x,
-            kernel_size=self.kernel_size,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            ceil_mode=self.ceil_mode,
-            return_indices=self.return_indices,
-        )
-
-
 class MaxPool1dBenchCase:
     def __init__(
         self,
@@ -217,18 +169,6 @@ class MaxPool1dBenchCase:
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
         return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        return F.max_pool1d(
-            x,
-            kernel_size=self.kernel_size,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            ceil_mode=self.ceil_mode,
-            return_indices=self.return_indices,
-        )
-
 
 class MaxPool3dBenchCase:
     def __init__(
@@ -270,18 +210,6 @@ class MaxPool3dBenchCase:
             dtype=self.dtype,
         ).contiguous()
         return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        return F.max_pool3d(
-            x,
-            kernel_size=self.kernel_size,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            ceil_mode=self.ceil_mode,
-            return_indices=self.return_indices,
-        )
-
 
 class AvgPoolWorkload(WorkloadBase):
     def __init__(

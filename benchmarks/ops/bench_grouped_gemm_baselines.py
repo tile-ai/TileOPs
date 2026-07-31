@@ -270,7 +270,7 @@ def _set_triton_allocator():
 def gen_baseline_inputs(numel, E, N, K):
     """Shared workload tensors plus the derived tables each baseline needs."""
     workload = GroupedGemmUniformWorkload(numel, E, N, K, _DTYPE)
-    A, B, sizes, offsets = workload.gen_baseline_inputs()
+    A, B, sizes, offsets = workload.gen_inputs()
     per = workload.rows_per_expert
     dev = A.device
     m_indices = torch.arange(E, device=dev, dtype=torch.int32).repeat_interleave(per)
