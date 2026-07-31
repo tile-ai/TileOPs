@@ -77,3 +77,8 @@ CLAUDE.local.md
 .claude/worktrees/
 docs/superpowers/
 *.ncu-rep
+
+# Benchmark run artifacts
+profile_run.log
+bench_stack_dumps/
+bench_results.xml
