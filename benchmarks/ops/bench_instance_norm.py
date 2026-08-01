@@ -8,7 +8,7 @@ from tileops.ops.norm.instance_norm import (
     InstanceNormFwdOp,
     InstanceNormNoAffineFwdOp,
 )
-from workloads.normalization import InstanceNormTest
+from workloads.normalization import InstanceNormWorkload
 
 _OP_NAME = "InstanceNormFwdOp"
 _OP_NAME_NO_AFFINE = "InstanceNormNoAffineFwdOp"
@@ -34,7 +34,7 @@ _NO_AFFINE_PARAMS = _build_params(load_workloads(_OP_NAME_NO_AFFINE))
 @pytest.mark.parametrize("n, c, spatial, dtype, tune", _AFFINE_PARAMS)
 def test_instance_norm_bench(n: int, c: int, spatial: tuple,
                              dtype: torch.dtype, tune: bool) -> None:
-    test = InstanceNormTest(n, c, spatial, dtype)
+    test = InstanceNormWorkload(n, c, spatial, dtype)
     x, weight, bias = test.gen_inputs()
 
     op = InstanceNormFwdOp(tune=tune)
@@ -53,7 +53,7 @@ def test_instance_norm_bench(n: int, c: int, spatial: tuple,
 @pytest.mark.parametrize("n, c, spatial, dtype, tune", _NO_AFFINE_PARAMS)
 def test_instance_norm_no_affine_bench(n: int, c: int, spatial: tuple,
                                        dtype: torch.dtype, tune: bool) -> None:
-    test = InstanceNormTest(n, c, spatial, dtype)
+    test = InstanceNormWorkload(n, c, spatial, dtype)
     x, _, _ = test.gen_inputs()
 
     op = InstanceNormNoAffineFwdOp(tune=tune)

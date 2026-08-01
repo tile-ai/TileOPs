@@ -31,7 +31,7 @@ def _make_op(shape: tuple, dtype: torch.dtype, op_kind: str):
     return cls(dtype=dtype, dim=-1)
 
 
-class _CumulativeBenchmarkWorkload(CumulativeWorkload):
+class CumulativeBenchmarkWorkload(CumulativeWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         x_f32 = x.float()
         if self.op_kind == "cumsum":
@@ -42,7 +42,7 @@ class _CumulativeBenchmarkWorkload(CumulativeWorkload):
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMSUM_OP))
 def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = _CumulativeBenchmarkWorkload(shape, dtype, "cumsum")
+    test = CumulativeBenchmarkWorkload(shape, dtype, "cumsum")
     inputs = test.gen_inputs()
 
     op = _make_op(shape, dtype, "cumsum")
@@ -56,7 +56,7 @@ def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_CUMPROD_OP))
 def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = _CumulativeBenchmarkWorkload(shape, dtype, "cumprod")
+    test = CumulativeBenchmarkWorkload(shape, dtype, "cumprod")
     inputs = test.gen_inputs()
 
     op = _make_op(shape, dtype, "cumprod")

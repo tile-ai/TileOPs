@@ -4,10 +4,10 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.deepseek import DsaDecodeTest as _DsaDecodeTestWorkload
+from workloads.attention.deepseek import DsaDecodeWorkload
 
 
-class DsaDecodeTest(_DsaDecodeTestWorkload, TestBase):
+class DsaDecodeTest(DsaDecodeWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, kv: torch.Tensor,
                     indices: torch.Tensor) -> torch.Tensor:
         q = q.float()

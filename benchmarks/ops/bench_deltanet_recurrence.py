@@ -7,7 +7,7 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBe
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import DeltaNetDecodeOp
-from workloads.linear_attention import DeltaNetDecodeTest
+from workloads.linear_attention import DeltaNetDecodeWorkload
 from workloads.workload_base import FixtureBase
 
 _OP_NAME = "DeltaNetDecodeOp"
@@ -39,7 +39,7 @@ def deltanet_decode_torch(
     return o, new_state
 
 
-class _DeltaNetDecodeTestBaseline(DeltaNetDecodeTest):
+class DeltaNetDecodeTestBaseline(DeltaNetDecodeWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(
@@ -54,7 +54,7 @@ class _DeltaNetDecodeTestBaseline(DeltaNetDecodeTest):
         return o.to(self.dtype), new_state.to(self.dtype)
 
 
-class DeltaNetDecodeBenchmark(BenchmarkBase[DeltaNetDecodeTest]):
+class DeltaNetDecodeBenchmark(BenchmarkBase[DeltaNetDecodeWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -95,7 +95,7 @@ def test_deltanet_decode_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _DeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
+    test = DeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
     inputs = test.gen_inputs()
 
     op = DeltaNetDecodeOp(tune=tune)

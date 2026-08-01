@@ -10,11 +10,10 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.elementwise import ReluFwdKernel
 from tileops.ops.elementwise import ReluFwdOp
-from workloads.elementwise import RandnFlatWorkload
-from workloads.elementwise import ReluTest as _ReluTestWorkload
+from workloads.elementwise import RandnFlatWorkload, ReluWorkload
 
 
-class ReluTest(_ReluTestWorkload, TestBase):
+class ReluTest(ReluWorkload, TestBase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return torch.relu(x.float()).to(x.dtype)
 

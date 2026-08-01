@@ -7,15 +7,9 @@ from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.engram_decode import EngramDecodeOp
 from workloads.engram import (
     CONV_KERNEL_SIZE,
-)
-from workloads.engram import (
-    EngramDecodeTest as _EngramDecodeTestWorkload,
-)
-from workloads.engram import (
-    EngramGateConvBwdTest as _EngramGateConvBwdTestWorkload,
-)
-from workloads.engram import (
-    EngramGateConvFwdTest as _EngramGateConvFwdTestWorkload,
+    EngramDecodeWorkload,
+    EngramGateConvBwdWorkload,
+    EngramGateConvFwdWorkload,
 )
 
 
@@ -58,7 +52,7 @@ def engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, eps=1e-6):
     )
 
 
-class EngramGateConvFwdTest(_EngramGateConvFwdTestWorkload, TestBase):
+class EngramGateConvFwdTest(EngramGateConvFwdWorkload, TestBase):
     def ref_program(self, H, k, v, rms_w_h, rms_w_v, conv_w):
         return engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, self.eps)
 
@@ -125,7 +119,7 @@ def ref_engram_gate_conv_bwd(dY, H, k, v, rms_w_h, rms_w_v, conv_w,
     )
 
 
-class EngramGateConvBwdTest(_EngramGateConvBwdTestWorkload, TestBase):
+class EngramGateConvBwdTest(EngramGateConvBwdWorkload, TestBase):
     def ref_program(self, dY, H, k, v, rms_w_h, rms_w_v, conv_w,
                     vhat, alpha, rrms_h, rrms_k, rrms_v):
         return ref_engram_gate_conv_bwd(
@@ -228,7 +222,7 @@ def engram_decode_step_torch(
     return y_t.to(h_t.dtype), new_conv_state
 
 
-class EngramDecodeTest(_EngramDecodeTestWorkload, TestBase):
+class EngramDecodeTest(EngramDecodeWorkload, TestBase):
     def ref_program(self, e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
         y_ref, state_ref = engram_decode_step_torch(
             e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,

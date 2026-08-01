@@ -22,10 +22,7 @@ Design-first, spec-driven documentation for TileOPs. [`tileops/manifest/`](../ti
 
 ## Performance Guides
 
-Empirical performance guidance lives under [`perf/`](perf/README.md). Each op category has a checklist plus the evidence backing it.
-
-- [perf/elementwise.md](perf/elementwise.md) — elementwise kernel performance checklist
-- [perf/elementwise-evidence.md](perf/elementwise-evidence.md) — reasoning and measurements
+- [perf/trace-timeline.md](perf/trace-timeline.md) — in-kernel timeline tracer: annotate, build, run, and read
 
 ## External
 

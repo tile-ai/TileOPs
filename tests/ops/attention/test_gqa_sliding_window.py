@@ -6,11 +6,11 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupedQueryAttentionSlidingWindowFwdOp
 from workloads.attention.gqa import (
-    GroupedQueryAttentionSlidingWindowFwdTest as _GroupedQueryAttentionSlidingWindowFwdTestWorkload,
+    GroupedQueryAttentionSlidingWindowFwdWorkload,
 )
 
 
-class GroupedQueryAttentionSlidingWindowFwdTest(_GroupedQueryAttentionSlidingWindowFwdTestWorkload, TestBase):
+class GroupedQueryAttentionSlidingWindowFwdTest(GroupedQueryAttentionSlidingWindowFwdWorkload, TestBase):
     def ref_program(
         self,
         q: torch.Tensor,

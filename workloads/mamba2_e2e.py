@@ -1,4 +1,4 @@
-"""End-to-end Mamba-2 SSD forward workload fixtures and test generators.
+"""End-to-end Mamba-2 SSD forward workload fixtures and input generators.
 
 Covers model-scale configurations (130M–2.7B) and workload types
 (latency / serving / throughput / long-context).
@@ -80,7 +80,7 @@ class Mamba2FwdFixture(FixtureBase):
 # WorkloadBase subclass — generates all required input tensors
 # ---------------------------------------------------------------------------
 
-class Mamba2FwdTest(WorkloadBase):
+class Mamba2FwdWorkload(WorkloadBase):
     """Input generator for the Mamba-2 SSD end-to-end forward pass.
 
     Generates tensors matching the interface of Mamba2FwdOp.forward and

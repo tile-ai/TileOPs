@@ -17,7 +17,7 @@ _DTYPE_MAP = {
 }
 
 
-class _BmmFp8BenchmarkWorkload(BmmFp8Workload):
+class BmmFp8BenchmarkWorkload(BmmFp8Workload):
     def torch_fp32_bmm_ref(self, *inputs: torch.Tensor) -> torch.Tensor:
         a, b, scale_a, scale_b = inputs
         if scale_a.dim() != 0 or scale_b.dim() != 0:
@@ -31,7 +31,7 @@ class _BmmFp8BenchmarkWorkload(BmmFp8Workload):
 
 
 def _flashinfer_bmm_fp8_per_tensor_ref(
-    workload: _BmmFp8BenchmarkWorkload, a: torch.Tensor, b_kmajor: torch.Tensor,
+    workload: BmmFp8BenchmarkWorkload, a: torch.Tensor, b_kmajor: torch.Tensor,
     scale_a: torch.Tensor, scale_b: torch.Tensor,
 ) -> torch.Tensor:
 
@@ -103,7 +103,7 @@ def test_bmm_fp8_bench(
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
     out_dtype = torch.bfloat16
-    workload = _BmmFp8BenchmarkWorkload(batch, m, n, k, dtype, out_dtype=out_dtype)
+    workload = BmmFp8BenchmarkWorkload(batch, m, n, k, dtype, out_dtype=out_dtype)
     a, b_kn, scale_a, scale_b = workload.gen_inputs()
     b_nk = b_kn.transpose(-2, -1).contiguous()      # [B, N, K], K-innermost
     b_kmajor = b_nk.transpose(-2, -1)               # [B, K, N] view, zero-copy

@@ -6,10 +6,10 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.mha import MhaDecodeTest as _MhaDecodeTestWorkload
+from workloads.attention.mha import MhaDecodeWorkload
 
 
-class MhaDecodeTest(_MhaDecodeTestWorkload, TestBase):
+class MhaDecodeTest(MhaDecodeWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         q_bhsd = q.transpose(1, 2)  # [B, H, S_q, D]
         k_bhsd = k.transpose(1, 2)  # [B, H, S_kv, D]

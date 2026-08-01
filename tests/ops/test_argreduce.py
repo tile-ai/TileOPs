@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from workloads.reduction import ArgmaxTest as _ArgmaxWorkload
+from workloads.reduction import ArgmaxWorkload
 
 
 def _call(op, x: torch.Tensor) -> torch.Tensor:
@@ -145,7 +145,7 @@ class SpecArgreduceFixture(FixtureBase):
 # TestBase helpers — inherit gen_inputs() from workload classes
 
 
-class ArgreduceTest(_ArgmaxWorkload, TestBase):
+class ArgreduceTest(ArgmaxWorkload, TestBase):
     """Parameterized test helper for argreduce ops."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):

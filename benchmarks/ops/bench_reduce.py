@@ -19,14 +19,14 @@ from tileops.ops.reduction.reduce import (
     VarMeanFwdOp,
 )
 from workloads.reduction import (
-    AmaxTest,
-    AminTest,
-    MeanTest,
-    ProdTest,
-    StdTest,
-    SumTest,
-    VarMeanTest,
-    VarTest,
+    AmaxWorkload,
+    AminWorkload,
+    MeanWorkload,
+    ProdWorkload,
+    StdWorkload,
+    SumWorkload,
+    VarMeanWorkload,
+    VarWorkload,
 )
 
 # Op name constants
@@ -51,7 +51,7 @@ _VAR_MEAN_OP = "VarMeanFwdOp"
 def test_sum_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = SumTest(shape, dtype)
+    test = SumWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)  # baseline below reduces dim=-1
@@ -85,7 +85,7 @@ def test_sum_bench(
 def test_mean_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = MeanTest(shape, dtype)
+    test = MeanWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)  # baseline below mirrors the op's dim
@@ -119,7 +119,7 @@ def test_mean_bench(
 def test_amax_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = AmaxTest(shape, dtype)
+    test = AmaxWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
@@ -153,7 +153,7 @@ def test_amax_bench(
 def test_amin_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = AminTest(shape, dtype)
+    test = AminWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
@@ -182,7 +182,7 @@ def test_amin_bench(
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_PROD_OP))
 def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = ProdTest(shape, dtype)
+    test = ProdWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op = ProdFwdOp(dtype=dtype)
@@ -212,7 +212,7 @@ def test_prod_bench(shape: tuple, dtype: torch.dtype) -> None:
 def test_std_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = StdTest(shape, dtype)
+    test = StdWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
@@ -246,7 +246,7 @@ def test_std_bench(
 def test_var_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = VarTest(shape, dtype)
+    test = VarWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
@@ -280,7 +280,7 @@ def test_var_bench(
 def test_var_mean_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = VarMeanTest(shape, dtype)
+    test = VarMeanWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)

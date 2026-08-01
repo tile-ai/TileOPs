@@ -4,10 +4,10 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import FFTC2COp
-from workloads.fft import FFTTest as _FFTTestWorkload
+from workloads.fft import FFTWorkload
 
 
-class FFTTest(_FFTTestWorkload, TestBase):
+class FFTTest(FFTWorkload, TestBase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return torch.fft.fft(x, dim=-1)
 

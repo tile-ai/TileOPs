@@ -6,10 +6,10 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSAFwdVarlenOp
-from workloads.attention.deepseek import NsaFwdTest as _NsaFwdTestWorkload
+from workloads.attention.deepseek import NsaFwdWorkload
 
 
-class NsaFwdTest(_NsaFwdTestWorkload, TestBase):
+class NsaFwdTest(NsaFwdWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                     block_indices: torch.Tensor, block_counts: torch.Tensor,
                     offsets: torch.Tensor, token_indices: torch.Tensor) -> torch.Tensor:

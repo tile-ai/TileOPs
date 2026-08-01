@@ -10,10 +10,10 @@ from tileops.ops.norm.instance_norm import (
     InstanceNormFwdOp,
     InstanceNormNoAffineFwdOp,
 )
-from workloads.normalization import InstanceNormTest as _InstanceNormTestWorkload
+from workloads.normalization import InstanceNormWorkload
 
 
-class InstanceNormTest(_InstanceNormTestWorkload, TestBase):
+class InstanceNormTest(InstanceNormWorkload, TestBase):
     def ref_program(self, x: torch.Tensor, weight: torch.Tensor,
                     bias: torch.Tensor) -> torch.Tensor:
         return F.instance_norm(

@@ -28,11 +28,11 @@ from tileops.ops import (
     GroupedQueryAttentionPrefillVarlenFwdOp,
 )
 from workloads.attention.gqa import (
-    GQAPrefillFwdTest,
-    GQAPrefillPagedWithKVCacheFwdTest,
-    GQAPrefillVarlenFwdTest,
-    GroupedQueryAttentionBwdTest,
-    GroupedQueryAttentionFwdTest,
+    GQAPrefillFwdWorkload,
+    GQAPrefillPagedWithKVCacheFwdWorkload,
+    GQAPrefillVarlenFwdWorkload,
+    GroupedQueryAttentionBwdWorkload,
+    GroupedQueryAttentionFwdWorkload,
     uniform_packed_prefill_inputs,
 )
 
@@ -42,7 +42,7 @@ _GQA_PREFILL_FWD_OP = "GroupedQueryAttentionPrefillFwdOp"
 _GQA_PREFILL_PAGED_WITH_KV_CACHE_FWD_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
 
 
-class GQAPrefillVarlenFwdBenchmark(BenchmarkBase[GQAPrefillVarlenFwdTest]):
+class GQAPrefillVarlenFwdBenchmark(BenchmarkBase[GQAPrefillVarlenFwdWorkload]):
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
         visible = 0
@@ -61,7 +61,7 @@ class GQAPrefillVarlenFwdBenchmark(BenchmarkBase[GQAPrefillVarlenFwdTest]):
         ) * t.dtype.itemsize + cu_seqlens_size * torch.int32.itemsize
 
 
-def _fa3_gqa_fwd(test: GroupedQueryAttentionFwdTest):
+def _fa3_gqa_fwd(test: GroupedQueryAttentionFwdWorkload):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
         from flash_attn_interface import flash_attn_func
@@ -75,7 +75,7 @@ def _fa3_gqa_fwd(test: GroupedQueryAttentionFwdTest):
     return baseline_fn
 
 
-def _fa3_gqa_bwd(test: GroupedQueryAttentionBwdTest):
+def _fa3_gqa_bwd(test: GroupedQueryAttentionBwdWorkload):
     """Return FA3 backward baseline callable, or None if not installed."""
     try:
         from flash_attn_interface import flash_attn_func
@@ -168,7 +168,7 @@ def _torch_gqa_bwd(test):
     return fn
 
 
-def _torch_gqa_prefill_ref(test: GQAPrefillFwdTest):
+def _torch_gqa_prefill_ref(test: GQAPrefillFwdWorkload):
     """Materialized torch reference for dense prefill with bottom-right causal mask."""
 
     def fn(q, k, v):
@@ -197,7 +197,7 @@ def _torch_gqa_prefill_ref(test: GQAPrefillFwdTest):
     return fn
 
 
-def _torch_gqa_prefill_varlen_ref(test: GQAPrefillVarlenFwdTest):
+def _torch_gqa_prefill_varlen_ref(test: GQAPrefillVarlenFwdWorkload):
     """Materialized torch reference for packed-varlen prefill."""
 
     def fn(q, k, v, cu_seqlens_q, cu_seqlens_kv):
@@ -275,7 +275,7 @@ def test_gqa_fwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GroupedQueryAttentionFwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
+    test = GroupedQueryAttentionFwdWorkload(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
@@ -319,7 +319,7 @@ def test_gqa_bwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GroupedQueryAttentionBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
+    test = GroupedQueryAttentionBwdWorkload(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
@@ -364,7 +364,7 @@ def test_gqa_prefill_fwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GQAPrefillFwdTest(batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, causal, dtype)
+    test = GQAPrefillFwdWorkload(batch, heads, heads_kv, seq_len_q, seq_len_kv, dim, causal, dtype)
     test.sm_scale = sm_scale
     test.softcap = softcap
     inputs = test.gen_inputs()
@@ -453,7 +453,7 @@ def test_gqa_prefill_varlen_fwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GQAPrefillVarlenFwdTest(batch, heads, heads_kv, q_lens, kv_lens, dim, causal, dtype)
+    test = GQAPrefillVarlenFwdWorkload(batch, heads, heads_kv, q_lens, kv_lens, dim, causal, dtype)
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
@@ -468,7 +468,7 @@ def test_gqa_prefill_varlen_fwd_bench(
 
 
 def _fp8_paged_cache_inputs(
-    test: GQAPrefillPagedWithKVCacheFwdTest,
+    test: GQAPrefillPagedWithKVCacheFwdWorkload,
 ) -> tuple[torch.Tensor, ...]:
     q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q = (
         test.gen_inputs()
@@ -527,7 +527,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
             pytest.skip("FP8 paged KV cache benchmark does not support fused RoPE")
     elif cache_dtype is not None and fp8_dtype is None:
         pytest.skip("torch fp8 is unavailable")
-    test = GQAPrefillPagedWithKVCacheFwdTest(
+    test = GQAPrefillPagedWithKVCacheFwdWorkload(
         batch,
         heads,
         heads_kv,

@@ -8,7 +8,7 @@ from tileops.ops.norm.group_norm import (
     GroupNormFwdOp,
     GroupNormNoAffineFwdOp,
 )
-from workloads.normalization import GroupNormTest
+from workloads.normalization import GroupNormWorkload
 
 _OP_NAME = "GroupNormFwdOp"
 _OP_NAME_NO_AFFINE = "GroupNormNoAffineFwdOp"
@@ -40,7 +40,7 @@ _NO_AFFINE_PARAMS = _build_params(load_workloads(_OP_NAME_NO_AFFINE))
                          _AFFINE_PARAMS)
 def test_group_norm_bench(n: int, c: int, spatial: tuple, num_groups: int,
                           dtype: torch.dtype, tune: bool) -> None:
-    test = GroupNormTest(n, c, spatial, num_groups, dtype)
+    test = GroupNormWorkload(n, c, spatial, num_groups, dtype)
     x, weight, bias = test.gen_inputs()
 
     op = GroupNormFwdOp(num_groups=num_groups, tune=tune)
@@ -61,7 +61,7 @@ def test_group_norm_bench(n: int, c: int, spatial: tuple, num_groups: int,
 def test_group_norm_no_affine_bench(n: int, c: int, spatial: tuple,
                                     num_groups: int, dtype: torch.dtype,
                                     tune: bool) -> None:
-    test = GroupNormTest(n, c, spatial, num_groups, dtype)
+    test = GroupNormWorkload(n, c, spatial, num_groups, dtype)
     x, _, _ = test.gen_inputs()
 
     op = GroupNormNoAffineFwdOp(num_groups=num_groups, tune=tune)

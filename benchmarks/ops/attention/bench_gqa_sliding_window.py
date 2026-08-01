@@ -11,7 +11,7 @@ from benchmarks.ops.attention.manifest_params import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionSlidingWindowFwdOp
-from workloads.attention.gqa import GroupedQueryAttentionSlidingWindowFwdTest
+from workloads.attention.gqa import GroupedQueryAttentionSlidingWindowFwdWorkload
 
 _OP_NAME = "GroupedQueryAttentionSlidingWindowFwdOp"
 
@@ -119,7 +119,7 @@ def test_gqa_sliding_window_fwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GroupedQueryAttentionSlidingWindowFwdTest(
+    test = GroupedQueryAttentionSlidingWindowFwdWorkload(
         batch, seq, heads, heads_kv, dim, is_causal, wl, wr, dtype
     )
     inputs = test.gen_inputs()

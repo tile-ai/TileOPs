@@ -29,7 +29,7 @@ def _compute_gqa_square_lse(
     return torch.logsumexp(scores, dim=-1) * math.log2(math.e)
 
 
-class GroupedQueryAttentionBwdTest(WorkloadBase):
+class GroupedQueryAttentionBwdWorkload(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, seq_len: int, dim: int,
                  is_causal: bool, dtype: torch.dtype) -> None:
@@ -87,7 +87,7 @@ class GroupedQueryAttentionBwdTest(WorkloadBase):
         return q, k, v, o, grad_output, lse
 
 
-class GroupedQueryAttentionFwdTest(WorkloadBase):
+class GroupedQueryAttentionFwdWorkload(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, seq_len: int, dim: int,
                  is_causal: bool, dtype: torch.dtype) -> None:
@@ -112,7 +112,7 @@ class GroupedQueryAttentionFwdTest(WorkloadBase):
         return q, k, v
 
 
-class GroupedQueryAttentionDecodeTest(WorkloadBase):
+class GroupedQueryAttentionDecodeWorkload(WorkloadBase):
 
     def __init__(self,
                  batch: int,
@@ -141,7 +141,7 @@ class GroupedQueryAttentionDecodeTest(WorkloadBase):
         return Q, K, V
 
 
-class GroupedQueryAttentionDecodePagedTest(WorkloadBase):
+class GroupedQueryAttentionDecodePagedWorkload(WorkloadBase):
 
     def __init__(self,
                  batch: int,
@@ -186,7 +186,7 @@ class GroupedQueryAttentionDecodePagedTest(WorkloadBase):
         return q, k, v, real_seqlen_kv, block_table
 
 
-class GQAPrefillFwdTest(WorkloadBase):
+class GQAPrefillFwdWorkload(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, seq_len_q: int,
                  seq_len_kv: int, dim: int, is_causal: bool, dtype: torch.dtype) -> None:
@@ -212,7 +212,7 @@ class GQAPrefillFwdTest(WorkloadBase):
         return q, k, v
 
 
-class GQAPrefillVarlenFwdTest(WorkloadBase):
+class GQAPrefillVarlenFwdWorkload(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, q_lens: list[int],
                  kv_lens: list[int], dim: int, is_causal: bool,
@@ -266,7 +266,7 @@ class GQAPrefillVarlenFwdTest(WorkloadBase):
 
 
 
-class GQAPrefillPagedWithKVCacheFwdTest(WorkloadBase):
+class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, q_lens: list[int],
                  cache_lens: list[int], page_size: int, dim: int, is_causal: bool,
@@ -332,7 +332,7 @@ class GQAPrefillPagedWithKVCacheFwdTest(WorkloadBase):
             block_table, self.max_seqlen_q)
 
 
-class GroupedQueryAttentionSlidingWindowFwdTest(WorkloadBase):
+class GroupedQueryAttentionSlidingWindowFwdWorkload(WorkloadBase):
 
     def __init__(
         self,
@@ -366,7 +366,7 @@ class GroupedQueryAttentionSlidingWindowFwdTest(WorkloadBase):
         return q, k, v
 
 
-class GroupedQueryAttentionSlidingWindowVarlenFwdTest(WorkloadBase):
+class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(WorkloadBase):
 
     def __init__(
         self,

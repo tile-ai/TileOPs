@@ -27,7 +27,7 @@ except ImportError:
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoeUnpermuteFwdOp
-from workloads.moe import MoeUnpermuteTest
+from workloads.moe import MoeUnpermuteWorkload
 
 _OP_NAME = "MoeUnpermuteFwdOp"
 
@@ -59,7 +59,7 @@ def _manifest_params():
 )
 def test_moe_unpermute_bench(total_tokens: int, top_k: int, hidden_size: int) -> None:
     dtype = torch.bfloat16
-    test = MoeUnpermuteTest(total_tokens, top_k, hidden_size, dtype)
+    test = MoeUnpermuteWorkload(total_tokens, top_k, hidden_size, dtype)
     mm2_pad, fwd_idx, topk_weights = test.gen_inputs()
 
     # TileOPs

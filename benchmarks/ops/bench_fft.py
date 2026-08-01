@@ -7,12 +7,12 @@ from benchmarks.benchmark_base import (
     workloads_to_params,
 )
 from tileops.ops import FFTC2COp
-from workloads.fft import FFTTest
+from workloads.fft import FFTWorkload
 
 _OP_NAME = "FFTC2COp"
 
 
-class _FFTTestBaseline(FFTTest):
+class FFTTestBaseline(FFTWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -23,7 +23,7 @@ class _FFTTestBaseline(FFTTest):
 def test_fft_bench(shape: tuple, dtype: torch.dtype) -> None:
     n = shape[-1]
     batch_shape = shape[:-1]
-    test = _FFTTestBaseline(n, dtype, batch_shape=batch_shape)
+    test = FFTTestBaseline(n, dtype, batch_shape=batch_shape)
     inputs = test.gen_inputs()
 
     op = FFTC2COp(tune=True)

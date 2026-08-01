@@ -20,7 +20,7 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GatedDeltaNetBwdOp, GatedDeltaNetFwdOp, GatedDeltaNetOp
-from workloads.linear_attention import GatedDeltaNetFwdTest
+from workloads.linear_attention import GatedDeltaNetFwdWorkload
 from workloads.workload_base import FixtureBase
 
 
@@ -143,7 +143,7 @@ def prepare_wy_repr_gated_torch(k, g_cum, beta, chunk_size):
     return a_g_inv, a_g_inv.clone()
 
 
-class _GatedDeltaNetFwdTestBaseline(GatedDeltaNetFwdTest):
+class GatedDeltaNetFwdTestBaseline(GatedDeltaNetFwdWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(
@@ -184,7 +184,7 @@ def _to_fla_layout(q, k, v, g, beta):
 
 # Forward benchmark
 
-class GatedDeltaNetFwdBenchmark(BenchmarkBase[GatedDeltaNetFwdTest]):
+class GatedDeltaNetFwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -225,7 +225,7 @@ def test_gated_deltanet_vs_fla_fwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = GatedDeltaNetFwdBenchmark(test)
     inputs = test.gen_inputs()  # q, k, v, g, beta  (BHSD)
 
@@ -253,7 +253,7 @@ def test_gated_deltanet_vs_fla_fwd(
 
 # Backward benchmark
 
-class GatedDeltaNetBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdTest]):
+class GatedDeltaNetBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -293,7 +293,7 @@ def test_gated_deltanet_vs_fla_bwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = GatedDeltaNetBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
@@ -344,7 +344,7 @@ def test_gated_deltanet_vs_fla_bwd(
 
 # Combined fwd+bwd benchmark (fair comparison: both measure fwd+bwd total)
 
-class GatedDeltaNetFwdBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdTest]):
+class GatedDeltaNetFwdBwdBenchmark(BenchmarkBase[GatedDeltaNetFwdWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -384,7 +384,7 @@ def test_gated_deltanet_vs_fla_fwdbwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = GatedDeltaNetFwdBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size

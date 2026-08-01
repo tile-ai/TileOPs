@@ -5,10 +5,10 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.norm.ada_layer_norm import AdaLayerNormKernel
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
-from workloads.normalization import AdaLayerNormZeroTest as _AdaLayerNormZeroTestWorkload
+from workloads.normalization import AdaLayerNormZeroWorkload
 
 
-class AdaLayerNormZeroTest(_AdaLayerNormZeroTestWorkload, TestBase):
+class AdaLayerNormZeroTest(AdaLayerNormZeroWorkload, TestBase):
     def ref_program(
         self,
         x: torch.Tensor,

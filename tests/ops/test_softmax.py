@@ -19,9 +19,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
-from workloads.reduction import LogSoftmaxTest as _LogSoftmaxTestWorkload
-from workloads.reduction import LogSumExpTest as _LogSumExpTestWorkload
-from workloads.reduction import SoftmaxTest as _SoftmaxTestWorkload
+from workloads.reduction import LogSoftmaxWorkload, LogSumExpWorkload, SoftmaxWorkload
 
 # Tolerances (from docs/design/testing.md)
 
@@ -87,7 +85,7 @@ class SoftmaxFixture(FixtureBase):
     ]
 
 
-class SoftmaxTest(_SoftmaxTestWorkload, TestBase):
+class SoftmaxTest(SoftmaxWorkload, TestBase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.softmax(x.float(), dim=self.dim).to(x.dtype)
 
@@ -225,7 +223,7 @@ class LogSoftmaxFixture(FixtureBase):
     ]
 
 
-class LogSoftmaxTest(_LogSoftmaxTestWorkload, TestBase):
+class LogSoftmaxTest(LogSoftmaxWorkload, TestBase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.log_softmax(x.float(), dim=self.dim).to(x.dtype)
 
@@ -294,7 +292,7 @@ class LogSumExpFixture(FixtureBase):
     ]
 
 
-class LogSumExpTest(_LogSumExpTestWorkload, TestBase):
+class LogSumExpTest(LogSumExpWorkload, TestBase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return torch.logsumexp(x.float(), dim=self.dim).to(x.dtype)
 

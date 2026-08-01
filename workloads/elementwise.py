@@ -8,7 +8,7 @@ import torch
 from workloads.workload_base import WorkloadBase
 
 
-class ReluTest(WorkloadBase):
+class ReluWorkload(WorkloadBase):
 
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total

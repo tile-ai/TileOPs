@@ -16,7 +16,7 @@ import pytest
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.mamba2_fwd import Mamba2FwdOp
 from tileops.testing.mamba2_reference import mamba2_fwd_ref
-from workloads.mamba2_e2e import Mamba2FwdFixture, Mamba2FwdTest
+from workloads.mamba2_e2e import Mamba2FwdFixture, Mamba2FwdWorkload
 
 # Optional mamba_ssm Triton baseline
 try:
@@ -29,7 +29,7 @@ except ImportError:
 
 # FLOPS / memory calculators
 
-class Mamba2FwdBenchmark(BenchmarkBase["Mamba2FwdTest"]):
+class Mamba2FwdBenchmark(BenchmarkBase["Mamba2FwdWorkload"]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -76,7 +76,7 @@ class Mamba2FwdBenchmark(BenchmarkBase["Mamba2FwdTest"]):
 @Mamba2FwdFixture
 def test_mamba2_fwd_bench(batch, seqlen, n_heads, d_head, d_state, n_groups,
                            dtype, chunk_size, dt_softplus, tune):
-    test = Mamba2FwdTest(
+    test = Mamba2FwdWorkload(
         batch, seqlen, n_heads, d_head, d_state, n_groups,
         dtype, chunk_size, dt_softplus,
     )

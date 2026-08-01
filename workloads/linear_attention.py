@@ -5,7 +5,7 @@ import torch
 from workloads.workload_base import WorkloadBase
 
 
-class DeltaNetFwdTest(WorkloadBase):
+class DeltaNetFwdWorkload(WorkloadBase):
 
     def __init__(
         self,
@@ -34,7 +34,7 @@ class DeltaNetFwdTest(WorkloadBase):
         return q, k, v, beta
 
 
-class DeltaNetDecodeTest(WorkloadBase):
+class DeltaNetDecodeWorkload(WorkloadBase):
 
     def __init__(
         self,
@@ -60,7 +60,7 @@ class DeltaNetDecodeTest(WorkloadBase):
         return q, k, v, beta, state
 
 
-class GLADecodeTest(WorkloadBase):
+class GLADecodeWorkload(WorkloadBase):
 
     def __init__(
         self,
@@ -88,7 +88,7 @@ class GLADecodeTest(WorkloadBase):
         return q, k, v, gk, state
 
 
-class GatedDeltaNetFwdTest(WorkloadBase):
+class GatedDeltaNetFwdWorkload(WorkloadBase):
 
     def __init__(
         self,
@@ -118,7 +118,7 @@ class GatedDeltaNetFwdTest(WorkloadBase):
         return q, k, v, g, beta
 
 
-class GatedDeltaNetPrefillFwdTest(GatedDeltaNetFwdTest):
+class GatedDeltaNetPrefillFwdWorkload(GatedDeltaNetFwdWorkload):
     """Inference prefill workload for Gated DeltaNet."""
 
     def __init__(
@@ -159,7 +159,7 @@ class GatedDeltaNetPrefillFwdTest(GatedDeltaNetFwdTest):
         return q, k, v, g, beta
 
 
-class GatedDeltaNetDecodeTest(WorkloadBase):
+class GatedDeltaNetDecodeWorkload(WorkloadBase):
 
     def __init__(
         self,

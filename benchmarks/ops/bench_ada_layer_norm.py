@@ -6,7 +6,7 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
-from workloads.normalization import AdaLayerNormTest, AdaLayerNormZeroTest
+from workloads.normalization import AdaLayerNormWorkload, AdaLayerNormZeroWorkload
 
 _ADA_OP_NAME = "AdaLayerNormFwdOp"
 _ADA_ZERO_OP_NAME = "AdaLayerNormZeroFwdOp"
@@ -26,7 +26,7 @@ def _to_params(workloads):
 
 @pytest.mark.parametrize("m, n, dtype", _to_params(load_workloads(_ADA_OP_NAME)))
 def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
-    test = AdaLayerNormTest(m, n, dtype)
+    test = AdaLayerNormWorkload(m, n, dtype)
     inputs = test.gen_inputs()
 
     op = AdaLayerNormFwdOp(dtype=dtype)
@@ -45,7 +45,7 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("m, n, dtype", _to_params(load_workloads(_ADA_ZERO_OP_NAME)))
 def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
-    test = AdaLayerNormZeroTest(m, n, dtype)
+    test = AdaLayerNormZeroWorkload(m, n, dtype)
     inputs = test.gen_inputs()
 
     op = AdaLayerNormZeroFwdOp(dtype=dtype)

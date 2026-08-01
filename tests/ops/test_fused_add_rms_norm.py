@@ -3,10 +3,10 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
-from workloads.normalization import FusedAddRMSNormTest as _FusedAddRMSNormTestWorkload
+from workloads.normalization import FusedAddRMSNormWorkload
 
 
-class FusedAddRMSNormTest(_FusedAddRMSNormTestWorkload, TestBase):
+class FusedAddRMSNormTest(FusedAddRMSNormWorkload, TestBase):
     def ref_program(
         self,
         x: torch.Tensor,

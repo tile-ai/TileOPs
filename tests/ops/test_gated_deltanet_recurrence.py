@@ -8,7 +8,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.gated_deltanet_recurrence import GatedDeltaNetDecodeRawCudaFlaStyleKernel
 from tileops.ops import GatedDeltaNetDecodeOp
 from workloads.linear_attention import (
-    GatedDeltaNetDecodeTest as _GatedDeltaNetDecodeTestWorkload,
+    GatedDeltaNetDecodeWorkload,
 )
 
 
@@ -42,7 +42,7 @@ def gated_deltanet_decode_torch(
     return o, new_state
 
 
-class GatedDeltaNetDecodeTest(_GatedDeltaNetDecodeTestWorkload, TestBase):
+class GatedDeltaNetDecodeTest(GatedDeltaNetDecodeWorkload, TestBase):
     def ref_program(
         self,
         q: torch.Tensor,

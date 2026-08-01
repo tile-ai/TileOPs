@@ -9,7 +9,7 @@ from workloads.nsa_utils import prepare_chunk_offsets, prepare_token_indices
 from workloads.workload_base import WorkloadBase
 
 
-class NsaFwdTest(WorkloadBase):
+class NsaFwdWorkload(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, c_seq_len: int, dim: int, is_causal: bool,
                  scale: float, block_size: int, groups: int, selected_blocks: int,
@@ -217,7 +217,7 @@ class NsaFwdTest(WorkloadBase):
         return o_slc.to(dtype) + o_swa.to(dtype) if o_swa is not None else o_slc.to(dtype)
 
 
-class NsaCmpFwdTest(WorkloadBase):
+class NsaCmpFwdWorkload(WorkloadBase):
 
     def __init__(self, seq_num: int, c_seq_len: int, heads: int, dim_k: int, dim_v: int,
                  group: int, scale: float, bc: int, bs: int, bk: int, bv: int,
@@ -269,7 +269,7 @@ class NsaCmpFwdTest(WorkloadBase):
         )
 
 
-class NsaTopkTest(WorkloadBase):
+class NsaTopkWorkload(WorkloadBase):
 
     def __init__(self, seq_num: int, c_seq_len: int, heads: int, dim: int, group: int,
                  scale: float, selected_block_num: int, bc: int, bs: int, bk: int,
@@ -329,7 +329,7 @@ class NsaTopkTest(WorkloadBase):
         )
 
 
-class MlaDecodeTest(WorkloadBase):
+class MlaDecodeWorkload(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                  dim_pe: int, dtype: torch.dtype) -> None:
@@ -361,7 +361,7 @@ class MlaDecodeTest(WorkloadBase):
         return Q, Q_pe, K, K_pe
 
 
-class DsaDecodeTest(WorkloadBase):
+class DsaDecodeWorkload(WorkloadBase):
 
     def __init__(self, batch: int, heads: int, seq_len: int, seq_len_kv: int, dim: int,
                  dim_tail: int, topk: int, stride_kv: int, heads_kv: int, q_start_index_s: int,

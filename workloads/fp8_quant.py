@@ -3,7 +3,7 @@ import torch
 from workloads.workload_base import WorkloadBase
 
 
-class FP8QuantTest(WorkloadBase):
+class FP8QuantWorkload(WorkloadBase):
 
     def __init__(self, batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
                  in_dtype: torch.dtype):

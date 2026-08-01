@@ -15,14 +15,14 @@ from benchmarks.benchmark_base import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import FP8QuantOp
-from workloads.fp8_quant import FP8QuantTest
+from workloads.fp8_quant import FP8QuantWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
 _TUNE = True
 
 
-class _FP8QuantTestBaseline(FP8QuantTest):
+class FP8QuantTestBaseline(FP8QuantWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -44,7 +44,7 @@ _FP8_QUANT_PARAMS = workload_field_params(
 @pytest.mark.parametrize("batch, seq_len_kv, kv_group, index_dim, in_dtype", _FP8_QUANT_PARAMS)
 def test_fp8_quant_bench(batch: int, seq_len_kv: int, kv_group: int, index_dim: int,
                          in_dtype: torch.dtype) -> None:
-    test = _FP8QuantTestBaseline(batch, seq_len_kv, kv_group, index_dim, in_dtype)
+    test = FP8QuantTestBaseline(batch, seq_len_kv, kv_group, index_dim, in_dtype)
     inputs = test.gen_inputs()
 
     op = FP8QuantOp(tune=_TUNE)

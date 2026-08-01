@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import DeltaNetFwdOp
-from workloads.linear_attention import DeltaNetFwdTest as _DeltaNetFwdTestWorkload
+from workloads.linear_attention import DeltaNetFwdWorkload
 
 
 def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):
@@ -73,7 +73,7 @@ def prepare_wy_repr_deltanet_torch(k, beta, chunk_size):
     return Aw, Au
 
 
-class DeltaNetFwdTest(_DeltaNetFwdTestWorkload, TestBase):
+class DeltaNetFwdTest(DeltaNetFwdWorkload, TestBase):
     def ref_program(
         self,
         q: torch.Tensor,

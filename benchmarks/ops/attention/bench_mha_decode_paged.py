@@ -8,12 +8,12 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params, mha_decode_paged_args
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.mha import MhaDecodePagedTest
+from workloads.attention.mha import MhaDecodePagedWorkload
 
 _OP_NAME = "MultiHeadAttentionDecodePagedWithKVCacheFwdOp"
 
 
-class _MhaDecodePagedTestBaseline(MhaDecodePagedTest):
+class MhaDecodePagedTestBaseline(MhaDecodePagedWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -128,7 +128,7 @@ _MHA_DECODE_PAGED_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mha_d
 def test_mha_decode_paged_bench(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int,
                                 page_size: int, is_causal: bool, dtype: torch.dtype,
                                 tune: bool) -> None:
-    test = _MhaDecodePagedTestBaseline(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
+    test = MhaDecodePagedTestBaseline(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 

@@ -30,7 +30,7 @@ from tileops.ops import (
 _TUNE = True
 
 
-class _ConvWorkload:
+class ConvWorkload:
     """Minimal shape/dtype descriptor for the convolution family.
 
     Holds ``shape`` and ``dtype`` so :class:`ManifestBenchmark` can call
@@ -165,7 +165,7 @@ def test_conv1d_bench(
         stride=stride, padding=padding,
         dilation=dilation, groups=groups, tune=_TUNE,
     )
-    bm = ManifestBenchmark(_CONV1D_OP, op, _ConvWorkload(input_shape, dtype))
+    bm = ManifestBenchmark(_CONV1D_OP, op, ConvWorkload(input_shape, dtype))
     _profile_conv(
         op, bm, inputs, _torch_conv_baseline(F.conv1d, stride, padding, dilation, groups),
         {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,
@@ -197,7 +197,7 @@ def test_conv1d_bias_bench(
         stride=stride, padding=padding,
         dilation=dilation, groups=groups, tune=_TUNE,
     )
-    bm = ManifestBenchmark(_CONV1D_BIAS_OP, op, _ConvWorkload(input_shape, dtype))
+    bm = ManifestBenchmark(_CONV1D_BIAS_OP, op, ConvWorkload(input_shape, dtype))
     _profile_conv(
         op, bm, inputs, _torch_conv_baseline(F.conv1d, stride, padding, dilation, groups),
         {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,
@@ -232,7 +232,7 @@ def test_conv2d_bench(
         stride=stride, padding=padding,
         dilation=dilation, groups=groups, tune=_TUNE,
     )
-    bm = ManifestBenchmark(_CONV2D_OP, op, _ConvWorkload(input_shape, dtype))
+    bm = ManifestBenchmark(_CONV2D_OP, op, ConvWorkload(input_shape, dtype))
     _profile_conv(
         op, bm, inputs, _torch_conv_baseline(F.conv2d, stride, padding, dilation, groups),
         {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,
@@ -264,7 +264,7 @@ def test_conv2d_bias_bench(
         stride=stride, padding=padding,
         dilation=dilation, groups=groups, tune=_TUNE,
     )
-    bm = ManifestBenchmark(_CONV2D_BIAS_OP, op, _ConvWorkload(input_shape, dtype))
+    bm = ManifestBenchmark(_CONV2D_BIAS_OP, op, ConvWorkload(input_shape, dtype))
     _profile_conv(
         op, bm, inputs, _torch_conv_baseline(F.conv2d, stride, padding, dilation, groups),
         {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,
@@ -299,7 +299,7 @@ def test_conv3d_bench(
         stride=stride, padding=padding,
         dilation=dilation, groups=groups, tune=_TUNE,
     )
-    bm = ManifestBenchmark(_CONV3D_OP, op, _ConvWorkload(input_shape, dtype))
+    bm = ManifestBenchmark(_CONV3D_OP, op, ConvWorkload(input_shape, dtype))
     _profile_conv(
         op, bm, inputs, _torch_conv_baseline(F.conv3d, stride, padding, dilation, groups),
         {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,
@@ -331,7 +331,7 @@ def test_conv3d_bias_bench(
         stride=stride, padding=padding,
         dilation=dilation, groups=groups, tune=_TUNE,
     )
-    bm = ManifestBenchmark(_CONV3D_BIAS_OP, op, _ConvWorkload(input_shape, dtype))
+    bm = ManifestBenchmark(_CONV3D_BIAS_OP, op, ConvWorkload(input_shape, dtype))
     _profile_conv(
         op, bm, inputs, _torch_conv_baseline(F.conv3d, stride, padding, dilation, groups),
         {"input_shape": input_shape, "c_out": c_out, "kernel_size": kernel_size,

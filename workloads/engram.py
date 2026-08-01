@@ -5,7 +5,7 @@ from workloads.workload_base import WorkloadBase
 CONV_KERNEL_SIZE = 4
 
 
-class EngramGateConvFwdTest(WorkloadBase):
+class EngramGateConvFwdWorkload(WorkloadBase):
     def __init__(self, M, seq_len, d, dtype, eps=1e-6):
         self.M = M
         self.seq_len = seq_len
@@ -23,7 +23,7 @@ class EngramGateConvFwdTest(WorkloadBase):
         return H, k, v, rms_w_h, rms_w_v, conv_w
 
 
-class EngramGateConvBwdTest(WorkloadBase):
+class EngramGateConvBwdWorkload(WorkloadBase):
     def __init__(self, M, seq_len, d, dtype, eps=1e-6):
         self.M = M
         self.seq_len = seq_len
@@ -64,7 +64,7 @@ class EngramGateConvBwdTest(WorkloadBase):
                 vhat, alpha_squeezed, rrms_h, rrms_k, rrms_v)
 
 
-class EngramDecodeTest(WorkloadBase):
+class EngramDecodeWorkload(WorkloadBase):
     def __init__(self, batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, eps=1e-6):
         self.batch = batch
         self.d_mem = d_mem

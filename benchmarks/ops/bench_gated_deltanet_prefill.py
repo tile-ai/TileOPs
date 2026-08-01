@@ -24,7 +24,7 @@ from benchmarks.ops.bench_gated_deltanet import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import GatedDeltaNetPrefillFwdOp
-from workloads.linear_attention import GatedDeltaNetPrefillFwdTest
+from workloads.linear_attention import GatedDeltaNetPrefillFwdWorkload
 
 _OP_NAME = "GatedDeltaNetPrefillFwdOp"
 _TORCH_FALLBACK_MAX_SEQ_LEN = 4096
@@ -36,7 +36,7 @@ except ImportError:
     chunk_gated_delta_rule = None
 
 
-class _GatedDeltaNetPrefillFwdTestBaseline(GatedDeltaNetPrefillFwdTest):
+class GatedDeltaNetPrefillFwdTestBaseline(GatedDeltaNetPrefillFwdWorkload):
     """Adds a pure-torch fallback baseline for benchmark profiling."""
 
     def ref_program(
@@ -184,7 +184,7 @@ def test_gated_deltanet_prefill_fwd_bench(
             f"S <= {_TORCH_FALLBACK_MAX_SEQ_LEN}"
         )
 
-    test = _GatedDeltaNetPrefillFwdTestBaseline(
+    test = GatedDeltaNetPrefillFwdTestBaseline(
         batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype, layout=layout
     )
     inputs = test.gen_inputs()

@@ -10,8 +10,7 @@ import tileops.ops.attention.gqa as gqa_module
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
-from workloads.attention.mha import MhaBwdTest as _MhaBwdTestWorkload
-from workloads.attention.mha import MhaFwdTest as _MhaFwdTestWorkload
+from workloads.attention.mha import MhaBwdWorkload, MhaFwdWorkload
 
 
 class _FakeDenseKernel(Kernel):
@@ -33,7 +32,7 @@ class _FakeLegacyMhaBwdKernel(Kernel):
         return None
 
 
-class MhaBwdTest(_MhaBwdTestWorkload, TestBase):
+class MhaBwdTest(MhaBwdWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
                     grad_output: torch.Tensor,
                     lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -49,7 +48,7 @@ class MhaBwdTest(_MhaBwdTestWorkload, TestBase):
         return q.grad, k.grad, v.grad
 
 
-class MhaFwdTest(_MhaFwdTestWorkload, TestBase):
+class MhaFwdTest(MhaFwdWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor,
                     v: torch.Tensor) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]

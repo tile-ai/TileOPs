@@ -8,11 +8,10 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MHCPostOp, MHCPreOp
-from workloads.mhc import MHCPostTest as _MHCPostTestWorkload
-from workloads.mhc import MHCPreTest as _MHCPreTestWorkload
+from workloads.mhc import MHCPostWorkload, MHCPreWorkload
 
 
-class MHCPreTest(_MHCPreTestWorkload, TestBase):
+class MHCPreTest(MHCPreWorkload, TestBase):
     def ref_program(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor,
                     alpha_pre, alpha_post, alpha_res,
                     sinkhorn_repeat: int, eps: float) -> tuple[torch.Tensor, torch.Tensor]:
@@ -90,7 +89,7 @@ def test_mhc_pre_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
     test.check(op, *test.gen_inputs(), compare=_cosine_compare)
 
 
-class MHCPostTest(_MHCPostTestWorkload, TestBase):
+class MHCPostTest(MHCPostWorkload, TestBase):
     def ref_program(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,
                     x_res: torch.Tensor) -> torch.Tensor:
         batch = self.batch

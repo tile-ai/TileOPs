@@ -23,7 +23,7 @@ except ImportError:
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteAlignFwdOp
-from workloads.moe import MoePermuteAlignTest
+from workloads.moe import MoePermuteAlignWorkload
 
 _OP_NAME = "MoePermuteAlignFwdOp"
 
@@ -163,7 +163,7 @@ def test_permute_align_bench(
     total_tokens: int, top_k: int, num_experts: int, block_size: int
 ) -> None:
     numel = total_tokens * top_k
-    test = MoePermuteAlignTest(total_tokens, top_k, num_experts, block_size)
+    test = MoePermuteAlignWorkload(total_tokens, top_k, num_experts, block_size)
     inputs = test.gen_inputs()
 
     # TileOPs

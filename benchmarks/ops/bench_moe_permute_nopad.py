@@ -24,7 +24,7 @@ except ImportError:
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteNopadFwdOp
-from workloads.moe import MoePermuteTest as MoePermuteNopadWorkload
+from workloads.moe import MoePermuteWorkload
 
 _OP_NAME = "MoePermuteNopadFwdOp"
 
@@ -61,7 +61,7 @@ def test_moe_permute_nopad_bench(
     total_tokens: int, top_k: int, num_experts: int, hidden_size: int
 ) -> None:
     dtype = torch.bfloat16
-    workload = MoePermuteNopadWorkload(total_tokens, top_k, num_experts, hidden_size, dtype)
+    workload = MoePermuteWorkload(total_tokens, top_k, num_experts, hidden_size, dtype)
     torch.manual_seed(42)
     hidden_states, topk_ids = workload.gen_inputs()
 

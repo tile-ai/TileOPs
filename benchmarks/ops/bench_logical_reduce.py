@@ -9,7 +9,7 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
-from workloads.reduction import AllTest, AnyTest, CountNonzeroTest
+from workloads.reduction import AllWorkload, AnyWorkload, CountNonzeroWorkload
 
 # Op name constants
 
@@ -28,7 +28,7 @@ _COUNT_NONZERO_OP = "CountNonzeroFwdOp"
 def test_any_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = AnyTest(shape, dtype)
+    test = AnyWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
@@ -62,7 +62,7 @@ def test_any_bench(
 def test_all_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = AllTest(shape, dtype)
+    test = AllWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
@@ -96,7 +96,7 @@ def test_all_bench(
 def test_count_nonzero_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = CountNonzeroTest(shape, dtype)
+    test = CountNonzeroWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)

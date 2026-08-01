@@ -10,11 +10,11 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.attention.mha import (
-    MhaDecodePagedTest as _MhaDecodePagedTestWorkload,
+    MhaDecodePagedWorkload,
 )
 
 
-class MhaDecodePagedTest(_MhaDecodePagedTestWorkload, TestBase):
+class MhaDecodePagedTest(MhaDecodePagedWorkload, TestBase):
 
     def _maxdiff_cosine_compare(self, output: torch.Tensor, output_ref: torch.Tensor, atol: float = 0.001) -> None:
         """Compare using max-diff and cosine similarity."""

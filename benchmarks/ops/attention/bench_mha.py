@@ -7,15 +7,15 @@ from benchmarks.ops.attention.manifest_params import manifest_params, mha_qkv_ar
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionFwdOp
 from workloads.attention.mha import (
-    MhaBwdTest,
-    MhaFwdTest,
+    MhaBwdWorkload,
+    MhaFwdWorkload,
 )
 
 _MHA_FWD_OP = "MultiHeadAttentionFwdOp"
 _MHA_BWD_OP = "MultiHeadAttentionBwdOp"
 
 
-def _fa3_mha_fwd(test: MhaFwdTest):
+def _fa3_mha_fwd(test: MhaFwdWorkload):
     """Return FA3 forward baseline callable, or None if not installed."""
     try:
         from flash_attn_interface import flash_attn_func
@@ -29,7 +29,7 @@ def _fa3_mha_fwd(test: MhaFwdTest):
     return baseline_fn
 
 
-def _fa3_mha_bwd(test: MhaBwdTest):
+def _fa3_mha_bwd(test: MhaBwdWorkload):
     """Return FA3 backward baseline callable, or None if not installed."""
     try:
         from flash_attn_interface import flash_attn_func
@@ -49,7 +49,7 @@ def _fa3_mha_bwd(test: MhaBwdTest):
     return baseline_fn
 
 
-def _flashinfer_mha_fwd(test: MhaFwdTest, q, k, v):
+def _flashinfer_mha_fwd(test: MhaFwdWorkload, q, k, v):
     """Set up FlashInfer batched prefill wrapper. Returns callable or None."""
     try:
         from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper
@@ -107,7 +107,7 @@ _MHA_FWD_BENCH_PARAMS = manifest_params(load_workloads(_MHA_FWD_OP), mha_qkv_arg
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", _MHA_FWD_BENCH_PARAMS)
 def test_mha_fwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
                        dtype: torch.dtype, tune: bool) -> None:
-    test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
+    test = MhaFwdWorkload(batch, heads, seq_len, dim, causal, dtype)
     inputs = test.gen_inputs()
 
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
@@ -136,7 +136,7 @@ _MHA_BWD_BENCH_PARAMS = manifest_params(load_workloads(_MHA_BWD_OP), mha_qkv_arg
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", _MHA_BWD_BENCH_PARAMS)
 def test_mha_bwd_bench(batch: int, seq_len: int, heads: int, dim: int, causal: bool,
                        dtype: torch.dtype, tune: bool) -> None:
-    test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)
+    test = MhaBwdWorkload(batch, heads, seq_len, dim, causal, dtype)
     inputs = test.gen_inputs()
 
     op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)

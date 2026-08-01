@@ -31,7 +31,7 @@ class WorkloadBase(ABC):
         raise NotImplementedError
 
 
-class RandnTest(WorkloadBase):
+class RandnWorkload(WorkloadBase):
     """Workload base for ops whose inputs are generated via ``torch.randn``."""
 
     def __init__(self, shape: tuple, dtype: torch.dtype):

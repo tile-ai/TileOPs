@@ -1,5 +1,5 @@
 # Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
-# Licensed under the MIT License; see THIRD_PARTY_NOTICES.md for details.
+# Licensed under the MIT License.
 # Adapted and modified for TileOps GatedDeltaNet prefill integration.
 
 import functools
