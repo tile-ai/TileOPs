@@ -1,4 +1,4 @@
-"""End-to-end Mamba-2 SSD forward workload fixtures and test generators.
+"""End-to-end Mamba-2 SSD forward workload fixtures and input generators.
 
 Covers model-scale configurations (130M–2.7B) and workload types
 (latency / serving / throughput / long-context).
