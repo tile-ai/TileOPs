@@ -270,3 +270,39 @@ class MaxPoolWorkload(WorkloadBase):
             x = x.transpose(-2, -1).contiguous().transpose(-2, -1)
             assert not x.is_contiguous()
         return (x,)
+
+
+class AdaptivePool2dWorkload(WorkloadBase):
+    """One NCHW tensor for the adaptive 2D pool family.
+
+    ``output_size`` shapes no input; it rides along because the op and both
+    oracles need it, and PyTorch's scalar-``None`` spelling is normalised here
+    so neither stage repeats the rule.
+    """
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        h_in: int,
+        w_in: int,
+        output_size: int | None | tuple[int | None, int | None],
+        dtype: torch.dtype,
+    ) -> None:
+        self.n = n
+        self.c_in = c_in
+        self.h_in = h_in
+        self.w_in = w_in
+        self.output_size = output_size
+        self.dtype = dtype
+
+    @property
+    def torch_output_size(self) -> tuple[int | None, int | None] | int | tuple[int, int]:
+        """torch 2.10 rejects a scalar ``None``; ``(None, None)`` is the same."""
+        return (None, None) if self.output_size is None else self.output_size
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        x = torch.randn(
+            self.n, self.c_in, self.h_in, self.w_in, device="cuda", dtype=self.dtype
+        ).contiguous()
+        return (x,)

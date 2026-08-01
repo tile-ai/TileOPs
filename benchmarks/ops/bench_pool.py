@@ -30,6 +30,7 @@ from tileops.ops import (
     MaxPool3dIndicesFwdOp,
 )
 from workloads.pool import (
+    AdaptivePool2dWorkload,
     AvgPool1dBenchCase,
     AvgPool2dBenchCase,
     AvgPool3dBenchCase,
@@ -795,61 +796,19 @@ def test_max_pool3d_indices_bench(
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
-class AdaptiveAvgPool2dBenchCase:
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        output_size: tuple[int, int],
-        dtype: torch.dtype,
-    ) -> None:
-        self.n = n
-        self.c_in = c_in
-        self.h_in = h_in
-        self.w_in = w_in
-        self.output_size = output_size
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(
-            self.n, self.c_in, self.h_in, self.w_in, device="cuda", dtype=self.dtype
-        ).contiguous()
-        return (x,)
-
+class _AdaptiveAvgPool2dBenchCase(AdaptivePool2dWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return F.adaptive_avg_pool2d(x, self.output_size)
+        return F.adaptive_avg_pool2d(x, self.torch_output_size)
 
 
-class AdaptiveMaxPool2dBenchCase:
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        output_size: tuple[int, int],
-        dtype: torch.dtype,
-        return_indices: bool = False,
-    ) -> None:
-        self.n = n
-        self.c_in = c_in
-        self.h_in = h_in
-        self.w_in = w_in
-        self.output_size = output_size
-        self.dtype = dtype
+class _AdaptiveMaxPool2dBenchCase(AdaptivePool2dWorkload):
+    def __init__(self, *args, return_indices: bool = False, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
         self.return_indices = return_indices
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(
-            self.n, self.c_in, self.h_in, self.w_in, device="cuda", dtype=self.dtype
-        ).contiguous()
-        return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         return F.adaptive_max_pool2d(
-            x, self.output_size, return_indices=self.return_indices
+            x, self.torch_output_size, return_indices=self.return_indices
         )
 
 
@@ -889,7 +848,7 @@ def test_adaptive_avg_pool2d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = AdaptiveAvgPool2dBenchCase(n, c_in, h_in, w_in, output_size, dtype)
+    test = _AdaptiveAvgPool2dBenchCase(n, c_in, h_in, w_in, output_size, dtype)
     inputs = test.gen_inputs()
 
     op = AdaptiveAvgPool2dFwdOp(output_size=output_size, tune=tune)
@@ -914,7 +873,7 @@ def test_adaptive_max_pool2d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = AdaptiveMaxPool2dBenchCase(n, c_in, h_in, w_in, output_size, dtype)
+    test = _AdaptiveMaxPool2dBenchCase(n, c_in, h_in, w_in, output_size, dtype)
     inputs = test.gen_inputs()
 
     op = AdaptiveMaxPool2dFwdOp(output_size=output_size, tune=tune)
@@ -939,7 +898,7 @@ def test_adaptive_max_pool2d_indices_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = AdaptiveMaxPool2dBenchCase(
+    test = _AdaptiveMaxPool2dBenchCase(
         n, c_in, h_in, w_in, output_size, dtype, return_indices=True
     )
     inputs = test.gen_inputs()

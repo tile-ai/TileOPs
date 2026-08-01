@@ -38,7 +38,7 @@ from tileops.ops import (
     MaxPool3dFwdOp,
     MaxPool3dIndicesFwdOp,
 )
-from workloads.pool import AvgPoolWorkload, MaxPoolWorkload
+from workloads.pool import AdaptivePool2dWorkload, AvgPoolWorkload, MaxPoolWorkload
 
 
 class _DummyKernel(Kernel):
@@ -1760,45 +1760,20 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
     ]
 
 
-class AdaptiveAvgPool2dTest(TestBase):
-    def __init__(
-        self,
-        output_size: int | None | tuple[int | None, int | None],
-        dtype: torch.dtype,
-    ) -> None:
-        self.output_size = output_size
-        self.dtype = dtype
 
-    def gen_inputs(self, *shape: int) -> tuple[torch.Tensor]:
-        x = torch.randn(*shape, device="cuda", dtype=self.dtype).contiguous()
-        return (x,)
-
+class AdaptiveAvgPool2dTest(AdaptivePool2dWorkload, TestBase):
     def ref_program(self, input: torch.Tensor) -> torch.Tensor:
-        # torch 2.10 rejects scalar None; (None, None) is the same semantics.
-        output_size = (None, None) if self.output_size is None else self.output_size
-        return F.adaptive_avg_pool2d(input, output_size)
+        return F.adaptive_avg_pool2d(input, self.torch_output_size)
 
 
-class AdaptiveMaxPool2dTest(TestBase):
-    def __init__(
-        self,
-        output_size: int | None | tuple[int | None, int | None],
-        dtype: torch.dtype,
-        return_indices: bool,
-    ) -> None:
-        self.output_size = output_size
-        self.dtype = dtype
+class AdaptiveMaxPool2dTest(AdaptivePool2dWorkload, TestBase):
+    def __init__(self, *args, return_indices: bool, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
         self.return_indices = return_indices
 
-    def gen_inputs(self, *shape: int) -> tuple[torch.Tensor]:
-        x = torch.randn(*shape, device="cuda", dtype=self.dtype).contiguous()
-        return (x,)
-
     def ref_program(self, input: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        # torch 2.10 rejects scalar None; (None, None) is the same semantics.
-        output_size = (None, None) if self.output_size is None else self.output_size
         return F.adaptive_max_pool2d(
-            input, output_size, return_indices=self.return_indices
+            input, self.torch_output_size, return_indices=self.return_indices
         )
 
 
@@ -1812,10 +1787,10 @@ def test_adaptive_avg_pool2d(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = AdaptiveAvgPool2dTest(output_size, dtype)
+    test = AdaptiveAvgPool2dTest(n, c_in, h_in, w_in, output_size, dtype)
     op = AdaptiveAvgPool2dFwdOp(output_size, tune=tune)
     atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
-    test.check(op, *test.gen_inputs(n, c_in, h_in, w_in), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
     assert isinstance(op.kernel, AdaptiveAvgPool2dKernel)
 
 
@@ -1831,12 +1806,14 @@ def test_adaptive_max_pool2d(
 ) -> None:
     # Exercise both the plain and the return_indices op on the same config.
     for return_indices in (False, True):
-        test = AdaptiveMaxPool2dTest(output_size, dtype, return_indices)
+        test = AdaptiveMaxPool2dTest(
+            n, c_in, h_in, w_in, output_size, dtype, return_indices=return_indices
+        )
         op_cls = (
             AdaptiveMaxPool2dIndicesFwdOp if return_indices else AdaptiveMaxPool2dFwdOp
         )
         op = op_cls(output_size, tune=tune)
-        test.check(op, *test.gen_inputs(n, c_in, h_in, w_in), atol=0, rtol=0)
+        test.check(op, *test.gen_inputs(), atol=0, rtol=0)
         expected_kernel = (
             AdaptiveMaxPool2dWithIndicesKernel if return_indices else AdaptiveMaxPool2dKernel
         )

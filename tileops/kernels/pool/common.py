@@ -89,3 +89,24 @@ def pool_output_dim(
         out -= 1
 
     return max(out, 0)
+
+
+def adaptive_bin(o, size_in: int, size_out: int):
+    """Half-open input range `[start, end)` feeding output index ``o``.
+
+    PyTorch partitions each spatial axis as
+    ``[floor(o*in/out), ceil((o+1)*in/out))``. Bins are never empty, including
+    when ``size_out > size_in``. Evaluated while tracing, so the emitted
+    expression is the same as writing the arithmetic inline.
+    """
+    return (o * size_in) // size_out, ((o + 1) * size_in + size_out - 1) // size_out
+
+
+def max_adaptive_bin_extent(size_in: int, size_out: int) -> int:
+    """Widest bin on this axis — a compile-time bound for a `T.serial` loop.
+
+    `ceil(in/out)` is not a valid bound: in=55/out=7 has a bin of 9 against
+    ceil = 8, and expanding in=8/out=12 gives bins of 2 against 1.
+    """
+    extents = (adaptive_bin(o, size_in, size_out) for o in range(size_out))
+    return max(end - start for start, end in extents)

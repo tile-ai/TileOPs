@@ -8,6 +8,8 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
+from .common import adaptive_bin, max_adaptive_bin_extent
+
 __all__ = ["AdaptiveAvgPool2dKernel"]
 
 
@@ -23,18 +25,10 @@ def _adaptive_avg_pool2d_kernel(
 ):
     accum_dtype = "float"
     total_output = n * c_in * out_h * out_w
-    # Static upper bounds for the adaptive bin extents (compile-time constants;
-    # TileLang rejects dynamic T.serial bounds). Note ceil(in/out) alone is NOT
-    # a valid bound: e.g. in=55/out=7 has a bin of 9 > ceil(55/7) = 8, and
-    # expansion in=8/out=12 has bins of 2 > 1.
-    max_kh = max(
-        ((o + 1) * h_in + out_h - 1) // out_h - (o * h_in) // out_h
-        for o in range(out_h)
-    )
-    max_kw = max(
-        ((o + 1) * w_in + out_w - 1) // out_w - (o * w_in) // out_w
-        for o in range(out_w)
-    )
+    # TileLang rejects dynamic T.serial bounds, so the loops below need these
+    # as compile-time constants.
+    max_kh = max_adaptive_bin_extent(h_in, out_h)
+    max_kw = max_adaptive_bin_extent(w_in, out_w)
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _adaptive_avg_pool2d_func(block_m: int, threads: int):
@@ -54,13 +48,8 @@ def _adaptive_avg_pool2d_kernel(
                         c_idx = channel_batch_idx % c_in
                         batch = channel_batch_idx // c_in
 
-                        # PyTorch adaptive bins partition each spatial axis as
-                        # [floor(o*in/out), ceil((o+1)*in/out)); bins are always
-                        # non-empty, including output_size > input_size.
-                        ih_start = (oh * h_in) // out_h
-                        ih_end = ((oh + 1) * h_in + out_h - 1) // out_h
-                        iw_start = (ow * w_in) // out_w
-                        iw_end = ((ow + 1) * w_in + out_w - 1) // out_w
+                        ih_start, ih_end = adaptive_bin(oh, h_in, out_h)
+                        iw_start, iw_end = adaptive_bin(ow, w_in, out_w)
 
                         sum_val = T.alloc_var(T.float32)
                         sum_val = T.cast(0.0, accum_dtype)
