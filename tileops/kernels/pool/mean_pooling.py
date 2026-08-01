@@ -24,7 +24,7 @@ def _mean_pooling_kernel(
     accum_dtype: str,
 ) -> Callable:
 
-    @tilelang.jit(out_idx=[1], pass_configs={"tl.disable_tma_lower": True})
+    @tilelang.jit(out_idx=[1])
     def _mean_pooling_func(bdim: int, threads: int) -> None:
 
         @T.prim_func
@@ -61,8 +61,11 @@ def _mean_pooling_kernel(
                 end_dim = T.min(start_dim + bdim, dim)
 
                 T.clear(x_shared)
+                # disable_tma=True: the copy extent is a runtime value
+                # (ragged chunks), which the TMA lowering cannot express.
                 T.copy(x[i_b, start_token:end_token, i_h, start_dim:end_dim],
-                       x_shared[0:end_token - start_token, :end_dim - start_dim])
+                       x_shared[0:end_token - start_token, :end_dim - start_dim],
+                       disable_tma=True)
                 T.copy(x_shared, x_local)
                 T.reduce_sum(x_local, output_local, dim=0)
                 for d_idx in T.Parallel(bdim):

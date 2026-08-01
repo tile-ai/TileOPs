@@ -116,7 +116,11 @@ class TestBase(WorkloadBase):
         max_abs_err = 0.0
         for output, output_ref in zip(outputs, outputs_ref, strict=True):
             if output_ref is not None:
-                err = (output.float() - output_ref.float()).abs().max().item()
+                # Widen before subtracting so narrow dtypes do not lose the
+                # error to rounding. .float() alone would drop the imaginary
+                # part of a complex output and under-report it.
+                wide = torch.complex64 if output.is_complex() else torch.float32
+                err = (output.to(wide) - output_ref.to(wide)).abs().max().item()
                 max_abs_err = max(max_abs_err, err)
 
         # Store for conftest hook to attach to pytest report.
