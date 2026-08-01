@@ -85,13 +85,13 @@ def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int,
     if offsets is not None:
         assert batch_size == 1
         assert offsets[-1] == seq_len
-        offsets = torch.tensor(offsets, dtype=torch.int32, device="cuda")
-        indices = prepare_chunk_indices(offsets, chunk_size)
+        offset_tensor = torch.tensor(offsets, dtype=torch.int32, device="cuda")
+        indices = prepare_chunk_indices(offset_tensor, chunk_size)
         chunks_per_bacth = indices.shape[0]
-        seq_num = offsets.shape[0] - 1
+        seq_num = offset_tensor.shape[0] - 1
         use_offsets = 1
     else:
-        offsets = torch.arange(
+        offset_tensor = torch.arange(
             0, (batch_size + 1) * seq_len,
             seq_len,
             dtype=torch.int32,
@@ -121,7 +121,7 @@ def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int,
         chunk_size=chunk_size, chunks_per_bacth=chunks_per_bacth,
         seq_num=seq_num, use_offsets=use_offsets,
         dtype=dtype, accum_dtype=accum_dtype,
-        offsets=offsets, indices=indices)
+        offsets=offset_tensor, indices=indices)
 
     bm = MeanPoolingBenchmark(test)
     inputs = test.gen_inputs()
