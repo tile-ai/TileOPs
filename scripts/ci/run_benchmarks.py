@@ -31,24 +31,21 @@ TEARDOWN_TIMEOUT_S = 120
 # = the bench file. prctl(PR_SET_PTRACER, parent) lets py-spy attach under
 # yama ptrace_scope=1. The collect-only pass runs while another file owns
 # the GPU, so it must stay GPU-silent; CUDA init happens after the stdin
-# grant. The collect stage reports through TILEOPS_COLLECT_STATUS -- "started"
-# before the pass, then its exit code -- so the parent can tell a clean collect
-# from a failing one from a child that died mid-collect. The run exit code
-# leaves via the pipe before interpreter teardown.
+# grant. TILEOPS_COLLECT_STATUS holds "started", then the collect exit code,
+# so a child that dies mid-collect stays distinguishable from a clean one.
+# The run exit code leaves via the pipe before interpreter teardown.
 _CHILD = """\
 import ctypes, os, sys
 
-_status = os.environ.get("TILEOPS_COLLECT_STATUS")
-if _status:
-    open(_status, "w").write("started")
+status = os.environ["TILEOPS_COLLECT_STATUS"]
+open(status, "w").write("started")
 
 ctypes.CDLL(None).prctl(0x59616D61, os.getppid(), 0, 0, 0)
 
 import pytest
 
 rc_collect = int(pytest.main(["--collect-only", "-q", sys.argv[3]]))
-if _status:
-    open(_status, "w").write(str(rc_collect))
+open(status, "w").write(str(rc_collect))
 sys.stdin.readline()
 rc = int(pytest.main(sys.argv[2:]))
 os.write(int(sys.argv[1]), str(rc).encode())
@@ -216,11 +213,7 @@ def _fragment_suites(fragment: Path) -> list[ET.Element]:
 
 
 def _collect_outcome(status_path: Path) -> str | None:
-    """Describe the collect-only pass, or None if it completed acceptably.
-
-    0 and 5 are the codes this runner accepts elsewhere -- 5 is "nothing
-    collected", which a file of skips legitimately returns.
-    """
+    """Describe the collect-only pass, or None if it exited 0 or 5 (nothing collected)."""
     try:
         raw = status_path.read_text().strip()
     except OSError:
@@ -392,10 +385,8 @@ def main() -> int:
         for rel, outcome in collect_failed:
             print(f"  {rel}: {outcome}", flush=True)
         print(
-            "  Collection runs while another file owns the GPU. A broken import is the"
-            " usual cause; if it initialises CUDA, that alone can fail the whole sweep"
-            " on a GPU in Exclusive_Process mode and perturb the file being measured"
-            " on a shared one.",
+            "  Collection runs while another file owns the GPU; a broken import is the"
+            " usual cause, and one that initialises CUDA perturbs the measured file.",
             flush=True,
         )
 
