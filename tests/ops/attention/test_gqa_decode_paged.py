@@ -11,11 +11,11 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
 from tileops.utils import is_hopper
 from workloads.attention.gqa import (
-    GroupedQueryAttentionDecodePagedTest as _GroupedQueryAttentionDecodePagedTestWorkload,
+    GroupedQueryAttentionDecodePagedWorkload,
 )
 
 
-class GroupedQueryAttentionDecodePagedTest(_GroupedQueryAttentionDecodePagedTestWorkload, TestBase):
+class GroupedQueryAttentionDecodePagedTest(GroupedQueryAttentionDecodePagedWorkload, TestBase):
 
     def _maxdiff_cosine_compare(self, output: torch.Tensor, output_ref: torch.Tensor, atol: float = 0.001) -> None:
         """Compare using max-diff and cosine similarity."""

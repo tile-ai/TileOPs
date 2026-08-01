@@ -14,7 +14,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoePermuteAlignFwdOp
-from workloads.moe import MoePermuteAlignTest as _MoePermuteAlignTestWorkload
+from workloads.moe import MoePermuteAlignWorkload
 
 
 def _ref_permute_align(
@@ -66,7 +66,7 @@ def _ref_permute_align(
     )
 
 
-class MoePermuteAlignTest(_MoePermuteAlignTestWorkload, TestBase):
+class MoePermuteAlignTest(MoePermuteAlignWorkload, TestBase):
     def ref_program(
         self, topk_ids: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

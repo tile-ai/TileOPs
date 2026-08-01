@@ -8,10 +8,10 @@ from tileops.kernels.norm.ada_layer_norm import (
     _should_use_cp_async,
 )
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
-from workloads.normalization import AdaLayerNormTest as _AdaLayerNormTestWorkload
+from workloads.normalization import AdaLayerNormWorkload
 
 
-class AdaLayerNormTest(_AdaLayerNormTestWorkload, TestBase):
+class AdaLayerNormTest(AdaLayerNormWorkload, TestBase):
     def ref_program(
         self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor
     ) -> torch.Tensor:

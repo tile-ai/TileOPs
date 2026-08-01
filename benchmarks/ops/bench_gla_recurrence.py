@@ -14,7 +14,7 @@ from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport, ManifestBe
 from benchmarks.ops.attention.manifest_params import manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import GLADecodeOp
-from workloads.linear_attention import GLADecodeTest
+from workloads.linear_attention import GLADecodeWorkload
 from workloads.workload_base import FixtureBase
 
 _OP_NAME = "GLADecodeOp"
@@ -44,7 +44,7 @@ def gla_decode_torch(
     return o, new_state
 
 
-class GLADecodeTestBaseline(GLADecodeTest):
+class GLADecodeTestBaseline(GLADecodeWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(
@@ -64,7 +64,7 @@ except ImportError:
     fused_recurrent_gla = None
 
 
-class GLADecodeBenchmark(BenchmarkBase[GLADecodeTest]):
+class GLADecodeBenchmark(BenchmarkBase[GLADecodeWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

@@ -6,10 +6,10 @@ import torch
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import MeanPoolingForwardOp
 from workloads.nsa_utils import prepare_chunk_indices
-from workloads.pool import MeanPoolingTest
+from workloads.pool import MeanPoolingWorkload
 
 
-class MeanPoolingTestBaseline(MeanPoolingTest):
+class MeanPoolingTestBaseline(MeanPoolingWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, x: torch.Tensor, offsets: torch.Tensor,
@@ -44,7 +44,7 @@ class MeanPoolingTestBaseline(MeanPoolingTest):
         return output
 
 
-class MeanPoolingBenchmark(BenchmarkBase[MeanPoolingTest]):
+class MeanPoolingBenchmark(BenchmarkBase[MeanPoolingWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

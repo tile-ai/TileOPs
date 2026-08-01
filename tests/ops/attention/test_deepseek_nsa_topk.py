@@ -4,7 +4,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSATopkVarlenOp
-from workloads.attention.deepseek import NsaTopkTest as _NsaTopkTestWorkload
+from workloads.attention.deepseek import NsaTopkWorkload
 
 
 def _nsa_topk_torch(test, q, k_cmp, lse, block_counts, block_size, scale,
@@ -128,7 +128,7 @@ def _nsa_topk_torch(test, q, k_cmp, lse, block_counts, block_size, scale,
     return block_indices
 
 
-class NsaTopkTest(_NsaTopkTestWorkload, TestBase):
+class NsaTopkTest(NsaTopkWorkload, TestBase):
 
     def check_topk(self, op, *inputs, threshold: float = 1e-3) -> None:
         """Custom check for topk indices (not floating point closeness)."""

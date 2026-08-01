@@ -80,7 +80,7 @@ class Mamba2FwdFixture(FixtureBase):
 # WorkloadBase subclass — generates all required input tensors
 # ---------------------------------------------------------------------------
 
-class Mamba2FwdTest(WorkloadBase):
+class Mamba2FwdWorkload(WorkloadBase):
     """Input generator for the Mamba-2 SSD end-to-end forward pass.
 
     Generates tensors matching the interface of Mamba2FwdOp.forward and

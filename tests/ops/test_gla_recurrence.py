@@ -5,7 +5,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GLADecodeOp
-from workloads.linear_attention import GLADecodeTest as _GLADecodeTestWorkload
+from workloads.linear_attention import GLADecodeWorkload
 
 
 def gla_decode_torch(
@@ -32,7 +32,7 @@ def gla_decode_torch(
     return o, new_state
 
 
-class GLADecodeTest(_GLADecodeTestWorkload, TestBase):
+class GLADecodeTest(GLADecodeWorkload, TestBase):
     def ref_program(
         self,
         q: torch.Tensor,

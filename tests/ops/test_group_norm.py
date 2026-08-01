@@ -4,10 +4,10 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.group_norm import GroupNormFwdOp, GroupNormNoAffineFwdOp
-from workloads.normalization import GroupNormTest as _GroupNormTestWorkload
+from workloads.normalization import GroupNormWorkload
 
 
-class GroupNormTest(_GroupNormTestWorkload, TestBase):
+class GroupNormTest(GroupNormWorkload, TestBase):
     def ref_program(self, x: torch.Tensor, weight: torch.Tensor,
                     bias: torch.Tensor) -> torch.Tensor:
         return F.group_norm(

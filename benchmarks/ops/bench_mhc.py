@@ -17,7 +17,7 @@ from benchmarks.benchmark_base import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import MHCPostOp, MHCPreOp
-from workloads.mhc import MHCPostTest, MHCPreTest
+from workloads.mhc import MHCPostWorkload, MHCPreWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
@@ -28,7 +28,7 @@ _TUNE = True
 _SINKHORN_EPS = 0.02
 
 
-class MHCPreTestBaseline(MHCPreTest):
+class MHCPreTestBaseline(MHCPreWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor,
@@ -113,7 +113,7 @@ def test_mhc_pre_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype,
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
-class MHCPostTestBaseline(MHCPostTest):
+class MHCPostTestBaseline(MHCPostWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, x_layer_out: torch.Tensor, h_post: torch.Tensor,

@@ -11,9 +11,9 @@ import torch.nn.functional as F
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 from workloads.reduction import (
-    LogSoftmaxTest,
-    LogSumExpTest,
-    SoftmaxTest,
+    LogSoftmaxWorkload,
+    LogSumExpWorkload,
+    SoftmaxWorkload,
 )
 
 # Op name constants
@@ -28,7 +28,7 @@ _LOGSUMEXP_OP = "LogSumExpFwdOp"
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_SOFTMAX_OP))
 def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = SoftmaxTest(shape, dtype)
+    test = SoftmaxWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op = SoftmaxFwdOp(dim=-1, tune=True)
@@ -53,7 +53,7 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_LOG_SOFTMAX_OP))
 def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = LogSoftmaxTest(shape, dtype)
+    test = LogSoftmaxWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op = LogSoftmaxFwdOp(dim=-1, tune=True)
@@ -83,7 +83,7 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 def test_logsumexp_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = LogSumExpTest(shape, dtype)
+    test = LogSumExpWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)

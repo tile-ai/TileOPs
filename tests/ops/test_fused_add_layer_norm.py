@@ -5,11 +5,11 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from workloads.normalization import (
-    FusedAddLayerNormTest as _FusedAddLayerNormTestWorkload,
+    FusedAddLayerNormWorkload,
 )
 
 
-class FusedAddLayerNormTest(_FusedAddLayerNormTestWorkload, TestBase):
+class FusedAddLayerNormTest(FusedAddLayerNormWorkload, TestBase):
     def ref_program(
         self,
         x: torch.Tensor,

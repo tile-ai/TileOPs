@@ -5,10 +5,10 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.norm.layer_norm import LayerNormKernel
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
-from workloads.normalization import LayerNormTest as _LayerNormTestWorkload
+from workloads.normalization import LayerNormWorkload
 
 
-class LayerNormTest(_LayerNormTestWorkload, TestBase):
+class LayerNormTest(LayerNormWorkload, TestBase):
     def ref_program(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
         # Reference uses torch.nn.functional.layer_norm
         return F.layer_norm(

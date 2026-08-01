@@ -14,10 +14,8 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.normalization import (
-    BatchNormBwdTest as _BatchNormBwdTestWorkload,
-)
-from workloads.normalization import (
-    BatchNormFwdTest as _BatchNormFwdTestWorkload,
+    BatchNormBwdWorkload,
+    BatchNormFwdWorkload,
 )
 
 
@@ -32,7 +30,7 @@ def _ref_fwd(x, weight, bias, running_mean, running_var, training, momentum=0.1,
     return y32.to(x.dtype), rm, rv
 
 
-class BatchNormBwdTest(_BatchNormBwdTestWorkload, TestBase):
+class BatchNormBwdTest(BatchNormBwdWorkload, TestBase):
     def ref_program(self, grad_out, x, weight, mean, rstd):
         """Reference via torch.autograd on a float32 graph."""
         x32 = x.float().requires_grad_(True)
@@ -45,7 +43,7 @@ class BatchNormBwdTest(_BatchNormBwdTestWorkload, TestBase):
         y32.backward(grad_out.float())
         return x32.grad.to(x.dtype), w32.grad, b32.grad
 
-class BatchNormFwdTest(_BatchNormFwdTestWorkload, TestBase):
+class BatchNormFwdTest(BatchNormFwdWorkload, TestBase):
     def ref_program(self, x, weight, bias, running_mean, running_var):
         y, rm, rv = _ref_fwd(x, weight, bias, running_mean, running_var,
                              training=self.training)

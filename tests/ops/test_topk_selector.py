@@ -5,10 +5,10 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import TopkSelectorOp
 from tileops.utils import str2dtype
-from workloads.topk_selector import TopkSelectorTest as _TopkSelectorTestWorkload
+from workloads.topk_selector import TopkSelectorWorkload
 
 
-class TopkSelectorTest(_TopkSelectorTestWorkload, TestBase):
+class TopkSelectorTest(TopkSelectorWorkload, TestBase):
     def ref_program(self, index_score: torch.Tensor, starts: torch.Tensor,
                     ends: torch.Tensor) -> torch.Tensor:
         # index_score: (batch, seq_len, seq_len_kv, kv_group); topk over seq_len_kv (dim=2)

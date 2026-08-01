@@ -3,7 +3,7 @@ import torch
 from workloads.workload_base import WorkloadBase
 
 
-class FFTTest(WorkloadBase):
+class FFTWorkload(WorkloadBase):
 
     def __init__(self, n: int, dtype: torch.dtype, batch_shape: tuple = ()):
         self.n = n

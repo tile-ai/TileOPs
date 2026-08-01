@@ -9,13 +9,9 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from workloads.reduction import (
-    ProdTest as _ProdTest,
-)
-from workloads.reduction import (
-    StdTest as _StdTest,
-)
-from workloads.reduction import (
-    SumTest as _SumTest,
+    ProdWorkload,
+    StdWorkload,
+    SumWorkload,
 )
 
 # Fixtures
@@ -124,7 +120,7 @@ class BesselFixture(FixtureBase):
 # TestBase helpers — inherit gen_inputs() from workload classes
 
 
-class ReduceTest(_SumTest, TestBase):
+class ReduceTest(SumWorkload, TestBase):
     """Parameterized test helper for simple reduce ops (sum/mean/amax/amin)."""
 
     def __init__(
@@ -146,7 +142,7 @@ class ReduceTest(_SumTest, TestBase):
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
 
 
-class ProdTest(_ProdTest, TestBase):
+class ProdTest(ProdWorkload, TestBase):
     """Parameterized test helper for prod op (uses small-range inputs)."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype):
@@ -156,7 +152,7 @@ class ProdTest(_ProdTest, TestBase):
         return x.float().prod(dim=-1).to(x.dtype)
 
 
-class WelfordTest(_StdTest, TestBase):
+class WelfordTest(StdWorkload, TestBase):
     """Test helper for Welford-based ops (std, var, var_mean)."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str, correction: int = 1):

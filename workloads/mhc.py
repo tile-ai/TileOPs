@@ -3,7 +3,7 @@ import torch
 from workloads.workload_base import WorkloadBase
 
 
-class MHCPreTest(WorkloadBase):
+class MHCPreWorkload(WorkloadBase):
 
     def __init__(self, batch: int, n_expand: int, c_x: int, dtype: torch.dtype):
         self.batch = batch
@@ -30,7 +30,7 @@ class MHCPreTest(WorkloadBase):
         return phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, eps
 
 
-class MHCPostTest(WorkloadBase):
+class MHCPostWorkload(WorkloadBase):
 
     def __init__(self, batch: int, n_expand: int, c_x: int, dtype: torch.dtype):
         self.batch = batch

@@ -303,7 +303,7 @@ class AdaptivePool2dWorkload(WorkloadBase):
         return (x,)
 
 
-class MeanPoolingTest(WorkloadBase):
+class MeanPoolingWorkload(WorkloadBase):
 
     def __init__(self, batch_size: int, seq_len: int, heads: int, dim: int, chunk_size: int,
                  chunks_per_bacth: int, seq_num: int, use_offsets: int,

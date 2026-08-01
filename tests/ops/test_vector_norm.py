@@ -10,7 +10,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
-from workloads.reduction import L1NormTest as _L1NormWorkload
+from workloads.reduction import L1NormWorkload
 
 # Fixtures
 
@@ -92,7 +92,7 @@ class VectorNorm1DFixture(FixtureBase):
 _ORD_MAP = {"l1": 1, "l2": 2, "inf": float("inf")}
 
 
-class VectorNormTest(_L1NormWorkload, TestBase):
+class VectorNormTest(L1NormWorkload, TestBase):
     """Parameterized test helper for vector norm ops."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):

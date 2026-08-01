@@ -20,7 +20,7 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetOp
-from workloads.linear_attention import DeltaNetFwdTest
+from workloads.linear_attention import DeltaNetFwdWorkload
 from workloads.workload_base import FixtureBase
 
 
@@ -126,7 +126,7 @@ def prepare_wy_repr_deltanet_torch(k, beta, chunk_size):
     return a_inv, a_inv.clone()
 
 
-class DeltaNetFwdTestBaseline(DeltaNetFwdTest):
+class DeltaNetFwdTestBaseline(DeltaNetFwdWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(
@@ -162,7 +162,7 @@ def _to_fla_layout(q, k, v, beta):
 
 # Forward benchmark
 
-class DeltaNetFwdBenchmark(BenchmarkBase[DeltaNetFwdTest]):
+class DeltaNetFwdBenchmark(BenchmarkBase[DeltaNetFwdWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -229,7 +229,7 @@ def test_deltanet_vs_fla_fwd(
 
 # Backward benchmark
 
-class DeltaNetBwdBenchmark(BenchmarkBase[DeltaNetFwdTest]):
+class DeltaNetBwdBenchmark(BenchmarkBase[DeltaNetFwdWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -316,7 +316,7 @@ def test_deltanet_vs_fla_bwd(
 
 # Combined fwd+bwd benchmark (fair comparison: both measure fwd+bwd total)
 
-class DeltaNetFwdBwdBenchmark(BenchmarkBase[DeltaNetFwdTest]):
+class DeltaNetFwdBwdBenchmark(BenchmarkBase[DeltaNetFwdWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload

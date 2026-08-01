@@ -11,7 +11,7 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
-from workloads.reduction import ArgmaxTest, ArgminTest
+from workloads.reduction import ArgmaxWorkload, ArgminWorkload
 
 _ARGMAX_OP = "ArgmaxFwdOp"
 _ARGMIN_OP = "ArgminFwdOp"
@@ -36,7 +36,7 @@ def _is_unsupported_large_argreduce_error(exc: Exception) -> bool:
 
 @pytest.mark.parametrize("shape, dtype, extra", workloads_to_params(_ARGMAX_OP, include_extra=True))
 def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
-    workload = ArgmaxTest(shape, dtype)
+    workload = ArgmaxWorkload(shape, dtype)
     inputs = workload.gen_inputs()
 
     op = ArgmaxFwdOp(dtype=dtype, **extra)
@@ -69,7 +69,7 @@ def test_argmax_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
 
 @pytest.mark.parametrize("shape, dtype, extra", workloads_to_params(_ARGMIN_OP, include_extra=True))
 def test_argmin_bench(shape: tuple, dtype: torch.dtype, extra: dict) -> None:
-    workload = ArgminTest(shape, dtype)
+    workload = ArgminWorkload(shape, dtype)
     inputs = workload.gen_inputs()
 
     op = ArgminFwdOp(dtype=dtype, **extra)

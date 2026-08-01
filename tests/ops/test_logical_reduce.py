@@ -11,7 +11,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.reduction.logical_reduce import LogicalReduceKernel
-from workloads.reduction import AnyTest as _AnyWorkload
+from workloads.reduction import AnyWorkload
 
 # Fixtures
 
@@ -133,7 +133,7 @@ class LogicalReduceKeepdimFixture(FixtureBase):
 # TestBase helpers — inherit gen_inputs() from workload classes
 
 
-class LogicalReduceTest(_AnyWorkload, TestBase):
+class LogicalReduceTest(AnyWorkload, TestBase):
     """Parameterized test helper for logical reduce ops."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):

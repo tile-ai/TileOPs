@@ -7,11 +7,11 @@ from tileops.kernels.attention.gqa_decode import GQADecodeKernel
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
 from tileops.utils import is_hopper
 from workloads.attention.gqa import (
-    GroupedQueryAttentionDecodeTest as _GroupedQueryAttentionDecodeTestWorkload,
+    GroupedQueryAttentionDecodeWorkload,
 )
 
 
-class GroupedQueryAttentionDecodeTest(_GroupedQueryAttentionDecodeTestWorkload, TestBase):
+class GroupedQueryAttentionDecodeTest(GroupedQueryAttentionDecodeWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         q_bhsd = q.unsqueeze(1).transpose(1, 2)  # [B, H, 1, D]
         groups = self.heads // self.heads_kv

@@ -11,7 +11,7 @@ import torch
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
-from workloads.normalization import BatchNormBwdTest, BatchNormFwdTest
+from workloads.normalization import BatchNormBwdWorkload, BatchNormFwdWorkload
 
 _FWD_OP_NAME = "BatchNormFwdOp"
 _BWD_OP_NAME = "BatchNormBwdOp"
@@ -100,7 +100,7 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
 
     op = BatchNormFwdOp(training=training, tune=tune)
 
-    test = BatchNormFwdTest(N, C, spatial, dtype, training)
+    test = BatchNormFwdWorkload(N, C, spatial, dtype, training)
     bm = ManifestBenchmark(_FWD_OP_NAME, op, test)
 
     result = bm.profile(lambda *a: op(*a), *inputs)
@@ -119,7 +119,7 @@ def test_batch_norm_bwd_bench(N, C, spatial, dtype):
 
     op = BatchNormBwdOp()
 
-    test = BatchNormBwdTest(N, C, spatial, dtype)
+    test = BatchNormBwdWorkload(N, C, spatial, dtype)
     bm = ManifestBenchmark(_BWD_OP_NAME, op, test)
 
     result = bm.profile(op, *inputs)

@@ -6,10 +6,10 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MeanPoolingForwardOp
 from workloads.nsa_utils import prepare_chunk_indices
-from workloads.pool import MeanPoolingTest as _MeanPoolingTestWorkload
+from workloads.pool import MeanPoolingWorkload
 
 
-class MeanPoolingTest(_MeanPoolingTestWorkload, TestBase):
+class MeanPoolingTest(MeanPoolingWorkload, TestBase):
     def ref_program(self, x: torch.Tensor, offsets: torch.Tensor,
                     indices: torch.Tensor) -> torch.Tensor:
         _ = indices

@@ -5,7 +5,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GatedDeltaNetFwdOp
 from workloads.linear_attention import (
-    GatedDeltaNetFwdTest as _GatedDeltaNetFwdTestWorkload,
+    GatedDeltaNetFwdWorkload,
 )
 
 
@@ -86,7 +86,7 @@ def prepare_wy_repr_gated_torch(k, g_cum, beta, chunk_size):
     return Aw, Au
 
 
-class GatedDeltaNetFwdTest(_GatedDeltaNetFwdTestWorkload, TestBase):
+class GatedDeltaNetFwdTest(GatedDeltaNetFwdWorkload, TestBase):
     def ref_program(
         self,
         q: torch.Tensor,

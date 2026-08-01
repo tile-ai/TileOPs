@@ -3,7 +3,7 @@ import torch
 from workloads.workload_base import WorkloadBase
 
 
-class TopkSelectorTest(WorkloadBase):
+class TopkSelectorWorkload(WorkloadBase):
 
     def __init__(self, batch: int, seq_len: int, seq_len_kv: int, kv_group: int, topk: int,
                  in_dtype: torch.dtype, out_dtype: torch.dtype):

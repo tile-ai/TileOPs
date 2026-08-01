@@ -5,7 +5,7 @@ import torch
 from workloads.workload_base import WorkloadBase
 
 
-class RMSNormTest(WorkloadBase):
+class RMSNormWorkload(WorkloadBase):
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
         self.m = m
@@ -19,7 +19,7 @@ class RMSNormTest(WorkloadBase):
         return x, weight
 
 
-class LayerNormTest(WorkloadBase):
+class LayerNormWorkload(WorkloadBase):
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
         self.m = m
@@ -34,7 +34,7 @@ class LayerNormTest(WorkloadBase):
         return x, weight, bias
 
 
-class FusedAddRMSNormTest(WorkloadBase):
+class FusedAddRMSNormWorkload(WorkloadBase):
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
         self.m = m
@@ -49,7 +49,7 @@ class FusedAddRMSNormTest(WorkloadBase):
         return x, residual, weight
 
 
-class FusedAddLayerNormTest(WorkloadBase):
+class FusedAddLayerNormWorkload(WorkloadBase):
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
         self.m = m
@@ -65,7 +65,7 @@ class FusedAddLayerNormTest(WorkloadBase):
         return x, residual, weight, bias
 
 
-class AdaLayerNormTest(WorkloadBase):
+class AdaLayerNormWorkload(WorkloadBase):
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
         self.m = m
@@ -80,7 +80,7 @@ class AdaLayerNormTest(WorkloadBase):
         return x, scale, shift
 
 
-class AdaLayerNormZeroTest(WorkloadBase):
+class AdaLayerNormZeroWorkload(WorkloadBase):
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
         self.m = m
@@ -96,7 +96,7 @@ class AdaLayerNormZeroTest(WorkloadBase):
         return x, scale, shift, gate
 
 
-class GroupNormTest(WorkloadBase):
+class GroupNormWorkload(WorkloadBase):
 
     def __init__(self, n: int, c: int, spatial: tuple, g: int,
                  dtype: torch.dtype, eps: float = 1e-5):
@@ -115,7 +115,7 @@ class GroupNormTest(WorkloadBase):
         return x, weight, bias
 
 
-class InstanceNormTest(WorkloadBase):
+class InstanceNormWorkload(WorkloadBase):
 
     def __init__(self, n: int, c: int, spatial: tuple,
                  dtype: torch.dtype, eps: float = 1e-5):
@@ -142,7 +142,7 @@ def _make_tensors(N, C, spatial, dtype, device="cuda"):
     running_var = torch.ones(C, device=device, dtype=torch.float32)
     return x, weight, bias, running_mean, running_var
 
-class BatchNormBwdTest(WorkloadBase):
+class BatchNormBwdWorkload(WorkloadBase):
 
     def __init__(self, N, C, spatial, dtype):
         self.N = N
@@ -165,7 +165,7 @@ class BatchNormBwdTest(WorkloadBase):
         rstd = 1.0 / torch.sqrt(var + 1e-5)
         return grad_out, x, weight, mean, rstd
 
-class BatchNormFwdTest(WorkloadBase):
+class BatchNormFwdWorkload(WorkloadBase):
 
     def __init__(self, N, C, spatial, dtype, training):
         self.N = N

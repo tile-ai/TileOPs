@@ -6,10 +6,10 @@ from einops import einsum, rearrange
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.deepseek import MlaDecodeTest as _MlaDecodeTestWorkload
+from workloads.attention.deepseek import MlaDecodeWorkload
 
 
-class MlaDecodeTest(_MlaDecodeTestWorkload, TestBase):
+class MlaDecodeTest(MlaDecodeWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, q_pe: torch.Tensor, kv: torch.Tensor,
                     k_pe: torch.Tensor) -> torch.Tensor:
         """

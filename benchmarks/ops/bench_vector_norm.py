@@ -9,7 +9,7 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
-from workloads.reduction import InfNormTest, L1NormTest, L2NormTest
+from workloads.reduction import InfNormWorkload, L1NormWorkload, L2NormWorkload
 
 # Op name constants
 
@@ -28,7 +28,7 @@ _INF_NORM_OP = "InfNormFwdOp"
 def test_l1_norm_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = L1NormTest(shape, dtype)
+    test = L1NormWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
@@ -64,7 +64,7 @@ def test_l1_norm_bench(
 def test_l2_norm_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = L2NormTest(shape, dtype)
+    test = L2NormWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
@@ -100,7 +100,7 @@ def test_l2_norm_bench(
 def test_inf_norm_bench(
     shape: tuple, dtype: torch.dtype, op_params: dict
 ) -> None:
-    test = InfNormTest(shape, dtype)
+    test = InfNormWorkload(shape, dtype)
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)

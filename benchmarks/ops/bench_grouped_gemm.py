@@ -21,7 +21,7 @@ from benchmarks.benchmark_base import (
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedGemmOp
 from workloads.grouped_gemm import (
-    GroupedGemmTest,
+    GroupedGemmWorkload,
 )
 
 # Autotuning is a bench-run policy, not a workload property; manifest
@@ -29,7 +29,7 @@ from workloads.grouped_gemm import (
 _TUNE = True
 
 
-class GroupedGemmTestBaseline(GroupedGemmTest):
+class GroupedGemmTestBaseline(GroupedGemmWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,

@@ -15,14 +15,14 @@ from benchmarks.benchmark_base import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import TopkSelectorOp
-from workloads.topk_selector import TopkSelectorTest
+from workloads.topk_selector import TopkSelectorWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
 _TUNE = True
 
 
-class TopkSelectorTestBaseline(TopkSelectorTest):
+class TopkSelectorTestBaseline(TopkSelectorWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, index_score: torch.Tensor, starts: torch.Tensor,

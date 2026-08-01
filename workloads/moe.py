@@ -5,7 +5,7 @@ import torch
 from workloads.workload_base import WorkloadBase
 
 
-class FusedTopKTest(WorkloadBase):
+class FusedTopKWorkload(WorkloadBase):
     def __init__(self, num_tokens, num_experts, top_k, scoring_func, renormalize, dtype):
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -19,7 +19,7 @@ class FusedTopKTest(WorkloadBase):
         return (torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda"),)
 
 
-class MoePermuteTest(WorkloadBase):
+class MoePermuteWorkload(WorkloadBase):
 
     def __init__(self, total_tokens, top_k, num_experts, hidden_size, dtype):
         self.total_tokens = total_tokens
@@ -40,7 +40,7 @@ class MoePermuteTest(WorkloadBase):
         return hidden_states, topk_ids
 
 
-class MoePermuteAlignTest(WorkloadBase):
+class MoePermuteAlignWorkload(WorkloadBase):
 
     def __init__(self, total_tokens: int, top_k: int, num_experts: int, block_size: int):
         self.total_tokens = total_tokens
@@ -57,7 +57,7 @@ class MoePermuteAlignTest(WorkloadBase):
         return (topk_ids,)
 
 
-class MoeUnpermuteTest(WorkloadBase):
+class MoeUnpermuteWorkload(WorkloadBase):
 
     def __init__(self, total_tokens, top_k, hidden_size, dtype):
         self.total_tokens = total_tokens

@@ -27,12 +27,10 @@ from tileops.ops.attention.gqa import (
 )
 from tileops.utils import is_h200
 from workloads.attention.gqa import (
-    GroupedQueryAttentionBwdTest as _GroupedQueryAttentionBwdTestWorkload,
+    GroupedQueryAttentionBwdWorkload,
+    GroupedQueryAttentionFwdWorkload,
+    uniform_packed_prefill_inputs,
 )
-from workloads.attention.gqa import (
-    GroupedQueryAttentionFwdTest as _GroupedQueryAttentionFwdTestWorkload,
-)
-from workloads.attention.gqa import uniform_packed_prefill_inputs
 
 _PREFILL_TOLERANCE = {
     torch.float16: (5e-3, 1e-5),
@@ -40,7 +38,7 @@ _PREFILL_TOLERANCE = {
 }
 
 
-class GroupedQueryAttentionBwdTest(_GroupedQueryAttentionBwdTestWorkload, TestBase):
+class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
                     grad_output: torch.Tensor,
                     lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -56,7 +54,7 @@ class GroupedQueryAttentionBwdTest(_GroupedQueryAttentionBwdTestWorkload, TestBa
         return q.grad, k.grad, v.grad
 
 
-class GroupedQueryAttentionFwdTest(_GroupedQueryAttentionFwdTestWorkload, TestBase):
+class GroupedQueryAttentionFwdTest(GroupedQueryAttentionFwdWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor,
                     v: torch.Tensor) -> torch.Tensor:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]

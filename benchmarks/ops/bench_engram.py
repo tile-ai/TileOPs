@@ -22,9 +22,9 @@ from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.engram_decode import EngramDecodeOp
 from workloads.engram import (
     CONV_KERNEL_SIZE,
-    EngramDecodeTest,
-    EngramGateConvBwdTest,
-    EngramGateConvFwdTest,
+    EngramDecodeWorkload,
+    EngramGateConvBwdWorkload,
+    EngramGateConvFwdWorkload,
 )
 
 # Autotuning is a bench-run policy, not a workload property; manifest
@@ -79,7 +79,7 @@ _ENGRAM_GATE_CONV_FWD_PARAMS = workload_field_params(
 
 @pytest.mark.parametrize("M, seq_len, d, dtype", _ENGRAM_GATE_CONV_FWD_PARAMS)
 def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
-    test = EngramGateConvFwdTest(M, seq_len, d, dtype)
+    test = EngramGateConvFwdWorkload(M, seq_len, d, dtype)
     inputs = test.gen_inputs()
 
     op = EngramGateConvFwdOp(M, seq_len, d, dtype, tune=_TUNE)
@@ -134,7 +134,7 @@ def ref_engram_gate_conv_bwd(dY, H, k, v, rms_w_h, rms_w_v, conv_w,
     )
 
 
-class EngramGateConvBwdTestBaseline(EngramGateConvBwdTest):
+class EngramGateConvBwdTestBaseline(EngramGateConvBwdWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, dY, H, k, v, rms_w_h, rms_w_v, conv_w,
@@ -238,7 +238,7 @@ _ENGRAM_DECODE_PARAMS = workload_field_params(
     _ENGRAM_DECODE_PARAMS,
 )
 def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype):
-    test = EngramDecodeTest(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
+    test = EngramDecodeWorkload(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
     inputs = test.gen_inputs()
 
     op = EngramDecodeOp(

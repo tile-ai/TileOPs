@@ -8,12 +8,12 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import manifest_params, mha_decode_paged_args
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.mha import MhaDecodePagedTest
+from workloads.attention.mha import MhaDecodePagedWorkload
 
 _OP_NAME = "MultiHeadAttentionDecodePagedWithKVCacheFwdOp"
 
 
-class MhaDecodePagedTestBaseline(MhaDecodePagedTest):
+class MhaDecodePagedTestBaseline(MhaDecodePagedWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,

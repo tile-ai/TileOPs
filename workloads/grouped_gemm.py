@@ -25,7 +25,7 @@ def _generate_offsets(batch_sizes_list, padding_M):
             + math.ceil((batch_sizes_list[i] + 1) / padding_M) * padding_M)
     return batch_offsets_list, batch_padded_offsets_list
 
-class GroupedGemmTest(WorkloadBase):
+class GroupedGemmWorkload(WorkloadBase):
 
     def __init__(self, batch_sum: int, batch_count: int, N: int, K: int, dtype: torch.dtype,
                  transpose_a: bool, transpose_b: bool):

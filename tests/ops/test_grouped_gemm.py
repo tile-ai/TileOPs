@@ -5,11 +5,11 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.grouped_gemm import GroupedGemmOp
 from workloads.grouped_gemm import (
-    GroupedGemmTest as _GroupedGemmTestWorkload,
+    GroupedGemmWorkload,
 )
 
 
-class GroupedGemmTest(_GroupedGemmTestWorkload, TestBase):
+class GroupedGemmTest(GroupedGemmWorkload, TestBase):
     def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
                     batch_offsets: torch.Tensor,
                     batch_padded_offsets: torch.Tensor) -> torch.Tensor:

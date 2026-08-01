@@ -6,12 +6,12 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from benchmarks.ops.attention.manifest_params import gqa_decode_args, manifest_params
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.gqa import GroupedQueryAttentionDecodeTest
+from workloads.attention.gqa import GroupedQueryAttentionDecodeWorkload
 
 _OP_NAME = "GroupedQueryAttentionDecodeWithKVCacheFwdOp"
 
 
-class GroupedQueryAttentionDecodeTestBaseline(GroupedQueryAttentionDecodeTest):
+class GroupedQueryAttentionDecodeTestBaseline(GroupedQueryAttentionDecodeWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:

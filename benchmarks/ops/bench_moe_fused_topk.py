@@ -23,7 +23,7 @@ except ImportError:
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops.moe import FusedTopKOp
-from workloads.moe import FusedTopKTest
+from workloads.moe import FusedTopKWorkload
 from workloads.workload_base import FixtureBase
 
 
@@ -49,7 +49,7 @@ def fused_topk_torch(
 # Benchmark class
 
 
-class FusedTopKBenchmark(BenchmarkBase[FusedTopKTest]):
+class FusedTopKBenchmark(BenchmarkBase[FusedTopKWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -87,7 +87,7 @@ def test_fused_topk_bench(
     num_tokens: int, num_experts: int, top_k: int, scoring_func: str, renormalize: bool
 ) -> None:
     dtype = torch.bfloat16
-    test = FusedTopKTest(num_tokens, num_experts, top_k, scoring_func, renormalize, dtype)
+    test = FusedTopKWorkload(num_tokens, num_experts, top_k, scoring_func, renormalize, dtype)
     bm = FusedTopKBenchmark(test)
     (gating_output,) = test.gen_inputs()
 

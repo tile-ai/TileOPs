@@ -12,7 +12,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoePermuteNopadFwdOp
-from workloads.moe import MoePermuteTest as _MoePermuteTestWorkload
+from workloads.moe import MoePermuteWorkload
 
 
 def _ref_moe_permute_nopad(
@@ -57,7 +57,7 @@ def _ref_moe_permute_nopad(
     return perm_h, true_offsets_t, true_sizes_t, expert_first_token_offset, fwd_idx_t
 
 
-class MoePermuteNopadTest(_MoePermuteTestWorkload, TestBase):
+class MoePermuteNopadTest(MoePermuteWorkload, TestBase):
     def ref_program(self, hidden_states, topk_ids):
         return _ref_moe_permute_nopad(hidden_states, topk_ids, self.num_experts)
 

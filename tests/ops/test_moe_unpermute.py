@@ -18,7 +18,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.moe import MoeUnpermuteFwdOp
-from workloads.moe import MoeUnpermuteTest as _MoeUnpermuteTestWorkload
+from workloads.moe import MoeUnpermuteWorkload
 
 
 def _ref_moe_unpermute(
@@ -42,7 +42,7 @@ def _ref_moe_unpermute(
     return output.to(dtype)
 
 
-class MoeUnpermuteTest(_MoeUnpermuteTestWorkload, TestBase):
+class MoeUnpermuteTest(MoeUnpermuteWorkload, TestBase):
     def ref_program(self, mm2_pad, fwd_idx, topk_weights):
         return _ref_moe_unpermute(mm2_pad, fwd_idx, topk_weights)
 
