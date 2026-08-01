@@ -13,7 +13,7 @@ description: Per-op orchestrator that brings a single op into alignment with its
 
 - **Input**: `op_name` must be present in [`tileops/manifest/`](../../../tileops/manifest/) with `status: spec-only` and a non-empty `source.kernel_map` (same preconditions as scaffold-op; see [PRE_CHECK](#pre_check)).
 - **Path and data bindings used throughout this skill** (resolved by the orchestrator once at `PRE_CHECK` when the manifest entry is first loaded, then passed into every sub-skill invocation):
-  - `<source_op>` — manifest `source.op` path (e.g., `tileops/ops/reduction/cumsum.py`).
+  - `<source_op>` — manifest `source.op` path (e.g., `tileops/ops/reduction/cumulative.py`).
   - `<source_test>` — manifest `source.test` path (e.g., `tests/ops/test_cumulative.py`).
   - `<source_bench>` — manifest `source.bench` path.
   - `<source_kernel>` — manifest `source.kernel` path (the primary kernel implementation file).

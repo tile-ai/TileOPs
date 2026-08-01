@@ -10,7 +10,7 @@ description: Scaffold a new T2 (L1-direct) Op file from a single `tileops/manife
 ## Contract
 
 - **Input**: `op_name` must be present in [`tileops/manifest/`](../../../tileops/manifest/) with `status: spec-only` and a non-empty `source.kernel_map`. `source.kernel_map` is manifest-level source of truth for Op→Kernel dispatch and cannot be derived by the scaffold (dispatch keys are kernel-internal conventions); adding it for a spec-only entry is a prerequisite manifest PR.
-- **Output**: new file at the exact path declared by manifest `source.op` (e.g., `tileops/ops/reduction/cumsum.py`), containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to the package `__init__.py` at that path's parent directory (e.g., `tileops/ops/reduction/__init__.py`) with a matching `__all__` entry. Note: the filesystem package directory (parent of `source.op`) is not always the same as the manifest `family` field — for example, `CumsumFwdOp` has `family: scan` but lives under `tileops/ops/reduction/`. Always key paths off `source.op`, never off `family`. Plus a side-artefact at `.foundry/plan/<op_name>/plan.json` carrying the DRY_RUN self-audit (not tracked in git).
+- **Output**: new file at the exact path declared by manifest `source.op` (e.g., `tileops/ops/reduction/cumulative.py`), containing the 17 scaffold slots; one-line `from .<module> import <ClassName>` added to the package `__init__.py` at that path's parent directory (e.g., `tileops/ops/reduction/__init__.py`) with a matching `__all__` entry. Note: the filesystem package directory (parent of `source.op`) is not always the same as the manifest `family` field — for example, `CumsumFwdOp` has `family: scan` but lives under `tileops/ops/reduction/`. Always key paths off `source.op`, never off `family`. Plus a side-artefact at `.foundry/plan/<op_name>/plan.json` carrying the DRY_RUN self-audit (not tracked in git).
 - **Termination (success)**: `python scripts/validate_manifest.py --check-op <op_name>` reports **no errors** for this op. Warnings are allowed and passed through to the final summary.
 - **Termination (blocked)**: any validator error for `op_name` that the scaffold cannot fix by re-reading the playbook's slot rules. Do NOT commit; report with the failing rows from the validator.
 - **Constraints**:
@@ -76,7 +76,7 @@ PY
 
 Extract: `family`, `status`, `signature.inputs`, `signature.outputs`, `signature.params`, `signature.static_dims`, `signature.shape_rules`, `source.kernel_map`, `source.op`, `source.kernel`, `roofline.vars`, `roofline.flops`, `roofline.bytes`.
 
-Derive the target file path from `source.op` (e.g. `tileops/ops/reduction/cumsum.py`). The **filesystem package directory** is `source.op`'s parent (e.g. `tileops/ops/reduction/`). Do not use the manifest `family` field to compute paths — it is a semantic label, and some ops have `family` distinct from their filesystem parent (e.g., `CumsumFwdOp` has `family: scan` but lives under `reduction/`). Module filename is `source.op`'s basename without `.py`.
+Derive the target file path from `source.op` (e.g. `tileops/ops/reduction/cumulative.py`). The **filesystem package directory** is `source.op`'s parent (e.g. `tileops/ops/reduction/`). Do not use the manifest `family` field to compute paths — it is a semantic label, and some ops have `family` distinct from their filesystem parent (e.g., `CumsumFwdOp` has `family: scan` but lives under `reduction/`). Module filename is `source.op`'s basename without `.py`.
 
 ### 2. PRE_CHECK
 
@@ -106,7 +106,7 @@ Skeleton:
 {
   "locked_facts": {
     "op_name": "CumsumFwdOp",
-    "module_path": "tileops/ops/reduction/cumsum.py",
+    "module_path": "tileops/ops/reduction/cumulative.py",
     "kernel_map": {"cumulative_fwd": "CumulativeKernel"},
     "init_kwargs": [{"name": "dim", "source": "signature.params.dim", "type": "int", "default": -1}],
     "forward_inputs": ["x"],
