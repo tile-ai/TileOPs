@@ -56,7 +56,7 @@ class MeanPoolingForwardOp(Op):
         heads: int,
         dim: int,
         chunk_size: int,
-        chunks_per_bacth: int,
+        chunks_per_batch: int,
         seq_num: int,
         use_offsets: int,
         dtype: torch.dtype,

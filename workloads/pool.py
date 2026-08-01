@@ -306,16 +306,16 @@ class AdaptivePool2dWorkload(WorkloadBase):
 class MeanPoolingWorkload(WorkloadBase):
 
     def __init__(self, batch_size: int, seq_len: int, heads: int, dim: int, chunk_size: int,
-                 chunks_per_bacth: int, seq_num: int, use_offsets: int,
+                 chunks_per_batch: int, seq_num: int, use_offsets: int,
                  dtype: torch.dtype, accum_dtype: torch.dtype,
                  offsets: Optional[torch.Tensor] = None,
-                 indices: Optional[torch.Tensor] = None):
+                 indices: Optional[torch.Tensor] = None) -> None:
         self.batch_size = batch_size
         self.seq_len = seq_len
         self.heads = heads
         self.dim = dim
         self.chunk_size = chunk_size
-        self.chunks_per_bacth = chunks_per_bacth
+        self.chunks_per_batch = chunks_per_batch
         self.seq_num = seq_num
         self.use_offsets = use_offsets
         self.dtype = dtype
@@ -326,5 +326,5 @@ class MeanPoolingWorkload(WorkloadBase):
     def gen_inputs(self) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         x = torch.randn(
             self.batch_size, self.seq_len, self.heads, self.dim,
-            device='cuda', dtype=self.dtype)
+            device="cuda", dtype=self.dtype)
         return x, self.offsets, self.indices

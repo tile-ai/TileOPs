@@ -8,12 +8,6 @@
 Both checked by `benchmarks/tests/test_benchmark_boundaries.py`, which matches names
 literally — it will not catch a draw helper under another name.
 
-## Placement
-
-- `benchmarks/ops/` — one file per manifest op, reachable from that op's `source.bench`.
-- `benchmarks/kernels/` — a kernel that no manifest op wraps one-to-one, whose isolated
-  cost the op-level file can only measure in aggregate.
-
 → [trust-model.md §Benchmark](../../docs/design/trust-model.md#benchmark) | [testing.md §Benchmarks](../../docs/design/testing.md#benchmarks)
 
 ______________________________________________________________________

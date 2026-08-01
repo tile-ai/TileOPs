@@ -17,8 +17,8 @@ class MeanPoolingTest(MeanPoolingWorkload, TestBase):
 
         if self.use_offsets == 0:
             output = torch.empty(
-                batch_size, self.chunks_per_bacth, heads, dim, dtype=x.dtype, device=x.device)
-            for chunk_id in range(self.chunks_per_bacth):
+                batch_size, self.chunks_per_batch, heads, dim, dtype=x.dtype, device=x.device)
+            for chunk_id in range(self.chunks_per_batch):
                 start_token = chunk_id * self.chunk_size
                 end_token = min(start_token + self.chunk_size, seq_len)
                 output[:, chunk_id] = x[:, start_token:end_token].mean(dim=1)
@@ -88,7 +88,7 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
         assert batch_size == 1
         assert offsets[-1] == seq_len
         indices = prepare_chunk_indices(offsets, chunk_size)
-        chunks_per_bacth = indices.shape[0]
+        chunks_per_batch = indices.shape[0]
         seq_num = offsets.shape[0] - 1
         use_offsets = 1
     else:
@@ -98,8 +98,8 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
             dtype=torch.int32,
             device='cuda',
             requires_grad=False)
-        chunks_per_bacth = (seq_len + chunk_size - 1) // chunk_size  # integer ceil
-        indices = torch.randint(0, seq_len, (chunks_per_bacth, 2), dtype=torch.int32, device='cuda')
+        chunks_per_batch = (seq_len + chunk_size - 1) // chunk_size  # integer ceil
+        indices = torch.randint(0, seq_len, (chunks_per_batch, 2), dtype=torch.int32, device='cuda')
         seq_num = batch_size
         use_offsets = 0
 
@@ -109,7 +109,7 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
         "heads": heads,
         "dim": dim,
         "chunk_size": chunk_size,
-        "chunks_per_bacth": chunks_per_bacth,
+        "chunks_per_batch": chunks_per_batch,
         "seq_num": seq_num,
         "use_offsets": use_offsets,
         "dtype": dtype,
@@ -119,7 +119,7 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
 
     test = MeanPoolingTest(
         batch_size=batch_size, seq_len=seq_len, heads=heads, dim=dim,
-        chunk_size=chunk_size, chunks_per_bacth=chunks_per_bacth,
+        chunk_size=chunk_size, chunks_per_batch=chunks_per_batch,
         seq_num=seq_num, use_offsets=use_offsets,
         dtype=dtype, accum_dtype=accum_dtype,
         offsets=offsets, indices=indices)
