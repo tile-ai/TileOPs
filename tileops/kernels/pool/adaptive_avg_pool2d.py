@@ -1,14 +1,10 @@
 import functools
-import itertools
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
-
-from .common import adaptive_bin, max_adaptive_bin_extent
+from .common import AdaptivePool2dKernelBase, adaptive_bin, max_adaptive_bin_extent
 
 __all__ = ["AdaptiveAvgPool2dKernel"]
 
@@ -109,64 +105,8 @@ def _(
     return torch.empty((n, c_in, out_h, out_w), dtype=x.dtype, device=x.device)
 
 
-class AdaptiveAvgPool2dKernel(Kernel):
+class AdaptiveAvgPool2dKernel(AdaptivePool2dKernelBase):
     """Adaptive average pooling forward kernel for NCHW inputs."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        out_h: int,
-        out_w: int,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
-        if dtype not in {torch.float16, torch.bfloat16}:
-            raise ValueError(
-                f"AdaptiveAvgPool2dKernel supports float16 and bfloat16, got {dtype}"
-            )
-        self.n = n
-        self.c_in = c_in
-        self.h_in = h_in
-        self.w_in = w_in
-        self.out_h = out_h
-        self.out_w = out_w
-        self.dtype = dtype
-        self.kernel = _adaptive_avg_pool2d_kernel(
-            n, c_in, h_in, w_in, out_h, out_w, self.dtype_str
-        )
-        self.init_config(config, tune)
-
-    @property
-    def default_config(self) -> dict:
-        return {
-            "block_m": 256,
-            "threads": 256,
-        }
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [
-            {"block_m": block_m, "threads": threads}
-            for block_m, threads in itertools.product([128, 256, 512], [128, 256, 512])
-        ]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _adaptive_avg_pool2d_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.h_in,
-            self.w_in,
-            self.out_h,
-            self.out_w,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["threads"],
-            x,
-        )
+    _build = staticmethod(_adaptive_avg_pool2d_kernel)
+    _dispatch = staticmethod(_adaptive_avg_pool2d_wrapped_kernel)
