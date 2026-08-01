@@ -73,6 +73,9 @@ def test_scalar_prod_reduction(dim: int, keepdim: bool, dtype: torch.dtype) -> N
 
 
 @pytest.mark.smoke
+# A scalar input leaves correction=1 with no degrees of freedom, so both the
+# op and the PyTorch reference warn. That is the contract under test.
+@pytest.mark.filterwarnings("ignore:.*degrees of freedom:UserWarning")
 @pytest.mark.parametrize("dim", _DIMS, ids=_DIM_IDS)
 @pytest.mark.parametrize("keepdim", [False, True], ids=["keepdim=False", "keepdim=True"])
 @pytest.mark.parametrize("dtype", _FLOAT_DTYPES, ids=["fp16", "bf16", "fp32"])
@@ -109,6 +112,7 @@ def test_scalar_welford_reductions(dim, keepdim: bool, dtype: torch.dtype) -> No
 
 
 @pytest.mark.smoke
+@pytest.mark.filterwarnings("ignore:.*degrees of freedom:UserWarning")
 @pytest.mark.parametrize(
     ("shape", "dim"),
     [((1,), None), ((1,), 0), ((2, 1), -1)],

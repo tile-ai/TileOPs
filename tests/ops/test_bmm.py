@@ -5,6 +5,10 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.ops import BmmFp8Op, BmmFwdOp
 from workloads.bmm import BmmFp8Workload, BmmWorkload
 
+# Covering the [B,K,N] path is the point of these tests, so the perf hint
+# BmmFp8Op emits for it is expected output, not a signal.
+pytestmark = pytest.mark.filterwarnings("ignore:BmmFp8Op")
+
 
 class BmmTest(BmmWorkload, TestBase):
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:

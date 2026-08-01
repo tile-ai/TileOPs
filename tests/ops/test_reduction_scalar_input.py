@@ -17,9 +17,13 @@ import warnings
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA required"
-)
+pytestmark = [
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+    # The Welford tests assert on this warning inside their own
+    # ``catch_warnings`` blocks; silence only what the reference calls
+    # outside those blocks emit.
+    pytest.mark.filterwarnings("ignore:.*degrees of freedom:UserWarning"),
+]
 
 
 _DIM_FORMS = [None, 0, -1, (), []]
