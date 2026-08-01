@@ -1,9 +1,8 @@
 # pool.yaml -- manifest entries for the 'pool' family.
 #
 # Source of truth for pooling op interfaces. These entries are generated from
-# PyTorch functional reference APIs. The 1d/2d/3d pooling entries are
-# implemented; the adaptive 2D pooling entries remain spec-only pending
-# kernel implementation.
+# PyTorch functional reference APIs. Each entry's `status` field is the
+# authority on whether it is implemented.
 
 AvgPool1dFwdOp:
   ref_api: "torch.nn.functional.avg_pool1d"
@@ -619,7 +618,8 @@ AdaptiveAvgPool2dFwdOp:
   # Declared on the batched NCHW form (pool-family convention). The Op layer
   # also accepts unbatched CHW input, unsqueezed to NCHW internally.
   family: pool
-  status: spec-only
+  status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -627,7 +627,7 @@ AdaptiveAvgPool2dFwdOp:
     outputs:
       output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
     params:
-      output_size: {type: "int | None | tuple[int | None, int | None]"}
+      output_size: {type: "int | None | tuple[int | None, int | None] | list[int | None]"}
     shape_rules:
       - "output_size is None or isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
       - "_oH == (None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
@@ -669,7 +669,7 @@ AdaptiveAvgPool2dFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 AdaptiveMaxPool2dFwdOp:
   ref_api: "torch.nn.functional.adaptive_max_pool2d"
@@ -677,7 +677,8 @@ AdaptiveMaxPool2dFwdOp:
   # Declared on the batched NCHW form (pool-family convention). The Op layer
   # also accepts unbatched CHW input, unsqueezed to NCHW internally.
   family: pool
-  status: spec-only
+  status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -685,7 +686,7 @@ AdaptiveMaxPool2dFwdOp:
     outputs:
       output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
     params:
-      output_size: {type: "int | None | tuple[int | None, int | None]"}
+      output_size: {type: "int | None | tuple[int | None, int | None] | list[int | None]"}
     shape_rules:
       - "output_size is None or isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
       - "_oH == (None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
@@ -725,7 +726,7 @@ AdaptiveMaxPool2dFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true
 
 AdaptiveMaxPool2dIndicesFwdOp:
   ref_api: "torch.nn.functional.adaptive_max_pool2d"
@@ -733,7 +734,8 @@ AdaptiveMaxPool2dIndicesFwdOp:
   # Declared on the batched NCHW form (pool-family convention). The Op layer
   # also accepts unbatched CHW input, unsqueezed to NCHW internally.
   family: pool
-  status: spec-only
+  status: implemented
+  torch_compile_fullgraph: true
   variant_of: AdaptiveMaxPool2dFwdOp
 
   signature:
@@ -743,7 +745,7 @@ AdaptiveMaxPool2dIndicesFwdOp:
       output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
       indices: {dtype: "int64", shape: "[N, C, H_out, W_out]"}
     params:
-      output_size: {type: "int | None | tuple[int | None, int | None]"}
+      output_size: {type: "int | None | tuple[int | None, int | None] | list[int | None]"}
     shape_rules:
       - "output_size is None or isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
       - "_oH == (None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
@@ -783,4 +785,4 @@ AdaptiveMaxPool2dIndicesFwdOp:
     op: tileops/ops/pool.py
     test: tests/ops/test_pool.py
     bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: false
+    bench_manifest_driven: true

@@ -16,6 +16,9 @@ from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.kernels.pool.common import pool_output_dim
 from tileops.manifest import load_workloads
 from tileops.ops import (
+    AdaptiveAvgPool2dFwdOp,
+    AdaptiveMaxPool2dFwdOp,
+    AdaptiveMaxPool2dIndicesFwdOp,
     AvgPool1dFwdOp,
     AvgPool2dFwdOp,
     AvgPool3dFwdOp,
@@ -27,6 +30,7 @@ from tileops.ops import (
     MaxPool3dIndicesFwdOp,
 )
 from workloads.pool import (
+    AdaptivePool2dWorkload,
     AvgPool1dBenchCase,
     AvgPool2dBenchCase,
     AvgPool3dBenchCase,
@@ -35,6 +39,9 @@ from workloads.pool import (
     MaxPool3dBenchCase,
 )
 
+_ADAPTIVE_AVG_POOL2D_OP_NAME = "AdaptiveAvgPool2dFwdOp"
+_ADAPTIVE_MAX_POOL2D_OP_NAME = "AdaptiveMaxPool2dFwdOp"
+_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME = "AdaptiveMaxPool2dIndicesFwdOp"
 _AVG_POOL1D_OP_NAME = "AvgPool1dFwdOp"
 _AVG_POOL2D_OP_NAME = "AvgPool2dFwdOp"
 _AVG_POOL3D_OP_NAME = "AvgPool3dFwdOp"
@@ -782,6 +789,126 @@ def test_max_pool3d_indices_bench(
         tune=tune,
     )
     bm = ManifestBenchmark(_MAX_POOL3D_INDICES_OP_NAME, op, test)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+
+class _AdaptiveAvgPool2dBenchCase(AdaptivePool2dWorkload):
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        # torch rejects a scalar None here; (None, None) means the same.
+        size = (None, None) if self.output_size is None else self.output_size
+        return F.adaptive_avg_pool2d(x, size)
+
+
+class _AdaptiveMaxPool2dBenchCase(AdaptivePool2dWorkload):
+    def __init__(self, *args, return_indices: bool = False, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.return_indices = return_indices
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        # torch rejects a scalar None here; (None, None) means the same.
+        size = (None, None) if self.output_size is None else self.output_size
+        return F.adaptive_max_pool2d(
+            x, size, return_indices=self.return_indices
+        )
+
+
+def _adaptive_pool2d_bench_params_from_workloads(workloads) -> list:
+    params = []
+    for workload in workloads:
+        n, c_in, h_in, w_in = workload["input_shape"]
+        output_size = tuple(workload["output_size"])
+        label = workload.get("label", f"{n}x{c_in}x{h_in}x{w_in}")
+        for dtype_str in workload["dtypes"]:
+            dtype = getattr(torch, dtype_str)
+            params.append(
+                pytest.param(
+                    n,
+                    c_in,
+                    h_in,
+                    w_in,
+                    output_size,
+                    dtype,
+                    True,
+                    id=f"{label}-{dtype_str}",
+                )
+            )
+    return params
+
+
+@pytest.mark.parametrize(
+    "n, c_in, h_in, w_in, output_size, dtype, tune",
+    _adaptive_pool2d_bench_params_from_workloads(load_workloads(_ADAPTIVE_AVG_POOL2D_OP_NAME)),
+)
+def test_adaptive_avg_pool2d_bench(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    output_size: tuple[int, int],
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    test = _AdaptiveAvgPool2dBenchCase(n, c_in, h_in, w_in, output_size, dtype)
+    inputs = test.gen_inputs()
+
+    op = AdaptiveAvgPool2dFwdOp(output_size=output_size, tune=tune)
+    bm = ManifestBenchmark(_ADAPTIVE_AVG_POOL2D_OP_NAME, op, test)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+
+@pytest.mark.parametrize(
+    "n, c_in, h_in, w_in, output_size, dtype, tune",
+    _adaptive_pool2d_bench_params_from_workloads(load_workloads(_ADAPTIVE_MAX_POOL2D_OP_NAME)),
+)
+def test_adaptive_max_pool2d_bench(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    output_size: tuple[int, int],
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    test = _AdaptiveMaxPool2dBenchCase(n, c_in, h_in, w_in, output_size, dtype)
+    inputs = test.gen_inputs()
+
+    op = AdaptiveMaxPool2dFwdOp(output_size=output_size, tune=tune)
+    bm = ManifestBenchmark(_ADAPTIVE_MAX_POOL2D_OP_NAME, op, test)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+
+@pytest.mark.parametrize(
+    "n, c_in, h_in, w_in, output_size, dtype, tune",
+    _adaptive_pool2d_bench_params_from_workloads(load_workloads(_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME)),
+)
+def test_adaptive_max_pool2d_indices_bench(
+    n: int,
+    c_in: int,
+    h_in: int,
+    w_in: int,
+    output_size: tuple[int, int],
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    test = _AdaptiveMaxPool2dBenchCase(
+        n, c_in, h_in, w_in, output_size, dtype, return_indices=True
+    )
+    inputs = test.gen_inputs()
+
+    op = AdaptiveMaxPool2dIndicesFwdOp(output_size=output_size, tune=tune)
+    bm = ManifestBenchmark(_ADAPTIVE_MAX_POOL2D_INDICES_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

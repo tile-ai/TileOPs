@@ -1,3 +1,5 @@
+from .adaptive_avg_pool2d import AdaptiveAvgPool2dKernel
+from .adaptive_max_pool2d import AdaptiveMaxPool2dKernel, AdaptiveMaxPool2dWithIndicesKernel
 from .avg_pool1d import AvgPool1dKernel, AvgPool1dSpatialKernel
 from .avg_pool2d import AvgPool2dKernel, AvgPool2dSpatialKernel
 from .avg_pool3d import AvgPool3dKernel, AvgPool3dSpatialKernel
@@ -7,6 +9,9 @@ from .max_pool3d import MaxPool3dKernel, MaxPool3dWithIndicesKernel
 from .mean_pooling import MeanPoolingFwdKernel
 
 __all__ = [
+    "AdaptiveAvgPool2dKernel",
+    "AdaptiveMaxPool2dKernel",
+    "AdaptiveMaxPool2dWithIndicesKernel",
     "AvgPool1dKernel",
     "AvgPool1dSpatialKernel",
     "AvgPool2dKernel",
