@@ -83,9 +83,7 @@ def _avg_pool1d_bench_params() -> list:
     return params
 
 
-class _AvgPool1dBenchCase(  # noqa: N801
-    AvgPool1dBenchCase
-):
+class AvgPool1dBenchmarkWorkload(AvgPool1dBenchCase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.avg_pool1d(
             x,
@@ -97,9 +95,7 @@ class _AvgPool1dBenchCase(  # noqa: N801
         )
 
 
-class _AvgPool2dBenchCase(  # noqa: N801
-    AvgPool2dBenchCase
-):
+class AvgPool2dBenchmarkWorkload(AvgPool2dBenchCase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.avg_pool2d(
             x,
@@ -112,9 +108,7 @@ class _AvgPool2dBenchCase(  # noqa: N801
         )
 
 
-class _AvgPool3dBenchCase(  # noqa: N801
-    AvgPool3dBenchCase
-):
+class AvgPool3dBenchmarkWorkload(AvgPool3dBenchCase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.avg_pool3d(
             x,
@@ -127,9 +121,7 @@ class _AvgPool3dBenchCase(  # noqa: N801
         )
 
 
-class _MaxPool2dBenchCase(  # noqa: N801
-    MaxPool2dBenchCase
-):
+class MaxPool2dBenchmarkWorkload(MaxPool2dBenchCase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         return F.max_pool2d(
             x,
@@ -142,9 +134,7 @@ class _MaxPool2dBenchCase(  # noqa: N801
         )
 
 
-class _MaxPool1dBenchCase(  # noqa: N801
-    MaxPool1dBenchCase
-):
+class MaxPool1dBenchmarkWorkload(MaxPool1dBenchCase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         return F.max_pool1d(
             x,
@@ -157,9 +147,7 @@ class _MaxPool1dBenchCase(  # noqa: N801
         )
 
 
-class _MaxPool3dBenchCase(  # noqa: N801
-    MaxPool3dBenchCase
-):
+class MaxPool3dBenchmarkWorkload(MaxPool3dBenchCase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         return F.max_pool3d(
             x,
@@ -188,7 +176,7 @@ def test_avg_pool1d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _AvgPool1dBenchCase(
+    test = AvgPool1dBenchmarkWorkload(
         n, c_in, l_in, kernel_size, stride, padding, ceil_mode, count_include_pad, dtype
     )
     inputs = test.gen_inputs()
@@ -262,7 +250,7 @@ def test_avg_pool2d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _AvgPool2dBenchCase(
+    test = AvgPool2dBenchmarkWorkload(
         n,
         c_in,
         h_in,
@@ -349,7 +337,7 @@ def test_avg_pool3d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _AvgPool3dBenchCase(
+    test = AvgPool3dBenchmarkWorkload(
         n,
         c_in,
         d_in,
@@ -440,7 +428,7 @@ def test_max_pool2d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _MaxPool2dBenchCase(
+    test = MaxPool2dBenchmarkWorkload(
         n,
         c_in,
         h_in,
@@ -487,7 +475,7 @@ def test_max_pool2d_indices_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _MaxPool2dBenchCase(
+    test = MaxPool2dBenchmarkWorkload(
         n,
         c_in,
         h_in,
@@ -577,7 +565,7 @@ def test_max_pool1d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _MaxPool1dBenchCase(
+    test = MaxPool1dBenchmarkWorkload(
         n,
         c_in,
         l_in,
@@ -622,7 +610,7 @@ def test_max_pool1d_indices_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _MaxPool1dBenchCase(
+    test = MaxPool1dBenchmarkWorkload(
         n,
         c_in,
         l_in,
@@ -715,7 +703,7 @@ def test_max_pool3d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _MaxPool3dBenchCase(
+    test = MaxPool3dBenchmarkWorkload(
         n,
         c_in,
         d_in,
@@ -764,7 +752,7 @@ def test_max_pool3d_indices_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _MaxPool3dBenchCase(
+    test = MaxPool3dBenchmarkWorkload(
         n,
         c_in,
         d_in,
