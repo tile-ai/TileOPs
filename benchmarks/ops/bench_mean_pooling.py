@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 import pytest
 import torch
@@ -64,12 +64,12 @@ _MEAN_POOLING_BENCH_PARAMS = [
     pytest.param(2, 2048, 64, 128, 64, torch.float16, torch.float32, True, None, id="dense-batched"),
     pytest.param(
         1, 8192, 64, 128, 64, torch.float16, torch.float32, True,
-        torch.tensor([0, 2048, 4096, 6144, 8192], dtype=torch.int32, device="cuda"),
+        [0, 2048, 4096, 6144, 8192],
         id="varlen-long",
     ),
     pytest.param(
         1, 1000, 64, 128, 32, torch.float16, torch.float32, True,
-        torch.tensor([0, 100, 300, 600, 1000], dtype=torch.int32, device="cuda"),
+        [0, 100, 300, 600, 1000],
         id="varlen-tail",
     ),
 ]
@@ -81,10 +81,11 @@ _MEAN_POOLING_BENCH_PARAMS = [
 )
 def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int, chunk_size: int,
                             dtype: torch.dtype, accum_dtype: torch.dtype, tune: bool,
-                            offsets: Optional[torch.Tensor]) -> None:
+                            offsets: Optional[List[int]]) -> None:
     if offsets is not None:
         assert batch_size == 1
         assert offsets[-1] == seq_len
+        offsets = torch.tensor(offsets, dtype=torch.int32, device="cuda")
         indices = prepare_chunk_indices(offsets, chunk_size)
         chunks_per_bacth = indices.shape[0]
         seq_num = offsets.shape[0] - 1
