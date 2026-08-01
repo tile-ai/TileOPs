@@ -31,15 +31,20 @@ TEARDOWN_TIMEOUT_S = 120
 # = the bench file. prctl(PR_SET_PTRACER, parent) lets py-spy attach under
 # yama ptrace_scope=1. The collect-only pass runs while another file owns
 # the GPU, so it must stay GPU-silent; CUDA init happens after the stdin
-# grant. The exit code leaves via the pipe before interpreter teardown.
+# grant. A failing collect is marked in the log so the parent can attribute
+# it: the child cannot fail here for GPU reasons unless it broke that rule.
+# The exit code leaves via the pipe before interpreter teardown.
 _CHILD = """\
 import ctypes, os, sys
+
+_MARK = "COLLECT-FAILED"
 
 ctypes.CDLL(None).prctl(0x59616D61, os.getppid(), 0, 0, 0)
 
 import pytest
 
-pytest.main(["--collect-only", "-q", sys.argv[3]])
+if pytest.main(["--collect-only", "-q", sys.argv[3]]):
+    print("%s: collect-only failed before the GPU grant" % _MARK, flush=True)
 sys.stdin.readline()
 rc = int(pytest.main(sys.argv[2:]))
 os.write(int(sys.argv[1]), str(rc).encode())
@@ -205,6 +210,16 @@ def _fragment_suites(fragment: Path) -> list[ET.Element]:
     return list(root) if root.tag == "testsuites" else [root]
 
 
+COLLECT_FAILED_MARK = "COLLECT-FAILED"
+
+
+def _collect_failed(log_path: Path) -> bool:
+    """Did this child's collect-only pass fail, before it was granted the GPU?"""
+    with contextlib.suppress(OSError):
+        return COLLECT_FAILED_MARK in log_path.read_text(errors="replace")
+    return False
+
+
 def _log_tail(log_path: Path) -> str:
     return "".join(log_path.read_text(errors="replace").splitlines(keepends=True)[-LOG_TAIL_LINES:])
 
@@ -269,6 +284,7 @@ def main() -> int:
             return Child(_CHILD, argv, work_dir / f"{index:03d}.log")
 
         pending: deque[Child] = deque()
+        collect_failed: list[str] = []
         spawned = 0
 
         def top_up() -> None:
@@ -336,6 +352,8 @@ def main() -> int:
                         message = f"pytest exited with {rc} without writing results"
                         suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
                         failed.append(rel)
+                if _collect_failed(log_path):
+                    collect_failed.append(rel)
                 print(f"--- {rel} finished in {elapsed:.0f}s ---", flush=True)
                 _absorb_profile_log(profile_parts)
         finally:
@@ -349,6 +367,24 @@ def main() -> int:
 
     if profile_parts:
         Path("profile_run.log").write_text("\n".join(profile_parts))
+
+    if collect_failed:
+        if len(collect_failed) == len(bench_files):
+            print(
+                "\nevery file failed collect-only: the environment has no usable GPU,"
+                " or an import shared by all of them is broken",
+                flush=True,
+            )
+        else:
+            print(
+                f"\n{len(collect_failed)} file(s) failed collect-only while another file"
+                " owned the GPU. Collection must not initialise CUDA -- a module-level"
+                " CUDA tensor here can fail the whole sweep on a GPU in Exclusive_Process"
+                " mode, and perturbs the file being measured on a shared one:",
+                flush=True,
+            )
+        for rel in collect_failed:
+            print(f"  {rel}", flush=True)
 
     if failed:
         print(f"\n{len(failed)} benchmark file(s) failed:", flush=True)
