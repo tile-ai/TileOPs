@@ -1730,7 +1730,7 @@ class AdaptiveAvgPool2dFixture(FixtureBase):
                     1, 16, 10, 10, 4, torch.bfloat16, False,
                     marks=pytest.mark.full, id="full-scalar-output-size-bf16"),
                 pytest.param(
-                    1, 8, 9, 11, (None, None), torch.float16, False,
+                    1, 8, 9, 11, None, torch.float16, False,
                     marks=pytest.mark.full, id="full-all-none-identity-fp16"),
             ],
         ),
@@ -1763,7 +1763,9 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
 
 class AdaptiveAvgPool2dTest(AdaptivePool2dWorkload, TestBase):
     def ref_program(self, input: torch.Tensor) -> torch.Tensor:
-        return F.adaptive_avg_pool2d(input, self.torch_output_size)
+        # torch rejects a scalar None here; (None, None) means the same.
+        size = (None, None) if self.output_size is None else self.output_size
+        return F.adaptive_avg_pool2d(input, size)
 
 
 class AdaptiveMaxPool2dTest(AdaptivePool2dWorkload, TestBase):
@@ -1772,8 +1774,10 @@ class AdaptiveMaxPool2dTest(AdaptivePool2dWorkload, TestBase):
         self.return_indices = return_indices
 
     def ref_program(self, input: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        # torch rejects a scalar None here; (None, None) means the same.
+        size = (None, None) if self.output_size is None else self.output_size
         return F.adaptive_max_pool2d(
-            input, self.torch_output_size, return_indices=self.return_indices
+            input, size, return_indices=self.return_indices
         )
 
 
@@ -1858,6 +1862,36 @@ def test_adaptive_pool_compile_fullgraph(
     else:
         ref = F.adaptive_max_pool2d(x, (4, 4))
         torch.testing.assert_close(out, ref, atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+def test_adaptive_pool2d_accepts_chw() -> None:
+    """A 3-D input keeps its rank on the way out; NCHW cases never exercise that."""
+    x = torch.randn(16, 11, 13, device="cuda", dtype=torch.float16)
+    avg = AdaptiveAvgPool2dFwdOp(output_size=(5, 4))(x)
+    assert avg.shape == (16, 5, 4)
+    torch.testing.assert_close(
+        avg.float(), F.adaptive_avg_pool2d(x.float(), (5, 4)), atol=2e-3, rtol=2e-3
+    )
+
+    val, idx = AdaptiveMaxPool2dIndicesFwdOp(output_size=(5, 4))(x)
+    ref_val, ref_idx = F.adaptive_max_pool2d(x.float(), (5, 4), return_indices=True)
+    assert val.shape == (16, 5, 4) and idx.shape == (16, 5, 4)
+    torch.testing.assert_close(val.float(), ref_val, atol=0, rtol=0)
+    torch.testing.assert_close(idx, ref_idx, atol=0, rtol=0)
+
+
+@pytest.mark.smoke
+def test_adaptive_max_pool2d_indices_nan_window() -> None:
+    """A NaN in the window wins, and the recorded index is the last one seen."""
+    x = torch.randn(1, 1, 4, 4, device="cuda", dtype=torch.float16)
+    x[0, 0, 1, 1] = float("nan")
+    x[0, 0, 3, 3] = float("nan")
+
+    val, idx = AdaptiveMaxPool2dIndicesFwdOp(output_size=(1, 1))(x)
+    ref_val, ref_idx = F.adaptive_max_pool2d(x.float(), (1, 1), return_indices=True)
+    assert torch.isnan(val.float()).all()
+    torch.testing.assert_close(idx, ref_idx, atol=0, rtol=0)
 
 
 if __name__ == "__main__":

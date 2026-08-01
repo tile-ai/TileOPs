@@ -22,8 +22,6 @@ def _adaptive_max_pool2d_kernel(
 ):
     accum_dtype = "float"
     total_output = n * c_in * out_h * out_w
-    # TileLang rejects dynamic T.serial bounds, so the loops below need these
-    # as compile-time constants.
     max_kh = max_adaptive_bin_extent(h_in, out_h)
     max_kw = max_adaptive_bin_extent(w_in, out_w)
 
@@ -130,8 +128,6 @@ def _adaptive_max_pool2d_with_indices_kernel(
 ):
     accum_dtype = "float"
     total_output = n * c_in * out_h * out_w
-    # TileLang rejects dynamic T.serial bounds, so the loops below need these
-    # as compile-time constants.
     max_kh = max_adaptive_bin_extent(h_in, out_h)
     max_kw = max_adaptive_bin_extent(w_in, out_w)
 

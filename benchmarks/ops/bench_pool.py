@@ -798,7 +798,9 @@ def test_max_pool3d_indices_bench(
 
 class _AdaptiveAvgPool2dBenchCase(AdaptivePool2dWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return F.adaptive_avg_pool2d(x, self.torch_output_size)
+        # torch rejects a scalar None here; (None, None) means the same.
+        size = (None, None) if self.output_size is None else self.output_size
+        return F.adaptive_avg_pool2d(x, size)
 
 
 class _AdaptiveMaxPool2dBenchCase(AdaptivePool2dWorkload):
@@ -807,8 +809,10 @@ class _AdaptiveMaxPool2dBenchCase(AdaptivePool2dWorkload):
         self.return_indices = return_indices
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        # torch rejects a scalar None here; (None, None) means the same.
+        size = (None, None) if self.output_size is None else self.output_size
         return F.adaptive_max_pool2d(
-            x, self.torch_output_size, return_indices=self.return_indices
+            x, size, return_indices=self.return_indices
         )
 
 

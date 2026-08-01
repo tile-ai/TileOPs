@@ -275,9 +275,7 @@ class MaxPoolWorkload(WorkloadBase):
 class AdaptivePool2dWorkload(WorkloadBase):
     """One NCHW tensor for the adaptive 2D pool family.
 
-    ``output_size`` shapes no input; it rides along because the op and both
-    oracles need it, and PyTorch's scalar-``None`` spelling is normalised here
-    so neither stage repeats the rule.
+    ``output_size`` shapes no input; it rides along because the op needs it.
     """
 
     def __init__(
@@ -296,10 +294,6 @@ class AdaptivePool2dWorkload(WorkloadBase):
         self.output_size = output_size
         self.dtype = dtype
 
-    @property
-    def torch_output_size(self) -> tuple[int | None, int | None] | int | tuple[int, int]:
-        """torch 2.10 rejects a scalar ``None``; ``(None, None)`` is the same."""
-        return (None, None) if self.output_size is None else self.output_size
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(
