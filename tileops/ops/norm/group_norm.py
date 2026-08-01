@@ -73,7 +73,6 @@ class GroupNormFwdOp(Op):
         self.M: Optional[int] = None
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[tuple, Kernel] = {}
-        self._constant_cache: Dict[tuple, Tuple[torch.Tensor, torch.Tensor]] = {}
         self.kernel: Optional[Kernel] = None
         self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype]] = None
 
@@ -136,28 +135,21 @@ class GroupNormFwdOp(Op):
         self.dtype = dtype
         self._last_roofline_spec = (N, C, spatial_size, dtype)
 
-    def _get_kernel_and_constants(
+    def _get_kernel(
         self,
         M: int,
         D: int,
         dtype: torch.dtype,
-        device: torch.device,
         device_index: Optional[int],
-    ) -> Tuple[Kernel, torch.Tensor, torch.Tensor]:
+    ) -> Kernel:
         key = (M, D, dtype, device_index, self.eps, self.tune)
         if key not in self._kernel_cache:
             self._kernel_cache[key] = self.kernel_map["group_norm"](
                 M, D, self.eps, dtype, tune=self.tune,
             )
-        if key not in self._constant_cache:
-            self._constant_cache[key] = (
-                torch.ones(D, dtype=dtype, device=device),
-                torch.zeros(D, dtype=dtype, device=device),
-            )
         kernel = self._kernel_cache[key]
         self.kernel = kernel
-        unit_weight, zero_bias = self._constant_cache[key]
-        return kernel, unit_weight, zero_bias
+        return kernel
 
     def forward(
         self,
@@ -231,9 +223,7 @@ class GroupNormFwdOp(Op):
             )
 
         self._bind_spec(N, C, spatial, spatial_size, D, M, dtype)
-        kernel, unit_weight, zero_bias = self._get_kernel_and_constants(
-            M, D, dtype, x.device, x.device.index,
-        )
+        kernel = self._get_kernel(M, D, dtype, x.device.index)
         orig_shape = x.shape
         x = x.contiguous()
         x_reshaped = x.reshape(
@@ -241,10 +231,10 @@ class GroupNormFwdOp(Op):
         )
         x_2d = x_reshaped.reshape(M, D)
 
-        # Kernel broadcasts 1D weight/bias row-wise; GroupNorm's per-group
-        # affine doesn't fit that layout, so run the kernel with identity
-        # (unit/zero) and apply per-channel affine after.
-        y_2d = kernel(x_2d, unit_weight, zero_bias)
+        # The kernel broadcasts its affine row-wise; GroupNorm's per-channel
+        # affine doesn't fit that layout, so normalize without an affine and
+        # apply the per-channel scale/shift after.
+        y_2d = kernel(x_2d)
 
         y = y_2d.reshape(N, self.num_groups, cpg, *spatial)
         y = y.reshape(orig_shape)

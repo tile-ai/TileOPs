@@ -178,6 +178,7 @@ class GroupNormKernel(Kernel):
         self.dtype = dtype
         self.D_padded = _align_up(D, ALIGNMENT)
         self.kernel = _group_norm_kernel(self.M, self.D, self.eps, self.dtype_str)
+        self._identity_affine: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}
         self.init_config(config, tune)
 
     @property
@@ -188,21 +189,49 @@ class GroupNormKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return select_row_configs(self.D_padded, self.dtype)
 
-    def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+    def _identity_affine_for(
+        self, device: torch.device
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return cached unit-scale / zero-shift buffers of the launch width."""
+        buffers = self._identity_affine.get(device)
+        if buffers is None:
+            buffers = (
+                torch.ones(self.D_padded, dtype=self.dtype, device=device),
+                torch.zeros(self.D_padded, dtype=self.dtype, device=device),
+            )
+            self._identity_affine[device] = buffers
+        return buffers
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: Optional[torch.Tensor] = None,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Normalize ``(M, D)`` rows with a row-broadcast affine.
 
         Args:
             x: Input of shape ``(M, D)``.
-            weight: Affine scale of shape ``(D,)``.
-            bias: Affine shift of shape ``(D,)``.
+            weight: Affine scale of shape ``(D,)``. Omit together with *bias*
+                to normalize without an affine.
+            bias: Affine shift of shape ``(D,)``. Omit together with *weight*
+                to normalize without an affine.
 
         Returns:
             Tensor of shape ``(M, D)``. The alignment padding the prim_func
             requires is applied and trimmed here.
+
+        Raises:
+            ValueError: If exactly one of *weight* / *bias* is omitted.
         """
+        if (weight is None) != (bias is None):
+            raise ValueError("weight and bias must be supplied together")
         pad = self.D_padded - self.D
         if pad:
             x = F.pad(x, (0, pad))
+        if weight is None:
+            weight, bias = self._identity_affine_for(x.device)
+        elif pad:
             weight = F.pad(weight, (0, pad))
             bias = F.pad(bias, (0, pad))
         y = _group_norm_wrapped(
