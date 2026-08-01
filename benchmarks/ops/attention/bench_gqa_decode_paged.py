@@ -14,7 +14,7 @@ from workloads.attention.gqa import GroupedQueryAttentionDecodePagedTest
 _OP_NAME = "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp"
 
 
-class _GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodePagedTest):
+class GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodePagedTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -143,7 +143,7 @@ _GQA_DECODE_PAGED_BENCH_PARAMS = manifest_params(
 def test_gqa_decode_paged_bench(batch: int, heads: int, heads_kv: int, seqlen_kv: int, dim: int,
                                 page_size: int, sm_scale: float | None,
                                 softcap: float | None, dtype: torch.dtype, tune: bool) -> None:
-    test = _GroupedQueryAttentionDecodePagedTestBaseline(
+    test = GroupedQueryAttentionDecodePagedTestBaseline(
         batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype,
         sm_scale=sm_scale, softcap=softcap)
     inputs = test.gen_inputs()

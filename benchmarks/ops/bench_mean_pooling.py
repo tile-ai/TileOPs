@@ -9,7 +9,7 @@ from workloads.nsa_utils import prepare_chunk_indices
 from workloads.pool import MeanPoolingTest
 
 
-class _MeanPoolingTestBaseline(MeanPoolingTest):
+class MeanPoolingTestBaseline(MeanPoolingTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, x: torch.Tensor, offsets: torch.Tensor,
@@ -116,7 +116,7 @@ def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int,
         "tune": tune,
     }
 
-    test = _MeanPoolingTestBaseline(
+    test = MeanPoolingTestBaseline(
         batch_size=batch_size, seq_len=seq_len, heads=heads, dim=dim,
         chunk_size=chunk_size, chunks_per_bacth=chunks_per_bacth,
         seq_num=seq_num, use_offsets=use_offsets,

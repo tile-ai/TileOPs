@@ -29,7 +29,7 @@ from workloads.grouped_gemm import (
 _TUNE = True
 
 
-class _GroupedGemmTestBaseline(GroupedGemmTest):
+class GroupedGemmTestBaseline(GroupedGemmTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, A: torch.Tensor, B: torch.Tensor, batch_sizes: torch.Tensor,
@@ -111,7 +111,7 @@ def test_grouped_gemm_bench(batch_sum: int, batch_count: int, N: int, K: int,
     layout = ("T" if transpose_a else "N") + ("T" if transpose_b else "N")
     name = f"grouped_gemm_{layout.lower()}"
 
-    test = _GroupedGemmTestBaseline(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
+    test = GroupedGemmTestBaseline(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
     inputs = test.gen_inputs()
 
     op = GroupedGemmOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=_TUNE)

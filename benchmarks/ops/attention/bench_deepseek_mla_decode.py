@@ -12,7 +12,7 @@ from workloads.attention.deepseek import MlaDecodeTest
 _OP_NAME = "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp"
 
 
-class _MlaDecodeTestBaseline(MlaDecodeTest):
+class MlaDecodeTestBaseline(MlaDecodeTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, q_pe: torch.Tensor, kv: torch.Tensor,
@@ -68,7 +68,7 @@ _MLA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mla_decode_
 )
 def test_mla_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                           dim_pe: int, dtype: torch.dtype, tune: bool) -> None:
-    test = _MlaDecodeTestBaseline(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
+    test = MlaDecodeTestBaseline(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
     inputs = test.gen_inputs()
 
     op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(

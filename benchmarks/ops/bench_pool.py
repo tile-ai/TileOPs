@@ -784,14 +784,14 @@ def test_max_pool3d_indices_bench(
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
 
 
-class _AdaptiveAvgPool2dBenchCase(AdaptivePool2dWorkload):
+class AdaptiveAvgPool2dBenchmarkWorkload(AdaptivePool2dWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         # torch rejects a scalar None here; (None, None) means the same.
         size = (None, None) if self.output_size is None else self.output_size
         return F.adaptive_avg_pool2d(x, size)
 
 
-class _AdaptiveMaxPool2dBenchCase(AdaptivePool2dWorkload):
+class AdaptiveMaxPool2dBenchmarkWorkload(AdaptivePool2dWorkload):
     def __init__(self, *args, return_indices: bool = False, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.return_indices = return_indices
@@ -840,7 +840,7 @@ def test_adaptive_avg_pool2d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _AdaptiveAvgPool2dBenchCase(n, c_in, h_in, w_in, output_size, dtype)
+    test = AdaptiveAvgPool2dBenchmarkWorkload(n, c_in, h_in, w_in, output_size, dtype)
     inputs = test.gen_inputs()
 
     op = AdaptiveAvgPool2dFwdOp(output_size=output_size, tune=tune)
@@ -865,7 +865,7 @@ def test_adaptive_max_pool2d_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _AdaptiveMaxPool2dBenchCase(n, c_in, h_in, w_in, output_size, dtype)
+    test = AdaptiveMaxPool2dBenchmarkWorkload(n, c_in, h_in, w_in, output_size, dtype)
     inputs = test.gen_inputs()
 
     op = AdaptiveMaxPool2dFwdOp(output_size=output_size, tune=tune)
@@ -890,7 +890,7 @@ def test_adaptive_max_pool2d_indices_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _AdaptiveMaxPool2dBenchCase(
+    test = AdaptiveMaxPool2dBenchmarkWorkload(
         n, c_in, h_in, w_in, output_size, dtype, return_indices=True
     )
     inputs = test.gen_inputs()

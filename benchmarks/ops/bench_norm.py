@@ -18,7 +18,7 @@ from workloads.normalization import (
 )
 
 
-class _RMSNormTestBaseline(RMSNormTest):
+class RMSNormTestBaseline(RMSNormTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -45,7 +45,7 @@ def _rms_params():
 
 @pytest.mark.parametrize("m, n, dtype, tune", _rms_params())
 def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = _RMSNormTestBaseline(m, n, dtype)
+    test = RMSNormTestBaseline(m, n, dtype)
     inputs = test.gen_inputs()
 
     op = RMSNormFwdOp(normalized_shape=(n,), dtype=dtype, tune=tune)

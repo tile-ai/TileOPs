@@ -126,7 +126,7 @@ def prepare_wy_repr_deltanet_torch(k, beta, chunk_size):
     return a_inv, a_inv.clone()
 
 
-class _DeltaNetFwdTestBaseline(DeltaNetFwdTest):
+class DeltaNetFwdTestBaseline(DeltaNetFwdTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(
@@ -201,7 +201,7 @@ def test_deltanet_vs_fla_fwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _DeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = DeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = DeltaNetFwdBenchmark(test)
     inputs = test.gen_inputs()  # q, k, v, beta (BHSD)
 
@@ -267,7 +267,7 @@ def test_deltanet_vs_fla_bwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _DeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = DeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = DeltaNetBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
@@ -354,7 +354,7 @@ def test_deltanet_vs_fla_fwdbwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _DeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = DeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = DeltaNetFwdBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size

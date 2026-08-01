@@ -44,7 +44,7 @@ def gla_decode_torch(
     return o, new_state
 
 
-class _GLADecodeTestBaseline(GLADecodeTest):
+class GLADecodeTestBaseline(GLADecodeTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(
@@ -112,7 +112,7 @@ def test_gla_decode_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _GLADecodeTestBaseline(batch, heads, dim_k, dim_v, dtype, scale=scale)
+    test = GLADecodeTestBaseline(batch, heads, dim_k, dim_v, dtype, scale=scale)
     inputs = test.gen_inputs()
 
     # --- TileOPs ---

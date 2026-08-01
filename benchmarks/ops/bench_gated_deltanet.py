@@ -143,7 +143,7 @@ def prepare_wy_repr_gated_torch(k, g_cum, beta, chunk_size):
     return a_g_inv, a_g_inv.clone()
 
 
-class _GatedDeltaNetFwdTestBaseline(GatedDeltaNetFwdTest):
+class GatedDeltaNetFwdTestBaseline(GatedDeltaNetFwdTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(
@@ -225,7 +225,7 @@ def test_gated_deltanet_vs_fla_fwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = GatedDeltaNetFwdBenchmark(test)
     inputs = test.gen_inputs()  # q, k, v, g, beta  (BHSD)
 
@@ -293,7 +293,7 @@ def test_gated_deltanet_vs_fla_bwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = GatedDeltaNetBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
@@ -384,7 +384,7 @@ def test_gated_deltanet_vs_fla_fwdbwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+    test = GatedDeltaNetFwdTestBaseline(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     bm = GatedDeltaNetFwdBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size

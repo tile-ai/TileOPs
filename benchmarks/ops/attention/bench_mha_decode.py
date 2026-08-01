@@ -12,7 +12,7 @@ from workloads.attention.mha import MhaDecodeTest
 _OP_NAME = "MultiHeadAttentionDecodeWithKVCacheFwdOp"
 
 
-class _MhaDecodeTestBaseline(MhaDecodeTest):
+class MhaDecodeTestBaseline(MhaDecodeTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
@@ -73,7 +73,7 @@ _MHA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), mha_decode_
 @pytest.mark.parametrize("b, h, s_q, s_kv, d, dtype, tune", _MHA_DECODE_BENCH_PARAMS)
 def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype,
                           tune: bool) -> None:
-    test = _MhaDecodeTestBaseline(b, h, s_q, s_kv, d, dtype)
+    test = MhaDecodeTestBaseline(b, h, s_q, s_kv, d, dtype)
     inputs = test.gen_inputs()
 
     op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, dtype, tune=tune)

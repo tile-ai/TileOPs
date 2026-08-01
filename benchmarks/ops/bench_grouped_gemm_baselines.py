@@ -379,7 +379,7 @@ CASES = [
 
 
 @dataclass(frozen=True)
-class _GroupedGemmBaselineWorkload:
+class GroupedGemmBaselineWorkload:
     """Shape carrier for the grouped-GEMM roofline (uniform routing)."""
 
     numel: int   # total rows = M_per_expert * num_experts
@@ -390,7 +390,7 @@ class _GroupedGemmBaselineWorkload:
     label: str
 
 
-class GroupedGemmBaselinesBenchmark(BenchmarkBase[_GroupedGemmBaselineWorkload]):
+class GroupedGemmBaselinesBenchmark(BenchmarkBase[GroupedGemmBaselineWorkload]):
     """Hand-written roofline for the 3WG grouped GEMM vs external baselines.
 
     The 3WG kernel is not an aligned Op (no manifest entry), so FLOP/memory are
@@ -473,7 +473,7 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
     try:
         A, B, sizes, offsets, m_indices, offs_cumsum, per = gen_baseline_inputs(numel, E, N, K)
         B_KN = B.transpose(1, 2).contiguous()  # [E, K, N] for torch & non-TMA triton
-        workload = _GroupedGemmBaselineWorkload(numel, E, N, K, _DTYPE, label)
+        workload = GroupedGemmBaselineWorkload(numel, E, N, K, _DTYPE, label)
         bm = GroupedGemmBaselinesBenchmark(workload)
 
         # ---- ours: 3-WG persistent (pre-allocated out via out=) ----

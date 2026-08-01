@@ -18,7 +18,7 @@ _TUNE = False
 _CONFIG = None
 
 
-class _FP8LightningIndexerBaseline(FP8LightningIndexerWorkload):
+class FP8LightningIndexerBaseline(FP8LightningIndexerWorkload):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, kv: torch.Tensor, weights: torch.Tensor,
@@ -79,7 +79,7 @@ def _indexer_params() -> list:
 def test_fp8_lightning_indexer_bench(batch: int, seq_len: int, heads: int, index_dim: int,
                                      seq_len_kv: int, kv_group: int,
                                      clean_logits: bool) -> None:
-    test = _FP8LightningIndexerBaseline(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
+    test = FP8LightningIndexerBaseline(batch, seq_len, heads, index_dim, seq_len_kv, kv_group,
                                         clean_logits, _CONFIG)
     inputs = test.gen_inputs()
 

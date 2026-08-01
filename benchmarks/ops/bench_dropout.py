@@ -17,7 +17,7 @@ from workloads.elementwise import ShapedRandnWorkload
 _OP_NAME = "DropoutOp"
 
 
-class _DropoutBenchmarkWorkload(ShapedRandnWorkload):
+class DropoutBenchmarkWorkload(ShapedRandnWorkload):
     def __init__(self, shape: tuple, dtype, p: float = 0.5):
         super().__init__(shape, dtype)
         self.p = p
@@ -27,7 +27,7 @@ class _DropoutBenchmarkWorkload(ShapedRandnWorkload):
 
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_OP_NAME))
 def test_dropout_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = _DropoutBenchmarkWorkload(shape, dtype)
+    test = DropoutBenchmarkWorkload(shape, dtype)
     (x,) = test.gen_inputs()
 
     op = DropoutOp(p=test.p, seed=42)

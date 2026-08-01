@@ -22,7 +22,7 @@ from workloads.topk_selector import TopkSelectorTest
 _TUNE = True
 
 
-class _TopkSelectorTestBaseline(TopkSelectorTest):
+class TopkSelectorTestBaseline(TopkSelectorTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, index_score: torch.Tensor, starts: torch.Tensor,
@@ -46,7 +46,7 @@ _TOPK_SELECTOR_PARAMS = workload_field_params(
 )
 def test_topk_selector_bench(batch: int, seq_len: int, seq_len_kv: int, kv_group: int, topk: int,
                              in_dtype: torch.dtype, out_dtype: torch.dtype) -> None:
-    test = _TopkSelectorTestBaseline(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype,
+    test = TopkSelectorTestBaseline(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype,
                                      out_dtype)
     inputs = test.gen_inputs()
 

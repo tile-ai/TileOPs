@@ -43,7 +43,7 @@ def gated_deltanet_decode_torch(
     return o, new_state
 
 
-class _GatedDeltaNetDecodeTestBaseline(GatedDeltaNetDecodeTest):
+class GatedDeltaNetDecodeTestBaseline(GatedDeltaNetDecodeTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(
@@ -105,7 +105,7 @@ def test_gated_deltanet_decode_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _GatedDeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
+    test = GatedDeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
     inputs = test.gen_inputs()
 
     op = GatedDeltaNetDecodeOp(tune=tune)

@@ -21,7 +21,7 @@ _DTYPE_MAP = {
 }
 
 
-class _GemmBenchmarkWorkload(GemmWorkload):
+class GemmBenchmarkWorkload(GemmWorkload):
     def torch_matmul(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if self.trans_a:
             a = a.T
@@ -30,7 +30,7 @@ class _GemmBenchmarkWorkload(GemmWorkload):
         return torch.matmul(a, b)
 
 
-class _GemmFp8BenchmarkWorkload(GemmFp8Workload):
+class GemmFp8BenchmarkWorkload(GemmFp8Workload):
     def _expand_scale(self, scale: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
         if tuple(scale.shape) == (1, 1):
             return scale.expand(rows, cols)
@@ -51,7 +51,7 @@ class _GemmFp8BenchmarkWorkload(GemmFp8Workload):
         return out.to(self.out_dtype)
 
 
-class _GemmW4A16BenchmarkWorkload(GemmW4A16Workload):
+class GemmW4A16BenchmarkWorkload(GemmW4A16Workload):
     def torch_dequantized_matmul(
         self,
         activation: torch.Tensor,
@@ -64,7 +64,7 @@ class _GemmW4A16BenchmarkWorkload(GemmW4A16Workload):
 
 
 def _flashinfer_fp8_blockscale_ref(
-    workload: _GemmFp8BenchmarkWorkload, *inputs: torch.Tensor
+    workload: GemmFp8BenchmarkWorkload, *inputs: torch.Tensor
 ) -> torch.Tensor:
     from flashinfer.gemm import fp8_blockscale_gemm_sm90
 
@@ -90,7 +90,7 @@ def _flashinfer_fp8_blockscale_ref(
 
 
 def _prepare_flashinfer_fp8_per_tensor(
-    workload: _GemmFp8BenchmarkWorkload, *inputs: torch.Tensor
+    workload: GemmFp8BenchmarkWorkload, *inputs: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     import flashinfer
 
@@ -256,7 +256,7 @@ def test_gemm_bench(
     dtype_str: str,
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
-    workload = _GemmBenchmarkWorkload(m, n, k, dtype, trans_a, trans_b)
+    workload = GemmBenchmarkWorkload(m, n, k, dtype, trans_a, trans_b)
     a, b = workload.gen_inputs()
 
     op = GemmOp(trans_a=trans_a, trans_b=trans_b)
@@ -281,7 +281,7 @@ def test_gemm_fp8_bench(
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
     out_dtype = torch.bfloat16
-    workload = _GemmFp8BenchmarkWorkload(m, n, k, dtype, scale_mode, out_dtype=out_dtype)
+    workload = GemmFp8BenchmarkWorkload(m, n, k, dtype, scale_mode, out_dtype=out_dtype)
     inputs = workload.gen_inputs()
 
     op = GemmFp8Op(out_dtype=out_dtype)
@@ -334,7 +334,7 @@ def test_gemm_w4a16_bench(
     dtype_str: str,
 ) -> None:
     dtype = _DTYPE_MAP[dtype_str]
-    workload = _GemmW4A16BenchmarkWorkload(m, n, k, dtype, group_size=group_size)
+    workload = GemmW4A16BenchmarkWorkload(m, n, k, dtype, group_size=group_size)
     inputs = workload.gen_inputs()
 
     op = GemmW4A16Op(group_size=group_size)

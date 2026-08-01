@@ -39,7 +39,7 @@ def deltanet_decode_torch(
     return o, new_state
 
 
-class _DeltaNetDecodeTestBaseline(DeltaNetDecodeTest):
+class DeltaNetDecodeTestBaseline(DeltaNetDecodeTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(
@@ -95,7 +95,7 @@ def test_deltanet_decode_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = _DeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
+    test = DeltaNetDecodeTestBaseline(batch, heads, dim_k, dim_v, dtype)
     inputs = test.gen_inputs()
 
     op = DeltaNetDecodeOp(tune=tune)

@@ -134,7 +134,7 @@ def ref_engram_gate_conv_bwd(dY, H, k, v, rms_w_h, rms_w_v, conv_w,
     )
 
 
-class _EngramGateConvBwdTestBaseline(EngramGateConvBwdTest):
+class EngramGateConvBwdTestBaseline(EngramGateConvBwdTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, dY, H, k, v, rms_w_h, rms_w_v, conv_w,
@@ -153,7 +153,7 @@ _ENGRAM_GATE_CONV_BWD_PARAMS = workload_field_params(
 
 @pytest.mark.parametrize("M, seq_len, d, dtype", _ENGRAM_GATE_CONV_BWD_PARAMS)
 def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
-    test = _EngramGateConvBwdTestBaseline(M, seq_len, d, dtype)
+    test = EngramGateConvBwdTestBaseline(M, seq_len, d, dtype)
     inputs = test.gen_inputs()
 
     op = EngramGateConvBwdOp(M, seq_len, d, dtype, tune=_TUNE)

@@ -11,7 +11,7 @@ from workloads.attention.gqa import GroupedQueryAttentionDecodeTest
 _OP_NAME = "GroupedQueryAttentionDecodeWithKVCacheFwdOp"
 
 
-class _GroupedQueryAttentionDecodeTestBaseline(GroupedQueryAttentionDecodeTest):
+class GroupedQueryAttentionDecodeTestBaseline(GroupedQueryAttentionDecodeTest):
     """Adds baseline ref_program for benchmark profiling."""
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
@@ -135,7 +135,7 @@ _GQA_DECODE_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), gqa_decode_
 def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim: int,
                           sm_scale: float | None, softcap: float | None, dtype: torch.dtype,
                           tune: bool) -> None:
-    test = _GroupedQueryAttentionDecodeTestBaseline(
+    test = GroupedQueryAttentionDecodeTestBaseline(
         batch, heads, heads_kv, seq_len_kv, dim, dtype, sm_scale=sm_scale, softcap=softcap)
     inputs = test.gen_inputs()
 
