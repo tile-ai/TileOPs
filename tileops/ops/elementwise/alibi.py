@@ -8,7 +8,6 @@ from tileops.kernels.elementwise import AlibiFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _apply_fp8_post_cast
 
 
 class AlibiFwdOp(Op):
@@ -66,6 +65,4 @@ class AlibiFwdOp(Op):
         return 3 * n_elem, self.total_memory
 
     def forward(self) -> torch.Tensor:
-        out = self.kernel()
-        result = out.reshape(self.num_heads, self.seq_len, self.seq_len)
-        return _apply_fp8_post_cast(result, self.kernel)
+        return self.kernel().reshape(self.num_heads, self.seq_len, self.seq_len)

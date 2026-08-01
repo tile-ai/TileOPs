@@ -6,7 +6,6 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.cumulative import CumulativeKernel
 
 from ..op_base import Op
@@ -130,10 +129,6 @@ class CumulativeOp(Op):
         y = self._get_kernel(M, N, dtype, x.device.index)(x)
         self._last_roofline_mn = (M, N)
 
-        # Kernel output is N_padded-wide along last dim; trim to N.
-        N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        if N_padded != N:
-            y = y[:, :N]
         y = y.reshape(post_move_shape)
         if dim_norm != ndim - 1:
             y = y.movedim(-1, dim_norm)

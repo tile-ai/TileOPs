@@ -22,6 +22,7 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
+import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -30,6 +31,11 @@ from ._config import select_row_config, select_row_configs
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
 ALIGNMENT = 256
+
+# Largest candidate block_m in GroupNormNoAffineKernel.autotune_configs. The
+# row count is padded to a multiple of this value so the full-tile T.copy
+# never crosses the M boundary regardless of the selected block_m.
+_M_BLOCK_ALIGN = 16
 
 
 def _align_up(n: int, alignment: int) -> int:
@@ -183,7 +189,23 @@ class GroupNormKernel(Kernel):
         return select_row_configs(self.D_padded, self.dtype)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
-        return _group_norm_wrapped(
+        """Normalize ``(M, D)`` rows with a row-broadcast affine.
+
+        Args:
+            x: Input of shape ``(M, D)``.
+            weight: Affine scale of shape ``(D,)``.
+            bias: Affine shift of shape ``(D,)``.
+
+        Returns:
+            Tensor of shape ``(M, D)``. The alignment padding the prim_func
+            requires is applied and trimmed here.
+        """
+        pad = self.D_padded - self.D
+        if pad:
+            x = F.pad(x, (0, pad))
+            weight = F.pad(weight, (0, pad))
+            bias = F.pad(bias, (0, pad))
+        y = _group_norm_wrapped(
             self.M,
             self.D,
             self.eps,
@@ -194,6 +216,7 @@ class GroupNormKernel(Kernel):
             weight,
             bias,
         )
+        return y[:, : self.D] if pad else y
 
 
 @functools.lru_cache(maxsize=32)
@@ -294,7 +317,8 @@ class GroupNormNoAffineKernel(Kernel):
     InstanceNorm.
 
     Args:
-        M: Number of rows = N * G.
+        M: Number of rows = N * G. Rounded up internally to a whole number
+            of ``block_m`` tiles.
         D: Row length = (C / G) * spatial_size.
         eps: Epsilon for numerical stability.
         dtype: Data type (float32, float16, or bfloat16).
@@ -319,8 +343,9 @@ class GroupNormNoAffineKernel(Kernel):
         self.eps = eps
         self.dtype = dtype
         self.D_padded = _align_up(D, ALIGNMENT)
+        self.M_padded = _align_up(M, _M_BLOCK_ALIGN)
         self.kernel = _group_norm_no_affine_kernel(
-            self.M, self.D, self.eps, self.dtype_str,
+            self.M_padded, self.D, self.eps, self.dtype_str,
         )
         self.init_config(config, tune)
 
@@ -333,8 +358,23 @@ class GroupNormNoAffineKernel(Kernel):
         return select_row_configs(self.D_padded, self.dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _group_norm_no_affine_wrapped(
-            self.M,
+        """Normalize ``(M, D)`` rows without an affine.
+
+        Args:
+            x: Input of shape ``(M, D)``.
+
+        Returns:
+            Tensor of shape ``(M, D)``. Both the row-count and row-length
+            padding the prim_func requires are applied and trimmed here.
+        """
+        d_pad = self.D_padded - self.D
+        m_pad = self.M_padded - self.M
+        if d_pad:
+            x = F.pad(x, (0, d_pad))
+        if m_pad:
+            x = F.pad(x, (0, 0, 0, m_pad))
+        y = _group_norm_no_affine_wrapped(
+            self.M_padded,
             self.D,
             self.eps,
             self.dtype_str,
@@ -342,3 +382,8 @@ class GroupNormNoAffineKernel(Kernel):
             self.config["threads"],
             x,
         )
+        if m_pad:
+            y = y[: self.M, :]
+        if d_pad:
+            y = y[:, : self.D]
+        return y

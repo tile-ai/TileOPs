@@ -12,7 +12,7 @@ from tileops.kernels.elementwise import (
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _OP_REGISTRY, _apply_fp8_post_cast, _validate_scalar_param_repr
+from ._base import _OP_REGISTRY, _validate_scalar_param_repr
 
 
 class MaskedFillFwdOp(Op):
@@ -227,8 +227,7 @@ class MaskedFillScalarFwdOp(Op):
         result = self.kernel(x_flat, mask_flat)
         if self._bool_storage:
             result = result.view(torch.bool)
-        result = result.view(self.out_shape if self.out_shape else ())
-        return _apply_fp8_post_cast(result, self.kernel)
+        return result.view(self.out_shape if self.out_shape else ())
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:

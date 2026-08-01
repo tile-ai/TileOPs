@@ -13,6 +13,7 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
+import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -136,7 +137,22 @@ class RMSNormKernel(Kernel):
         return select_row_configs(self.N_padded, self.dtype)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        return _rms_norm_wrapped(
+        """Normalize ``x`` row-wise.
+
+        Args:
+            x: Input of shape ``(M, N)``.
+            weight: Affine scale of shape ``(N,)``.
+
+        Returns:
+            Tensor of shape ``(M, N)``. The alignment padding the prim_func
+            requires is applied and trimmed here, so callers only ever see
+            the semantic ``N``-wide result.
+        """
+        pad = self.N_padded - self.N
+        if pad:
+            x = F.pad(x, (0, pad))
+            weight = F.pad(weight, (0, pad))
+        y = _rms_norm_wrapped(
             self.M,
             self.N,
             self.eps,
@@ -146,3 +162,4 @@ class RMSNormKernel(Kernel):
             x,
             weight,
         )
+        return y[:, : self.N] if pad else y

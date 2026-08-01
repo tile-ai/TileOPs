@@ -7,7 +7,6 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.logsumexp import LogSumExpKernel
 from tileops.kernels.reduction.softmax import SoftmaxKernel
 
@@ -33,7 +32,7 @@ def _resolve_implicit_softmax_dim(name: str, ndim: int) -> int:
 class _SoftmaxBaseOp(Op):
     """Base class for softmax-family ops.
 
-    Handles shared validation, reshape, pad/trim logic. Subclasses only
+    Handles shared validation and reshape logic. Subclasses only
     need to set ``_op_kind``, ``_kernel_key``, ``_kernel_class`` and
     override output reshaping if needed.
 
@@ -141,9 +140,6 @@ class _SoftmaxBaseOp(Op):
             self.kernel = kernel
             # Alignment padding is handled by the kernel's forward().
             y = kernel(x)
-            N_padded = align_up(N, DEFAULT_ALIGNMENT)
-            if N_padded != N:
-                y = y[:, :N] if y.ndim == 2 else y
             return restore_multidim_shape(y, orig_shape, dims, self.keepdim)
 
         # --- single-dim path ---
@@ -185,11 +181,6 @@ class _SoftmaxBaseOp(Op):
 
         # Alignment padding is handled by the kernel's forward().
         y = kernel(x)
-
-        # Trim padding (kernel output may still be N_padded-wide).
-        N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        if N_padded != N:
-            y = y[:, :N] if y.ndim == 2 else y
 
         return self._reshape_output(y, orig_shape, dim, needs_transpose)
 

@@ -15,8 +15,10 @@ Utility:
 - coalesce_broadcast_dims: reduces N-dim broadcast to minimal effective dims
 """
 
+import functools
 import inspect
 import math
+import re
 import weakref
 from math import prod
 from typing import Callable, Dict, List, Optional
@@ -24,6 +26,7 @@ from typing import Callable, Dict, List, Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.manifest import load_manifest
 
 from ..op_base import Op
 
@@ -543,16 +546,70 @@ def coalesce_broadcast_dims(a_shape, b_shape):
     return out_shape, coalesced_shape, a_strides, b_strides
 
 
-def _apply_fp8_post_cast(result: torch.Tensor, kernel) -> torch.Tensor:
-    """Apply fp8 output cast if the kernel requires it.
+_SAME_AS_RE = re.compile(r"^same_as\(\s*\w+\s*\)$")
+_PROMOTE_INT_TO_FLOAT_RE = re.compile(r"^promote_int_to_float\(\s*\w+\s*\)$")
+# Target dtype for integral inputs under ``promote_int_to_float``, matching
+# PyTorch's int-input promotion (e.g. ``torch.reciprocal``).
+_PROMOTED_FLOAT_DTYPE = torch.float32
 
-    For e5m2 dtypes the kernel produces fp16 output to preserve Inf/NaN;
-    this helper performs the final non-saturating cast via PyTorch.
+
+@functools.lru_cache(maxsize=None)
+def _manifest_output_dtype_expr(op_class_name: str) -> str:
+    """Return the manifest ``signature.outputs`` dtype expression for an op.
+
+    Args:
+        op_class_name: Op class name, which is the manifest entry key.
+
+    Returns:
+        The declared dtype expression, e.g. ``"same_as(input)"`` or ``"bool"``.
+
+    Raises:
+        KeyError: If the manifest has no entry for *op_class_name*.
+        ValueError: If the entry declares other than exactly one output.
     """
-    fp8_out = getattr(kernel, "_fp8_output_dtype", None)
-    if fp8_out is not None:
-        return result.to(fp8_out)
-    return result
+    entry = load_manifest().get(op_class_name)
+    if entry is None:
+        raise KeyError(
+            f"{op_class_name} has no manifest entry; the output dtype is "
+            "declared under signature.outputs"
+        )
+    outputs = entry["signature"]["outputs"]
+    if len(outputs) != 1:
+        raise ValueError(
+            f"{op_class_name} declares {len(outputs)} outputs; the elementwise "
+            "bases resolve a single output dtype"
+        )
+    return next(iter(outputs.values()))["dtype"]
+
+
+def resolve_output_dtype(op_class_name: str, input_dtype: torch.dtype) -> torch.dtype:
+    """Resolve an op's output dtype from its manifest declaration.
+
+    Args:
+        op_class_name: Op class name, which is the manifest entry key.
+        input_dtype: Declared input dtype of the op instance.
+
+    Returns:
+        The output dtype. ``same_as(...)`` and dtype unions follow the input;
+        ``promote_int_to_float(...)`` promotes integral inputs to float32; a
+        bare dtype name resolves to that dtype.
+
+    Raises:
+        ValueError: If the declared expression names an unknown dtype.
+    """
+    expr = _manifest_output_dtype_expr(op_class_name)
+    if _SAME_AS_RE.match(expr) or "|" in expr:
+        return input_dtype
+    if _PROMOTE_INT_TO_FLOAT_RE.match(expr):
+        if input_dtype.is_floating_point:
+            return input_dtype
+        return _PROMOTED_FLOAT_DTYPE
+    resolved = getattr(torch, expr, None)
+    if not isinstance(resolved, torch.dtype):
+        raise ValueError(
+            f"{op_class_name}: manifest output dtype {expr!r} is not a torch dtype"
+        )
+    return resolved
 
 
 _FP8_DTYPES = (torch.float8_e4m3fn, torch.float8_e5m2)
@@ -615,12 +672,8 @@ class UnaryOp(Op):
         return self.kernel_map[self._op_name](N_total, dtype, tune=tune)
 
     def _resolve_output_dtype(self) -> torch.dtype:
-        # Use _fp8_output_dtype (the final dtype after Op-layer post-cast)
-        # rather than kernel.output_dtype (which is fp16 for e5m2).
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        return fp8_out or getattr(
-            self.kernel, "output_dtype", self.dtype,
-        )
+        """Return the manifest-declared output dtype for this op."""
+        return resolve_output_dtype(type(self).__name__, self.dtype)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -650,10 +703,7 @@ class UnaryOp(Op):
         """Direct kernel call for use inside custom_op implementation."""
         orig_shape = input.shape
         flat = input.contiguous().reshape(-1)
-        result = self.kernel(flat).reshape(orig_shape)
-        # For e5m2: kernel produces fp16 to preserve Inf/NaN;
-        # cast to e5m2 here using PyTorch's non-saturating conversion.
-        return _apply_fp8_post_cast(result, self.kernel)
+        return self.kernel(flat).reshape(orig_shape)
 
     def _validate_input(self, input: torch.Tensor) -> None:
         """Validate input tensor against the op's dtype / numel contract."""
@@ -777,8 +827,7 @@ class BinaryOp(Op):
     def total_memory(self) -> float:
         """Read a + read b + write y."""
         in_elem = self.dtype.itemsize
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        out_elem = fp8_out.itemsize if fp8_out is not None else in_elem
+        out_elem = resolve_output_dtype(type(self).__name__, self.dtype).itemsize
         return (self.a_numel + self.b_numel) * in_elem + self.N_total * out_elem
 
     def _eager_forward(
@@ -787,10 +836,9 @@ class BinaryOp(Op):
         other: torch.Tensor,
     ) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
-        result = self.kernel(
+        return self.kernel(
             input.contiguous().view(-1), other.contiguous().view(-1),
         ).reshape(self.out_shape)
-        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(
         self,
@@ -882,12 +930,7 @@ class FusedGatedOp(Op):
                 "Fused gated dimensions are available after first forward"
             )
         in_elem = self.dtype.itemsize
-        fp8_out = (
-            getattr(self.kernel, "_fp8_output_dtype", None)
-            if self.kernel is not None
-            else None
-        )
-        out_elem = fp8_out.itemsize if fp8_out is not None else in_elem
+        out_elem = resolve_output_dtype(type(self).__name__, self.dtype).itemsize
         return self.M * 2 * self.N * in_elem + self.M * self.N * out_elem
 
     def eval_roofline(self) -> tuple[int, int]:
@@ -940,8 +983,7 @@ class FusedGatedOp(Op):
         M, N = self._validate_runtime_input(x)
         self._ensure_kernel(M, N, x.dtype)
         x = x.contiguous()
-        result = self.kernel(x)
-        return _apply_fp8_post_cast(result, self.kernel)
+        return self.kernel(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         M, N = self._validate_runtime_input(x)
@@ -1051,11 +1093,9 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
         self.dtype = dtype
         self.inplace = inplace
         self.kernel = kernel
-        # Surface ``output_dtype`` for FP8 post-cast accounting in
-        # ``total_memory``, as ``UnaryOp.__init__`` does. No parametric
-        # activation declares an FP8 path yet, so this resolves to self.dtype.
-        fp8_out = getattr(self.kernel, "_fp8_output_dtype", None)
-        self.output_dtype = fp8_out or getattr(self.kernel, "output_dtype", dtype)
+        # Surface ``output_dtype`` for ``total_memory`` accounting, as
+        # ``UnaryOp.__init__`` does.
+        self.output_dtype = resolve_output_dtype(type(self).__name__, dtype)
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 

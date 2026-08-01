@@ -813,9 +813,14 @@ class SoftmaxKernel(Kernel):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the softmax/log_softmax kernel.
 
-        Accepts an ``(M, N)`` tensor.  Boundary handling for non-aligned
-        ``N`` is performed inside the GPU kernel (masked loads + ``-inf``
-        fill), so no host-side ``F.pad`` is needed.
+        Args:
+            x: Input of shape ``(M, N)``. Boundary handling for non-aligned
+                ``N`` happens inside the GPU kernel (masked loads + ``-inf``
+                fill), so no host-side ``F.pad`` is needed.
+
+        Returns:
+            Tensor of shape ``(M, N)``. The prim_func writes an
+            alignment-padded row; the surplus columns are trimmed here.
         """
         tile_n = self._tile_n
 
@@ -830,10 +835,4 @@ class SoftmaxKernel(Kernel):
             x,
         )
 
-        # Trim back to N_padded if needed (when tile_n does not divide
-        # N_padded, e.g. compute_tile_n chose tile_n_max over a small
-        # divisor for better shared memory utilisation).
-        if y.shape[1] > self.N_padded:
-            y = y[:, : self.N_padded]
-
-        return y
+        return y[:, : self.N] if y.shape[1] > self.N else y

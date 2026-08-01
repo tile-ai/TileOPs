@@ -418,10 +418,11 @@ class CumulativeKernel(Kernel):
                 handled internally via masked loads.
 
         Returns:
-            Output tensor of shape (M, N_padded).
+            Output tensor of shape (M, N). The prim_func writes an
+            alignment-padded row; the surplus columns are trimmed here.
         """
         if self.use_parallel:
-            return _cumulative_parallel_fwd_wrapped(
+            y = _cumulative_parallel_fwd_wrapped(
                 self.M,
                 self.N,
                 self.dtype_str,
@@ -431,7 +432,7 @@ class CumulativeKernel(Kernel):
                 x,
             )
         else:
-            return _cumulative_fwd_wrapped(
+            y = _cumulative_fwd_wrapped(
                 self.M,
                 self.N,
                 self.op_kind,
@@ -441,6 +442,7 @@ class CumulativeKernel(Kernel):
                 self.config["threads"],
                 x,
             )
+        return y[:, : self.N] if y.shape[1] > self.N else y
 
 
 # ---------------------------------------------------------------------------

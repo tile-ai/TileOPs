@@ -20,6 +20,7 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
+import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -450,9 +451,49 @@ class EngramGateConvBwdKernel(Kernel):
         rrms_k: torch.Tensor,
         rrms_v: torch.Tensor,
     ) -> list[torch.Tensor]:
-        return _engram_gate_conv_bwd_wrapped(
+        """Run the fused gate + conv backward pass.
+
+        Args:
+            dY: Gradient of the output, shape ``(M, seq_len, d)``.
+            H: Hidden states of shape ``(M, seq_len, d)``.
+            k: Key projection of shape ``(M, seq_len, d)``.
+            v: Value projection of shape ``(M, seq_len, d)``.
+            rms_w_h: RMSNorm weight of shape ``(d,)`` for ``H`` and ``k``.
+            rms_w_v: RMSNorm weight of shape ``(d,)`` for the gated value.
+            conv_w: Depthwise conv weights of shape ``(4, d)``.
+            vhat: Gated value saved by the forward pass, ``(M, seq_len, d)``.
+            alpha: Scalar gate saved by the forward pass, ``(M, seq_len)``.
+            rrms_h: Reciprocal RMS of ``H``, shape ``(M, seq_len)``.
+            rrms_k: Reciprocal RMS of ``k``, shape ``(M, seq_len)``.
+            rrms_v: Reciprocal RMS of ``vhat``, shape ``(M, seq_len)``.
+
+        Returns:
+            ``[dH, dk, dv, drms_w_h, drms_w_v, dconv_w]``, trimmed to ``d``.
+            The staging buffers the prim_func writes are internal and are not
+            returned.
+        """
+        pad = self.d_padded - self.d
+        if pad:
+            dY = F.pad(dY, (0, pad))
+            H = F.pad(H, (0, pad))
+            k = F.pad(k, (0, pad))
+            v = F.pad(v, (0, pad))
+            vhat = F.pad(vhat, (0, pad))
+            rms_w_h = F.pad(rms_w_h, (0, pad))
+            rms_w_v = F.pad(rms_w_v, (0, pad))
+            conv_w = F.pad(conv_w, (0, pad))
+        results = _engram_gate_conv_bwd_wrapped(
             self.M, self.seq_len, self.d, self.eps,
             self.dtype_str, self.config["threads"],
             dY, H, k, v, rms_w_h, rms_w_v, conv_w,
             vhat, alpha, rrms_h, rrms_k, rrms_v,
         )
+        dH, dk, dv, drms_w_h, drms_w_v, dconv_w = results[:6]
+        if pad:
+            dH = dH[:, :, : self.d]
+            dk = dk[:, :, : self.d]
+            dv = dv[:, :, : self.d]
+            drms_w_h = drms_w_h[: self.d]
+            drms_w_v = drms_w_v[: self.d]
+            dconv_w = dconv_w[:, : self.d]
+        return [dH, dk, dv, drms_w_h, drms_w_v, dconv_w]
