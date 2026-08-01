@@ -12,28 +12,22 @@ import torch.nn.functional as F
 
 from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark, workloads_to_params
 from tileops.ops.dropout import DropoutOp
-from workloads.workload_base import WorkloadBase
+from workloads.elementwise import ShapedRandnWorkload
 
 _OP_NAME = "DropoutOp"
 
 
-class DropoutBenchCase(WorkloadBase):
-    def __init__(self, shape: tuple, dtype: torch.dtype, p: float = 0.5):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
+class _DropoutBenchmarkWorkload(ShapedRandnWorkload):
+    def __init__(self, shape: tuple, dtype, p: float = 0.5):
+        super().__init__(shape, dtype)
         self.p = p
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return F.dropout(x, p=self.p, training=True)
 
-
 @pytest.mark.parametrize("shape, dtype", workloads_to_params(_OP_NAME))
 def test_dropout_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = DropoutBenchCase(shape, dtype)
+    test = _DropoutBenchmarkWorkload(shape, dtype)
     (x,) = test.gen_inputs()
 
     op = DropoutOp(p=test.p, seed=42)

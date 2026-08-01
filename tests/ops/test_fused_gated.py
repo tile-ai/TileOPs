@@ -15,6 +15,7 @@ from tileops.kernels.elementwise import (
     SiluAndMulFwdKernel,
 )
 from tileops.ops.elementwise import GeluAndMulFwdOp, GeluTanhAndMulFwdOp, SiluAndMulFwdOp
+from workloads.elementwise import GatedRandnWorkload
 
 # SiluAndMul
 
@@ -31,16 +32,7 @@ class SiluAndMulFixture(FixtureBase):
     ]
 
 
-class SiluAndMulTest(TestBase):
-
-    def __init__(self, m: int, n: int, dtype: torch.dtype):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
-        return (x,)
+class SiluAndMulTest(GatedRandnWorkload, TestBase):
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         x_f32 = x.float()
@@ -102,16 +94,7 @@ class GeluAndMulFixture(FixtureBase):
     ]
 
 
-class GeluAndMulTest(TestBase):
-
-    def __init__(self, m: int, n: int, dtype: torch.dtype):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
-        return (x,)
+class GeluAndMulTest(GatedRandnWorkload, TestBase):
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         x_f32 = x.float()
@@ -142,16 +125,7 @@ class GeluTanhAndMulFixture(FixtureBase):
     ]
 
 
-class GeluTanhAndMulTest(TestBase):
-
-    def __init__(self, m: int, n: int, dtype: torch.dtype):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
-        return (x,)
+class GeluTanhAndMulTest(GatedRandnWorkload, TestBase):
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         x_f32 = x.float()

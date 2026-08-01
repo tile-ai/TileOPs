@@ -9,6 +9,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
+from workloads.elementwise import RandnPairWorkload
 
 # Shared helpers
 
@@ -21,18 +22,12 @@ def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     )
 
 
-class ComparisonTest(TestBase):
+class ComparisonTest(RandnPairWorkload, TestBase):
     """Reusable test body for comparison ops."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
-        self.n_total = n_total
-        self.dtype = dtype
+        super().__init__(n_total, dtype)
         self.ref_fn = ref_fn
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.ref_fn(a, b)

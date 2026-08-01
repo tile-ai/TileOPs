@@ -17,7 +17,8 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.ops import GLABwdOp, GLAFwdOp
-from workloads.workload_base import FixtureBase, WorkloadBase
+from workloads.linear_attention import GLAChunkwiseWorkload
+from workloads.workload_base import FixtureBase
 
 
 def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
@@ -88,32 +89,10 @@ except ImportError:
 
 # Test helper (shared between fwd and bwd benchmarks)
 
-class GLATest(WorkloadBase):
-
-    def __init__(self, batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype):
-        self.batch = batch
-        self.seq_len = seq_len
-        self.heads = heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.chunk_size = chunk_size
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        B, T, H, K, V = self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v
-        q = torch.randn(B, T, H, K, device="cuda", dtype=self.dtype) * 0.1
-        k = torch.randn(B, T, H, K, device="cuda", dtype=self.dtype) * 0.1
-        v = torch.randn(B, T, H, V, device="cuda", dtype=self.dtype) * 0.1
-        g = -torch.rand(B, T, H, K, device="cuda", dtype=self.dtype)
-        return q, k, v, g
-
-    def ref_program(self, q, k, v, g):
-        return gla_fwd_chunked_torch(q, k, v, g, self.chunk_size)
-
 
 # Forward benchmark
 
-class GLAFwdBenchmark(BenchmarkBase[GLATest]):
+class GLAFwdBenchmark(BenchmarkBase[GLAChunkwiseWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -150,7 +129,7 @@ def test_gla_fwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GLATest(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)
+    test = GLAChunkwiseWorkload(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)
     bm = GLAFwdBenchmark(test)
     inputs = test.gen_inputs()
 
@@ -171,13 +150,16 @@ def test_gla_fwd_bench(
         BenchmarkReport.record(op, locals(), result_fla, tag="fla")
     else:
         # --- Torch reference baseline ---
-        result_bl = bm.profile(test.ref_program, *inputs)
+        result_bl = bm.profile(
+            lambda q, k, v, g: gla_fwd_chunked_torch(q, k, v, g, chunk_size),
+            *inputs,
+        )
         BenchmarkReport.record(op, locals(), result_bl, tag="torch")
 
 
 # Backward benchmark
 
-class GLABwdBenchmark(BenchmarkBase[GLATest]):
+class GLABwdBenchmark(BenchmarkBase[GLAChunkwiseWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -214,7 +196,7 @@ def test_gla_bwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GLATest(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)
+    test = GLAChunkwiseWorkload(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)
     bm = GLABwdBenchmark(test)
 
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
@@ -259,13 +241,15 @@ def test_gla_bwd_bench(
         # --- Torch autograd reference baseline ---
         def torch_bwd():
             return gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
-        result_bl = bm.profile(torch_bwd)
+        # torch_bwd builds its forward graph inside the timed callable, so it
+        # needs the autograd-enabled path; profile() runs under no_grad.
+        result_bl = bm.profile_autograd(torch_bwd)
         BenchmarkReport.record(bwd_op, locals(), result_bl, tag="torch")
 
 
 # Combined fwd+bwd benchmark
 
-class GLAFwdBwdBenchmark(BenchmarkBase[GLATest]):
+class GLAFwdBwdBenchmark(BenchmarkBase[GLAChunkwiseWorkload]):
 
     def calculate_flops(self) -> Optional[float]:
         t = self.workload
@@ -302,7 +286,7 @@ def test_gla_fwdbwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GLATest(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)
+    test = GLAChunkwiseWorkload(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)
     bm = GLAFwdBwdBenchmark(test)
 
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size

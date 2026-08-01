@@ -32,10 +32,15 @@ from tileops.ops.elementwise import (
     coalesce_broadcast_dims,
 )
 from tileops.ops.elementwise.arithmetic import _DIV_KERNEL_BY_ROUNDING_MODE
-from workloads.elementwise import AddSameShapeTest as _AddSameShapeTestWorkload
+from workloads.elementwise import (
+    AddBroadcastWorkload,
+    PositivePairWorkload,
+    PowPositiveWorkload,
+    RandnPairWorkload,
+)
 
 
-class AddSameShapeTest(_AddSameShapeTestWorkload, TestBase):
+class AddSameShapeTest(RandnPairWorkload, TestBase):
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return (a.float() + b.float()).to(a.dtype)
 
@@ -140,17 +145,7 @@ class AddBroadcastFixture(FixtureBase):
     ]
 
 
-class AddBroadcastTest(TestBase):
-
-    def __init__(self, a_shape: tuple, b_shape: tuple, dtype: torch.dtype):
-        self.a_shape = a_shape
-        self.b_shape = b_shape
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.b_shape, dtype=self.dtype, device="cuda")
-        return a, b
+class AddBroadcastTest(AddBroadcastWorkload, TestBase):
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return (a.float() + b.float()).to(a.dtype)
@@ -265,35 +260,23 @@ def test_add_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None
 # Generic binary test helper
 
 
-class BinarySameShapeTest(TestBase):
+class BinarySameShapeTest(RandnPairWorkload, TestBase):
     """Reusable test body for binary same-shape ops."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
-        self.n_total = n_total
-        self.dtype = dtype
+        super().__init__(n_total, dtype)
         self.ref_fn = ref_fn
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.ref_fn(a.float(), b.float()).to(a.dtype)
 
 
-class BinaryPositiveTest(TestBase):
+class BinaryPositiveTest(PositivePairWorkload, TestBase):
     """Test body for ops that need positive inputs (div, remainder, pow, etc.)."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
-        self.n_total = n_total
-        self.dtype = dtype
+        super().__init__(n_total, dtype)
         self.ref_fn = ref_fn
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
-        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
-        return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.ref_fn(a.float(), b.float()).to(a.dtype)
@@ -302,17 +285,8 @@ class BinaryPositiveTest(TestBase):
 # Same-shape correctness for simple binary arith ops
 
 
-class RemainderTest(TestBase):
+class RemainderTest(PositivePairWorkload, TestBase):
     """Remainder reference matches the kernel: fp32 division+floor, native multiply-subtract."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
-        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
-        return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # fp32 division+floor, cast back, native multiply-subtract
@@ -320,17 +294,8 @@ class RemainderTest(TestBase):
         return a - floored * b
 
 
-class PowPositiveTest(TestBase):
+class PowPositiveTest(PowPositiveWorkload, TestBase):
     """Pow needs positive base and small exponent to avoid overflow in fp16."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.5
-        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") * 2.0
-        return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return torch.pow(a.float(), b.float()).to(a.dtype)
@@ -389,17 +354,8 @@ class FloorDivideFixture(FixtureBase):
     ]
 
 
-class FloorDivideTest(TestBase):
+class FloorDivideTest(PositivePairWorkload, TestBase):
     """Floor divide reference matches the kernel: fp32 division+floor, cast back."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
-        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
-        return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         # fp32 division+floor, cast back to native dtype
@@ -429,17 +385,11 @@ class LerpFixture(FixtureBase):
     ]
 
 
-class LerpTest(TestBase):
-
-    def __init__(self, n_total: int, dtype: torch.dtype, weight: float = 0.5):
-        self.n_total = n_total
-        self.dtype = dtype
+class LerpTest(RandnPairWorkload, TestBase):
+    def __init__(self, n_total: int, dtype, weight: float = 0.5):
+        super().__init__(n_total, dtype)
         self.weight = weight
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return torch.lerp(a.float(), b.float(), self.weight).to(a.dtype)

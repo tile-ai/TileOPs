@@ -58,37 +58,12 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe import (
     FusedMoEExpertsNopadPersistent3WGFwdOp,
 )
-from workloads.workload_base import WorkloadBase
+from workloads.moe import MoeExpertsWorkload
 
 _OP_NAME = "FusedMoEExpertsNopadPersistent3WGFwdOp"  # manifest entry name
 
 
 # Workload
-
-
-class MoEExpertsTest(WorkloadBase):
-    def __init__(self, num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype):
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.hidden_size = hidden_size
-        self.ffn_size = ffn_size
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        torch.manual_seed(42)
-        dev = "cuda"
-        hidden = torch.randn(self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev)
-        w1 = torch.randn(self.num_experts, self.ffn_size * 2, self.hidden_size, dtype=self.dtype, device=dev) * 0.02
-        w2 = torch.randn(self.num_experts, self.hidden_size, self.ffn_size, dtype=self.dtype, device=dev) * 0.02
-        topk_weights = torch.softmax(
-            torch.randn(self.num_tokens, self.top_k, dtype=torch.float32, device=dev), dim=-1
-        )
-        topk_ids = torch.randint(0, self.num_experts, (self.num_tokens, self.top_k), dtype=torch.int32, device=dev)
-        return hidden, w1, w2, topk_weights, topk_ids
-
-    def ref_program(self, *args):
-        return None
 
 
 # Benchmark class
@@ -122,7 +97,7 @@ def test_moe_experts_nopad_bench(
     num_tokens: int, num_experts: int, top_k: int, hidden_size: int,
     ffn_size: int, dtype: torch.dtype,
 ) -> None:
-    test = MoEExpertsTest(num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype)
+    test = MoeExpertsWorkload(num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype)
     hidden, w1, w2, topk_weights, topk_ids = test.gen_inputs()
 
     kwargs = dict(

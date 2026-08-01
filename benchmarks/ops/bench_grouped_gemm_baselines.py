@@ -53,6 +53,7 @@ tl = pytest.importorskip("triton.language")
 
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport  # noqa: E402
 from tileops.kernels.grouped_gemm import GroupedGemmPersistent3WGKernel  # noqa: E402
+from workloads.grouped_gemm import GroupedGemmUniformWorkload  # noqa: E402
 
 try:
     import deep_gemm
@@ -89,6 +90,8 @@ def _supports_tma() -> bool:
 # Triton 08-grouped-gemm tutorial, ported (fp16 -> bf16).
 # Upstream: triton-lang/triton python/tutorials/08-grouped-gemm.py
 # ─────────────────────────────────────────────────────────────────────────────
+
+
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "NUM_SM": 84}),
@@ -100,6 +103,8 @@ def _supports_tma() -> bool:
     ],
     key=["group_size"],
 )
+
+
 @triton.jit
 def _grouped_matmul_kernel(
     group_a_ptrs,
@@ -170,6 +175,8 @@ _TMA_CONFIGS = [
 
 @triton.autotune(_TMA_CONFIGS, key=["group_size"])
 @triton.jit
+
+
 def _grouped_matmul_tma_kernel(
     group_a_ptrs,
     group_b_ptrs,
@@ -258,22 +265,14 @@ def _set_triton_allocator():
 # ─────────────────────────────────────────────────────────────────────────────
 # Input generation (uniform routing).
 # ─────────────────────────────────────────────────────────────────────────────
-def gen_inputs(numel, E, N, K):
-    """Uniform routing: every expert gets ``numel // E`` rows (a multiple of 128).
 
-    Returns the shared bf16 tensors plus the per-expert metadata each baseline needs.
-    """
-    assert numel % E == 0, f"numel={numel} not divisible by E={E}"
-    per = numel // E
-    torch.manual_seed(42)
-    dev = "cuda"
 
-    A = torch.randn(numel, K, dtype=_DTYPE, device=dev) * 0.02
-    B = torch.randn(E, N, K, dtype=_DTYPE, device=dev) * 0.02  # NT: C = A @ B[e]^T
-
-    sizes = torch.full((E,), per, dtype=torch.int32, device=dev)
-    offsets = torch.zeros(E, dtype=torch.int32, device=dev)
-    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
+def gen_baseline_inputs(numel, E, N, K):
+    """Shared workload tensors plus the derived tables each baseline needs."""
+    workload = GroupedGemmUniformWorkload(numel, E, N, K, _DTYPE)
+    A, B, sizes, offsets = workload.gen_inputs()
+    per = workload.rows_per_expert
+    dev = A.device
     m_indices = torch.arange(E, device=dev, dtype=torch.int32).repeat_interleave(per)
     offs_cumsum = torch.cumsum(sizes, dim=0).to(torch.int32)  # torch._grouped_mm: no leading 0
     return A, B, sizes, offsets, m_indices, offs_cumsum, per
@@ -377,6 +376,8 @@ CASES = [
 # ─────────────────────────────────────────────────────────────────────────────
 # Framework benchmark: FLOP / memory model for the grouped GEMM.
 # ─────────────────────────────────────────────────────────────────────────────
+
+
 @dataclass(frozen=True)
 class _GroupedGemmBaselineWorkload:
     """Shape carrier for the grouped-GEMM roofline (uniform routing)."""
@@ -411,6 +412,8 @@ class GroupedGemmBaselinesBenchmark(BenchmarkBase[_GroupedGemmBaselineWorkload])
 # Session-scoped GPU clock warmup: pin the SM clock before the first case so
 # case 0 is not a cold-start outlier (the framework's per-call warmup is short).
 # ─────────────────────────────────────────────────────────────────────────────
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _pin_gpu_clock():
     if torch.cuda.is_available():
@@ -468,7 +471,7 @@ def test_grouped_gemm_baselines(label, tokens, E, top_k, hidden, moe_inter, M, N
     group_a = group_c = group_c_tma = None
     group_b_kn = group_b_nk = None
     try:
-        A, B, sizes, offsets, m_indices, offs_cumsum, per = gen_inputs(numel, E, N, K)
+        A, B, sizes, offsets, m_indices, offs_cumsum, per = gen_baseline_inputs(numel, E, N, K)
         B_KN = B.transpose(1, 2).contiguous()  # [E, K, N] for torch & non-TMA triton
         workload = _GroupedGemmBaselineWorkload(numel, E, N, K, _DTYPE, label)
         bm = GroupedGemmBaselinesBenchmark(workload)

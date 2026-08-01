@@ -31,7 +31,7 @@ _BASE = 10000.0
 
 
 class _RopeWorkload:
-    """Minimal :class:`ShapeDtypeWorkload` for the RoPE family.
+    """Minimal shape/dtype descriptor for the RoPE family.
 
     Holds ``shape`` and ``dtype`` so :class:`ManifestBenchmark` can call
     ``op.eval_roofline()`` after ``forward()`` has bound the dynamic vars.

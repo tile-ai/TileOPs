@@ -15,6 +15,7 @@ from tileops.ops.elementwise import (
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
 )
+from workloads.elementwise import BitwiseNotWorkload, BitwiseWorkload
 
 # Shared helpers
 
@@ -26,18 +27,12 @@ def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     )
 
 
-class BitwiseTest(TestBase):
+class BitwiseTest(BitwiseWorkload, TestBase):
     """Reusable test body for bitwise ops."""
 
     def __init__(self, n_total: int, ref_fn):
-        self.n_total = n_total
-        self.dtype = torch.int32
+        super().__init__(n_total)
         self.ref_fn = ref_fn
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device="cuda")
-        b = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device="cuda")
-        return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.ref_fn(a, b)
@@ -191,21 +186,8 @@ class BitwiseFixture(FixtureBase):
     ]
 
 
-class BitwiseNotTest(TestBase):
+class BitwiseNotTest(BitwiseNotWorkload, TestBase):
     """Test fixture for bitwise_not."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self.dtype == torch.bool:
-            x = torch.rand(self.n_total, device="cuda") > 0.5
-        elif self.dtype == torch.uint8:
-            x = torch.randint(0, 256, (self.n_total,), device="cuda", dtype=self.dtype)
-        else:
-            x = torch.randint(-128, 128, (self.n_total,), device="cuda", dtype=self.dtype)
-        return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return torch.bitwise_not(x)

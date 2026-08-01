@@ -33,6 +33,7 @@ from workloads.attention.gqa import (
     GQAPrefillVarlenFwdTest,
     GroupedQueryAttentionBwdTest,
     GroupedQueryAttentionFwdTest,
+    uniform_packed_prefill_inputs,
 )
 
 _GQA_FWD_OP = "GroupedQueryAttentionFwdOp"
@@ -92,31 +93,6 @@ def _fa3_gqa_bwd(test: GroupedQueryAttentionBwdTest):
         return q.grad, k.grad, v.grad
 
     return baseline_fn
-
-
-def _uniform_packed_prefill_inputs(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-           torch.Tensor, torch.Tensor]:
-    batch, seq_len_q, _, _ = q.shape
-    _, seq_len_kv, heads_kv, _ = k.shape
-    cu_q = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_q
-    cu_kv = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_kv
-    q_scale = torch.ones((batch, heads_kv), device=q.device, dtype=torch.float32)
-    return (
-        q.reshape(batch * seq_len_q, q.shape[2], q.shape[3]).contiguous(),
-        k.reshape(batch * seq_len_kv, heads_kv, k.shape[3]).contiguous(),
-        v.reshape(batch * seq_len_kv, heads_kv, v.shape[3]).contiguous(),
-        cu_q,
-        cu_kv,
-        q_scale,
-        torch.ones_like(q_scale),
-        torch.ones_like(q_scale),
-    )
-
-
 def _flashinfer_gqa_fwd(test, q, k, v):
     """FlashInfer ragged-prefill baseline. Handles seq_len_q != seq_len_kv (square is
     the seq_len_q == seq_len_kv case). Returns callable or None."""
@@ -392,7 +368,7 @@ def test_gqa_prefill_fwd_bench(
     test.sm_scale = sm_scale
     test.softcap = softcap
     inputs = test.gen_inputs()
-    packed_inputs = _uniform_packed_prefill_inputs(*inputs)
+    packed_inputs = uniform_packed_prefill_inputs(*inputs)
 
     op = GroupedQueryAttentionPrefillFwdOp(
         batch=batch,
@@ -489,7 +465,6 @@ def test_gqa_prefill_varlen_fwd_bench(
 
     result_bl = bm.profile(_torch_gqa_prefill_varlen_ref(test), *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
-
 
 
 def _fp8_paged_cache_inputs(

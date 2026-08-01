@@ -38,6 +38,8 @@ PR-level correctness verification. QA writes tests against manifest spec.
 - **OWNS**: ref_program, tolerances, assertions, [`tests/`](../../tests/), [`workloads/`](../../workloads/)
 - **MUST NOT WRITE**: kernel code, benchmark logic, or performance measurements
 
+Input construction belongs in [`workloads/`](../../workloads/), not in a test class: the benchmark stage may not write that layer, so a workload left inside `tests/` is unreachable from a benchmark and gets copied.
+
 → Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Tests](testing.md#tests)
 
 ## Implementation
@@ -57,7 +59,7 @@ Nightly performance guard. Independent baselines — cannot modify op/tests/work
 
 - **OWNS**: profiling, baseline comparisons, [`benchmarks/`](../../benchmarks/)
 - **MUST NOT WRITE**: correctness assertions, kernel code
-- **MUST NOT** (oracle-leakage rule, not a write rule): import oracle/ref functions from [`tests/`](../../tests/) or [`workloads/`](../../workloads/). Benchmark-local baseline functions are allowed; the prohibition prevents the benchmark stage from sharing its correctness oracle with the test stage.
+- **MUST NOT** (import rule, not a write rule): import from [`tests/`](../../tests/), or import ref/oracle functions from [`workloads/`](../../workloads/). Buys decoupling, not cross-validation — no baseline output is compared against the test oracle. It keeps nightly benchmarks alive across test-side refactors, and keeps baseline timings stable when an oracle is edited.
 
 → Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
 
@@ -67,18 +69,17 @@ Shared input-definition layer — not a development stage. Test stage OWNS it (Q
 
 **Provides**: `WorkloadBase` (gen_inputs), `FixtureMeta`/`FixtureBase` (parametrize), per-op workload subclasses.
 
-**Must not contain**: ref_program, check/tolerance logic, calculate_flops/memory, benchmark baselines. Reason: prevents shared oracle surface between test correctness and benchmark baselines.
+**Must contain**: input construction for every op — one class per op, or one parameterized class a family shares. This is the only layer both downstream stages import.
+
+**Must not contain**: ref_program, check/tolerance logic, calculate_flops/memory, benchmark baselines. Reason: anything placed here couples the two stages that import it. Correctness logic belongs to the test stage, timing baselines to the benchmark stage.
 
 ```
 WorkloadBase (workloads/workload_base.py)  # gen_inputs() only — abstract contract
   ├── TestBase (tests/test_base.py)     # adds ref_program(), check()
-  └── concrete subclasses typically define shape + dtype
+  └── concrete subclasses per op        # the test stage's MUST PROVIDE artifact
 
-# Public benchmark interface (capability protocols)
-ShapeDtypeWorkload                      # shape + dtype metadata
-InputGeneratingWorkload                 # gen_inputs()
-BenchmarkWorkload                       # both (when a workload defines shape, dtype, gen_inputs)
-BenchmarkBase[W] (benchmarks/)          # generic over workload type
+BenchmarkBase[W] (benchmarks/)          # generic over workload type; reads
+                                        # roofline off the op, not the workload
 ```
 
 → Cross-refs: [architecture.md](architecture.md), [testing.md](testing.md)

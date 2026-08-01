@@ -16,6 +16,7 @@ from tileops.ops.elementwise import (
     IsnanFwdOp,
     SoftplusFwdOp,
 )
+from workloads.elementwise import SpecialWorkload
 
 
 class SpecialFixture(FixtureBase):
@@ -40,24 +41,12 @@ class SpecialEdgeFixture(FixtureBase):
     ]
 
 
-class SpecialTest(TestBase):
+class SpecialTest(SpecialWorkload, TestBase):
     """Generic test fixture for special predicate ops."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, ref_fn, gen_fn=None):
-        self.n_total = n_total
-        self.dtype = dtype
+        super().__init__(n_total, dtype, gen_fn=gen_fn)
         self._ref_fn = ref_fn
-        self._gen_fn = gen_fn
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self._gen_fn is not None:
-            return (self._gen_fn(self.n_total, self.dtype),)
-        x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
-        quarter = self.n_total // 4
-        x[:quarter] = float("nan")
-        x[quarter:2 * quarter] = float("inf")
-        x[2 * quarter:3 * quarter] = float("-inf")
-        return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return self._ref_fn(x)

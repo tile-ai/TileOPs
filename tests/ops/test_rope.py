@@ -21,6 +21,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from workloads.rope import RopeWorkload
 
 # Reference implementations (pure PyTorch)
 
@@ -248,34 +249,13 @@ def _compute_longrope_freqs(head_dim: int, seq_len: int, base: float = 10000.0,
 # Test fixtures
 
 
-class RopeTest(TestBase):
+class RopeTest(RopeWorkload, TestBase):
     """Generic test fixture for RoPE ops.
 
     The op computes cos/sin internally; the test generates only x as input
     and computes the reference rotation using independently generated
     frequency tables.
     """
-
-    def __init__(self, variant: str, layout: str, batch: int, seq_len: int,
-                 num_heads: int, head_dim: int, dtype: torch.dtype,
-                 extra_kwargs: dict | None = None):
-        self.variant = variant
-        self.layout = layout
-        self.batch = batch
-        self.seq_len = seq_len
-        self.num_heads = num_heads
-        self.head_dim = head_dim
-        self.dtype = dtype
-        self.extra_kwargs = extra_kwargs or {}
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        """Generate only x; cos/sin are computed by the op internally."""
-        if self.layout == "1d":
-            x = torch.randn(self.seq_len, self.head_dim, device="cuda", dtype=self.dtype)
-        else:
-            x = torch.randn(self.batch, self.seq_len, self.num_heads, self.head_dim,
-                             device="cuda", dtype=self.dtype)
-        return (x,)
 
     def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Independently compute cos/sin for the reference implementation."""

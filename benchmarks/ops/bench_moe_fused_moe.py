@@ -32,7 +32,7 @@ except ImportError:
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoeFwdCbFwdOp, FusedMoeFwdOp, FusedTopKOp
-from workloads.workload_base import WorkloadBase
+from workloads.moe import FusedMoeWorkload
 
 _OP_NAME = "FusedMoeFwdOp"
 _OP_NAME_CB = "FusedMoeFwdCbFwdOp"
@@ -43,61 +43,7 @@ _DTYPE_MAP = {
 }
 
 
-class FusedMoeBenchTest(WorkloadBase):
-    """Inputs for a single FusedMoe benchmark configuration."""
-
-    def __init__(
-        self,
-        num_tokens: int,
-        num_experts: int,
-        top_k: int,
-        hidden_size: int,
-        ffn_size: int,
-        scoring_func: str,
-        renormalize: bool,
-        with_correction_bias: bool,
-        routed_scaling_factor: float,
-        dtype: torch.dtype,
-    ):
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.hidden_size = hidden_size
-        self.ffn_size = ffn_size
-        self.scoring_func = scoring_func
-        self.renormalize = renormalize
-        self.with_correction_bias = with_correction_bias
-        self.routed_scaling_factor = routed_scaling_factor
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        torch.manual_seed(42)
-        dev = "cuda"
-        hidden = torch.randn(
-            self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev,
-        )
-        gating = torch.randn(
-            self.num_tokens, self.num_experts, dtype=torch.float32, device=dev,
-        )
-        correction_bias = (
-            torch.randn(self.num_experts, dtype=torch.float32, device=dev) * 0.1
-            if self.with_correction_bias else None
-        )
-        w_gate_up = torch.randn(
-            self.num_experts, self.ffn_size * 2, self.hidden_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
-        w_down = torch.randn(
-            self.num_experts, self.hidden_size, self.ffn_size,
-            dtype=self.dtype, device=dev,
-        ) * 0.02
-        return hidden, gating, correction_bias, w_gate_up, w_down
-
-    def ref_program(self, *args):
-        return None
-
-
-class FusedMoeBenchmark(BenchmarkBase[FusedMoeBenchTest]):
+class FusedMoeBenchmark(BenchmarkBase[FusedMoeWorkload]):
     """Benchmark wrapper sourcing flops/bytes from the bound op's roofline."""
 
     def __init__(self, test, op):
@@ -162,7 +108,7 @@ def _run_bench(
     routed_scaling_factor: float,
     dtype: torch.dtype,
 ) -> None:
-    test = FusedMoeBenchTest(
+    test = FusedMoeWorkload(
         num_tokens, num_experts, top_k, hidden_size, ffn_size,
         scoring_func, renormalize, with_correction_bias,
         routed_scaling_factor, dtype,

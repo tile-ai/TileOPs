@@ -10,6 +10,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, exact_compare
 from tileops.ops.elementwise import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
+from workloads.elementwise import LogicalNotWorkload, LogicalWorkload
 
 # Shared helpers
 
@@ -22,20 +23,12 @@ def _bool_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
     )
 
 
-class LogicalTest(TestBase):
+class LogicalTest(LogicalWorkload, TestBase):
     """Reusable test body for logical ops."""
 
     def __init__(self, n_total: int, dtype: torch.dtype, ref_fn):
-        self.n_total = n_total
-        self.dtype = dtype
+        super().__init__(n_total, dtype)
         self.ref_fn = ref_fn
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda") > 0
-        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda") > 0
-        a = a.to(self.dtype)
-        b = b.to(self.dtype)
-        return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return self.ref_fn(a.bool(), b.bool())
@@ -158,28 +151,8 @@ class LogicalFixture(FixtureBase):
     ]
 
 
-class LogicalNotTest(TestBase):
+class LogicalNotTest(LogicalNotWorkload, TestBase):
     """Test fixture for logical_not."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self.dtype == torch.bool:
-            x = torch.rand(self.n_total, device="cuda") > 0.5
-            return (x,)
-
-        if self.dtype == torch.uint8:
-            x = torch.randint(0, 8, (self.n_total,), device="cuda", dtype=self.dtype)
-        elif self.dtype in (torch.int8, torch.int16, torch.int32, torch.int64):
-            x = torch.randint(-4, 4, (self.n_total,), device="cuda", dtype=self.dtype)
-        else:
-            x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
-
-        mask = torch.rand(self.n_total, device="cuda") > 0.5
-        x[mask] = 0
-        return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return torch.logical_not(x)
