@@ -109,11 +109,7 @@ def test_binary_kernel_sets_output_dtype_in_init():
         patch.object(AddFwdKernel, "_build_kernel", return_value=None),
         patch.object(AddFwdKernel, "init_config"),
     ):
-        kernel = AddFwdKernel(
-            N_total=1024, dtype=torch.float16,
-            coalesced_shape=(1024,), a_strides=(1,), b_strides=(1,),
-            a_numel=1024, b_numel=1024,
-        )
+        kernel = AddFwdKernel(a_shape=(1024,), b_shape=(1024,), dtype=torch.float16)
     assert kernel.output_dtype == torch.float16
 
 
@@ -149,13 +145,9 @@ def test_unary_default_config_preserves_strategy_npt_split():
 def test_binary_default_config_preserves_strategy_npt_split():
     """Binary kernels should keep the explicit_parallel/register_copy npt split."""
     common_kwargs = {
-        "N_total": 1024,
+        "a_shape": (1024,),
+        "b_shape": (1024,),
         "dtype": torch.float16,
-        "coalesced_shape": (1024,),
-        "a_strides": (1,),
-        "b_strides": (1,),
-        "a_numel": 1024,
-        "b_numel": 1024,
     }
     with (
         patch.object(AddFwdKernel, "_build_kernel", return_value=None),

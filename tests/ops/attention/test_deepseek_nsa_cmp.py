@@ -72,10 +72,10 @@ class NsaCmpFwdTest(NsaCmpFwdWorkload, TestBase):
 
 class NsaCmpFwdFixture(FixtureBase):
     PARAMS = [
-        ("seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, bk, bv, "
+        ("seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, "
          "dtype, accum_dtype, tune", [
              pytest.param(
-                 9, 8192, 32, 128, 128, 16, 128**-0.5, 32, 32, 128, 128, torch.float16,
+                 9, 8192, 32, 128, 128, 16, 128**-0.5, 32, 32, torch.float16,
                  torch.float32, False, marks=pytest.mark.smoke,
              ),
          ]),
@@ -93,21 +93,19 @@ def test_nsa_cmp_fwd_varlen_op(
     scale: float,
     bc: int,
     bs: int,
-    bk: int,
-    bv: int,
     dtype: torch.dtype,
     accum_dtype: torch.dtype,
     tune: bool,
 ) -> None:
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
-    test = NsaCmpFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, bk, bv,
+    test = NsaCmpFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs,
                          dtype, accum_dtype)
     inputs = test.gen_inputs()
 
     op = NSACmpFwdVarlenOp(
         seq_num=seq_num, c_seq_len=c_seq_len, heads=heads, dim_k=dim_k, dim_v=dim_v, group=group,
-        scale=scale, bc=bc, bs=bs, bk=bk, bv=bv, dtype=dtype, accum_dtype=accum_dtype, tune=tune,
+        scale=scale, bc=bc, bs=bs, dtype=dtype, accum_dtype=accum_dtype, tune=tune,
         chunk_num=test.chunk_num)
     test.check(op, *inputs, atol=4e-3, rtol=1e-5)
 

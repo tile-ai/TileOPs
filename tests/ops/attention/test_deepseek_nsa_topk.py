@@ -171,14 +171,14 @@ class NsaTopkTest(NsaTopkWorkload, TestBase):
 
 class NsaTopkFixture(FixtureBase):
     PARAMS = [
-        ("seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs, bk, "
+        ("seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs, "
          "dtype, accum_dtype, tune", [
              pytest.param(
-                 5, 1024, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32, False,
+                 5, 1024, 32, 128, 16, 1, 16, 32, 32, torch.float16, torch.float32, False,
                  marks=pytest.mark.smoke,
              ),
              pytest.param(
-                 3, 512, 32, 128, 16, 1, 16, 32, 32, 128, torch.float16, torch.float32, False,
+                 3, 512, 32, 128, 16, 1, 16, 32, 32, torch.float16, torch.float32, False,
                  marks=pytest.mark.full,
              ),
          ]),
@@ -196,7 +196,6 @@ def test_nsa_topk_varlen_op(
     selected_block_num: int,
     bc: int,
     bs: int,
-    bk: int,
     dtype: torch.dtype,
     accum_dtype: torch.dtype,
     tune: bool,
@@ -204,11 +203,11 @@ def test_nsa_topk_varlen_op(
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
     test = NsaTopkTest(seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs,
-                       bk, dtype, accum_dtype)
+                       dtype, accum_dtype)
     inputs = test.gen_inputs()
     op = NSATopkVarlenOp(
         seq_num=seq_num, c_seq_len=c_seq_len, heads=heads, dim=dim, group=group, scale=scale,
-        selected_block_num=selected_block_num, bc=bc, bs=bs, bk=bk, dtype=dtype,
+        selected_block_num=selected_block_num, bc=bc, bs=bs, dtype=dtype,
         accum_dtype=accum_dtype, tune=tune, chunk_num=test.chunk_num)
     test.check_topk(op, *inputs)
 

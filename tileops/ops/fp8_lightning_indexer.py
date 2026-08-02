@@ -72,7 +72,7 @@ class FP8LightningIndexerOp(Op):
                 seq_len_kv,
                 kv_group,
                 self.clean_logits,
-                self.config,
+                config=self.config,
                 tune=self.tune)
         return self._kernel_cache[key]
 

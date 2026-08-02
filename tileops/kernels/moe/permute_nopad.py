@@ -275,7 +275,11 @@ class MoePermuteNopadKernel(Kernel):
         expert_map: Optional [E_global] int32 tensor mapping global expert ids
             to local ids (-1 = not on this rank).  When provided, only local
             token-expert pairs are included in the permuted output.
-        config: Optional config dict.
+        config: Optional config dict with "threads".
+        tune: Whether to autotune. The scan thread count is fixed by the
+            single-block prefix-sum algorithm, so ``autotune_configs`` is
+            undefined and ``tune=True`` degrades to the default config with a
+            warning from ``Kernel.init_config``.
 
     Example:
         >>> kernel = MoePermuteNopadKernel(num_tokens=4, top_k=2, num_experts=8, hidden_size=128)
@@ -293,6 +297,7 @@ class MoePermuteNopadKernel(Kernel):
         dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
         config: Optional[dict] = None,
+        tune: bool = False,
     ):
         super().__init__()
         self.num_tokens = num_tokens
@@ -317,7 +322,7 @@ class MoePermuteNopadKernel(Kernel):
             num_tokens, self.numel, hidden_size, self.dtype_str
         )
 
-        self.init_config(config, tune=False)
+        self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:

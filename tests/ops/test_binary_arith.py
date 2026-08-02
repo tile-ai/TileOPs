@@ -5,7 +5,6 @@ floor_divide, lerp, maximum, minimum (plus existing add).
 Also includes L4 edge case tests for div, remainder, floor_divide, pow.
 """
 
-import math
 
 import pytest
 import torch
@@ -16,6 +15,7 @@ from tileops.kernels.elementwise import (
     DivTruncFwdKernel,
     FloorDivideFwdKernel,
     MaximumFwdKernel,
+    coalesce_broadcast_dims,
 )
 from tileops.ops.elementwise import (
     AddFwdOp,
@@ -29,7 +29,6 @@ from tileops.ops.elementwise import (
     PowFwdOp,
     RemainderFwdOp,
     SubFwdOp,
-    coalesce_broadcast_dims,
 )
 from tileops.ops.elementwise.arithmetic import _DIV_KERNEL_BY_ROUNDING_MODE
 from workloads.elementwise import (
@@ -248,8 +247,7 @@ def test_add_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None
     """Binary strategies selected via the config dict produce correct results."""
     test = AddSameShapeTest(n_total, dtype)
     kernel = AddFwdKernel(
-        n_total, dtype, (n_total,), (1,), (1,), n_total, n_total,
-        config={"strategy": strategy},
+        (n_total,), (n_total,), dtype, config={"strategy": strategy},
     )
     assert kernel.strategy == strategy
     assert kernel.config["strategy"] == strategy
@@ -731,19 +729,14 @@ def test_register_copy_downgrades_on_broadcast() -> None:
     a_shape = (2, 64, 128)
     b_shape = (1, 1, 128)
     dtype = torch.float16
-    out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
-        a_shape, b_shape,
-    )
-    n_total = math.prod(out_shape)
+    out_shape = torch.broadcast_shapes(a_shape, b_shape)
 
     for kernel_cls, ref_fn in [
         (AddFwdKernel, lambda a, b: a + b),
         (MaximumFwdKernel, lambda a, b: torch.maximum(a, b)),
     ]:
         kernel = kernel_cls(
-            n_total, dtype, coalesced_shape, a_strides, b_strides,
-            math.prod(a_shape), math.prod(b_shape),
-            config={"strategy": "register_copy"},
+            a_shape, b_shape, dtype, config={"strategy": "register_copy"},
         )
         # Strategy must have been downgraded, and the resolved config must
         # reflect the downgrade (config is the single source of truth).

@@ -53,8 +53,8 @@ class MoeUnpermuteFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["unpermute_kernel"](
-            total_tokens, top_k, hidden_size, self.padded_batch_sum, dtype,
-            scaling=routed_scaling_factor,
+            total_tokens, top_k, hidden_size, self.padded_batch_sum,
+            scaling=routed_scaling_factor, dtype=dtype,
         )
 
     @property

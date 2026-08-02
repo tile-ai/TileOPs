@@ -245,6 +245,20 @@ def _(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, *inputs) 
 
 
 class TopkSelectorKernel(Kernel):
+    """Per-row top-k index selection over an ``[B, S, S_kv, G]`` score tensor.
+
+    Args:
+        batch: Batch size.
+        seq_len: Query sequence length.
+        seq_len_kv: Key/value sequence length.
+        kv_group: Number of key/value groups.
+        topk: Number of indices selected per row.
+        dtype: Torch dtype of the input scores.
+        out_dtype: Torch dtype of the emitted indices.
+        config: Optional dict with "RADIX", "BLOCK_SIZE", "SMEM_INPUT_SIZE"
+            and "block_m".
+        tune: Whether to autotune.
+    """
 
     supported_archs: list[int] = [90]
 
@@ -254,7 +268,7 @@ class TopkSelectorKernel(Kernel):
                  seq_len_kv: int,
                  kv_group: int,
                  topk: int,
-                 in_dtype: torch.dtype,
+                 dtype: torch.dtype,
                  out_dtype: torch.dtype,
                  config: Optional[dict] = None,
                  tune: bool = False):
@@ -264,13 +278,12 @@ class TopkSelectorKernel(Kernel):
         self.seq_len_kv = seq_len_kv
         self.kv_group = kv_group
         self.topk = topk
-        self.in_dtype = in_dtype
+        self.dtype = dtype
         self.out_dtype = out_dtype
-        self.in_dtype_str = self.dtype_to_str(self.in_dtype)
         self.out_dtype_str = self.dtype_to_str(self.out_dtype)
 
         self.kernel = _topk_selector_kernel(self.batch, self.seq_len, self.seq_len_kv,
-                                            self.kv_group, self.topk, self.in_dtype_str,
+                                            self.kv_group, self.topk, self.dtype_str,
                                             self.out_dtype_str)
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
@@ -354,7 +367,7 @@ class TopkSelectorKernel(Kernel):
     def forward(self, index_score: torch.Tensor, starts: torch.Tensor,
                 ends: torch.Tensor) -> torch.Tensor:
         return _topk_selector_wrapped_kernel(self.batch, self.seq_len, self.seq_len_kv,
-                                             self.kv_group, self.topk, self.in_dtype_str,
+                                             self.kv_group, self.topk, self.dtype_str,
                                              self.out_dtype_str, self.config["RADIX"],
                                              self.config["BLOCK_SIZE"],
                                              self.config["SMEM_INPUT_SIZE"], self.config["block_m"],

@@ -220,7 +220,7 @@ class NsaFwdWorkload(WorkloadBase):
 class NsaCmpFwdWorkload(WorkloadBase):
 
     def __init__(self, seq_num: int, c_seq_len: int, heads: int, dim_k: int, dim_v: int,
-                 group: int, scale: float, bc: int, bs: int, bk: int, bv: int,
+                 group: int, scale: float, bc: int, bs: int,
                  dtype: torch.dtype, accum_dtype: torch.dtype) -> None:
         self.seq_num = seq_num
         self.c_seq_len = c_seq_len
@@ -231,8 +231,6 @@ class NsaCmpFwdWorkload(WorkloadBase):
         self.scale = scale
         self.bc = bc
         self.bs = bs
-        self.bk = bk
-        self.bv = bv
         self.dtype = dtype
         self.accum_dtype = accum_dtype
 
@@ -272,7 +270,7 @@ class NsaCmpFwdWorkload(WorkloadBase):
 class NsaTopkWorkload(WorkloadBase):
 
     def __init__(self, seq_num: int, c_seq_len: int, heads: int, dim: int, group: int,
-                 scale: float, selected_block_num: int, bc: int, bs: int, bk: int,
+                 scale: float, selected_block_num: int, bc: int, bs: int,
                  dtype: torch.dtype, accum_dtype: torch.dtype) -> None:
         self.seq_num = seq_num
         self.c_seq_len = c_seq_len
@@ -283,7 +281,6 @@ class NsaTopkWorkload(WorkloadBase):
         self.selected_block_num = selected_block_num
         self.bc = bc
         self.bs = bs
-        self.bk = bk
         self.dtype = dtype
         self.accum_dtype = accum_dtype
 
