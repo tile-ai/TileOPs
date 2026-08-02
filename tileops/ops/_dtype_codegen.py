@@ -23,17 +23,11 @@ unchanged.
 
 from __future__ import annotations
 
-import re
 from typing import Any, Callable
 
 import torch
 
-_SAME_AS_RE = re.compile(r"^same_as\(\s*(\w+)\s*\)$")
-
-
-def _parse_tokens(dtype_str: str) -> list[str]:
-    """Split a dtype expression into ``|``-separated tokens."""
-    return [t.strip() for t in dtype_str.split("|") if t.strip()]
+from tileops.manifest.dtype_rules import parse_tokens, same_as_ref
 
 
 def _classify_tokens(
@@ -47,9 +41,9 @@ def _classify_tokens(
     concrete: list[torch.dtype] = []
     refs: list[str] = []
     for tok in tokens:
-        m = _SAME_AS_RE.match(tok)
-        if m:
-            refs.append(m.group(1))
+        ref = same_as_ref(tok)
+        if ref is not None:
+            refs.append(ref)
             continue
         dt = getattr(torch, tok, None)
         if not isinstance(dt, torch.dtype):
@@ -133,8 +127,8 @@ def _parse_dtype_combos(
                     )
                 seen.append(cur)
                 tok = raw[cur]
-                m = _SAME_AS_RE.match(tok)
-                if not m:
+                ref = same_as_ref(tok)
+                if ref is None:
                     dt = getattr(torch, tok, None)
                     if not isinstance(dt, torch.dtype):
                         raise ValueError(
@@ -143,7 +137,6 @@ def _parse_dtype_combos(
                         )
                     norm[name] = dt
                     break
-                ref = m.group(1)
                 if ref not in raw:
                     raise ValueError(
                         f"{op_name}: signature.dtype_combos[{idx}]"
@@ -192,7 +185,7 @@ def synthesize_validate_dtypes(
                 f"{op_name}: signature.inputs[{name!r}] must be a mapping"
             )
         dtype_str = attrs.get("dtype", "")
-        tokens = _parse_tokens(dtype_str)
+        tokens = parse_tokens(dtype_str)
         if not tokens:
             raise ValueError(
                 f"{op_name}: signature.inputs[{name!r}].dtype is empty"

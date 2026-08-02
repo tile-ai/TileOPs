@@ -32,9 +32,9 @@ __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
 ALIGNMENT = 256
 
-# Largest candidate block_m in GroupNormNoAffineKernel.autotune_configs. The
-# row count is padded to a multiple of this value so the full-tile T.copy
-# never crosses the M boundary regardless of the selected block_m.
+# A multiple of every candidate block_m (_config._CANDIDATE_BLOCK_M tops out
+# at 8). The row count is padded to this value so the full-tile T.copy never
+# crosses the M boundary regardless of the selected block_m.
 _M_BLOCK_ALIGN = 16
 
 

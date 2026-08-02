@@ -18,7 +18,6 @@ Utility:
 import functools
 import inspect
 import math
-import re
 import weakref
 from math import prod
 from typing import Callable, Dict, List, Optional
@@ -27,6 +26,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.manifest import load_manifest
+from tileops.manifest.dtype_rules import promote_int_to_float_ref, same_as_ref
 
 from ..op_base import Op
 
@@ -546,8 +546,6 @@ def coalesce_broadcast_dims(a_shape, b_shape):
     return out_shape, coalesced_shape, a_strides, b_strides
 
 
-_SAME_AS_RE = re.compile(r"^same_as\(\s*\w+\s*\)$")
-_PROMOTE_INT_TO_FLOAT_RE = re.compile(r"^promote_int_to_float\(\s*\w+\s*\)$")
 # Target dtype for integral inputs under ``promote_int_to_float``, matching
 # PyTorch's int-input promotion (e.g. ``torch.reciprocal``).
 _PROMOTED_FLOAT_DTYPE = torch.float32
@@ -598,9 +596,9 @@ def resolve_output_dtype(op_class_name: str, input_dtype: torch.dtype) -> torch.
         ValueError: If the declared expression names an unknown dtype.
     """
     expr = _manifest_output_dtype_expr(op_class_name)
-    if _SAME_AS_RE.match(expr) or "|" in expr:
+    if same_as_ref(expr) is not None or "|" in expr:
         return input_dtype
-    if _PROMOTE_INT_TO_FLOAT_RE.match(expr):
+    if promote_int_to_float_ref(expr) is not None:
         if input_dtype.is_floating_point:
             return input_dtype
         return _PROMOTED_FLOAT_DTYPE
