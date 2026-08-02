@@ -9,7 +9,7 @@ from tileops.kernels.elementwise import PreluFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _OP_REGISTRY, _apply_fp8_post_cast
+from ._base import _OP_REGISTRY
 
 
 class PreluFwdOp(Op):
@@ -66,10 +66,9 @@ class PreluFwdOp(Op):
         weight: torch.Tensor,
     ) -> torch.Tensor:
         orig_shape = input.shape
-        result = self.kernel(
+        return self.kernel(
             input.contiguous().reshape(-1), weight.contiguous().reshape(-1),
         ).reshape(orig_shape)
-        return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(
         self,

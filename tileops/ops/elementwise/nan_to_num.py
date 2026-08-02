@@ -8,7 +8,7 @@ from tileops.kernels.elementwise import NanToNumFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _OP_REGISTRY, _apply_fp8_post_cast, _validate_scalar_param_repr
+from ._base import _OP_REGISTRY, _validate_scalar_param_repr
 
 
 class NanToNumFwdOp(Op):
@@ -91,8 +91,7 @@ class NanToNumFwdOp(Op):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         orig_shape = input.shape
-        result = self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
-        return _apply_fp8_post_cast(result, self.kernel)
+        return self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:

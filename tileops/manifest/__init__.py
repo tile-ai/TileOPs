@@ -61,6 +61,21 @@ def load_manifest() -> dict[str, Any]:
     return merged
 
 
+
+def try_load_entry(op_name: str) -> dict[str, Any] | None:
+    """Return the manifest entry for *op_name*, or None if unavailable.
+
+    Every failure — missing key, unreadable manifest — downgrades to None so
+    an incomplete manifest never blocks op-class construction at import time.
+    """
+    try:
+        ops = load_manifest()
+    except Exception:
+        return None
+    entry = ops.get(op_name)
+    return entry if isinstance(entry, dict) else None
+
+
 def load_workloads(op_name: str) -> list[dict[str, Any]]:
     """Return the workloads list for *op_name*.
 
@@ -114,4 +129,5 @@ __all__ = [
     "load_workloads",
     "manifest_files",
     "single_input_workload_contract",
+    "try_load_entry",
 ]

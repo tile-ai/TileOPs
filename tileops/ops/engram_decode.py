@@ -1,7 +1,6 @@
 from typing import Dict, List, Optional
 
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.engram import EngramDecodeKernel
 from tileops.kernels.kernel_base import Kernel
@@ -9,12 +8,6 @@ from tileops.kernels.kernel_base import Kernel
 from .op_base import Op
 
 __all__ = ["EngramDecodeOp"]
-
-ALIGNMENT = 256
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 class EngramDecodeOp(Op):
@@ -58,7 +51,6 @@ class EngramDecodeOp(Op):
         self.dilation = dilation
         self.dtype = dtype
         self.eps = eps
-        self.d_padded = _align_up(d, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["engram_decode"](
             batch, d_mem, d, max_conv_len, conv_kernel_size, dilation,
@@ -106,30 +98,6 @@ class EngramDecodeOp(Op):
         h_t = h_t.contiguous()
         conv_state = conv_state.contiguous()
 
-        # Left-pad conv_state to max_conv_len if needed
-        if conv_state.shape[1] < self.max_conv_len:
-            conv_state = F.pad(
-                conv_state,
-                (0, 0, self.max_conv_len - conv_state.shape[1], 0),
-                mode='constant', value=0,
-            )
-
-        # Pad d dimension to alignment
-        if self.d_padded != self.d:
-            h_t = F.pad(h_t, (0, self.d_padded - self.d))
-            conv_state = F.pad(conv_state, (0, self.d_padded - self.d))
-            W_K = F.pad(W_K, (0, self.d_padded - self.d))
-            W_V = F.pad(W_V, (0, self.d_padded - self.d))
-            rms_w_h = F.pad(rms_w_h, (0, self.d_padded - self.d))
-            rms_w_v = F.pad(rms_w_v, (0, self.d_padded - self.d))
-            conv_w = F.pad(conv_w, (0, self.d_padded - self.d))
-
-        results = self.kernel(
+        return self.kernel(
             e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
         )
-
-        if self.d_padded != self.d:
-            results[0] = results[0][:, :self.d]
-            results[1] = results[1][:, :, :self.d]
-
-        return results

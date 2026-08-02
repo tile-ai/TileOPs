@@ -8,7 +8,6 @@ from tileops.kernels.elementwise import SinusoidalFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _apply_fp8_post_cast
 
 
 class SinusoidalFwdOp(Op):
@@ -66,6 +65,4 @@ class SinusoidalFwdOp(Op):
         return 6 * n_elem, self.total_memory
 
     def forward(self) -> torch.Tensor:
-        out = self.kernel()
-        result = out.reshape(self.seq_len, self.d_model)
-        return _apply_fp8_post_cast(result, self.kernel)
+        return self.kernel().reshape(self.seq_len, self.d_model)

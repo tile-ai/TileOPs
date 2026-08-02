@@ -18,6 +18,7 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
+import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -193,7 +194,25 @@ class FusedAddLayerNormKernel(Kernel):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ) -> list[torch.Tensor]:
-        return _fused_add_layer_norm_wrapped(
+        """Run fused add + LayerNorm on ``N``-wide rows.
+
+        Args:
+            x: Input of shape ``(M, N)``.
+            residual: Residual of shape ``(M, N)``.
+            weight: Affine scale of shape ``(N,)``.
+            bias: Affine shift of shape ``(N,)``.
+
+        Returns:
+            ``[y, residual_out]``, both of shape ``(M, N)``. The alignment
+            padding the prim_func requires is applied and trimmed here.
+        """
+        pad = self.N_padded - self.N
+        if pad:
+            x = F.pad(x, (0, pad))
+            residual = F.pad(residual, (0, pad))
+            weight = F.pad(weight, (0, pad))
+            bias = F.pad(bias, (0, pad))
+        outputs = _fused_add_layer_norm_wrapped(
             self.M,
             self.N,
             self.eps,
@@ -205,6 +224,9 @@ class FusedAddLayerNormKernel(Kernel):
             weight,
             bias,
         )
+        if pad:
+            return [out[:, : self.N] for out in outputs]
+        return outputs
 
 
 # Fused Add + RMSNorm kernel
@@ -352,7 +374,23 @@ class FusedAddRMSNormKernel(Kernel):
         residual: torch.Tensor,
         weight: torch.Tensor,
     ) -> list[torch.Tensor]:
-        return _fused_add_rms_norm_wrapped(
+        """Run fused add + RMSNorm on ``N``-wide rows.
+
+        Args:
+            x: Input of shape ``(M, N)``.
+            residual: Residual of shape ``(M, N)``.
+            weight: Affine scale of shape ``(N,)``.
+
+        Returns:
+            ``[y, residual_out]``, both of shape ``(M, N)``. The alignment
+            padding the prim_func requires is applied and trimmed here.
+        """
+        pad = self.N_padded - self.N
+        if pad:
+            x = F.pad(x, (0, pad))
+            residual = F.pad(residual, (0, pad))
+            weight = F.pad(weight, (0, pad))
+        outputs = _fused_add_rms_norm_wrapped(
             self.M,
             self.N,
             self.eps,
@@ -363,3 +401,6 @@ class FusedAddRMSNormKernel(Kernel):
             residual,
             weight,
         )
+        if pad:
+            return [out[:, : self.N] for out in outputs]
+        return outputs

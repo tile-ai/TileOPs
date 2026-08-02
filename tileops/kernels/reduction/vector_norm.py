@@ -26,6 +26,7 @@ from tileops.kernels.reduction._primitives import (
     align_up,
     compute_tile_n,
     device_smem_budget,
+    tune_by_forward,
 )
 
 __all__ = ["VectorNormKernel"]
@@ -372,41 +373,10 @@ class VectorNormKernel(Kernel):
         """Autotune vector norm, benchmarking tiled configs directly."""
         if not self._needs_tiling:
             return super().autotune(warmup=warmup, rep=rep)
-
-        configs = self.autotune_configs
-        if not configs:
-            self.config = self.default_config
-            return
-
-        print(f'Start autotuning {self.__class__.__name__} (tiled path)...')
-
-        device = torch.cuda.current_device()
-        x = torch.randn(self.M, self.N, dtype=self.dtype, device=device)
-
-        best_config = configs[0]
-        best_time = float('inf')
-
-        for cfg in configs:
-            self.config = cfg
-            for _ in range(warmup):
-                self.forward(x)
-            torch.cuda.synchronize()
-
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            start.record()
-            for _ in range(rep):
-                self.forward(x)
-            end.record()
-            torch.cuda.synchronize()
-            elapsed = start.elapsed_time(end) / rep
-
-            if elapsed < best_time:
-                best_time = elapsed
-                best_config = cfg
-
-        self.config = best_config
-        print(f'Best config: {self.config}')
+        x = torch.randn(
+            self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device()
+        )
+        tune_by_forward(self, x, warmup=warmup, rep=rep)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the l1/l2/inf norm kernel.

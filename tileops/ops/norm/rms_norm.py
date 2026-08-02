@@ -2,13 +2,11 @@ import math
 from typing import Dict, Optional, Sequence, Tuple
 
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import RMSNormKernel
 
 from ..op_base import Op
-from .norm_base import ALIGNMENT, align_up
 
 __all__ = ["RMSNormFwdOp"]
 
@@ -57,7 +55,6 @@ class RMSNormFwdOp(Op):
         self.dtype = dtype
         self.eps = _DEFAULT_EPS if eps is None else float(eps)
         self.tune = tune
-        self.N_padded = align_up(self.N, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[int, Kernel] = {}
         self._last_roofline_mn: Optional[Tuple[int, int]] = None
@@ -123,11 +120,6 @@ class RMSNormFwdOp(Op):
         x_flat = x.contiguous().reshape(-1, self.N)
         w_flat = weight.contiguous().reshape(self.N)
         m = x_flat.shape[0]
-        if self.N_padded != self.N:
-            x_flat = F.pad(x_flat, (0, self.N_padded - self.N))
-            w_flat = F.pad(w_flat, (0, self.N_padded - self.N))
         y = self._get_kernel(m)(x_flat, w_flat)
-        if self.N_padded != self.N:
-            y = y[:, : self.N]
         self._last_roofline_mn = (m, self.N)
         return y.reshape(orig_shape)

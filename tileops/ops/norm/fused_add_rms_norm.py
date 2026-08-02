@@ -1,13 +1,11 @@
 from typing import Dict, Optional, Tuple
 
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import FusedAddRMSNormKernel
 
 from ..op_base import Op
-from .norm_base import ALIGNMENT, align_up
 
 __all__ = ["FusedAddRMSNormFwdOp"]
 
@@ -158,21 +156,9 @@ class FusedAddRMSNormFwdOp(Op):
         dtype = expected_dtype
         assert dtype is not None
         self.dtype = dtype
-        N_padded = align_up(N, ALIGNMENT)
-
-        # Pad hidden dim to 256-element alignment if needed
-        if N_padded != N:
-            x = F.pad(x, (0, N_padded - N))
-            residual = F.pad(residual, (0, N_padded - N))
-            weight = F.pad(weight, (0, N_padded - N))
 
         kernel = self._get_kernel(M_actual, N, dtype, x.device.index)
         y, residual_out = kernel(x, residual, weight)
         self._last_roofline_mn = (M_actual, N)
-
-        # Trim padding
-        if N_padded != N:
-            y = y[:, :N]
-            residual_out = residual_out[:, :N]
 
         return y.reshape(orig_shape), residual_out.reshape(orig_shape)

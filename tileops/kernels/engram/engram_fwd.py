@@ -24,6 +24,7 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
+import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -274,8 +275,35 @@ class EngramGateConvFwdKernel(Kernel):
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
     ) -> list[torch.Tensor]:
-        return _engram_gate_conv_fwd_wrapped(
+        """Run the fused gate + conv forward pass.
+
+        Args:
+            H: Hidden states of shape ``(M, seq_len, d)``.
+            k: Key projection of shape ``(M, seq_len, d)``.
+            v: Value projection of shape ``(M, seq_len, d)``.
+            rms_w_h: RMSNorm weight of shape ``(d,)`` for ``H`` and ``k``.
+            rms_w_v: RMSNorm weight of shape ``(d,)`` for the gated value.
+            conv_w: Depthwise conv weights of shape ``(4, d)``.
+
+        Returns:
+            ``[Y, vhat, alpha, rrms_h, rrms_k, rrms_v]``. ``Y`` and ``vhat``
+            are ``(M, seq_len, d)``; the alignment padding the prim_func
+            requires is applied and trimmed here.
+        """
+        pad = self.d_padded - self.d
+        if pad:
+            H = F.pad(H, (0, pad))
+            k = F.pad(k, (0, pad))
+            v = F.pad(v, (0, pad))
+            rms_w_h = F.pad(rms_w_h, (0, pad))
+            rms_w_v = F.pad(rms_w_v, (0, pad))
+            conv_w = F.pad(conv_w, (0, pad))
+        results = _engram_gate_conv_fwd_wrapped(
             self.M, self.seq_len, self.d, self.eps,
             self.dtype_str, self.config["threads"],
             H, k, v, rms_w_h, rms_w_v, conv_w,
         )
+        if pad:
+            results[0] = results[0][:, :, : self.d]
+            results[1] = results[1][:, :, : self.d]
+        return results

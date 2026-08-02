@@ -33,8 +33,8 @@ Outputs:
 
 Grid: (B,) — one thread block per batch element.
 
-The conv_state is padded to max_conv_len by the op before calling this kernel,
-so the kernel is compiled once with max_conv_len.
+``forward`` left-pads conv_state to max_conv_len, so the kernel is compiled
+once with max_conv_len regardless of the caller's history length.
 """
 
 import functools
@@ -43,6 +43,7 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
+import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 
@@ -280,8 +281,6 @@ class EngramDecodeKernel(Kernel):
     Fuses GEMV projection, RMSNorm gating, dilated causal conv with state
     update, and SiLU activation into a single kernel launch.
 
-    The conv_state is padded to max_conv_len by the op before calling this kernel.
-
     Args:
         batch: batch size.
         d_mem: memory embedding dimension.
@@ -351,9 +350,44 @@ class EngramDecodeKernel(Kernel):
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
     ) -> list[torch.Tensor]:
-        return _engram_decode_wrapped(
+        """Run one fused decode step.
+
+        Args:
+            e_t: Gathered N-gram embedding, shape ``(B, d_mem)``.
+            h_t: Hidden state for the current token, shape ``(B, d)``.
+            conv_state: Conv history of shape ``(B, L, d)`` with
+                ``L <= max_conv_len``; left-padded to the compiled capacity
+                here.
+            W_K: Key projection weight of shape ``(d_mem, d)``.
+            W_V: Value projection weight of shape ``(d_mem, d)``.
+            rms_w_h: RMSNorm weight of shape ``(d,)`` for ``h`` and ``k``.
+            rms_w_v: RMSNorm weight of shape ``(d,)`` for the gated value.
+            conv_w: Depthwise conv weights of shape ``(w, d)``.
+
+        Returns:
+            ``[y_t, new_conv_state]`` of shapes ``(B, d)`` and
+            ``(B, max_conv_len, d)``. The alignment padding the prim_func
+            requires is applied and trimmed here.
+        """
+        state_pad = self.max_conv_len - conv_state.shape[1]
+        if state_pad > 0:
+            conv_state = F.pad(conv_state, (0, 0, state_pad, 0))
+        pad = self.d_padded - self.d
+        if pad:
+            h_t = F.pad(h_t, (0, pad))
+            conv_state = F.pad(conv_state, (0, pad))
+            W_K = F.pad(W_K, (0, pad))
+            W_V = F.pad(W_V, (0, pad))
+            rms_w_h = F.pad(rms_w_h, (0, pad))
+            rms_w_v = F.pad(rms_w_v, (0, pad))
+            conv_w = F.pad(conv_w, (0, pad))
+        results = _engram_decode_wrapped(
             self.batch, self.d_mem, self.d, self.max_conv_len,
             self.conv_kernel_size, self.dilation, self.eps,
             self.dtype_str, self.config["threads"],
             e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
         )
+        if pad:
+            results[0] = results[0][:, : self.d]
+            results[1] = results[1][:, :, : self.d]
+        return results

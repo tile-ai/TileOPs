@@ -9,6 +9,7 @@ infrastructure is available from the start.
 """
 
 import tilelang.language as T
+import torch
 
 __all__ = [
     "DEFAULT_ALIGNMENT",
@@ -21,6 +22,7 @@ __all__ = [
     "make_reduce_epilogue",
     "make_softmax_epilogue",
     "make_welford_update",
+    "tune_by_forward",
 ]
 
 # 256-element alignment (512 bytes for fp16/bf16) required by T.copy()
@@ -197,6 +199,44 @@ _REDUCE_KINDS = {"sum", "max", "min"}
 _SOFTMAX_KINDS = {"softmax", "log_softmax"}
 _SCAN_KINDS = {"sum", "prod"}
 
+
+
+def tune_by_forward(kernel, *probe_inputs, warmup: int = 10, rep: int = 10) -> None:
+    """Select the fastest candidate config by timing ``kernel.forward``.
+
+    The tiled reduction paths have no single ``self.kernel`` object for
+    TileLang's autotuner to decorate — they dispatch through wrapped helper
+    functions — so each candidate is timed through ``forward`` instead.
+    Leaves ``kernel.config`` set to the winner, or to ``default_config`` when
+    the kernel declares no candidates.
+    """
+    configs = kernel.autotune_configs
+    if not configs:
+        kernel.config = kernel.default_config
+        return
+
+    print(f'Start autotuning {kernel.__class__.__name__} (tiled path)...')
+    best_config, best_time = configs[0], float('inf')
+    for cfg in configs:
+        kernel.config = cfg
+        for _ in range(warmup):
+            kernel.forward(*probe_inputs)
+        torch.cuda.synchronize()
+
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        for _ in range(rep):
+            kernel.forward(*probe_inputs)
+        end.record()
+        torch.cuda.synchronize()
+        elapsed = start.elapsed_time(end) / rep
+
+        if elapsed < best_time:
+            best_time, best_config = elapsed, cfg
+
+    kernel.config = best_config
+    print(f'Best config: {kernel.config}')
 
 def make_reduce_epilogue(op_kind: str):
     """Create a post-reduce processing T.macro.

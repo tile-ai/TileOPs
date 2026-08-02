@@ -1,6 +1,6 @@
 import functools
 import itertools
-from typing import Optional, Tuple
+from typing import Any, Callable, ClassVar, Optional, Tuple
 
 import tilelang
 import tilelang.language as T
@@ -141,10 +141,18 @@ def _(
     return torch.empty((n, c_in, out_h, out_w), dtype=x.dtype, device=x.device)
 
 
-class MaxPool2dKernel(Kernel):
-    """Max pooling forward kernel for NCHW inputs (return_indices=False)."""
+class _MaxPool2dKernelBase(Kernel):
+    """Shared construction and dispatch for the 2d max-pool kernels.
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    Concrete kernels supply ``_build`` and ``_dispatch``; everything else —
+    parameter capture, output extents, config and launch — is identical
+    between the value-only and with-indices variants.
+    """
+
+    _build: ClassVar[Callable[..., Any]]
+    _dispatch: ClassVar[Callable[..., Any]]
+
+    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
     def __init__(
         self,
@@ -168,7 +176,7 @@ class MaxPool2dKernel(Kernel):
         super().__init__()
         if dtype not in {torch.float16, torch.bfloat16, torch.float32}:
             raise ValueError(
-                f"MaxPool2dKernel supports float16, bfloat16, and float32, got {dtype}"
+                f"{type(self).__name__} supports float16, bfloat16, and float32, got {dtype}"
             )
         self.n = n
         self.c_in = c_in
@@ -186,7 +194,7 @@ class MaxPool2dKernel(Kernel):
         self.dtype = dtype
         self.out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
         self.out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-        self.kernel = _max_pool2d_kernel(
+        self.kernel = type(self)._build(
             n,
             c_in,
             h_in,
@@ -218,8 +226,8 @@ class MaxPool2dKernel(Kernel):
             for block_m, threads in itertools.product([128, 256, 512], [128, 256, 512])
         ]
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _max_pool2d_wrapped_kernel(
+    def forward(self, x: torch.Tensor) -> Any:
+        return type(self)._dispatch(
             self.n,
             self.c_in,
             self.h_in,
@@ -238,6 +246,13 @@ class MaxPool2dKernel(Kernel):
             self.config["threads"],
             x,
         )
+
+
+class MaxPool2dKernel(_MaxPool2dKernelBase):
+    """Max pooling forward kernel (return_indices=False)."""
+
+    _build = staticmethod(_max_pool2d_kernel)
+    _dispatch = staticmethod(_max_pool2d_wrapped_kernel)
 
 
 @functools.lru_cache(maxsize=32)
@@ -396,100 +411,10 @@ def _(
     )
 
 
-class MaxPool2dWithIndicesKernel(Kernel):
-    """Max pooling forward-with-indices kernel for NCHW inputs."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
 
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_h: int,
-        stride_w: int,
-        pad_h: int,
-        pad_w: int,
-        dilation_h: int,
-        dilation_w: int,
-        ceil_mode: bool,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
-        if dtype not in {torch.float16, torch.bfloat16, torch.float32}:
-            raise ValueError(
-                f"MaxPool2dWithIndicesKernel supports float16, bfloat16, and float32, got {dtype}"
-            )
-        self.n = n
-        self.c_in = c_in
-        self.h_in = h_in
-        self.w_in = w_in
-        self.kernel_h = kernel_h
-        self.kernel_w = kernel_w
-        self.stride_h = stride_h
-        self.stride_w = stride_w
-        self.pad_h = pad_h
-        self.pad_w = pad_w
-        self.dilation_h = dilation_h
-        self.dilation_w = dilation_w
-        self.ceil_mode = ceil_mode
-        self.dtype = dtype
-        self.out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-        self.out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-        self.kernel = _max_pool2d_with_indices_kernel(
-            n,
-            c_in,
-            h_in,
-            w_in,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            dilation_h,
-            dilation_w,
-            ceil_mode,
-            self.dtype_str,
-        )
-        self.init_config(config, tune)
+class MaxPool2dWithIndicesKernel(_MaxPool2dKernelBase):
+    """Max pooling forward-with-indices kernel."""
 
-    @property
-    def default_config(self) -> dict:
-        return {
-            "block_m": 256,
-            "threads": 256,
-        }
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [
-            {"block_m": block_m, "threads": threads}
-            for block_m, threads in itertools.product([128, 256, 512], [128, 256, 512])
-        ]
-
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _max_pool2d_with_indices_wrapped_kernel(
-            self.n,
-            self.c_in,
-            self.h_in,
-            self.w_in,
-            self.kernel_h,
-            self.kernel_w,
-            self.stride_h,
-            self.stride_w,
-            self.pad_h,
-            self.pad_w,
-            self.dilation_h,
-            self.dilation_w,
-            self.ceil_mode,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["threads"],
-            x,
-        )
+    _build = staticmethod(_max_pool2d_with_indices_kernel)
+    _dispatch = staticmethod(_max_pool2d_with_indices_wrapped_kernel)

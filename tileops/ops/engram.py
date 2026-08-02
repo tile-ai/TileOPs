@@ -1,7 +1,6 @@
 from typing import Dict, List, Optional
 
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.engram import EngramGateConvBwdKernel, EngramGateConvFwdKernel
 from tileops.kernels.kernel_base import Kernel
@@ -10,12 +9,7 @@ from .op_base import Op
 
 __all__ = ["EngramGateConvBwdOp", "EngramGateConvFwdOp"]
 
-ALIGNMENT = 256
 CONV_KERNEL_SIZE = 4
-
-
-def _align_up(n: int, alignment: int) -> int:
-    return ((n + alignment - 1) // alignment) * alignment
 
 
 class EngramGateConvFwdOp(Op):
@@ -52,7 +46,6 @@ class EngramGateConvFwdOp(Op):
         self.d = d
         self.dtype = dtype
         self.eps = eps
-        self.d_padded = _align_up(d, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["engram_gate_conv_fwd"](
             M, seq_len, d, eps, dtype, tune=tune,
@@ -106,24 +99,7 @@ class EngramGateConvFwdOp(Op):
         k = k.contiguous()
         v = v.contiguous()
 
-        # Pad hidden dim to alignment if needed
-        if self.d_padded != self.d:
-            H = F.pad(H, (0, self.d_padded - self.d))
-            k = F.pad(k, (0, self.d_padded - self.d))
-            v = F.pad(v, (0, self.d_padded - self.d))
-            rms_w_h = F.pad(rms_w_h, (0, self.d_padded - self.d))
-            rms_w_v = F.pad(rms_w_v, (0, self.d_padded - self.d))
-            conv_w = F.pad(conv_w, (0, self.d_padded - self.d))
-
-        results = self.kernel(H, k, v, rms_w_h, rms_w_v, conv_w)
-        # results: [Y, vhat, alpha, rrms_h, rrms_k, rrms_v]
-
-        # Trim padding on d-dim tensors
-        if self.d_padded != self.d:
-            results[0] = results[0][:, :, :self.d]   # Y
-            results[1] = results[1][:, :, :self.d]   # vhat
-
-        return results
+        return self.kernel(H, k, v, rms_w_h, rms_w_v, conv_w)
 
 
 class EngramGateConvBwdOp(Op):
@@ -160,7 +136,6 @@ class EngramGateConvBwdOp(Op):
         self.d = d
         self.dtype = dtype
         self.eps = eps
-        self.d_padded = _align_up(d, ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["engram_gate_conv_bwd"](
             M, seq_len, d, eps, dtype, tune=tune,
@@ -220,33 +195,7 @@ class EngramGateConvBwdOp(Op):
         v = v.contiguous()
         vhat = vhat.contiguous()
 
-        # Pad hidden dim if needed
-        if self.d_padded != self.d:
-            dY = F.pad(dY, (0, self.d_padded - self.d))
-            H = F.pad(H, (0, self.d_padded - self.d))
-            k = F.pad(k, (0, self.d_padded - self.d))
-            v = F.pad(v, (0, self.d_padded - self.d))
-            vhat = F.pad(vhat, (0, self.d_padded - self.d))
-            rms_w_h = F.pad(rms_w_h, (0, self.d_padded - self.d))
-            rms_w_v = F.pad(rms_w_v, (0, self.d_padded - self.d))
-            conv_w = F.pad(conv_w, (0, self.d_padded - self.d))
-
-        results = self.kernel(
+        return self.kernel(
             dY, H, k, v, rms_w_h, rms_w_v, conv_w,
             vhat, alpha, rrms_h, rrms_k, rrms_v,
         )
-        # results: [dH, dk, dv, drms_w_h, drms_w_v, dconv_w, dvhat_buf]
-
-        dH, dk, dv = results[0], results[1], results[2]
-        drms_w_h, drms_w_v, dconv_w = results[3], results[4], results[5]
-
-        # Trim padding
-        if self.d_padded != self.d:
-            dH = dH[:, :, :self.d]
-            dk = dk[:, :, :self.d]
-            dv = dv[:, :, :self.d]
-            drms_w_h = drms_w_h[:self.d]
-            drms_w_v = drms_w_v[:self.d]
-            dconv_w = dconv_w[:, :self.d]
-
-        return [dH, dk, dv, drms_w_h, drms_w_v, dconv_w]
