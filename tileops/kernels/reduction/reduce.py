@@ -34,6 +34,7 @@ from tileops.kernels.reduction._primitives import (
     align_up,
     compute_tile_n,
     device_smem_budget,
+    tune_by_forward,
 )
 
 __all__ = ["ReduceKernel"]
@@ -1023,54 +1024,13 @@ class ReduceKernel(Kernel):
         return configs if configs else [self.default_config]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Autotune the reduce kernel by benchmarking candidate configs.
-
-        The non-tiled path delegates to the base ``Kernel.autotune`` which
-        applies TileLang's ``autotune`` decorator to ``self.kernel``.
-
-        The tiled path has no single ``self.kernel`` object -- it dispatches
-        through wrapped helper functions -- so we benchmark each candidate
-        config via :meth:`forward` directly and pick the fastest.
-        """
+        """Autotune the reduce kernel by benchmarking candidate configs."""
         if not self._needs_tiling:
             return super().autotune(warmup=warmup, rep=rep)
-
-        configs = self.autotune_configs
-        if not configs:
-            self.config = self.default_config
-            return
-
-        print(f'Start autotuning {self.__class__.__name__} (tiled path)...')
-
-        device = torch.cuda.current_device()
-        x = torch.randn(self.M, self.N, dtype=self.dtype, device=device)
-
-        best_config = configs[0]
-        best_time = float('inf')
-
-        for cfg in configs:
-            self.config = cfg
-            # Warmup
-            for _ in range(warmup):
-                self.forward(x)
-            torch.cuda.synchronize()
-
-            # Benchmark
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            start.record()
-            for _ in range(rep):
-                self.forward(x)
-            end.record()
-            torch.cuda.synchronize()
-            elapsed = start.elapsed_time(end) / rep
-
-            if elapsed < best_time:
-                best_time = elapsed
-                best_config = cfg
-
-        self.config = best_config
-        print(f'Best config: {self.config}')
+        x = torch.randn(
+            self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device()
+        )
+        tune_by_forward(self, x, warmup=warmup, rep=rep)
 
     def forward(self, x: torch.Tensor) -> object:
         if self._is_welford:
