@@ -121,7 +121,6 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   self.dtype = dtype
   self.dim = dim
   self.tune = tune
-  self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
   self.dispatch_kernel(kernel_map)
   # M unknown at init (only N committed via static_dims); kernel
   # is built lazily in forward() once M is derived.
@@ -154,7 +153,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 ### Slot S16: <a id="slot-s16"></a> `forward` body
 
 - **Rule.** Body sequence: (a) `self._validate_dtypes(...)`; (b) validate `shape_rules` (e.g. `-x.ndim <= dim < x.ndim`) and normalise parameter-dependent axes via modulo (e.g. `dim = self.dim % x.ndim`); (c) validate each `static_dims` commitment (`x.shape[<resolved_axis>] == self.<kwarg>`); (d) for arbitrary-rank ops, bind `self._static_axes = frozenset({(input_index, resolved_axis)})` and look up / lazily build the kernel in `self._kernel_cache` keyed by `self._cache_key(*input_shapes)`; (e) `.contiguous()` + reshape to the kernel's expected 2D layout; (f) call the kernel; (g) trim alignment padding (if any) and restore the original shape. Fully-static ops skip the cache-lookup part of (d) since `self.kernel` was built at init.
-- **Derivation.** Validation expressions come from each `static_dims` entry's `<tensor>.shape[<axis>]` RHS; axis normalisation mirrors the param evaluation in `static_dims` + `shape_rules`; kernel cache key is whatever `_cache_key` projects (default: tuple of non-static-axis sizes). Padding trim applies when the kernel operates on `align_up(N, DEFAULT_ALIGNMENT)` (`self.N_padded != self.N`).
+- **Derivation.** Validation expressions come from each `static_dims` entry's `<tensor>.shape[<axis>]` RHS; axis normalisation mirrors the param evaluation in `static_dims` + `shape_rules`; kernel cache key is whatever `_cache_key` projects (default: tuple of non-static-axis sizes). A kernel that pads internally returns the semantic shape, so the op does not trim.
 - **Example (arbitrary-rank).**
   ```python
   self._validate_dtypes(x)
@@ -182,12 +181,10 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   orig_shape = x.shape
   x2 = x.movedim(dim, -1).contiguous().reshape(M, self.N)
   y2 = kernel(x2)
-  if self.N_padded != self.N:
-      y2 = y2[:, : self.N]
   y = y2.reshape(*orig_shape[:dim], *orig_shape[dim + 1 :], self.N)
   return y.movedim(-1, dim)
   ```
-- **Common mistakes.** Skipping `_validate_dtypes`; reshape before `.contiguous()`; hard-coding `x.shape[-1]` instead of the normalised `x.shape[self.dim % x.ndim]`; binding `self._static_axes` before the axis is non-negative (violates `Op._static_axes` contract); forgetting the kernel cache lookup so every forward rebuilds the kernel; forgetting the padding trim when `self.N_padded != self.N` (causes `reshape(orig_shape)` to raise on size mismatch); not restoring the original shape.
+- **Common mistakes.** Skipping `_validate_dtypes`; reshape before `.contiguous()`; hard-coding `x.shape[-1]` instead of the normalised `x.shape[self.dim % x.ndim]`; binding `self._static_axes` before the axis is non-negative (violates `Op._static_axes` contract); forgetting the kernel cache lookup so every forward rebuilds the kernel; trimming padded kernel output in the op instead of leaving it to the kernel; not restoring the original shape.
 
 ### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes` method body
 

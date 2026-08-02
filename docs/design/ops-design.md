@@ -52,7 +52,6 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
 from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel
 
 from ..op_base import Op
@@ -118,7 +117,6 @@ class ExampleCumsumFwdOp(Op):
         self.dtype = dtype
         self.dim = dim
         self.tune = tune
-        self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self.dispatch_kernel(kernel_map)
         # M is not a static_dim — deferred to forward() where x.ndim
         # is known and M is derived from the non-reduction axes.
@@ -169,13 +167,11 @@ class ExampleCumsumFwdOp(Op):
         orig_shape = x.shape
         x2 = x.movedim(dim, -1).contiguous().reshape(M, self.N)
         y2 = kernel(x2)
-        if self.N_padded != self.N:
-            y2 = y2[:, : self.N]
         y = y2.reshape(*orig_shape[:dim], *orig_shape[dim + 1:], self.N)
         return y.movedim(-1, dim)
 ```
 
-**Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the kernel cache lookup. Padding trim emitted iff the kernel operates on `align_up(N, DEFAULT_ALIGNMENT)` (`self.N_padded != self.N`).
+**Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the kernel cache lookup. The op never trims kernel output: a kernel that pads internally returns the semantic shape.
 
 **Reference.** [Slot S14](ops-design-reference.md#slot-s14), [S15](ops-design-reference.md#slot-s15), [S16](ops-design-reference.md#slot-s16).
 
