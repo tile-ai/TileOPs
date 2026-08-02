@@ -9,6 +9,8 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import LOG2E
 
+from ._config import tile_stage_thread_configs
+
 __all__ = [
     'FlashAttnBwdPostprocessKernel',
     'FlashAttnBwdPreprocessKernel',
@@ -267,18 +269,7 @@ class MHABwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, ...]:
         return self.kernel(**self.config)(*inputs)
@@ -616,18 +607,7 @@ class GQABwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, ...]:
         return self.kernel(**self.config)(*inputs)

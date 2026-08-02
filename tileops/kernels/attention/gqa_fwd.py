@@ -1,5 +1,4 @@
 import functools
-import itertools
 from typing import Callable, Optional, Tuple
 
 import tilelang
@@ -15,6 +14,8 @@ from tileops.kernels.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
+
+from ._config import tile_stage_thread_configs
 
 __all__ = [
     'GQAFwdKernel',
@@ -208,18 +209,7 @@ class MHAFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k: torch.Tensor,
                 v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -401,17 +391,7 @@ class MHAFwdWgmmaPipelinedKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k: torch.Tensor,
                 v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -587,18 +567,7 @@ class GQAFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k: torch.Tensor,
                 v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -801,17 +770,7 @@ class GQAFwdWgmmaPipelinedKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k: torch.Tensor,
                 v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -1064,18 +1023,7 @@ class GQAPrefillFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k: torch.Tensor,
                 v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -1387,18 +1335,7 @@ class GQAPrefillWithKVCacheFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
                 k_cache: torch.Tensor, v_cache: torch.Tensor,
@@ -1772,18 +1709,7 @@ class GQAPrefillWithKVCacheRopeFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
                 k_cache: torch.Tensor, v_cache: torch.Tensor, cache_seqlens: torch.Tensor,
@@ -2135,18 +2061,7 @@ class GQAPrefillPagedWithKVCacheFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
                 k_pages: torch.Tensor, v_pages: torch.Tensor, cu_seqlens_q: torch.Tensor,
@@ -2524,18 +2439,7 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
                 k_pages: torch.Tensor, v_pages: torch.Tensor, k_scale: torch.Tensor,
@@ -3052,18 +2956,7 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128]
-        block_n = [32, 64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-
-        return [{
-            'block_m': c[0],
-            'block_n': c[1],
-            'num_stages': c[2],
-            'threads': c[3]
-        } for c in _configs]
+        return tile_stage_thread_configs()
 
     def forward(self, q: torch.Tensor, k_new: torch.Tensor, v_new: torch.Tensor,
                 k_pages: torch.Tensor, v_pages: torch.Tensor, cu_seqlens_q: torch.Tensor,

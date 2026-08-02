@@ -24,6 +24,30 @@ __all__ = [
 
 # Shared helpers
 
+def conv_autotune_configs(
+    dtype,
+    *,
+    block_m=(32, 64, 128),
+    block_n=(64, 128, 256),
+    block_k=(32, 64, 128),
+    num_stages=(2, 3),
+    threads=(128, 256),
+) -> list[dict]:
+    """Search space filtered to combinations that fit in shared memory."""
+    limit = get_shared_memory_limit_bytes()
+    valid = []
+    for bm, bn, bk, ns, th in itertools.product(
+        block_m, block_n, block_k, num_stages, threads,
+    ):
+        if conv_shared_memory_bytes(bm, bn, bk, ns, dtype) > limit:
+            continue
+        valid.append({
+            "block_m": bm, "block_n": bn, "block_k": bk,
+            "num_stages": ns, "threads": th, "enable_rasterization": True,
+        })
+    return valid
+
+
 def get_shared_memory_limit_bytes() -> int:
     return torch.cuda.get_device_properties(
         torch.cuda.current_device()
@@ -695,30 +719,7 @@ class Conv1dPointwiseKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
-        configs = itertools.product(
-            [32, 64, 128],
-            [64, 128, 256],
-            [32, 64, 128],
-            [2, 3],
-            [128, 256],
-            [True],
-        )
-        valid_configs = []
-        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
-            shared_memory_bytes = conv_shared_memory_bytes(
-                block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > shared_memory_limit_bytes:
-                continue
-            valid_configs.append({
-                "block_m": block_m,
-                "block_n": block_n,
-                "block_k": block_k,
-                "num_stages": num_stages,
-                "threads": threads,
-                "enable_rasterization": enable_rasterization,
-            })
-        return valid_configs
+        return conv_autotune_configs(self.dtype)
 
     def forward(
         self,
@@ -822,30 +823,7 @@ class Conv1dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
-        configs = itertools.product(
-            [32, 64, 128],
-            [64, 128, 256],
-            [32, 64, 128],
-            [2, 3],
-            [128, 256],
-            [True],
-        )
-        valid_configs = []
-        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
-            shared_memory_bytes = conv_shared_memory_bytes(
-                block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > shared_memory_limit_bytes:
-                continue
-            valid_configs.append({
-                "block_m": block_m,
-                "block_n": block_n,
-                "block_k": block_k,
-                "num_stages": num_stages,
-                "threads": threads,
-                "enable_rasterization": enable_rasterization,
-            })
-        return valid_configs
+        return conv_autotune_configs(self.dtype)
 
     def _get_weight_flat(self, weight: torch.Tensor) -> torch.Tensor:
         weight_version = weight._version
@@ -1031,30 +1009,10 @@ class GroupConv1dKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         if self.use_direct:
             return [self.default_config]
-        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
-        configs = itertools.product(
-            self._block_m_choices,
-            [64, 128, 256],
-            [32, 64, 128],
-            [2, 3],
-            [128, 256],
-            [True],
+        return conv_autotune_configs(
+            self.dtype,
+            block_m=self._block_m_choices,
         )
-        valid_configs = []
-        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
-            shared_memory_bytes = conv_shared_memory_bytes(
-                block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > shared_memory_limit_bytes:
-                continue
-            valid_configs.append({
-                "block_m": block_m,
-                "block_n": block_n,
-                "block_k": block_k,
-                "num_stages": num_stages,
-                "threads": threads,
-                "enable_rasterization": enable_rasterization,
-            })
-        return valid_configs
 
     def forward(
         self,
@@ -1963,33 +1921,12 @@ class Conv2dSymmetricKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
-        configs = itertools.product(
-            [64, 128],
-            [64, 128, 256],
-            [16, 32, 64],
-            [2, 3],
-            [128, 256],
-            [True],
+        configs = conv_autotune_configs(
+            self.dtype,
+            block_m=[64, 128],
+            block_k=[16, 32, 64],
         )
-        valid_configs = []
-        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
-            if self.c_in % block_k != 0:
-                continue
-            shared_memory_bytes = conv_shared_memory_bytes(
-                block_m, block_n, block_k, num_stages, self.dtype
-            )
-            if shared_memory_bytes > shared_memory_limit_bytes:
-                continue
-            valid_configs.append({
-                "block_m": block_m,
-                "block_n": block_n,
-                "block_k": block_k,
-                "num_stages": num_stages,
-                "threads": threads,
-                "enable_rasterization": enable_rasterization,
-            })
-        return valid_configs
+        return [c for c in configs if self.c_in % c["block_k"] == 0]
 
     def forward(
         self,
@@ -2136,30 +2073,11 @@ class Conv2dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
-        configs = itertools.product(
-            [64, 128],
-            [64, 128, 256],
-            [64, 128],
-            [2, 3],
-            [128, 256],
-            [True],
+        return conv_autotune_configs(
+            self.dtype,
+            block_m=[64, 128],
+            block_k=[64, 128],
         )
-        valid_configs = []
-        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
-            shared_memory_bytes = conv_shared_memory_bytes(
-                block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > shared_memory_limit_bytes:
-                continue
-            valid_configs.append({
-                "block_m": block_m,
-                "block_n": block_n,
-                "block_k": block_k,
-                "num_stages": num_stages,
-                "threads": threads,
-                "enable_rasterization": enable_rasterization,
-            })
-        return valid_configs
 
     def forward(
         self,
@@ -2302,30 +2220,7 @@ class GroupConv2dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
-        configs = itertools.product(
-            [32, 64, 128],
-            [64, 128, 256],
-            [32, 64, 128],
-            [2, 3],
-            [128, 256],
-            [True],
-        )
-        valid_configs = []
-        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
-            shared_memory_bytes = conv_shared_memory_bytes(
-                block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > shared_memory_limit_bytes:
-                continue
-            valid_configs.append({
-                "block_m": block_m,
-                "block_n": block_n,
-                "block_k": block_k,
-                "num_stages": num_stages,
-                "threads": threads,
-                "enable_rasterization": enable_rasterization,
-            })
-        return valid_configs
+        return conv_autotune_configs(self.dtype)
 
     def forward(
         self,
@@ -2445,30 +2340,10 @@ class Conv2d1x1Kernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
-        configs = itertools.product(
-            [64, 128, 256],
-            [64, 128, 256],
-            [32, 64, 128],
-            [2, 3],
-            [128, 256],
-            [True],
+        return conv_autotune_configs(
+            self.dtype,
+            block_m=[64, 128, 256],
         )
-        valid_configs = []
-        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
-            shared_memory_bytes = conv_shared_memory_bytes(
-                block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > shared_memory_limit_bytes:
-                continue
-            valid_configs.append({
-                "block_m": block_m,
-                "block_n": block_n,
-                "block_k": block_k,
-                "num_stages": num_stages,
-                "threads": threads,
-                "enable_rasterization": enable_rasterization,
-            })
-        return valid_configs
 
     def forward(
         self,
@@ -3082,30 +2957,10 @@ class Conv3dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
-        configs = itertools.product(
-            [32, 64, 128],
-            [32, 64, 128],
-            [32, 64, 128],
-            [2, 3],
-            [128, 256],
-            [True],
+        return conv_autotune_configs(
+            self.dtype,
+            block_n=[32, 64, 128],
         )
-        valid_configs = []
-        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
-            shared_memory_bytes = conv_shared_memory_bytes(
-                block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > shared_memory_limit_bytes:
-                continue
-            valid_configs.append({
-                "block_m": block_m,
-                "block_n": block_n,
-                "block_k": block_k,
-                "num_stages": num_stages,
-                "threads": threads,
-                "enable_rasterization": enable_rasterization,
-            })
-        return valid_configs
 
     def forward(
         self,
@@ -3269,30 +3124,10 @@ class GroupConv3dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        shared_memory_limit_bytes = get_shared_memory_limit_bytes()
-        configs = itertools.product(
-            [32, 64, 128],
-            [32, 64, 128],
-            [32, 64, 128],
-            [2, 3],
-            [128, 256],
-            [True],
+        return conv_autotune_configs(
+            self.dtype,
+            block_n=[32, 64, 128],
         )
-        valid_configs = []
-        for block_m, block_n, block_k, num_stages, threads, enable_rasterization in configs:
-            shared_memory_bytes = conv_shared_memory_bytes(
-                block_m, block_n, block_k, num_stages, self.dtype)
-            if shared_memory_bytes > shared_memory_limit_bytes:
-                continue
-            valid_configs.append({
-                "block_m": block_m,
-                "block_n": block_n,
-                "block_k": block_k,
-                "num_stages": num_stages,
-                "threads": threads,
-                "enable_rasterization": enable_rasterization,
-            })
-        return valid_configs
 
     def forward(
         self,
