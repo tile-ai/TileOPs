@@ -32,7 +32,7 @@ def mhc_pre_ref(
     norm_eps = 0.0001
     r_ref = torch.sqrt(xsqr.sum(dim=1)) / math.sqrt(n_expand * c_x) + norm_eps
     H = torch.zeros([batch, n_expand * n_expand + 2 * n_expand],
-                    device="cuda", dtype=torch.float)
+                    device=x.device, dtype=torch.float)
     for i in range(batch):
         H[i, :] = x[i, :].float() @ phi
 
@@ -54,8 +54,8 @@ def mhc_pre_ref(
         H_res_ref = H_res_ref / (H_res_ref.sum(dim=-1, keepdim=True) + eps)
         H_res_ref = H_res_ref / (H_res_ref.sum(dim=-2, keepdim=True) + eps)
     x_in_reshaped = x.reshape([batch, n_expand, c_x])
-    x_res_ref = torch.zeros([batch, n_expand, c_x], device="cuda", dtype=torch.bfloat16)
-    x_layer_ref = torch.zeros([batch, c_x], device="cuda", dtype=torch.bfloat16)
+    x_res_ref = torch.zeros([batch, n_expand, c_x], device=x.device, dtype=torch.bfloat16)
+    x_layer_ref = torch.zeros([batch, c_x], device=x.device, dtype=torch.bfloat16)
 
     h_res_ref = H_res_ref
     h_pre_ref = H_pre_ref
