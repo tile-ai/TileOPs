@@ -305,6 +305,10 @@ Abstract interface: `default_kernel_map` (property), `forward()`. Manifest-drive
 
 Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `autotune(warmup, rep)`.
 
+#### Constructor contract
+
+A Kernel `__init__` MUST end with the tail `(..., dtype, config=None, tune=False)`, and MUST accept only values a caller can derive from the op's semantics — shapes, dtypes, algorithm parameters. A lowering representation (a coalesced index layout, a synthesized stride vector, a tile size that merely restates a head dimension) MUST NOT appear: the kernel derives it internally, so the argument list stays implementable by a kernel that does not share TileLang's lowering model. Extra construction-time operands (a baked scalar such as `alpha`) go after the tail as keyword-only parameters. When a tail parameter genuinely does not apply — an index-only kernel with no free element type, a kernel with no tunable knob — the definition's docstring says which one and why.
+
 ## Optional Hooks (Appendix)
 
 Hooks family bases expose for op-specific semantics. The `scaffold-op` skill does NOT emit these.
