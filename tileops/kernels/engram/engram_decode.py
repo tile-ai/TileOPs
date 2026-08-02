@@ -33,8 +33,8 @@ Outputs:
 
 Grid: (B,) — one thread block per batch element.
 
-The conv_state is padded to max_conv_len by the op before calling this kernel,
-so the kernel is compiled once with max_conv_len.
+``forward`` left-pads conv_state to max_conv_len, so the kernel is compiled
+once with max_conv_len regardless of the caller's history length.
 """
 
 import functools
