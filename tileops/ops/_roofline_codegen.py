@@ -37,6 +37,8 @@ import math
 from math import prod
 from typing import Any, Callable
 
+from tileops.manifest import try_load_entry
+
 
 # Names bound into the vars-layer namespace per
 # ``docs/design/roofline.md`` §4.4.4. Helper names map to their Python
@@ -642,20 +644,6 @@ def synthesize_eval_roofline(
     return _synthesize_inline_mode(op_name, roofline, signature)
 
 
-def _lookup_manifest_entry(op_name: str) -> dict[str, Any] | None:
-    """Return the manifest entry for *op_name* or ``None`` if absent."""
-    try:
-        from tileops.manifest import load_manifest
-    except Exception:
-        return None
-    try:
-        ops = load_manifest()
-    except Exception:
-        return None
-    entry = ops.get(op_name)
-    if not isinstance(entry, dict):
-        return None
-    return entry
 
 
 def maybe_install_eval_roofline(cls: type) -> None:
@@ -695,7 +683,7 @@ def maybe_install_eval_roofline(cls: type) -> None:
     sig = getattr(cls, "__manifest_signature__", None)
     status = getattr(cls, "__manifest_status__", None)
     if roofline is None or status is None:
-        entry = _lookup_manifest_entry(cls.__name__)
+        entry = try_load_entry(cls.__name__)
         if entry is None:
             return
         roofline = entry.get("roofline")

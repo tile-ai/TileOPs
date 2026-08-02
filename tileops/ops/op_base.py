@@ -71,6 +71,18 @@ class Op(ABC):
         maybe_install_validator(cls)
         maybe_install_eval_roofline(cls)
 
+    # FIXME(staged-rollout): the three contract stubs below — _infer_output_shapes,
+    # _validate_dtypes and eval_roofline — raise NotImplementedError instead of
+    # being @abstractmethod.
+    #
+    # Broken invariant: L1 does not enforce that every concrete Op implements them.
+    # Why: marking them abstract today breaks every op under tileops/ops/ that has
+    #     not been migrated to docs/design/ops-design.md, and eval_roofline bodies
+    #     are emitted by scaffold-op codegen that has not run for most ops yet. The
+    #     trust model requires one migration PR per op.
+    # Cleanup: when all three are implemented across tileops/ops/, make all three
+    #     @abstractmethod and delete this marker.
+
     @property
     @abstractmethod
     def default_kernel_map(self) -> dict[str, Kernel]:
@@ -85,18 +97,6 @@ class Op(ABC):
         ``**shape_kwargs`` base signature exists only to make the L1 contract
         grepable and discoverable; see docs/design/ops-design.md §``_infer_output_shapes``.
         """
-        # FIXME(staged-rollout): L1 Op does not yet strictly enforce _infer_output_shapes
-        # via @abstractmethod; base raises NotImplementedError instead.
-        #
-        # Broken invariant: L1 base does not strictly enforce implementation
-        #     of _infer_output_shapes on every concrete Op subclass.
-        # Why: Introducing @abstractmethod now would break all existing concrete
-        #     ops under tileops/ops/ that have not yet been migrated to the spec
-        #     in docs/design/ops-design.md; the trust model requires a separate
-        #     per-op migration PR.
-        # Cleanup: once all concrete ops under tileops/ops/ implement
-        #     _infer_output_shapes, _validate_dtypes, and eval_roofline,
-        #     convert this stub (and the two below) to `@abstractmethod`.
         raise NotImplementedError(
             "_infer_output_shapes must be implemented by the concrete Op subclass; "
             "see docs/design/ops-design.md §`_infer_output_shapes` (codegen)")
@@ -108,18 +108,6 @@ class Op(ABC):
         ``signature.inputs`` (e.g. ``_validate_dtypes(self, x, weight)``).
         See docs/design/ops-design.md §``_validate_dtypes``.
         """
-        # FIXME(staged-rollout): L1 Op does not yet strictly enforce _validate_dtypes
-        # via @abstractmethod; base raises NotImplementedError instead.
-        #
-        # Broken invariant: L1 base does not strictly enforce implementation
-        #     of _validate_dtypes on every concrete Op subclass.
-        # Why: Introducing @abstractmethod now would break all existing concrete
-        #     ops under tileops/ops/ that have not yet been migrated to the spec
-        #     in docs/design/ops-design.md; the trust model requires a separate
-        #     per-op migration PR.
-        # Cleanup: once all concrete ops under tileops/ops/ implement
-        #     _infer_output_shapes, _validate_dtypes, and eval_roofline,
-        #     convert this stub (and the others) to `@abstractmethod`.
         raise NotImplementedError(
             "_validate_dtypes must be implemented by the concrete Op subclass; "
             "see docs/design/ops-design.md §`_validate_dtypes` (codegen)")
@@ -133,21 +121,6 @@ class Op(ABC):
         evaluator at L1, by design (§4.4.6 rejects "Op-local AST evaluator").
         The L1 base only declares the contract; concrete ops supply the body.
         """
-        # FIXME(staged-rollout): L1 Op does not yet strictly enforce eval_roofline
-        # via @abstractmethod; base raises NotImplementedError instead.
-        #
-        # Broken invariant: L1 base does not strictly enforce implementation
-        #     of eval_roofline on every concrete Op subclass.
-        # Why: Introducing @abstractmethod now would break every existing
-        #     concrete op under tileops/ops/ (none of them ship an
-        #     eval_roofline yet). The scaffold-op codegen work that will
-        #     generate these bodies per docs/design/roofline.md §4.4 is pre-
-        #     requisite; the trust model requires a separate per-op migration
-        #     PR to flip any given op from stub to generated body.
-        # Cleanup: once all concrete ops under tileops/ops/ implement
-        #     eval_roofline (via codegen emission per docs/design/roofline.md §4.4),
-        #     convert this stub and the two stubs above (_infer_output_shapes,
-        #     _validate_dtypes) to `@abstractmethod`.
         raise NotImplementedError(
             "eval_roofline must be implemented by the concrete Op subclass, "
             "emitted per docs/design/roofline.md §4.4 (codegen); the L1 base "

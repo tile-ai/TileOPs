@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 import torch
 
+from tileops.manifest import try_load_entry
 from tileops.manifest.dtype_rules import parse_tokens, same_as_ref
 
 
@@ -290,26 +291,6 @@ def synthesize_validate_dtypes(
     return _validate_dtypes
 
 
-def _lookup_manifest_entry(op_name: str) -> dict[str, Any] | None:
-    """Return the manifest entry for *op_name* or None if absent.
-
-    Lazy-imports the manifest loader to avoid pulling YAML I/O in the
-    ``Op`` base import path when no subclass has been declared yet.
-    Failures (missing key, load errors) downgrade to ``None`` so an
-    incomplete manifest never blocks op-class construction.
-    """
-    try:
-        from tileops.manifest import load_manifest
-    except Exception:
-        return None
-    try:
-        ops = load_manifest()
-    except Exception:
-        return None
-    entry = ops.get(op_name)
-    if not isinstance(entry, dict):
-        return None
-    return entry
 
 
 def maybe_install_validator(cls: type) -> None:
@@ -341,7 +322,7 @@ def maybe_install_validator(cls: type) -> None:
     sig = getattr(cls, "__manifest_signature__", None)
     status = getattr(cls, "__manifest_status__", None)
     if sig is None or status is None:
-        entry = _lookup_manifest_entry(cls.__name__)
+        entry = try_load_entry(cls.__name__)
         if entry is None:
             return
         sig = entry.get("signature")

@@ -40,6 +40,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import tileops.manifest as manifest_pkg  # noqa: E402
+from tileops.manifest.dtype_rules import PROMOTE_INT_TO_FLOAT_RE, SAME_AS_RE  # noqa: E402
 from tileops.manifest.shape_rules import (  # noqa: E402
     dim_range_validity,
     dim_uniqueness,
@@ -58,12 +59,10 @@ _TORCH_DTYPES = {
     "float8_e4m3", "float8_e5m2fnuz", "float8_e4m3fnuz",
 }
 
-_SAME_AS_RE = re.compile(r"^same_as\(\s*(\w+)\s*\)$")
 # ``promote_int_to_float(ref)``: ``float32`` for integral ``ref``, else
 # ``same_as(ref)``. Models PyTorch int-input promotion (``torch.reciprocal``).
-_PROMOTE_INT_TO_FLOAT_RE = re.compile(
-    r"^promote_int_to_float\(\s*(\w+)\s*\)$"
-)
+_SAME_AS_RE = SAME_AS_RE
+_PROMOTE_INT_TO_FLOAT_RE = PROMOTE_INT_TO_FLOAT_RE
 
 # Integral torch dtypes that ``promote_int_to_float`` rewrites to ``float32``.
 # Restricted to the dtypes PyTorch's int-input promotion treats as integral
@@ -1072,6 +1071,10 @@ def _parse_dtype_expr(dtype_str: str) -> list[str]:
 
     Handles: "float16", "float16 | bfloat16", "same_as(x)".
     Returns list of raw tokens (may include same_as references).
+
+    Empty tokens are kept, unlike ``manifest.dtype_rules.parse_tokens``: a
+    trailing or doubled ``|`` must surface downstream as an unknown-dtype
+    error rather than being silently dropped.
     """
     return [t.strip() for t in dtype_str.split("|")]
 
