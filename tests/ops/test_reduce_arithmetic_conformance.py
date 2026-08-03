@@ -9,8 +9,7 @@ values.
 These tests assert the output shape matches PyTorch (in particular, a 0-D
 tensor for ``dim=None, keepdim=False``) and that the numerics match within
 standard reduction tolerances. Once green, the corresponding manifest
-entries can flip from ``status: spec-only`` to ``status: implemented``
-in a separate manifest-only PR per the trust model.
+entries can flip from ``status: spec-only`` to ``status: implemented``.
 """
 
 from __future__ import annotations

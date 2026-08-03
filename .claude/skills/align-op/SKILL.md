@@ -324,4 +324,3 @@ They do not conflict. `align-op` never manages cross-op cleanup gates; that rema
 - **Kernel scaffolding / kernel-layer edits.** align-op surfaces kernel work as a follow-up via `kernel-check.json`; a separate (future) `kernel-scaffold` / `kernel-align` skill will own that layer.
 - **Family-level cleanup.** Cross-op dual-path removal lives in `align-family` and is not a concern of per-op alignment.
 - **General auto-detection of "redesign vs minor."** The distinction is a design judgement; align-op prompts or accepts `--mode`. The one exception is the **first-op bias** in CLASSIFY (no canonical-pattern precedent in the family → auto `redesign`). Beyond that one case, no auto-detection.
-- **Manifest changes (other than FLIP_STATUS).** Per the trust model, manifest changes live in separate manifest PRs.

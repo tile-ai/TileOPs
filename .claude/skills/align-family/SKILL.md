@@ -114,7 +114,7 @@ Per-op outcome:
 
 `align-family` MUST NOT re-flip manifest status or re-run per-op validation on its own; `align-op`'s SUCCESS return is the single source of truth that the manifest was flipped.
 
-`align-op` flips `status` and retargets the `source.*` pointers; `align-family` writes no contractual field on any op ([manifest-spec.md](../../domain-rules/manifest-spec.md)).
+`align-op` flips `status` and retargets `source.kernel_map` / `source.test` / `source.bench`; `align-family` writes no contractual field on any op ([manifest-spec.md](../../domain-rules/manifest-spec.md)).
 
 ### 5. CLEANUP_GATE
 

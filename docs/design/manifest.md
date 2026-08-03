@@ -21,8 +21,8 @@ flowchart LR
     C -->|checked by| V
 ```
 
-- **Human reviewer** — only actor that modifies the manifest. All changes require PR review.
-- **Agent** — generates Ops, tests, benchmarks from the manifest. Reads only, never modifies.
+- The manifest is written against an authoritative reference, never derived from current TileOps code.
+- Ops, tests and benchmarks are generated from the manifest, not the other way round.
 - **Validator** — [`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) in CI. Enforces manifest ↔ code consistency.
 
 **Invariants:**

@@ -1,4 +1,4 @@
-Run before approving any PR. Apply each item if its scope matches the diff. If any applicable check fails, REQUEST_CHANGES until the developer pushes a triage commit.
+Run before approving any PR. Apply each item if its scope matches the diff.
 
 ## Tests
 

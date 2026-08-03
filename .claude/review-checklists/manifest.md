@@ -5,7 +5,7 @@ Load `.claude/domain-rules/manifest-spec.md` before reviewing.
 Two non-negotiable principles cut across every event:
 
 - **Reference semantic alignment.** Any change to an op's spec (signature, shape rules, dtype combos, roofline vars) must map back to an authoritative reference — PyTorch public API for `torch.nn.*` / `torch.nn.functional.*` names; the paper or vendor docs otherwise. Reverse-engineering from current TileOps code is forbidden — spec is upstream of code.
-- **`status` field truthfulness.** `status: implemented` is a hard claim that code conforms to the entry. The reviewer's job is to *disprove* it, not to take it on faith. Status flips that don't reflect actual conformance corrupt the trust model.
+- **`status` field truthfulness.** `status: implemented` is a hard claim that code conforms to the entry. The reviewer's job is to *disprove* it, not to take it on faith. A status flip that does not reflect actual conformance makes the spec unreliable for every reader downstream.
 
 #### Add-manifest (new entry)
 
