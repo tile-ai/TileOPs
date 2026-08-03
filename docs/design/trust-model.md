@@ -18,7 +18,8 @@ implementation conform to an accident.
 
 ## Test
 
-`ref_program`, tolerances and assertions live with the test.
+`ref_program`, tolerances and assertions live with the test, which does not
+import from [`benchmarks/`](../../benchmarks/).
 
 Input construction does not: it belongs in [`workloads/`](../../workloads/). A
 workload left inside `tests/` is unreachable from a benchmark — see
