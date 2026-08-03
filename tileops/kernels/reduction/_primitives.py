@@ -72,17 +72,8 @@ def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
     aborts with "no available layout found".
 
     Binds any such fragment, ``cols == N_padded`` included.  Conservative:
-    ``rows == 1`` builds regardless, and ``vec`` is really capped by the widest
-    buffer in the loop (an fp32 accumulator), not by the storage dtype passed
-    here.  Iterating rows serially in the kernel would drop the constraint
-    outright.
-
-    Args:
-        elem_bytes: Bytes per element of the storage dtype.
-        threads: Thread-block size the fragment must be valid for.
-
-    Returns:
-        Column count that ``cols`` must be a multiple of.
+    ``vec`` is really capped by the widest buffer in the loop (an fp32
+    accumulator), not by the ``elem_bytes`` storage dtype passed here.
     """
     return threads * VECTOR_ACCESS_BYTES // elem_bytes
 
@@ -90,22 +81,19 @@ def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
 class BlockConfigPlanner:
     """Derives ``block_m`` / ``threads`` / ``tile_n`` for a row-wise reduction.
 
-    Every reduction kernel that maps one row per ``block_m`` slot and reduces
-    along N makes the same three decisions -- whether the row fits in shared
-    memory at all, which single config to run untuned, and which candidates to
-    offer the autotuner.  They are derived here once so the kernels cannot
-    answer them differently.
+    Every reduction kernel that maps one row per ``block_m`` slot makes the same
+    three decisions -- whether a row fits in shared memory, which config to run
+    untuned, and which candidates to offer the autotuner.  Derived here once so
+    the kernels cannot answer them differently.
 
     Args:
-        N_padded: Hidden dimension, already aligned to ``DEFAULT_ALIGNMENT``.
-        elem_bytes: Bytes per element of the kernel's storage dtype.
-        smem_budget: Shared memory a thread block may allocate, from
-            ``device_smem_budget()``.
-        num_buffers: Shared buffers of shape ``(block_m, tile_n)`` alive at
-            once.  Welford's two-pass kernels allocate 2.
+        num_buffers: ``(block_m, tile_n)`` shared buffers alive at once.
+            Welford's two-pass kernels allocate 2.
     """
 
     _BLOCK_MS = (1, 2, 4, 8)
+    # Extra tile widths offered to the autotuner beyond the default pick.
+    _EXTRA_TILE_N = 2
 
     def __init__(
         self,
@@ -123,9 +111,8 @@ class BlockConfigPlanner:
     def _row_bytes(self) -> int:
         """Shared memory one untiled row occupies.
 
-        ``num_buffers`` is deliberately excluded: it counts the tiled path's
-        ``(block_m, tile_n)`` shared buffers, whereas the untiled kernels keep
-        their second pass in fragments.
+        Excludes ``num_buffers``: that counts tiled shared buffers, and the
+        untiled kernels keep their second pass in fragments.
         """
         return self.N_padded * self.elem_bytes
 
@@ -135,9 +122,6 @@ class BlockConfigPlanner:
         return (
             self.N_padded > MAX_SINGLE_TILE_COLS or self._row_bytes > self.smem_budget
         )
-
-    # Extra tile widths offered to the autotuner beyond the default pick.
-    _EXTRA_TILE_N: int = 2
 
     def _column_alignment(self, block_m: int, threads: int) -> int:
         """Column granularity a tile must respect for this pair.
@@ -177,12 +161,11 @@ class BlockConfigPlanner:
         )
 
     def tile_n_candidates(self, block_m: int, threads: int) -> list[int]:
-        """Return buildable tile widths to time for this pair.
+        """Return buildable tile widths to time for this pair, widest first.
 
-        The default pick maximises tile width subject to an exact-divisor
-        preference; it is regularly beaten by a narrower tile that trades one
-        global pass for a better shared-memory stride.  Those narrower widths
-        are the extra entries.  Empty when the pair can build no tile at all.
+        The widest is regularly beaten by a narrower tile trading one global
+        pass for a better shared-memory stride, so the next tile counts follow
+        it.  Empty when the pair can build no tile at all.
         """
         try:
             default = self.tile_n_for(block_m, threads)
