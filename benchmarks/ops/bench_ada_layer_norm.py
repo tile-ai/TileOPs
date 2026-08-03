@@ -29,7 +29,7 @@ def test_ada_layer_norm_bench(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormWorkload(m, n, dtype)
     inputs = test.gen_inputs()
 
-    op = AdaLayerNormFwdOp(dtype=dtype)
+    op = AdaLayerNormFwdOp()
     bm = ManifestBenchmark(_ADA_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -48,7 +48,7 @@ def test_ada_layer_norm_zero_bench(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormZeroWorkload(m, n, dtype)
     inputs = test.gen_inputs()
 
-    op = AdaLayerNormZeroFwdOp(dtype=dtype)
+    op = AdaLayerNormZeroFwdOp()
     bm = ManifestBenchmark(_ADA_ZERO_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

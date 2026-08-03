@@ -146,7 +146,6 @@ def _make_1d_input(n: int, dtype: torch.dtype) -> torch.Tensor:
 
 
 def _make_op(
-    dtype: torch.dtype,
     op_kind: str,
     dim: int = -1,
     keepdim: bool = False,
@@ -162,7 +161,7 @@ def _make_op(
         "inf": InfNormFwdOp,
     }
     cls = op_map[op_kind]
-    return cls(dtype=dtype, dim=dim, keepdim=keepdim, kernel_map=kernel_map, tune=tune)
+    return cls(dim=dim, keepdim=keepdim, kernel_map=kernel_map, tune=tune)
 
 
 # L1NormFwdOp tests
@@ -171,7 +170,7 @@ def _make_op(
 @VectorNormBasicFixture
 def test_l1_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "l1")
-    op = _make_op(dtype, "l1")
+    op = _make_op("l1")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -180,7 +179,7 @@ def test_l1_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
 def test_l1_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
-    op = _make_op(dtype, "l1")
+    op = _make_op("l1")
     ref = torch.linalg.vector_norm(x.float().contiguous(), ord=1, dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -190,7 +189,7 @@ def test_l1_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 @VectorNorm3DFixture
 def test_l1_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = _make_op(dtype, "l1")
+    op = _make_op("l1")
     ref = torch.linalg.vector_norm(x.float(), ord=1, dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -200,7 +199,7 @@ def test_l1_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 @VectorNorm4DFixture
 def test_l1_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    op = _make_op(dtype, "l1")
+    op = _make_op("l1")
     ref = torch.linalg.vector_norm(x.float(), ord=1, dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -210,7 +209,7 @@ def test_l1_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
 @VectorNorm1DFixture
 def test_l1_1d(n: int, dtype: torch.dtype) -> None:
     x = _make_1d_input(n, dtype)
-    op = _make_op(dtype, "l1")
+    op = _make_op("l1")
     ref = torch.linalg.vector_norm(x.float(), ord=1, dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -223,7 +222,7 @@ def test_l1_1d(n: int, dtype: torch.dtype) -> None:
 @VectorNormBasicFixture
 def test_l2_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "l2")
-    op = _make_op(dtype, "l2")
+    op = _make_op("l2")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -232,7 +231,7 @@ def test_l2_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
 def test_l2_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
-    op = _make_op(dtype, "l2")
+    op = _make_op("l2")
     ref = torch.linalg.vector_norm(x.float().contiguous(), ord=2, dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -242,7 +241,7 @@ def test_l2_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 @VectorNorm3DFixture
 def test_l2_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = _make_op(dtype, "l2")
+    op = _make_op("l2")
     ref = torch.linalg.vector_norm(x.float(), ord=2, dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -252,7 +251,7 @@ def test_l2_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 @VectorNorm4DFixture
 def test_l2_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    op = _make_op(dtype, "l2")
+    op = _make_op("l2")
     ref = torch.linalg.vector_norm(x.float(), ord=2, dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -262,7 +261,7 @@ def test_l2_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
 @VectorNorm1DFixture
 def test_l2_1d(n: int, dtype: torch.dtype) -> None:
     x = _make_1d_input(n, dtype)
-    op = _make_op(dtype, "l2")
+    op = _make_op("l2")
     ref = torch.linalg.vector_norm(x.float(), ord=2, dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -275,7 +274,7 @@ def test_l2_1d(n: int, dtype: torch.dtype) -> None:
 @VectorNormBasicFixture
 def test_inf_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "inf")
-    op = _make_op(dtype, "inf")
+    op = _make_op("inf")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -284,7 +283,7 @@ def test_inf_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
 def test_inf_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     x_full = _make_noncontig_input(m, n, dtype)
     x = x_full[:, :n]
-    op = _make_op(dtype, "inf")
+    op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float().contiguous(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -294,7 +293,7 @@ def test_inf_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 @VectorNorm3DFixture
 def test_inf_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = _make_op(dtype, "inf")
+    op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -304,7 +303,7 @@ def test_inf_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 @VectorNorm4DFixture
 def test_inf_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    op = _make_op(dtype, "inf")
+    op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -314,7 +313,7 @@ def test_inf_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
 @VectorNorm1DFixture
 def test_inf_1d(n: int, dtype: torch.dtype) -> None:
     x = _make_1d_input(n, dtype)
-    op = _make_op(dtype, "inf")
+    op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
     atol, rtol = _get_tolerances(dtype)
@@ -348,7 +347,7 @@ def test_inf_nan_propagation(m: int, n: int, dtype: torch.dtype) -> None:
     x[1, -1] = float("nan")
     # Rows 2+ remain finite
 
-    op = _make_op(dtype, "inf")
+    op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
 
@@ -383,7 +382,7 @@ class VectorNormSpecFixture(FixtureBase):
 def test_spec_dim0(op_kind: str, dtype: torch.dtype) -> None:
     """Reduce along dim=0."""
     x = torch.randn(64, 512, dtype=dtype, device="cuda")
-    op = _make_op(dtype, op_kind, dim=0)
+    op = _make_op(op_kind, dim=0)
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=0).to(dtype)
     y = op(x)
@@ -395,7 +394,7 @@ def test_spec_dim0(op_kind: str, dtype: torch.dtype) -> None:
 def test_spec_dim1_3d(op_kind: str, dtype: torch.dtype) -> None:
     """Reduce along dim=1 of a 3D tensor."""
     x = torch.randn(4, 64, 512, dtype=dtype, device="cuda")
-    op = _make_op(dtype, op_kind, dim=1)
+    op = _make_op(op_kind, dim=1)
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=1).to(dtype)
     y = op(x)
@@ -407,7 +406,7 @@ def test_spec_dim1_3d(op_kind: str, dtype: torch.dtype) -> None:
 def test_spec_keepdim(op_kind: str, dtype: torch.dtype) -> None:
     """keepdim=True preserves the reduced dimension as size 1."""
     x = torch.randn(32, 512, dtype=dtype, device="cuda")
-    op = _make_op(dtype, op_kind, keepdim=True)
+    op = _make_op(op_kind, keepdim=True)
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=-1, keepdim=True).to(dtype)
     y = op(x)
@@ -420,7 +419,7 @@ def test_spec_keepdim(op_kind: str, dtype: torch.dtype) -> None:
 def test_spec_dim0_keepdim(op_kind: str, dtype: torch.dtype) -> None:
     """dim=0 + keepdim=True."""
     x = torch.randn(64, 512, dtype=dtype, device="cuda")
-    op = _make_op(dtype, op_kind, dim=0, keepdim=True)
+    op = _make_op(op_kind, dim=0, keepdim=True)
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=0, keepdim=True).to(dtype)
     y = op(x)
@@ -459,7 +458,7 @@ _DtypeSmoke_float32 = _make_dtype_smoke_fixture(torch.float32)
 @_DtypeSmoke_float16
 def test_l1_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "l1")
-    op = _make_op(dtype, "l1")
+    op = _make_op("l1")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -467,7 +466,7 @@ def test_l1_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
 @_DtypeSmoke_bfloat16
 def test_l1_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "l1")
-    op = _make_op(dtype, "l1")
+    op = _make_op("l1")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -475,7 +474,7 @@ def test_l1_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
 @_DtypeSmoke_float32
 def test_l1_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "l1")
-    op = _make_op(dtype, "l1")
+    op = _make_op("l1")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -483,7 +482,7 @@ def test_l1_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
 @_DtypeSmoke_float16
 def test_l2_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "l2")
-    op = _make_op(dtype, "l2")
+    op = _make_op("l2")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -491,7 +490,7 @@ def test_l2_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
 @_DtypeSmoke_bfloat16
 def test_l2_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "l2")
-    op = _make_op(dtype, "l2")
+    op = _make_op("l2")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -499,7 +498,7 @@ def test_l2_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
 @_DtypeSmoke_float32
 def test_l2_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "l2")
-    op = _make_op(dtype, "l2")
+    op = _make_op("l2")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -507,7 +506,7 @@ def test_l2_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
 @_DtypeSmoke_float16
 def test_inf_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "inf")
-    op = _make_op(dtype, "inf")
+    op = _make_op("inf")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -515,7 +514,7 @@ def test_inf_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
 @_DtypeSmoke_bfloat16
 def test_inf_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "inf")
-    op = _make_op(dtype, "inf")
+    op = _make_op("inf")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -523,7 +522,7 @@ def test_inf_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
 @_DtypeSmoke_float32
 def test_inf_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
     test = VectorNormTest(m, n, dtype, "inf")
-    op = _make_op(dtype, "inf")
+    op = _make_op("inf")
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -537,7 +536,7 @@ def test_inf_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
 def test_empty_dim_full_reduction_keepdim(op_kind: str, keepdim: bool) -> None:
     dtype = torch.float16
     x = torch.randn(32, 256, dtype=dtype, device="cuda")
-    op = _make_op(dtype, op_kind, dim=[], keepdim=keepdim)
+    op = _make_op(op_kind, dim=[], keepdim=keepdim)
     ref = torch.linalg.vector_norm(
         x.float(), ord=_ORD_MAP[op_kind], dim=[], keepdim=keepdim,
     ).to(dtype)
@@ -556,7 +555,7 @@ def test_empty_dim_full_reduction_3d_dtypes(
     op_kind: str, dtype: torch.dtype,
 ) -> None:
     x = torch.randn(2, 16, 128, dtype=dtype, device="cuda")
-    op = _make_op(dtype, op_kind, dim=[], keepdim=False)
+    op = _make_op(op_kind, dim=[], keepdim=False)
     ref = torch.linalg.vector_norm(
         x.float(), ord=_ORD_MAP[op_kind], dim=[], keepdim=False,
     ).to(dtype)
@@ -572,14 +571,12 @@ def test_vector_norm_long_sequence_tiled(op_kind: str) -> None:
     """Exercise the N-tiled path with a tail-M block."""
     dtype = torch.bfloat16
     test = VectorNormTest(3, 33024, dtype, op_kind)
-    op = _make_op(
-        dtype,
-        op_kind,
+    op = _make_op(op_kind,
         kernel_map={"vector_norm": _TailBlockVectorNormKernel},
     )
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-    kernel = op._kernel_cache[(3, 33024)]
+    kernel = op._kernel_cache[(3, 33024, dtype)]
     assert kernel.config["block_m"] > test.shape[0]
     assert kernel.config["tile_n"] > 0
 
@@ -593,11 +590,11 @@ def test_vector_norm_tiled_autotune() -> None:
     """
     m, n, dtype = 4, 40000, torch.float16
     test = VectorNormTest(m, n, dtype, "l2")
-    op = _make_op(dtype, "l2", tune=True)
+    op = _make_op("l2", tune=True)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
-    kernel = op._kernel_cache[(m, n)]
+    kernel = op._kernel_cache[(m, n, dtype)]
     assert kernel._needs_tiling
     assert kernel.config in kernel.autotune_configs
 

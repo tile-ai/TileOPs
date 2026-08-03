@@ -43,7 +43,6 @@ class L1NormFwdOp(_ReduceOpBase):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         ord: Union[int, float] = 1,
         dim: Union[int, List[int], None] = None,
         keepdim: bool = False,
@@ -58,7 +57,7 @@ class L1NormFwdOp(_ReduceOpBase):
             )
         self.ord = ord
         super().__init__(
-            dtype=dtype, dim=dim, keepdim=keepdim,
+            dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
 
@@ -93,7 +92,6 @@ class L2NormFwdOp(_ReduceOpBase):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         ord: Union[int, float] = 2,
         dim: Union[int, List[int], None] = None,
         keepdim: bool = False,
@@ -108,7 +106,7 @@ class L2NormFwdOp(_ReduceOpBase):
             )
         self.ord = ord
         super().__init__(
-            dtype=dtype, dim=dim, keepdim=keepdim,
+            dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
 
@@ -146,7 +144,6 @@ class InfNormFwdOp(_ReduceOpBase):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         ord: Union[int, float] = inf,
         dim: Union[int, List[int], None] = None,
         keepdim: bool = False,
@@ -161,7 +158,7 @@ class InfNormFwdOp(_ReduceOpBase):
             )
         self.ord = ord
         super().__init__(
-            dtype=dtype, dim=dim, keepdim=keepdim,
+            dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
 

@@ -53,18 +53,16 @@ class LayerNormFwdOp(Op):
         normalized_shape: Sequence[int],
         eps: Optional[float] = 1e-5,
         *,
-        dtype: torch.dtype,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.N = normalized_shape_to_n(normalized_shape)
         self.normalized_shape = tuple(int(d) for d in normalized_shape)
-        self.dtype = dtype
         # Manifest declares ``eps: float | None`` with PyTorch default 1e-5.
         self.eps = 1e-5 if eps is None else float(eps)
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel: Optional[Kernel] = None
+        self._kernel_cache: Dict[tuple[int, torch.dtype], Kernel] = {}
         self._last_m: Optional[int] = None
 
     @property
@@ -72,10 +70,10 @@ class LayerNormFwdOp(Op):
         return {"layer_norm": LayerNormKernel}
 
     def eval_roofline(self) -> tuple[int, int]:
-        if self._last_m is None:
+        if self._last_m is None or self.dtype is None:
             raise RuntimeError(
                 "LayerNormFwdOp.eval_roofline() requires a prior forward() "
-                "call to bind the leading-dims product."
+                "call to bind the leading-dims product and the dtype."
             )
         elem_bytes = self.dtype.itemsize
         m = self._last_m
@@ -109,17 +107,15 @@ class LayerNormFwdOp(Op):
             raise ValueError("weight must be a CUDA tensor")
         if not bias.is_cuda:
             raise ValueError("bias must be a CUDA tensor")
-        if x.dtype != self.dtype:
+        self._validate_dtypes(x, weight, bias)
+        self.dtype = x.dtype
+        if weight.dtype != x.dtype:
             raise ValueError(
-                f"Expected x.dtype {self.dtype}, got {x.dtype}"
+                f"Expected weight.dtype {x.dtype}, got {weight.dtype}"
             )
-        if weight.dtype != self.dtype:
+        if bias.dtype != x.dtype:
             raise ValueError(
-                f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
-            )
-        if bias.dtype != self.dtype:
-            raise ValueError(
-                f"Expected bias.dtype {self.dtype}, got {bias.dtype}"
+                f"Expected bias.dtype {x.dtype}, got {bias.dtype}"
             )
 
         ns = self.normalized_shape
@@ -143,10 +139,12 @@ class LayerNormFwdOp(Op):
         weight = weight.contiguous().reshape(self.N)
         bias = bias.contiguous().reshape(self.N)
         m_actual = x.shape[0]
-        if self.kernel is None or m_actual != self._last_m:
-            self.kernel = self.kernel_map["layer_norm"](
-                m_actual, self.N, self.eps, self.dtype, tune=self.tune,
+        key = (m_actual, x.dtype)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["layer_norm"](
+                m_actual, self.N, self.eps, x.dtype, tune=self.tune,
             )
+        self.kernel = self._kernel_cache[key]
         self._last_m = m_actual
 
         y = self.kernel(x, weight, bias)

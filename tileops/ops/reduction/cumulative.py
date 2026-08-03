@@ -20,8 +20,6 @@ class CumulativeOp(Op):
     op-kind dispatch string (`"sum"` or `"prod"`).
 
     Args:
-        dtype: Data type (float32, float16, or bfloat16). If omitted,
-            inferred from the first input tensor.
         dim: Reduction axis (default -1). Negative values are normalized at
             forward time (`dim % x.ndim`).
         kernel_map: Optional kernel override dict.
@@ -37,15 +35,12 @@ class CumulativeOp(Op):
 
     def __init__(
         self,
-        dtype: Optional[torch.dtype] = None,
         dim: int = -1,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
         self.N = None
-        self.dtype = dtype
-        self._committed_dtype = dtype
         self.dim = dim
         self.tune = tune
         self.dispatch_kernel(kernel_map)
@@ -91,10 +86,7 @@ class CumulativeOp(Op):
     def _validate_and_normalize_dim(self, x: torch.Tensor) -> tuple[int, int, torch.dtype]:
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
-        if self._committed_dtype is not None and x.dtype != self._committed_dtype:
-            raise ValueError(
-                f"Expected x.dtype {self._committed_dtype}, got {x.dtype}"
-            )
+        self._validate_dtypes(x)
         ndim = x.ndim
         if not (-ndim <= self.dim < ndim):
             raise ValueError(
@@ -146,8 +138,6 @@ class CumsumFwdOp(CumulativeOp):
     SM utilization; every other shape takes the sequential scan.
 
     Args:
-        dtype: Optional data type (float32, float16, or bfloat16).
-            Preferred API infers it from ``x``.
         dim: Reduction axis (default -1). Negative values are normalized
             at forward time.
         kernel_map: Optional override for kernel dispatch.
@@ -173,8 +163,6 @@ class CumprodFwdOp(CumulativeOp):
     handled inside the kernel via masked loads.
 
     Args:
-        dtype: Optional data type (float32, float16, or bfloat16).
-            Preferred API infers it from ``x``.
         dim: Reduction axis (default -1). Negative values are normalized
             at forward time.
         kernel_map: Optional override for kernel dispatch.

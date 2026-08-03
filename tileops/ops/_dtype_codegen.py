@@ -247,43 +247,48 @@ def synthesize_validate_dtypes(
         "op_name": op_name,
     }
     params_src = ", ".join(input_names)
+    # Unrolled per input, with each parameter referenced by name. A `locals()`
+    # lookup or a loop over `input_names` would read the same values, but
+    # `torch.compile` cannot trace `locals()`, and this body runs inside
+    # `forward()` — so an op that validates dtypes would lose `fullgraph`.
     src_lines = [
         f"def _validate_dtypes(self, {params_src}):",
         f'    """Synthesized from manifest signature for {op_name}."""',
-        "    _locals = locals()",
-        "    for _name in input_names:",
-        "        _concrete, _refs, _dtype_str = per_input[_name]",
-        "        _actual = _locals[_name].dtype",
-        "        if _actual in _concrete:",
-        "            continue",
-        "        _matched = False",
-        "        for _ref in _refs:",
-        "            _ref_tensor = _locals.get(_ref)",
-        "            if _ref_tensor is None:",
-        "                raise ValueError(",
-        "                    f\"{op_name}: input {_name!r} declares \"",
-        "                    f\"same_as({_ref}) but {_ref!r} was not supplied\"",
-        "                )",
-        "            if _actual == _ref_tensor.dtype:",
-        "                _matched = True",
-        "                break",
-        "        if _matched:",
-        "            continue",
-        "        raise ValueError(",
-        "            f\"{op_name}: input {_name!r} has dtype {_actual}, \"",
-        "            f\"expected {_dtype_str!r}\"",
-        "        )",
-        "    if combo_keys is not None:",
-        "        _observed = tuple(_locals[_n].dtype for _n in input_names)",
-        "        if _observed not in combo_keys:",
-        "            _pairs = \", \".join(",
-        "                f\"{_n}={_d}\" for _n, _d in zip(input_names, _observed)",
-        "            )",
-        "            raise ValueError(",
-        "                f\"{op_name}: dtype combination ({_pairs}) is not \"",
-        "                f\"listed in signature.dtype_combos\"",
-        "            )",
     ]
+    for name in input_names:
+        concrete, refs, dtype_str = per_input[name]
+        closure[f"_concrete_{name}"] = frozenset(concrete)
+        closure[f"_dtype_str_{name}"] = dtype_str
+        src_lines.append(f"    _actual = {name}.dtype")
+        src_lines.append(f"    if _actual not in _concrete_{name}:")
+        # Every `same_as(ref)` was checked above to name a sibling input, so
+        # each ref is in scope as a parameter here.
+        if refs:
+            cond = " or ".join(f"_actual == {r}.dtype" for r in refs)
+            src_lines.append(f"        if not ({cond}):")
+            indent = "            "
+        else:
+            indent = "        "
+        src_lines += [
+            f"{indent}raise ValueError(",
+            f'{indent}    f"{{op_name}}: input {name!r} has dtype {{_actual}}, "',
+            f"{indent}    f\"expected {{_dtype_str_{name}!r}}\"",
+            f"{indent})",
+        ]
+    if combo_keys is not None:
+        observed = ", ".join(f"{n}.dtype" for n in input_names)
+        trailing = "," if len(input_names) == 1 else ""
+        src_lines += [
+            f"    _observed = ({observed}{trailing})",
+            "    if _observed not in combo_keys:",
+            "        _pairs = \", \".join(",
+            "            f\"{_n}={_d}\" for _n, _d in zip(input_names, _observed)",
+            "        )",
+            "        raise ValueError(",
+            "            f\"{op_name}: dtype combination ({_pairs}) is not \"",
+            "            f\"listed in signature.dtype_combos\"",
+            "        )",
+        ]
     exec("\n".join(src_lines), closure)
     _validate_dtypes = closure["_validate_dtypes"]
     _validate_dtypes.__name__ = "_validate_dtypes"

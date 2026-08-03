@@ -87,7 +87,7 @@ def test_logsumexp_bench(
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
-    op = LogSumExpFwdOp(dtype=dtype, tune=True, **op_params)
+    op = LogSumExpFwdOp(tune=True, **op_params)
     bm = ManifestBenchmark(_LOGSUMEXP_OP, op, test)
     try:
         result = bm.profile(op, *inputs)

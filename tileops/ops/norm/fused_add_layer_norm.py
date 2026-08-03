@@ -51,17 +51,14 @@ class FusedAddLayerNormFwdOp(Op):
         self,
         M: Optional[int] = None,
         N: Optional[int] = None,
-        dtype: Optional[torch.dtype] = None,
         eps: float = 1e-5,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.M = M
         self.N = N
-        self.dtype = dtype
         self._committed_M = M
         self._committed_N = N
-        self._committed_dtype = dtype
         self.eps = eps
         self.tune = tune
         self.dispatch_kernel(kernel_map)
@@ -119,16 +116,14 @@ class FusedAddLayerNormFwdOp(Op):
             ValueError: If tensors are not on CUDA, dtypes mismatch,
                 or shapes are incompatible with the configured dimensions.
         """
-        expected_dtype = self._committed_dtype
+        expected_dtype = x.dtype
         for name, tensor in [("x", x), ("residual", residual), ("weight", weight), ("bias", bias)]:
             if not tensor.is_cuda:
                 raise ValueError(f"{name} must be a CUDA tensor")
-            if expected_dtype is not None and tensor.dtype != expected_dtype:
+            if tensor.dtype != expected_dtype:
                 raise ValueError(
                     f"Expected {name}.dtype {expected_dtype}, got {tensor.dtype}"
                 )
-            if expected_dtype is None:
-                expected_dtype = tensor.dtype
         if weight.ndim != 1:
             raise ValueError(
                 f"Expected weight to be 1D, got {weight.ndim}D"
@@ -167,7 +162,6 @@ class FusedAddLayerNormFwdOp(Op):
         self.N = N
         dtype = expected_dtype
         assert dtype is not None
-        self.dtype = dtype
 
         kernel = self._get_kernel(M_actual, N, dtype, x.device.index)
         y, residual_out = kernel(x, residual, weight, bias)

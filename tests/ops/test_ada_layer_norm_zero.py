@@ -66,7 +66,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @AdaLayerNormZeroFixture
 def test_ada_layer_norm_zero_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormZeroTest(m, n, dtype)
-    op = AdaLayerNormZeroFwdOp(dtype=dtype)
+    op = AdaLayerNormZeroFwdOp()
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -130,7 +130,7 @@ def test_ada_layer_norm_zero_3d(batch: int, seq: int, hidden: int, dtype: torch.
     shift = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
     gate = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
 
-    op = AdaLayerNormZeroFwdOp(dtype=dtype)
+    op = AdaLayerNormZeroFwdOp()
 
     # Reference: gate * (scale * LayerNorm(x) + shift)
     eps = 1e-5

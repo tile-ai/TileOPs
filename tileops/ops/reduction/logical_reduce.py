@@ -52,7 +52,6 @@ class AllFwdOp(_ReduceOpBase):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         keepdim: bool = False,
         *,
@@ -62,7 +61,6 @@ class AllFwdOp(_ReduceOpBase):
         """Construct AllFwdOp.
 
         Args:
-            dtype: Input data type.
             dim: Reduction dimension (default ``None``, i.e. full reduction).
                 Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
                 ``None``.
@@ -71,7 +69,7 @@ class AllFwdOp(_ReduceOpBase):
             tune: Whether to autotune (default ``False``).
         """
         super().__init__(
-            dtype=dtype, dim=dim, keepdim=keepdim,
+            dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
 
@@ -126,7 +124,6 @@ class AnyFwdOp(_ReduceOpBase):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         keepdim: bool = False,
         *,
@@ -136,7 +133,6 @@ class AnyFwdOp(_ReduceOpBase):
         """Construct AnyFwdOp.
 
         Args:
-            dtype: Input data type.
             dim: Reduction dimension (default ``None``, i.e. full reduction).
                 Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
                 ``None``.
@@ -145,7 +141,7 @@ class AnyFwdOp(_ReduceOpBase):
             tune: Whether to autotune (default ``False``).
         """
         super().__init__(
-            dtype=dtype, dim=dim, keepdim=keepdim,
+            dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
 
@@ -199,7 +195,6 @@ class CountNonzeroFwdOp(_ReduceOpBase):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -207,7 +202,7 @@ class CountNonzeroFwdOp(_ReduceOpBase):
     ):
         # count_nonzero never keeps dim (matches torch.count_nonzero)
         super().__init__(
-            dtype=dtype, dim=dim, keepdim=False,
+            dim=dim, keepdim=False,
             kernel_map=kernel_map, tune=tune,
         )
 

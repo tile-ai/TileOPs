@@ -44,7 +44,6 @@ class RMSNormFwdOp(Op):
         normalized_shape: Sequence[int],
         eps: Optional[float] = None,
         *,
-        dtype: torch.dtype,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -52,29 +51,29 @@ class RMSNormFwdOp(Op):
         if len(self.normalized_shape) == 0:
             raise ValueError("normalized_shape must be non-empty")
         self.N = math.prod(self.normalized_shape)
-        self.dtype = dtype
         self.eps = _DEFAULT_EPS if eps is None else float(eps)
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._kernel_cache: Dict[int, Kernel] = {}
+        self._kernel_cache: Dict[tuple[int, torch.dtype], Kernel] = {}
         self._last_roofline_mn: Optional[Tuple[int, int]] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"rms_norm": RMSNormKernel}
 
-    def _get_kernel(self, m: int) -> Kernel:
-        if m not in self._kernel_cache:
-            self._kernel_cache[m] = self.kernel_map["rms_norm"](
-                m, self.N, self.eps, self.dtype, tune=self.tune,
+    def _get_kernel(self, m: int, dtype: torch.dtype) -> Kernel:
+        key = (m, dtype)
+        if key not in self._kernel_cache:
+            self._kernel_cache[key] = self.kernel_map["rms_norm"](
+                m, self.N, self.eps, dtype, tune=self.tune,
             )
-        return self._kernel_cache[m]
+        return self._kernel_cache[key]
 
     def eval_roofline(self) -> Tuple[int, int]:
-        if self._last_roofline_mn is None:
+        if self._last_roofline_mn is None or self.dtype is None:
             raise RuntimeError(
                 "RMSNormFwdOp.eval_roofline() requires a prior forward() "
-                "call to bind the leading-dims product."
+                "call to bind the leading-dims product and the dtype."
             )
         m, n = self._last_roofline_mn
         elem_bytes = self.dtype.itemsize
@@ -100,11 +99,11 @@ class RMSNormFwdOp(Op):
         k = len(ns)
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
-        if not weight.is_cuda or weight.dtype != self.dtype:
+        self._validate_dtypes(x, weight)
+        self.dtype = x.dtype
+        if not weight.is_cuda or weight.dtype != x.dtype:
             raise ValueError(
-                f"weight must be a CUDA tensor of dtype {self.dtype}"
+                f"weight must be a CUDA tensor of dtype {x.dtype}"
             )
         if x.ndim < k or tuple(x.shape[-k:]) != ns:
             raise ValueError(
@@ -120,6 +119,6 @@ class RMSNormFwdOp(Op):
         x_flat = x.contiguous().reshape(-1, self.N)
         w_flat = weight.contiguous().reshape(self.N)
         m = x_flat.shape[0]
-        y = self._get_kernel(m)(x_flat, w_flat)
+        y = self._get_kernel(m, x.dtype)(x_flat, w_flat)
         self._last_roofline_mn = (m, self.N)
         return y.reshape(orig_shape)
