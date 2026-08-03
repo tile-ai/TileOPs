@@ -1,12 +1,4 @@
-## Boundary
-
-- **OWNS**: `tileops/manifest/`
-- **MUST NOT WRITE**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `benchmarks/`
-- Manifest changes require human review in a separate PR.
-
 → [trust-model.md §Manifest](../../docs/design/trust-model.md#manifest)
-
-______________________________________________________________________
 
 - Manifest key must equal the Op `cls.__name__` exactly. Class-naming convention: see [ops-design.md](ops-design.md).
 

@@ -1,15 +1,6 @@
 Common rules for every checklist in this folder. Load before any title-specific checklist.
 
-## Load order
-
-1. `docs/design/trust-model.md` — stage contracts (`manifest → test → implementation → benchmark`).
-1. The title-specific checklist.
-
-## Review lens
-
-Apply trust-model rules as a review lens: surface cross-layer diffs as comments with a concrete citation; the author replies with rationale; the reviewer judges on content. Provenance labels (`automated` / `needs-review` / `nightshift`) record origin; review criteria apply uniformly.
-
-## Cross-layer review criteria
+## Correctness criteria
 
 | Criterion         | Pass                                                                                                                                                                    | Fail                                                                |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |

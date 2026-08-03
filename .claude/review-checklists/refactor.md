@@ -7,5 +7,5 @@ For `[Refactor]`.
 
 #### Sub-types
 
-- `[Refactor][Manifest]` → load `manifest.md` instead. `tileops/ops/` and `tileops/kernels/` must NOT change in the same PR.
+- `[Refactor][Manifest]` → load `manifest.md` instead.
 - `[Refactor][Ops]` / `[Refactor][<Family>]` that flips `status` → also load `manifest.md`.

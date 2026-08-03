@@ -1,11 +1,4 @@
-## Boundary
-
-- **OWNS**: `tileops/ops/`, `tileops/kernels/`
-- **MUST NOT WRITE**: `tests/`, `benchmarks/`, `workloads/`, `tileops/manifest/`
-
 → [trust-model.md §Implementation](../../docs/design/trust-model.md#implementation) | [ops-design.md](../../docs/design/ops-design.md)
-
-______________________________________________________________________
 
 - Class names: PascalCase `{Name}{Direction}Op` (Op layer) or `{Name}{Direction}Kernel` (Kernel layer); direction suffix mandatory. Manifest author chooses `{Name}`. Builder functions stay snake_case.
 

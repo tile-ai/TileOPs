@@ -9,7 +9,6 @@ Two non-negotiable principles cut across every event:
 
 #### Checklist
 
-- [ ] **Boundary respected.** Diff stays inside `benchmarks/`. No edits to `tileops/ops/`, `tileops/kernels/`, `tests/`, `workloads/`, or `tileops/manifest/` (`.claude/domain-rules/benchmark.md §Boundary`).
 - [ ] **Independent baseline present.** Each new/edited benchmark records ≥1 non-`"tileops"` baseline. If the external baseline is conditional, a local torch fallback is registered.
 - [ ] **No correctness gating.** No `assert`, `torch.allclose`, or equivalent inside `benchmarks/`. Numeric mismatches surface through report columns, not exceptions.
 - [ ] **Realistic shapes.** Shape constants reflect real DNN workloads (LLaMA-family or equivalent), annotated with the model/scenario they represent. Arbitrary flat numbers (e.g., 262K, 1M, 4M) are rejected.

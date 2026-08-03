@@ -46,7 +46,9 @@ This buys decoupling, not cross-validation — no baseline output is compared
 against the test oracle. It keeps nightly benchmarks running across test-side
 refactors, and keeps baseline timings stable when an oracle is edited.
 
-Enforced by [`benchmarks/tests/test_benchmark_boundaries.py`](../../benchmarks/tests/test_benchmark_boundaries.py).
+[`benchmarks/tests/test_benchmark_boundaries.py`](../../benchmarks/tests/test_benchmark_boundaries.py)
+checks the `tests/` import and a locally defined `gen_inputs`, both by literal
+name. The oracle-import half is unchecked.
 
 → Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
 
@@ -75,6 +77,10 @@ BenchmarkBase[W] (benchmarks/)             # generic over workload type; reads
                                            # roofline off the op, not the workload
 ```
 
-Enforced by [`tests/test_workload_placement.py`](../../tests/test_workload_placement.py).
+[`tests/test_workload_placement.py`](../../tests/test_workload_placement.py) scans
+for methods named `ref_program`, `check`, `calculate_flops` or
+`calculate_memory`. A module-level function, a tolerance attribute, or a
+baseline under another name passes it, and nothing checks that every op has a
+workload.
 
 → Cross-refs: [architecture.md](architecture.md), [testing.md](testing.md)

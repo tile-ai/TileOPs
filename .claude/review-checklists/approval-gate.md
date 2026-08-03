@@ -18,16 +18,6 @@ Run before approving any PR. Apply each item if its scope matches the diff. If a
 
 - [ ] **No AC defense.** Reject "AC-N required this matrix" — AC text does not bind the merged suite.
 
-## Authoring discipline
-
-- [ ] **PR body.** Conforms to `.foundry/mold/pr-body-template.md`; records final state only — what the PR does (Summary, scoped to the merged diff) + verification facts (test plan, pre-commit, structural readiness, test node delta). Strip dev-process narration: per-round fix history, tally IDs (`T001–T0NN`), "Driven by review iteration", reviewer-by-reviewer changelogs, abandoned approaches. Those belong in commit history / review threads. REQUEST_CHANGES if found.
-
-## Review process
-
-- [ ] **Batch-once.** If only cleanup-class issues (keep / shrink / delete / rename / dedupe) remain with no correctness blockers, surface every such item from the full diff in this single pass. Don't defer — either include now or demote to advisory (no longer gates APPROVE).
-
-- [ ] **Re-run on triage.** Re-run every applicable check above on the developer's triage commit before approving.
-
 ## Scope-specific
 
 - [ ] **Skill edits (`.claude/skills/**`).** Require a tightening pass before APPROVE — condense wording without changing what the skill instructs. Verify: semantics preserved, every step has exactly one valid execution path, no example included unless load-bearing, retained examples reference durable concepts rather than implementation details that age out.

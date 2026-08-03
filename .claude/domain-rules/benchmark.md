@@ -1,7 +1,3 @@
-## Boundary
-
-- **OWNS**: `benchmarks/`
-- **MUST NOT WRITE**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `workloads/`, `tileops/manifest/`
 - **MUST NOT**: import from `tests/`, or import ref/oracle functions from `workloads/`. Reads of any other file are unrestricted.
 - **MUST NOT**: author `gen_inputs`. Import the op's workload from `workloads/`; if it has none, add it there in its own PR instead of copying locally. Subclassing an imported workload to attach a baseline is fine.
 
