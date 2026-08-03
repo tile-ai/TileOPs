@@ -11,8 +11,7 @@ tensor for ``dim=None, keepdim=False``) and that the numerics match within
 standard reduction tolerances. ``VarMeanFwdOp`` additionally asserts the
 returned tuple shape/dtype matches ``torch.var_mean`` element-by-element.
 Once green, the corresponding manifest entries can flip from
-``status: spec-only`` to ``status: implemented`` in a separate
-manifest-only PR per the trust model.
+``status: spec-only`` to ``status: implemented``.
 """
 
 from __future__ import annotations

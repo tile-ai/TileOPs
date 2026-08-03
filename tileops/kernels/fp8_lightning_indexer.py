@@ -226,6 +226,28 @@ def _(
 
 
 class FP8LightningIndexerKernel(Kernel):
+    """FP8 lightning indexer: per-query logits over an fp8-quantized index cache.
+
+    Args:
+        batch: Batch size.
+        seq_len: Query sequence length.
+        heads: Number of index heads.
+        index_dim: Index head dimension.
+        seq_len_kv: Key/value sequence length.
+        kv_group: Number of key/value groups.
+        clean_logits: Whether to zero the logits outside each query's
+            ``[cu_seqlen_ks, cu_seqlen_ke)`` window.
+        dtype: Torch dtype of the quantized index tensors. The tensor-core
+            path this kernel emits accepts ``torch.float8_e4m3fn`` only; the
+            weights, scales and logits are fixed at ``torch.float32``.
+        config: Optional dict with "block_N", "num_stages", "threads" and
+            "block_Q".
+        tune: Whether to autotune.
+
+    Raises:
+        ValueError: If *dtype* is not ``torch.float8_e4m3fn``.
+    """
+
     supported_archs: list[int] = [90]
 
     def __init__(self,
@@ -236,9 +258,14 @@ class FP8LightningIndexerKernel(Kernel):
                  seq_len_kv,
                  kv_group,
                  clean_logits=True,
+                 dtype: torch.dtype = torch.float8_e4m3fn,
                  config: Optional[dict] = None,
                  tune=False):
         super().__init__()
+        if dtype != torch.float8_e4m3fn:
+            raise ValueError(
+                f"FP8LightningIndexerKernel indexes float8_e4m3fn tensors, got {dtype}")
+        self.dtype = dtype
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads

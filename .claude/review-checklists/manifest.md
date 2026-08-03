@@ -5,7 +5,7 @@ Load `.claude/domain-rules/manifest-spec.md` before reviewing.
 Two non-negotiable principles cut across every event:
 
 - **Reference semantic alignment.** Any change to an op's spec (signature, shape rules, dtype combos, roofline vars) must map back to an authoritative reference — PyTorch public API for `torch.nn.*` / `torch.nn.functional.*` names; the paper or vendor docs otherwise. Reverse-engineering from current TileOps code is forbidden — spec is upstream of code.
-- **`status` field truthfulness.** `status: implemented` is a hard claim that code conforms to the entry. The reviewer's job is to *disprove* it, not to take it on faith. Status flips that don't reflect actual conformance corrupt the trust model.
+- **`status` field truthfulness.** `status: implemented` is a hard claim that code conforms to the entry. The reviewer's job is to *disprove* it, not to take it on faith. A status flip that does not reflect actual conformance makes the spec unreliable for every reader downstream.
 
 #### Add-manifest (new entry)
 
@@ -16,7 +16,6 @@ PRs from the `add-manifest` skill, or any PR that adds a previously-absent op en
 - [ ] **Required fields present.** `signature`, `shape_rules`, `dtype_combos`, `roofline`; `kernel_map` and `static_dims` where the family requires them.
 - [ ] **Lands as `spec-only`.** New entries never land as `implemented`, regardless of any existing code claiming to be ready.
 - [ ] **Validator green.** `scripts/validate_manifest.py` passes with no checks disabled.
-- [ ] **No code change.** Diff does not modify `tileops/ops/` or `tileops/kernels/`.
 
 #### Fix-manifest (patch existing entry)
 
@@ -25,7 +24,6 @@ PRs from the `fix-manifest` skill — patches one missing structural field (`ker
 - [ ] **Scope is one structural field.** Diff modifies exactly one missing field. Edits to `signature`, `shape_rules`, `dtype_combos`, or `roofline` belong to `add-manifest`, not `fix-manifest` — reject and split.
 - [ ] **Reference still aligns.** Other reference-derivable fields (`signature`, `shape_rules`, `dtype_combos`) on the same entry have not silently drifted from the source URL. Spot-check at least one.
 - [ ] **Validator green.**
-- [ ] **No code change.** Diff does not modify `tileops/ops/` or `tileops/kernels/`.
 
 #### Status flip (`spec-only` ↔ `implemented`)
 

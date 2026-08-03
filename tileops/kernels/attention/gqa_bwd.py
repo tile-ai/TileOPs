@@ -54,9 +54,33 @@ def _flashattn_bwd_preprocess_kernel(batch: int, heads: int, seq_len: int, dim: 
 
 
 class FlashAttnBwdPreprocessKernel(Kernel):
+    """Row-wise ``delta = rowsum(o * do)`` preprocessing for the GQA/MHA backward pass.
+
+    The launch geometry is fixed (``blk = 256``), so ``default_config`` is empty
+    and ``autotune_configs`` is undefined: ``tune=True`` degrades to the default
+    config with a warning from ``Kernel.init_config``. Both parameters are still
+    accepted so the constructor tail matches every other kernel.
+
+    Args:
+        batch: Batch size.
+        heads: Number of query heads.
+        seq_len: Sequence length.
+        dim: Head dimension.
+        dtype: Torch dtype of ``o`` / ``do``.
+        config: Optional config dict. This kernel exposes no tunable knobs.
+        tune: Whether to autotune. No-op for this kernel; see above.
+    """
+
     supported_archs: list[int] = [80, 89, 90]
 
-    def __init__(self, batch: int, heads: int, seq_len: int, dim: int, dtype: torch.dtype) -> None:
+    def __init__(self,
+                 batch: int,
+                 heads: int,
+                 seq_len: int,
+                 dim: int,
+                 dtype: torch.dtype,
+                 config: Optional[dict] = None,
+                 tune: bool = False) -> None:
         super().__init__()
         self.batch = batch
         self.heads = heads
@@ -66,6 +90,7 @@ class FlashAttnBwdPreprocessKernel(Kernel):
 
         self.kernel = _flashattn_bwd_preprocess_kernel(self.batch, self.heads, self.seq_len,
                                                        self.dim, self.dtype_str)
+        self.init_config(config, tune)
 
     def forward(self, o: torch.Tensor, do: torch.Tensor) -> torch.Tensor:
         return self.kernel(o, do)
@@ -104,9 +129,33 @@ def _flashattn_bwd_postprocess_kernel(batch: int,
 
 
 class FlashAttnBwdPostprocessKernel(Kernel):
+    """Cast the fp32 ``dq`` accumulator back to the storage dtype.
+
+    The launch geometry is fixed (``blk = 64``), so ``default_config`` is empty
+    and ``autotune_configs`` is undefined: ``tune=True`` degrades to the default
+    config with a warning from ``Kernel.init_config``. Both parameters are still
+    accepted so the constructor tail matches every other kernel.
+
+    Args:
+        batch: Batch size.
+        heads: Number of query heads.
+        seq_len: Sequence length.
+        dim: Head dimension.
+        dtype: Torch dtype of the output ``dq``.
+        config: Optional config dict. This kernel exposes no tunable knobs.
+        tune: Whether to autotune. No-op for this kernel; see above.
+    """
+
     supported_archs: list[int] = [80, 89, 90]
 
-    def __init__(self, batch: int, heads: int, seq_len: int, dim: int, dtype: torch.dtype) -> None:
+    def __init__(self,
+                 batch: int,
+                 heads: int,
+                 seq_len: int,
+                 dim: int,
+                 dtype: torch.dtype,
+                 config: Optional[dict] = None,
+                 tune: bool = False) -> None:
         super().__init__()
         self.batch = batch
         self.heads = heads
@@ -116,6 +165,7 @@ class FlashAttnBwdPostprocessKernel(Kernel):
 
         self.kernel = _flashattn_bwd_postprocess_kernel(self.batch, self.heads, self.seq_len,
                                                         self.dim, self.dtype_str)
+        self.init_config(config, tune)
 
     def forward(self, dq: torch.Tensor) -> torch.Tensor:
         return self.kernel(dq)

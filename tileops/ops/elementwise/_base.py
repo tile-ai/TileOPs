@@ -12,7 +12,10 @@ torch.compile support:
   runtime via _OP_REGISTRY keyed by id(instance)
 
 Utility:
-- coalesce_broadcast_dims: reduces N-dim broadcast to minimal effective dims
+- broadcast_out_shape: PyTorch broadcast output shape of two operand shapes
+
+The broadcast *lowering* decision (dim coalescing and stride synthesis) belongs
+to the kernel layer; this module only passes the two operand shapes down.
 """
 
 import functools
@@ -484,66 +487,20 @@ def _register_fused_gated_custom_op(op_cls):
     op_cls._wrapped = _wrapped
 
 
-def coalesce_broadcast_dims(a_shape, b_shape):
-    """Coalesce N-dim broadcast into minimal effective dimensions.
+def broadcast_out_shape(a_shape, b_shape) -> torch.Size:
+    """Return the PyTorch broadcast output shape of two operand shapes.
 
-    Merges adjacent dimensions that have the same broadcast behaviour
-    (both real or both broadcast) to minimise the number of divmod
-    operations inside the kernel loop.
+    0-dim operands are normalised to a single size-1 dimension, so a scalar
+    paired with a scalar yields ``(1,)`` rather than ``()``.
 
     Args:
         a_shape: Shape tuple of input a.
         b_shape: Shape tuple of input b.
 
     Returns:
-        Tuple of (out_shape, coalesced_shape, a_strides, b_strides) where
-        strides use 0 for broadcast dimensions.
+        The broadcast output shape.
     """
-    # Normalise scalar (0-dim) inputs to 1-dim with size 1
-    if len(a_shape) == 0:
-        a_shape = (1,)
-    if len(b_shape) == 0:
-        b_shape = (1,)
-
-    out_shape = torch.broadcast_shapes(a_shape, b_shape)
-    ndim = len(out_shape)
-    a_pad = (1,) * (ndim - len(a_shape)) + tuple(a_shape)
-    b_pad = (1,) * (ndim - len(b_shape)) + tuple(b_shape)
-
-    def _make_strides(padded_shape):
-        strides = [1] * ndim
-        for i in range(ndim - 2, -1, -1):
-            strides[i] = strides[i + 1] * padded_shape[i + 1]
-        # Only zero strides for genuinely broadcast dims (size-1 expanded to >1)
-        return [
-            0 if padded_shape[i] == 1 and out_shape[i] > 1 else strides[i]
-            for i in range(ndim)
-        ]
-
-    a_raw = _make_strides(a_pad)
-    b_raw = _make_strides(b_pad)
-
-    # Coalesce adjacent dims with compatible broadcast patterns
-    groups = [(out_shape[0], a_raw[0], b_raw[0])]
-    for i in range(1, ndim):
-        prev_out, prev_as, prev_bs = groups[-1]
-        a_can = (a_raw[i] == 0 and prev_as == 0) or (
-            a_raw[i] != 0 and prev_as == a_raw[i] * out_shape[i]
-        )
-        b_can = (b_raw[i] == 0 and prev_bs == 0) or (
-            b_raw[i] != 0 and prev_bs == b_raw[i] * out_shape[i]
-        )
-        if a_can and b_can:
-            groups[-1] = (prev_out * out_shape[i], a_raw[i], b_raw[i])
-        else:
-            groups.append((out_shape[i], a_raw[i], b_raw[i]))
-
-    # Remove trivial size-1 groups (unless all trivial)
-    groups = [g for g in groups if g[0] > 1] or [(1, 0, 0)]
-    coalesced_shape = tuple(g[0] for g in groups)
-    a_strides = tuple(g[1] for g in groups)
-    b_strides = tuple(g[2] for g in groups)
-    return out_shape, coalesced_shape, a_strides, b_strides
+    return torch.broadcast_shapes(tuple(a_shape) or (1,), tuple(b_shape) or (1,))
 
 
 # Target dtype for integral inputs under ``promote_int_to_float``, matching
@@ -792,29 +749,22 @@ class BinaryOp(Op):
         self.dtype = dtype
         self.a_shape = tuple(a_shape)
         self.b_shape = tuple(b_shape)
-        out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
-            a_shape, b_shape,
-        )
+        out_shape = broadcast_out_shape(self.a_shape, self.b_shape)
         self.out_shape = out_shape
         self._out_shape_list = list(out_shape)  # cached for custom_op hot path
         self.N_total = prod(out_shape)
         self.a_numel = prod(a_shape)
         self.b_numel = prod(b_shape)
         self.dispatch_kernel(kernel_map)
-        self.kernel = self._build_kernel_instance(
-            coalesced_shape, a_strides, b_strides, tune,
-        )
+        self.kernel = self._build_kernel_instance(tune)
         # Register in global registry for torch.compile dispatch
         self._instance_key = id(self)
         _OP_REGISTRY[self._instance_key] = self
 
-    def _build_kernel_instance(
-        self, coalesced_shape, a_strides, b_strides, tune,
-    ):
+    def _build_kernel_instance(self, tune):
         """Construct the kernel. Subclasses override to inject extra kwargs."""
         return self.kernel_map[self._op_name](
-            self.N_total, self.dtype, coalesced_shape, a_strides, b_strides,
-            self.a_numel, self.b_numel, tune=tune,
+            self.a_shape, self.b_shape, self.dtype, tune=tune,
         )
 
     @property
@@ -1128,13 +1078,9 @@ class _AlphaScaledBinaryOp(BinaryOp):
             a_shape, b_shape, dtype, kernel_map=kernel_map, tune=tune,
         )
 
-    def _build_kernel_instance(
-        self, coalesced_shape, a_strides, b_strides, tune,
-    ):
+    def _build_kernel_instance(self, tune):
         return self.kernel_map[self._op_name](
-            self.N_total, self.dtype, coalesced_shape, a_strides, b_strides,
-            self.a_numel, self.b_numel, tune=tune,
-            alpha=self.alpha,
+            self.a_shape, self.b_shape, self.dtype, tune=tune, alpha=self.alpha,
         )
 
 
@@ -1150,20 +1096,15 @@ class _BoolOutputBinaryOp(BinaryOp):
             kernel_map[f"{self._op_name}_bool_storage"] = self.bool_storage_kernel_cls
         return kernel_map
 
-    def _build_kernel_instance(
-        self, coalesced_shape, a_strides, b_strides, tune,
-    ):
+    def _build_kernel_instance(self, tune):
         self._bool_storage = (
             self.dtype == torch.bool and self.bool_storage_kernel_cls is not None
         )
         if self._bool_storage:
             return self.kernel_map[f"{self._op_name}_bool_storage"](
-                self.N_total, torch.uint8, coalesced_shape, a_strides, b_strides,
-                self.a_numel, self.b_numel, tune=tune,
+                self.a_shape, self.b_shape, torch.uint8, tune=tune,
             )
-        return super()._build_kernel_instance(
-            coalesced_shape, a_strides, b_strides, tune,
-        )
+        return super()._build_kernel_instance(tune)
 
     def _eager_forward(
         self,

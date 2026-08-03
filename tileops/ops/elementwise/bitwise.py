@@ -28,20 +28,15 @@ class _BoolStorageBitwiseBinaryOp(BinaryOp):
             kernel_map[f"{self._op_name}_bool_storage"] = self.bool_storage_kernel_cls
         return kernel_map
 
-    def _build_kernel_instance(
-        self, coalesced_shape, a_strides, b_strides, tune,
-    ):
+    def _build_kernel_instance(self, tune):
         self._bool_storage = (
             self.dtype == torch.bool and self.bool_storage_kernel_cls is not None
         )
         if self._bool_storage:
             return self.kernel_map[f"{self._op_name}_bool_storage"](
-                self.N_total, torch.uint8, coalesced_shape, a_strides, b_strides,
-                self.a_numel, self.b_numel, tune=tune,
+                self.a_shape, self.b_shape, torch.uint8, tune=tune,
             )
-        return super()._build_kernel_instance(
-            coalesced_shape, a_strides, b_strides, tune,
-        )
+        return super()._build_kernel_instance(tune)
 
     def _eager_forward(
         self,

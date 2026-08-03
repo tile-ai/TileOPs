@@ -1351,12 +1351,13 @@ class GroupedQueryAttentionBwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.prep_kernel = self.kernel_map["gqa_bwd_preprocess_kernel"](batch, heads, seq_len, dim,
-                                                                        self.dtype)
+                                                                        self.dtype, tune=tune)
         self.kernel = self.kernel_map["gqa_bwd_kernel"](
             batch, heads, heads_kv, seq_len, dim, is_causal, self.dtype, tune=tune)
         if not is_hopper():
             self.post_kernel = self.kernel_map["gqa_bwd_postprocess_kernel"](batch, heads, seq_len,
-                                                                             dim, self.dtype)
+                                                                             dim, self.dtype,
+                                                                             tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

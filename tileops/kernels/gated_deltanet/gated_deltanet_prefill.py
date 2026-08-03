@@ -1652,7 +1652,21 @@ def _gated_deltanet_prefill_wrapped_kernel_fake(
 
 
 class GatedDeltaNetPrefillFwdKernel(Kernel):
-    """Gated DeltaNet zero-state prefill."""
+    """Gated DeltaNet zero-state prefill.
+
+    Args:
+        batch: Batch size.
+        head: Number of heads.
+        seq_len: Sequence length.
+        chunk_size: Chunk length of the chunkwise recurrence.
+        dim_k: Key head dimension.
+        dim_v: Value head dimension.
+        layout: Axis order of q/k/v, ``"bhtd"`` or ``"bthd"``.
+        dtype: TileLang dtype string of q/k/v.
+        config: Optional config dict of per-stage stage counts and thread
+            counts.
+        tune: Whether to autotune.
+    """
 
     supported_archs: list[int] = [80, 89, 90]
 
@@ -1664,9 +1678,9 @@ class GatedDeltaNetPrefillFwdKernel(Kernel):
         chunk_size: int,
         dim_k: int,
         dim_v: int,
+        layout: str = "bhtd",
         dtype: str = "float32",
         config: Optional[dict] = None,
-        layout: str = "bhtd",
         tune: bool = False,
     ):
         super().__init__()

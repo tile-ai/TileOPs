@@ -12,8 +12,7 @@ Output dtype is part of the contract: ``All`` / ``Any`` must return
 asserts both the output shape (in particular, a 0-D tensor for
 ``dim=None, keepdim=False``) and the exact output dtype, plus numeric
 equality with PyTorch. Once green, the corresponding manifest entries can
-flip from ``status: spec-only`` to ``status: implemented`` in a separate
-manifest-only PR per the trust model.
+flip from ``status: spec-only`` to ``status: implemented``.
 """
 
 from __future__ import annotations

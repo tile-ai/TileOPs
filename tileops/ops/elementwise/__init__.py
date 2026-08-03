@@ -32,7 +32,7 @@ from ._base import (
     _register_unary_custom_op,
     _register_unary_inplace_custom_op,
     _register_where_custom_op,
-    coalesce_broadcast_dims,
+    broadcast_out_shape,
 )
 from .activations import (
     EluFwdOp,
@@ -185,7 +185,7 @@ __all__ = [
     "TruncFwdOp",
     "UnaryOp",
     "WhereFwdOp",
-    "coalesce_broadcast_dims",
+    "broadcast_out_shape",
 ]
 
 

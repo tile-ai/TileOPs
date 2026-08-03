@@ -204,7 +204,7 @@ class TestAutotuneConfigs:
     @pytest.mark.full
     def test_binary_autotune_configs_still_works(self):
         """BinaryKernel autotune_configs must still work (no regression)."""
-        k = AddFwdKernel(N, torch.float16, (N,), (1,), (1,), N, N)
+        k = AddFwdKernel((N,), (N,), torch.float16)
         configs = k.autotune_configs
         assert configs is not None
         assert len(configs) >= 3

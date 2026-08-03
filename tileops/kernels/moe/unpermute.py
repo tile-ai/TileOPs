@@ -124,10 +124,14 @@ class MoeUnpermuteKernel(Kernel):
         top_k: Number of experts selected per token K.
         hidden_size: Hidden dimension H.
         padded_batch_sum: Size of the padded mm2_pad buffer (≥ T*K).
-        dtype: Data type of mm2_pad and output (bf16 or fp16).
-        config: Optional config dict.
         scaling: Scalar multiplied into the reduced output before the cast/store
             (folds ``routed_scaling_factor``). Defaults to 1.0 (no scaling).
+        dtype: Data type of mm2_pad and output (bf16 or fp16).
+        config: Optional config dict. This kernel exposes no tunable knobs.
+        tune: Whether to autotune. The launch geometry is one block per token
+            with a fixed thread count, so ``autotune_configs`` is undefined and
+            ``tune=True`` degrades to the default config with a warning from
+            ``Kernel.init_config``.
 
     Example:
         >>> kernel = MoeUnpermuteKernel(num_tokens=4, top_k=2, hidden_size=128, padded_batch_sum=512)
@@ -142,9 +146,10 @@ class MoeUnpermuteKernel(Kernel):
         top_k: int,
         hidden_size: int,
         padded_batch_sum: int,
+        scaling: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
         config: Optional[dict] = None,
-        scaling: float = 1.0,
+        tune: bool = False,
     ):
         super().__init__()
         self.num_tokens = num_tokens
@@ -158,7 +163,7 @@ class MoeUnpermuteKernel(Kernel):
             num_tokens, top_k, hidden_size, padded_batch_sum, self.dtype_str, scaling
         )
 
-        self.init_config(config, tune=False)
+        self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:

@@ -332,6 +332,16 @@ class FusedTopKKernel(Kernel):
             forward(). Adds bias to sigmoid scores for expert selection while writing
             unbiased sigmoid scores to topk_weights. Requires scoring_func="sigmoid".
         config: Optional kernel config dict (key: "TOKENS_PER_BLOCK").
+        tune: Whether to autotune. ``TOKENS_PER_BLOCK`` is pinned to the
+            one-warp-per-token mapping the algorithm relies on, so
+            ``autotune_configs`` is undefined and ``tune=True`` degrades to the
+            default config with a warning from ``Kernel.init_config``.
+
+    Note:
+        ``dtype`` does not apply. Routing arithmetic is fixed at float32 and
+        the outputs are float32 weights plus int32 expert ids; ``forward()``
+        up-casts ``gating_output`` of any float dtype before the launch, so no
+        element type is selected at construction.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -345,6 +355,7 @@ class FusedTopKKernel(Kernel):
         renormalize: bool = False,
         with_correction_bias: bool = False,
         config: Optional[dict] = None,
+        tune: bool = False,
     ):
         super().__init__()
         if scoring_func not in _SCORING_FUNCS:
@@ -370,7 +381,7 @@ class FusedTopKKernel(Kernel):
         self._kernel_fn = _fused_topk_kernel(
             num_tokens, num_experts, top_k, scoring_func, with_correction_bias
         )
-        self.init_config(config, tune=False)
+        self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:

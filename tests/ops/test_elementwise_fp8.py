@@ -37,9 +37,7 @@ def test_binary_bitwise_kernel_rejects_fp8():
 
     with pytest.raises(ValueError, match="only supports dtypes"):
         BitwiseAndFwdKernel(
-            N_total=_N, dtype=torch.float8_e4m3fn,
-            coalesced_shape=(_N,), a_strides=(1,), b_strides=(1,),
-            a_numel=_N, b_numel=_N,
+            a_shape=(_N,), b_shape=(_N,), dtype=torch.float8_e4m3fn,
         )
 
 
@@ -54,9 +52,7 @@ def test_binary_arith_kernel_rejects_fp8():
 
     with pytest.raises(ValueError, match="only supports dtypes"):
         MulFwdKernel(
-            N_total=_N, dtype=torch.float8_e4m3fn,
-            coalesced_shape=(_N,), a_strides=(1,), b_strides=(1,),
-            a_numel=_N, b_numel=_N,
+            a_shape=(_N,), b_shape=(_N,), dtype=torch.float8_e4m3fn,
         )
 
 
@@ -118,11 +114,7 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
 
 
 def _binary_kwargs(dtype):
-    return dict(
-        N_total=_N, dtype=dtype,
-        coalesced_shape=(_N,), a_strides=(1,), b_strides=(1,),
-        a_numel=_N, b_numel=_N,
-    )
+    return {"a_shape": (_N,), "b_shape": (_N,), "dtype": dtype}
 
 
 @pytest.mark.smoke

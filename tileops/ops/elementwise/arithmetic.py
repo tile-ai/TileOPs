@@ -22,12 +22,7 @@ from tileops.kernels.elementwise import (
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import (
-    _OP_REGISTRY,
-    BinaryOp,
-    _AlphaScaledBinaryOp,
-    coalesce_broadcast_dims,
-)
+from ._base import _OP_REGISTRY, BinaryOp, _AlphaScaledBinaryOp
 
 
 class AddFwdOp(_AlphaScaledBinaryOp):
@@ -166,34 +161,13 @@ class LerpFwdOp(BinaryOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        supported = self.kernel_cls.SUPPORTED_DTYPES
-        if supported is not None and dtype not in supported:
-            names = ", ".join(str(dt) for dt in supported)
-            raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. "
-                f"Supported: [{names}]"
-            )
-        self.dtype = dtype
-        self.a_shape = tuple(a_shape)
-        self.b_shape = tuple(b_shape)
         self._weight = weight
-        out_shape, coalesced_shape, a_strides, b_strides = coalesce_broadcast_dims(
-            a_shape, b_shape,
+        super().__init__(a_shape, b_shape, dtype, kernel_map=kernel_map, tune=tune)
+
+    def _build_kernel_instance(self, tune):
+        return self.kernel_map[self._op_name](
+            self.a_shape, self.b_shape, self.dtype, tune=tune, weight=self._weight,
         )
-        self.out_shape = out_shape
-        self._out_shape_list = list(out_shape)  # cached for custom_op hot path
-        self.N_total = prod(out_shape)
-        self.a_numel = prod(a_shape)
-        self.b_numel = prod(b_shape)
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            self.N_total, dtype, coalesced_shape, a_strides, b_strides,
-            self.a_numel, self.b_numel, tune=tune,
-            weight=weight,
-        )
-        # Register in global registry for torch.compile dispatch
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
 
 class MaximumFwdOp(BinaryOp):

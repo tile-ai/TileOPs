@@ -21,13 +21,15 @@ def _nsa_cmp_fwd_varlen_kernel(
     scale: float,
     bc: int,
     bs: int,
-    bk: int,
-    bv: int,
     dtype: str,
     accum_dtype: str,
 ) -> Callable:
     scale_log2 = scale * LOG2E
     head_kv = heads // group
+    # The shared-memory tiles span the whole head dimension: a narrower tile
+    # would silently truncate the QK contraction and the O write-back.
+    bk = dim_k
+    bv = dim_v
 
     q_shape = [c_seq_len, heads, dim_k]
     k_cmp_shape = [chunk_num, head_kv, dim_k]
@@ -163,8 +165,6 @@ def _nsa_cmp_fwd_varlen_wrapped_kernel(
     scale: float,
     bc: int,
     bs: int,
-    bk: int,
-    bv: int,
     dtype: str,
     accum_dtype: str,
     threads: int,
@@ -176,7 +176,7 @@ def _nsa_cmp_fwd_varlen_wrapped_kernel(
     token_indices: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     return _nsa_cmp_fwd_varlen_kernel(seq_num, c_seq_len, heads, dim_k, dim_v, chunk_num, group,
-                                      scale, bc, bs, bk, bv, dtype,
+                                      scale, bc, bs, dtype,
                                       accum_dtype)(threads)(q, k_cmp, v_cmp, offsets, chunk_offsets,
                                                             token_indices)
 
@@ -193,15 +193,12 @@ def _(
     scale: float,
     bc: int,
     bs: int,
-    bk: int,
-    bv: int,
     dtype: str,
     accum_dtype: str,
     threads: int,
     *inputs: Any,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    _ = (seq_num, dim_k, dim_v, chunk_num, group, scale, bc, bs, bk, bv, dtype, accum_dtype,
-         threads)
+    _ = (seq_num, dim_k, dim_v, chunk_num, group, scale, bc, bs, dtype, accum_dtype, threads)
     return (torch.empty([c_seq_len, heads, dim_v], dtype=inputs[0].dtype, device=inputs[0].device),
             torch.empty([c_seq_len, heads], dtype=inputs[0].dtype, device=inputs[0].device))
 
@@ -220,8 +217,6 @@ class NSACmpFwdVarlenKernel(Kernel):
                  scale: float,
                  bc: int,
                  bs: int,
-                 bk: int,
-                 bv: int,
                  dtype: torch.dtype,
                  accum_dtype: torch.dtype,
                  config: Optional[dict] = None,
@@ -237,8 +232,6 @@ class NSACmpFwdVarlenKernel(Kernel):
         self.scale = scale
         self.bc = bc
         self.bs = bs
-        self.bk = bk
-        self.bv = bv
         self.dtype = dtype
         self.accum_dtype = accum_dtype
         self.accum_dtype_str = self.dtype_to_str(self.accum_dtype)
@@ -260,8 +253,8 @@ class NSACmpFwdVarlenKernel(Kernel):
                 token_indices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return _nsa_cmp_fwd_varlen_wrapped_kernel(self.seq_num, self.c_seq_len, self.heads,
                                                   self.dim_k, self.dim_v, self.chunk_num,
-                                                  self.group, self.scale, self.bc, self.bs, self.bk,
-                                                  self.bv, self.dtype_str, self.accum_dtype_str,
+                                                  self.group, self.scale, self.bc, self.bs,
+                                                  self.dtype_str, self.accum_dtype_str,
                                                   self.config["threads"], q.to(self.dtype),
                                                   k_cmp.to(self.dtype), v_cmp.to(self.dtype),
                                                   offsets.to(torch.int32),

@@ -79,6 +79,19 @@ def _(batch, seq_len_kv, kv_group, index_dim, in_dtype, num_stages, block_m, *in
 
 
 class FP8QuantKernel(Kernel):
+    """Per-group fp8 quantization of a ``[B, S_kv, G, D]`` index tensor.
+
+    Args:
+        batch: Batch size.
+        seq_len_kv: Key/value sequence length.
+        kv_group: Number of key/value groups.
+        index_dim: Index (head) dimension.
+        dtype: Torch dtype of the tensor being quantized. The output element
+            type is fixed at ``torch.float8_e4m3fn`` and the scale at
+            ``torch.float32``, so this is the kernel's only free dtype.
+        config: Optional dict with "num_stages" and "block_m".
+        tune: Whether to autotune.
+    """
 
     supported_archs: list[int] = [90]
 
@@ -87,7 +100,7 @@ class FP8QuantKernel(Kernel):
                  seq_len_kv: int,
                  kv_group: int,
                  index_dim: int,
-                 in_dtype: torch.dtype,
+                 dtype: torch.dtype,
                  config: Optional[dict] = None,
                  tune: bool = False):
         super().__init__()
@@ -95,7 +108,7 @@ class FP8QuantKernel(Kernel):
         self.seq_len_kv = seq_len_kv
         self.kv_group = kv_group
         self.index_dim = index_dim
-        self.dtype = in_dtype
+        self.dtype = dtype
         self.config = config or {}
         self.kernel = _fp8_quant_kernel(self.batch, self.seq_len_kv, self.kv_group, self.index_dim,
                                         self.dtype_str)

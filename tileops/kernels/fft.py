@@ -1,6 +1,6 @@
 import functools
 import math
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 import tilelang
 import tilelang.language as T
@@ -510,6 +510,7 @@ class FFTC2CKernel(Kernel):
                  n: int,
                  batch_size: int = 1,
                  dtype: torch.dtype = torch.complex64,
+                 config: Optional[Dict[str, Any]] = None,
                  tune: bool = False) -> None:
         super().__init__()
         self.n = n
@@ -517,7 +518,7 @@ class FFTC2CKernel(Kernel):
         self.dtype = dtype
 
         self.kernel = _fft_c2c_kernel(n, batch_size, self.dtype_str)
-        self.init_config(tune=tune)
+        self.init_config(config, tune)
 
     @property
     def default_config(self) -> Dict[str, Any]:

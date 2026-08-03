@@ -1,12 +1,4 @@
-## Boundary
-
-- **OWNS**: `tileops/manifest/`
-- **MUST NOT WRITE**: `tileops/ops/`, `tileops/kernels/`, `tests/`, `benchmarks/`
-- Manifest changes require human review in a separate PR.
-
 → [trust-model.md §Manifest](../../docs/design/trust-model.md#manifest)
-
-______________________________________________________________________
 
 - Manifest key must equal the Op `cls.__name__` exactly. Class-naming convention: see [ops-design.md](ops-design.md).
 
@@ -44,6 +36,8 @@ ______________________________________________________________________
 - No `Optional[Tensor]` in manifest. Conditional inputs split into variant entries linked by `variant_of` (single-level, no chaining). Variants share `source.kernel` and `source.op`; each carries its own `signature`, `workloads`, `roofline`.
 
 - Tensor layout defaults to contiguous row-major. Non-default needs an explicit `layout` field; `shape` dim names reflect memory order.
+
+- `source.kernel_map`, `source.test` and `source.bench` are discoverability pointers: they name where the current implementation, test and benchmark live, and are retargeted whenever those move. `source.kernel` and `source.op` are contract — they say where the op is *defined*.
 
 - `source.kernel_map` is the Op→Kernel dispatch registration table (`dispatch_key: KernelClassName`). It declares what an Op uses, not how dispatch picks.
 

@@ -1,6 +1,6 @@
 import functools
 import os
-from typing import Callable, Tuple
+from typing import Callable, Optional, Tuple
 
 import tilelang
 import tilelang.language as T
@@ -697,7 +697,26 @@ def _expand_fa3_gqa_descales(
 
 
 class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(Kernel):
-    """BN224 WS FP8 GQA kernel with FA3-compatible 2D descales and TMA-V layout."""
+    """BN224 WS FP8 GQA kernel with FA3-compatible 2D descales and TMA-V layout.
+
+    Query, key and value are always ``torch.float8_e4m3fn``; the only free dtype
+    is the one the kernel writes, so ``dtype`` names the output element type.
+
+    The block schedule is fixed by the PTX contract this kernel implements
+    (BN224 warp specialization), so ``default_config`` is empty and
+    ``autotune_configs`` is undefined: ``tune=True`` degrades to the default
+    config with a warning from ``Kernel.init_config``.
+
+    Args:
+        batch: Batch size.
+        heads: Number of query heads.
+        heads_kv: Number of key/value heads.
+        seq_len: Sequence length, a multiple of both 224 and 128.
+        dim: Head dimension, which must be 128.
+        dtype: Output dtype, ``torch.float16`` or ``torch.bfloat16``.
+        config: Optional config dict. This kernel exposes no tunable knobs.
+        tune: Whether to autotune. No-op for this kernel; see above.
+    """
 
     supported_archs: list[int] = [90]
 
@@ -708,10 +727,10 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(Kernel):
         heads_kv: int,
         seq_len: int,
         dim: int,
-        out_dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
         tune: bool = False,
     ) -> None:
-        del tune
         super().__init__()
         if heads % heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
@@ -727,7 +746,7 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(Kernel):
             raise ValueError(
                 "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel currently requires seq_len % 128 == 0."
             )
-        if out_dtype not in (torch.float16, torch.bfloat16):
+        if dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(
                 "GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel outputs float16 or bfloat16."
             )
@@ -736,7 +755,8 @@ class GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(Kernel):
         self.heads_kv = heads_kv
         self.seq_len = seq_len
         self.dim = dim
-        self.dtype = out_dtype
+        self.dtype = dtype
+        self.init_config(config, tune)
 
     def forward(
         self,

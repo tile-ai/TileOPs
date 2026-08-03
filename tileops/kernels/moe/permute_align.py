@@ -347,7 +347,16 @@ class MoePermuteAlignKernel(Kernel):
         numel: Total number of (token, expert) assignments = total_tokens * top_k.
         num_experts: Number of experts.
         block_size: GEMM tile size (M dimension).
-        config: Optional config dict (unused; kept for API consistency).
+        config: Optional config dict with "threads".
+        tune: Whether to autotune. The thread count is fixed by the
+            single-block cumulative-count algorithm, so ``autotune_configs``
+            is undefined and ``tune=True`` degrades to the default config with
+            a warning from ``Kernel.init_config``.
+
+    Note:
+        ``dtype`` does not apply. Every tensor this kernel reads or writes is
+        an int32 index array whose element type is fixed by the MoE grouped
+        GEMM index contract, so there is no free element type to select.
 
     Example:
         >>> kernel = MoePermuteAlignKernel(numel=32, num_experts=8, block_size=16)
@@ -362,6 +371,7 @@ class MoePermuteAlignKernel(Kernel):
         num_experts: int,
         block_size: int,
         config: Optional[dict] = None,
+        tune: bool = False,
     ):
         super().__init__()
         self.numel = numel
@@ -380,7 +390,7 @@ class MoePermuteAlignKernel(Kernel):
             self._align_fn   = None
             self._scatter_fn = None
 
-        self.init_config(config, tune=False)
+        self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:

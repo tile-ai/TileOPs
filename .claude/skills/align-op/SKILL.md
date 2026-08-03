@@ -84,8 +84,8 @@ stateDiagram-v2
 Preconditions identical to `scaffold-op`'s — orchestrator enforces them up front so sub-skills never see ill-formed input:
 
 - `op_name` in `tileops/manifest/` → proceed; otherwise BLOCKED ("op not in manifest").
-- `status: spec-only` → proceed; `implemented` → BLOCKED ("already aligned; flip status to spec-only in a manifest PR first if you intend to re-align"); missing/other → BLOCKED.
-- `source.kernel_map` declared and non-empty → proceed; missing → BLOCKED with the same guidance scaffold-op uses (add in a prerequisite manifest PR).
+- `status: spec-only` → proceed; `implemented` → BLOCKED ("already aligned; flip status back to spec-only first if you intend to re-align"); missing/other → BLOCKED.
+- `source.kernel_map` declared and non-empty → proceed; missing → BLOCKED with the same guidance scaffold-op uses (add the dispatch map first).
 - Every value in `source.kernel_map` resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path" — kernel must exist for op layer to align, regardless of case).
 
 ### 2. CLASSIFY
@@ -266,7 +266,7 @@ Orchestrator (not a sub-skill) edits the manifest:
 - `ops.<op_name>.status: spec-only` → `status: implemented`
 - Commit as `[Refactor][Manifest] promote <op_name> to implemented`.
 
-This is the only manifest write in the entire workflow, and it MUST stay within the [Status flip carve-out](../../rules/manifest-trust-model.md#status-flip-carve-out); any contractual-field change requires a separate manifest-only PR.
+This is the only manifest write in the entire workflow: flip `status`, and retarget `source.kernel_map` / `source.test` / `source.bench` at what this run produced. A contractual field — `signature`, `shape_rules`, `roofline`, `params` — is spec, and changing it to match the code inverts the spec relationship ([manifest-spec.md](../../domain-rules/manifest-spec.md)).
 
 ### 11. CLEANUP
 
@@ -324,4 +324,3 @@ They do not conflict. `align-op` never manages cross-op cleanup gates; that rema
 - **Kernel scaffolding / kernel-layer edits.** align-op surfaces kernel work as a follow-up via `kernel-check.json`; a separate (future) `kernel-scaffold` / `kernel-align` skill will own that layer.
 - **Family-level cleanup.** Cross-op dual-path removal lives in `align-family` and is not a concern of per-op alignment.
 - **General auto-detection of "redesign vs minor."** The distinction is a design judgement; align-op prompts or accepts `--mode`. The one exception is the **first-op bias** in CLASSIFY (no canonical-pattern precedent in the family → auto `redesign`). Beyond that one case, no auto-detection.
-- **Manifest changes (other than FLIP_STATUS).** Per the trust model, manifest changes live in separate manifest PRs.

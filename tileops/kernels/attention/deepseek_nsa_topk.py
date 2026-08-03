@@ -21,12 +21,14 @@ def _nsa_topk_varlen_kernel(
     selected_block_num: int,
     bc: int,
     bs: int,
-    bk: int,
     dtype: str,
     accum_dtype: str,
 ) -> Callable:
     scale_log2 = scale * LOG2E
     head_kv = heads // group
+    # The shared-memory tiles span the whole head dimension: a narrower tile
+    # would silently truncate the QK contraction.
+    bk = dim
 
     q_shape = [c_seq_len, heads, dim]
     k_cmp_shape = [chunk_num, head_kv, dim]
@@ -222,7 +224,6 @@ def _nsa_topk_varlen_wrapped_kernel(
     selected_block_num: int,
     bc: int,
     bs: int,
-    bk: int,
     dtype: str,
     accum_dtype: str,
     threads: int,
@@ -234,7 +235,7 @@ def _nsa_topk_varlen_wrapped_kernel(
     token_indices: torch.Tensor,
 ) -> torch.Tensor:
     return _nsa_topk_varlen_kernel(seq_num, c_seq_len, heads, dim, chunk_num, group, scale,
-                                   selected_block_num, bc, bs, bk, dtype,
+                                   selected_block_num, bc, bs, dtype,
                                    accum_dtype)(threads)(q, k_cmp, lse_in, offsets, chunk_offsets,
                                                          token_indices)
 
@@ -251,13 +252,12 @@ def _(
     selected_block_num: int,
     bc: int,
     bs: int,
-    bk: int,
     dtype: str,
     accum_dtype: str,
     threads: int,
     *inputs: tuple[Any],
 ) -> torch.Tensor:
-    _ = (seq_num, dim, chunk_num, group, scale, bc, bs, bk, dtype, accum_dtype, threads)
+    _ = (seq_num, dim, chunk_num, group, scale, bc, bs, dtype, accum_dtype, threads)
     return torch.empty([c_seq_len, heads, selected_block_num],
                        dtype=inputs[0].dtype,
                        device=inputs[0].device)
@@ -277,7 +277,6 @@ class NSATopkVarlenKernel(Kernel):
                  selected_block_num: int,
                  bc: int,
                  bs: int,
-                 bk: int,
                  dtype: torch.dtype,
                  accum_dtype: torch.dtype,
                  config: Optional[dict] = None,
@@ -293,7 +292,6 @@ class NSATopkVarlenKernel(Kernel):
         self.selected_block_num = selected_block_num
         self.bc = bc
         self.bs = bs
-        self.bk = bk
         self.dtype = dtype
         self.accum_dtype = accum_dtype
         self.accum_dtype_str = self.dtype_to_str(self.accum_dtype)
@@ -315,7 +313,7 @@ class NSATopkVarlenKernel(Kernel):
                 token_indices: torch.Tensor) -> torch.Tensor:
         return _nsa_topk_varlen_wrapped_kernel(self.seq_num, self.c_seq_len, self.heads, self.dim,
                                                self.chunk_num, self.group, self.scale,
-                                               self.selected_block_num, self.bc, self.bs, self.bk,
+                                               self.selected_block_num, self.bc, self.bs,
                                                self.dtype_str,
                                                self.accum_dtype_str, self.config["threads"],
                                                q.to(self.dtype), k_cmp.to(self.dtype),

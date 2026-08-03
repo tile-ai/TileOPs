@@ -49,7 +49,7 @@ class MoePermuteAlignFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map["permute_align_kernel"](
-            self.numel, num_experts, block_size
+            self.numel, num_experts, block_size, tune=tune
         )
 
     @property
