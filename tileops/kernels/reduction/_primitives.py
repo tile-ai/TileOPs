@@ -150,10 +150,11 @@ class BlockConfigPlanner:
             ValueError: If no tile of the required column granularity fits in
                 shared memory for this pair.
         """
+        # Single-tile probe: one buffer, because the single-tile kernels hold
+        # the row in fragments and allocate no second shared copy.
         if self.N_padded <= MAX_SINGLE_TILE_COLS:
             single = compute_tile_n(
-                block_m, self.elem_bytes, self.N_padded,
-                budget=self.smem_budget, num_buffers=self.num_buffers,
+                block_m, self.elem_bytes, self.N_padded, budget=self.smem_budget,
             )
             if single == self.N_padded:
                 return 0

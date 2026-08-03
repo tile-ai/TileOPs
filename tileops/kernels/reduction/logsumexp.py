@@ -24,8 +24,9 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
+    AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
-    MAX_SINGLE_TILE_COLS,
+    BlockConfigPlanner,
     align_up,
     compute_tile_n,
     device_smem_budget,
@@ -290,6 +291,9 @@ class LogSumExpKernel(Kernel):
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = _elem_bytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
+        self._planner = BlockConfigPlanner(
+            self.N_padded, self._elem_bytes, self._smem_budget,
+        )
 
         # Build self.kernel BEFORE init_config: when tune=True, init_config
         # delegates to autotune() which requires self.kernel to exist.
@@ -338,26 +342,12 @@ class LogSumExpKernel(Kernel):
     def _tile_n_for_block_m(self, block_m: int) -> int:
         """Return tile_n for a given block_m (0 means no tiling needed).
 
-        Uses the device's actual shared memory budget (not the
-        conservative 48 KiB default) so that large-N workloads can
-        use fewer, larger tiles or even the single-tile fast path.
-
-        Both paths are subject to the MAX_SINGLE_TILE_COLS column
-        cap (TileLang's vectorizer fails at the 32768 column boundary).
+        Derived at the granularity the *coarsest* candidate thread count
+        needs: tile_n is baked into the kernel at build time and then reused
+        across every ``threads`` value the autotuner tries, so one tile has to
+        satisfy all of them.
         """
-        budget = self._smem_budget
-        # Single-tile path: cap by column count and smem budget.
-        if self.N_padded <= MAX_SINGLE_TILE_COLS:
-            tile_n = compute_tile_n(block_m, self._elem_bytes, self.N_padded, budget=budget)
-            if tile_n == self.N_padded:
-                return 0
-        # Tiled path (logsumexp uses 1 shared buffer).
-        # Cap the smem budget so tile_n stays within the column limit.
-        col_budget = MAX_SINGLE_TILE_COLS * block_m * self._elem_bytes
-        effective_budget = min(budget, col_budget)
-        return compute_tile_n(
-            block_m, self._elem_bytes, self.N_padded, budget=effective_budget,
-        )
+        return self._planner.tile_n_for(block_m, max(AUTOTUNE_THREADS))
 
     @property
     def default_config(self) -> dict:
