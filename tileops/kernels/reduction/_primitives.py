@@ -8,6 +8,8 @@ This module must land before any sub-category kernel PR so that shared
 infrastructure is available from the start.
 """
 
+import itertools
+
 import tilelang.language as T
 import torch
 
@@ -18,6 +20,7 @@ __all__ = [
     "MAX_SINGLE_TILE_COLS",
     "SHARED_MEMORY_BUDGET_BYTES",
     "VECTOR_ACCESS_BYTES",
+    "BlockConfigPlanner",
     "align_up",
     "compute_tile_n",
     "device_smem_budget",
@@ -66,15 +69,13 @@ def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
     number of thread-block passes the map shifts from row to row, and the
     following ``T.reduce_*`` has no fragment layout consistent with both the
     elementwise loops and its ``(rows,)`` destination -- layout inference
-    aborts with "no available layout found".  The constraint is not specific to
-    a tiled kernel: it binds any such fragment, ``cols == N_padded`` included.
+    aborts with "no available layout found".
 
-    The result is conservative in two directions, both harmless.  ``rows == 1``
-    and any ``cols`` below one pass build regardless.  And ``vec`` is really
-    capped by the widest buffer in the loop -- an fp32 accumulator fragment --
-    never by the narrower storage dtype passed here.  Iterating rows serially
-    in the kernel would drop the constraint outright; this granularity is the
-    cheaper fix while the flattened ``T.Parallel`` stands.
+    Binds any such fragment, ``cols == N_padded`` included.  Conservative:
+    ``rows == 1`` builds regardless, and ``vec`` is really capped by the widest
+    buffer in the loop (an fp32 accumulator), not by the storage dtype passed
+    here.  Iterating rows serially in the kernel would drop the constraint
+    outright.
 
     Args:
         elem_bytes: Bytes per element of the storage dtype.
@@ -84,6 +85,141 @@ def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
         Column count that ``cols`` must be a multiple of.
     """
     return threads * VECTOR_ACCESS_BYTES // elem_bytes
+
+
+class BlockConfigPlanner:
+    """Derives ``block_m`` / ``threads`` / ``tile_n`` for a row-wise reduction.
+
+    Every reduction kernel that maps one row per ``block_m`` slot and reduces
+    along N makes the same three decisions -- whether the row fits in shared
+    memory at all, which single config to run untuned, and which candidates to
+    offer the autotuner.  They are derived here once so the kernels cannot
+    answer them differently.
+
+    Args:
+        N_padded: Hidden dimension, already aligned to ``DEFAULT_ALIGNMENT``.
+        elem_bytes: Bytes per element of the kernel's storage dtype.
+        smem_budget: Shared memory a thread block may allocate, from
+            ``device_smem_budget()``.
+        num_buffers: Shared buffers of shape ``(block_m, tile_n)`` alive at
+            once.  Welford's two-pass kernels allocate 2.
+    """
+
+    _BLOCK_MS = (1, 2, 4, 8)
+
+    def __init__(
+        self,
+        N_padded: int,
+        elem_bytes: int,
+        smem_budget: int,
+        num_buffers: int = 1,
+    ):
+        self.N_padded = N_padded
+        self.elem_bytes = elem_bytes
+        self.smem_budget = smem_budget
+        self.num_buffers = num_buffers
+
+    @property
+    def _row_bytes(self) -> int:
+        """Shared memory one untiled row occupies.
+
+        ``num_buffers`` is deliberately excluded: it counts the tiled path's
+        ``(block_m, tile_n)`` shared buffers, whereas the untiled kernels keep
+        their second pass in fragments.
+        """
+        return self.N_padded * self.elem_bytes
+
+    @property
+    def needs_tiling(self) -> bool:
+        """Whether one padded row exceeds the column cap or the smem budget."""
+        return (
+            self.N_padded > MAX_SINGLE_TILE_COLS or self._row_bytes > self.smem_budget
+        )
+
+    def tile_n_for(self, block_m: int, threads: int) -> int:
+        """Return the tile width a ``(block_m, threads)`` pair can build.
+
+        Args:
+            block_m: Rows per thread block.
+            threads: Thread-block size.
+
+        Returns:
+            Column tile size, or 0 when the pair needs no tiling at all.
+
+        Raises:
+            ValueError: If no tile of the required column granularity fits in
+                shared memory for this pair.
+        """
+        if self.N_padded <= MAX_SINGLE_TILE_COLS:
+            single = compute_tile_n(
+                block_m, self.elem_bytes, self.N_padded,
+                budget=self.smem_budget, num_buffers=self.num_buffers,
+            )
+            if single == self.N_padded:
+                return 0
+
+        col_budget = (
+            MAX_SINGLE_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
+        )
+        return compute_tile_n(
+            block_m, self.elem_bytes, self.N_padded,
+            alignment=reduce_column_alignment(self.elem_bytes, threads),
+            budget=min(self.smem_budget, col_budget),
+            num_buffers=self.num_buffers,
+        )
+
+    def _untiled_block_ms(self) -> list[int]:
+        max_block_m = self.smem_budget // self._row_bytes
+        return [bm for bm in self._BLOCK_MS if bm <= max_block_m]
+
+    def _num_tiles(self, tile_n: int) -> int:
+        return (self.N_padded + tile_n - 1) // tile_n
+
+    def default_config(self) -> dict:
+        """Return the config used when no candidate sweep runs."""
+        if not self.needs_tiling:
+            block_ms = self._untiled_block_ms()
+            return {
+                "block_m": block_ms[-1] if block_ms else 1,
+                "threads": DEFAULT_THREADS,
+            }
+
+        # Tiled: prefer the block_m that needs the fewest N-tiles.
+        best_bm, best_tile_n = 1, self.tile_n_for(1, DEFAULT_THREADS)
+        for bm in self._BLOCK_MS[1:]:
+            try:
+                tn = self.tile_n_for(bm, DEFAULT_THREADS)
+            except ValueError:
+                continue
+            if self._num_tiles(tn) < self._num_tiles(best_tile_n):
+                best_bm, best_tile_n = bm, tn
+        return {
+            "block_m": best_bm,
+            "threads": DEFAULT_THREADS,
+            "tile_n": best_tile_n,
+        }
+
+    def autotune_configs(self) -> list[dict]:
+        """Return every candidate config, all of them buildable.
+
+        A ``(block_m, threads)`` pair with no fitting tile is dropped here
+        rather than left to abort the sweep at build time.
+        """
+        if not self.needs_tiling:
+            return [
+                {"block_m": bm, "threads": t}
+                for bm, t in itertools.product(self._untiled_block_ms(), AUTOTUNE_THREADS)
+            ]
+
+        configs = []
+        for bm, t in itertools.product(self._BLOCK_MS, AUTOTUNE_THREADS):
+            try:
+                configs.append(
+                    {"block_m": bm, "threads": t, "tile_n": self.tile_n_for(bm, t)},
+                )
+            except ValueError:
+                continue
+        return configs if configs else [self.default_config()]
 
 
 def device_smem_budget(device_index: int | None = None) -> int:

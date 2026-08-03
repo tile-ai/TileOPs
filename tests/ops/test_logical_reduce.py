@@ -659,11 +659,10 @@ def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) ->
 
 @pytest.mark.smoke
 def test_logical_reduce_tiled_autotune() -> None:
-    """Autotune builds and times every tiled candidate, then runs the winner.
+    """``tune=True`` must build and time every tiled candidate.
 
-    N is deliberately not a power of two: for a power-of-two N_padded
-    ``compute_tile_n`` returns an exact divisor of N_padded and every
-    candidate happens to be buildable, which hides a mis-derived tile_n.
+    N is not a power of two: a power-of-two N_padded lets ``compute_tile_n``
+    fall back on an exact divisor, which hides a mis-derived tile_n.
     """
     from tileops.ops.reduction.logical_reduce import AnyFwdOp
 

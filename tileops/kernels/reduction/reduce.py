@@ -19,7 +19,6 @@ memory instructions.
 """
 
 import functools
-import itertools
 from typing import Optional
 
 import tilelang
@@ -28,15 +27,11 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
-    AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
-    MAX_SINGLE_TILE_COLS,
-    SHARED_MEMORY_BUDGET_BYTES,
+    BlockConfigPlanner,
     align_up,
-    compute_tile_n,
     device_smem_budget,
-    reduce_column_alignment,
     tune_by_forward,
 )
 
@@ -911,9 +906,11 @@ class ReduceKernel(Kernel):
         self._is_welford = op_kind in _WELFORD_KINDS
         self._elem_bytes = torch.tensor([], dtype=dtype).element_size()
         self._smem_budget = device_smem_budget()
-
-        # Determine whether tiling is needed
-        self._needs_tiling = self.N_padded > MAX_SINGLE_TILE_COLS
+        self._planner = BlockConfigPlanner(
+            self.N_padded, self._elem_bytes, self._smem_budget,
+            num_buffers=2 if self._is_welford else 1,
+        )
+        self._needs_tiling = self._planner.needs_tiling
 
         if not self._needs_tiling:
             if self._is_welford:
@@ -941,100 +938,17 @@ class ReduceKernel(Kernel):
         if self._needs_tiling and not tune:
             bm = self.config.get("block_m", 1)
             if "tile_n" not in self.config or self.config["tile_n"] == 0:
-                self.config["tile_n"] = self._tile_n_for(
+                self.config["tile_n"] = self._planner.tile_n_for(
                     bm, self.config.get("threads", DEFAULT_THREADS),
                 )
 
-    def _tile_n_for(self, block_m: int, threads: int) -> int:
-        """Return tile_n for a block_m / threads pair (0 means no tiling).
-
-        Welford kernels allocate 2 shared buffers per pass, so
-        ``num_buffers=2`` is used to ensure both fit in shared memory.
-
-        Raises:
-            ValueError: If no tile of the required column granularity fits in
-                shared memory for this pair.  Callers building candidate lists
-                drop the pair rather than emit an unbuildable tile.
-        """
-        budget = self._smem_budget
-        if self.N_padded <= MAX_SINGLE_TILE_COLS:
-            single = compute_tile_n(
-                block_m, self._elem_bytes, self.N_padded, budget=budget,
-            )
-            if single == self.N_padded:
-                return 0
-
-        num_buffers = 2 if self._is_welford else 1
-        col_budget = MAX_SINGLE_TILE_COLS * num_buffers * block_m * self._elem_bytes
-        effective_budget = min(budget, col_budget)
-        return compute_tile_n(
-            block_m, self._elem_bytes, self.N_padded,
-            alignment=reduce_column_alignment(self._elem_bytes, threads),
-            num_buffers=num_buffers,
-            budget=effective_budget,
-        )
-
     @property
     def default_config(self) -> dict:
-        if not self._needs_tiling:
-            smem_per_row = self.N_padded * self._elem_bytes
-            max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
-            block_m = 1
-            for bm in [1, 2, 4, 8]:
-                if bm <= max_block_m:
-                    block_m = bm
-            return {"block_m": block_m, "threads": DEFAULT_THREADS}
-
-        # Tiled path: pick block_m that minimizes tile count
-        best_bm = 1
-        best_tile_n = self._tile_n_for(1, DEFAULT_THREADS)
-
-        for bm in [2, 4, 8]:
-            try:
-                tn = self._tile_n_for(bm, DEFAULT_THREADS)
-            except ValueError:
-                continue
-            if tn == 0:
-                # No tiling needed at this block_m — always prefer
-                best_bm = bm
-                best_tile_n = tn
-            elif best_tile_n == 0:
-                # Current best doesn't need tiling; keep it
-                pass
-            else:
-                # Both need tiling — pick fewer tiles
-                best_num = (self.N_padded + best_tile_n - 1) // best_tile_n
-                curr_num = (self.N_padded + tn - 1) // tn
-                if curr_num < best_num:
-                    best_bm = bm
-                    best_tile_n = tn
-
-        return {"block_m": best_bm, "threads": DEFAULT_THREADS, "tile_n": best_tile_n}
+        return self._planner.default_config()
 
     @property
     def autotune_configs(self) -> list[dict]:
-        if not self._needs_tiling:
-            smem_per_row = self.N_padded * self._elem_bytes
-            max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
-            block_ms = [bm for bm in [1, 2, 4, 8] if bm <= max_block_m]
-            configs = list(itertools.product(block_ms, AUTOTUNE_THREADS))
-            return [{"block_m": bm, "threads": t} for bm, t in configs]
-
-        # Tiled path.  tile_n is derived per (block_m, threads) pair at a
-        # column granularity that pair can build, so every emitted triple
-        # builds; a pair with no fitting tile is dropped here rather than left
-        # to fail during the sweep.
-        configs = []
-        for bm in [1, 2, 4, 8]:
-            for t in AUTOTUNE_THREADS:
-                try:
-                    tn = self._tile_n_for(bm, t)
-                except ValueError:
-                    continue
-                if tn == 0:
-                    continue
-                configs.append({"block_m": bm, "threads": t, "tile_n": tn})
-        return configs if configs else [self.default_config]
+        return self._planner.autotune_configs()
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Autotune the reduce kernel by benchmarking candidate configs."""
