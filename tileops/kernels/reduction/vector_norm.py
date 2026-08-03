@@ -21,11 +21,14 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
+    AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
+    DEFAULT_THREADS,
     MAX_SINGLE_TILE_COLS,
     align_up,
     compute_tile_n,
     device_smem_budget,
+    tile_column_alignment,
     tune_by_forward,
 )
 
@@ -303,10 +306,18 @@ class VectorNormKernel(Kernel):
         if self._needs_tiling and not tune:
             bm = self.config.get("block_m", 1)
             if "tile_n" not in self.config or self.config["tile_n"] == 0:
-                self.config["tile_n"] = self._tile_n_for_block_m(bm)
+                self.config["tile_n"] = self._tile_n_for(
+                    bm, self.config.get("threads", DEFAULT_THREADS),
+                )
 
-    def _tile_n_for_block_m(self, block_m: int) -> int:
-        """Return tile_n for a given block_m (0 means no tiling needed)."""
+    def _tile_n_for(self, block_m: int, threads: int) -> int:
+        """Return tile_n for a block_m / threads pair (0 means no tiling).
+
+        Raises:
+            ValueError: If no tile of the required column granularity fits in
+                shared memory for this pair.  Callers building candidate lists
+                drop the pair rather than emit an unbuildable tile.
+        """
         budget = self._smem_budget
         if self.N_padded <= MAX_SINGLE_TILE_COLS:
             single = compute_tile_n(
@@ -318,7 +329,9 @@ class VectorNormKernel(Kernel):
         col_budget = MAX_SINGLE_TILE_COLS * block_m * self._elem_bytes
         effective_budget = min(budget, col_budget)
         return compute_tile_n(
-            block_m, self._elem_bytes, self.N_padded, budget=effective_budget,
+            block_m, self._elem_bytes, self.N_padded,
+            alignment=tile_column_alignment(self._elem_bytes, threads),
+            budget=effective_budget,
         )
 
     @property
@@ -331,13 +344,13 @@ class VectorNormKernel(Kernel):
             for bm in [1, 2, 4, 8]:
                 if bm <= max_block_m:
                     block_m = bm
-            return {"block_m": block_m, "threads": 128}
+            return {"block_m": block_m, "threads": DEFAULT_THREADS}
 
         best_bm = 1
-        best_tile_n = self._tile_n_for_block_m(1)
+        best_tile_n = self._tile_n_for(1, DEFAULT_THREADS)
         for bm in [2, 4, 8]:
             try:
-                tn = self._tile_n_for_block_m(bm)
+                tn = self._tile_n_for(bm, DEFAULT_THREADS)
             except ValueError:
                 continue
             best_num = (self.N_padded + best_tile_n - 1) // best_tile_n
@@ -345,7 +358,7 @@ class VectorNormKernel(Kernel):
             if curr_num < best_num:
                 best_bm = bm
                 best_tile_n = tn
-        return {"block_m": best_bm, "threads": 128, "tile_n": best_tile_n}
+        return {"block_m": best_bm, "threads": DEFAULT_THREADS, "tile_n": best_tile_n}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -353,19 +366,22 @@ class VectorNormKernel(Kernel):
             smem_per_row = self.N_padded * self._elem_bytes
             max_block_m = self._smem_budget // smem_per_row
             block_ms = [bm for bm in [1, 2, 4, 8] if bm <= max_block_m]
-            threads_list = [128, 256]
-            configs = list(itertools.product(block_ms, threads_list))
+            configs = list(itertools.product(block_ms, AUTOTUNE_THREADS))
             return [{"block_m": bm, "threads": t} for bm, t in configs]
 
+        # Tiled path.  tile_n is derived per (block_m, threads) pair at a
+        # column granularity that pair can build, so every emitted triple
+        # builds; a pair with no fitting tile is dropped here rather than left
+        # to fail during the sweep.
         configs = []
         for bm in [1, 2, 4, 8]:
-            try:
-                tn = self._tile_n_for_block_m(bm)
-            except ValueError:
-                continue
-            if tn == 0:
-                continue
-            for t in [128, 256]:
+            for t in AUTOTUNE_THREADS:
+                try:
+                    tn = self._tile_n_for(bm, t)
+                except ValueError:
+                    continue
+                if tn == 0:
+                    continue
                 configs.append({"block_m": bm, "threads": t, "tile_n": tn})
         return configs if configs else [self.default_config]
 

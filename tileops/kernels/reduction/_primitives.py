@@ -12,9 +12,12 @@ import tilelang.language as T
 import torch
 
 __all__ = [
+    "AUTOTUNE_THREADS",
     "DEFAULT_ALIGNMENT",
+    "DEFAULT_THREADS",
     "MAX_SINGLE_TILE_COLS",
     "SHARED_MEMORY_BUDGET_BYTES",
+    "VECTOR_ACCESS_BYTES",
     "align_up",
     "compute_tile_n",
     "device_smem_budget",
@@ -22,6 +25,7 @@ __all__ = [
     "make_reduce_epilogue",
     "make_softmax_epilogue",
     "make_welford_update",
+    "tile_column_alignment",
     "tune_by_forward",
 ]
 
@@ -41,6 +45,45 @@ MAX_SINGLE_TILE_COLS: int = 32512
 # Default shared memory budget per SM (48 KiB) used to compute the maximum
 # block_m that fits within a single thread block's shared memory allocation.
 SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
+
+# Widest vectorized access TileLang plans for a tile buffer on the
+# architectures the reduction kernels declare (SM80-SM90): a 128-bit ``ld/st``.
+# SM100+ raises this to 256 bits and would need a wider granularity.
+VECTOR_ACCESS_BYTES: int = 16
+
+# Thread counts offered by the reduction autotune candidate lists.
+AUTOTUNE_THREADS: tuple[int, ...] = (128, 256)
+
+# Thread count used when no candidate sweep runs.
+DEFAULT_THREADS: int = AUTOTUNE_THREADS[0]
+
+
+def tile_column_alignment(elem_bytes: int, threads: int) -> int:
+    """Return a column granularity that keeps a multi-row tile buildable.
+
+    TileLang flattens a ``T.Parallel(block_m, tile_n)`` loop and hands each
+    thread one ``VECTOR_ACCESS_BYTES`` chunk per pass, so the thread owning
+    column *j* of row *i* is ``(i * tile_n + j) / vec % threads``.  When
+    ``tile_n / vec`` is not a whole number of thread-block passes the map
+    shifts from row to row; the following ``T.reduce_*`` then has no fragment
+    layout consistent with both the elementwise loops and its ``(block_m,)``
+    destination, and layout inference aborts with "no available layout found".
+    Rounding ``tile_n`` to this granularity makes the map row-invariant.
+
+    Row invariance is sufficient, not necessary -- a tile narrower than one
+    thread-block pass also builds -- so the returned value can be
+    conservative for very small tiles.  ``block_m == 1`` is unconstrained
+    either way, but the granularity is applied uniformly so that one tile size
+    serves every ``block_m`` in a candidate list.
+
+    Args:
+        elem_bytes: Bytes per element of the tile buffer.
+        threads: Thread-block size the tile must be valid for.
+
+    Returns:
+        Column count that ``tile_n`` must be a multiple of.
+    """
+    return threads * VECTOR_ACCESS_BYTES // elem_bytes
 
 
 def device_smem_budget(device_index: int | None = None) -> int:

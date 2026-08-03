@@ -222,6 +222,37 @@ def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
+@pytest.mark.parametrize(
+    "op_kind",
+    [
+        pytest.param("sum", marks=pytest.mark.smoke),
+        # Welford builds a different tiled kernel with two shared buffers.
+        pytest.param("var", marks=pytest.mark.full),
+    ],
+)
+def test_reduce_tiled_autotune(op_kind: str) -> None:
+    """Autotune builds and times every tiled candidate, then runs the winner.
+
+    N is deliberately not a power of two: for a power-of-two N_padded
+    ``compute_tile_n`` returns an exact divisor of N_padded and every
+    candidate happens to be buildable, which hides a mis-derived tile_n.
+    """
+    from tileops.ops.reduction.reduce import SumFwdOp, VarFwdOp
+
+    m, n, dtype = 4, 40000, torch.float16
+    if op_kind == "sum":
+        test = ReduceTest(m, n, dtype, "sum")
+        op = SumFwdOp(dtype=dtype, dim=-1, tune=True)
+    else:
+        test = WelfordTest(m, n, dtype, "var", correction=1)
+        op = VarFwdOp(dtype=dtype, dim=-1, tune=True)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+    kernel = op._kernel_cache[(m, n)]
+    assert kernel._needs_tiling
+    assert kernel.config in kernel.autotune_configs
+
+
 @ReduceNonContigFixture
 def test_sum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp

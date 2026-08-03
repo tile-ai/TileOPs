@@ -151,6 +151,7 @@ def _make_op(
     dim: int = -1,
     keepdim: bool = False,
     kernel_map=None,
+    tune: bool = False,
 ):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
@@ -161,7 +162,7 @@ def _make_op(
         "inf": InfNormFwdOp,
     }
     cls = op_map[op_kind]
-    return cls(dtype=dtype, dim=dim, keepdim=keepdim, kernel_map=kernel_map)
+    return cls(dtype=dtype, dim=dim, keepdim=keepdim, kernel_map=kernel_map, tune=tune)
 
 
 # L1NormFwdOp tests
@@ -581,6 +582,25 @@ def test_vector_norm_long_sequence_tiled(op_kind: str) -> None:
     kernel = op._kernel_cache[(3, 33024)]
     assert kernel.config["block_m"] > test.shape[0]
     assert kernel.config["tile_n"] > 0
+
+
+@pytest.mark.smoke
+def test_vector_norm_tiled_autotune() -> None:
+    """Autotune builds and times every tiled candidate, then runs the winner.
+
+    N is deliberately not a power of two: for a power-of-two N_padded
+    ``compute_tile_n`` returns an exact divisor of N_padded and every
+    candidate happens to be buildable, which hides a mis-derived tile_n.
+    """
+    m, n, dtype = 4, 40000, torch.float16
+    test = VectorNormTest(m, n, dtype, "l2")
+    op = _make_op(dtype, "l2", tune=True)
+    atol, rtol = _get_tolerances(dtype)
+    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+
+    kernel = op._kernel_cache[(m, n)]
+    assert kernel._needs_tiling
+    assert kernel.config in kernel.autotune_configs
 
 
 if __name__ == "__main__":
