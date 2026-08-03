@@ -136,15 +136,22 @@ class BlockConfigPlanner:
             self.N_padded > MAX_SINGLE_TILE_COLS or self._row_bytes > self.smem_budget
         )
 
+    # Extra tile widths offered to the autotuner beyond the default pick.
+    _EXTRA_TILE_N: int = 2
+
+    def _column_alignment(self, block_m: int, threads: int) -> int:
+        """Column granularity a tile must respect for this pair.
+
+        ``block_m == 1`` needs only the ``T.copy`` alignment: one row cannot
+        have a row-to-row thread-map shift, and the coarser granularity would
+        only quantise the width away from an exact divisor of N_padded.
+        """
+        if block_m == 1:
+            return DEFAULT_ALIGNMENT
+        return reduce_column_alignment(self.elem_bytes, threads)
+
     def tile_n_for(self, block_m: int, threads: int) -> int:
-        """Return the tile width a ``(block_m, threads)`` pair can build.
-
-        Args:
-            block_m: Rows per thread block.
-            threads: Thread-block size.
-
-        Returns:
-            Column tile size, or 0 when the pair needs no tiling at all.
+        """Return the tile width to use untuned (0: this pair needs no tiling).
 
         Raises:
             ValueError: If no tile of the required column granularity fits in
@@ -164,10 +171,34 @@ class BlockConfigPlanner:
         )
         return compute_tile_n(
             block_m, self.elem_bytes, self.N_padded,
-            alignment=reduce_column_alignment(self.elem_bytes, threads),
+            alignment=self._column_alignment(block_m, threads),
             budget=min(self.smem_budget, col_budget),
             num_buffers=self.num_buffers,
         )
+
+    def tile_n_candidates(self, block_m: int, threads: int) -> list[int]:
+        """Return buildable tile widths to time for this pair.
+
+        The default pick maximises tile width subject to an exact-divisor
+        preference; it is regularly beaten by a narrower tile that trades one
+        global pass for a better shared-memory stride.  Those narrower widths
+        are the extra entries.  Empty when the pair can build no tile at all.
+        """
+        try:
+            default = self.tile_n_for(block_m, threads)
+        except ValueError:
+            return []
+        if default == 0:
+            return [0]
+
+        align = self._column_alignment(block_m, threads)
+        out = [default]
+        fewest = self._num_tiles(default)
+        for n_tiles in range(fewest, fewest + self._EXTRA_TILE_N):
+            tile_n = align_up((self.N_padded + n_tiles - 1) // n_tiles, align)
+            if 0 < tile_n <= default and tile_n not in out:
+                out.append(tile_n)
+        return out
 
     def _untiled_block_ms(self) -> list[int]:
         max_block_m = self.smem_budget // self._row_bytes
@@ -203,8 +234,9 @@ class BlockConfigPlanner:
     def autotune_configs(self) -> list[dict]:
         """Return every candidate config, all of them buildable.
 
-        A ``(block_m, threads)`` pair with no fitting tile is dropped here
-        rather than left to abort the sweep at build time.
+        ``tile_n`` is a search dimension, not a function of the other two.
+        Pairs with no buildable tile are dropped here rather than left to
+        abort the sweep at build time.
         """
         if not self.needs_tiling:
             return [
@@ -212,14 +244,11 @@ class BlockConfigPlanner:
                 for bm, t in itertools.product(self._untiled_block_ms(), AUTOTUNE_THREADS)
             ]
 
-        configs = []
-        for bm, t in itertools.product(self._BLOCK_MS, AUTOTUNE_THREADS):
-            try:
-                configs.append(
-                    {"block_m": bm, "threads": t, "tile_n": self.tile_n_for(bm, t)},
-                )
-            except ValueError:
-                continue
+        configs = [
+            {"block_m": bm, "threads": t, "tile_n": tile_n}
+            for bm, t in itertools.product(self._BLOCK_MS, AUTOTUNE_THREADS)
+            for tile_n in self.tile_n_candidates(bm, t)
+        ]
         return configs if configs else [self.default_config()]
 
 
