@@ -73,7 +73,7 @@ align-op <op_name>                       ← per-op orchestrator
     └─ [orchestrator] REPORT
 ```
 
-`align-family` delegates each op to `align-op`; never calls `test-op` / `implement-op` / `bench-op` directly and never writes the manifest. `align-op@FLIP_STATUS` is the only writer of `status`. Manifest-trust enforcement: `.claude/rules/manifest-trust-model.md`.
+`align-family` delegates each op to `align-op`; never calls `test-op` / `implement-op` / `bench-op` directly and never writes the manifest. `align-op@FLIP_STATUS` is the only writer of `status`. Manifest rules: `.claude/domain-rules/manifest-spec.md`.
 
 ## Trust model
 

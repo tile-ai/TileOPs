@@ -266,7 +266,7 @@ Orchestrator (not a sub-skill) edits the manifest:
 - `ops.<op_name>.status: spec-only` → `status: implemented`
 - Commit as `[Refactor][Manifest] promote <op_name> to implemented`.
 
-This is the only manifest write in the entire workflow, and it MUST stay within the [Status flip carve-out](../../rules/manifest-trust-model.md#status-flip-carve-out); any contractual-field change requires a separate manifest-only PR.
+This is the only manifest write in the entire workflow: flip `status`, and retarget `source.kernel_map` / `source.test` / `source.bench` at what this run produced. A contractual field — `signature`, `shape_rules`, `roofline`, `params` — is spec, and changing it to match the code inverts the spec relationship ([manifest-spec.md](../../domain-rules/manifest-spec.md)).
 
 ### 11. CLEANUP
 
