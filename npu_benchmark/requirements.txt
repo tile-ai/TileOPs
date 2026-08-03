@@ -1,0 +1,8 @@
+torch
+tilelang
+pyyaml
+pytest
+# For Ascend NPU support, install torch_npu matching your torch/CANN version:
+#   pip install torch_npu
+# For CUDA fallback (local dev on NVIDIA GPUs):
+#   NPU_BENCHMARK_FORCE_CUDA=1

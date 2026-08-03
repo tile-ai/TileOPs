@@ -1,0 +1,14 @@
+[project]
+name = "npu-benchmark"
+version = "0.1.0"
+description = "Standalone NPU benchmark framework for TileLang kernels"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests", "benchmarks"]
+python_files = ["test_*.py", "bench_*.py"]
+markers = [
+    "smoke: fast sanity cases (first workload per op)",
+    "full: complete workload sweep",
+]
