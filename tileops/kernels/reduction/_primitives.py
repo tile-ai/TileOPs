@@ -25,7 +25,7 @@ __all__ = [
     "make_reduce_epilogue",
     "make_softmax_epilogue",
     "make_welford_update",
-    "tile_column_alignment",
+    "reduce_column_alignment",
     "tune_by_forward",
 ]
 
@@ -46,42 +46,42 @@ MAX_SINGLE_TILE_COLS: int = 32512
 # block_m that fits within a single thread block's shared memory allocation.
 SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
 
-# Widest vectorized access TileLang plans for a tile buffer on the
-# architectures the reduction kernels declare (SM80-SM90): a 128-bit ``ld/st``.
-# SM100+ raises this to 256 bits and would need a wider granularity.
+# Width of the vectorized ``ld/st`` TileLang plans for a tile buffer on the
+# architectures the reduction kernels declare (SM80-SM90): 128 bits.
 VECTOR_ACCESS_BYTES: int = 16
 
 # Thread counts offered by the reduction autotune candidate lists.
 AUTOTUNE_THREADS: tuple[int, ...] = (128, 256)
 
 # Thread count used when no candidate sweep runs.
-DEFAULT_THREADS: int = AUTOTUNE_THREADS[0]
+DEFAULT_THREADS: int = 128
 
 
-def tile_column_alignment(elem_bytes: int, threads: int) -> int:
-    """Return a column granularity that keeps a multi-row tile buildable.
+def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
+    """Return the column granularity a reducible ``(rows, cols)`` fragment needs.
 
-    TileLang flattens a ``T.Parallel(block_m, tile_n)`` loop and hands each
-    thread one ``VECTOR_ACCESS_BYTES`` chunk per pass, so the thread owning
-    column *j* of row *i* is ``(i * tile_n + j) / vec % threads``.  When
-    ``tile_n / vec`` is not a whole number of thread-block passes the map
-    shifts from row to row; the following ``T.reduce_*`` then has no fragment
-    layout consistent with both the elementwise loops and its ``(block_m,)``
-    destination, and layout inference aborts with "no available layout found".
-    Rounding ``tile_n`` to this granularity makes the map row-invariant.
+    TileLang flattens ``T.Parallel(rows, cols)`` and hands each thread one
+    ``VECTOR_ACCESS_BYTES`` chunk per pass, so column *j* of row *i* belongs to
+    thread ``(i * cols + j) / vec % threads``.  Unless ``cols`` is a whole
+    number of thread-block passes the map shifts from row to row, and the
+    following ``T.reduce_*`` has no fragment layout consistent with both the
+    elementwise loops and its ``(rows,)`` destination -- layout inference
+    aborts with "no available layout found".  The constraint is not specific to
+    a tiled kernel: it binds any such fragment, ``cols == N_padded`` included.
 
-    Row invariance is sufficient, not necessary -- a tile narrower than one
-    thread-block pass also builds -- so the returned value can be
-    conservative for very small tiles.  ``block_m == 1`` is unconstrained
-    either way, but the granularity is applied uniformly so that one tile size
-    serves every ``block_m`` in a candidate list.
+    The result is conservative in two directions, both harmless.  ``rows == 1``
+    and any ``cols`` below one pass build regardless.  And ``vec`` is really
+    capped by the widest buffer in the loop -- an fp32 accumulator fragment --
+    never by the narrower storage dtype passed here.  Iterating rows serially
+    in the kernel would drop the constraint outright; this granularity is the
+    cheaper fix while the flattened ``T.Parallel`` stands.
 
     Args:
-        elem_bytes: Bytes per element of the tile buffer.
-        threads: Thread-block size the tile must be valid for.
+        elem_bytes: Bytes per element of the storage dtype.
+        threads: Thread-block size the fragment must be valid for.
 
     Returns:
-        Column count that ``tile_n`` must be a multiple of.
+        Column count that ``cols`` must be a multiple of.
     """
     return threads * VECTOR_ACCESS_BYTES // elem_bytes
 

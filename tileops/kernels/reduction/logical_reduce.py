@@ -28,7 +28,7 @@ from tileops.kernels.reduction._primitives import (
     align_up,
     compute_tile_n,
     device_smem_budget,
-    tile_column_alignment,
+    reduce_column_alignment,
     tune_by_forward,
 )
 
@@ -394,7 +394,7 @@ class LogicalReduceKernel(Kernel):
         effective_budget = min(budget, col_budget)
         return compute_tile_n(
             block_m, self._elem_bytes, self.N_padded,
-            alignment=tile_column_alignment(self._elem_bytes, threads),
+            alignment=reduce_column_alignment(self._elem_bytes, threads),
             budget=effective_budget,
         )
 
