@@ -183,9 +183,23 @@ class BlockConfigPlanner:
                 out.append(tile_n)
         return out
 
-    def _untiled_block_ms(self) -> list[int]:
+    def untiled_block_m_ok(self, block_m: int, threads: int) -> bool:
+        """Whether an untiled ``(block_m, N_padded)`` fragment can be reduced.
+
+        Same constraint as the tiled path, but ``N_padded`` is fixed by the
+        workload, so an unusable ``block_m`` has to be dropped instead.
+        """
+        if block_m == 1:
+            return True
+        align = reduce_column_alignment(self.elem_bytes, threads)
+        return self.N_padded % align == 0
+
+    def _untiled_block_ms(self, threads: int) -> list[int]:
         max_block_m = self.smem_budget // self._row_bytes
-        return [bm for bm in self._BLOCK_MS if bm <= max_block_m]
+        return [
+            bm for bm in self._BLOCK_MS
+            if bm <= max_block_m and self.untiled_block_m_ok(bm, threads)
+        ]
 
     def _num_tiles(self, tile_n: int) -> int:
         return (self.N_padded + tile_n - 1) // tile_n
@@ -193,7 +207,7 @@ class BlockConfigPlanner:
     def default_config(self) -> dict:
         """Return the config used when no candidate sweep runs."""
         if not self.needs_tiling:
-            block_ms = self._untiled_block_ms()
+            block_ms = self._untiled_block_ms(DEFAULT_THREADS)
             return {
                 "block_m": block_ms[-1] if block_ms else 1,
                 "threads": DEFAULT_THREADS,
@@ -224,7 +238,8 @@ class BlockConfigPlanner:
         if not self.needs_tiling:
             return [
                 {"block_m": bm, "threads": t}
-                for bm, t in itertools.product(self._untiled_block_ms(), AUTOTUNE_THREADS)
+                for t in AUTOTUNE_THREADS
+                for bm in self._untiled_block_ms(t)
             ]
 
         configs = [

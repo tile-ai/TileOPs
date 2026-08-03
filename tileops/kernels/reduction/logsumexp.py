@@ -32,6 +32,10 @@ from tileops.kernels.reduction._primitives import (
     device_smem_budget,
 )
 
+# These two kernels bake tile_n in at build time and default to the wider
+# thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
+_DEFAULT_TUNE_THREADS = 256
+
 __all__ = ["LogSumExpKernel"]
 
 
@@ -365,6 +369,8 @@ class LogSumExpKernel(Kernel):
         best_tile_n = self._tile_n_for_block_m(1)
 
         for bm in [2, 4, 8, 16]:
+            if not self._planner.untiled_block_m_ok(bm, _DEFAULT_TUNE_THREADS):
+                continue
             try:
                 tn = self._tile_n_for_block_m(bm)
             except ValueError:
@@ -382,7 +388,8 @@ class LogSumExpKernel(Kernel):
                     best_bm = bm
                     best_tile_n = tn
 
-        return {"block_m": best_bm, "threads": 256, "tile_n": best_tile_n}
+        return {"block_m": best_bm, "threads": _DEFAULT_TUNE_THREADS,
+                "tile_n": best_tile_n}
 
     def _tile_n_candidates(self) -> list[int]:
         """Return candidate tile_n values for autotune exploration.
@@ -462,6 +469,8 @@ class LogSumExpKernel(Kernel):
                     if bm > max_block_m_no_tile:
                         continue
                     for t in threads_list:
+                        if not self._planner.untiled_block_m_ok(bm, t):
+                            continue
                         configs.append({"block_m": bm, "threads": t, "tile_n": 0})
             else:
                 # Tiled regime: use block_m=1 with each tile_n candidate.

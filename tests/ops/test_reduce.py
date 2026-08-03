@@ -222,6 +222,26 @@ def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
+@pytest.mark.smoke
+def test_reduce_untiled_autotune_unaligned_n() -> None:
+    """Every untiled candidate must build when N_padded is not thread-aligned.
+
+    N_padded=20224 is not a multiple of threads * 128-bit / elem_bytes, so a
+    (block_m > 1, N_padded) fragment has no reducible layout and those block_m
+    values must be absent from the candidate list.
+    """
+    from tileops.ops.reduction.reduce import SumFwdOp
+
+    m, n, dtype = 8, 20000, torch.float16
+    test = ReduceTest(m, n, dtype, "sum")
+    op = SumFwdOp(dtype=dtype, dim=-1, tune=True)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+    kernel = op._kernel_cache[(m, n)]
+    assert not kernel._needs_tiling
+    assert {c["block_m"] for c in kernel.autotune_configs} == {1}
+
+
 @pytest.mark.parametrize(
     "op_kind",
     [
