@@ -1,6 +1,6 @@
 # Issue Body Sections
 
-Structural contract for the issue body — the template and per-section rules below are what the pipeline parses. Constraints authoring policy (work-shape declarations, defaults) lives in [docs/design/trust-model.md §Issue-authoring](../../docs/design/trust-model.md#issue-authoring-declaring-scope).
+Structural contract for the issue body — the template and per-section rules below are what the pipeline parses.
 
 ## 1. Template
 
@@ -26,7 +26,7 @@ Copy verbatim. Replace each `{...}`. Keep all five top-level sections.
 1. {at least one step}
 
 ## Constraints
-- {one bullet per constraint or scope declaration — see trust-model.md §Issue-authoring for the three work-shape forms}
+- {one bullet per constraint — behavioural, compatibility or performance expectations}
 
 ## Acceptance Criteria
 - [ ] Modified files pass unit tests
@@ -45,5 +45,4 @@ Copy verbatim. Replace each `{...}`. Keep all five top-level sections.
 
 ## 3. Cross-references
 
-- Constraints authoring policy: [docs/design/trust-model.md §Issue-authoring](../../docs/design/trust-model.md#issue-authoring-declaring-scope)
 - Reviewer-side criteria: [.claude/review-checklists/pre-review.md](../../.claude/review-checklists/pre-review.md)
