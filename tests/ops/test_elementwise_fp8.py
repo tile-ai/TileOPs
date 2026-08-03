@@ -114,7 +114,7 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
 
 
 def _binary_kwargs(dtype):
-    return dict(a_shape=(_N,), b_shape=(_N,), dtype=dtype)
+    return {"a_shape": (_N,), "b_shape": (_N,), "dtype": dtype}
 
 
 @pytest.mark.smoke
