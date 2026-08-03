@@ -84,8 +84,8 @@ stateDiagram-v2
 Preconditions identical to `scaffold-op`'s — orchestrator enforces them up front so sub-skills never see ill-formed input:
 
 - `op_name` in `tileops/manifest/` → proceed; otherwise BLOCKED ("op not in manifest").
-- `status: spec-only` → proceed; `implemented` → BLOCKED ("already aligned; flip status to spec-only in a manifest PR first if you intend to re-align"); missing/other → BLOCKED.
-- `source.kernel_map` declared and non-empty → proceed; missing → BLOCKED with the same guidance scaffold-op uses (add in a prerequisite manifest PR).
+- `status: spec-only` → proceed; `implemented` → BLOCKED ("already aligned; flip status back to spec-only first if you intend to re-align"); missing/other → BLOCKED.
+- `source.kernel_map` declared and non-empty → proceed; missing → BLOCKED with the same guidance scaffold-op uses (add the dispatch map first).
 - Every value in `source.kernel_map` resolves to an importable symbol → proceed; otherwise BLOCKED ("kernel class not found at expected path" — kernel must exist for op layer to align, regardless of case).
 
 ### 2. CLASSIFY
