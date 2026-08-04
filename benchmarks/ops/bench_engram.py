@@ -82,7 +82,7 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
     test = EngramGateConvFwdWorkload(M, seq_len, d, dtype)
     inputs = test.gen_inputs()
 
-    op = EngramGateConvFwdOp(M, seq_len, d, dtype, tune=_TUNE)
+    op = EngramGateConvFwdOp(M, seq_len, d, tune=_TUNE)
     bm = ManifestBenchmark(_ENGRAM_GATE_CONV_FWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -156,7 +156,7 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
     test = EngramGateConvBwdTestBaseline(M, seq_len, d, dtype)
     inputs = test.gen_inputs()
 
-    op = EngramGateConvBwdOp(M, seq_len, d, dtype, tune=_TUNE)
+    op = EngramGateConvBwdOp(M, seq_len, d, tune=_TUNE)
     bm = ManifestBenchmark(_ENGRAM_GATE_CONV_BWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -242,7 +242,7 @@ def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, di
     inputs = test.gen_inputs()
 
     op = EngramDecodeOp(
-        batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune=_TUNE,
+        batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, tune=_TUNE,
     )
     bm = ManifestBenchmark(_ENGRAM_DECODE_OP, op, test)
     result = bm.profile(op, *inputs)

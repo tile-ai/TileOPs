@@ -131,7 +131,6 @@ class Mamba2FwdOp:
                 n_groups=n_groups,
                 chunk_len=self.chunk_size,
                 d_state=d_state,
-                dtype=dtype,
                 tune=self.tune,
             )
         return self._cb_producer_ops[key]

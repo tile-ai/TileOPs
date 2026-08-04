@@ -112,7 +112,6 @@ def test_mean_pooling_op(batch_size: int, seq_len: int, heads: int, dim: int, ch
         "chunks_per_batch": chunks_per_batch,
         "seq_num": seq_num,
         "use_offsets": use_offsets,
-        "dtype": dtype,
         "accum_dtype": accum_dtype,
         "tune": tune,
     }
