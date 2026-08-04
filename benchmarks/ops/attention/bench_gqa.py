@@ -239,8 +239,6 @@ def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp) -> str:
         return "ws_noncausal"
     if isinstance(kernel, GQAFwdWgmmaPipelinedKernel):
         return "wgmma_pipelined"
-    if isinstance(kernel, GQAFwdKernel):
-        return "legacy"
     return kernel.__class__.__name__
 
 

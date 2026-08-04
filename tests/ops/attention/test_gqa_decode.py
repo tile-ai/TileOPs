@@ -5,7 +5,6 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention.gqa_decode import GQADecodeKernel
 from tileops.ops import GroupedQueryAttentionDecodeWithKVCacheFwdOp
-from tileops.utils import is_hopper
 from workloads.attention.gqa import (
     GroupedQueryAttentionDecodeWorkload,
 )
@@ -121,8 +120,6 @@ def test_gqa_decode_rejects_non_positive_seqlen_kv() -> None:
 @pytest.mark.smoke
 def test_gqa_decode_bs1_dispatch() -> None:
     """batch=1 fp16 dim-128 requests select the WS kernel; other dtypes/shapes fall back."""
-    if not is_hopper():
-        pytest.skip("batch=1 warp-specialized decode requires Hopper")
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(1, 32, 4, 8192, 128, torch.float16)
     assert op._uses_bs1_fast_path()
     assert op.kernel.__class__.__name__ == "GQADecodeBs1Kernel"
@@ -149,8 +146,6 @@ def test_gqa_decode_bs1_runtime_context_switch() -> None:
     Covers the crossover (1024), a balanced mid split, an aligned split needing >=3 tiles
     per slice, an unaligned length, and the sub-1024 non-split fallback.
     """
-    if not is_hopper():
-        pytest.skip("batch=1 warp-specialized decode requires Hopper")
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(1, 32, 4, 8192, 128, torch.float16)
     assert op.kernel.__class__.__name__ == "GQADecodeBs1Kernel"
     for real, tier in ((6000, "ctx"), (3072, "ctx"), (2048, "ctx"), (1024, "ctx"),
@@ -163,8 +158,6 @@ def test_gqa_decode_bs1_runtime_context_switch() -> None:
 @pytest.mark.smoke
 def test_gqa_decode_bs1_group4() -> None:
     """The WS kernel generalizes to a query-per-KV-head group other than 8 (here 4)."""
-    if not is_hopper():
-        pytest.skip("batch=1 warp-specialized decode requires Hopper")
     op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(1, 32, 8, 4096, 128, torch.float16)
     assert op._uses_bs1_fast_path()
     assert op.kernel.__class__.__name__ == "GQADecodeBs1Kernel"

@@ -4,16 +4,13 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.attention import (
-    FlashAttnBwdPostprocessKernel,
     FlashAttnBwdPreprocessKernel,
-    GQABwdKernel,
     GQABwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
     MHADecodeKernel,
     MHADecodePagedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import is_hopper
 
 from ..op_base import Op
 from .gqa import (
@@ -84,7 +81,6 @@ class MultiHeadAttentionFwdOp(Op):
                 self.dtype,
                 sm_scale=None,
                 softcap=0.0,
-                hopper=is_hopper(),
             ),
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
         }
@@ -156,9 +152,7 @@ class MultiHeadAttentionBwdOp(Op):
             "gqa_bwd_preprocess_kernel":
                 FlashAttnBwdPreprocessKernel,
             "gqa_bwd_kernel":
-                GQABwdWgmmaPipelinedKernel if is_hopper() else GQABwdKernel,
-            "gqa_bwd_postprocess_kernel":
-                FlashAttnBwdPostprocessKernel if not is_hopper() else None,
+                GQABwdWgmmaPipelinedKernel,
         }
 
     @staticmethod

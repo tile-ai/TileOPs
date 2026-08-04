@@ -8,7 +8,6 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import (
-    GQAFwdKernel,
     GQAFwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
@@ -858,33 +857,30 @@ def test_gqa_bwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, 
 @pytest.mark.smoke
 def test_gqa_fwd_dispatch_selects_ws_noncausal_on_h200() -> None:
     kernel_cls = _select_gqa_fwd_kernel_cls(
-        4, 64, 4, 512, 128, False, torch.float16, hopper=True, h200=True)
+        4, 64, 4, 512, 128, False, torch.float16, h200=True)
     assert kernel_cls is GQAFwdWsPersistentKernel
 
 
 @pytest.mark.smoke
 def test_gqa_fwd_dispatch_selects_ws_causal_on_h200() -> None:
     kernel_cls = _select_gqa_fwd_kernel_cls(
-        4, 64, 4, 512, 128, True, torch.float16, hopper=True, h200=True)
+        4, 64, 4, 512, 128, True, torch.float16, h200=True)
     assert kernel_cls is GQAFwdWsPersistentCausalKernel
 
 
 @pytest.mark.smoke
 def test_gqa_fwd_dispatch_falls_back_for_small_causal_shape() -> None:
     kernel_cls = _select_gqa_fwd_kernel_cls(
-        1, 32, 8, 1024, 128, True, torch.float16, hopper=True, h200=True)
+        1, 32, 8, 1024, 128, True, torch.float16, h200=True)
     assert kernel_cls is GQAFwdWgmmaPipelinedKernel
 
 
 @pytest.mark.smoke
-def test_gqa_fwd_dispatch_falls_back_off_h200() -> None:
-    hopper_cls = _select_gqa_fwd_kernel_cls(
-        4, 64, 4, 512, 128, False, torch.float16, hopper=True, h200=False)
-    assert hopper_cls is GQAFwdWgmmaPipelinedKernel
-
-    non_hopper_cls = _select_gqa_fwd_kernel_cls(
-        4, 64, 4, 512, 128, False, torch.float16, hopper=False, h200=False)
-    assert non_hopper_cls is GQAFwdKernel
+def test_gqa_fwd_dispatch_without_h200_work_threshold() -> None:
+    """Off the H200 warp-specialized contract, dispatch takes the WGMMA kernel."""
+    cls = _select_gqa_fwd_kernel_cls(
+        4, 64, 4, 512, 128, False, torch.float16, h200=False)
+    assert cls is GQAFwdWgmmaPipelinedKernel
 
 
 @pytest.mark.smoke
@@ -929,7 +925,6 @@ def test_gqa_prefill_dense_selector_widens_ws_capability() -> None:
         torch.float16,
         sm_scale=0.25,
         softcap=2.0,
-        hopper=True,
     ).__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
     assert _select_gqa_prefill_fwd_kernel_cls(
         128,
@@ -937,7 +932,6 @@ def test_gqa_prefill_dense_selector_widens_ws_capability() -> None:
         torch.bfloat16,
         sm_scale=128**-0.5,
         softcap=0.0,
-        hopper=True,
     ).__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
 
 

@@ -5,16 +5,13 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.attention import (
-    FlashAttnBwdPostprocessKernel,
     FlashAttnBwdPreprocessKernel,
-    GQABwdKernel,
     GQABwdWgmmaPipelinedKernel,
     GQADecodeBs1Kernel,
     GQADecodeKernel,
     GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
     GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
-    GQAFwdKernel,
     GQAFwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
@@ -25,13 +22,11 @@ from tileops.kernels.attention import (
     GQAPrefillPagedWithKVCacheRopeAppendKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
     GQAPrefillVarlenFwdKernel,
-    GQASlidingWindowFwdKernel,
     GQASlidingWindowFwdWgmmaPipelinedKernel,
-    GQASlidingWindowVarlenFwdKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import is_h200, is_hopper
+from tileops.utils import is_h200
 
 from ..op_base import Op
 from ..rope import _base_freqs
@@ -80,7 +75,6 @@ def _supports_gqa_decode_bs1(
     """Return whether the common Hopper batch=1 GQA decode contract is satisfied."""
     if not (
         batch == 1
-        and is_hopper()
         and dtype == torch.float16
         and dim == 128
         and softcap == 0.0
@@ -139,11 +133,8 @@ def _select_gqa_fwd_kernel_cls(
     is_causal: bool,
     dtype: torch.dtype,
     *,
-    hopper: bool,
     h200: bool,
 ) -> Type[Kernel]:
-    if not hopper:
-        return GQAFwdKernel
     if is_causal:
         if _supports_gqa_ws_causal(batch, heads, heads_kv, seq_len, dim, dtype, h200=h200):
             return GQAFwdWsPersistentCausalKernel
@@ -159,11 +150,9 @@ def _select_gqa_prefill_fwd_kernel_cls(
     dtype: torch.dtype,
     sm_scale: float,
     softcap: float,
-    *,
-    hopper: bool,
 ) -> Type[Kernel]:
     del sm_scale, softcap
-    if hopper and is_causal and dim == 128 and dtype in (torch.float16, torch.bfloat16):
+    if is_causal and dim == 128 and dtype in (torch.float16, torch.bfloat16):
         return GQAPrefillFwdWsPersistentCausalKernel
     return GQAPrefillFwdKernel
 
@@ -322,7 +311,6 @@ class GroupedQueryAttentionFwdOp(Op):
             self.dim,
             self.is_causal,
             self.dtype,
-            hopper=is_hopper(),
             sm_scale=self.sm_scale,
             softcap=self.softcap,
         )
@@ -441,13 +429,8 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             self.dtype,
             self.sm_scale,
             self.softcap,
-            hopper=is_hopper(),
         )
-        sliding_kernel_cls = (
-            GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
-            if is_hopper()
-            else GQASlidingWindowVarlenFwdKernel
-        )
+        sliding_kernel_cls = GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
         return {
             "gqa_prefill_fwd_kernel": dense_kernel_cls,
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
@@ -1354,10 +1337,6 @@ class GroupedQueryAttentionBwdOp(Op):
                                                                         self.dtype, tune=tune)
         self.kernel = self.kernel_map["gqa_bwd_kernel"](
             batch, heads, heads_kv, seq_len, dim, is_causal, self.dtype, tune=tune)
-        if not is_hopper():
-            self.post_kernel = self.kernel_map["gqa_bwd_postprocess_kernel"](batch, heads, seq_len,
-                                                                             dim, self.dtype,
-                                                                             tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1365,9 +1344,7 @@ class GroupedQueryAttentionBwdOp(Op):
             "gqa_bwd_preprocess_kernel":
                 FlashAttnBwdPreprocessKernel,
             "gqa_bwd_kernel":
-                GQABwdWgmmaPipelinedKernel if is_hopper() else GQABwdKernel,
-            "gqa_bwd_postprocess_kernel":
-                FlashAttnBwdPostprocessKernel if not is_hopper() else None,
+                GQABwdWgmmaPipelinedKernel,
         }
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, o: torch.Tensor,
@@ -1379,7 +1356,7 @@ class GroupedQueryAttentionBwdOp(Op):
         dk = torch.zeros_like(k, dtype=torch.float32)
         dv = torch.zeros_like(v, dtype=torch.float32)
         self.kernel(q, k, v, do, lse, delta, dq, dk, dv)
-        dq = dq.to(self.dtype) if is_hopper() else self.post_kernel(dq)
+        dq = dq.to(self.dtype)
         dk, dv = dk.to(self.dtype), dv.to(self.dtype)
         return dq, dk, dv
 
@@ -1425,13 +1402,10 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        # The batch=1 warp-specialized decode kernel is Hopper-only; only expose it on
-        # Hopper so the op stays constructible (falling back to the architecture-agnostic
-        # GQADecodeKernel) on sm80/sm89.
-        kernel_map: Dict[str, Kernel] = {"gqa_decode_kernel": GQADecodeKernel}
-        if is_hopper():
-            kernel_map["gqa_decode_bs1_kernel"] = GQADecodeBs1Kernel
-        return kernel_map
+        return {
+            "gqa_decode_kernel": GQADecodeKernel,
+            "gqa_decode_bs1_kernel": GQADecodeBs1Kernel,
+        }
 
     def _uses_bs1_fast_path(self) -> bool:
         """Ctor-time gate for the batch=1 warp-specialized decode kernel.
@@ -1512,10 +1486,10 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernel_map: Dict[str, Kernel] = {"gqa_decode_paged_kernel": GQADecodePagedKernel}
-        if is_hopper():
-            kernel_map["gqa_decode_paged_bs1_kernel"] = GQADecodePagedBs1Kernel
-        return kernel_map
+        return {
+            "gqa_decode_paged_kernel": GQADecodePagedKernel,
+            "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
+        }
 
     def _uses_bs1_fast_path(self) -> bool:
         """Use the paged Hopper fast path only when its TMA tile stays within one page."""
@@ -1610,7 +1584,7 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernel = GQASlidingWindowFwdWgmmaPipelinedKernel if is_hopper() else GQASlidingWindowFwdKernel
+        kernel = GQASlidingWindowFwdWgmmaPipelinedKernel
         return {"gqa_sliding_window_fwd": kernel}
 
     def forward(
@@ -1754,8 +1728,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernel = (GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
-                  if is_hopper() else GQASlidingWindowVarlenFwdKernel)
+        kernel = GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
         return {"gqa_sliding_window_varlen_fwd": kernel}
 
     def forward(

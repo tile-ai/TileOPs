@@ -9,7 +9,6 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
-from tileops.utils import is_hopper
 from workloads.attention.gqa import (
     GroupedQueryAttentionDecodePagedWorkload,
 )
@@ -182,9 +181,6 @@ def test_gqa_decode_paged_bs1_fixed_tier_correctness(
     reverse_pages: bool,
 ) -> None:
     """Check both runtime tiers, including output-distinguishing page translation."""
-    if not is_hopper():
-        pytest.skip("batch=1 warp-specialized paged decode requires Hopper")
-
     torch.manual_seed(0)
     batch, heads, heads_kv, seqlen_kv, dim, page_size = 1, 32, 4, 4096, 128, 256
     dtype = torch.float16
@@ -217,8 +213,6 @@ def test_gqa_decode_paged_bs1_fixed_tier_correctness(
 @pytest.mark.smoke
 def test_gqa_decode_paged_bs1_dispatch() -> None:
     """Eligible Hopper requests select the paged TMA/WGMMA kernel."""
-    if not is_hopper():
-        pytest.skip("batch=1 warp-specialized paged decode requires Hopper")
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
         1, 32, 4, 8192, 128, 256, torch.float16)
     assert op._uses_bs1_fast_path()
