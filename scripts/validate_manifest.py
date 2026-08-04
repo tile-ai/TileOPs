@@ -3176,6 +3176,19 @@ def check_c3_ctor_signature_parity(
         manifest_has_default = (
             manifest_default is not _MISSING and manifest_default != "REQUIRED"
         )
+        # A ``torch.dtype`` default is spelled by name in YAML ("float16"),
+        # so compare the resolved dtype rather than the spelling. Without this
+        # no entry can declare a dtype default at all.
+        if (
+            manifest_has_default
+            and pattrs.get("type") == "torch.dtype"
+            and isinstance(manifest_default, str)
+        ):
+            import torch
+
+            resolved = getattr(torch, manifest_default, None)
+            if isinstance(resolved, torch.dtype):
+                manifest_default = resolved
         compat_default = pattrs.get("compat_default", _MISSING)
         manifest_has_compat_default = (
             compat_default is not _MISSING and not manifest_has_default

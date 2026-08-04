@@ -12,6 +12,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import torch
 
 pytestmark = pytest.mark.smoke
 
@@ -2585,6 +2586,33 @@ class TestCtorSignatureParity:
         assert validator.check_c3_ctor_signature_parity(
             "OpCompat", entry, cls
         ) == []
+
+    def test_dtype_default_compared_as_dtype(self, validator):
+        """A ``torch.dtype`` default is spelled by name in YAML.
+
+        ``torch.float16 != "float16"``, so comparing the spellings would make
+        every dtype default a mismatch and leave the manifest unable to declare
+        one at all.
+        """
+        cls = _strict_op(
+            "OpDtypeDefault",
+            init=lambda self, dtype=torch.float16, kernel_map=None: None,
+        )
+        entry = {"signature": {
+            "params": {"dtype": {"type": "torch.dtype", "default": "float16"}},
+        }}
+        assert validator.check_c3_ctor_signature_parity(
+            "OpDtypeDefault", entry, cls,
+        ) == []
+
+        # A genuinely different dtype still fails.
+        entry_bad = {"signature": {
+            "params": {"dtype": {"type": "torch.dtype", "default": "bfloat16"}},
+        }}
+        errs = validator.check_c3_ctor_signature_parity(
+            "OpDtypeDefault", entry_bad, cls,
+        )
+        assert any("default mismatch" in e for e in errs), errs
 
     def test_ctor_mismatches_fail(self, validator):
         """Case table: missing default, compat_default mismatch, kw-only."""
