@@ -84,7 +84,7 @@ class MoeUnpermuteFixture(FixtureBase):
 @MoeUnpermuteFixture
 def test_moe_unpermute_op(total_tokens, top_k, hidden_size, dtype):
     test = MoeUnpermuteTest(total_tokens, top_k, hidden_size, dtype)
-    op = MoeUnpermuteFwdOp(total_tokens, top_k, hidden_size, dtype)
+    op = MoeUnpermuteFwdOp(total_tokens, top_k, hidden_size)
     mm2_pad, fwd_idx, topk_weights = test.gen_inputs()
 
     output = op(mm2_pad, fwd_idx, topk_weights)
@@ -105,7 +105,7 @@ def test_moe_unpermute_skewed():
     fwd_idx = torch.arange(numel, dtype=torch.int32, device="cuda") % K
     topk_weights = torch.rand(T, K, dtype=torch.float32, device="cuda")
 
-    op = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+    op = MoeUnpermuteFwdOp(T, K, H, padded_batch_sum=numel)
     output = op(mm2_pad, fwd_idx, topk_weights)
     output_ref = _ref_moe_unpermute(mm2_pad, fwd_idx, topk_weights)
 
@@ -132,7 +132,7 @@ def test_moe_unpermute_ep_masking():
     assert (fwd_idx < 0).any(), "test must actually inject -1 slots"
     topk_weights = torch.rand(T, K, dtype=torch.float32, device=dev)
 
-    op = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+    op = MoeUnpermuteFwdOp(T, K, H, padded_batch_sum=numel)
     output = op(mm2_pad, fwd_idx, topk_weights)
 
     # Reference matching the kernel's -1 semantics: skip non-local slots.
@@ -160,7 +160,7 @@ def test_moe_unpermute_out_param():
     topk_weights = torch.softmax(
         torch.randn(T, K, dtype=torch.float32, device=dev), dim=-1)
 
-    op = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+    op = MoeUnpermuteFwdOp(T, K, H, padded_batch_sum=numel)
     ref = op(mm2_pad, fwd_idx, topk_weights)
 
     out = torch.empty((T, H), dtype=torch.bfloat16, device=dev)
@@ -182,11 +182,11 @@ def test_moe_unpermute_scaling():
         torch.randn(T, K, dtype=torch.float32, device=dev), dim=-1)
 
     scale = 2.827
-    base = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+    base = MoeUnpermuteFwdOp(T, K, H, padded_batch_sum=numel)
     ref = base(mm2_pad, fwd_idx, topk_weights).float() * scale
 
     scaled = MoeUnpermuteFwdOp(
-        T, K, H, torch.bfloat16, padded_batch_sum=numel, routed_scaling_factor=scale)
+        T, K, H, padded_batch_sum=numel, routed_scaling_factor=scale)
     got = scaled(mm2_pad, fwd_idx, topk_weights).float()
     torch.testing.assert_close(got, ref, rtol=2e-2, atol=2e-2)
 
@@ -203,7 +203,7 @@ def test_moe_unpermute_out_buffer_validation():
     fwd_idx = torch.arange(numel, dtype=torch.int32, device=dev)
     topk_weights = torch.softmax(
         torch.randn(T, K, dtype=torch.float32, device=dev), dim=-1)
-    op = MoeUnpermuteFwdOp(T, K, H, torch.bfloat16, padded_batch_sum=numel)
+    op = MoeUnpermuteFwdOp(T, K, H, padded_batch_sum=numel)
 
     with pytest.raises(ValueError, match="contiguous"):
         op(mm2_pad, fwd_idx, topk_weights,

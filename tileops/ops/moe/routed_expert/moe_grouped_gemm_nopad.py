@@ -26,13 +26,12 @@ class MoeGroupedGemmNopadFwdOp(Op):
         num_experts: Total number of experts E.
         n: Output feature dimension N (e.g. 2*ffn_size or hidden_size).
         k: Input feature dimension K (hidden_size or ffn_size).
-        dtype: Activation and weight dtype (bf16 or fp16).
         kernel_map: Optional kernel override dict.
         tune: Whether to autotune.
 
     Example:
         >>> op = MoeGroupedGemmNopadFwdOp(numel=16384, num_experts=256, n=4096, k=2048,
-        ...                       dtype=torch.bfloat16)
+        ...)
         >>> C = op(A, B, true_sizes, true_offsets)  # [numel, N]
     """
 
@@ -42,7 +41,6 @@ class MoeGroupedGemmNopadFwdOp(Op):
         num_experts: int,
         n: int,
         k: int,
-        dtype: torch.dtype = torch.bfloat16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -50,12 +48,18 @@ class MoeGroupedGemmNopadFwdOp(Op):
         self.num_experts = num_experts
         self.n = n
         self.k = k
-        self.dtype = dtype
+        self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["moe_grouped_gemm_kernel"](
-            numel, num_experts, n, k, dtype=dtype, tune=tune
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["moe_grouped_gemm_kernel"](
+                self.numel, self.num_experts, self.n, self.k,
+                dtype=dtype, tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -79,4 +83,5 @@ class MoeGroupedGemmNopadFwdOp(Op):
         Returns:
             C: [numel, N] GEMM output.
         """
-        return self.kernel(a, b, true_sizes, true_offsets)
+        self.dtype = a.dtype
+        return self._get_kernel(a.dtype)(a, b, true_sizes, true_offsets)

@@ -68,7 +68,6 @@ class FusedMoe(Op):
         renormalize: bool = False,
         with_correction_bias: bool = False,
         routed_scaling_factor: float = 1.0,
-        dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
@@ -86,7 +85,6 @@ class FusedMoe(Op):
         self.renormalize = renormalize
         self.with_correction_bias = with_correction_bias
         self.routed_scaling_factor = routed_scaling_factor
-        self.dtype = dtype
         self.expert_map = expert_map
 
         self.dispatch_kernel(kernel_map)
@@ -160,7 +158,6 @@ class FusedMoe(Op):
                 ffn_size=ffn_size,
                 activation=activation,
                 routed_scaling_factor=routed_scaling_factor,
-                dtype=dtype,
                 expert_map=expert_map,
                 kernel_map=kernel_map,
                 use_fused_activation=use_fused_activation,
@@ -229,7 +226,6 @@ class FusedMoeFwdOp(FusedMoe):
         scoring_func: str = "softmax",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
-        dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
@@ -248,7 +244,6 @@ class FusedMoeFwdOp(FusedMoe):
             renormalize=renormalize,
             with_correction_bias=False,
             routed_scaling_factor=routed_scaling_factor,
-            dtype=dtype,
             expert_map=expert_map,
             prepare_finalize=prepare_finalize,
             experts=experts,
@@ -285,7 +280,6 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
         scoring_func: str = "sigmoid",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
-        dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
         prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
         experts: Optional[FusedMoEExpertsModular] = None,
@@ -304,7 +298,6 @@ class FusedMoeFwdCbFwdOp(FusedMoe):
             renormalize=renormalize,
             with_correction_bias=True,
             routed_scaling_factor=routed_scaling_factor,
-            dtype=dtype,
             expert_map=expert_map,
             prepare_finalize=prepare_finalize,
             experts=experts,

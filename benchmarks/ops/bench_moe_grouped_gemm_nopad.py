@@ -49,7 +49,7 @@ def test_moe_grouped_gemm_nopad_bench(
     workload = MoeGroupedGemmNopadWorkload(numel, num_experts, n, k, dtype)
     a, b, true_sizes, true_offsets = workload.gen_inputs()
 
-    op = MoeGroupedGemmNopadFwdOp(numel, num_experts, n, k, dtype=dtype)
+    op = MoeGroupedGemmNopadFwdOp(numel, num_experts, n, k)
     bm = ManifestBenchmark(_OP_NAME, op, workload)
 
     # Warmup: trigger JIT compilation before timed profiling.

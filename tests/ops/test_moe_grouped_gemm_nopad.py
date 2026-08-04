@@ -79,7 +79,7 @@ def test_moe_grouped_gemm_nopad_op(numel, num_experts, n, k, distribution, dtype
     )
     a, b, true_sizes, true_offsets = test.gen_inputs()
 
-    op = MoeGroupedGemmNopadFwdOp(numel, num_experts, n, k, dtype=dtype)
+    op = MoeGroupedGemmNopadFwdOp(numel, num_experts, n, k)
     c = op(a, b, true_sizes, true_offsets)
     c_ref = _ref_grouped_gemm_nopad(a, b, true_sizes, true_offsets)
 
