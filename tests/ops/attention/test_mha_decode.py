@@ -34,7 +34,7 @@ class MhaDecodeFixture(FixtureBase):
 def test_mha_decode(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: torch.dtype,
                     tune: bool) -> None:
     test = MhaDecodeTest(b, h, s_q, s_kv, d, dtype)
-    op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, dtype, tune=tune)
+    op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, tune=tune)
     test.check(op, *test.gen_inputs(), atol=2e-3, rtol=1e-5)
 
 

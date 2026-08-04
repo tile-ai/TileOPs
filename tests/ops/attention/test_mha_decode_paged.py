@@ -103,7 +103,6 @@ def test_mha_decode_paged_op(
         dim=dim,
         page_size=page_size,
         is_causal=is_causal,
-        dtype=dtype,
         tune=tune,
     )
     test.check(op, *test.gen_inputs(), compare=test._maxdiff_cosine_compare)

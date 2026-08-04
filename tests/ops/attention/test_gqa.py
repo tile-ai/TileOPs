@@ -850,7 +850,7 @@ def test_gqa_prefill_varlen_rejects_unsupported_dtype() -> None:
 def test_gqa_bwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                  dtype: torch.dtype, tune: bool) -> None:
     test = GroupedQueryAttentionBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 

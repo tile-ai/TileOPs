@@ -76,7 +76,7 @@ def test_mha_decode_bench(b: int, h: int, s_q: int, s_kv: int, d: int, dtype: to
     test = MhaDecodeTestBaseline(b, h, s_q, s_kv, d, dtype)
     inputs = test.gen_inputs()
 
-    op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, dtype, tune=tune)
+    op = MultiHeadAttentionDecodeWithKVCacheFwdOp(b, h, s_q, s_kv, d, tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

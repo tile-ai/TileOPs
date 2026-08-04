@@ -1332,11 +1332,24 @@ class GroupedQueryAttentionBwdOp(Op):
 
         self.dtype = dtype
 
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.prep_kernel = self.kernel_map["gqa_bwd_preprocess_kernel"](batch, heads, seq_len, dim,
-                                                                        self.dtype, tune=tune)
-        self.kernel = self.kernel_map["gqa_bwd_kernel"](
-            batch, heads, heads_kv, seq_len, dim, is_causal, self.dtype, tune=tune)
+        self._kernel_cache: Dict[torch.dtype, tuple[Kernel, Kernel]] = {}
+
+    def _get_kernels(self, dtype: torch.dtype) -> tuple[Kernel, Kernel]:
+        """Return (preprocess, backward) kernels for *dtype*, building once."""
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = (
+                self.kernel_map["gqa_bwd_preprocess_kernel"](
+                    self.batch, self.heads, self.seq_len, self.dim, dtype,
+                    tune=self.tune,
+                ),
+                self.kernel_map["gqa_bwd_kernel"](
+                    self.batch, self.heads, self.heads_kv, self.seq_len,
+                    self.dim, self.is_causal, dtype, tune=self.tune,
+                ),
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1351,13 +1364,15 @@ class GroupedQueryAttentionBwdOp(Op):
                 do: torch.Tensor,
                 lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         do = do.contiguous()
-        delta = self.prep_kernel(o, do)
+        self.dtype = q.dtype
+        prep_kernel, kernel = self._get_kernels(q.dtype)
+        delta = prep_kernel(o, do)
         dq = torch.zeros_like(q, dtype=torch.float32)
         dk = torch.zeros_like(k, dtype=torch.float32)
         dv = torch.zeros_like(v, dtype=torch.float32)
-        self.kernel(q, k, v, do, lse, delta, dq, dk, dv)
-        dq = dq.to(self.dtype)
-        dk, dv = dk.to(self.dtype), dv.to(self.dtype)
+        kernel(q, k, v, do, lse, delta, dq, dk, dv)
+        dq = dq.to(q.dtype)
+        dk, dv = dk.to(q.dtype), dv.to(q.dtype)
         return dq, dk, dv
 
 

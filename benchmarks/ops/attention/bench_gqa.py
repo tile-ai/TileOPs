@@ -320,7 +320,7 @@ def test_gqa_bwd_bench(
     test = GroupedQueryAttentionBwdWorkload(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     inputs = test.gen_inputs()
 
-    op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
     bm = ManifestBenchmark(_GQA_BWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
