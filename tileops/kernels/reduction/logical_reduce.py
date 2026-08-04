@@ -110,23 +110,26 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
                 )
 
                 if _needs_pad:
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, j < N),
-                            T.cast(x[pid_m * block_m + i, j], "float32"),
-                            T.cast(_pad_val, "float32"),
-                        )
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < N),
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(_pad_val, "float32"),
+                            )
                 else:
                     # Load via shared memory
                     T.copy(x[pid_m * block_m, 0], shared_buf)
 
                     # Cast to fp32
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                 # Cast to bool (0.0 or 1.0)
-                for i, j in T.Parallel(block_m, N_padded):
-                    bool_vals[i, j] = T.if_then_else(x_f32[i, j] != 0.0, 1.0, 0.0)
+                for i in T.serial(block_m):
+                    for j in T.Parallel(N_padded):
+                        bool_vals[i, j] = T.if_then_else(x_f32[i, j] != 0.0, 1.0, 0.0)
 
                 if op_kind == "any":
                     # any: result is 1 if max(bool_vals) == 1
@@ -194,18 +197,20 @@ def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_
                     T.fill(acc, 0.0)
 
                 for t in T.Serial(num_tiles):
-                    for i, j in T.Parallel(block_m, tile_n):
-                        x_f32[i, j] = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, t * tile_n + j < N),
-                            T.cast(
-                                x[pid_m * block_m + i, t * tile_n + j],
-                                "float32",
-                            ),
-                            T.cast(_pad_val, "float32"),
-                        )
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(tile_n):
+                            x_f32[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, t * tile_n + j < N),
+                                T.cast(
+                                    x[pid_m * block_m + i, t * tile_n + j],
+                                    "float32",
+                                ),
+                                T.cast(_pad_val, "float32"),
+                            )
 
-                    for i, j in T.Parallel(block_m, tile_n):
-                        bool_vals[i, j] = T.if_then_else(x_f32[i, j] != 0.0, 1.0, 0.0)
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(tile_n):
+                            bool_vals[i, j] = T.if_then_else(x_f32[i, j] != 0.0, 1.0, 0.0)
 
                     if op_kind == "any":
                         T.reduce_max(bool_vals, tile_acc, dim=1)

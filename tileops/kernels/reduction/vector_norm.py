@@ -71,38 +71,43 @@ def _vector_norm_kernel(M: int, N: int, op_kind: str, dtype: str):
                 out_local = T.alloc_fragment((block_m,), dtype)
 
                 if _needs_pad:
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, j < N),
-                            T.cast(x[pid_m * block_m + i, j], "float32"),
-                            T.cast(0.0, "float32"),
-                        )
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < N),
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(0.0, "float32"),
+                            )
                 else:
                     # Optimization: fused load and cast - load directly to fp32 fragment
                     # This saves one intermediate buffer copy
                     # Need to guard M-dimension tail when M % block_m != 0
                     if M % block_m != 0:
-                        for i, j in T.Parallel(block_m, N_padded):
-                            x_f32[i, j] = T.if_then_else(
-                                pid_m * block_m + i < M,
-                                T.cast(x[pid_m * block_m + i, j], "float32"),
-                                T.cast(0.0, "float32"),
-                            )
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(N_padded):
+                                x_f32[i, j] = T.if_then_else(
+                                    pid_m * block_m + i < M,
+                                    T.cast(x[pid_m * block_m + i, j], "float32"),
+                                    T.cast(0.0, "float32"),
+                                )
                     else:
-                        for i, j in T.Parallel(block_m, N_padded):
-                            x_f32[i, j] = T.cast(x[pid_m * block_m + i, j], "float32")
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(N_padded):
+                                x_f32[i, j] = T.cast(x[pid_m * block_m + i, j], "float32")
 
                 if op_kind == "l1":
                     # l1 norm: sum(|x|)
-                    for i, j in T.Parallel(block_m, N_padded):
-                        transformed[i, j] = T.abs(x_f32[i, j])
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            transformed[i, j] = T.abs(x_f32[i, j])
                     T.reduce_sum(transformed, acc, dim=1)
                 elif op_kind == "l2":
                     # l2 norm: sqrt(sum(x^2))
                     # Optimization B: inline square computation to potentially reduce memory traffic
-                    for i, j in T.Parallel(block_m, N_padded):
-                        val = x_f32[i, j]
-                        transformed[i, j] = val * val
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            val = x_f32[i, j]
+                            transformed[i, j] = val * val
                     T.reduce_sum(transformed, acc, dim=1)
                     for i in T.Parallel(block_m):
                         acc[i] = T.sqrt(acc[i])
@@ -111,8 +116,9 @@ def _vector_norm_kernel(M: int, N: int, op_kind: str, dtype: str):
                     # Note: T.reduce_max does not propagate NaN.
                     # NaN handling is done at the Op layer (InfNormFwdOp)
                     # by detecting NaN rows and patching the output.
-                    for i, j in T.Parallel(block_m, N_padded):
-                        transformed[i, j] = T.abs(x_f32[i, j])
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            transformed[i, j] = T.abs(x_f32[i, j])
                     T.reduce_max(transformed, acc, dim=1)
 
                 # Cast back to output dtype
@@ -154,33 +160,37 @@ def _vector_norm_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: 
                 T.fill(acc, 0.0)
 
                 for t in T.Serial(num_tiles):
-                    for i, j in T.Parallel(block_m, tile_n):
-                        x_f32[i, j] = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, t * tile_n + j < N),
-                            T.cast(
-                                x[pid_m * block_m + i, t * tile_n + j],
-                                "float32",
-                            ),
-                            T.cast(0.0, "float32"),
-                        )
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(tile_n):
+                            x_f32[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, t * tile_n + j < N),
+                                T.cast(
+                                    x[pid_m * block_m + i, t * tile_n + j],
+                                    "float32",
+                                ),
+                                T.cast(0.0, "float32"),
+                            )
 
                     if op_kind == "l1":
-                        for i, j in T.Parallel(block_m, tile_n):
-                            transformed[i, j] = T.abs(x_f32[i, j])
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(tile_n):
+                                transformed[i, j] = T.abs(x_f32[i, j])
                         T.reduce_sum(transformed, tile_acc, dim=1)
                         for i in T.Parallel(block_m):
                             acc[i] = acc[i] + tile_acc[i]
                     elif op_kind == "l2":
-                        for i, j in T.Parallel(block_m, tile_n):
-                            transformed[i, j] = x_f32[i, j] * x_f32[i, j]
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(tile_n):
+                                transformed[i, j] = x_f32[i, j] * x_f32[i, j]
                         T.reduce_sum(transformed, tile_acc, dim=1)
                         for i in T.Parallel(block_m):
                             acc[i] = acc[i] + tile_acc[i]
                     else:
                         # Note: T.reduce_max does not propagate NaN.
                         # NaN handling remains in the Op layer.
-                        for i, j in T.Parallel(block_m, tile_n):
-                            transformed[i, j] = T.abs(x_f32[i, j])
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(tile_n):
+                                transformed[i, j] = T.abs(x_f32[i, j])
                         T.reduce_max(transformed, tile_acc, dim=1)
                         for i in T.Parallel(block_m):
                             acc[i] = T.max(acc[i], tile_acc[i])

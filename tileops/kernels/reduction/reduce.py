@@ -102,19 +102,21 @@ def _simple_reduce_kernel(M, N, op_kind, dtype):
                     # Kernel-side boundary handling: element-wise load
                     # with T.if_then_else masking for padding columns
                     # and row-tail safety (M % block_m != 0).
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, j < N),
-                            T.cast(x[pid_m * block_m + i, j], "float32"),
-                            T.cast(_pad_val, "float32"),
-                        )
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < N),
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(_pad_val, "float32"),
+                            )
                 else:
                     # Load via shared memory (fast vectorized path)
                     T.copy(x[pid_m * block_m, 0], shared_buf)
 
                     # Cast to fp32
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                 # Reduce
                 if op_kind == "sum":
@@ -127,8 +129,9 @@ def _simple_reduce_kernel(M, N, op_kind, dtype):
                     T.reduce_max(x_f32, acc, dim=1)
                 elif op_kind == "amin":
                     # Negate, reduce_max, negate back
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = -x_f32[i, j]
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = -x_f32[i, j]
                     T.reduce_max(x_f32, acc, dim=1)
                     for i in T.Parallel(block_m):
                         acc[i] = -acc[i]
@@ -189,25 +192,28 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n):
                         with T.If(t < num_tiles - 1):
                             with T.Then():
                                 T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                                for i, j in T.Parallel(block_m, tile_n):
-                                    tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                                for i in T.serial(block_m):
+                                    for j in T.Parallel(tile_n):
+                                        tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
                             with T.Else():
-                                for i, j in T.Parallel(block_m, tile_n):
-                                    tile_f32[i, j] = T.if_then_else(
-                                        T.And(
-                                            pid_m * block_m + i < M,
-                                            t * tile_n + j < N,
-                                        ),
-                                        T.cast(
-                                            x[pid_m * block_m + i, t * tile_n + j],
-                                            "float32",
-                                        ),
-                                        T.cast(_pad_val, "float32"),
-                                    )
+                                for i in T.serial(block_m):
+                                    for j in T.Parallel(tile_n):
+                                        tile_f32[i, j] = T.if_then_else(
+                                            T.And(
+                                                pid_m * block_m + i < M,
+                                                t * tile_n + j < N,
+                                            ),
+                                            T.cast(
+                                                x[pid_m * block_m + i, t * tile_n + j],
+                                                "float32",
+                                            ),
+                                            T.cast(_pad_val, "float32"),
+                                        )
                     else:
                         T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                        for i, j in T.Parallel(block_m, tile_n):
-                            tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(tile_n):
+                                tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                     # Tile-local reduce
                     if op_kind in ("sum", "mean"):
@@ -220,8 +226,9 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n):
                             acc[i] = T.max(acc[i], tile_acc[i])
                     elif op_kind == "amin":
                         # Negate, reduce_max, negate back
-                        for i, j in T.Parallel(block_m, tile_n):
-                            tile_f32[i, j] = -tile_f32[i, j]
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(tile_n):
+                                tile_f32[i, j] = -tile_f32[i, j]
                         T.reduce_max(tile_f32, tile_acc, dim=1)
                         for i in T.Parallel(block_m):
                             acc[i] = T.min(acc[i], -tile_acc[i])
@@ -271,27 +278,30 @@ def _prod_reduce_kernel(M, N, dtype):
                 if _needs_pad:
                     # Kernel-side boundary handling: fill out-of-bounds
                     # columns with 1.0 (identity for product).
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, j < N),
-                            T.cast(x[pid_m * block_m + i, j], "float32"),
-                            T.cast(1.0, "float32"),
-                        )
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < N),
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(1.0, "float32"),
+                            )
                 else:
                     T.copy(x[pid_m * block_m, 0], shared_buf)
 
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                 # Compute log(|x|) and count negatives
                 # Padded positions are 1.0, so log(1.0)=0 (neutral for sum)
                 # and sign_neg=0 (non-negative).
-                for i, j in T.Parallel(block_m, N_padded):
-                    abs_val = T.abs(x_f32[i, j])
-                    # Use a small epsilon to avoid log(0)
-                    log_abs[i, j] = T.log(T.max(abs_val, 1e-38))
-                    # 1 if negative, 0 if non-negative
-                    sign_neg[i, j] = T.if_then_else(x_f32[i, j] < 0.0, 1.0, 0.0)
+                for i in T.serial(block_m):
+                    for j in T.Parallel(N_padded):
+                        abs_val = T.abs(x_f32[i, j])
+                        # Use a small epsilon to avoid log(0)
+                        log_abs[i, j] = T.log(T.max(abs_val, 1e-38))
+                        # 1 if negative, 0 if non-negative
+                        sign_neg[i, j] = T.if_then_else(x_f32[i, j] < 0.0, 1.0, 0.0)
 
                 T.reduce_sum(log_abs, acc_log, dim=1)
                 T.reduce_sum(sign_neg, acc_sign, dim=1)
@@ -349,32 +359,36 @@ def _prod_reduce_kernel_tiled(M, N, dtype, tile_n):
                         with T.If(t < num_tiles - 1):
                             with T.Then():
                                 T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                                for i, j in T.Parallel(block_m, tile_n):
-                                    tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                                for i in T.serial(block_m):
+                                    for j in T.Parallel(tile_n):
+                                        tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
                             with T.Else():
-                                for i, j in T.Parallel(block_m, tile_n):
-                                    tile_f32[i, j] = T.if_then_else(
-                                        T.And(
-                                            pid_m * block_m + i < M,
-                                            t * tile_n + j < N,
-                                        ),
-                                        T.cast(
-                                            x[pid_m * block_m + i, t * tile_n + j],
-                                            "float32",
-                                        ),
-                                        T.cast(1.0, "float32"),
-                                    )
+                                for i in T.serial(block_m):
+                                    for j in T.Parallel(tile_n):
+                                        tile_f32[i, j] = T.if_then_else(
+                                            T.And(
+                                                pid_m * block_m + i < M,
+                                                t * tile_n + j < N,
+                                            ),
+                                            T.cast(
+                                                x[pid_m * block_m + i, t * tile_n + j],
+                                                "float32",
+                                            ),
+                                            T.cast(1.0, "float32"),
+                                        )
                     else:
                         T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                        for i, j in T.Parallel(block_m, tile_n):
-                            tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(tile_n):
+                                tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
-                    for i, j in T.Parallel(block_m, tile_n):
-                        abs_val = T.abs(tile_f32[i, j])
-                        log_abs[i, j] = T.log(T.max(abs_val, 1e-38))
-                        sign_neg[i, j] = T.if_then_else(
-                            tile_f32[i, j] < 0.0, 1.0, 0.0,
-                        )
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(tile_n):
+                            abs_val = T.abs(tile_f32[i, j])
+                            log_abs[i, j] = T.log(T.max(abs_val, 1e-38))
+                            sign_neg[i, j] = T.if_then_else(
+                                tile_f32[i, j] < 0.0, 1.0, 0.0,
+                            )
 
                     T.reduce_sum(log_abs, tile_log, dim=1)
                     T.reduce_sum(sign_neg, tile_sign, dim=1)
@@ -434,17 +448,19 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                     out_m = T.alloc_fragment((block_m,), dtype)
 
                     if _needs_pad:
-                        for i, j in T.Parallel(block_m, N_padded):
-                            x_f32[i, j] = T.if_then_else(
-                                T.And(pid_m * block_m + i < M, j < N),
-                                T.cast(x[pid_m * block_m + i, j], "float32"),
-                                T.cast(0.0, "float32"),
-                            )
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(N_padded):
+                                x_f32[i, j] = T.if_then_else(
+                                    T.And(pid_m * block_m + i < M, j < N),
+                                    T.cast(x[pid_m * block_m + i, j], "float32"),
+                                    T.cast(0.0, "float32"),
+                                )
                     else:
                         T.copy(x[pid_m * block_m, 0], shared_buf)
 
-                        for i, j in T.Parallel(block_m, N_padded):
-                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(N_padded):
+                                x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                     # Mean
                     T.reduce_sum(x_f32, row_sum, dim=1)
@@ -452,8 +468,9 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                         mean_val[i] = row_sum[i] / float(N)
 
                     # Variance: sum((x - mean)^2) / (N - correction)
-                    for i, j in T.Parallel(block_m, N_padded):
-                        sq_diff[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            sq_diff[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
 
                     T.reduce_sum(sq_diff, var_sum, dim=1)
 
@@ -485,17 +502,19 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                     out_local = T.alloc_fragment((block_m,), dtype)
 
                     if _needs_pad:
-                        for i, j in T.Parallel(block_m, N_padded):
-                            x_f32[i, j] = T.if_then_else(
-                                T.And(pid_m * block_m + i < M, j < N),
-                                T.cast(x[pid_m * block_m + i, j], "float32"),
-                                T.cast(0.0, "float32"),
-                            )
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(N_padded):
+                                x_f32[i, j] = T.if_then_else(
+                                    T.And(pid_m * block_m + i < M, j < N),
+                                    T.cast(x[pid_m * block_m + i, j], "float32"),
+                                    T.cast(0.0, "float32"),
+                                )
                     else:
                         T.copy(x[pid_m * block_m, 0], shared_buf)
 
-                        for i, j in T.Parallel(block_m, N_padded):
-                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(N_padded):
+                                x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                     # Mean
                     T.reduce_sum(x_f32, row_sum, dim=1)
@@ -503,8 +522,9 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                         mean_val[i] = row_sum[i] / float(N)
 
                     # Variance
-                    for i, j in T.Parallel(block_m, N_padded):
-                        sq_diff[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            sq_diff[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
 
                     T.reduce_sum(sq_diff, var_sum, dim=1)
 
@@ -576,25 +596,28 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
                             with T.If(t < num_tiles - 1):
                                 with T.Then():
                                     T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                                    for i, j in T.Parallel(block_m, tile_n):
-                                        tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                                    for i in T.serial(block_m):
+                                        for j in T.Parallel(tile_n):
+                                            tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
                                 with T.Else():
-                                    for i, j in T.Parallel(block_m, tile_n):
-                                        tile_f32[i, j] = T.if_then_else(
-                                            T.And(
-                                                pid_m * block_m + i < M,
-                                                t * tile_n + j < N,
-                                            ),
-                                            T.cast(
-                                                x[pid_m * block_m + i, t * tile_n + j],
-                                                "float32",
-                                            ),
-                                            0.0,
-                                        )
+                                    for i in T.serial(block_m):
+                                        for j in T.Parallel(tile_n):
+                                            tile_f32[i, j] = T.if_then_else(
+                                                T.And(
+                                                    pid_m * block_m + i < M,
+                                                    t * tile_n + j < N,
+                                                ),
+                                                T.cast(
+                                                    x[pid_m * block_m + i, t * tile_n + j],
+                                                    "float32",
+                                                ),
+                                                0.0,
+                                            )
                         else:
                             T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                            for i, j in T.Parallel(block_m, tile_n):
-                                tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                            for i in T.serial(block_m):
+                                for j in T.Parallel(tile_n):
+                                    tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                         T.reduce_sum(tile_f32, tile_sum, dim=1)
                         for i in T.Parallel(block_m):
@@ -613,30 +636,34 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
                             with T.If(t < num_tiles - 1):
                                 with T.Then():
                                     T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                                    for i, j in T.Parallel(block_m, tile_n):
-                                        p2_f32[i, j] = T.cast(p2_shared[i, j], "float32")
+                                    for i in T.serial(block_m):
+                                        for j in T.Parallel(tile_n):
+                                            p2_f32[i, j] = T.cast(p2_shared[i, j], "float32")
                                 with T.Else():
-                                    for i, j in T.Parallel(block_m, tile_n):
-                                        p2_f32[i, j] = T.if_then_else(
-                                            T.And(
-                                                pid_m * block_m + i < M,
-                                                t * tile_n + j < N,
-                                            ),
-                                            T.cast(
-                                                x[pid_m * block_m + i, t * tile_n + j],
-                                                "float32",
-                                            ),
-                                            0.0,
-                                        )
+                                    for i in T.serial(block_m):
+                                        for j in T.Parallel(tile_n):
+                                            p2_f32[i, j] = T.if_then_else(
+                                                T.And(
+                                                    pid_m * block_m + i < M,
+                                                    t * tile_n + j < N,
+                                                ),
+                                                T.cast(
+                                                    x[pid_m * block_m + i, t * tile_n + j],
+                                                    "float32",
+                                                ),
+                                                0.0,
+                                            )
                         else:
                             T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                            for i, j in T.Parallel(block_m, tile_n):
-                                p2_f32[i, j] = T.cast(p2_shared[i, j], "float32")
+                            for i in T.serial(block_m):
+                                for j in T.Parallel(tile_n):
+                                    p2_f32[i, j] = T.cast(p2_shared[i, j], "float32")
 
-                        for i, j in T.Parallel(block_m, tile_n):
-                            sq_diff[i, j] = (p2_f32[i, j] - mean_val[i]) * (
-                                p2_f32[i, j] - mean_val[i]
-                            )
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(tile_n):
+                                sq_diff[i, j] = (p2_f32[i, j] - mean_val[i]) * (
+                                    p2_f32[i, j] - mean_val[i]
+                                )
                         T.reduce_sum(sq_diff, tile_sq, dim=1)
                         for i in T.Parallel(block_m):
                             var_sum[i] = var_sum[i] + tile_sq[i]
@@ -678,25 +705,28 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
                             with T.If(t < num_tiles - 1):
                                 with T.Then():
                                     T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                                    for i, j in T.Parallel(block_m, tile_n):
-                                        tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                                    for i in T.serial(block_m):
+                                        for j in T.Parallel(tile_n):
+                                            tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
                                 with T.Else():
-                                    for i, j in T.Parallel(block_m, tile_n):
-                                        tile_f32[i, j] = T.if_then_else(
-                                            T.And(
-                                                pid_m * block_m + i < M,
-                                                t * tile_n + j < N,
-                                            ),
-                                            T.cast(
-                                                x[pid_m * block_m + i, t * tile_n + j],
-                                                "float32",
-                                            ),
-                                            0.0,
-                                        )
+                                    for i in T.serial(block_m):
+                                        for j in T.Parallel(tile_n):
+                                            tile_f32[i, j] = T.if_then_else(
+                                                T.And(
+                                                    pid_m * block_m + i < M,
+                                                    t * tile_n + j < N,
+                                                ),
+                                                T.cast(
+                                                    x[pid_m * block_m + i, t * tile_n + j],
+                                                    "float32",
+                                                ),
+                                                0.0,
+                                            )
                         else:
                             T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                            for i, j in T.Parallel(block_m, tile_n):
-                                tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                            for i in T.serial(block_m):
+                                for j in T.Parallel(tile_n):
+                                    tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                         T.reduce_sum(tile_f32, tile_sum, dim=1)
                         for i in T.Parallel(block_m):
@@ -715,30 +745,34 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
                             with T.If(t < num_tiles - 1):
                                 with T.Then():
                                     T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                                    for i, j in T.Parallel(block_m, tile_n):
-                                        p2_f32[i, j] = T.cast(p2_shared[i, j], "float32")
+                                    for i in T.serial(block_m):
+                                        for j in T.Parallel(tile_n):
+                                            p2_f32[i, j] = T.cast(p2_shared[i, j], "float32")
                                 with T.Else():
-                                    for i, j in T.Parallel(block_m, tile_n):
-                                        p2_f32[i, j] = T.if_then_else(
-                                            T.And(
-                                                pid_m * block_m + i < M,
-                                                t * tile_n + j < N,
-                                            ),
-                                            T.cast(
-                                                x[pid_m * block_m + i, t * tile_n + j],
-                                                "float32",
-                                            ),
-                                            0.0,
-                                        )
+                                    for i in T.serial(block_m):
+                                        for j in T.Parallel(tile_n):
+                                            p2_f32[i, j] = T.if_then_else(
+                                                T.And(
+                                                    pid_m * block_m + i < M,
+                                                    t * tile_n + j < N,
+                                                ),
+                                                T.cast(
+                                                    x[pid_m * block_m + i, t * tile_n + j],
+                                                    "float32",
+                                                ),
+                                                0.0,
+                                            )
                         else:
                             T.copy(x[pid_m * block_m, t * tile_n], p2_shared)
-                            for i, j in T.Parallel(block_m, tile_n):
-                                p2_f32[i, j] = T.cast(p2_shared[i, j], "float32")
+                            for i in T.serial(block_m):
+                                for j in T.Parallel(tile_n):
+                                    p2_f32[i, j] = T.cast(p2_shared[i, j], "float32")
 
-                        for i, j in T.Parallel(block_m, tile_n):
-                            sq_diff[i, j] = (p2_f32[i, j] - mean_val[i]) * (
-                                p2_f32[i, j] - mean_val[i]
-                            )
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(tile_n):
+                                sq_diff[i, j] = (p2_f32[i, j] - mean_val[i]) * (
+                                    p2_f32[i, j] - mean_val[i]
+                                )
                         T.reduce_sum(sq_diff, tile_sq, dim=1)
                         for i in T.Parallel(block_m):
                             var_sum[i] = var_sum[i] + tile_sq[i]

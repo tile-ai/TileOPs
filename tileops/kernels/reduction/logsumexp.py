@@ -74,23 +74,26 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
                     # Kernel-side boundary handling: element-wise load
                     # with T.if_then_else masking for padding columns
                     # and row-tail safety (M % block_m != 0).
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, j < N),
-                            T.cast(x[pid_m * block_m + i, j], "float32"),
-                            T.cast(_neg_inf, "float32"),
-                        )
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < N),
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(_neg_inf, "float32"),
+                            )
                 else:
                     T.copy(x[pid_m * block_m, 0], shared_buf)
                     T.copy(shared_buf, x_local)
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
                 T.fill(row_max, -T.infinity("float32"))
                 T.reduce_max(x_f32, row_max, dim=1, clear=False)
 
-                for i, j in T.Parallel(block_m, N_padded):
-                    x_f32[i, j] = T.exp(x_f32[i, j] - row_max[i])
+                for i in T.serial(block_m):
+                    for j in T.Parallel(N_padded):
+                        x_f32[i, j] = T.exp(x_f32[i, j] - row_max[i])
                 T.reduce_sum(x_f32, row_sum, dim=1)
 
                 out_local = T.alloc_fragment((block_m,), dtype)
@@ -154,22 +157,25 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                             with T.Then():
                                 T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
                                 T.copy(shared_buf, tile_local)
-                                for i, j in T.Parallel(block_m, tile_n):
-                                    tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
+                                for i in T.serial(block_m):
+                                    for j in T.Parallel(tile_n):
+                                        tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
                             with T.Else():
-                                for i, j in T.Parallel(block_m, tile_n):
-                                    tile_f32[i, j] = T.if_then_else(
-                                        T.And(pid_m * block_m + i < M, t * tile_n + j < N),
-                                        T.cast(
-                                            x[pid_m * block_m + i, t * tile_n + j], "float32"
-                                        ),
-                                        T.cast(_neg_inf, "float32"),
-                                    )
+                                for i in T.serial(block_m):
+                                    for j in T.Parallel(tile_n):
+                                        tile_f32[i, j] = T.if_then_else(
+                                            T.And(pid_m * block_m + i < M, t * tile_n + j < N),
+                                            T.cast(
+                                                x[pid_m * block_m + i, t * tile_n + j], "float32"
+                                            ),
+                                            T.cast(_neg_inf, "float32"),
+                                        )
                     else:
                         T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
                         T.copy(shared_buf, tile_local)
-                        for i, j in T.Parallel(block_m, tile_n):
-                            tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(tile_n):
+                                tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
 
                     T.fill(tile_max, -T.infinity("float32"))
                     T.reduce_max(tile_f32, tile_max, dim=1, clear=False)
@@ -178,8 +184,9 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                         prev_max[i] = row_max[i]
                         row_max[i] = T.max(row_max[i], tile_max[i])
 
-                    for i, j in T.Parallel(block_m, tile_n):
-                        tile_f32[i, j] = T.exp(tile_f32[i, j] - row_max[i])
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(tile_n):
+                            tile_f32[i, j] = T.exp(tile_f32[i, j] - row_max[i])
                     T.reduce_sum(tile_f32, tile_sum, dim=1)
 
                     for i in T.Parallel(block_m):
