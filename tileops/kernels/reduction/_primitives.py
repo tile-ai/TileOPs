@@ -8,13 +8,19 @@ This module must land before any sub-category kernel PR so that shared
 infrastructure is available from the start.
 """
 
+import itertools
+
 import tilelang.language as T
 import torch
 
 __all__ = [
+    "AUTOTUNE_THREADS",
     "DEFAULT_ALIGNMENT",
+    "DEFAULT_THREADS",
     "MAX_SINGLE_TILE_COLS",
     "SHARED_MEMORY_BUDGET_BYTES",
+    "VECTOR_ACCESS_BYTES",
+    "BlockConfigPlanner",
     "align_up",
     "compute_tile_n",
     "device_smem_budget",
@@ -22,6 +28,7 @@ __all__ = [
     "make_reduce_epilogue",
     "make_softmax_epilogue",
     "make_welford_update",
+    "reduce_column_alignment",
     "tune_by_forward",
 ]
 
@@ -41,6 +48,243 @@ MAX_SINGLE_TILE_COLS: int = 32512
 # Default shared memory budget per SM (48 KiB) used to compute the maximum
 # block_m that fits within a single thread block's shared memory allocation.
 SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
+
+# Width of the vectorized ``ld/st`` TileLang plans for a tile buffer on the
+# architectures the reduction kernels declare (SM80-SM90): 128 bits.
+VECTOR_ACCESS_BYTES: int = 16
+
+# Thread counts offered by the reduction autotune candidate lists.
+AUTOTUNE_THREADS: tuple[int, ...] = (128, 256)
+
+# Thread count used when no candidate sweep runs.
+DEFAULT_THREADS: int = 128
+
+
+def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
+    """Return the column count one thread-block pass covers.
+
+    Each thread takes one ``VECTOR_ACCESS_BYTES`` chunk per pass, so a pass is
+    ``threads`` chunks wide.  ``layout_ok`` is what callers should ask; this is
+    the granularity it measures against and generation aligns to.
+    """
+    return threads * VECTOR_ACCESS_BYTES // elem_bytes
+
+
+class BlockConfigPlanner:
+    """Derives ``block_m`` / ``threads`` / ``tile_n`` for a row-wise reduction.
+
+    Every reduction kernel that maps one row per ``block_m`` slot makes the same
+    three decisions -- whether a row fits in shared memory, which config to run
+    untuned, and which candidates to offer the autotuner.  Derived here once so
+    the kernels cannot answer them differently.
+
+    Args:
+        num_buffers: ``(block_m, tile_n)`` shared buffers alive at once.
+            Welford's two-pass kernels allocate 2.
+    """
+
+    _BLOCK_MS = (1, 2, 4, 8)
+    # Extra tile widths offered to the autotuner beyond the default pick.
+    _EXTRA_TILE_N = 2
+
+    def __init__(
+        self,
+        N_padded: int,
+        elem_bytes: int,
+        smem_budget: int,
+        num_buffers: int = 1,
+    ):
+        self.N_padded = N_padded
+        self.elem_bytes = elem_bytes
+        self.smem_budget = smem_budget
+        self.num_buffers = num_buffers
+
+    @property
+    def _row_bytes(self) -> int:
+        """Shared memory one untiled row occupies.
+
+        Excludes ``num_buffers``: that counts tiled shared buffers, and the
+        untiled kernels keep their second pass in fragments.
+        """
+        return self.N_padded * self.elem_bytes
+
+    @property
+    def needs_tiling(self) -> bool:
+        """Whether one padded row exceeds the column cap or the smem budget."""
+        return (
+            self.N_padded > MAX_SINGLE_TILE_COLS or self._row_bytes > self.smem_budget
+        )
+
+    def _column_alignment(self, block_m: int, threads: int) -> int:
+        """Column granularity a tile must respect for this pair.
+
+        ``block_m == 1`` needs only the ``T.copy`` alignment: one row cannot
+        have a row-to-row thread-map shift, and the coarser granularity would
+        only quantise the width away from an exact divisor of N_padded.
+        """
+        if block_m == 1:
+            return DEFAULT_ALIGNMENT
+        return reduce_column_alignment(self.elem_bytes, threads)
+
+    def tile_n_for(self, block_m: int, threads: int) -> int:
+        """Return the tile width to use untuned (0: this pair needs no tiling).
+
+        Raises:
+            ValueError: If no tile of the required column granularity fits in
+                shared memory for this pair.
+        """
+        # Single-tile probe: one buffer, because the single-tile kernels hold
+        # the row in fragments and allocate no second shared copy.
+        if self.N_padded <= MAX_SINGLE_TILE_COLS:
+            single = compute_tile_n(
+                block_m, self.elem_bytes, self.N_padded, budget=self.smem_budget,
+            )
+            if single == self.N_padded:
+                return 0
+
+        col_budget = (
+            MAX_SINGLE_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
+        )
+        return compute_tile_n(
+            block_m, self.elem_bytes, self.N_padded,
+            alignment=self._column_alignment(block_m, threads),
+            budget=min(self.smem_budget, col_budget),
+            num_buffers=self.num_buffers,
+        )
+
+    def tile_n_candidates(self, block_m: int, threads: int) -> list[int]:
+        """Return buildable tile widths to time for this pair, widest first.
+
+        The widest is regularly beaten by a narrower tile trading one global
+        pass for a better shared-memory stride, so the next tile counts follow
+        it.  Empty when the pair can build no tile at all.
+        """
+        try:
+            default = self.tile_n_for(block_m, threads)
+        except ValueError:
+            return []
+        if default == 0:
+            return [0]
+
+        align = self._column_alignment(block_m, threads)
+        out = [default]
+        fewest = self._num_tiles(default)
+        for n_tiles in range(fewest, fewest + self._EXTRA_TILE_N + 1):
+            if len(out) > self._EXTRA_TILE_N:
+                break
+            tile_n = align_up((self.N_padded + n_tiles - 1) // n_tiles, align)
+            if 0 < tile_n <= default and tile_n not in out:
+                out.append(tile_n)
+        return out
+
+    def layout_ok(self, block_m: int, cols: int, threads: int) -> bool:
+        """Whether a ``(block_m, cols)`` fragment is known to be reducible.
+
+        A conservative envelope, not the exact rule.  It was the exact rule
+        while the kernels wrote these fragments from a two-dimensional
+        ``T.Parallel(block_m, cols)``: TileLang flattens that loop, the thread
+        owning column *j* of row *i* is ``(i * cols + j) / vec % threads``, and
+        the map repeats from row to row only when ``cols`` is a whole number of
+        passes or divides one evenly.  Measured 44 of 44 over fp16/fp32 x
+        {128, 256} threads x cols in [256, 4096].
+
+        The kernels now serialise the row loop, so the map no longer depends on
+        the row and nearly every width builds.  One narrow residue survives --
+        softmax, log_softmax and logsumexp fail layout inference at
+        ``block_m=4, cols=768`` -- and this envelope still excludes it, so it
+        stays as the guard.  Everything it admits builds; some of what it
+        rejects would now build too.
+
+        ``block_m == 1`` is unconstrained: a single row cannot shift.
+        """
+        if block_m == 1:
+            return True
+        one_pass = reduce_column_alignment(self.elem_bytes, threads)
+        return cols % one_pass == 0 or one_pass % cols == 0
+
+    def reject_tile_n(self, block_m: int, tile_n: int, threads: int) -> str:
+        """Return why a caller-supplied ``tile_n`` is unusable, or ""."""
+        if tile_n <= 0 or tile_n % DEFAULT_ALIGNMENT:
+            return (
+                f"tile_n={tile_n} must be positive and a multiple of "
+                f"{DEFAULT_ALIGNMENT} (the T.copy shared-memory alignment)"
+            )
+        if tile_n > MAX_SINGLE_TILE_COLS:
+            return f"tile_n={tile_n} exceeds the {MAX_SINGLE_TILE_COLS} column cap"
+        held = self.num_buffers * block_m * tile_n * self.elem_bytes
+        if held > self.smem_budget:
+            return (
+                f"tile_n={tile_n} with block_m={block_m} needs {held} bytes of "
+                f"shared memory, over the {self.smem_budget} budget"
+            )
+        if not self.layout_ok(block_m, tile_n, threads):
+            one_pass = reduce_column_alignment(self.elem_bytes, threads)
+            return (
+                f"tile_n={tile_n} neither divides nor is a multiple of the "
+                f"{one_pass}-column thread-block pass (threads={threads}, "
+                f"elem_bytes={self.elem_bytes}), so a (block_m={block_m}, "
+                f"tile_n) fragment has no reducible layout"
+            )
+        return ""
+
+    def _untiled_block_ms(self, threads: int, budget: int | None = None) -> list[int]:
+        """Row counts an untiled kernel can build within *budget*.
+
+        ``default_config`` passes the conservative ``SHARED_MEMORY_BUDGET_BYTES``
+        and the sweep passes the device budget.  Largest-that-fits is a
+        capacity rule, not a performance one -- at 2048x4096 fp16 on H200,
+        ``block_m=4`` beats ``block_m=8`` on sum, var and l2 alike -- so the
+        untuned path stays inside the smaller envelope and the sweep, which
+        times every row count, is what reaches the wider one.
+        """
+        max_block_m = (budget or self.smem_budget) // self._row_bytes
+        return [
+            bm for bm in self._BLOCK_MS
+            if bm <= max_block_m and self.layout_ok(bm, self.N_padded, threads)
+        ]
+
+    def _num_tiles(self, tile_n: int) -> int:
+        return (self.N_padded + tile_n - 1) // tile_n
+
+    def default_config(self) -> dict:
+        """Return the config used when no candidate sweep runs."""
+        if not self.needs_tiling:
+            block_ms = self._untiled_block_ms(
+                DEFAULT_THREADS, budget=SHARED_MEMORY_BUDGET_BYTES,
+            )
+            return {
+                "block_m": block_ms[-1] if block_ms else 1,
+                "threads": DEFAULT_THREADS,
+            }
+
+        # Tiled: block_m == 1 always needs the fewest N-tiles.  A larger
+        # block_m only shrinks the per-row shared-memory budget, so its tile is
+        # narrower and its tile count never lower.
+        return {
+            "block_m": 1,
+            "threads": DEFAULT_THREADS,
+            "tile_n": self.tile_n_for(1, DEFAULT_THREADS),
+        }
+
+    def autotune_configs(self) -> list[dict]:
+        """Return every candidate config, all of them buildable.
+
+        ``tile_n`` is a search dimension, not a function of the other two.
+        Pairs with no buildable tile are dropped here rather than left to
+        abort the sweep at build time.
+        """
+        if not self.needs_tiling:
+            return [
+                {"block_m": bm, "threads": t}
+                for t in AUTOTUNE_THREADS
+                for bm in self._untiled_block_ms(t)
+            ]
+
+        return [
+            {"block_m": bm, "threads": t, "tile_n": tile_n}
+            for bm, t in itertools.product(self._BLOCK_MS, AUTOTUNE_THREADS)
+            for tile_n in self.tile_n_candidates(bm, t)
+        ]
 
 
 def device_smem_budget(device_index: int | None = None) -> int:
@@ -320,8 +564,10 @@ def make_welford_update(block_m: int, N_padded: int):
         # Compute M2_b = sum((x[j] - batch_mean)^2) -- deviations from
         # the *batch's own mean*, not the combined mean.  The parallel
         # Welford merge formula requires this to be correct.
-        for i, j in T.Parallel(block_m, N_padded):
-            sq_diff[i, j] = (x[i, j] - batch_mean[i]) * (x[i, j] - batch_mean[i])
+        for i in T.serial(block_m):
+            for j in T.Parallel(N_padded):
+                dev = x[i, j] - batch_mean[i]
+                sq_diff[i, j] = dev * dev
         T.reduce_sum(sq_diff, row_sq_sum, dim=1)
 
         # Combine with existing M2 using parallel Welford merge formula:

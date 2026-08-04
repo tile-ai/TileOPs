@@ -657,6 +657,25 @@ def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) ->
     assert kernel.config["tile_n"] > 0
 
 
+@pytest.mark.smoke
+def test_logical_reduce_tiled_autotune() -> None:
+    """``tune=True`` must build and time every tiled candidate.
+
+    N is not a power of two: a power-of-two N_padded lets ``compute_tile_n``
+    fall back on an exact divisor, which hides a mis-derived tile_n.
+    """
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
+
+    m, n, dtype = 4, 40000, torch.bool
+    test = LogicalReduceTest(m, n, dtype, "any")
+    op = AnyFwdOp(dtype=dtype, dim=-1, tune=True)
+    test.check(op, *test.gen_inputs(), compare=_exact_compare)
+
+    kernel = op._kernel_cache[(m, n)]
+    assert kernel._needs_tiling
+    assert kernel.config in kernel.autotune_configs
+
+
 # Manifest dtype contract: bool input + int64 / bool output dtypes.
 
 _M = 64

@@ -12,7 +12,6 @@ Output is bool for any/all, int64 for count_nonzero.
 """
 
 import functools
-import itertools
 from typing import Optional
 
 import tilelang
@@ -22,9 +21,9 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
-    MAX_SINGLE_TILE_COLS,
+    DEFAULT_THREADS,
+    BlockConfigPlanner,
     align_up,
-    compute_tile_n,
     device_smem_budget,
     tune_by_forward,
 )
@@ -111,23 +110,26 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str):
                 )
 
                 if _needs_pad:
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, j < N),
-                            T.cast(x[pid_m * block_m + i, j], "float32"),
-                            T.cast(_pad_val, "float32"),
-                        )
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < N),
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(_pad_val, "float32"),
+                            )
                 else:
                     # Load via shared memory
                     T.copy(x[pid_m * block_m, 0], shared_buf)
 
                     # Cast to fp32
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(N_padded):
+                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                 # Cast to bool (0.0 or 1.0)
-                for i, j in T.Parallel(block_m, N_padded):
-                    bool_vals[i, j] = T.if_then_else(x_f32[i, j] != 0.0, 1.0, 0.0)
+                for i in T.serial(block_m):
+                    for j in T.Parallel(N_padded):
+                        bool_vals[i, j] = T.if_then_else(x_f32[i, j] != 0.0, 1.0, 0.0)
 
                 if op_kind == "any":
                     # any: result is 1 if max(bool_vals) == 1
@@ -195,18 +197,20 @@ def _logical_reduce_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_
                     T.fill(acc, 0.0)
 
                 for t in T.Serial(num_tiles):
-                    for i, j in T.Parallel(block_m, tile_n):
-                        x_f32[i, j] = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, t * tile_n + j < N),
-                            T.cast(
-                                x[pid_m * block_m + i, t * tile_n + j],
-                                "float32",
-                            ),
-                            T.cast(_pad_val, "float32"),
-                        )
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(tile_n):
+                            x_f32[i, j] = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, t * tile_n + j < N),
+                                T.cast(
+                                    x[pid_m * block_m + i, t * tile_n + j],
+                                    "float32",
+                                ),
+                                T.cast(_pad_val, "float32"),
+                            )
 
-                    for i, j in T.Parallel(block_m, tile_n):
-                        bool_vals[i, j] = T.if_then_else(x_f32[i, j] != 0.0, 1.0, 0.0)
+                    for i in T.serial(block_m):
+                        for j in T.Parallel(tile_n):
+                            bool_vals[i, j] = T.if_then_else(x_f32[i, j] != 0.0, 1.0, 0.0)
 
                     if op_kind == "any":
                         T.reduce_max(bool_vals, tile_acc, dim=1)
@@ -351,10 +355,10 @@ class LogicalReduceKernel(Kernel):
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = torch.tensor([], dtype=self._kernel_dtype).element_size()
         self._smem_budget = device_smem_budget()
-        self._needs_tiling = (
-            self.N_padded > MAX_SINGLE_TILE_COLS
-            or self.N_padded * self._elem_bytes > self._smem_budget
+        self._planner = BlockConfigPlanner(
+            self.N_padded, self._elem_bytes, self._smem_budget,
         )
+        self._needs_tiling = self._planner.needs_tiling
         self.kernel = None
         if not self._needs_tiling:
             self.kernel = _logical_reduce_kernel(
@@ -366,72 +370,20 @@ class LogicalReduceKernel(Kernel):
         self.init_config(config, tune)
         if self._needs_tiling and not tune:
             bm = self.config.get("block_m", 1)
+            threads = self.config.get("threads", DEFAULT_THREADS)
             if "tile_n" not in self.config or self.config["tile_n"] == 0:
-                self.config["tile_n"] = self._tile_n_for_block_m(bm)
-
-    def _tile_n_for_block_m(self, block_m: int) -> int:
-        """Return tile_n for a given block_m (0 means no tiling needed)."""
-        budget = self._smem_budget
-        if self.N_padded <= MAX_SINGLE_TILE_COLS:
-            single = compute_tile_n(
-                block_m, self._elem_bytes, self.N_padded, budget=budget,
-            )
-            if single == self.N_padded:
-                return 0
-
-        col_budget = MAX_SINGLE_TILE_COLS * block_m * self._elem_bytes
-        effective_budget = min(budget, col_budget)
-        return compute_tile_n(
-            block_m, self._elem_bytes, self.N_padded, budget=effective_budget,
-        )
+                self.config["tile_n"] = self._planner.tile_n_for(bm, threads)
+            reason = self._planner.reject_tile_n(bm, self.config["tile_n"], threads)
+            if reason:
+                raise ValueError(reason)
 
     @property
     def default_config(self) -> dict:
-        """Select default block_m based on shared memory budget."""
-        if not self._needs_tiling:
-            smem_per_row = self.N_padded * self._elem_bytes
-            max_block_m = self._smem_budget // smem_per_row
-            block_m = 1
-            for bm in [1, 2, 4, 8]:
-                if bm <= max_block_m:
-                    block_m = bm
-            return {"block_m": block_m, "threads": 128}
-
-        best_bm = 1
-        best_tile_n = self._tile_n_for_block_m(1)
-        for bm in [2, 4, 8]:
-            try:
-                tn = self._tile_n_for_block_m(bm)
-            except ValueError:
-                continue
-            best_num = (self.N_padded + best_tile_n - 1) // best_tile_n
-            curr_num = (self.N_padded + tn - 1) // tn
-            if curr_num < best_num:
-                best_bm = bm
-                best_tile_n = tn
-        return {"block_m": best_bm, "threads": 128, "tile_n": best_tile_n}
+        return self._planner.default_config()
 
     @property
     def autotune_configs(self) -> list[dict]:
-        if not self._needs_tiling:
-            smem_per_row = self.N_padded * self._elem_bytes
-            max_block_m = self._smem_budget // smem_per_row
-            block_ms = [bm for bm in [1, 2, 4, 8] if bm <= max_block_m]
-            threads_list = [128, 256]
-            configs = list(itertools.product(block_ms, threads_list))
-            return [{"block_m": bm, "threads": t} for bm, t in configs]
-
-        configs = []
-        for bm in [1, 2, 4, 8]:
-            try:
-                tn = self._tile_n_for_block_m(bm)
-            except ValueError:
-                continue
-            if tn == 0:
-                continue
-            for t in [128, 256]:
-                configs.append({"block_m": bm, "threads": t, "tile_n": tn})
-        return configs if configs else [self.default_config]
+        return self._planner.autotune_configs()
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Autotune logical reduce, benchmarking tiled configs directly."""

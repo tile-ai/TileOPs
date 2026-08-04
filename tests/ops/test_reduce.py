@@ -222,6 +222,94 @@ def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
+@pytest.mark.smoke
+def test_reduce_caller_tile_n_validated() -> None:
+    """A caller-chosen tile_n is accepted only if it actually builds.
+
+    Without the check the width reaches TileLang and surfaces as an ICHECK on
+    min_reg_num, which names nothing the caller can act on.  128 threads at
+    fp16 is a 1024-column thread-block pass; a width must divide it or be a
+    multiple of it.
+    """
+    from tileops.kernels.reduction.reduce import ReduceKernel
+
+    m, n, dtype = 8, 102400, torch.float16
+    x = torch.randn(m, n, dtype=dtype, device="cuda")
+
+    def run(tile_n: int, block_m: int = 2) -> None:
+        kernel = ReduceKernel(
+            M=m, N=n, op_kind="sum", dtype=dtype, tune=False,
+            config={"block_m": block_m, "threads": 128, "tile_n": tile_n},
+        )
+        kernel.forward(x)  # construction defers the build; forward triggers it
+
+    for accepted in (512, 1024, 2048):  # divides the pass, or a multiple of it
+        run(accepted)
+    run(1536, block_m=1)  # one row cannot shift, so nothing constrains it
+    run(0)  # 0 is the "derive it for me" sentinel, not a width
+
+    for rejected, why in (
+        (768, "neither divides nor is a multiple"),
+        (1536, "neither divides nor is a multiple"),
+        (257, "must be positive and a multiple"),
+        (65536, "exceeds"),
+    ):
+        with pytest.raises(ValueError, match=why):
+            run(rejected)
+
+
+@pytest.mark.smoke
+def test_reduce_untiled_autotune_unaligned_n() -> None:
+    """Every untiled candidate must build at an N_padded off the pass width.
+
+    N_padded=20224 neither divides nor is a multiple of
+    threads * 128-bit / elem_bytes, so ``layout_ok`` excludes every block_m
+    above 1 and the candidate list must not offer them.  With the serial row
+    loop such a fragment would in fact build; the envelope stays because it
+    also covers the residue that does not.
+    """
+    from tileops.ops.reduction.reduce import SumFwdOp
+
+    m, n, dtype = 8, 20000, torch.float16
+    test = ReduceTest(m, n, dtype, "sum")
+    op = SumFwdOp(dtype=dtype, dim=-1, tune=True)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+    kernel = op._kernel_cache[(m, n)]
+    assert not kernel._needs_tiling
+    assert {c["block_m"] for c in kernel.autotune_configs} == {1}
+
+
+@pytest.mark.parametrize(
+    "op_kind",
+    [
+        pytest.param("sum", marks=pytest.mark.smoke),
+        # Welford builds a different tiled kernel with two shared buffers.
+        pytest.param("var", marks=pytest.mark.full),
+    ],
+)
+def test_reduce_tiled_autotune(op_kind: str) -> None:
+    """``tune=True`` must build and time every tiled candidate.
+
+    N is not a power of two: a power-of-two N_padded lets ``compute_tile_n``
+    fall back on an exact divisor, which hides a mis-derived tile_n.
+    """
+    from tileops.ops.reduction.reduce import SumFwdOp, VarFwdOp
+
+    m, n, dtype = 4, 40000, torch.float16
+    if op_kind == "sum":
+        test = ReduceTest(m, n, dtype, "sum")
+        op = SumFwdOp(dtype=dtype, dim=-1, tune=True)
+    else:
+        test = WelfordTest(m, n, dtype, "var", correction=1)
+        op = VarFwdOp(dtype=dtype, dim=-1, tune=True)
+    test.check(op, *test.gen_inputs(), **_tol(dtype))
+
+    kernel = op._kernel_cache[(m, n)]
+    assert kernel._needs_tiling
+    assert kernel.config in kernel.autotune_configs
+
+
 @ReduceNonContigFixture
 def test_sum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
