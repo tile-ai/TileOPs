@@ -223,25 +223,39 @@ def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_reduce_caller_tile_n_rejected() -> None:
-    """A caller-chosen tile_n the layout pass cannot reduce fails at construction.
+def test_reduce_caller_tile_n_validated() -> None:
+    """A caller-chosen tile_n is accepted only if it actually builds.
 
-    Without this the width reaches TileLang and surfaces as an ICHECK on
-    min_reg_num, which names nothing the caller can act on.
+    Without the check the width reaches TileLang and surfaces as an ICHECK on
+    min_reg_num, which names nothing the caller can act on.  128 threads at
+    fp16 is a 1024-column thread-block pass; a width must divide it or be a
+    multiple of it.
     """
     from tileops.kernels.reduction.reduce import ReduceKernel
 
-    def build(tile_n: int, block_m: int = 2):
-        return ReduceKernel(
-            M=4, N=102400, op_kind="sum", dtype=torch.float16, tune=False,
+    m, n, dtype = 8, 102400, torch.float16
+    x = torch.randn(m, n, dtype=dtype, device="cuda")
+
+    def run(tile_n: int, block_m: int = 2) -> None:
+        kernel = ReduceKernel(
+            M=m, N=n, op_kind="sum", dtype=dtype, tune=False,
             config={"block_m": block_m, "threads": 128, "tile_n": tile_n},
         )
+        kernel.forward(x)  # construction defers the build; forward triggers it
 
-    # 1024 = 128 threads x 128-bit / 2 bytes.
-    with pytest.raises(ValueError, match="not a multiple of 1024"):
-        build(1536)
-    build(2048)          # whole number of passes
-    build(1536, block_m=1)  # one row cannot shift
+    for accepted in (512, 1024, 2048):  # divides the pass, or a multiple of it
+        run(accepted)
+    run(1536, block_m=1)  # one row cannot shift, so nothing constrains it
+    run(0)  # 0 is the "derive it for me" sentinel, not a width
+
+    for rejected, why in (
+        (768, "neither divides nor is a multiple"),
+        (1536, "neither divides nor is a multiple"),
+        (257, "must be positive and a multiple"),
+        (65536, "exceeds"),
+    ):
+        with pytest.raises(ValueError, match=why):
+            run(rejected)
 
 
 @pytest.mark.smoke

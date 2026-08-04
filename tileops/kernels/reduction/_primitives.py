@@ -71,10 +71,10 @@ def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
     elementwise loops and its ``(rows,)`` destination -- layout inference
     aborts with "no available layout found".
 
-    Binds any such fragment, ``cols == N_padded`` included.  Measured exact at
-    and above one pass: for fp16 at 128 threads, 1024/2048/3072 build and
-    1536/2560 do not.  Below one pass the boundary is not characterised --
-    512 builds, 768 does not -- so generation stays above it.
+    Binds any such fragment, ``cols == N_padded`` included.  ``cols`` must
+    divide one pass or be a multiple of it -- see ``layout_ok``, which is what
+    callers should ask.  This returns the pass width alone, the granularity
+    generation aligns to.
     """
     return threads * VECTOR_ACCESS_BYTES // elem_bytes
 
@@ -178,46 +178,60 @@ class BlockConfigPlanner:
         align = self._column_alignment(block_m, threads)
         out = [default]
         fewest = self._num_tiles(default)
-        for n_tiles in range(fewest, fewest + self._EXTRA_TILE_N):
+        for n_tiles in range(fewest, fewest + self._EXTRA_TILE_N + 1):
+            if len(out) > self._EXTRA_TILE_N:
+                break
             tile_n = align_up((self.N_padded + n_tiles - 1) // n_tiles, align)
             if 0 < tile_n <= default and tile_n not in out:
                 out.append(tile_n)
         return out
 
-    def reject_tile_n(self, block_m: int, tile_n: int, threads: int) -> str:
-        """Return why this tile cannot be reduced, or "" if it may be built.
+    def layout_ok(self, block_m: int, cols: int, threads: int) -> bool:
+        """Whether a ``(block_m, cols)`` fragment can be reduced at this width.
 
-        Generation is conservative and validation permissive.  A caller-chosen
-        width below one thread-block pass is left alone -- the boundary there
-        is not characterised -- while a wider one that is not a whole number of
-        passes is rejected, which is measured exact.
+        One thread-block pass covers ``reduce_column_alignment`` columns.  The
+        per-row thread map repeats only when ``cols`` is a whole number of
+        passes or divides one evenly; anything between shifts the map from row
+        to row.  Measured exact over fp16/fp32 x {128, 256} threads x
+        cols in [256, 4096]: 44 of 44 predictions matched.
+
+        ``block_m == 1`` is unconstrained -- a single row cannot shift.
         """
-        pass_cols = reduce_column_alignment(self.elem_bytes, threads)
-        if block_m > 1 and tile_n >= pass_cols and tile_n % pass_cols:
+        if block_m == 1:
+            return True
+        one_pass = reduce_column_alignment(self.elem_bytes, threads)
+        return cols % one_pass == 0 or one_pass % cols == 0
+
+    def reject_tile_n(self, block_m: int, tile_n: int, threads: int) -> str:
+        """Return why a caller-supplied ``tile_n`` is unusable, or ""."""
+        if tile_n <= 0 or tile_n % DEFAULT_ALIGNMENT:
             return (
-                f"tile_n={tile_n} is not a multiple of {pass_cols} "
-                f"(threads={threads} x {VECTOR_ACCESS_BYTES} bytes / "
+                f"tile_n={tile_n} must be positive and a multiple of "
+                f"{DEFAULT_ALIGNMENT} (the T.copy shared-memory alignment)"
+            )
+        if tile_n > MAX_SINGLE_TILE_COLS:
+            return f"tile_n={tile_n} exceeds the {MAX_SINGLE_TILE_COLS} column cap"
+        held = self.num_buffers * block_m * tile_n * self.elem_bytes
+        if held > self.smem_budget:
+            return (
+                f"tile_n={tile_n} with block_m={block_m} needs {held} bytes of "
+                f"shared memory, over the {self.smem_budget} budget"
+            )
+        if not self.layout_ok(block_m, tile_n, threads):
+            one_pass = reduce_column_alignment(self.elem_bytes, threads)
+            return (
+                f"tile_n={tile_n} neither divides nor is a multiple of the "
+                f"{one_pass}-column thread-block pass (threads={threads}, "
                 f"elem_bytes={self.elem_bytes}), so a (block_m={block_m}, "
                 f"tile_n) fragment has no reducible layout"
             )
         return ""
 
-    def untiled_block_m_ok(self, block_m: int, threads: int) -> bool:
-        """Whether an untiled ``(block_m, N_padded)`` fragment can be reduced.
-
-        Same constraint as the tiled path, but ``N_padded`` is fixed by the
-        workload, so an unusable ``block_m`` has to be dropped instead.
-        """
-        if block_m == 1:
-            return True
-        align = reduce_column_alignment(self.elem_bytes, threads)
-        return self.N_padded % align == 0
-
     def _untiled_block_ms(self, threads: int) -> list[int]:
         max_block_m = self.smem_budget // self._row_bytes
         return [
             bm for bm in self._BLOCK_MS
-            if bm <= max_block_m and self.untiled_block_m_ok(bm, threads)
+            if bm <= max_block_m and self.layout_ok(bm, self.N_padded, threads)
         ]
 
     def _num_tiles(self, tile_n: int) -> int:
@@ -232,19 +246,13 @@ class BlockConfigPlanner:
                 "threads": DEFAULT_THREADS,
             }
 
-        # Tiled: prefer the block_m that needs the fewest N-tiles.
-        best_bm, best_tile_n = 1, self.tile_n_for(1, DEFAULT_THREADS)
-        for bm in self._BLOCK_MS[1:]:
-            try:
-                tn = self.tile_n_for(bm, DEFAULT_THREADS)
-            except ValueError:
-                continue
-            if self._num_tiles(tn) < self._num_tiles(best_tile_n):
-                best_bm, best_tile_n = bm, tn
+        # Tiled: block_m == 1 always needs the fewest N-tiles.  A larger
+        # block_m only shrinks the per-row shared-memory budget, so its tile is
+        # narrower and its tile count never lower.
         return {
-            "block_m": best_bm,
+            "block_m": 1,
             "threads": DEFAULT_THREADS,
-            "tile_n": best_tile_n,
+            "tile_n": self.tile_n_for(1, DEFAULT_THREADS),
         }
 
     def autotune_configs(self) -> list[dict]:
@@ -261,12 +269,11 @@ class BlockConfigPlanner:
                 for bm in self._untiled_block_ms(t)
             ]
 
-        configs = [
+        return [
             {"block_m": bm, "threads": t, "tile_n": tile_n}
             for bm, t in itertools.product(self._BLOCK_MS, AUTOTUNE_THREADS)
             for tile_n in self.tile_n_candidates(bm, t)
         ]
-        return configs if configs else [self.default_config()]
 
 
 def device_smem_budget(device_index: int | None = None) -> int:

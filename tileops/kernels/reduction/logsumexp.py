@@ -302,15 +302,8 @@ class LogSumExpKernel(Kernel):
         # Build self.kernel BEFORE init_config: when tune=True, init_config
         # delegates to autotune() which requires self.kernel to exist.
         #
-        # tile_n is baked into the kernel at build time, so we pre-compute
-        # it from the heuristic block_m in default_config. The matching
-        # `autotune_configs` property below filters out any block_m whose
-        # tile_n differs from this pre-built one, so the autotuner stays
-        # within a single tiling regime by design.
-        #
-        # Cross-tile_n autotune exploration is a known limitation; the
-        # single-regime restriction is inherited from prior tiling design
-        # and not introduced here.
+        # tile_n is baked into the kernel at build time, so pre-compute it from
+        # default_config; autotune() rebuilds once per candidate width.
         self._tile_n = self.default_config["tile_n"]
         self.kernel = _logsumexp_kernel(
             self.M,
@@ -329,6 +322,8 @@ class LogSumExpKernel(Kernel):
             # previous autotuner result), honour it.  Only fall back to
             # the heuristic when tile_n was not provided.
             caller_tile_n = config.get("tile_n") if config is not None else None
+            if caller_tile_n == 0:
+                caller_tile_n = None
             if caller_tile_n is not None:
                 reason = self._planner.reject_tile_n(
                     self.config["block_m"], caller_tile_n,
@@ -375,7 +370,7 @@ class LogSumExpKernel(Kernel):
         best_tile_n = self._tile_n_for_block_m(1)
 
         for bm in [2, 4, 8, 16]:
-            if not self._planner.untiled_block_m_ok(bm, _DEFAULT_TUNE_THREADS):
+            if not self._planner.layout_ok(bm, self.N_padded, _DEFAULT_TUNE_THREADS):
                 continue
             try:
                 tn = self._tile_n_for_block_m(bm)
@@ -475,7 +470,7 @@ class LogSumExpKernel(Kernel):
                     if bm > max_block_m_no_tile:
                         continue
                     for t in threads_list:
-                        if not self._planner.untiled_block_m_ok(bm, t):
+                        if not self._planner.layout_ok(bm, self.N_padded, t):
                             continue
                         configs.append({"block_m": bm, "threads": t, "tile_n": 0})
             else:
