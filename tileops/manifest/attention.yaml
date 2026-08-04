@@ -166,6 +166,10 @@ GroupedQueryAttentionPrefillFwdOp:
       window_size_right: {type: int, default: -1}
       backend: {type: str, default: "auto"}
       validate_uniform_cu_seqlens: {type: bool, default: true}
+      # Element type of `o`. The float16 / bfloat16 rows of dtype_combos pin it
+      # to q.dtype; the float8_e4m3fn rows admit either float16 or bfloat16, so
+      # an fp8 caller selects between them here.
+      dtype: {type: torch.dtype, default: float16}
     dtype_combos:
       - {q: float16, k: float16, v: float16, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: float16}
       - {q: bfloat16, k: bfloat16, v: bfloat16, cu_seqlens_q: int32, cu_seqlens_kv: int32, q_scale: float32, k_scale: float32, v_scale: float32, o: bfloat16}
