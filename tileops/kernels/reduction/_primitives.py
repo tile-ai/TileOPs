@@ -61,20 +61,11 @@ DEFAULT_THREADS: int = 128
 
 
 def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
-    """Return the column granularity a reducible ``(rows, cols)`` fragment needs.
+    """Return the column count one thread-block pass covers.
 
-    TileLang flattens ``T.Parallel(rows, cols)`` and hands each thread one
-    ``VECTOR_ACCESS_BYTES`` chunk per pass, so column *j* of row *i* belongs to
-    thread ``(i * cols + j) / vec % threads``.  Unless ``cols`` is a whole
-    number of thread-block passes the map shifts from row to row, and the
-    following ``T.reduce_*`` has no fragment layout consistent with both the
-    elementwise loops and its ``(rows,)`` destination -- layout inference
-    aborts with "no available layout found".
-
-    Binds any such fragment, ``cols == N_padded`` included.  ``cols`` must
-    divide one pass or be a multiple of it -- see ``layout_ok``, which is what
-    callers should ask.  This returns the pass width alone, the granularity
-    generation aligns to.
+    Each thread takes one ``VECTOR_ACCESS_BYTES`` chunk per pass, so a pass is
+    ``threads`` chunks wide.  ``layout_ok`` is what callers should ask; this is
+    the granularity it measures against and generation aligns to.
     """
     return threads * VECTOR_ACCESS_BYTES // elem_bytes
 
@@ -187,15 +178,24 @@ class BlockConfigPlanner:
         return out
 
     def layout_ok(self, block_m: int, cols: int, threads: int) -> bool:
-        """Whether a ``(block_m, cols)`` fragment can be reduced at this width.
+        """Whether a ``(block_m, cols)`` fragment is known to be reducible.
 
-        One thread-block pass covers ``reduce_column_alignment`` columns.  The
-        per-row thread map repeats only when ``cols`` is a whole number of
-        passes or divides one evenly; anything between shifts the map from row
-        to row.  Measured exact over fp16/fp32 x {128, 256} threads x
-        cols in [256, 4096]: 44 of 44 predictions matched.
+        A conservative envelope, not the exact rule.  It was the exact rule
+        while the kernels wrote these fragments from a two-dimensional
+        ``T.Parallel(block_m, cols)``: TileLang flattens that loop, the thread
+        owning column *j* of row *i* is ``(i * cols + j) / vec % threads``, and
+        the map repeats from row to row only when ``cols`` is a whole number of
+        passes or divides one evenly.  Measured 44 of 44 over fp16/fp32 x
+        {128, 256} threads x cols in [256, 4096].
 
-        ``block_m == 1`` is unconstrained -- a single row cannot shift.
+        The kernels now serialise the row loop, so the map no longer depends on
+        the row and nearly every width builds.  One narrow residue survives --
+        softmax, log_softmax and logsumexp fail layout inference at
+        ``block_m=4, cols=768`` -- and this envelope still excludes it, so it
+        stays as the guard.  Everything it admits builds; some of what it
+        rejects would now build too.
+
+        ``block_m == 1`` is unconstrained: a single row cannot shift.
         """
         if block_m == 1:
             return True
