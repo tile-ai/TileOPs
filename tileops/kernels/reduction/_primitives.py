@@ -227,8 +227,17 @@ class BlockConfigPlanner:
             )
         return ""
 
-    def _untiled_block_ms(self, threads: int) -> list[int]:
-        max_block_m = self.smem_budget // self._row_bytes
+    def _untiled_block_ms(self, threads: int, budget: int | None = None) -> list[int]:
+        """Row counts an untiled kernel can build within *budget*.
+
+        ``default_config`` passes the conservative ``SHARED_MEMORY_BUDGET_BYTES``
+        and the sweep passes the device budget.  Largest-that-fits is a
+        capacity rule, not a performance one -- at 2048x4096 fp16 on H200,
+        ``block_m=4`` beats ``block_m=8`` on sum, var and l2 alike -- so the
+        untuned path stays inside the smaller envelope and the sweep, which
+        times every row count, is what reaches the wider one.
+        """
+        max_block_m = (budget or self.smem_budget) // self._row_bytes
         return [
             bm for bm in self._BLOCK_MS
             if bm <= max_block_m and self.layout_ok(bm, self.N_padded, threads)
@@ -240,7 +249,9 @@ class BlockConfigPlanner:
     def default_config(self) -> dict:
         """Return the config used when no candidate sweep runs."""
         if not self.needs_tiling:
-            block_ms = self._untiled_block_ms(DEFAULT_THREADS)
+            block_ms = self._untiled_block_ms(
+                DEFAULT_THREADS, budget=SHARED_MEMORY_BUDGET_BYTES,
+            )
             return {
                 "block_m": block_ms[-1] if block_ms else 1,
                 "threads": DEFAULT_THREADS,
