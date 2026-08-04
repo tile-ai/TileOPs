@@ -260,11 +260,13 @@ def test_reduce_caller_tile_n_validated() -> None:
 
 @pytest.mark.smoke
 def test_reduce_untiled_autotune_unaligned_n() -> None:
-    """Every untiled candidate must build when N_padded is not thread-aligned.
+    """Every untiled candidate must build at an N_padded off the pass width.
 
-    N_padded=20224 is not a multiple of threads * 128-bit / elem_bytes, so a
-    (block_m > 1, N_padded) fragment has no reducible layout and those block_m
-    values must be absent from the candidate list.
+    N_padded=20224 neither divides nor is a multiple of
+    threads * 128-bit / elem_bytes, so ``layout_ok`` excludes every block_m
+    above 1 and the candidate list must not offer them.  With the serial row
+    loop such a fragment would in fact build; the envelope stays because it
+    also covers the residue that does not.
     """
     from tileops.ops.reduction.reduce import SumFwdOp
 

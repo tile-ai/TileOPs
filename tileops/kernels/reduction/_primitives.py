@@ -564,8 +564,10 @@ def make_welford_update(block_m: int, N_padded: int):
         # Compute M2_b = sum((x[j] - batch_mean)^2) -- deviations from
         # the *batch's own mean*, not the combined mean.  The parallel
         # Welford merge formula requires this to be correct.
-        for i, j in T.Parallel(block_m, N_padded):
-            sq_diff[i, j] = (x[i, j] - batch_mean[i]) * (x[i, j] - batch_mean[i])
+        for i in T.serial(block_m):
+            for j in T.Parallel(N_padded):
+                dev = x[i, j] - batch_mean[i]
+                sq_diff[i, j] = dev * dev
         T.reduce_sum(sq_diff, row_sq_sum, dim=1)
 
         # Combine with existing M2 using parallel Welford merge formula:

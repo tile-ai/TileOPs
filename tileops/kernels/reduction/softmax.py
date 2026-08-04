@@ -254,7 +254,9 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                             tile_f32[i, j] = T.if_then_else(
                                                 T.And(pid_m * block_m + i < M, t * tile_n + j < N),
                                                 T.cast(
-                                                    x[pid_m * block_m + i, t * tile_n + j], "float32"
+                                                    x[pid_m * block_m + i,
+                                                      t * tile_n + j],
+                                                    "float32",
                                                 ),
                                                 T.cast(_neg_inf, "float32"),
                                             )
@@ -384,7 +386,9 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                             tile_f32[i, j] = T.if_then_else(
                                                 T.And(pid_m * block_m + i < M, t * tile_n + j < N),
                                                 T.cast(
-                                                    x[pid_m * block_m + i, t * tile_n + j], "float32"
+                                                    x[pid_m * block_m + i,
+                                                      t * tile_n + j],
+                                                    "float32",
                                                 ),
                                                 T.cast(_neg_inf, "float32"),
                                             )
@@ -443,7 +447,9 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                                             p2_f32[i, j] = T.if_then_else(
                                                 T.And(pid_m * block_m + i < M, t * tile_n + j < N),
                                                 T.cast(
-                                                    x[pid_m * block_m + i, t * tile_n + j], "float32"
+                                                    x[pid_m * block_m + i,
+                                                      t * tile_n + j],
+                                                    "float32",
                                                 )
                                                 - row_max[i]
                                                 - log_sum[i],

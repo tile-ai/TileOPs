@@ -470,7 +470,8 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                     # Variance: sum((x - mean)^2) / (N - correction)
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
-                            sq_diff[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
+                            dev = x_f32[i, j] - mean_val[i]
+                            sq_diff[i, j] = dev * dev
 
                     T.reduce_sum(sq_diff, var_sum, dim=1)
 
@@ -524,7 +525,8 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
                     # Variance
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
-                            sq_diff[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
+                            dev = x_f32[i, j] - mean_val[i]
+                            sq_diff[i, j] = dev * dev
 
                     T.reduce_sum(sq_diff, var_sum, dim=1)
 
