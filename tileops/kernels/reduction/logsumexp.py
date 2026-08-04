@@ -330,6 +330,12 @@ class LogSumExpKernel(Kernel):
             # the heuristic when tile_n was not provided.
             caller_tile_n = config.get("tile_n") if config is not None else None
             if caller_tile_n is not None:
+                reason = self._planner.reject_tile_n(
+                    self.config["block_m"], caller_tile_n,
+                    self.config.get("threads", _DEFAULT_TUNE_THREADS),
+                )
+                if reason:
+                    raise ValueError(reason)
                 target_tile_n = caller_tile_n
             else:
                 target_tile_n = self._tile_n_for_block_m(self.config["block_m"])

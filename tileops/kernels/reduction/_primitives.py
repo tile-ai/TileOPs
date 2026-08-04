@@ -71,9 +71,10 @@ def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
     elementwise loops and its ``(rows,)`` destination -- layout inference
     aborts with "no available layout found".
 
-    Binds any such fragment, ``cols == N_padded`` included.  Conservative:
-    ``vec`` is really capped by the widest buffer in the loop (an fp32
-    accumulator), not by the ``elem_bytes`` storage dtype passed here.
+    Binds any such fragment, ``cols == N_padded`` included.  Measured exact at
+    and above one pass: for fp16 at 128 threads, 1024/2048/3072 build and
+    1536/2560 do not.  Below one pass the boundary is not characterised --
+    512 builds, 768 does not -- so generation stays above it.
     """
     return threads * VECTOR_ACCESS_BYTES // elem_bytes
 
@@ -182,6 +183,24 @@ class BlockConfigPlanner:
             if 0 < tile_n <= default and tile_n not in out:
                 out.append(tile_n)
         return out
+
+    def reject_tile_n(self, block_m: int, tile_n: int, threads: int) -> str:
+        """Return why this tile cannot be reduced, or "" if it may be built.
+
+        Generation is conservative and validation permissive.  A caller-chosen
+        width below one thread-block pass is left alone -- the boundary there
+        is not characterised -- while a wider one that is not a whole number of
+        passes is rejected, which is measured exact.
+        """
+        pass_cols = reduce_column_alignment(self.elem_bytes, threads)
+        if block_m > 1 and tile_n >= pass_cols and tile_n % pass_cols:
+            return (
+                f"tile_n={tile_n} is not a multiple of {pass_cols} "
+                f"(threads={threads} x {VECTOR_ACCESS_BYTES} bytes / "
+                f"elem_bytes={self.elem_bytes}), so a (block_m={block_m}, "
+                f"tile_n) fragment has no reducible layout"
+            )
+        return ""
 
     def untiled_block_m_ok(self, block_m: int, threads: int) -> bool:
         """Whether an untiled ``(block_m, N_padded)`` fragment can be reduced.

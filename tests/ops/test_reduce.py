@@ -223,6 +223,28 @@ def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+def test_reduce_caller_tile_n_rejected() -> None:
+    """A caller-chosen tile_n the layout pass cannot reduce fails at construction.
+
+    Without this the width reaches TileLang and surfaces as an ICHECK on
+    min_reg_num, which names nothing the caller can act on.
+    """
+    from tileops.kernels.reduction.reduce import ReduceKernel
+
+    def build(tile_n: int, block_m: int = 2):
+        return ReduceKernel(
+            M=4, N=102400, op_kind="sum", dtype=torch.float16, tune=False,
+            config={"block_m": block_m, "threads": 128, "tile_n": tile_n},
+        )
+
+    # 1024 = 128 threads x 128-bit / 2 bytes.
+    with pytest.raises(ValueError, match="not a multiple of 1024"):
+        build(1536)
+    build(2048)          # whole number of passes
+    build(1536, block_m=1)  # one row cannot shift
+
+
+@pytest.mark.smoke
 def test_reduce_untiled_autotune_unaligned_n() -> None:
     """Every untiled candidate must build when N_padded is not thread-aligned.
 

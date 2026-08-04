@@ -937,10 +937,12 @@ class ReduceKernel(Kernel):
         # A caller-provided config may have block_m without tile_n.
         if self._needs_tiling and not tune:
             bm = self.config.get("block_m", 1)
+            threads = self.config.get("threads", DEFAULT_THREADS)
             if "tile_n" not in self.config or self.config["tile_n"] == 0:
-                self.config["tile_n"] = self._planner.tile_n_for(
-                    bm, self.config.get("threads", DEFAULT_THREADS),
-                )
+                self.config["tile_n"] = self._planner.tile_n_for(bm, threads)
+            reason = self._planner.reject_tile_n(bm, self.config["tile_n"], threads)
+            if reason:
+                raise ValueError(reason)
 
     @property
     def default_config(self) -> dict:
