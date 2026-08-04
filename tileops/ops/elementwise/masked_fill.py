@@ -12,7 +12,7 @@ from tileops.kernels.elementwise import (
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _OP_REGISTRY, _validate_scalar_param_repr
+from ._base import _validate_scalar_param_repr
 
 
 class MaskedFillFwdOp(Op):
@@ -75,8 +75,6 @@ class MaskedFillFwdOp(Op):
         self._bool_storage = dtype == torch.bool
         kernel_dtype = torch.uint8 if self._bool_storage else dtype
         self.kernel = self.kernel_map["masked_fill_tensor_value"](self.N_total, kernel_dtype)
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
@@ -204,8 +202,6 @@ class MaskedFillScalarFwdOp(Op):
         self.kernel = self.kernel_map["masked_fill"](
             self.N_total, kernel_dtype, kernel_value,
         )
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):

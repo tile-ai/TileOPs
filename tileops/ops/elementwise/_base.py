@@ -9,7 +9,7 @@ torch.compile support:
 - Concrete ops are registered via @torch.library.custom_op at package load time
 - Three factory functions (_register_unary_custom_op, _register_binary_custom_op,
   _register_fused_gated_custom_op) register every op; instances are looked up at
-  runtime via _OP_REGISTRY keyed by id(instance)
+  runtime via the shared instance registry in tileops.ops.compile_boundary
 
 Utility:
 - broadcast_out_shape: PyTorch broadcast output shape of two operand shapes
@@ -21,7 +21,6 @@ to the kernel layer; this module only passes the two operand shapes down.
 import functools
 import inspect
 import math
-import weakref
 from math import prod
 from typing import Callable, Dict, List, Optional
 
@@ -31,13 +30,13 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.manifest import load_manifest
 from tileops.manifest.dtype_rules import promote_int_to_float_ref, same_as_ref
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
 
 # torch.compile registration factories (see module docstring). The registry
 # key is a plain int so dynamo can trace through forward() without hitting
 # unsupported Python side-effects.
 
-_OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
 _MANIFEST_INT_SCALAR_DTYPES = (
     torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64,
@@ -142,12 +141,12 @@ def _register_unary_custom_op(op_cls, output_dtype_override=None):
     op_name = op_cls._op_name
 
     @torch.library.custom_op(f"top::elementwise_unary_{op_name}", mutates_args=())
-    def _wrapped(x: torch.Tensor, instance_key: int) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+    def _wrapped(x: torch.Tensor, instance_key: str) -> torch.Tensor:
+        instance = get_instance(instance_key)
         return instance._eager_forward(x)
 
     @_wrapped.register_fake
-    def _(x: torch.Tensor, instance_key: int) -> torch.Tensor:
+    def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
         out_dtype = output_dtype_override if output_dtype_override is not None else x.dtype
         return torch.empty_like(x, dtype=out_dtype)
 
@@ -169,8 +168,8 @@ def _register_unary_inplace_custom_op(op_cls):
     @torch.library.custom_op(
         f"top::elementwise_unary_{op_name}_inplace", mutates_args=("x",),
     )
-    def _wrapped_inplace(x: torch.Tensor, instance_key: int) -> None:
-        instance = _OP_REGISTRY[instance_key]
+    def _wrapped_inplace(x: torch.Tensor, instance_key: str) -> None:
+        instance = get_instance(instance_key)
         result = instance._eager_forward(x)
         x.copy_(result.reshape(x.shape))
 
@@ -191,9 +190,9 @@ def _register_binary_custom_op(op_cls, output_bool: bool = False):
         a: torch.Tensor,
         b: torch.Tensor,
         out_shape: List[int],
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+        instance = get_instance(instance_key)
         return instance._eager_forward(a, b)
 
     @_wrapped.register_fake
@@ -201,7 +200,7 @@ def _register_binary_custom_op(op_cls, output_bool: bool = False):
         a: torch.Tensor,
         b: torch.Tensor,
         out_shape: List[int],
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
         out_dtype = torch.bool if output_bool else a.dtype
         return a.new_empty(out_shape, dtype=out_dtype)
@@ -217,16 +216,16 @@ def _register_prelu_custom_op(op_cls):
     def _wrapped(
         x: torch.Tensor,
         weight: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+        instance = get_instance(instance_key)
         return instance._eager_forward(x, weight)
 
     @_wrapped.register_fake
     def _(
         x: torch.Tensor,
         weight: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
         return torch.empty_like(x)
 
@@ -247,9 +246,9 @@ def _register_where_custom_op(op_cls):
         cond: torch.Tensor,
         x: torch.Tensor,
         y: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+        instance = get_instance(instance_key)
         return instance._eager_forward(cond, x, y)
 
     @_wrapped.register_fake
@@ -257,7 +256,7 @@ def _register_where_custom_op(op_cls):
         cond: torch.Tensor,
         x: torch.Tensor,
         y: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
         out_shape = torch.broadcast_shapes(cond.shape, x.shape, y.shape)
         return x.new_empty(out_shape)
@@ -282,9 +281,9 @@ def _register_lerp_tensor_custom_op(op_cls):
         input: torch.Tensor,
         end: torch.Tensor,
         weight: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+        instance = get_instance(instance_key)
         return instance._eager_forward(input, end, weight)
 
     @_wrapped.register_fake
@@ -292,7 +291,7 @@ def _register_lerp_tensor_custom_op(op_cls):
         input: torch.Tensor,
         end: torch.Tensor,
         weight: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
         out_shape = torch.broadcast_shapes(input.shape, end.shape, weight.shape)
         return input.new_empty(out_shape)
@@ -313,16 +312,16 @@ def _register_masked_fill_custom_op(op_cls):
     def _wrapped(
         x: torch.Tensor,
         mask: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+        instance = get_instance(instance_key)
         return instance._eager_forward(x, mask)
 
     @_wrapped.register_fake
     def _(
         x: torch.Tensor,
         mask: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
         out_shape = torch.broadcast_shapes(x.shape, mask.shape)
         return x.new_empty(out_shape)
@@ -346,9 +345,9 @@ def _register_masked_fill_tensor_value_custom_op(op_cls):
         input: torch.Tensor,
         mask: torch.Tensor,
         value: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+        instance = get_instance(instance_key)
         return instance._eager_forward(input, mask, value)
 
     @_wrapped.register_fake
@@ -356,7 +355,7 @@ def _register_masked_fill_tensor_value_custom_op(op_cls):
         input: torch.Tensor,
         mask: torch.Tensor,
         value: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
         out_shape = torch.broadcast_shapes(input.shape, mask.shape)
         return input.new_empty(out_shape)
@@ -384,9 +383,9 @@ def _register_clamp_tensor_custom_op(op_cls):
         input: torch.Tensor,
         min: Optional[torch.Tensor],
         max: Optional[torch.Tensor],
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+        instance = get_instance(instance_key)
         return instance._eager_forward(input, min, max)
 
     @_wrapped.register_fake
@@ -394,7 +393,7 @@ def _register_clamp_tensor_custom_op(op_cls):
         input: torch.Tensor,
         min: Optional[torch.Tensor],
         max: Optional[torch.Tensor],
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
         shapes = [input.shape]
         if min is not None:
@@ -415,16 +414,16 @@ def _register_clamp_min_custom_op(op_cls):
     def _wrapped(
         input: torch.Tensor,
         min: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+        instance = get_instance(instance_key)
         return instance._eager_forward(input, min)
 
     @_wrapped.register_fake
     def _(
         input: torch.Tensor,
         min: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
         out_shape = torch.broadcast_shapes(input.shape, min.shape)
         return input.new_empty(out_shape)
@@ -440,16 +439,16 @@ def _register_clamp_max_custom_op(op_cls):
     def _wrapped(
         input: torch.Tensor,
         max: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+        instance = get_instance(instance_key)
         return instance._eager_forward(input, max)
 
     @_wrapped.register_fake
     def _(
         input: torch.Tensor,
         max: torch.Tensor,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
         out_shape = torch.broadcast_shapes(input.shape, max.shape)
         return input.new_empty(out_shape)
@@ -470,9 +469,9 @@ def _register_fused_gated_custom_op(op_cls):
         x: torch.Tensor,
         M: int,
         N: int,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+        instance = get_instance(instance_key)
         return instance._eager_forward(x)
 
     @_wrapped.register_fake
@@ -480,7 +479,7 @@ def _register_fused_gated_custom_op(op_cls):
         x: torch.Tensor,
         M: int,
         N: int,
-        instance_key: int,
+        instance_key: str,
     ) -> torch.Tensor:
         return x.new_empty((M, N), dtype=x.dtype)
 
@@ -612,9 +611,6 @@ class UnaryOp(Op):
             N_total=N_total, dtype=dtype, tune=tune,
         )
         self.output_dtype = self._resolve_output_dtype()
-        # Register in global registry for torch.compile dispatch
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     def _build_kernel_instance(
         self,
@@ -757,9 +753,6 @@ class BinaryOp(Op):
         self.b_numel = prod(b_shape)
         self.dispatch_kernel(kernel_map)
         self.kernel = self._build_kernel_instance(tune)
-        # Register in global registry for torch.compile dispatch
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     def _build_kernel_instance(self, tune):
         """Construct the kernel. Subclasses override to inject extra kwargs."""
@@ -862,9 +855,6 @@ class FusedGatedOp(Op):
         self._kernel_key = None
         if M is not None and N is not None and dtype is not None:
             self._ensure_kernel(M, N, dtype)
-        # Register in global registry for torch.compile dispatch
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1013,7 +1003,7 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
     ``__init__`` (scalar parameter names and defaults vary per leaf):
     each leaf validates its scalars, populates ``self.<param>`` for
     introspection, instantiates ``self.kernel`` with typed kwargs, and
-    registers itself with ``_OP_REGISTRY`` via the
+    registers itself for compile dispatch via the
     ``_finalize_init`` helper. ``UnaryOp.__init__`` is intentionally
     bypassed; ``_finalize_init`` performs the equivalent state setup.
 
@@ -1035,7 +1025,7 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
         The leaf has already called ``self.dispatch_kernel(kernel_map)``
         and instantiated its kernel directly with typed kwargs. This
         helper records the kernel on ``self`` and runs the
-        ``_OP_REGISTRY`` registration shared by every parametric leaf.
+        instance registration shared by every parametric leaf.
         """
         self.N_total = N_total
         self.dtype = dtype
@@ -1044,8 +1034,6 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
         # Surface ``output_dtype`` for ``total_memory`` accounting, as
         # ``UnaryOp.__init__`` does.
         self.output_dtype = resolve_output_dtype(type(self).__name__, dtype)
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
 
 class _AlphaScaledBinaryOp(BinaryOp):
@@ -1175,18 +1163,17 @@ class _IntIdentityUnaryOp(UnaryOp):
         if dtype in type(self)._fallback_dtypes:
             self.N_total = N_total
             self.dtype = dtype
-            # No kernel is constructed — it is float-only. The kernel_map still
-            # goes through the shared install path so an override is arch-checked
-            # the same way as on the float path.
-            self._install_kernel_map(kernel_map)
+            # No kernel is constructed — it is float-only. Routing through
+            # dispatch_kernel keeps the arch check identical to the float path
+            # and registers the instance for the compile boundary, which a bare
+            # _install_kernel_map call would skip.
+            self.dispatch_kernel(kernel_map)
             self.kernel = None
             self.output_dtype = (
                 type(self)._int_output_dtype
                 if type(self)._int_output_dtype is not None
                 else dtype
             )
-            self._instance_key = id(self)
-            _OP_REGISTRY[self._instance_key] = self
             return
         super().__init__(N_total, dtype, kernel_map=kernel_map, tune=tune)
 

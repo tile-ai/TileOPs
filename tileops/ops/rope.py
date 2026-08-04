@@ -18,12 +18,12 @@ Layouts:
 torch.compile support:
 - All 5 concrete ops are registered via @torch.library.custom_op at module
   load time.  A factory function (_register_rope_custom_op) registers every
-  op; instances are looked up at runtime via _OP_REGISTRY keyed by
+  op; instances are looked up at runtime through the shared registry in
+  tileops.ops.compile_boundary, keyed by
   id(instance).
 """
 
 import math
-import weakref
 from typing import Dict, Optional
 
 import torch
@@ -38,12 +38,12 @@ from tileops.kernels.rope import (
     RopeYarnKernel,
 )
 
+from .compile_boundary import get_instance
 from .op_base import Op
 
 # torch.compile registration factory: a @torch.library.custom_op +
 # register_fake pair per RoPE op (see module docstring).
 
-_OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
 
 def _register_rope_custom_op(op_cls):
@@ -55,12 +55,12 @@ def _register_rope_custom_op(op_cls):
     op_name = op_cls._op_name
 
     @torch.library.custom_op(f"top::rope_{op_name}", mutates_args=())
-    def _wrapped(x: torch.Tensor, instance_key: int) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+    def _wrapped(x: torch.Tensor, instance_key: str) -> torch.Tensor:
+        instance = get_instance(instance_key)
         return instance._eager_forward(x)
 
     @_wrapped.register_fake
-    def _(x: torch.Tensor, instance_key: int) -> torch.Tensor:
+    def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
         return torch.empty_like(x)
 
     op_cls._wrapped = _wrapped
@@ -72,12 +72,12 @@ def _register_rope_position_ids_custom_op(op_cls):
 
     @torch.library.custom_op(f"top::rope_{op_name}", mutates_args=())
     def _wrapped(x: torch.Tensor, position_ids: torch.Tensor,
-                 instance_key: int) -> torch.Tensor:
-        instance = _OP_REGISTRY[instance_key]
+                 instance_key: str) -> torch.Tensor:
+        instance = get_instance(instance_key)
         return instance._eager_forward(x, position_ids)
 
     @_wrapped.register_fake
-    def _(x: torch.Tensor, position_ids: torch.Tensor, instance_key: int) -> torch.Tensor:
+    def _(x: torch.Tensor, position_ids: torch.Tensor, instance_key: str) -> torch.Tensor:
         return torch.empty_like(x)
 
     op_cls._wrapped = _wrapped
@@ -362,9 +362,6 @@ class _RopeOpBase(Op):
         self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
-        # Register in global registry for torch.compile dispatch
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     def _get_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         """Return cached cos/sin tables, recomputing if device changed."""
@@ -555,8 +552,6 @@ class RopeNeoxPositionIdsOp(Op):
         self._kernel_cache: Dict[tuple, Kernel] = {}
         self.kernel = None
 
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

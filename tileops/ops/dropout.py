@@ -10,7 +10,6 @@ Edge cases:
 - training=False: identity pass-through
 """
 
-import weakref
 from typing import Dict, Optional
 
 import torch
@@ -18,11 +17,11 @@ import torch
 from tileops.kernels.dropout import DropoutKernel
 from tileops.kernels.kernel_base import Kernel
 
+from .compile_boundary import get_instance
 from .op_base import Op
 
 __all__ = ["DropoutOp"]
 
-_OP_REGISTRY: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
 
 class DropoutOp(Op):
@@ -75,8 +74,6 @@ class DropoutOp(Op):
         self._kernel_cache: Dict[tuple[int, torch.dtype, int | None], Kernel] = {}
         self.kernel = None
 
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -128,13 +125,13 @@ class DropoutOp(Op):
 # torch.compile registration
 
 @torch.library.custom_op("top::dropout", mutates_args=())
-def _wrapped_dropout(x: torch.Tensor, instance_key: int) -> torch.Tensor:
-    instance = _OP_REGISTRY[instance_key]
+def _wrapped_dropout(x: torch.Tensor, instance_key: str) -> torch.Tensor:
+    instance = get_instance(instance_key)
     return instance._eager_forward(x)
 
 
 @_wrapped_dropout.register_fake
-def _(x: torch.Tensor, instance_key: int) -> torch.Tensor:
+def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
     return torch.empty_like(x)
 
 

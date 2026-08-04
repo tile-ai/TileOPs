@@ -22,7 +22,7 @@ from tileops.kernels.elementwise import (
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _OP_REGISTRY, BinaryOp, _AlphaScaledBinaryOp
+from ._base import BinaryOp, _AlphaScaledBinaryOp
 
 
 class AddFwdOp(_AlphaScaledBinaryOp):
@@ -240,8 +240,6 @@ class LerpTensorFwdOp(Op):
         self.kernel = self.kernel_map[self._op_name](
             self.N_total, dtype, tune=tune,
         )
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

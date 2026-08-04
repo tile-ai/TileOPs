@@ -667,10 +667,10 @@ def test_logical_reduce_tiled_autotune() -> None:
 
     m, n, dtype = 4, 40000, torch.bool
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyFwdOp(dtype=dtype, dim=-1, tune=True)
+    op = AnyFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
-    kernel = op._kernel_cache[(m, n)]
+    kernel = op._kernel_cache[(m, n, dtype)]
     assert kernel._needs_tiling
     assert kernel.config in kernel.autotune_configs
 

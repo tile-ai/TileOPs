@@ -9,7 +9,6 @@ from tileops.kernels.elementwise import WhereFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _OP_REGISTRY
 
 
 class WhereFwdOp(Op):
@@ -64,8 +63,6 @@ class WhereFwdOp(Op):
         self.N_total = prod(self.out_shape) if self.out_shape else 1
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map[self._op_name](self.N_total, dtype)
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
