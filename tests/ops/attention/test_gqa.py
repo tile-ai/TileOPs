@@ -815,7 +815,7 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
         [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
 
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True, torch.float16,
+        batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True,
         validate_inputs=True)
     with pytest.raises(ValueError, match="Expected k shape"):
         op(q, k[:, :, :-1].contiguous(), v, cu_q, cu_kv)
@@ -823,8 +823,7 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
         op(q[:-1], k, v, cu_q, cu_kv)
     with pytest.raises(ValueError, match="max_seqlen_q"):
         bad_op = GroupedQueryAttentionPrefillVarlenFwdOp(
-            batch, heads, heads_kv, dim, max(q_lens) - 1, max(kv_lens), True,
-            torch.float16, validate_inputs=True)
+            batch, heads, heads_kv, dim, max(q_lens) - 1, max(kv_lens), True, validate_inputs=True)
         bad_op(q, k, v, cu_q, cu_kv)
     bad_cu = torch.tensor([0, 128, 96], device="cuda", dtype=torch.int32)
     with pytest.raises(ValueError, match="cu_seqlens_q must be non-decreasing"):
@@ -833,16 +832,23 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
 
 @pytest.mark.smoke
 def test_gqa_prefill_varlen_rejects_unsupported_dtype() -> None:
+    """The element type now arrives with the tensors, so the rejection does too."""
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(
+        batch=1,
+        heads=8,
+        heads_kv=2,
+        dim=64,
+        max_seqlen_q=64,
+        max_seqlen_kv=128,
+    )
+    kwargs = {"dtype": torch.float32, "device": "cuda"}
+    q = torch.randn(64, 8, 64, **kwargs)
+    k = torch.randn(128, 2, 64, **kwargs)
+    v = torch.randn(128, 2, 64, **kwargs)
+    cu_q = torch.tensor([0, 64], device="cuda", dtype=torch.int32)
+    cu_kv = torch.tensor([0, 128], device="cuda", dtype=torch.int32)
     with pytest.raises(ValueError, match="Expected dtype torch.float16 or torch.bfloat16"):
-        GroupedQueryAttentionPrefillVarlenFwdOp(
-            batch=1,
-            heads=8,
-            heads_kv=2,
-            dim=64,
-            max_seqlen_q=64,
-            max_seqlen_kv=128,
-            dtype=torch.float32,
-        )
+        op(q, k, v, cu_q, cu_kv)
 
 
 

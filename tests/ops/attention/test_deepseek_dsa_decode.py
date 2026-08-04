@@ -80,7 +80,7 @@ def test_sparse_mla_decode(batch: int, heads: int, seq_len_q: int, seq_len_kv: i
         q_start_index_s, sm_scale=sm_scale, dtype=dtype)
     op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
         batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv,
-        q_start_index_s, sm_scale=sm_scale, dtype=dtype, tune=tune)
+        q_start_index_s, sm_scale=sm_scale, tune=tune)
     test.check(op, *test.gen_inputs(), atol=3e-4, rtol=1e-5)
 
 

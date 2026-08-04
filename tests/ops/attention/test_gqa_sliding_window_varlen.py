@@ -126,7 +126,7 @@ def test_gqa_sliding_window_varlen_fwd_op(
     op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
         batch=batch, heads=heads, heads_kv=heads_kv, dim=dim,
         is_causal=is_causal, window_size_left=wl, window_size_right=wr,
-        dtype=dtype, tune=tune)
+        tune=tune)
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
 
 

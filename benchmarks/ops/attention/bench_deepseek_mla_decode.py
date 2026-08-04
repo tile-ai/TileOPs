@@ -72,7 +72,7 @@ def test_mla_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int
     inputs = test.gen_inputs()
 
     op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(
-        batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune=tune)
+        batch, heads, heads_kv, seq_len_kv, dim, dim_pe, tune=tune)
     bm = ManifestBenchmark(_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

@@ -84,7 +84,6 @@ def test_nsa_varlen_op(
         "block_size": block_size,
         "groups": groups,
         "selected_blocks": selected_blocks,
-        "dtype": dtype,
         "accum_dtype": accum_dtype,
         "tune": tune,
     }

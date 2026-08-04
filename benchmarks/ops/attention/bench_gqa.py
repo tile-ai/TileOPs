@@ -455,7 +455,7 @@ def test_gqa_prefill_varlen_fwd_bench(
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        batch, heads, heads_kv, dim, test.max_seqlen_q, test.max_seqlen_kv, causal, dtype, tune=tune
+        batch, heads, heads_kv, dim, test.max_seqlen_q, test.max_seqlen_kv, causal, tune=tune
     )
     bm = GQAPrefillVarlenFwdBenchmark(test)
     result = bm.profile(op, *inputs)

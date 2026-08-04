@@ -767,7 +767,6 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         max_seqlen_q: int,
         max_seqlen_kv: int,
         is_causal: bool = True,
-        dtype: torch.dtype = torch.float16,
         sm_scale: Optional[float] = None,
         softcap: Optional[float] = None,
         validate_inputs: bool = False,
@@ -781,7 +780,6 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             raise ValueError("max_seqlen_q must be positive")
         if max_seqlen_kv <= 0:
             raise ValueError("max_seqlen_kv must be positive")
-        _validate_attention_dtype(dtype)
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -789,24 +787,32 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         self.max_seqlen_q = max_seqlen_q
         self.max_seqlen_kv = max_seqlen_kv
         self.is_causal = is_causal
-        self.dtype = dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
         self.softcap = _score_softcap(softcap)
         self.validate_inputs = validate_inputs
         self._roofline_kwargs = None
 
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_prefill_varlen_fwd_kernel"](
-            batch=batch,
-            heads=heads,
-            heads_kv=heads_kv,
-            dim=dim,
-            is_causal=is_causal,
-            dtype=dtype,
-            sm_scale=self.sm_scale,
-            softcap=self.softcap,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            _validate_attention_dtype(dtype)
+            self._kernel_cache[dtype] = self.kernel_map[
+                "gqa_prefill_varlen_fwd_kernel"
+            ](
+                batch=self.batch,
+                heads=self.heads,
+                heads_kv=self.heads_kv,
+                dim=self.dim,
+                is_causal=self.is_causal,
+                dtype=dtype,
+                sm_scale=self.sm_scale,
+                softcap=self.softcap,
+                tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -838,6 +844,9 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             if not tensor.is_contiguous():
                 raise ValueError(f"{name} must be contiguous")
 
+        # q carries the element type; k and v must agree with it.
+        _validate_attention_dtype(tensors["q"].dtype)
+
         expected_tail_shapes = {
             "q": (self.heads, self.dim),
             "k": (self.heads_kv, self.dim),
@@ -849,8 +858,9 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
                 raise ValueError(
                     f"Expected {name} shape [T, {expected_tail[0]}, {expected_tail[1]}], "
                     f"got {tuple(tensor.shape)}")
-            if tensor.dtype != self.dtype:
-                raise ValueError(f"Expected {name}.dtype {self.dtype}, got {tensor.dtype}")
+            if tensor.dtype != tensors["q"].dtype:
+                raise ValueError(
+                    f"Expected {name}.dtype {tensors['q'].dtype}, got {tensor.dtype}")
 
         for name in ("cu_seqlens_q", "cu_seqlens_kv"):
             tensor = tensors[name]
@@ -916,7 +926,8 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
         cu_seqlens_kv: torch.Tensor,
     ) -> torch.Tensor:
         self._validate_forward_inputs(q, k, v, cu_seqlens_q, cu_seqlens_kv)
-        output, _ = self.kernel(
+        self.dtype = q.dtype
+        output, _ = self._get_kernel(q.dtype)(
             q, k, v, cu_seqlens_q, cu_seqlens_kv, self.max_seqlen_q, self.max_seqlen_kv)
         self._roofline_kwargs = {
             "q_shape": tuple(q.shape),
@@ -1320,7 +1331,6 @@ class GroupedQueryAttentionBwdOp(Op):
                  seq_len: int,
                  dim: int,
                  is_causal: bool = True,
-                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False) -> None:
         self.batch = batch
@@ -1330,7 +1340,6 @@ class GroupedQueryAttentionBwdOp(Op):
         self.dim = dim
         self.is_causal = is_causal
 
-        self.dtype = dtype
 
         self.tune = tune
         self.dispatch_kernel(kernel_map)
@@ -1561,7 +1570,6 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
         is_causal: bool = True,
         window_size_left: int = -1,
         window_size_right: int = -1,
-        dtype: torch.dtype = torch.float16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -1581,21 +1589,26 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
         self.is_causal = is_causal
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
-        self.dtype = dtype
 
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_sliding_window_fwd"](
-            batch=batch,
-            heads=heads,
-            heads_kv=heads_kv,
-            seq_len=seq_len,
-            dim=dim,
-            is_causal=is_causal,
-            window_size_left=window_size_left,
-            window_size_right=window_size_right,
-            dtype=dtype,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["gqa_sliding_window_fwd"](
+                batch=self.batch,
+                heads=self.heads,
+                heads_kv=self.heads_kv,
+                seq_len=self.seq_len,
+                dim=self.dim,
+                is_causal=self.is_causal,
+                window_size_left=self.window_size_left,
+                window_size_right=self.window_size_right,
+                dtype=dtype,
+                tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1622,9 +1635,9 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
             if t.device.type != 'cuda':
                 raise ValueError(
                     f"{name} must be on a cuda device, got {t.device}")
-            if t.dtype != self.dtype:
+            if t.dtype != q.dtype:
                 raise ValueError(
-                    f"{name} dtype {t.dtype} does not match op dtype {self.dtype}")
+                    f"{name} dtype {t.dtype} does not match q dtype {q.dtype}")
         if not q.is_contiguous():
             q = q.contiguous()
         if not k.is_contiguous():
@@ -1645,7 +1658,8 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
                 f"v shape {v.shape} does not match expected "
                 f"({self.batch}, {self.seq_len}, {self.heads_kv}, {self.dim})")
 
-        output, _ = self.kernel.forward(q, k, v)
+        self.dtype = q.dtype
+        output, _ = self._get_kernel(q.dtype).forward(q, k, v)
         return output
 
     @property
@@ -1663,9 +1677,17 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
 
     @property
     def total_memory(self) -> int:
-        """Approximate bytes accessed: read Q/K/V, write O."""
-        elem = torch.tensor([], dtype=self.dtype).element_size()
-        return 2 * self.batch * self.seq_len * (self.heads + self.heads_kv) * self.dim * elem
+        """Approximate bytes accessed: read Q/K/V, write O.
+
+        Available after the first ``forward()``, which binds the element type
+        from its input; there is no element type before that.
+        """
+        if self.dtype is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.total_memory requires a prior forward() "
+                "call to bind the element type")
+        return (2 * self.batch * self.seq_len * (self.heads + self.heads_kv)
+                * self.dim * self.dtype.itemsize)
 
 
 class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
@@ -1704,7 +1726,6 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         is_causal: bool = True,
         window_size_left: int = -1,
         window_size_right: int = -1,
-        dtype: torch.dtype = torch.float16,
         accum_dtype: torch.dtype = torch.float32,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -1724,22 +1745,29 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         self.is_causal = is_causal
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
-        self.dtype = dtype
         self.accum_dtype = accum_dtype
 
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["gqa_sliding_window_varlen_fwd"](
-            batch=batch,
-            heads=heads,
-            heads_kv=heads_kv,
-            dim=dim,
-            is_causal=is_causal,
-            window_size_left=window_size_left,
-            window_size_right=window_size_right,
-            dtype=dtype,
-            accum_dtype=accum_dtype,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map[
+                "gqa_sliding_window_varlen_fwd"
+            ](
+                batch=self.batch,
+                heads=self.heads,
+                heads_kv=self.heads_kv,
+                dim=self.dim,
+                is_causal=self.is_causal,
+                window_size_left=self.window_size_left,
+                window_size_right=self.window_size_right,
+                dtype=dtype,
+                accum_dtype=self.accum_dtype,
+                tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1772,9 +1800,9 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
             if t.device.type != 'cuda':
                 raise ValueError(
                     f"{name} must be on a cuda device, got {t.device}")
-            if t.dtype != self.dtype:
+            if t.dtype != q.dtype:
                 raise ValueError(
-                    f"{name} dtype {t.dtype} does not match op dtype {self.dtype}")
+                    f"{name} dtype {t.dtype} does not match q dtype {q.dtype}")
             if not t.is_contiguous():
                 raise ValueError(f"{name} must be contiguous")
 
@@ -1832,7 +1860,8 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
                 f"max_seqlen_q ({max_seqlen_q}) must be >= actual max Q "
                 f"sequence length ({actual_max_q})")
 
-        output, _ = self.kernel.forward(
+        self.dtype = q.dtype
+        output, _ = self._get_kernel(q.dtype).forward(
             q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q)
         return output
 

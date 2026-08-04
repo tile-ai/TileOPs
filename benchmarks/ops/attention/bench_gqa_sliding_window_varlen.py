@@ -167,7 +167,6 @@ def test_gqa_sliding_window_varlen_fwd_bench(
         is_causal=is_causal,
         window_size_left=wl,
         window_size_right=wr,
-        dtype=dtype,
         tune=tune,
     )
     op.total_q = sum(seqlens_q)
