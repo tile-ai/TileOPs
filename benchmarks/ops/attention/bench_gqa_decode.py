@@ -145,7 +145,6 @@ def test_gqa_decode_bench(batch: int, heads: int, heads_kv: int, seq_len_kv: int
         heads_kv,
         seq_len_kv,
         dim,
-        dtype,
         sm_scale=sm_scale,
         softcap=softcap,
         tune=tune,

@@ -1394,35 +1394,41 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
                  heads_kv: int,
                  seqlen_kv: int,
                  dim: int,
-                 dtype: torch.dtype = torch.float16,
                  sm_scale: Optional[float] = None,
                  softcap: Optional[float] = None,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
-        _validate_attention_dtype(dtype)
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
         self.seqlen_kv = seqlen_kv
         self.dim = dim
 
-        self.dtype = dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
         self.softcap = _score_softcap(softcap)
 
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._select_decode_kernel_key()](
-            batch,
-            heads,
-            heads_kv,
-            seqlen_kv,
-            dim,
-            self.dtype,
-            sm_scale=self.sm_scale,
-            softcap=self.softcap,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            _validate_attention_dtype(dtype)
+            self._kernel_cache[dtype] = self.kernel_map[
+                self._select_decode_kernel_key(dtype)
+            ](
+                self.batch,
+                self.heads,
+                self.heads_kv,
+                self.seqlen_kv,
+                self.dim,
+                dtype,
+                sm_scale=self.sm_scale,
+                softcap=self.softcap,
+                tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1431,24 +1437,25 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
             "gqa_decode_bs1_kernel": GQADecodeBs1Kernel,
         }
 
-    def _uses_bs1_fast_path(self) -> bool:
-        """Ctor-time gate for the batch=1 warp-specialized decode kernel.
+    def _uses_bs1_fast_path(self, dtype: torch.dtype) -> bool:
+        """Whether *dtype* routes to the batch=1 warp-specialized decode kernel.
 
-        Any batch=1 fp16 Hopper request with dim 128 and a query-per-KV-head group that fits
-        one wgmma tile routes to GQADecodeBs1Kernel, which then switches on the runtime KV
-        length in forward().
+        A batch=1 fp16 request with dim 128 and a query-per-KV-head group that
+        fits one wgmma tile takes GQADecodeBs1Kernel, which then switches on the
+        runtime KV length in forward(). The element type is one of the inputs, so
+        this is a property of the call rather than of the op.
         """
         return _supports_gqa_decode_bs1(
             self.batch,
             self.heads,
             self.heads_kv,
             self.dim,
-            self.dtype,
+            dtype,
             self.softcap,
         )
 
-    def _select_decode_kernel_key(self) -> str:
-        if self._uses_bs1_fast_path():
+    def _select_decode_kernel_key(self, dtype: torch.dtype) -> str:
+        if self._uses_bs1_fast_path(dtype):
             return "gqa_decode_bs1_kernel"
         return "gqa_decode_kernel"
 
@@ -1460,7 +1467,8 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
             v = F.pad(
                 v, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode='constant', value=0)
 
-        return self.kernel(q, k, v, real_seqlen_kv)
+        self.dtype = q.dtype
+        return self._get_kernel(q.dtype)(q, k, v, real_seqlen_kv)
 
 
 class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
@@ -1475,13 +1483,11 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
                  seqlen_kv: int,
                  dim: int,
                  page_size: int,
-                 dtype: torch.dtype = torch.float16,
                  sm_scale: Optional[float] = None,
                  softcap: Optional[float] = None,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False) -> None:
         _validate_gqa_dims(heads, heads_kv, dim)
-        _validate_attention_dtype(dtype)
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -1490,23 +1496,31 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.page_size = page_size
         if page_size <= 0:
             raise ValueError("page_size must be positive")
-        self.dtype = dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
         self.softcap = _score_softcap(softcap)
 
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._select_decode_kernel_key()](
-            batch,
-            heads,
-            heads_kv,
-            seqlen_kv,
-            dim,
-            page_size,
-            self.dtype,
-            sm_scale=self.sm_scale,
-            softcap=self.softcap,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            _validate_attention_dtype(dtype)
+            self._kernel_cache[dtype] = self.kernel_map[
+                self._select_decode_kernel_key(dtype)
+            ](
+                self.batch,
+                self.heads,
+                self.heads_kv,
+                self.seqlen_kv,
+                self.dim,
+                self.page_size,
+                dtype,
+                sm_scale=self.sm_scale,
+                softcap=self.softcap,
+                tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1515,25 +1529,26 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
             "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
         }
 
-    def _uses_bs1_fast_path(self) -> bool:
+    def _uses_bs1_fast_path(self, dtype: torch.dtype) -> bool:
         """Use the paged Hopper fast path only when its TMA tile stays within one page."""
         return _supports_gqa_decode_bs1(
             self.batch,
             self.heads,
             self.heads_kv,
             self.dim,
-            self.dtype,
+            dtype,
             self.softcap,
         ) and GQADecodePagedBs1Kernel.block_n_for_page_size(self.page_size) is not None
 
-    def _select_decode_kernel_key(self) -> str:
-        if self._uses_bs1_fast_path():
+    def _select_decode_kernel_key(self, dtype: torch.dtype) -> str:
+        if self._uses_bs1_fast_path(dtype):
             return "gqa_decode_paged_bs1_kernel"
         return "gqa_decode_paged_kernel"
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
-        return self.kernel(q, k, v, real_seqlen_kv, block_table)
+        self.dtype = q.dtype
+        return self._get_kernel(q.dtype)(q, k, v, real_seqlen_kv, block_table)
 
 
 class GroupedQueryAttentionSlidingWindowFwdOp(Op):
