@@ -35,7 +35,7 @@ TEARDOWN_TIMEOUT_S = 120
 # so a child that dies mid-collect stays distinguishable from a clean one.
 # The run exit code leaves via the pipe before interpreter teardown.
 _CHILD = """\
-import ctypes, os, sys
+import ctypes, os, subprocess, sys
 
 status = os.environ["TILEOPS_COLLECT_STATUS"]
 open(status, "w").write("started")
@@ -45,6 +45,41 @@ ctypes.CDLL(None).prctl(0x59616D61, os.getppid(), 0, 0, 0)
 import pytest
 
 rc_collect = int(pytest.main(["--collect-only", "-q", sys.argv[3]]))
+torch_loaded = "torch" in sys.modules
+cuda_initialized = "not-loaded"
+if torch_loaded:
+    try:
+        cuda_initialized = str(sys.modules["torch"].cuda.is_initialized())
+    except Exception as exc:
+        cuda_initialized = f"error:{type(exc).__name__}:{exc}"
+gpu_rows = []
+try:
+    proc = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-compute-apps=pid,process_name,used_gpu_memory",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    if proc.returncode == 0:
+        for line in proc.stdout.splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if parts and parts[0] == str(os.getpid()):
+                gpu_rows.append(line.strip())
+    else:
+        gpu_rows.append(f"nvidia-smi-error:{proc.stderr.strip()}")
+except Exception as exc:
+    gpu_rows.append(f"probe-error:{type(exc).__name__}:{exc}")
+gpu_status = (
+    f"pid={os.getpid()} bench_file={sys.argv[3]} rc_collect={rc_collect} "
+    f"torch_loaded={torch_loaded} cuda_initialized={cuda_initialized} "
+    f"gpu_rows={gpu_rows}"
+)
+open(status + ".gpu", "w").write(gpu_status + "\\n")
+print("COLLECT_GPU_STATUS " + gpu_status, flush=True)
 open(status, "w").write(str(rc_collect))
 sys.stdin.readline()
 rc = int(pytest.main(sys.argv[2:]))
@@ -261,6 +296,14 @@ def main() -> int:
         default=4,
         help="upcoming files importing in advance while the current file runs",
     )
+    parser.add_argument(
+        "--strict-serial",
+        action="store_true",
+        help=(
+            "run one child at a time and wait for interpreter teardown before "
+            "starting the next benchmark file"
+        ),
+    )
     args = parser.parse_args()
 
     dump_dir = Path(args.dump_dir)
@@ -290,6 +333,73 @@ def main() -> int:
                 _CHILD, argv, work_dir / f"{index:03d}.log", work_dir / f"{index:03d}.collect"
             )
 
+        def run_child(index: int, bench_file: str, child: Child) -> None:
+            rel = os.path.relpath(bench_file)
+            print(f"\n=== [{index + 1}/{len(bench_files)}] {rel} ===", flush=True)
+            print(f"LIFECYCLE: {rel}: child pid={child.proc.pid}", flush=True)
+            fragment = work_dir / f"{index:03d}.xml"
+            log_path = work_dir / f"{index:03d}.log"
+
+            start = time.monotonic()
+            child.release()
+            # Poll in short steps so lingering teardown deadlines are
+            # enforced while this file runs, not after it.
+            file_deadline = start + args.timeout_per_file
+            while True:
+                rc = child.wait_result(min(1.0, max(0.0, file_deadline - time.monotonic())))
+                note_anomalies(_reap_lingering(lingering, block=False))
+                if rc is not None or time.monotonic() >= file_deadline:
+                    break
+            elapsed = time.monotonic() - start
+            print(f"LIFECYCLE: {rel}: pytest rc={rc} elapsed={elapsed:.3f}s", flush=True)
+
+            if rc is None:
+                dump_dir.mkdir(parents=True, exist_ok=True)
+                dump_path = dump_dir / f"{Path(bench_file).stem}.txt"
+                _dump_stack(child.proc.pid, dump_path)
+                child.kill()
+                sys.stdout.write(log_path.read_text(errors="replace"))
+                message = (
+                    f"timed out after {args.timeout_per_file:.0f}s; "
+                    f"killed, stack dump at {dump_path}"
+                )
+                print(f"TIMEOUT: {rel}: {message}", flush=True)
+                suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
+                failed.append(rel)
+            else:
+                if rc >= 0:
+                    # A pre-status signal death (rc < 0) is already reaped
+                    # and recorded below; enqueue only status-reported
+                    # children so post-status deaths stay observable.
+                    lingering.append(
+                        (child, time.monotonic() + args.teardown_timeout, bench_file)
+                    )
+                sys.stdout.write(log_path.read_text(errors="replace"))
+                if rc < 0:
+                    sig = signal.Signals(-rc)
+                    message = f"killed by signal {sig.value} ({sig.name})"
+                    print(f"CRASH: {rel}: {message}", flush=True)
+                    suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
+                    failed.append(rel)
+                elif fragment.exists():
+                    suites.extend(_fragment_suites(fragment))
+                    # 0 = all passed, 5 = nothing collected (e.g. all skipped).
+                    if rc not in (0, 5):
+                        failed.append(rel)
+                else:
+                    message = f"pytest exited with {rc} without writing results"
+                    suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
+                    failed.append(rel)
+            outcome = _collect_outcome(work_dir / f"{index:03d}.collect")
+            if outcome is not None:
+                collect_failed.append((rel, outcome))
+            print(f"--- {rel} finished in {elapsed:.0f}s ---", flush=True)
+            _absorb_profile_log(profile_parts)
+
+            if args.strict_serial:
+                note_anomalies(_reap_lingering(lingering, block=True))
+                print(f"LIFECYCLE: {rel}: teardown complete", flush=True)
+
         pending: deque[Child] = deque()
         collect_failed: list[tuple[str, str]] = []
         spawned = 0
@@ -300,74 +410,23 @@ def main() -> int:
                 pending.append(spawn_at(spawned))
                 spawned += 1
 
-        top_up()
-        try:
-            for index, bench_file in enumerate(bench_files):
-                child = pending.popleft()
-                top_up()
-                rel = os.path.relpath(bench_file)
-                print(f"\n=== [{index + 1}/{len(bench_files)}] {rel} ===", flush=True)
-                fragment = work_dir / f"{index:03d}.xml"
-                log_path = work_dir / f"{index:03d}.log"
-
-                start = time.monotonic()
-                child.release()
-                # Poll in short steps so lingering teardown deadlines are
-                # enforced while this file runs, not after it.
-                file_deadline = start + args.timeout_per_file
-                while True:
-                    rc = child.wait_result(min(1.0, max(0.0, file_deadline - time.monotonic())))
-                    note_anomalies(_reap_lingering(lingering, block=False))
-                    if rc is not None or time.monotonic() >= file_deadline:
-                        break
-                elapsed = time.monotonic() - start
-
-                if rc is None:
-                    dump_dir.mkdir(parents=True, exist_ok=True)
-                    dump_path = dump_dir / f"{Path(bench_file).stem}.txt"
-                    _dump_stack(child.proc.pid, dump_path)
-                    child.kill()
-                    sys.stdout.write(log_path.read_text(errors="replace"))
-                    message = (
-                        f"timed out after {args.timeout_per_file:.0f}s; "
-                        f"killed, stack dump at {dump_path}"
-                    )
-                    print(f"TIMEOUT: {rel}: {message}", flush=True)
-                    suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
-                    failed.append(rel)
-                else:
-                    if rc >= 0:
-                        # A pre-status signal death (rc < 0) is already reaped
-                        # and recorded below; enqueue only status-reported
-                        # children so post-status deaths stay observable.
-                        lingering.append(
-                            (child, time.monotonic() + args.teardown_timeout, bench_file)
-                        )
-                    sys.stdout.write(log_path.read_text(errors="replace"))
-                    if rc < 0:
-                        sig = signal.Signals(-rc)
-                        message = f"killed by signal {sig.value} ({sig.name})"
-                        print(f"CRASH: {rel}: {message}", flush=True)
-                        suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
-                        failed.append(rel)
-                    elif fragment.exists():
-                        suites.extend(_fragment_suites(fragment))
-                        # 0 = all passed, 5 = nothing collected (e.g. all skipped).
-                        if rc not in (0, 5):
-                            failed.append(rel)
-                    else:
-                        message = f"pytest exited with {rc} without writing results"
-                        suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
-                        failed.append(rel)
-                outcome = _collect_outcome(work_dir / f"{index:03d}.collect")
-                if outcome is not None:
-                    collect_failed.append((rel, outcome))
-                print(f"--- {rel} finished in {elapsed:.0f}s ---", flush=True)
-                _absorb_profile_log(profile_parts)
-        finally:
-            for leftover in pending:
-                leftover.kill()
-            note_anomalies(_reap_lingering(lingering, block=True))
+        if args.strict_serial:
+            try:
+                for index, bench_file in enumerate(bench_files):
+                    run_child(index, bench_file, spawn_at(index))
+            finally:
+                note_anomalies(_reap_lingering(lingering, block=True))
+        else:
+            top_up()
+            try:
+                for index, bench_file in enumerate(bench_files):
+                    child = pending.popleft()
+                    top_up()
+                    run_child(index, bench_file, child)
+            finally:
+                for leftover in pending:
+                    leftover.kill()
+                note_anomalies(_reap_lingering(lingering, block=True))
 
     merged = ET.Element("testsuites")
     merged.extend(suites)
