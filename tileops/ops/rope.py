@@ -328,12 +328,7 @@ class _RopeOpBase(Op):
     the input tensor, avoiding device-mismatch issues in multi-GPU settings.
 
     Args:
-        seq_len: Sequence length.
-        head_dim: Head dimension (must be even).
-        dtype: Torch dtype.
         layout: "1d" or "2d".
-        batch: Batch size (for 2d layout).
-        num_heads: Number of attention heads (for 2d layout).
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """
@@ -493,12 +488,7 @@ class RopeNeoxOp(_RopeOpBase):
     Reference: GPT-NeoX / HuggingFace transformers RotaryEmbedding.
 
     Args:
-        seq_len: Sequence length.
-        head_dim: Head dimension (must be even).
-        dtype: Torch dtype.
         layout: "1d" or "2d".
-        batch: Batch size (for 2d).
-        num_heads: Number of heads (for 2d).
         base: Frequency base (default 10000).
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
@@ -668,12 +658,7 @@ class RopeNonNeoxOp(_RopeOpBase):
     Reference: Su et al., "RoFormer: Enhanced Transformer with Rotary Position Embedding".
 
     Args:
-        seq_len: Sequence length.
-        head_dim: Head dimension (must be even).
-        dtype: Torch dtype.
         layout: "1d" or "2d".
-        batch: Batch size (for 2d).
-        num_heads: Number of heads (for 2d).
         base: Frequency base (default 10000).
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
@@ -703,12 +688,7 @@ class RopeLlama31Op(_RopeOpBase):
     Reference: Meta Llama 3.1 model implementation.
 
     Args:
-        seq_len: Sequence length.
-        head_dim: Head dimension (must be even).
-        dtype: Torch dtype.
         layout: "1d" or "2d".
-        batch: Batch size (for 2d).
-        num_heads: Number of heads (for 2d).
         base: Frequency base (default 10000).
         scale_factor: Scaling factor for low frequencies (default 8.0).
         low_freq_factor: Low-frequency wavelen threshold (default 1.0).
@@ -754,12 +734,7 @@ class RopeYarnOp(_RopeOpBase):
     Reference: Peng et al., "YaRN: Efficient Context Window Extension of LLMs".
 
     Args:
-        seq_len: Sequence length.
-        head_dim: Head dimension (must be even).
-        dtype: Torch dtype.
         layout: "1d" or "2d".
-        batch: Batch size (for 2d).
-        num_heads: Number of heads (for 2d).
         base: Frequency base (default 10000).
         scale: Context extension scale (default 16.0).
         original_max_position: Original max position (default 4096).
@@ -808,12 +783,7 @@ class RopeLongRopeOp(_RopeOpBase):
     Ding et al., "LongRoPE: Extending LLM Context Window Beyond 2M Tokens".
 
     Args:
-        seq_len: Sequence length.
-        head_dim: Head dimension (must be even).
-        dtype: Torch dtype.
         layout: "1d" or "2d".
-        batch: Batch size (for 2d).
-        num_heads: Number of heads (for 2d).
         base: Frequency base (default 10000).
         rescale_factors: Per-dimension rescale factors (ext_factors) of shape
             (head_dim // 2,). These multiply the divisor.

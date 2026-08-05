@@ -20,7 +20,6 @@ class PreluFwdOp(_PerDtypeKernels, Op):
 
     Args:
         shape: Shape of the input tensor (must have a channel dimension).
-        dtype: Torch dtype.
         num_channels: Number of channels (weight length).
         kernel_map: Optional dispatch override mapping kernel keys to
             ``Kernel`` subclasses. Falls back to ``default_kernel_map``.

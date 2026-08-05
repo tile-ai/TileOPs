@@ -28,7 +28,6 @@ class RMSNormFwdOp(Op):
             reduction runs (manifest ``params.normalized_shape``).
         eps: Epsilon for numerical stability (manifest ``params.eps``).
             ``None`` selects the implementation default ``1e-6``.
-        dtype: Data type (``torch.float16`` or ``torch.bfloat16``).
         kernel_map: Optional kernel override dictionary.
         tune: Whether to autotune (default ``False``).
 

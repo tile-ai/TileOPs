@@ -87,13 +87,7 @@ class GatedDeltaNetFwdOp(Op):
             o_tileops = o_fla.permute(0, 2, 1, 3)  # [B, S, H, DV] -> [B, H, S, DV]
 
     Args:
-        batch: Batch size.
-        heads: Number of attention heads.
-        seq_len: Sequence length (must be divisible by chunk_size).
-        dim_k: Key/query dimension.
-        dim_v: Value dimension.
         chunk_size: Chunk size for chunked linear attention.
-        dtype: Data type for computation.
         kernel_map: Optional kernel overrides.
         tune: Whether to autotune kernels.
     """
@@ -419,13 +413,7 @@ class GatedDeltaNetBwdOp(Op):
     Pipeline: prepare_wy_repr -> fwd (to get Aw, Au) -> bwd kernel -> (dq, dk, dv, dg, dbeta).
 
     Args:
-        batch: Batch size.
-        heads: Number of attention heads.
-        seq_len: Sequence length (must be divisible by chunk_size).
-        dim_k: Key/query dimension.
-        dim_v: Value dimension.
         chunk_size: Chunk size for chunked linear attention.
-        dtype: Data type for computation.
         kernel_map: Optional kernel overrides.
         tune: Whether to autotune kernels.
     """
@@ -550,13 +538,7 @@ class GatedDeltaNetOp(Op):
     Layout: BHSD (batch, head, seq_len, dim).
 
     Args:
-        batch: Batch size.
-        heads: Number of attention heads.
-        seq_len: Sequence length (must be divisible by chunk_size).
-        dim_k: Key/query dimension.
-        dim_v: Value dimension.
         chunk_size: Chunk size for chunked linear attention.
-        dtype: Data type for computation.
         kernel_map: Optional kernel overrides.
         tune: Whether to autotune kernels.
     """

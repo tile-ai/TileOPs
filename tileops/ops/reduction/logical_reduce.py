@@ -34,8 +34,6 @@ class AllFwdOp(_ReduceOpBase):
     ``x.bool()`` with the input shape, matching ``torch.all`` semantics.
 
     Args:
-        dtype: Input data type (float16, bfloat16, float32, int32, int64,
-               bool, complex64, complex128).
         dim: Reduction dimension (default ``None``, i.e. full reduction).
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.
@@ -106,8 +104,6 @@ class AnyFwdOp(_ReduceOpBase):
     ``x.bool()`` with the input shape, matching ``torch.any`` semantics.
 
     Args:
-        dtype: Input data type (float16, bfloat16, float32, int32, int64,
-               bool, complex64, complex128).
         dim: Reduction dimension (default ``None``, i.e. full reduction).
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.
@@ -178,8 +174,6 @@ class CountNonzeroFwdOp(_ReduceOpBase):
     complex64, complex128) are pre-converted to float32 in forward().
 
     Args:
-        dtype: Input data type (float16, bfloat16, float32, int32, int64,
-               bool, complex64, complex128).
         dim: Reduction dimension (default ``None``, i.e. full reduction).
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.

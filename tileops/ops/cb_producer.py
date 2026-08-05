@@ -25,7 +25,6 @@ class CBProducerOp(Op):
         n_groups: Number of groups
         chunk_len: Chunk length (Q)
         d_state: State dimension (N)
-        dtype: Data type
         tune: Whether to autotune
         kernel_map: Optional pre-initialized kernels
     """

@@ -22,7 +22,6 @@ class L1NormFwdOp(_ReduceOpBase):
     by ``(M, N)`` to avoid rebuilds.
 
     Args:
-        dtype: Input data type (float16, bfloat16, float32).
         dim: Reduction dimension (default ``None`` -> full reduction, matching
             ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
             ``None``.
@@ -71,7 +70,6 @@ class L2NormFwdOp(_ReduceOpBase):
     by ``(M, N)`` to avoid rebuilds.
 
     Args:
-        dtype: Input data type (float16, bfloat16, float32).
         dim: Reduction dimension (default ``None`` -> full reduction, matching
             ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
             ``None``.
@@ -123,7 +121,6 @@ class InfNormFwdOp(_ReduceOpBase):
     torch.linalg.vector_norm(ord=inf) semantics.
 
     Args:
-        dtype: Input data type (float16, bfloat16, float32).
         dim: Reduction dimension (default ``None`` -> full reduction, matching
             ``torch.linalg.vector_norm``). Accepts ``int``, ``list[int]``, or
             ``None``.

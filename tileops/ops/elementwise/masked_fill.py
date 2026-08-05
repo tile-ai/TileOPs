@@ -30,7 +30,6 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         input: Shape of the input tensor.
         mask: Shape of the mask tensor (bool).
         value: Shape of the value tensor (must be ``()`` per the manifest).
-        dtype: Torch dtype for ``input`` / ``value``.
         kernel_map: Optional dispatch override mapping kernel keys to
             ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
@@ -157,7 +156,6 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
             truncate floats toward zero (``1.5 -> 1``); ``torch.uint8``
             additionally wraps Python ints in ``[-255, 0)`` via two's
             complement.
-        dtype: Torch dtype. Must be a manifest-declared dtype.
         kernel_map: Optional dispatch override mapping kernel keys to
             ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """

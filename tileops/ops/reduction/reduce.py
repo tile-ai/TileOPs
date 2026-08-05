@@ -610,7 +610,6 @@ class _WelfordReduceOp(_ReduceOpBase):
     so no host-side ``F.pad`` is needed.
 
     Args:
-        dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default ``None``, i.e. full reduction).
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.

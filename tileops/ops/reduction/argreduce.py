@@ -18,7 +18,6 @@ class ArgmaxFwdOp(_ReduceOpBase):
     by ``(M, N)`` to avoid rebuilds.
 
     Args:
-        dtype: Input data type.
         dim: Reduction dimension. ``None`` (the default) matches
             ``torch.argmax(x)`` semantics: the input is treated as a
             contiguous flattened 1D buffer and the returned index is into
@@ -73,7 +72,6 @@ class ArgminFwdOp(_ReduceOpBase):
     by ``(M, N)`` to avoid rebuilds.
 
     Args:
-        dtype: Input data type.
         dim: Reduction dimension. ``None`` (the default) matches
             ``torch.argmin(x)`` semantics: the input is treated as a
             contiguous flattened 1D buffer and the returned index is into

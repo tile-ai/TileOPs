@@ -651,7 +651,6 @@ class UnaryOp(_PerDtypeKernels, Op):
 
     Args:
         N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """
@@ -759,7 +758,6 @@ class BinaryOp(_PerDtypeKernels, Op):
     Args:
         a_shape: Shape of input a.
         b_shape: Shape of input b.
-        dtype: Torch dtype.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """
@@ -905,7 +903,6 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         M: Optional number of rows. Inferred from ``x`` when omitted.
         N: Optional half column dim (output width). Inferred from ``x`` when
             omitted.
-        dtype: Optional torch dtype. Inferred from ``x`` when omitted.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """

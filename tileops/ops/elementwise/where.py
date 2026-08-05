@@ -26,7 +26,6 @@ class WhereFwdOp(_PerDtypeKernels, Op):
             with ``input`` / ``other``).
         input: Shape of the value-when-true tensor.
         other: Shape of the value-when-false tensor.
-        dtype: Torch dtype for ``input`` / ``other``.
         kernel_map: Optional dispatch override mapping kernel keys to
             ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """

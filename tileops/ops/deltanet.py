@@ -29,13 +29,7 @@ class DeltaNetFwdOp(Op):
         layout: ``q/k [B, T, H, K]``, ``v [B, T, H, V]``, ``beta [B, T, H]``.
 
     Args:
-        batch: Batch size.
-        heads: Number of attention heads.
-        seq_len: Sequence length (must be divisible by chunk_size).
-        dim_k: Key/query dimension.
-        dim_v: Value dimension.
         chunk_size: Chunk size for chunked linear attention.
-        dtype: Data type for computation.
         kernel_map: Optional kernel overrides.
         tune: Whether to autotune kernels.
     """
@@ -154,13 +148,7 @@ class DeltaNetBwdOp(Op):
     Pipeline: prepare_wy_repr -> fwd (to get Aw, Au) -> bwd kernel -> (dq, dk, dv, dbeta).
 
     Args:
-        batch: Batch size.
-        heads: Number of attention heads.
-        seq_len: Sequence length (must be divisible by chunk_size).
-        dim_k: Key/query dimension.
-        dim_v: Value dimension.
         chunk_size: Chunk size for chunked linear attention.
-        dtype: Data type for computation.
         kernel_map: Optional kernel overrides.
         tune: Whether to autotune kernels.
     """
@@ -316,13 +304,7 @@ class DeltaNetOp(Op):
     Layout: BHSD (batch, head, seq_len, dim).
 
     Args:
-        batch: Batch size.
-        heads: Number of attention heads.
-        seq_len: Sequence length (must be divisible by chunk_size).
-        dim_k: Key/query dimension.
-        dim_v: Value dimension.
         chunk_size: Chunk size for chunked linear attention.
-        dtype: Data type for computation.
         kernel_map: Optional kernel overrides.
         tune: Whether to autotune kernels.
     """

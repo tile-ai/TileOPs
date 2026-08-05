@@ -69,7 +69,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         ffn_size: Per-expert FFN intermediate dimension F.
         routed_scaling_factor: Scalar applied to the final reduced output.
             Defaults to 1.0 (no scaling).
-        dtype: Storage dtype for activations and weights. Defaults to bfloat16.
         expert_map: Optional global→local expert id map for expert parallelism
             (EP). Entries < 0 mark experts not owned by this rank.
         gemm_kernel: Optional override for the grouped-GEMM kernel class.

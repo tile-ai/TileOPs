@@ -27,7 +27,6 @@ class EngramGateConvFwdOp(Op):
         M: Batch size.
         seq_len: Sequence length.
         d: Model hidden dimension.
-        dtype: Data type (float16 or bfloat16).
         eps: RMSNorm epsilon (default 1e-6).
     """
 
@@ -121,7 +120,6 @@ class EngramGateConvBwdOp(Op):
         M: Batch size.
         seq_len: Sequence length.
         d: Model hidden dimension.
-        dtype: Data type (float16 or bfloat16).
         eps: RMSNorm epsilon (default 1e-6).
     """
 

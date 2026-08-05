@@ -24,14 +24,6 @@ class SSDChunkStateFwdOp(Op):
               * (1 if seq_idx is None else (seq_idx[b,c*Q+Q-1] >= 0 and seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
 
     Args:
-        batch:      Batch size.
-        num_chunks: Number of chunks (seq_len / chunk_len).
-        chunk_len:  Tokens per chunk.
-        n_heads:    Number of attention heads.
-        d_head:     Head dimension.
-        d_state:    SSM state dimension.
-        n_groups:   Number of B-matrix groups (n_heads must be divisible by n_groups).
-        dtype:      Data type for inputs (float16 or bfloat16).
         has_seq_idx: Whether to accept and apply a seq_idx mask.
         tune:       Whether to autotune tile config on construction.
     """

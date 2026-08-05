@@ -21,7 +21,6 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
 
     Args:
         N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
         nan: Replacement for NaN (default 0.0).
         posinf: Replacement for +Inf. Manifest default ``None`` resolves
             to the largest finite value representable in the user-facing

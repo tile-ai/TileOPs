@@ -50,7 +50,6 @@ class FusedMoe(Op):
         renormalize: Renormalize top-k weights to sum to 1.
         with_correction_bias: Accept `correction_bias` during routing.
         routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
-        dtype: Activation and weight dtype.
         expert_map: [E_global] int32 for Expert Parallel local filtering.
         prepare_finalize: Override the PrepareAndFinalize implementation.
         experts: Override the Experts implementation.

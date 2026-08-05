@@ -46,13 +46,6 @@ class Mamba2FwdOp:
     the official mamba_ssm library.
 
     Args:
-        batch:              Batch size.
-        seqlen:             Total sequence length (must be divisible by chunk_size).
-        n_heads:            Number of State Space Model (SSM) heads.
-        d_head:             Head dimension.
-        d_state:            SSM state dimension.
-        n_groups:           Number of B/C groups (n_heads must be divisible by n_groups).
-        dtype:              Data type for x, B, C inputs (float16 or bfloat16).
         chunk_size:         Tokens per chunk (default 256).
         dt_softplus:        Apply softplus to (dt + dt_bias) before use.
         has_initial_states: Whether initial_states tensor will be provided at forward time.

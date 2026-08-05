@@ -147,7 +147,6 @@ class LerpFwdOp(BinaryOp):
     Args:
         a_shape: Shape of input a.
         b_shape: Shape of input b.
-        dtype: Torch dtype.
         weight: Scalar interpolation weight, fixed at construction (default 0.5).
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
@@ -203,7 +202,6 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
         input: Shape of the start tensor.
         end: Shape of the end tensor.
         weight: Shape of the per-element weight tensor.
-        dtype: Torch dtype for all three operands.
     """
 
     _op_name = "lerp_tensor"

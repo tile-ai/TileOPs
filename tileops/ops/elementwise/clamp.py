@@ -33,7 +33,6 @@ class ClampFwdOp(_PerDtypeKernels, _ClampTensorBase):
         input: Shape of the input tensor.
         min: Shape of the lower-bound tensor, or ``None`` for no lower bound.
         max: Shape of the upper-bound tensor, or ``None`` for no upper bound.
-        dtype: Torch dtype for all operands.
 
     Raises:
         ValueError: If both ``min`` and ``max`` are ``None``.
@@ -151,7 +150,6 @@ class ClampMinFwdOp(_PerDtypeKernels, _ClampTensorBase):
     Args:
         input: Shape of the input tensor.
         min: Shape of the lower-bound tensor.
-        dtype: Torch dtype.
     """
 
     _op_name = "clamp_min"
@@ -226,7 +224,6 @@ class ClampMaxFwdOp(_PerDtypeKernels, _ClampTensorBase):
     Args:
         input: Shape of the input tensor.
         max: Shape of the upper-bound tensor.
-        dtype: Torch dtype.
     """
 
     _op_name = "clamp_max"
@@ -302,7 +299,6 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
         input: Shape of the input tensor.
         min: Lower bound (Number or None).
         max: Upper bound (Number or None).
-        dtype: Torch dtype.
     """
 
     _op_name = "clamp"

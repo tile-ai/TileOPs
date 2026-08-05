@@ -47,7 +47,6 @@ class GeluFwdOp(_GeluApproximateBase):
 
     Args:
         N_total: Number of elements (flattened input).
-        dtype: Torch dtype.
         approximate: Approximation mode. ``'none'`` (default) routes to
             the erf-based ``GeluFwdKernel``. ``'tanh'`` routes to
             ``GeluTanhFwdKernel`` (the fused tanh approximation
@@ -150,7 +149,6 @@ class LeakyReluFwdOp(_ParametricActivationOp):
 
     Args:
         N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
         negative_slope: Slope for negative inputs (default 0.01).
         inplace: When True, copy the result back into ``input`` and
             return ``input`` (preserving tensor identity). The kernel
@@ -192,7 +190,6 @@ class EluFwdOp(_ParametricActivationOp):
 
     Args:
         N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
         alpha: Scale for the negative part (default 1.0).
         inplace: When True, copy the result back into ``input`` and
             return ``input`` (preserving tensor identity).
@@ -232,7 +229,6 @@ class HardtanhFwdOp(_ParametricActivationOp):
 
     Args:
         N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
         min_val: Lower bound (default -1.0).
         max_val: Upper bound (default 1.0).
         inplace: When True, copy the result back into ``input`` and
@@ -275,7 +271,6 @@ class SoftplusFwdOp(_ParametricActivationOp):
 
     Args:
         N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
         beta: Scaling factor (default 1.0).
         threshold: Linear regime threshold (default 20.0).
         kernel_map: Optional kernel dispatch override.
