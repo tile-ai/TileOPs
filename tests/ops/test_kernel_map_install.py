@@ -268,17 +268,6 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
     assert entry.kernel.dtype == torch.int32
 
 
-# Rounds of review kept surfacing the same shape: an op deciding something on the
-# backend's behalf instead of asking it. The instances were removable one at a
-# time; the pattern was not, until stated as a contract every builder must meet.
-#
-# A syntactic check ("no `_build_entry` may index `kernel_map`") is not that
-# contract: it cannot see a helper that indexes it elsewhere, an alias, a
-# construction in `__init__`, or a `_build_kernel_instance` override that ignores
-# the class it was handed. Injecting a backend and observing what gets built
-# does, wherever the construction happens.
-
-
 class _ProbeKernel:
     """Stands in for whatever the injected backend says should be built."""
 
@@ -288,12 +277,7 @@ class _ProbeKernel:
 
     def __init__(self, *args, **kwargs):
         type(self).instances.append(self)
-        self.ctor_args = args
-        self.ctor_kwargs = kwargs
         self.ctor_dtype = next((a for a in args if isinstance(a, torch.dtype)), None)
-
-    def __call__(self, *args, **kwargs):
-        raise AssertionError("the probe is not meant to run")
 
 
 def _probe_backend(probe_dtype: torch.dtype):
@@ -326,6 +310,9 @@ _BUILDER_SHAPES = [
     ("PreluFwdOp", {"shape": (4, 8), "num_channels": 8}, ["prelu"], ()),
     ("NanToNumFwdOp", {"N_total": 64}, ["nan_to_num"], ()),
     ("ClampFwdOp", {"input": (64,), "min": (64,), "max": (64,)}, ["clamp_tensor"], ()),
+    ("ClampMinFwdOp", {"input": (64,), "min": (64,)}, ["clamp_tensor"], ()),
+    ("ClampMaxFwdOp", {"input": (64,), "max": (64,)}, ["clamp_tensor"], ()),
+    ("LerpFwdOp", {"a_shape": (64,), "b_shape": (64,), "weight": 0.5}, ["lerp"], ()),
     ("ClampScalarFwdOp", {"input": (64,), "min": 0.0}, ["clamp"], ()),
     ("MaskedFillScalarFwdOp", {"input": (64,), "mask": (64,), "value": 1.0}, ["masked_fill"], ()),
     ("MaskedFillFwdOp", {"input": (64,), "mask": (64,), "value": ()},
@@ -381,3 +368,7 @@ def test_generative_op_also_defers_to_the_backend(op_name, kwargs):
     assert len(_ProbeKernel.instances) == 1
     assert op.kernel is _ProbeKernel.instances[0]
     assert op.kernel.ctor_dtype == probe_dtype
+
+    # Whatever storage the backend computed in, the op delivers what it declared.
+    shipped = getattr(ew, op_name)(dtype=torch.float16, **kwargs)
+    assert shipped().dtype == torch.float16

@@ -584,15 +584,10 @@ def _is_fp8(dtype: torch.dtype) -> bool:
 class KernelEntry:
     """One element type's specialization, resolved together.
 
-    An op instance now serves whatever dtype its caller passes, so nothing
-    derived from the element type may live in a slot on the instance: a later
-    call with a different dtype would read the earlier call's value. Each
-    entry is built once and carries everything a call needs.
-
-    The fields state semantics only. How a backend represents those semantics
-    — reinterpreting bool storage as uint8, say — belongs to the kernel, not
-    here: an op that branches on a backend's representation cannot be served by
-    a second backend that represents it differently.
+    An instance serves whatever dtype its caller passes, so nothing derived from
+    the element type may live in a slot on it. The fields state semantics only;
+    how a backend represents them belongs to the kernel, so that a backend
+    representing them differently can still serve the op.
 
     Attributes:
         kernel: built for ``compute_dtype``.
@@ -611,32 +606,17 @@ class KernelEntry:
 class _PerDtypeKernels:
     """The family's one way to reach a kernel: ``self._entry(dtype)``.
 
-    Every elementwise op specializes on the element type of its inputs, so
-    every one of them needs the same three things — build once per dtype,
-    keep whatever else that specialization implies together with the kernel,
-    and record which dtype the most recent call used.
+    A subclass supplies ``_build_entry(dtype)``, returning an entry that carries
+    whatever the specialization implies besides the kernel; an op with no such
+    split simply gets ``compute_dtype == dtype``.
 
-    A subclass supplies ``_build_entry(dtype)``. It may return extra state in
-    the entry (bool operands running on a uint8 kernel, an integer input
-    computing in float32); an op with no such split simply gets
-    ``compute_dtype == dtype``.
-
-    ``self.dtype`` is metadata for ``eval_roofline`` and ``total_memory``, and
-    execution must never read it: by the time a second dtype arrives it no
-    longer describes the call in flight.
-
-    ``_note_call`` records it wherever a call commits to an element type, which
-    is every execution path: the eager one, the one ``torch.compile`` enters
-    behind the custom op, and the ones that answer without a kernel at all.
-
-    The record therefore describes the most recent call that *selected a
-    specialization*, not the most recent one that succeeded — a call that fails
-    afterwards leaves its dtype behind. Narrowing it to successful calls needs
-    the invocation context to reach ``eval_roofline`` instead of living in a
-    mutable slot, which is an ``Op``-wide contract change. A snapshot-and-restore
-    transaction here is not that fix: it cannot see the paths that bypass
-    ``__call__``, and two calls sharing an instance can erase each other's
-    published value.
+    ``self.dtype`` is metadata for ``eval_roofline`` and ``total_memory``, never
+    for execution: by the time a second dtype arrives it no longer describes the
+    call in flight. ``_note_call`` records it wherever a call commits to an
+    element type, so it names the most recent call that selected a
+    specialization — a call failing after that point leaves its dtype behind.
+    Narrowing it to successful calls needs the invocation context to reach
+    ``eval_roofline`` rather than a mutable slot, an ``Op``-wide change.
     """
 
     def _note_call(self, dtype: torch.dtype) -> None:
@@ -985,7 +965,8 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         flops = self.FLOPS_PER_ELEM * self.M * self.N
         return flops, int(self.total_memory)
 
-    def _validate_dtype(self, dtype: torch.dtype) -> None:
+    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
+        M, N = shape
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         supported = impl.SUPPORTED_DTYPES
         if supported is not None and ctor_dtype not in supported:
@@ -994,11 +975,6 @@ class FusedGatedOp(_PerDtypeKernels, Op):
                 f"{self._op_name} does not support dtype {dtype}. "
                 f"Supported: [{names}]"
             )
-
-    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
-        M, N = shape
-        self._validate_dtype(dtype)
-        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         return KernelEntry(
             kernel=impl(M, N, ctor_dtype, tune=self.tune),
             compute_dtype=ctor_dtype,

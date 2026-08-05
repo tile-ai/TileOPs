@@ -1,13 +1,8 @@
 """One op instance, two element types.
 
-Dtype used to be fixed at construction, so an instance served exactly one
-element type and per-instance state could safely hold anything derived from
-it. Now the tensors decide, and the family caches are hand-written per
-family — this covers the invariant they all have to satisfy.
-
-The rest of the suite parametrizes dtype but builds a fresh op per case, so
-it never exercises a second dtype through an instance that already has an
-entry.
+The rest of the suite parametrizes dtype but builds a fresh op per case, so it
+never drives a second dtype through an instance that already holds an entry.
+Each family caches by hand; this covers the invariant they all owe.
 """
 
 import pytest
@@ -80,8 +75,7 @@ def test_attention_decode_reselects_the_kernel_per_dtype():
     """The decode ops pick a kernel *slot* from the element type.
 
     float16 at batch=1 takes the warp-specialized kernel and bfloat16 falls
-    back, so one instance must hold two different kernel classes — the case
-    that used to need two ops with two constructor dtypes.
+    back, so one instance must hold two different kernel classes.
     """
     from tileops.ops.attention.gqa import (
         GroupedQueryAttentionDecodeWithKVCacheFwdOp,
@@ -182,11 +176,9 @@ def test_mismatched_input_dtypes_are_rejected():
         op(x, w)
 
 
-# Bool operands run on a different kernel than the same op's other dtypes: the
-# storage is reinterpreted as uint8. That fact used to live in a `_bool_storage`
-# attribute written while building a kernel, so a bool call followed by an
-# integer one left it describing the wrong call. It now travels inside the
-# cache entry, and these sequences would fail if it moved back out.
+# One instance alternating between bool and non-bool operands: the two are served
+# by different kernels, so anything derived from one must not survive into the
+# other.
 
 
 @pytest.mark.smoke
@@ -266,15 +258,8 @@ _SINGLE_TENSOR_OPS = _single_tensor_elementwise_ops()
 def test_single_tensor_op_records_its_dtype(name):
     """No op may reach a result without recording the element type it used.
 
-    Recording lives in the shared specialization lookup, so an op answering on
-    its own path — an integer identity, a predicate fallback — has to record for
-    itself. Enumerating the family turns a forgotten one into a failure here
-    rather than into roofline numbers describing an earlier call, which is how
-    `RoundFwdOp` shipped a stale dtype.
-
-    Each op is driven on every dtype its manifest declares, not just float32:
-    the paths that skip the kernel are exactly the ones a float-only sweep
-    misses.
+    An op answering on its own path — an integer identity, a predicate fallback
+    — records for itself, so every declared dtype is driven, not just float32.
     """
     op = _SINGLE_TENSOR_OPS[name](N_total=64)
     declared = load_manifest()[name]["signature"]["inputs"]
