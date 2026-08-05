@@ -183,18 +183,40 @@ def test_da_cumsum_fwd_accepts_declared_output_dtypes(dtype):
 
 
 @pytest.mark.smoke
+def test_da_cumsum_fwd_padded_head_tile():
+    """A head count not divisible by block_h exercises the guarded store.
+
+    The write loop covers ``block_h`` heads and masks the tail with
+    ``bh_tile * block_h + i < H``. With H divisible by block_h that mask is
+    never false, so a head count of 5 against block_h=4 is the only shape that
+    reaches the partial tile.
+    """
+    batch, n_heads, chunk_len, num_chunks = 1, 5, 64, 2
+    seq_len = chunk_len * num_chunks
+    op = DaCumsumFwdOp(chunk_len=chunk_len, dtype=torch.float32)
+    dt = torch.rand(batch, seq_len, n_heads, dtype=torch.float32, device="cuda")
+    A = -torch.rand(n_heads, dtype=torch.float32, device="cuda")
+
+    dt_out, dA_cumsum = op(dt, A)
+    ref_dt, ref_cumsum = da_cumsum_fwd_ref(
+        dt, A, num_chunks, chunk_len, dtype=torch.float32,
+    )
+    torch.testing.assert_close(dt_out, ref_dt, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(dA_cumsum, ref_cumsum, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.int32, torch.float64])
 def test_da_cumsum_fwd_rejects_undeclared_output_dtype(dtype):
     """A dtype outside the manifest union must raise, not silently cast.
 
     ``dt_out``'s dtype is a parameter, not a property of the inputs, so
-    ``_validate_dtypes`` never sees it — the kernel is the only gate.
+    ``_validate_dtypes`` never sees it. The op enforces the union because the
+    manifest is backend-independent; a kernel-only check would let a
+    ``kernel_map`` override accept a dtype the spec forbids.
     """
-    op = DaCumsumFwdOp(chunk_len=64, dtype=dtype)
-    dt = torch.rand(1, 128, 4, dtype=torch.float32, device="cuda")
-    A = -torch.rand(4, dtype=torch.float32, device="cuda")
-    with pytest.raises(ValueError, match="only supports dtypes"):
-        op(dt, A)
+    with pytest.raises(ValueError, match="dt_out dtype must be one of"):
+        DaCumsumFwdOp(chunk_len=64, dtype=dtype)
 
 
 

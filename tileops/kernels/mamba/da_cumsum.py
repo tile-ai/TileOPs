@@ -227,9 +227,9 @@ class DaCumsumFwdKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    #: Storage dtypes ``dt_out`` may take. ``dt`` and ``A`` are always float32
-    #: and the prefix sum is computed in float32, so this constrains only the
-    #: output cast — which is why it cannot be derived from the inputs.
+    #: This backend's own capability for the ``dt_out`` cast. The manifest
+    #: union is enforced by the op; a backend may support a narrower set, and
+    #: declines the call by raising here.
     SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
     def __init__(

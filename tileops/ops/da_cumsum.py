@@ -10,6 +10,13 @@ from .op_base import Op
 __all__ = ["DaCumsumFwdOp"]
 
 
+#: Storage dtypes ``dt_out`` may take, per the manifest ``outputs.dt_out``
+#: union. ``dt`` and ``A`` are always float32 and the prefix sum runs in
+#: float32, so this constrains only the output cast — no input tensor supplies
+#: it, which is why ``_validate_dtypes`` cannot be the gate.
+_DT_OUT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
+
 class DaCumsumFwdOp(Op):
     """Mamba-2 dA_cumsum forward operator.
 
@@ -43,6 +50,12 @@ class DaCumsumFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        if dtype not in _DT_OUT_DTYPES:
+            supported = ", ".join(str(dt) for dt in _DT_OUT_DTYPES)
+            raise ValueError(
+                f"{type(self).__name__} dt_out dtype must be one of "
+                f"[{supported}], got {dtype}"
+            )
         self.batch = None
         self.num_chunks = None
         self.chunk_len = chunk_len
