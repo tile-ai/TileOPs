@@ -74,5 +74,65 @@ def test_roofline_reports_the_most_recent_forward():
     assert bytes_fp16 < bytes_fp32
 
 
+@pytest.mark.smoke
+def test_attention_decode_reselects_the_kernel_per_dtype():
+    """The decode ops pick a kernel *slot* from the element type.
+
+    float16 at batch=1 takes the warp-specialized kernel and bfloat16 falls
+    back, so one instance must hold two different kernel classes — the case
+    that used to need two ops with two constructor dtypes.
+    """
+    from tileops.ops.attention.gqa import (
+        GroupedQueryAttentionDecodeWithKVCacheFwdOp,
+    )
+
+    op = GroupedQueryAttentionDecodeWithKVCacheFwdOp(1, 32, 4, 8192, 128)
+    fp16 = op._get_kernel(torch.float16)
+    bf16 = op._get_kernel(torch.bfloat16)
+    assert fp16.__class__.__name__ == "GQADecodeBs1Kernel"
+    assert bf16.__class__.__name__ == "GQADecodeKernel"
+    _assert_two_entries(op)
+
+
+@pytest.mark.smoke
+def test_moe_unpermute_serves_two_dtypes_from_one_instance():
+    from tileops.ops.moe.routed_expert.unpermute import MoeUnpermuteFwdOp
+
+    total_tokens, top_k, hidden = 16, 2, 128
+    numel = total_tokens * top_k
+    op = MoeUnpermuteFwdOp(total_tokens, top_k, hidden, padded_batch_sum=numel)
+    fwd_idx = torch.arange(numel, device="cuda", dtype=torch.int32)
+    for dtype in _DTYPES:
+        mm2_pad = torch.randn(numel, hidden, dtype=dtype, device="cuda")
+        weights = torch.rand(total_tokens, top_k, dtype=torch.float32, device="cuda")
+        assert op(mm2_pad, fwd_idx, weights).dtype == dtype
+    _assert_two_entries(op)
+
+
+@pytest.mark.smoke
+def test_cb_producer_serves_two_dtypes_from_one_instance():
+    from tileops.ops.cb_producer import CBProducerOp
+
+    batch, chunks, groups, chunk_len, d_state = 1, 2, 1, 64, 64
+    op = CBProducerOp(batch, chunks, groups, chunk_len, d_state)
+    s = chunks * chunk_len
+    for dtype in _DTYPES:
+        c = torch.randn(batch, s, groups, d_state, dtype=dtype, device="cuda")
+        b = torch.randn(batch, s, groups, d_state, dtype=dtype, device="cuda")
+        assert op(c, b).dtype == dtype
+    _assert_two_entries(op)
+
+
+@pytest.mark.smoke
+def test_mismatched_input_dtypes_are_rejected():
+    """The anchor selects the kernel; the others must agree with it."""
+    n = 256
+    op = RMSNormFwdOp(normalized_shape=(n,))
+    x = torch.randn(16, n, dtype=torch.float16, device="cuda")
+    w = torch.randn(n, dtype=torch.bfloat16, device="cuda")
+    with pytest.raises(ValueError):
+        op(x, w)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
