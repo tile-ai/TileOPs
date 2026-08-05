@@ -10,7 +10,7 @@ Two compile-time templates routed by ``block_m``:
   * ``block_m ≤ 64``  → Pingpong: 2 math WGs process independent tiles
   * ``block_m ≥ 128`` → Cooperative: 2 math WGs share one tile's M
 
-K-aligned only.  K-unaligned use ``GroupedGemmPersistentKernel``.
+K-aligned only.
 
 Uses a *static-wave scheduler* (no atomic counter): each CTA enumerates
 its tile IDs as ``flat_id_0 = 2*(sm_count*w + pid)`` and
