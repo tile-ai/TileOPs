@@ -252,6 +252,28 @@ def test_record_op_with_explicit_config_takes_precedence():
 
 @pytest.mark.full
 @pytest.mark.usefixtures('_reset_records')
+def test_record_composite_op_keeps_delegate_kernel_config():
+    """A composite that owns no kernels still reports the delegate's config."""
+
+    class _DelegateOp:
+        def __init__(self):
+            self._kernel_cache = {torch.float16: _FakeKernel({"block_m": 8})}
+
+    class _CompositeOp:
+        def __init__(self):
+            self._delegate = _DelegateOp()
+
+        @property
+        def _kernel_cache(self):
+            return self._delegate._kernel_cache
+
+    BenchmarkReport.record(_CompositeOp(), params={}, result=_result(), tag="t")
+    records = BenchmarkReport._records["_CompositeOp"]
+    assert records[0].get("config") == {"block_m": 8}
+
+
+@pytest.mark.full
+@pytest.mark.usefixtures('_reset_records')
 def test_record_op_without_any_config_omits_field():
     """Ops with no config sources should not produce a ``config`` field."""
 

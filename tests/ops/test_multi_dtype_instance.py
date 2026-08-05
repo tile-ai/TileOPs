@@ -95,6 +95,53 @@ def test_attention_decode_reselects_the_kernel_per_dtype():
 
 
 @pytest.mark.smoke
+def test_attention_square_prefill_reselects_the_kernel_per_dtype():
+    """The BSHD square wrapper resolves its prefill kernel from the tensors.
+
+    Causal dim-128 takes the warp-specialized dense slot.
+    """
+    from tileops.ops.attention.gqa import GroupedQueryAttentionFwdOp
+
+    batch, heads, heads_kv, seq_len, dim = 1, 8, 2, 256, 128
+    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, is_causal=True)
+    for dtype in _DTYPES:
+        q = torch.randn(batch, seq_len, heads, dim, dtype=dtype, device="cuda")
+        k = torch.randn(batch, seq_len, heads_kv, dim, dtype=dtype, device="cuda")
+        v = torch.randn_like(k)
+        output = op(q, k, v)
+        assert output.dtype == dtype
+        kernel = op._get_kernel(dtype)
+        assert kernel.__class__.__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
+        assert kernel.dtype == dtype
+    _assert_two_entries(op)
+
+
+@pytest.mark.smoke
+def test_attention_mha_serves_two_dtypes_from_one_instance():
+    """MHA owns no kernels; the per-dtype cache lives on the GQA delegate."""
+    from tileops.ops.attention.mha import MultiHeadAttentionFwdOp
+
+    batch, heads, seq_len, dim = 1, 8, 256, 64
+    op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, is_causal=False)
+    for dtype in _DTYPES:
+        q = torch.randn(batch, seq_len, heads, dim, dtype=dtype, device="cuda")
+        k = torch.randn_like(q)
+        v = torch.randn_like(q)
+        output = op(q, k, v)
+        assert output.dtype == dtype
+        assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillFwdKernel"
+    _assert_two_entries(op._gqa_op)
+
+    # MHA owns no cache, so autotune has to reach the delegate's kernels — one
+    # per dtype — rather than relying on attribute traversal finding them here.
+    tuned = []
+    for kernel in op._gqa_op._kernel_cache.values():
+        kernel.autotune = lambda *_args, _k=kernel: tuned.append(id(_k))
+    op.autotune()
+    assert len(tuned) == len(_DTYPES)
+
+
+@pytest.mark.smoke
 def test_moe_unpermute_serves_two_dtypes_from_one_instance():
     from tileops.ops.moe.routed_expert.unpermute import MoeUnpermuteFwdOp
 

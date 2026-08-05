@@ -226,8 +226,8 @@ def _torch_gqa_prefill_varlen_ref(test: GQAPrefillVarlenFwdWorkload):
     return fn
 
 
-def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp) -> str:
-    kernel = op.kernel
+def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp, dtype: torch.dtype) -> str:
+    kernel = op._get_kernel(dtype)
     if isinstance(kernel, GQAPrefillFwdWsPersistentCausalKernel):
         return "prefill_ws_causal"
     if isinstance(kernel, GQAPrefillFwdKernel):
@@ -275,9 +275,9 @@ def test_gqa_fwd_bench(
     test = GroupedQueryAttentionFwdWorkload(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     inputs = test.gen_inputs()
 
-    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
     bm = ManifestBenchmark(_GQA_FWD_OP, op, test)
-    tileops_variant = _tileops_gqa_variant(op)
+    tileops_variant = _tileops_gqa_variant(op, dtype)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag=f"tileops_{tileops_variant}")
 
@@ -568,7 +568,6 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
         page_size=page_size,
         dim=dim,
         is_causal=causal,
-        dtype=dtype,
         cache_dtype=cache_dtype,
         softcap=softcap,
         tune=tune,
