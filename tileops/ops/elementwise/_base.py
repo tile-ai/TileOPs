@@ -1163,10 +1163,9 @@ class _IntIdentityUnaryOp(UnaryOp):
         if dtype in type(self)._fallback_dtypes:
             self.N_total = N_total
             self.dtype = dtype
-            # No kernel is constructed — it is float-only. Routing through
-            # dispatch_kernel keeps the arch check identical to the float path
-            # and registers the instance for the compile boundary, which a bare
-            # _install_kernel_map call would skip.
+            # No kernel is constructed — it is float-only. dispatch_kernel, not
+            # _install_kernel_map: only the former registers the instance for
+            # the compile boundary.
             self.dispatch_kernel(kernel_map)
             self.kernel = None
             self.output_dtype = (

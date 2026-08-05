@@ -67,8 +67,6 @@ class MeanPoolingForwardOp(Op):
         for key, value in params.items():
             setattr(self, key, value)
 
-        # Every kernel argument except the element type, which the first
-        # forward() supplies from its input.
         self._kernel_params = params
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[torch.dtype, Kernel] = {}

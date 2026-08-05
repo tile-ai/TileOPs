@@ -660,7 +660,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             "cu_seqlens_q": cu_seqlens_q,
             "cu_seqlens_kv": cu_seqlens_kv,
             "is_causal": self.is_causal,
-            "dtype": self.dtype,
+            "dtype": q.dtype,
         }
 
     def forward(

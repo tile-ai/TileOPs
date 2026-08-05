@@ -144,9 +144,9 @@ class LayerNormFwdOp(Op):
             self._kernel_cache[key] = self.kernel_map["layer_norm"](
                 m_actual, self.N, self.eps, x.dtype, tune=self.tune,
             )
-        self.kernel = self._kernel_cache[key]
+        kernel = self._kernel_cache[key]
         self._last_m = m_actual
 
-        y = self.kernel(x, weight, bias)
+        y = kernel(x, weight, bias)
 
         return y.reshape(orig_shape)

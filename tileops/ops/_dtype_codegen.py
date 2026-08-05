@@ -247,10 +247,8 @@ def synthesize_validate_dtypes(
         "op_name": op_name,
     }
     params_src = ", ".join(input_names)
-    # Unrolled per input, with each parameter referenced by name. A `locals()`
-    # lookup or a loop over `input_names` would read the same values, but
-    # `torch.compile` cannot trace `locals()`, and this body runs inside
-    # `forward()` — so an op that validates dtypes would lose `fullgraph`.
+    # Unrolled per input rather than looping via `locals()`: dynamo cannot
+    # trace `locals()`, and this body runs inside `forward()`.
     src_lines = [
         f"def _validate_dtypes(self, {params_src}):",
         f'    """Synthesized from manifest signature for {op_name}."""',
