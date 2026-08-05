@@ -17,14 +17,18 @@ import torch
     [torch.float8_e4m3fn, torch.float8_e5m2],
 )
 def test_where_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
-    """WhereFwdOp must reject fp8 dtypes at construction (manifest contract)."""
+    """WhereFwdOp must reject fp8 dtypes (manifest contract).
+
+    The element type arrives with the tensors, so the rejection does too.
+    """
     from tileops.ops.elementwise import WhereFwdOp
 
     shape = (4, 8)
+    op = WhereFwdOp(condition=shape, input=shape, other=shape)
+    cond = torch.zeros(shape, device="cuda", dtype=torch.bool)
+    x = torch.zeros(shape, device="cuda").to(bad_dtype)
     with pytest.raises((ValueError, TypeError)):
-        WhereFwdOp(
-            condition=shape, input=shape, other=shape,
-        )
+        op(cond, x, x)
 
 
 @pytest.mark.smoke

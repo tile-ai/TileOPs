@@ -137,10 +137,10 @@ class WhereFwdOp(Op):
             raise ValueError(
                 f"Expected condition.dtype torch.bool, got {condition.dtype}"
             )
-        if input.dtype != self.dtype:
-            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
-        if other.dtype != self.dtype:
-            raise ValueError(f"Expected other.dtype {self.dtype}, got {other.dtype}")
+        self._validate_dtypes(condition, input, other)
+        if other.dtype != input.dtype:
+            raise ValueError(
+                f"Expected other.dtype {input.dtype}, got {other.dtype}")
         if tuple(condition.shape) != self.condition_shape:
             raise ValueError(
                 f"Expected condition.shape {self.condition_shape}, got {tuple(condition.shape)}"

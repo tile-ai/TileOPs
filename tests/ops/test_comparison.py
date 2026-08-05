@@ -358,8 +358,10 @@ def test_comparison_rejects_unsupported_dtype(
 ) -> None:
     """Comparison ops reject dtypes outside the supported set (e.g. complex)."""
     shape = (16,)
-    with pytest.raises(ValueError, match="does not support dtype"):
-        op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls(a_shape=shape, b_shape=shape)
+    x = torch.zeros(shape, device="cuda", dtype=dtype)
+    with pytest.raises(ValueError, match="has dtype|does not support dtype"):
+        op(x, x)
 
 
 if __name__ == "__main__":

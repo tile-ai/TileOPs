@@ -231,8 +231,10 @@ class BitwiseBinaryRejectFixture(FixtureBase):
 def test_bitwise_binary_rejects_float_dtype(op_cls, dtype: torch.dtype) -> None:
     """Binary bitwise ops only support integer dtypes; floats must be rejected."""
     shape = (16,)
-    with pytest.raises(ValueError, match="does not support dtype"):
-        op_cls(a_shape=shape, b_shape=shape)
+    op = op_cls(a_shape=shape, b_shape=shape)
+    x = torch.zeros(shape, device="cuda", dtype=dtype)
+    with pytest.raises(ValueError, match="has dtype|does not support dtype"):
+        op(x, x)
 
 
 if __name__ == "__main__":
