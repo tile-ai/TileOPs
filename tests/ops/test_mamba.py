@@ -170,6 +170,33 @@ def test_da_cumsum_fwd_missing_bias_raises():
         kernel(dt, A, dt_bias=None)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_da_cumsum_fwd_accepts_declared_output_dtypes(dtype):
+    """``dt_out`` takes any storage dtype the manifest declares."""
+    op = DaCumsumFwdOp(chunk_len=64, dtype=dtype)
+    dt = torch.rand(1, 128, 4, dtype=torch.float32, device="cuda")
+    A = -torch.rand(4, dtype=torch.float32, device="cuda")
+    dt_out, dA_cumsum = op(dt, A)
+    assert dt_out.dtype == dtype
+    assert dA_cumsum.dtype == torch.float32
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.int32, torch.float64])
+def test_da_cumsum_fwd_rejects_undeclared_output_dtype(dtype):
+    """A dtype outside the manifest union must raise, not silently cast.
+
+    ``dt_out``'s dtype is a parameter, not a property of the inputs, so
+    ``_validate_dtypes`` never sees it — the kernel is the only gate.
+    """
+    op = DaCumsumFwdOp(chunk_len=64, dtype=dtype)
+    dt = torch.rand(1, 128, 4, dtype=torch.float32, device="cuda")
+    A = -torch.rand(4, dtype=torch.float32, device="cuda")
+    with pytest.raises(ValueError, match="only supports dtypes"):
+        op(dt, A)
+
+
 
 
 class SSDChunkScanFwdTest(SSDChunkScanFwdWorkload, TestBase):
