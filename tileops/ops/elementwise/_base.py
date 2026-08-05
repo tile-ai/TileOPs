@@ -21,6 +21,7 @@ to the kernel layer; this module only passes the two operand shapes down.
 import functools
 import inspect
 import math
+from dataclasses import dataclass
 from math import prod
 from typing import Callable, Dict, List, Optional
 
@@ -574,6 +575,29 @@ def _is_fp8(dtype: torch.dtype) -> bool:
     return dtype in _FP8_DTYPES
 
 
+@dataclass(frozen=True)
+class KernelEntry:
+    """One element type's specialization, resolved together.
+
+    An op instance now serves whatever dtype its caller passes, so nothing
+    derived from the element type may live in a slot on the instance: a later
+    call with a different dtype would read the earlier call's value. Each
+    entry is built once and carries everything a call needs.
+
+    Attributes:
+        kernel: built for ``compute_dtype``.
+        compute_dtype: what the kernel was specialized for. Differs from the
+            key when the op reinterprets storage — bool runs on a uint8 kernel.
+        output_dtype: resolved from the manifest for the *semantic* dtype.
+        bool_storage: whether the caller's bool operands are reinterpreted.
+    """
+
+    kernel: Optional[Kernel]
+    compute_dtype: torch.dtype
+    output_dtype: torch.dtype
+    bool_storage: bool = False
+
+
 class UnaryOp(Op):
     """Template base class for unary elementwise ops.
 
@@ -600,17 +624,31 @@ class UnaryOp(Op):
     def __init__(
         self,
         N_total: int,
-        dtype: torch.dtype,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.N_total = N_total
-        self.dtype = dtype
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self._build_kernel_instance(
-            N_total=N_total, dtype=dtype, tune=tune,
+        self._entries: Dict[torch.dtype, KernelEntry] = {}
+
+    def _entry(self, dtype: torch.dtype) -> KernelEntry:
+        """Return the entry for *dtype*, building it on first use."""
+        entry = self._entries.get(dtype)
+        if entry is None:
+            entry = self._build_entry(dtype)
+            self._entries[dtype] = entry
+        return entry
+
+    def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
+        """Build one specialization. Subclasses override to reinterpret storage."""
+        return KernelEntry(
+            kernel=self._build_kernel_instance(
+                N_total=self.N_total, dtype=dtype, tune=self.tune,
+            ),
+            compute_dtype=dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
-        self.output_dtype = self._resolve_output_dtype()
 
     def _build_kernel_instance(
         self,
@@ -622,18 +660,19 @@ class UnaryOp(Op):
         """Construct the kernel. Subclasses override to specialize construction."""
         return self.kernel_map[self._op_name](N_total, dtype, tune=tune)
 
-    def _resolve_output_dtype(self) -> torch.dtype:
-        """Return the manifest-declared output dtype for this op."""
-        return resolve_output_dtype(type(self).__name__, self.dtype)
-
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {self._op_name: self.kernel_cls}
 
     @property
     def total_memory(self) -> float:
-        """Read x + write y."""
-        return self.N_total * (self.dtype.itemsize + self.output_dtype.itemsize)
+        """Read x + write y, for the element type of the most recent forward."""
+        if self.dtype is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.total_memory requires a prior forward() "
+                "call to bind the element type")
+        out = self._entry(self.dtype).output_dtype
+        return self.N_total * (self.dtype.itemsize + out.itemsize)
 
     def eval_roofline(self) -> tuple[int, int]:
         """Return ``(flops, bytes)`` for this unary elementwise op instance.
@@ -652,18 +691,16 @@ class UnaryOp(Op):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
+        self.dtype = input.dtype
         orig_shape = input.shape
         flat = input.contiguous().reshape(-1)
-        return self.kernel(flat).reshape(orig_shape)
+        return self._entry(input.dtype).kernel(flat).reshape(orig_shape)
 
     def _validate_input(self, input: torch.Tensor) -> None:
-        """Validate input tensor against the op's dtype / numel contract."""
+        """Validate the input against the manifest dtype union and the numel."""
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if input.dtype != self.dtype:
-            raise ValueError(
-                f"Expected input.dtype {self.dtype}, got {input.dtype}"
-            )
+        self._validate_dtypes(input)
         if input.numel() != self.N_total:
             raise ValueError(
                 f"Expected {self.N_total} elements, got {input.numel()}"
@@ -731,18 +768,9 @@ class BinaryOp(Op):
         self,
         a_shape: tuple,
         b_shape: tuple,
-        dtype: torch.dtype,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        kernel_supported = self.kernel_cls.SUPPORTED_DTYPES
-        if kernel_supported is not None and dtype not in kernel_supported:
-            names = ", ".join(str(dt) for dt in kernel_supported)
-            raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. "
-                f"Supported: [{names}]"
-            )
-        self.dtype = dtype
         self.a_shape = tuple(a_shape)
         self.b_shape = tuple(b_shape)
         out_shape = broadcast_out_shape(self.a_shape, self.b_shape)
@@ -751,13 +779,37 @@ class BinaryOp(Op):
         self.N_total = prod(out_shape)
         self.a_numel = prod(a_shape)
         self.b_numel = prod(b_shape)
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self._build_kernel_instance(tune)
+        self._entries: Dict[torch.dtype, KernelEntry] = {}
 
-    def _build_kernel_instance(self, tune):
+    def _entry(self, dtype: torch.dtype) -> KernelEntry:
+        """Return the entry for *dtype*, building it on first use."""
+        entry = self._entries.get(dtype)
+        if entry is None:
+            supported = self.kernel_cls.SUPPORTED_DTYPES
+            if supported is not None and dtype not in supported:
+                names = ", ".join(str(dt) for dt in supported)
+                raise ValueError(
+                    f"{self._op_name} does not support dtype {dtype}. "
+                    f"Supported: [{names}]"
+                )
+            entry = self._build_entry(dtype)
+            self._entries[dtype] = entry
+        return entry
+
+    def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
+        """Build one specialization. Subclasses override to reinterpret storage."""
+        return KernelEntry(
+            kernel=self._build_kernel_instance(self.tune, dtype),
+            compute_dtype=dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
+        )
+
+    def _build_kernel_instance(self, tune, dtype):
         """Construct the kernel. Subclasses override to inject extra kwargs."""
         return self.kernel_map[self._op_name](
-            self.a_shape, self.b_shape, self.dtype, tune=tune,
+            self.a_shape, self.b_shape, dtype, tune=tune,
         )
 
     @property
@@ -766,10 +818,14 @@ class BinaryOp(Op):
 
     @property
     def total_memory(self) -> float:
-        """Read a + read b + write y."""
-        in_elem = self.dtype.itemsize
-        out_elem = resolve_output_dtype(type(self).__name__, self.dtype).itemsize
-        return (self.a_numel + self.b_numel) * in_elem + self.N_total * out_elem
+        """Read a + read b + write y, for the most recent forward's dtype."""
+        if self.dtype is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.total_memory requires a prior forward() "
+                "call to bind the element type")
+        out_elem = self._entry(self.dtype).output_dtype.itemsize
+        return ((self.a_numel + self.b_numel) * self.dtype.itemsize
+                + self.N_total * out_elem)
 
     def _eager_forward(
         self,
@@ -777,7 +833,8 @@ class BinaryOp(Op):
         other: torch.Tensor,
     ) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
-        return self.kernel(
+        self.dtype = input.dtype
+        return self._entry(input.dtype).kernel(
             input.contiguous().view(-1), other.contiguous().view(-1),
         ).reshape(self.out_shape)
 
@@ -790,10 +847,10 @@ class BinaryOp(Op):
         b_name = getattr(self, "_other_name", "other")
         if not input.is_cuda or not other.is_cuda:
             raise ValueError("Inputs must be CUDA tensors")
-        if input.dtype != self.dtype:
-            raise ValueError(f"Expected {a_name}.dtype {self.dtype}, got {input.dtype}")
-        if other.dtype != self.dtype:
-            raise ValueError(f"Expected {b_name}.dtype {self.dtype}, got {other.dtype}")
+        self._validate_dtypes(input, other)
+        if other.dtype != input.dtype:
+            raise ValueError(
+                f"Expected {b_name}.dtype {input.dtype}, got {other.dtype}")
         if input.numel() != self.a_numel:
             raise ValueError(
                 f"Expected {a_name} to have {self.a_numel} elements, got {input.numel()}"
@@ -1049,28 +1106,24 @@ class _AlphaScaledBinaryOp(BinaryOp):
 
     The leading ``*`` makes ``alpha`` and the existing
     ``kernel_map`` / ``tune`` parameters keyword-only; only the
-    positional triplet ``(a_shape, b_shape, dtype)`` is shared with
-    ``BinaryOp``.
+    positional pair ``(a_shape, b_shape)`` is shared with ``BinaryOp``.
     """
 
     def __init__(
         self,
         a_shape: tuple,
         b_shape: tuple,
-        dtype: torch.dtype,
         *,
         alpha: int | float = 1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.alpha = alpha
-        super().__init__(
-            a_shape, b_shape, dtype, kernel_map=kernel_map, tune=tune,
-        )
+        super().__init__(a_shape, b_shape, kernel_map=kernel_map, tune=tune)
 
-    def _build_kernel_instance(self, tune):
+    def _build_kernel_instance(self, tune, dtype):
         return self.kernel_map[self._op_name](
-            self.a_shape, self.b_shape, self.dtype, tune=tune, alpha=self.alpha,
+            self.a_shape, self.b_shape, dtype, tune=tune, alpha=self.alpha,
         )
 
 
@@ -1086,23 +1139,29 @@ class _BoolOutputBinaryOp(BinaryOp):
             kernel_map[f"{self._op_name}_bool_storage"] = self.bool_storage_kernel_cls
         return kernel_map
 
-    def _build_kernel_instance(self, tune):
-        self._bool_storage = (
-            self.dtype == torch.bool and self.bool_storage_kernel_cls is not None
+    def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
+        """bool operands run on a uint8 kernel; the mode travels with the entry."""
+        bool_storage = dtype == torch.bool and self.bool_storage_kernel_cls is not None
+        if not bool_storage:
+            return super()._build_entry(dtype)
+        return KernelEntry(
+            kernel=self.kernel_map[f"{self._op_name}_bool_storage"](
+                self.a_shape, self.b_shape, torch.uint8, tune=self.tune,
+            ),
+            compute_dtype=torch.uint8,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
+            bool_storage=True,
         )
-        if self._bool_storage:
-            return self.kernel_map[f"{self._op_name}_bool_storage"](
-                self.a_shape, self.b_shape, torch.uint8, tune=tune,
-            )
-        return super()._build_kernel_instance(tune)
 
     def _eager_forward(
         self,
         input: torch.Tensor,
         other: torch.Tensor,
     ) -> torch.Tensor:
-        if getattr(self, "_bool_storage", False):
-            result = self.kernel(
+        self.dtype = input.dtype
+        entry = self._entry(input.dtype)
+        if entry.bool_storage:
+            result = entry.kernel(
                 input.contiguous().view(-1).view(torch.uint8),
                 other.contiguous().view(-1).view(torch.uint8),
             )
@@ -1155,31 +1214,23 @@ class _IntIdentityUnaryOp(UnaryOp):
     # the is{nan,inf,finite} predicates).
     _fallback_dtypes: tuple = _MANIFEST_INT_DTYPES
 
-    def __init__(
-        self,
-        N_total: int,
-        dtype: torch.dtype,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ):
+    def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
+        """An integer dtype gets an entry with no kernel — it never reaches one."""
         if dtype in type(self)._fallback_dtypes:
-            self.N_total = N_total
-            self.dtype = dtype
-            # No kernel is constructed — it is float-only. dispatch_kernel, not
-            # _install_kernel_map: only the former registers the instance for
-            # the compile boundary.
-            self.dispatch_kernel(kernel_map)
-            self.kernel = None
-            self.output_dtype = (
-                type(self)._int_output_dtype
-                if type(self)._int_output_dtype is not None
-                else dtype
+            return KernelEntry(
+                kernel=None,
+                compute_dtype=dtype,
+                output_dtype=(
+                    type(self)._int_output_dtype
+                    if type(self)._int_output_dtype is not None
+                    else dtype
+                ),
             )
-            return
-        super().__init__(N_total, dtype, kernel_map=kernel_map, tune=tune)
+        return super()._build_entry(dtype)
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        if self.kernel is None:
+        self.dtype = input.dtype
+        if self._entry(input.dtype).kernel is None:
             return type(self)._int_handler(input)
         return super()._eager_forward(input)
 

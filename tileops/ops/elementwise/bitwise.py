@@ -12,7 +12,7 @@ from tileops.kernels.elementwise import (
     BitwiseXorFwdKernel,
 )
 
-from ._base import BinaryOp, UnaryOp
+from ._base import BinaryOp, KernelEntry, UnaryOp, resolve_output_dtype
 
 
 class _BoolStorageBitwiseBinaryOp(BinaryOp):
@@ -28,23 +28,29 @@ class _BoolStorageBitwiseBinaryOp(BinaryOp):
             kernel_map[f"{self._op_name}_bool_storage"] = self.bool_storage_kernel_cls
         return kernel_map
 
-    def _build_kernel_instance(self, tune):
-        self._bool_storage = (
-            self.dtype == torch.bool and self.bool_storage_kernel_cls is not None
+    def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
+        """bool operands run on a uint8 kernel; the mode travels with the entry."""
+        bool_storage = dtype == torch.bool and self.bool_storage_kernel_cls is not None
+        if not bool_storage:
+            return super()._build_entry(dtype)
+        return KernelEntry(
+            kernel=self.kernel_map[f"{self._op_name}_bool_storage"](
+                self.a_shape, self.b_shape, torch.uint8, tune=self.tune,
+            ),
+            compute_dtype=torch.uint8,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
+            bool_storage=True,
         )
-        if self._bool_storage:
-            return self.kernel_map[f"{self._op_name}_bool_storage"](
-                self.a_shape, self.b_shape, torch.uint8, tune=tune,
-            )
-        return super()._build_kernel_instance(tune)
 
     def _eager_forward(
         self,
         input: torch.Tensor,
         other: torch.Tensor,
     ) -> torch.Tensor:
-        if getattr(self, "_bool_storage", False):
-            result = self.kernel(
+        self.dtype = input.dtype
+        entry = self._entry(input.dtype)
+        if entry.bool_storage:
+            result = entry.kernel(
                 input.contiguous().view(-1).view(torch.uint8),
                 other.contiguous().view(-1).view(torch.uint8),
             )
