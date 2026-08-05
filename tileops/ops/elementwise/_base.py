@@ -1235,8 +1235,18 @@ class _IntIdentityUnaryOp(UnaryOp):
     _fallback_dtypes: tuple = _MANIFEST_INT_DTYPES
 
     def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
-        """An integer dtype gets an entry with no kernel — it never reaches one."""
+        """Fall back only for a dtype the selected backend cannot serve.
+
+        The shipped kernels are float-only, so integers land on the op-level
+        handler. A backend supplying a native integer kernel declares it in
+        ``SUPPORTED_DTYPES`` and is used instead — deciding here without asking
+        would silently discard the override.
+        """
         if dtype in type(self)._fallback_dtypes:
+            impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
+            supported = impl.SUPPORTED_DTYPES
+            if supported is None or ctor_dtype in supported:
+                return super()._build_entry(dtype)
             return KernelEntry(
                 kernel=None,
                 compute_dtype=dtype,

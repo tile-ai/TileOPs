@@ -232,3 +232,37 @@ def test_default_backend_still_routes_bool_through_uint8():
     assert BitwiseAndFwdKernel.specialize(torch.int32) == (
         BitwiseAndFwdKernel, torch.int32,
     )
+
+
+@pytest.mark.smoke
+def test_integer_fallback_yields_to_a_backend_that_serves_integers():
+    """The op-level integer handler is a fallback, not a decision.
+
+    The shipped kernels are float-only, so integers are answered by the op. A
+    backend declaring integer support must be used instead — intercepting before
+    asking would discard the override silently, and the caller would never learn
+    that the kernel they supplied was ignored.
+    """
+    from tileops.kernels.elementwise import FloorFwdKernel
+    from tileops.ops.elementwise import FloorFwdOp
+
+    x = torch.arange(1, 65, device="cuda", dtype=torch.int32)
+
+    shipped = FloorFwdOp(N_total=64)
+    torch.testing.assert_close(shipped(x), x)
+    assert shipped._entries[torch.int32].kernel is None, "float-only kernel was used"
+
+    class NativeIntFloor(FloorFwdKernel):
+        SUPPORTED_DTYPES = (torch.int32, torch.float32)
+
+        def __init__(self, N_total, dtype, config=None, tune=False):
+            self.dtype = dtype
+
+        def forward(self, x):
+            return x.clone()
+
+    op = FloorFwdOp(N_total=64, kernel_map={"floor": NativeIntFloor})
+    torch.testing.assert_close(op(x), x)
+    entry = op._entries[torch.int32]
+    assert isinstance(entry.kernel, NativeIntFloor), "the override was bypassed"
+    assert entry.kernel.dtype == torch.int32
