@@ -164,7 +164,7 @@ class LeakyReluFwdOp(_ParametricActivationOp):
     # compare-and-select(1) + mul = 2 per elem.
     FLOPS_PER_ELEM = 2
 
-    _scalar_params = {"negative_slope": "negative_slope"}
+    _scalar_params = ("negative_slope",)
 
     def __init__(
         self,
@@ -203,7 +203,7 @@ class EluFwdOp(_ParametricActivationOp):
     # compare-and-select(1) + exp + sub + mul = 4 per elem.
     FLOPS_PER_ELEM = 4
 
-    _scalar_params = {"alpha": "alpha"}
+    _scalar_params = ("alpha",)
 
     def __init__(
         self,
@@ -243,7 +243,7 @@ class HardtanhFwdOp(_ParametricActivationOp):
     # collapses to 1 compare-and-select per output element.
     FLOPS_PER_ELEM = 1
 
-    _scalar_params = {"min_val": "min_val", "max_val": "max_val"}
+    _scalar_params = ("min_val", "max_val")
 
     def __init__(
         self,
@@ -284,7 +284,7 @@ class SoftplusFwdOp(_ParametricActivationOp):
     # = 5 per elem.
     FLOPS_PER_ELEM = 5
 
-    _scalar_params = {"beta": "beta", "threshold": "threshold"}
+    _scalar_params = ("beta", "threshold")
 
     def __init__(
         self,

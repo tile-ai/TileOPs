@@ -212,22 +212,17 @@ for _cls in [
 for _cls in [LogicalNotFwdOp, IsnanFwdOp, IsinfFwdOp, IsfiniteFwdOp]:
     _register_unary_custom_op(_cls)
 
-# --- Binary ops: same-dtype output (10 + 3 = 13 ops) ---
+# --- Binary ops (arithmetic 10 + bitwise 3 + comparison 6 + logical 2 = 21) ---
+# Output dtype comes from each op's manifest entry, so comparison and logical
+# ops need no separate registration group.
 for _cls in [
-    # arithmetic (10)
     AddFwdOp, SubFwdOp, MulFwdOp, DivFwdOp, RemainderFwdOp, PowFwdOp, FloorDivideFwdOp,
     LerpFwdOp, MaximumFwdOp, MinimumFwdOp,
-    # bitwise (3)
     BitwiseAndFwdOp, BitwiseOrFwdOp, BitwiseXorFwdOp,
-]:
-    _register_binary_custom_op(_cls)
-
-# --- Binary ops: bool output (comparison 6 + logical 2 = 8 ops) ---
-for _cls in [
     EqFwdOp, NeFwdOp, GtFwdOp, LtFwdOp, GeFwdOp, LeFwdOp,
     LogicalAndFwdOp, LogicalOrFwdOp,
 ]:
-    _register_binary_custom_op(_cls, output_bool=True)
+    _register_binary_custom_op(_cls)
 
 # --- Fused gated ops (3 ops) ---
 for _cls in [SiluAndMulFwdOp, GeluAndMulFwdOp, GeluTanhAndMulFwdOp]:

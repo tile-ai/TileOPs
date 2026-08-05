@@ -141,3 +141,46 @@ def test_install_kernel_map_is_private_helper_only() -> None:
     assert hasattr(Op, "dispatch_kernel")
     public_names = [n for n in vars(Op) if not n.startswith("_")]
     assert "install_kernel_map" not in public_names
+
+
+# ``Op.autotune`` walks whatever the op used as its kernel cache. The cache
+# value is a bare kernel for some families and a record for others, so a
+# traversal that only descends containers silently tunes nothing.
+
+
+@pytest.mark.smoke
+def test_autotune_reaches_kernels_held_in_a_record():
+    """A dataclass-valued cache must not hide its kernels from autotune."""
+    import dataclasses
+
+    from tileops.ops.op_base import _iter_kernels
+
+    class _FakeKernel(Kernel):
+        def __init__(self):
+            pass
+
+        def forward(self, *args, **kwargs):
+            raise AssertionError("never called")
+
+    @dataclasses.dataclass(frozen=True)
+    class _Entry:
+        kernel: object
+        compute_dtype: torch.dtype
+
+    k = _FakeKernel()
+    assert _iter_kernels({torch.float16: _Entry(k, torch.float16)}) == [k]
+    assert _iter_kernels(_Entry(None, torch.float16)) == []
+
+
+@pytest.mark.smoke
+def test_autotune_reaches_elementwise_entries():
+    """The elementwise cache is record-valued; every built kernel must be seen."""
+    from tileops.ops.elementwise import AbsFwdOp
+    from tileops.ops.op_base import _iter_kernels
+
+    op = AbsFwdOp(N_total=256)
+    for dtype in (torch.float16, torch.float32):
+        op(torch.randn(256, device="cuda", dtype=dtype))
+
+    found = _iter_kernels(op._entries)
+    assert len(found) == 2, f"autotune would see {len(found)} of 2 built kernels"

@@ -162,7 +162,6 @@ class RoundFwdOp(_IntIdentityUnaryOp):
 
     Args:
         N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """

@@ -179,12 +179,11 @@ def _register_unary_inplace_custom_op(op_cls):
     op_cls._wrapped_inplace = _wrapped_inplace
 
 
-def _register_binary_custom_op(op_cls, output_bool: bool = False):
+def _register_binary_custom_op(op_cls):
     """Register a binary elementwise op for torch.compile.
 
     Args:
         op_cls: The Op subclass to register.
-        output_bool: If True, output dtype is torch.bool (for comparison/logical ops).
     """
     op_name = op_cls._op_name
 
@@ -205,8 +204,9 @@ def _register_binary_custom_op(op_cls, output_bool: bool = False):
         out_shape: List[int],
         instance_key: str,
     ) -> torch.Tensor:
-        out_dtype = torch.bool if output_bool else a.dtype
-        return a.new_empty(out_shape, dtype=out_dtype)
+        return a.new_empty(
+            out_shape, dtype=resolve_output_dtype(op_cls.__name__, a.dtype)
+        )
 
     op_cls._wrapped = _wrapped
 
@@ -926,7 +926,7 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         self.N = N
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._entries: Dict[tuple, KernelEntry] = {}
+        self._init_entries()
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -987,8 +987,8 @@ class FusedGatedOp(_PerDtypeKernels, Op):
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
         M, N = self._validate_runtime_input(x)
+        entry = self._entry(x.dtype, M, N)  # may reject the dtype; commit after
         self.M, self.N = M, N
-        entry = self._entry(x.dtype, M, N)
         return entry.kernel(x.contiguous())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -1069,23 +1069,21 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
 
     Used by activations that take one or more scalar construction-time
     parameters (LeakyReLU, ELU, Hardtanh, Softplus). Leaves own their
-    ``__init__`` (scalar parameter names and defaults vary per leaf):
-    each leaf validates its scalars, populates ``self.<param>`` for
-    introspection, instantiates ``self.kernel`` with typed kwargs, and
-    registers itself for compile dispatch via the
-    ``_finalize_init`` helper. ``UnaryOp.__init__`` is intentionally
-    bypassed; ``_finalize_init`` performs the equivalent state setup.
+    ``__init__`` because scalar names and defaults vary per leaf: each records
+    its scalars on ``self``, calls ``dispatch_kernel``, then ``_finalize_init``
+    for the shared state ``UnaryOp.__init__`` would otherwise set.
 
     Leaves that declare ``inplace`` in the manifest signature accept it
     in ``__init__`` and pass it to ``_finalize_init``. ``forward`` and
     ``_eager_forward`` are inherited from the mixin and ``UnaryOp``.
     """
 
-    #: Scalar parameters baked into the kernel, as ``{kernel kwarg: attribute}``.
-    #: The entry builder validates each against the element type before baking
-    #: it in — which is why the check cannot stay in ``__init__``: it needs a
-    #: dtype, and there is none until a tensor arrives.
-    _scalar_params: Dict[str, str] = {}
+    #: Names of the scalar parameters baked into the kernel; each names both the
+    #: attribute on ``self`` and the kernel kwarg. The entry builder validates
+    #: them against the element type before baking, which is why the check
+    #: cannot live in ``__init__``: it needs a dtype, and none exists until a
+    #: tensor arrives.
+    _scalar_params: tuple[str, ...] = ()
 
     def _finalize_init(self, N_total: int, *, inplace: bool = False) -> None:
         """Wire shared base state for a leaf that owns its ``__init__``.
@@ -1099,10 +1097,10 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
 
     def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
         kwargs = {}
-        for kwarg, attr in type(self)._scalar_params.items():
-            value = getattr(self, attr)
-            _validate_scalar_param_repr(attr, value, dtype, self._op_name)
-            kwargs[kwarg] = value
+        for name in type(self)._scalar_params:
+            value = getattr(self, name)
+            _validate_scalar_param_repr(name, value, dtype, self._op_name)
+            kwargs[name] = value
         return KernelEntry(
             kernel=self.kernel_map[self._op_name](
                 self.N_total, dtype, tune=self.tune, **kwargs,

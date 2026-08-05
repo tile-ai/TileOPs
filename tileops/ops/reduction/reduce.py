@@ -516,7 +516,6 @@ class _SimpleReduceOp(_ReduceOpBase):
     overrides to ``dim=-1`` and restricts the type to ``int``.
 
     Args:
-        dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension. Accepts ``int``, ``list[int]``,
             ``tuple[int, ...]``, or ``None`` on the base class; subclasses
             may narrow this (see ``ProdFwdOp``).

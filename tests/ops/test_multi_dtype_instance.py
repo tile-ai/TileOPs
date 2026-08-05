@@ -181,5 +181,61 @@ def test_mismatched_input_dtypes_are_rejected():
         op(x, w)
 
 
+# Bool operands run on a different kernel than the same op's other dtypes: the
+# storage is reinterpreted as uint8. That fact used to live in a `_bool_storage`
+# attribute written while building a kernel, so a bool call followed by an
+# integer one left it describing the wrong call. It now travels inside the
+# cache entry, and these sequences would fail if it moved back out.
+
+
+@pytest.mark.smoke
+def test_bitwise_alternates_between_bool_and_integer_storage():
+    """bool -> int32 -> bool on one instance, each answered by its own kernel."""
+    from tileops.ops.elementwise import BitwiseAndFwdOp
+
+    op = BitwiseAndFwdOp((64,), (64,))
+    b = torch.tensor([True, False] * 32, device="cuda")
+    i = torch.arange(64, device="cuda", dtype=torch.int32)
+
+    torch.testing.assert_close(op(b, ~b), b & ~b)
+    torch.testing.assert_close(op(i, i + 1), i & (i + 1))
+    torch.testing.assert_close(op(b, b), b & b)  # back to bool after the int kernel
+
+    assert set(op._entries) == {torch.bool, torch.int32}
+
+
+@pytest.mark.smoke
+def test_logical_and_output_stays_bool_across_input_storage():
+    """A float input produces a bool output without disturbing the bool entry."""
+    from tileops.ops.elementwise import LogicalAndFwdOp
+
+    op = LogicalAndFwdOp((64,), (64,))
+    b = torch.tensor([True, False] * 32, device="cuda")
+    f = torch.tensor([0.0, 1.0] * 32, device="cuda")
+
+    torch.testing.assert_close(op(b, ~b), torch.logical_and(b, ~b))
+    torch.testing.assert_close(op(f, f), torch.logical_and(f, f))
+    torch.testing.assert_close(op(b, b), torch.logical_and(b, b))
+
+    assert set(op._entries) == {torch.bool, torch.float32}
+
+
+@pytest.mark.smoke
+def test_masked_fill_alternates_between_bool_and_float_input():
+    """The scalar is re-validated per element type, the mask stays bool."""
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
+
+    op = MaskedFillScalarFwdOp(input=(64,), mask=(64,), value=1)
+    mask = torch.tensor([True, False] * 32, device="cuda")
+    b = torch.zeros(64, device="cuda", dtype=torch.bool)
+    f = torch.zeros(64, device="cuda", dtype=torch.float32)
+
+    torch.testing.assert_close(op(b, mask), b.masked_fill(mask, 1))
+    torch.testing.assert_close(op(f, mask), f.masked_fill(mask, 1))
+    torch.testing.assert_close(op(b, mask), b.masked_fill(mask, 1))
+
+    assert set(op._entries) == {torch.bool, torch.float32}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

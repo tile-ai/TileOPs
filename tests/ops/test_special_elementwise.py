@@ -562,9 +562,14 @@ def test_scalar_param_rejects_unrepresentable(make_op) -> None:
     overflows float16, so the same op accepts one and rejects the other.
     """
     op = make_op()
+    call = (lambda t: op(t)) if _takes_one_tensor(op) else (lambda t: op(t, _bool_mask()))
+
+    fp32 = torch.zeros(1024, device="cuda", dtype=torch.float32)
+    assert call(fp32).dtype == torch.float32  # 1e6 is finite in float32
+
     fp16 = torch.zeros(1024, device="cuda", dtype=torch.float16)
     with pytest.raises(ValueError, match="not representable"):
-        op(fp16) if _takes_one_tensor(op) else op(fp16, _bool_mask())
+        call(fp16)
 
 
 @pytest.mark.smoke
@@ -717,8 +722,9 @@ def test_masked_fill_rejects_when_pytorch_rejects(
 ) -> None:
     """Op must reject every scalar that PyTorch's own masked_fill rejects.
 
-    The contract is parity, not the error message; assert both call sites
-    raise, leaving wording to the implementation.
+    Parity is the contract, but the op side matches the representability
+    diagnostic: a bare ``Exception`` would also be satisfied by an unrelated
+    builder or backend failure, which proves nothing about the validator.
     """
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
@@ -730,7 +736,7 @@ def test_masked_fill_rejects_when_pytorch_rejects(
     op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=fill_value)
     x = torch.zeros(1024, device="cuda", dtype=dtype)
     mask = torch.zeros(1024, device="cuda", dtype=torch.bool)
-    with pytest.raises((ValueError, TypeError)):
+    with pytest.raises(ValueError, match="representable"):
         op(x, mask)
 
 
