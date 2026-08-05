@@ -1584,7 +1584,6 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
         is_causal: Whether to apply causal masking.
         window_size_left: Left window size (-1 = unlimited).
         window_size_right: Right window size (-1 = unlimited).
-        dtype: Tensor data type.
         kernel_map: Optional override for hardware-specific kernel dispatch.
         tune: Whether to run autotuning on kernel instantiation.
     """
@@ -1740,7 +1739,6 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         is_causal: Whether to apply causal masking.
         window_size_left: Left window size (-1 = unlimited).
         window_size_right: Right window size (-1 = unlimited).
-        dtype: Tensor data type.
         accum_dtype: Accumulator data type for intermediate computations.
         kernel_map: Optional override for hardware-specific kernel dispatch.
         tune: Whether to run autotuning on kernel instantiation.

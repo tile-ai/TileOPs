@@ -1316,7 +1316,11 @@ class LogicalUnaryKernel(UnaryKernel):
 
 
 class _Uint8StorageUnaryKernel(UnaryKernel):
-    """Unary bool-storage kernel: public bool tensors are viewed as uint8."""
+    """Unary kernel that computes on uint8 but accepts and returns bool.
+
+    Reinterpreting bool storage as uint8 is this backend's requirement, not part
+    of the op's semantics, so the reinterpretation happens here.
+    """
 
     DEFAULT_STRATEGY = "register_copy"
     SUPPORTED_DTYPES = (torch.uint8,)
@@ -1325,9 +1329,22 @@ class _Uint8StorageUnaryKernel(UnaryKernel):
     def default_config(self) -> dict:
         return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
 
+    def forward(self, x):
+        as_bool = x.dtype == torch.bool
+        if as_bool:
+            x = x.view(torch.uint8)
+        result = super().forward(x)
+        return result.view(torch.bool) if as_bool else result
+
 
 class _Uint8StorageBinaryKernel(BinaryKernel):
-    """Binary bool-storage kernel: public bool tensors are viewed as uint8."""
+    """Binary kernel that computes on uint8 but accepts and returns bool.
+
+    Reinterpreting bool storage as uint8 is this backend's requirement, not part
+    of the op's semantics, so the reinterpretation happens here. Callers pass
+    bool tensors and get a bool result; a caller that already holds uint8 is
+    passed through unchanged.
+    """
 
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = (torch.uint8,)
@@ -1335,6 +1352,15 @@ class _Uint8StorageBinaryKernel(BinaryKernel):
     @property
     def default_config(self) -> dict:
         return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
+
+    def forward(self, a, b):
+        as_bool = a.dtype == torch.bool
+        if as_bool:
+            a = a.view(torch.uint8)
+        if b.dtype == torch.bool:
+            b = b.view(torch.uint8)
+        result = super().forward(a, b)
+        return result.view(torch.bool) if as_bool else result
 
 
 class ReluFwdKernel(FloatUnaryKernel):
@@ -2028,11 +2054,30 @@ class NegFwdKernel(FloatUnaryKernel):
 
 
 class ReciprocalFwdKernel(FloatUnaryKernel):
-    """Element-wise 1/x."""
+    """Element-wise 1/x.
+
+    Integral inputs are this backend's business: it has no integer kernel, so it
+    declares float32 as the type it computes them in and converts at the
+    boundary. A backend with a native integer-input reciprocal declares nothing
+    and receives the integers.
+    """
+
+    _INT_DTYPES = (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
+
+    @classmethod
+    def specialize(cls, dtype: torch.dtype) -> tuple:
+        if dtype in cls._INT_DTYPES:
+            return cls, torch.float32
+        return super().specialize(dtype)
 
     @staticmethod
     def op_func(x):
         return T.cast(1.0, "float32") / x
+
+    def forward(self, x):
+        if x.dtype != self.dtype:
+            x = x.to(self.dtype)
+        return super().forward(x)
 
 
 class SignFwdKernel(FloatUnaryKernel):
@@ -2860,6 +2905,10 @@ class WhereFwdKernel(ParametricUnaryKernel):
         return _make_where_kernel
 
     def forward(self, cond, x, y):
+        # A bool condition is this backend's uint8 predicate; the caller passes
+        # semantic bool and never names the representation.
+        if cond.dtype == torch.bool:
+            cond = cond.view(torch.uint8)
         return self._compiled_fn(cond, x, y)
 
 
@@ -3338,10 +3387,9 @@ class MaskedFillFwdKernel(ParametricUnaryKernel):
     """MaskedFill: out = mask ? fill_value : x.
 
     Supports the PyTorch ``Tensor.masked_fill(mask, value: Number)`` dtype
-    union of integer and floating-point input dtypes. The bool dtype path
-    is handled at the Op layer by viewing the input as uint8 and casting
-    the result back to bool, so the kernel itself only sees integer and
-    floating-point storage dtypes.
+    union of integer and floating-point input dtypes, plus bool: bool storage
+    is reinterpreted as uint8 here, because that is this backend's requirement
+    rather than part of the op's semantics.
     """
 
     _DEFAULT_THREADS = 512
@@ -3362,7 +3410,13 @@ class MaskedFillFwdKernel(ParametricUnaryKernel):
         return (self.fill_value,)
 
     def forward(self, x, mask):
-        return self._compiled_fn(x, mask)
+        as_bool = x.dtype == torch.bool
+        if as_bool:
+            x = x.view(torch.uint8)
+        if mask.dtype == torch.bool:
+            mask = mask.view(torch.uint8)
+        result = self._compiled_fn(x, mask)
+        return result.view(torch.bool) if as_bool else result
 
 
 @functools.lru_cache(maxsize=32)
@@ -3439,9 +3493,9 @@ class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
     Computes ``out = mask ? value : x`` over flat tensors of length
     ``N_total``. The Op layer broadcasts ``input`` and ``mask`` to the
     output shape, flattens them, packs the mask as uint8, and reshapes
-    the 0-dim ``value`` to a length-1 tensor before dispatch. The bool
-    input dtype is routed through uint8 at the Op layer, so this kernel
-    only sees integer and floating-point storage dtypes.
+    the 0-dim ``value`` to a length-1 tensor before dispatch. Bool storage is
+    reinterpreted as uint8 here, being this backend's requirement rather than
+    part of the op's semantics.
     """
 
     _DEFAULT_THREADS = 512
@@ -3452,10 +3506,20 @@ class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
         return _make_masked_fill_tensor_value_kernel
 
     def forward(self, x, mask, value):
+        as_bool = x.dtype == torch.bool
+        if as_bool:
+            x = x.view(torch.uint8)
+        # A 0-d scalar is the semantic form; this kernel reads it from a
+        # length-one buffer.
+        value = value.contiguous().view(1)
+        if as_bool:
+            value = value.view(torch.uint8)
+        if mask.dtype == torch.bool:
+            mask = mask.view(torch.uint8)
         result = self._compiled_fn(x, mask, value)
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
-        return result
+        return result.view(torch.bool) if as_bool else result
 
 
 @functools.lru_cache(maxsize=32)
@@ -3729,3 +3793,27 @@ class SinusoidalFwdKernel(Kernel):
 
     def forward(self):
         return self._compiled_fn()
+
+
+# Bool operands are served by the uint8-backed siblings defined above. Declaring
+# the pairing here — rather than having the op pick a second kernel_map slot and
+# a storage dtype — keeps the choice inside this backend. A backend with native
+# bool declares nothing and serves bool from its general implementation.
+for _primary, _impl in (
+    (EqFwdKernel, EqBoolStorageFwdKernel),
+    (NeFwdKernel, NeBoolStorageFwdKernel),
+    (GtFwdKernel, GtBoolStorageFwdKernel),
+    (LtFwdKernel, LtBoolStorageFwdKernel),
+    (GeFwdKernel, GeBoolStorageFwdKernel),
+    (LeFwdKernel, LeBoolStorageFwdKernel),
+    (LogicalAndFwdKernel, LogicalAndBoolStorageFwdKernel),
+    (LogicalOrFwdKernel, LogicalOrBoolStorageFwdKernel),
+    (LogicalNotFwdKernel, LogicalNotBoolStorageFwdKernel),
+    (BitwiseAndFwdKernel, BitwiseAndBoolStorageFwdKernel),
+    (BitwiseOrFwdKernel, BitwiseOrBoolStorageFwdKernel),
+    (BitwiseXorFwdKernel, BitwiseXorBoolStorageFwdKernel),
+    # masked_fill needs no sibling: the same kernel serves bool in uint8 storage.
+    (MaskedFillFwdKernel, MaskedFillFwdKernel),
+    (MaskedFillTensorValueFwdKernel, MaskedFillTensorValueFwdKernel),
+):
+    _primary.BOOL_IMPL = (_impl, torch.uint8)

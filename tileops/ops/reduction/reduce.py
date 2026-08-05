@@ -516,7 +516,6 @@ class _SimpleReduceOp(_ReduceOpBase):
     overrides to ``dim=-1`` and restricts the type to ``int``.
 
     Args:
-        dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension. Accepts ``int``, ``list[int]``,
             ``tuple[int, ...]``, or ``None`` on the base class; subclasses
             may narrow this (see ``ProdFwdOp``).
@@ -602,7 +601,7 @@ class ProdFwdOp(_SimpleReduceOp):
 class _WelfordReduceOp(_ReduceOpBase):
     """Base for Welford-based reduce ops (std, var, var_mean).
 
-    Construction: ``op(dtype=..., dim=None, correction=1, keepdim=False)``.
+    Construction: ``op(dim=None, correction=1, keepdim=False)``.
     M and N are derived from the input tensor at forward time, and kernels
     are cached by ``(M, N)`` to avoid rebuilds.
 
@@ -610,7 +609,6 @@ class _WelfordReduceOp(_ReduceOpBase):
     so no host-side ``F.pad`` is needed.
 
     Args:
-        dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default ``None``, i.e. full reduction).
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.

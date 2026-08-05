@@ -33,11 +33,7 @@ class DaCumsumFwdOp(Op):
     is computed from the fp32 dt values before casting, ensuring numerical precision.
 
     Args:
-        batch:        Batch size.
-        num_chunks:   Number of chunks (seq_len / chunk_len).
         chunk_len:    Tokens per chunk.
-        n_heads:      Number of attention heads.
-        seq_len:      Total sequence length (= num_chunks * chunk_len).
         dt_softplus:  Whether to apply softplus (with bypass for dt > 20) to dt.
         has_dt_bias:  Whether a per-head dt_bias is added before softplus/clamp.
         dt_min:       Lower clamp bound applied after bias and softplus.

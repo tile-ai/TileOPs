@@ -9,9 +9,10 @@ from tileops.kernels.elementwise import PreluFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
+from ._base import KernelEntry, _PerDtypeKernels, resolve_output_dtype
 
 
-class PreluFwdOp(Op):
+class PreluFwdOp(_PerDtypeKernels, Op):
     """PReLU: y = x if x > 0 else weight[channel] * x.
 
     Channel dimension follows PyTorch convention: dimension 1 for inputs
@@ -19,7 +20,6 @@ class PreluFwdOp(Op):
 
     Args:
         shape: Shape of the input tensor (must have a channel dimension).
-        dtype: Torch dtype.
         num_channels: Number of channels (weight length).
         kernel_map: Optional dispatch override mapping kernel keys to
             ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
@@ -31,13 +31,11 @@ class PreluFwdOp(Op):
     def __init__(
         self,
         shape: tuple,
-        dtype: torch.dtype,
         num_channels: int,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         self.shape = shape
-        self.dtype = dtype
         self.num_channels = num_channels
         # Manifest input bindings for the synthesized eval_roofline
         # (docs/design/roofline.md §4.4.3): each signature.inputs entry
@@ -51,7 +49,19 @@ class PreluFwdOp(Op):
         inner_size = (prod(shape[2:]) if len(shape) > 2 else 1) if len(shape) >= 2 else 1
         self.inner_size = inner_size
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](N_total, num_channels, inner_size, dtype)
+        self._init_entries()
+
+    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
+        kernel = impl(
+            self.N_total, self.num_channels, self.inner_size, ctor_dtype,
+        )
+
+        return KernelEntry(
+            kernel=kernel,
+            compute_dtype=ctor_dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
+        )
 
     @property
     def default_kernel_map(self):
@@ -63,7 +73,7 @@ class PreluFwdOp(Op):
         weight: torch.Tensor,
     ) -> torch.Tensor:
         orig_shape = input.shape
-        return self.kernel(
+        return self._entry(input.dtype).kernel(
             input.contiguous().reshape(-1), weight.contiguous().reshape(-1),
         ).reshape(orig_shape)
 
@@ -74,8 +84,7 @@ class PreluFwdOp(Op):
     ) -> torch.Tensor:
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if input.dtype != self.dtype:
-            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        self._validate_dtypes(input, weight)
         if tuple(input.shape) != tuple(self.shape):
             raise ValueError(
                 f"Expected input.shape {tuple(self.shape)}, got {tuple(input.shape)}"
@@ -85,9 +94,9 @@ class PreluFwdOp(Op):
         # boundary instead of corrupting the kernel.
         if not weight.is_cuda:
             raise ValueError("Weight must be a CUDA tensor")
-        if weight.dtype != self.dtype:
+        if weight.dtype != input.dtype:
             raise ValueError(
-                f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
+                f"Expected weight.dtype {input.dtype}, got {weight.dtype}"
             )
         if weight.numel() != self.num_channels:
             raise ValueError(

@@ -65,9 +65,8 @@ def _da_cumsum_fwd_kernel(
     then calls T.cumsum along the chunk dimension.  This eliminates the serial
     Q-step scan of the previous kernel and matches mamba_ssm's tl.cumsum approach.
 
-    Args:
-        block_h: Number of heads processed per CUDA block (passed to kernel_func).
-                 Must satisfy block_h * chunk_len <= 1024.
+    ``block_h``, the number of heads a block covers, is supplied by the returned
+    ``kernel_func`` and must satisfy ``block_h * chunk_len <= 1024``.
     """
     accum_dtype = "float"
 

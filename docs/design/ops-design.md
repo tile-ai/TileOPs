@@ -33,6 +33,8 @@ An output dtype is determined by the inputs when it is `same_as(...)`, `promote_
 
 The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — and the kernel cache is keyed by shape *and* dtype. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* and checking the architecture needs no tensor, and keeping it there preserves fast failure on an unsupported GPU.
 
+`self.dtype` exists for `eval_roofline` / `total_memory` only. No execution path may read it: it records an earlier call, and the next dtype invalidates it.
+
 `_validate_dtypes` runs on every `forward()` call — dtype validity depends on the actual tensors passed, not just their shapes. It is the only dtype gate; an op does not compare an incoming tensor against a dtype it was constructed with, because there is no such dtype. Roofline timing and formula semantics are defined in [roofline.md](roofline.md). See [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
 
 ## Scaffolding an Op from a Manifest Entry

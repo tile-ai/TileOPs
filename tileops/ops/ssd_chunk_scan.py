@@ -20,13 +20,6 @@ class SSDChunkScanFwdOp(Op):
                 + sum_{s <= l} cb[l, s] * exp(dA_cumsum[l] - dA_cumsum[s]) * dt[s] * x[s, p]
 
     Args:
-        batch:      Batch size.
-        num_chunks: Number of chunks (T / chunk_len).
-        chunk_len:  Tokens per chunk.
-        n_heads:    Number of heads.
-        d_head:     Head dimension.
-        d_state:    State Space Model (SSM) state dimension.
-        dtype:      Data type for inputs (float16 or bfloat16).
         tune:       Whether to autotune tile config on construction.
     """
 

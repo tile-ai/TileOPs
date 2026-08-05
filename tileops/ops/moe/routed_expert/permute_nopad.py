@@ -39,9 +39,9 @@ class MoePermuteNopadFwdOp(Op):
 
     def __init__(
         self,
+        num_experts: int,
         total_tokens: Optional[int] = None,
         top_k: Optional[int] = None,
-        num_experts: Optional[int] = None,
         hidden_size: Optional[int] = None,
         expert_map: Optional[torch.Tensor] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -160,8 +160,6 @@ class MoePermuteNopadFwdOp(Op):
             raise ValueError(
                 f"Expected hidden_size={self._committed_hidden_size}, got {hidden_size}"
             )
-        if self.num_experts is None:
-            raise ValueError("num_experts must be provided at construction time")
         if hidden_states.dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(
                 "Expected hidden_states.dtype to be torch.float16 or "

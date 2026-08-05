@@ -520,7 +520,7 @@ class ManifestBenchmark(BenchmarkBase[Any]):
 
     Usage::
 
-        op = SumFwdOp(dtype=dtype, dim=0)
+        op = SumFwdOp(dim=0)
         bm = ManifestBenchmark("SumFwdOp", op, workload)
         result = bm.profile(op, *inputs)
     """

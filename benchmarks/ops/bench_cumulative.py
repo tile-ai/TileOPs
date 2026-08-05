@@ -28,7 +28,7 @@ def _make_op(shape: tuple, dtype: torch.dtype, op_kind: str):
         "cumprod": CumprodFwdOp,
     }
     cls = op_map[op_kind]
-    return cls(dtype=dtype, dim=-1)
+    return cls(dim=-1)
 
 
 class CumulativeBenchmarkWorkload(CumulativeWorkload):

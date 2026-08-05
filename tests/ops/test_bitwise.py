@@ -54,7 +54,7 @@ class BitwiseAndFixture(FixtureBase):
 def test_bitwise_and_op(n_total: int) -> None:
     test = BitwiseTest(n_total, torch.bitwise_and)
     shape = (n_total,)
-    op = BitwiseAndFwdOp(a_shape=shape, b_shape=shape, dtype=torch.int32)
+    op = BitwiseAndFwdOp(a_shape=shape, b_shape=shape)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -74,7 +74,7 @@ class BitwiseOrFixture(FixtureBase):
 def test_bitwise_or_op(n_total: int) -> None:
     test = BitwiseTest(n_total, torch.bitwise_or)
     shape = (n_total,)
-    op = BitwiseOrFwdOp(a_shape=shape, b_shape=shape, dtype=torch.int32)
+    op = BitwiseOrFwdOp(a_shape=shape, b_shape=shape)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -94,7 +94,7 @@ class BitwiseXorFixture(FixtureBase):
 def test_bitwise_xor_op(n_total: int) -> None:
     test = BitwiseTest(n_total, torch.bitwise_xor)
     shape = (n_total,)
-    op = BitwiseXorFwdOp(a_shape=shape, b_shape=shape, dtype=torch.int32)
+    op = BitwiseXorFwdOp(a_shape=shape, b_shape=shape)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
 
@@ -131,7 +131,7 @@ def test_bitwise_broadcast(
 ) -> None:
     a = torch.randint(-1000, 1000, a_shape, dtype=torch.int32, device="cuda")
     b = torch.randint(-1000, 1000, b_shape, dtype=torch.int32, device="cuda")
-    op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=torch.int32)
+    op = op_cls(a_shape=a_shape, b_shape=b_shape)
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -160,7 +160,7 @@ def test_bool_bitwise_fast_path(
 ) -> None:
     a = torch.randint(0, 2, a_shape, device="cuda").bool()
     b = torch.randint(0, 2, b_shape, device="cuda").bool()
-    op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=torch.bool)
+    op = op_cls(a_shape=a_shape, b_shape=b_shape)
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -196,7 +196,7 @@ class BitwiseNotTest(BitwiseNotWorkload, TestBase):
 @BitwiseFixture
 def test_bitwise_not(n_total: int, dtype: torch.dtype) -> None:
     test = BitwiseNotTest(n_total, dtype)
-    op = BitwiseNotFwdOp(N_total=n_total, dtype=dtype)
+    op = BitwiseNotFwdOp(N_total=n_total)
     test.check(op, *test.gen_inputs(), compare=exact_compare)
 
 
@@ -231,8 +231,10 @@ class BitwiseBinaryRejectFixture(FixtureBase):
 def test_bitwise_binary_rejects_float_dtype(op_cls, dtype: torch.dtype) -> None:
     """Binary bitwise ops only support integer dtypes; floats must be rejected."""
     shape = (16,)
-    with pytest.raises(ValueError, match="does not support dtype"):
-        op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = op_cls(a_shape=shape, b_shape=shape)
+    x = torch.zeros(shape, device="cuda", dtype=dtype)
+    with pytest.raises(ValueError, match="has dtype|does not support dtype"):
+        op(x, x)
 
 
 if __name__ == "__main__":

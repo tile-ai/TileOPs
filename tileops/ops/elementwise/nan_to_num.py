@@ -8,15 +8,19 @@ from tileops.kernels.elementwise import NanToNumFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _validate_scalar_param_repr
+from ._base import (
+    KernelEntry,
+    _PerDtypeKernels,
+    _validate_scalar_param_repr,
+    resolve_output_dtype,
+)
 
 
-class NanToNumFwdOp(Op):
+class NanToNumFwdOp(_PerDtypeKernels, Op):
     """NanToNum: replace NaN, +Inf, -Inf with specified values.
 
     Args:
         N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
         nan: Replacement for NaN (default 0.0).
         posinf: Replacement for +Inf. Manifest default ``None`` resolves
             to the largest finite value representable in the user-facing
@@ -38,7 +42,6 @@ class NanToNumFwdOp(Op):
     def __init__(
         self,
         N_total: int,
-        dtype: torch.dtype,
         nan: float = 0.0,
         posinf: Optional[float] = None,
         neginf: Optional[float] = None,
@@ -46,28 +49,7 @@ class NanToNumFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        # The manifest default ``None`` resolves to the *final*
-        # user-facing dtype's max / min, not ``+/-inf``: the kernel runs
-        # in ``output_dtype`` (fp16 for e5m2 to preserve Inf/NaN) and
-        # _clamp_to_dtype_range targets that intermediate, so forwarding
-        # ``+inf`` would resolve to fp16's 65504.0 and then surface as
-        # ``+Inf`` after the e5m2 post-cast (e5m2 max is 57344.0).
-        # Picking ``torch.finfo(dtype).max`` here keeps the replacement
-        # value finite end-to-end and matches ``torch.nan_to_num``
-        # semantics (replace Inf with the dtype's max finite value).
-        _validate_scalar_param_repr("nan", nan, dtype, self._op_name)
-        if posinf is None:
-            kernel_posinf = torch.finfo(dtype).max
-        else:
-            _validate_scalar_param_repr("posinf", posinf, dtype, self._op_name)
-            kernel_posinf = posinf
-        if neginf is None:
-            kernel_neginf = torch.finfo(dtype).min
-        else:
-            _validate_scalar_param_repr("neginf", neginf, dtype, self._op_name)
-            kernel_neginf = neginf
         self.N_total = N_total
-        self.dtype = dtype
         self.nan = nan
         self.posinf = posinf
         self.neginf = neginf
@@ -76,11 +58,43 @@ class NanToNumFwdOp(Op):
         # input as ``self.input_shape`` since this op stores only the
         # flat element count, not the original-rank tensor.
         self.input_shape = (N_total,)
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        # Pass replacement values positionally; the kernel constructor's
-        # internal parameter naming is encapsulated below the Op layer.
-        self.kernel = self.kernel_map["nan_to_num"](
-            N_total, dtype, nan, kernel_posinf, kernel_neginf, tune=tune,
+        self._init_entries()
+
+    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
+        """Resolve the replacement values against *dtype*, then build.
+
+        A ``None`` bound means "this dtype's largest finite value", so it
+        cannot be resolved before the element type is known. Picking
+        ``finfo(dtype).max`` keeps the replacement finite end-to-end and
+        matches ``torch.nan_to_num``; forwarding ``+inf`` would resolve to
+        fp16's 65504.0 and resurface as ``+Inf`` after an e5m2 post-cast.
+        """
+        _validate_scalar_param_repr("nan", self.nan, dtype, self._op_name)
+        if self.posinf is None:
+            posinf = torch.finfo(dtype).max
+        else:
+            _validate_scalar_param_repr(
+                "posinf", self.posinf, dtype, self._op_name)
+            posinf = self.posinf
+        if self.neginf is None:
+            neginf = torch.finfo(dtype).min
+        else:
+            _validate_scalar_param_repr(
+                "neginf", self.neginf, dtype, self._op_name)
+            neginf = self.neginf
+        # Replacement values are positional; the kernel constructor's
+        # parameter naming is encapsulated below the Op layer.
+        impl, ctor_dtype = self._selected_kernel_cls("nan_to_num").specialize(dtype)
+        kernel = impl(
+            self.N_total, ctor_dtype, self.nan, posinf, neginf, tune=self.tune,
+        )
+
+        return KernelEntry(
+            kernel=kernel,
+            compute_dtype=ctor_dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
     @property
@@ -89,13 +103,14 @@ class NanToNumFwdOp(Op):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         orig_shape = input.shape
-        return self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
+        return self._entry(input.dtype).kernel(
+            input.contiguous().reshape(-1)
+        ).reshape(orig_shape)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if input.dtype != self.dtype:
-            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        self._validate_dtypes(input)
         if input.numel() != self.N_total:
             raise ValueError(f"Expected {self.N_total} elements, got {input.numel()}")
         wrapped = type(self)._wrapped

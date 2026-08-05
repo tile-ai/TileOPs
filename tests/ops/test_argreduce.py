@@ -454,7 +454,7 @@ def test_argreduce_rejects_multidim(op_cls_path: str, dim) -> None:
     op_cls = getattr(mod, cls_name)
 
     with pytest.raises((TypeError, ValueError)):
-        op_cls(dtype=torch.float16, dim=dim)
+        op_cls(dim=dim)
 
 
 # dim=None (full-tensor reduction) tests

@@ -28,12 +28,11 @@ class RMSNormFwdOp(Op):
             reduction runs (manifest ``params.normalized_shape``).
         eps: Epsilon for numerical stability (manifest ``params.eps``).
             ``None`` selects the implementation default ``1e-6``.
-        dtype: Data type (``torch.float16`` or ``torch.bfloat16``).
         kernel_map: Optional kernel override dictionary.
         tune: Whether to autotune (default ``False``).
 
     Example:
-        >>> op = RMSNormFwdOp(normalized_shape=(4096,), dtype=torch.float16)
+        >>> op = RMSNormFwdOp(normalized_shape=(4096,))
         >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
         >>> w = torch.randn(4096, dtype=torch.float16, device="cuda")
         >>> y = op(x, w)  # shape: (1024, 4096)

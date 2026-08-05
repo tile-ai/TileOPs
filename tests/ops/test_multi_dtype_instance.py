@@ -1,18 +1,14 @@
 """One op instance, two element types.
 
-Dtype used to be fixed at construction, so an instance served exactly one
-element type and per-instance state could safely hold anything derived from
-it. Now the tensors decide, and the family caches are hand-written per
-family — this covers the invariant they all have to satisfy.
-
-The rest of the suite parametrizes dtype but builds a fresh op per case, so
-it never exercises a second dtype through an instance that already has an
-entry.
+The rest of the suite parametrizes dtype but builds a fresh op per case, so it
+never drives a second dtype through an instance that already holds an entry.
+Each family caches by hand; this covers the invariant they all owe.
 """
 
 import pytest
 import torch
 
+from tileops.manifest import load_manifest
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.reduction.reduce import SumFwdOp
@@ -79,8 +75,7 @@ def test_attention_decode_reselects_the_kernel_per_dtype():
     """The decode ops pick a kernel *slot* from the element type.
 
     float16 at batch=1 takes the warp-specialized kernel and bfloat16 falls
-    back, so one instance must hold two different kernel classes — the case
-    that used to need two ops with two constructor dtypes.
+    back, so one instance must hold two different kernel classes.
     """
     from tileops.ops.attention.gqa import (
         GroupedQueryAttentionDecodeWithKVCacheFwdOp,
@@ -179,6 +174,121 @@ def test_mismatched_input_dtypes_are_rejected():
     w = torch.randn(n, dtype=torch.bfloat16, device="cuda")
     with pytest.raises(ValueError):
         op(x, w)
+
+
+# One instance alternating between bool and non-bool operands: the two are served
+# by different kernels, so anything derived from one must not survive into the
+# other.
+
+
+@pytest.mark.smoke
+def test_bitwise_alternates_between_bool_and_integer_storage():
+    """bool -> int32 -> bool on one instance, each answered by its own kernel."""
+    from tileops.ops.elementwise import BitwiseAndFwdOp
+
+    op = BitwiseAndFwdOp((64,), (64,))
+    b = torch.tensor([True, False] * 32, device="cuda")
+    i = torch.arange(64, device="cuda", dtype=torch.int32)
+
+    torch.testing.assert_close(op(b, ~b), b & ~b)
+    torch.testing.assert_close(op(i, i + 1), i & (i + 1))
+    torch.testing.assert_close(op(b, b), b & b)  # back to bool after the int kernel
+
+    assert set(op._entries) == {torch.bool, torch.int32}
+
+
+@pytest.mark.smoke
+def test_logical_and_output_stays_bool_across_input_storage():
+    """A float input produces a bool output without disturbing the bool entry."""
+    from tileops.ops.elementwise import LogicalAndFwdOp
+
+    op = LogicalAndFwdOp((64,), (64,))
+    b = torch.tensor([True, False] * 32, device="cuda")
+    f = torch.tensor([0.0, 1.0] * 32, device="cuda")
+
+    torch.testing.assert_close(op(b, ~b), torch.logical_and(b, ~b))
+    torch.testing.assert_close(op(f, f), torch.logical_and(f, f))
+    torch.testing.assert_close(op(b, b), torch.logical_and(b, b))
+
+    assert set(op._entries) == {torch.bool, torch.float32}
+
+
+@pytest.mark.smoke
+def test_masked_fill_alternates_between_bool_and_float_input():
+    """The scalar is re-validated per element type, the mask stays bool."""
+    from tileops.ops.elementwise import MaskedFillScalarFwdOp
+
+    op = MaskedFillScalarFwdOp(input=(64,), mask=(64,), value=1)
+    mask = torch.tensor([True, False] * 32, device="cuda")
+    b = torch.zeros(64, device="cuda", dtype=torch.bool)
+    f = torch.zeros(64, device="cuda", dtype=torch.float32)
+
+    torch.testing.assert_close(op(b, mask), b.masked_fill(mask, 1))
+    torch.testing.assert_close(op(f, mask), f.masked_fill(mask, 1))
+    torch.testing.assert_close(op(b, mask), b.masked_fill(mask, 1))
+
+    assert set(op._entries) == {torch.bool, torch.float32}
+
+
+def _single_tensor_elementwise_ops():
+    """Every concrete elementwise op drivable from one ``N_total`` argument."""
+    import inspect
+
+    import tileops.ops.elementwise as ew
+    from tileops.ops.elementwise._base import _PerDtypeKernels
+
+    found = {}
+    for name in dir(ew):
+        cls = getattr(ew, name)
+        if not (inspect.isclass(cls) and issubclass(cls, _PerDtypeKernels)):
+            continue
+        if name.startswith("_") or getattr(cls, "_op_name", None) is None:
+            continue  # a template base, not a concrete op
+        params = set(inspect.signature(cls.__init__).parameters)
+        if params - {"self", "kernel_map", "tune"} == {"N_total"}:
+            found[name] = cls
+    return found
+
+
+_SINGLE_TENSOR_OPS = _single_tensor_elementwise_ops()
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("name", sorted(_SINGLE_TENSOR_OPS))
+def test_single_tensor_op_records_its_dtype(name):
+    """No op may reach a result without recording the element type it used.
+
+    An op answering on its own path — an integer identity, a predicate fallback
+    — records for itself, so every declared dtype is driven, not just float32.
+    """
+    op = _SINGLE_TENSOR_OPS[name](N_total=64)
+    declared = load_manifest()[name]["signature"]["inputs"]
+    (spec,) = declared.values()
+    dtypes = [getattr(torch, d.strip()) for d in spec["dtype"].split("|")]
+    dtypes = [d for d in dtypes if d not in (torch.float64, torch.complex64, torch.complex128)]
+    assert dtypes, f"{name} declares no drivable input dtype"
+
+    for dtype in dtypes:
+        op = _SINGLE_TENSOR_OPS[name](N_total=64)
+        if dtype == torch.bool:
+            x = torch.tensor([True, False] * 32, device="cuda")
+        elif dtype.is_floating_point:
+            x = torch.rand(64, device="cuda", dtype=dtype) + 0.5
+        else:
+            x = torch.arange(1, 65, device="cuda", dtype=dtype)
+        op(x)  # an unexpected failure here is a real defect, not a skip
+        assert op.dtype == dtype, f"{name} did not record {dtype}"
+
+
+@pytest.mark.smoke
+def test_enumeration_still_sees_the_family():
+    """The sweep is worthless if the enumeration silently stops matching."""
+    assert len(_SINGLE_TENSOR_OPS) >= 24, (
+        f"only {len(_SINGLE_TENSOR_OPS)} single-tensor ops found; the filter broke"
+    )
+    for expected in ("AbsFwdOp", "ReciprocalFwdOp", "RoundFwdOp", "IsnanFwdOp",
+                     "LogicalNotFwdOp", "BitwiseNotFwdOp"):
+        assert expected in _SINGLE_TENSOR_OPS, f"{expected} dropped out of the sweep"
 
 
 if __name__ == "__main__":

@@ -19,7 +19,6 @@ class MoeUnpermuteFwdOp(Op):
         total_tokens: Number of input tokens T.
         top_k: Number of experts selected per token K.
         hidden_size: Hidden dimension H.
-        dtype: Data type of mm2_pad and output (bf16 or fp16).
         padded_batch_sum: Size of the padded mm2_pad buffer (first dim of mm2_pad).
             Must be >= T*K. When used with MoePermuteOp, pass the padded_batch_sum
             value returned by the kernel (T*K + E*block_m upper bound).

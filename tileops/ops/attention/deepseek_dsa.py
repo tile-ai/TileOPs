@@ -33,8 +33,6 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         sm_scale (Optional[float], default=None): Scaling factor for the softmax function.
         is_causal (bool, default=True): Whether the attention is causal
                     (True for causal, False for non-causal).
-        dtype (torch.dtype, default=torch.float16): The data type for
-                    the tensors used in the operation.
         kernel_map (Optional[Dict[str, Kernel]], default=None):
                     Optional mapping for custom kernels.
         tune (bool, default=False): Whether to enable kernel tuning.

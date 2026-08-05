@@ -1,6 +1,5 @@
 """Unary math elementwise ops (exp/log/sqrt/abs/neg/round/etc.)."""
 
-from typing import Dict, Optional
 
 import torch
 
@@ -23,9 +22,14 @@ from tileops.kernels.elementwise import (
     SqrtFwdKernel,
     TruncFwdKernel,
 )
-from tileops.kernels.kernel_base import Kernel
 
-from ._base import _MANIFEST_INT_DTYPES, UnaryOp, _IntIdentityUnaryOp
+from ._base import (
+    _MANIFEST_INT_DTYPES,
+    KernelEntry,
+    UnaryOp,
+    _IntIdentityUnaryOp,
+    resolve_output_dtype,
+)
 
 
 class ExpFwdOp(UnaryOp):
@@ -77,45 +81,35 @@ class ReciprocalFwdOp(UnaryOp):
 
     Mirrors ``torch.reciprocal`` int-input promotion: integral dtypes
     (uint8 / int8 / int16 / int32 / int64) are cast to float32 before the
-    float kernel runs, and the op's ``output_dtype`` is float32 in that
-    case. Floating inputs (float16 / bfloat16 / float32) follow the
-    standard same-dtype path.
+    float kernel runs, so their entry carries ``compute_dtype`` and
+    ``output_dtype`` of float32 against an integral key. Floating inputs
+    (float16 / bfloat16 / float32) follow the standard same-dtype path.
     """
 
     _op_name = "reciprocal"
     kernel_cls = ReciprocalFwdKernel
 
-    def __init__(
-        self,
-        N_total: int,
-        dtype: torch.dtype,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ):
-        if dtype in _MANIFEST_INT_DTYPES:
-            # Build the kernel against the promoted compute dtype (float32)
-            # so the float-only ReciprocalFwdKernel can run, then restore
-            # the user-declared dtype on ``self.dtype`` so metadata and
-            # ``eval_roofline`` reflect the real I/O contract: integer
-            # input bytes + float32 output bytes. ``self.output_dtype``
-            # stays float32 (set by the kernel) per the manifest's
-            # ``promote_int_to_float`` contract.
-            super().__init__(
-                N_total, torch.float32, kernel_map=kernel_map, tune=tune,
-            )
-            self.dtype = dtype
-        else:
-            super().__init__(N_total, dtype, kernel_map=kernel_map, tune=tune)
+    def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
+        """An integer input computes in float32; the entry records both types.
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        if self.dtype in _MANIFEST_INT_DTYPES:
-            self._validate_input(input)
-            promoted = input.to(torch.float32)
-            wrapped = type(self)._wrapped
-            if wrapped is not None:
-                return wrapped(promoted, self._instance_key)
-            return self._eager_forward(promoted)
-        return super().forward(input)
+        The semantic dtype keys the entry and drives roofline accounting —
+        integer input bytes, float32 output bytes — while the kernel is built
+        for the compute dtype the float-only kernel requires.
+        """
+        impl, compute = self._selected_kernel_cls().specialize(dtype)
+        return KernelEntry(
+            kernel=self._build_kernel_instance(
+                N_total=self.N_total, dtype=compute, tune=self.tune, impl=impl,
+            ),
+            compute_dtype=compute,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
+        )
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
+        """The kernel converts if its compute type differs from the input's."""
+        entry = self._entry(input.dtype)
+        flat = input.contiguous().reshape(-1)
+        return entry.kernel(flat).reshape(input.shape)
 
 
 class SignFwdOp(_IntIdentityUnaryOp):
@@ -166,7 +160,6 @@ class RoundFwdOp(_IntIdentityUnaryOp):
 
     Args:
         N_total: Total number of elements (flattened).
-        dtype: Torch dtype.
         kernel_map: Optional kernel dispatch override.
         tune: Whether to autotune.
     """
@@ -184,9 +177,12 @@ class RoundFwdOp(_IntIdentityUnaryOp):
         # before any fp32 arithmetic so a CPU tensor / wrong dtype / wrong
         # numel cannot silently bypass the checks.
         self._validate_input(input)
+        # This path answers without a kernel, so it binds the call metadata
+        # itself; _entry never runs.
+        self._note_call(input.dtype)
         # Integer dtypes are no-ops regardless of decimals (rounding an int
         # produces the same int). Match the float-path identity contract.
-        if self.dtype in _MANIFEST_INT_DTYPES:
+        if input.dtype in _MANIFEST_INT_DTYPES:
             return input.clone()
         # Run through fp32 so low-precision inputs (fp16/bf16) cannot overflow
         # when ``torch.round`` internally scales by ``10**decimals`` — e.g.
@@ -194,7 +190,8 @@ class RoundFwdOp(_IntIdentityUnaryOp):
         # at the end restores the op's contract dtype. The manifest's
         # ``kernel_map`` continues to describe the round-to-nearest-integer
         # kernel that handles the ``decimals=0`` fast path above.
-        return torch.round(input.float(), decimals=decimals).to(self.dtype)
+        # Metadata only; the cast target comes from the tensor.
+        return torch.round(input.float(), decimals=decimals).to(input.dtype)
 
 
 class TruncFwdOp(_IntIdentityUnaryOp):

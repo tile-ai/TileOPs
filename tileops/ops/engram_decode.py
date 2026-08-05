@@ -26,7 +26,6 @@ class EngramDecodeOp(Op):
         max_conv_len: Max conv cache capacity (compile-time).
         conv_kernel_size: Number of conv taps w (model param, e.g. 4).
         dilation: Dilation factor δ (model param, e.g. max N-gram order).
-        dtype: Data type (float16 or bfloat16).
         eps: RMSNorm epsilon (default 1e-6).
     """
 

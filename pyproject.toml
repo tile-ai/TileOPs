@@ -78,6 +78,9 @@ line-length = 100
 # NOTE: Please gradually tighten static code checks and other validations in the future.
 # The current exemptions are in place to ensure normal project development.
 [tool.ruff.lint]
+# DOC102 is in preview; opt into that one rule, not preview behaviour at large.
+preview = true
+explicit-preview-rules = true
 select = [
     # pycodestyle
     "E",
@@ -97,6 +100,8 @@ select = [
     "N",
     # ruff-specific: sort __all__
     "RUF022",
+    # pydoclint: a documented parameter the signature does not have
+    "DOC102",
     # flake8-annotations (type hints) — enable when codebase has sufficient coverage
     # "ANN",
 ]

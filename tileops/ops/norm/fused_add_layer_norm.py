@@ -40,8 +40,6 @@ class FusedAddLayerNormFwdOp(Op):
             API infers it from ``x.shape[:-1]``.
         N: Optional committed hidden dimension. Preferred API infers it from
             ``x.shape[-1]``.
-        dtype: Data type (``torch.float32``, ``torch.float16``, or
-            ``torch.bfloat16``).
         eps: Epsilon for numerical stability.
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.

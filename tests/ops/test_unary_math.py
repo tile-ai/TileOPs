@@ -96,7 +96,7 @@ def _repeat_values(values: list[float], n: int, dtype: torch.dtype) -> torch.Ten
 def _make_math_test(n_total, dtype, gen_fn, ref_fn, op_cls):
     """Build test, instantiate op, and run check."""
     test = UnaryMathTest(n_total, dtype, gen_fn=gen_fn, ref_fn=ref_fn)
-    op = op_cls(N_total=n_total, dtype=dtype)
+    op = op_cls(N_total=n_total)
     test.check(op, *test.gen_inputs(), **_get_tolerances(dtype))
 
 
@@ -242,7 +242,7 @@ def test_math_ops_reject_non_float_dtype() -> None:
 )
 def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
     n_total = 1024
-    op = op_cls(N_total=n_total, dtype=int_dtype)
+    op = op_cls(N_total=n_total)
     if int_dtype == torch.uint8:
         x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
     else:
@@ -257,7 +257,7 @@ def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
 def test_round_int_identity_with_decimals() -> None:
     """RoundFwdOp's decimals!=0 path also short-circuits on integer inputs."""
     n_total = 256
-    op = RoundFwdOp(N_total=n_total, dtype=torch.int32)
+    op = RoundFwdOp(N_total=n_total)
     x = torch.randint(-100, 100, (n_total,), device="cuda", dtype=torch.int32)
     y = op.forward(x, decimals=2)
     assert torch.equal(y, x)
@@ -287,7 +287,7 @@ _INT_DTYPES = [
 @pytest.mark.parametrize("int_dtype", _INT_DTYPES)
 def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
     n_total = 1024
-    op = op_cls(N_total=n_total, dtype=int_dtype)
+    op = op_cls(N_total=n_total)
     if int_dtype == torch.uint8:
         x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
     else:
@@ -311,7 +311,7 @@ def test_predicate_non_float_constant(op_cls, expected, non_float_dtype) -> None
     """Predicate ops return constant bool on every non-float dtype the
     manifest declares (integer dtypes plus ``torch.bool``)."""
     n_total = 256
-    op = op_cls(N_total=n_total, dtype=non_float_dtype)
+    op = op_cls(N_total=n_total)
     if non_float_dtype == torch.bool:
         x = torch.randint(0, 2, (n_total,), device="cuda", dtype=torch.bool)
     elif non_float_dtype == torch.uint8:
@@ -437,7 +437,7 @@ def test_round_decimals(dtype: torch.dtype, decimals: int) -> None:
     """
     n_total = 4096
     x = torch.randn(n_total, device="cuda", dtype=dtype) * 10.0
-    op = RoundFwdOp(N_total=n_total, dtype=dtype)
+    op = RoundFwdOp(N_total=n_total)
     out = op(x, decimals=decimals)
     ref = torch.round(x.float(), decimals=decimals).to(dtype)
     # The decimals path runs entirely in fp32 internally and only down-casts
@@ -457,7 +457,7 @@ def test_round_decimals_no_overflow_low_precision(dtype: torch.dtype) -> None:
     """
     n_total = 1
     x = torch.tensor([100.0], device="cuda", dtype=dtype)
-    op = RoundFwdOp(N_total=n_total, dtype=dtype)
+    op = RoundFwdOp(N_total=n_total)
     out = op(x, decimals=4)
     ref = torch.round(x.float(), decimals=4).to(dtype)
     assert torch.isfinite(out).all(), f"output contains non-finite values: {out}"
@@ -469,10 +469,76 @@ def test_round_decimals_default_is_zero() -> None:
     """Calling RoundFwdOp without ``decimals`` must round to nearest integer."""
     n_total = 1024
     x = torch.randn(n_total, device="cuda", dtype=torch.float32) * 5.0
-    op = RoundFwdOp(N_total=n_total, dtype=torch.float32)
+    op = RoundFwdOp(N_total=n_total)
     out = op(x)
     ref = torch.round(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_round_decimals_binds_call_metadata() -> None:
+    """A forward that answers without a kernel still records its element type.
+
+    ``self.dtype`` feeds ``eval_roofline`` / ``total_memory``. The non-zero
+    decimals path runs in torch and never reaches ``_entry``, so if binding
+    lived only in the cache lookup this path would leave the metadata
+    describing the previous call — or no call at all.
+    """
+    op = RoundFwdOp(N_total=256)
+    op(torch.randn(256, device="cuda", dtype=torch.float32), decimals=2)
+    assert op.dtype == torch.float32
+    assert op.total_memory == 2 * 256 * 4
+
+    op(torch.randn(256, device="cuda", dtype=torch.float16), decimals=2)
+    assert op.dtype == torch.float16, "metadata still describes the float32 call"
+    assert op.total_memory == 2 * 256 * 2
+
+    op(torch.arange(256, device="cuda", dtype=torch.int32), decimals=2)
+    assert op.dtype == torch.int32
+
+    fresh = RoundFwdOp(N_total=256)
+    fresh(torch.randn(256, device="cuda", dtype=torch.float32), decimals=2)
+    assert fresh.dtype == torch.float32, "a decimals-only instance never bound a dtype"
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("invoke", [
+    pytest.param(lambda op, x: op(x), id="call"),
+    pytest.param(lambda op, x: op.forward(x), id="forward"),
+    pytest.param(lambda op, x: op._eager_forward(x), id="eager_forward"),
+    pytest.param(lambda op, x: torch.compile(op, fullgraph=True)(x), id="compiled"),
+])
+def test_every_execution_path_records_its_dtype(invoke) -> None:
+    """Metadata must not depend on which entry point the caller used.
+
+    ``torch.compile`` reaches the op twice — once tracing, once through the
+    custom op — so a scheme that records on the outer call publishes nothing on
+    the first compiled invocation.
+    """
+    from tileops.ops.elementwise import AbsFwdOp
+
+    op = AbsFwdOp(N_total=256)
+    invoke(op, torch.randn(256, device="cuda", dtype=torch.float32))
+    assert op.dtype == torch.float32
+    assert op.total_memory == 2 * 256 * 4
+
+
+@pytest.mark.smoke
+def test_rejected_dtype_never_reaches_the_metadata() -> None:
+    """A dtype the op refuses cannot appear in the roofline metadata.
+
+    Validation runs before the specialization is selected, so the refusal path
+    never records anything. A call that fails *after* selecting one does leave
+    its dtype — see ``_PerDtypeKernels`` for why narrowing that needs the
+    invocation context rather than a slot.
+    """
+    op = RoundFwdOp(N_total=256)
+    op(torch.randn(256, device="cuda", dtype=torch.float32))
+    assert op.dtype == torch.float32
+
+    with pytest.raises(ValueError, match="dtype"):
+        op(torch.randn(256, device="cuda", dtype=torch.float64))
+    assert op.dtype == torch.float32, "a rejected dtype reached the metadata"
 
 
 @pytest.mark.smoke
@@ -483,15 +549,17 @@ def test_round_decimals_validates_input() -> None:
     short-circuit through the op-layer fp32 decomposition because the path
     bypassed ``UnaryOp.forward``'s validation.
     """
-    op = RoundFwdOp(N_total=2, dtype=torch.float32)
+    op = RoundFwdOp(N_total=2)
     # CPU tensor must raise (matches decimals=0 path).
     cpu_x = torch.ones(2, dtype=torch.float32)
     with pytest.raises(ValueError, match="CUDA tensor"):
         op(cpu_x, decimals=2)
-    # Wrong dtype must raise.
-    wrong_dtype = torch.ones(2, device="cuda", dtype=torch.float16)
+    # float16 is in the manifest union, so the same instance accepts it.
+    assert op(torch.ones(2, device="cuda", dtype=torch.float16), decimals=2).dtype \
+        == torch.float16
+    # A dtype outside the union must still raise.
     with pytest.raises(ValueError, match="dtype"):
-        op(wrong_dtype, decimals=2)
+        op(torch.ones(2, device="cuda", dtype=torch.float64), decimals=2)
     # Wrong numel must raise.
     wrong_numel = torch.ones(4, device="cuda", dtype=torch.float32)
     with pytest.raises(ValueError, match="elements"):
@@ -522,11 +590,12 @@ def test_reciprocal_int_promotes_to_float32(dtype: torch.dtype) -> None:
     else:
         x = torch.randint(-1000, 1001, (n_total,), device="cuda", dtype=dtype)
         x = torch.where(x == 0, torch.ones_like(x), x)
-    op = ReciprocalFwdOp(N_total=n_total, dtype=dtype)
-    assert op.output_dtype == torch.float32, (
-        f"ReciprocalFwdOp({dtype}).output_dtype must be float32, got {op.output_dtype}"
-    )
+    op = ReciprocalFwdOp(N_total=n_total)
     out = op(x)
+    entry_out = op._entry(dtype).output_dtype
+    assert entry_out == torch.float32, (
+        f"ReciprocalFwdOp({dtype}) must promote to float32, got {entry_out}"
+    )
     assert out.dtype == torch.float32, (
         f"output dtype must be float32 for int input, got {out.dtype}"
     )
@@ -554,11 +623,15 @@ def test_reciprocal_int_metadata_preserves_input_dtype(
     bandwidth math) see the real workload.
     """
     n_total = 4
-    op = ReciprocalFwdOp(N_total=n_total, dtype=dtype)
+    op = ReciprocalFwdOp(N_total=n_total)
+    x = torch.ones(n_total, device="cuda", dtype=dtype)
+    op(x)
+    # Metadata describes the most recent call: the caller's integer dtype in,
+    # float32 out.
     assert op.dtype == dtype, (
-        f"op.dtype must keep declared input dtype, got {op.dtype}"
+        f"op.dtype must report the most recent input dtype, got {op.dtype}"
     )
-    assert op.output_dtype == torch.float32
+    assert op._entry(dtype).output_dtype == torch.float32
     expected_bytes = n_total * (dtype.itemsize + torch.float32.itemsize)
     assert int(op.total_memory) == expected_bytes, (
         f"total_memory must charge int input bytes + float32 output "
@@ -571,16 +644,17 @@ def test_reciprocal_int_metadata_preserves_input_dtype(
 
 @pytest.mark.smoke
 def test_reciprocal_int_input_validation() -> None:
-    """ReciprocalFwdOp(int dtype) must validate the user input dtype.
+    """One instance serves integer and float inputs, and rejects the rest.
 
-    A float32 tensor handed to an op constructed with ``dtype=int32`` must
-    raise rather than silently bypass promotion: the op's contract is
-    ``input.dtype == declared dtype``.
+    Promotion is per call, so float32 and int32 are both valid and land on
+    different entries; a dtype outside the manifest union still raises.
     """
-    op = ReciprocalFwdOp(N_total=4, dtype=torch.int32)
-    wrong = torch.ones(4, device="cuda", dtype=torch.float32)
+    op = ReciprocalFwdOp(N_total=4)
+    assert op(torch.ones(4, device="cuda", dtype=torch.float32)).dtype == torch.float32
+    assert op(torch.ones(4, device="cuda", dtype=torch.int32)).dtype == torch.float32
+    assert len(op._entries) == 2, "each semantic dtype keys its own entry"
     with pytest.raises(ValueError, match="dtype"):
-        op(wrong)
+        op(torch.ones(4, device="cuda", dtype=torch.float64))
 
 
 if __name__ == "__main__":

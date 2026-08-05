@@ -20,7 +20,7 @@ __all__ = ["AllFwdOp", "AnyFwdOp", "CountNonzeroFwdOp"]
 class AllFwdOp(_ReduceOpBase):
     """All reduction along ``dim``, returning bool.
 
-    Construction: ``AllFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N
+    Construction: ``AllFwdOp(dim=None, keepdim=False)``.  M and N
     are derived from the input tensor at forward time, and kernels are
     cached by ``(M, N)`` to avoid rebuilds.
 
@@ -34,8 +34,6 @@ class AllFwdOp(_ReduceOpBase):
     ``x.bool()`` with the input shape, matching ``torch.all`` semantics.
 
     Args:
-        dtype: Input data type (float16, bfloat16, float32, int32, int64,
-               bool, complex64, complex128).
         dim: Reduction dimension (default ``None``, i.e. full reduction).
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.
@@ -92,7 +90,7 @@ class AllFwdOp(_ReduceOpBase):
 class AnyFwdOp(_ReduceOpBase):
     """Any reduction along ``dim``, returning bool.
 
-    Construction: ``AnyFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N
+    Construction: ``AnyFwdOp(dim=None, keepdim=False)``.  M and N
     are derived from the input tensor at forward time, and kernels are
     cached by ``(M, N)`` to avoid rebuilds.
 
@@ -106,8 +104,6 @@ class AnyFwdOp(_ReduceOpBase):
     ``x.bool()`` with the input shape, matching ``torch.any`` semantics.
 
     Args:
-        dtype: Input data type (float16, bfloat16, float32, int32, int64,
-               bool, complex64, complex128).
         dim: Reduction dimension (default ``None``, i.e. full reduction).
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.
@@ -164,7 +160,7 @@ class AnyFwdOp(_ReduceOpBase):
 class CountNonzeroFwdOp(_ReduceOpBase):
     """Count nonzero reduction along ``dim``, returning int64.
 
-    Construction: ``CountNonzeroFwdOp(dtype=..., dim=None)``.  M and N are
+    Construction: ``CountNonzeroFwdOp(dim=None)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 
@@ -178,8 +174,6 @@ class CountNonzeroFwdOp(_ReduceOpBase):
     complex64, complex128) are pre-converted to float32 in forward().
 
     Args:
-        dtype: Input data type (float16, bfloat16, float32, int32, int64,
-               bool, complex64, complex128).
         dim: Reduction dimension (default ``None``, i.e. full reduction).
             Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
             multi-dim reduction.

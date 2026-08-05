@@ -60,6 +60,24 @@ class Kernel(ABC):
         """Return the default config for the kernel"""
         return {}
 
+    #: Implementation serving bool operands, as ``(class, construction dtype)``.
+    #: Left unset by a backend whose general implementation handles bool.
+    BOOL_IMPL: Optional[tuple] = None
+
+    @classmethod
+    def specialize(cls, dtype: "torch.dtype") -> tuple:
+        """Return the class to build for *dtype*, and the dtype to build it with.
+
+        A backend may serve a semantic dtype with an implementation other than
+        its general one, or compute it in a different storage type — bool
+        operands on a uint8 kernel, say. Answering here keeps that choice inside
+        the backend: the caller passes the semantic dtype and never names an
+        implementation or a storage type. The default is the identity.
+        """
+        if dtype == torch.bool and cls.BOOL_IMPL is not None:
+            return cls.BOOL_IMPL
+        return cls, dtype
+
     @abstractmethod
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         """Run the kernel"""

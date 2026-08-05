@@ -107,7 +107,7 @@ def test_clamp_tensor_bench(
     test = TensorClampBenchCase(input_shape, dtype, min_shape=min_shape, max_shape=max_shape)
     x, t_min, t_max = test.gen_inputs()
 
-    op = ClampFwdOp(input=input_shape, min=min_shape, max=max_shape, dtype=dtype)
+    op = ClampFwdOp(input=input_shape, min=min_shape, max=max_shape)
     bm = ManifestBenchmark(_CLAMP_FWD_OP, op, test)
     result = bm.profile(op, x, t_min, t_max)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -134,7 +134,7 @@ def test_clamp_min_bench(
     test = TensorClampBenchCase(input_shape, dtype, min_shape=min_shape)
     x, t_min = test.gen_inputs()
 
-    op = ClampMinFwdOp(input=input_shape, min=min_shape, dtype=dtype)
+    op = ClampMinFwdOp(input=input_shape, min=min_shape)
     bm = ManifestBenchmark(_CLAMP_MIN_OP, op, test)
     result = bm.profile(op, x, t_min)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -161,7 +161,7 @@ def test_clamp_max_bench(
     test = TensorClampBenchCase(input_shape, dtype, max_shape=max_shape)
     x, t_max = test.gen_inputs()
 
-    op = ClampMaxFwdOp(input=input_shape, max=max_shape, dtype=dtype)
+    op = ClampMaxFwdOp(input=input_shape, max=max_shape)
     bm = ManifestBenchmark(_CLAMP_MAX_OP, op, test)
     result = bm.profile(op, x, t_max)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -310,9 +310,9 @@ def test_fp8_unary_independent_bench(
     inputs = test.gen_inputs()
 
     if op_cls.__name__ == "ClampScalarFwdOp":
-        op = op_cls(input=shape, dtype=dtype, **extra_kwargs)
+        op = op_cls(input=shape, **extra_kwargs)
     else:
-        op = op_cls(N_total=n_total, dtype=dtype, **extra_kwargs)
+        op = op_cls(N_total=n_total, **extra_kwargs)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(f"{op_name}_fp8", locals(), result, tag="tileops")
 
@@ -388,7 +388,7 @@ def test_fp8_selection_bench(
         bm = Fp8MaskedFillBenchmark(test)
         x, mask = test.gen_inputs()
 
-        op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-100.0, dtype=dtype)
+        op = MaskedFillScalarFwdOp(input=tuple(shape), mask=tuple(shape), value=-100.0)
         result = bm.profile(op, x, mask)
         BenchmarkReport.record(op, locals(), result, tag="tileops")
 

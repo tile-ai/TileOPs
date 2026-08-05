@@ -26,12 +26,6 @@ class SSDDecodeOp(Op):
     here and must be applied by the caller if needed.
 
     Args:
-        batch:    Batch size.
-        n_heads:  Number of attention heads.
-        d_head:   Head dimension (headdim in Mamba-2 notation).
-        d_state:  SSM state dimension.
-        n_groups: Number of B/C groups (n_heads must be divisible by n_groups).
-        dtype:    Data type for x, B_in, C_in (float16 or bfloat16).
         tune:     Whether to autotune tile config on construction.
     """
 

@@ -44,7 +44,8 @@ class SinusoidalFwdOp(Op):
         self.d_model = d_model
         self.dtype = dtype
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](seq_len, d_model, dtype)
+        impl, ctor_dtype = self.kernel_map[self._op_name].specialize(dtype)
+        self.kernel = impl(seq_len, d_model, ctor_dtype)
 
     @property
     def default_kernel_map(self):
@@ -65,4 +66,7 @@ class SinusoidalFwdOp(Op):
         return 6 * n_elem, self.total_memory
 
     def forward(self) -> torch.Tensor:
-        return self.kernel().reshape(self.seq_len, self.d_model)
+        # The op promised ``self.dtype``; whichever storage the backend chose to
+        # compute in is its own business and does not reach the caller.
+        out = self.kernel().reshape(self.seq_len, self.d_model)
+        return out if out.dtype == self.dtype else out.to(self.dtype)

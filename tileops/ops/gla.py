@@ -51,15 +51,9 @@ class GLAFwdOp(Op):
     Layout: BTHD (batch, seq_len, heads, dim).
 
     Args:
-        batch: Batch size.
-        seq_len: Sequence length (must be divisible by chunk_size).
-        heads: Number of attention heads.
-        dim_k: Key/query dimension.
-        dim_v: Value dimension.
         chunk_size: Chunk size for chunked linear attention.
         scale: Query scale factor (default: dim_k**-0.5).
         output_final_state: Whether to return the final hidden state.
-        dtype: Data type for computation.
         kernel_map: Optional kernel overrides.
         tune: Whether to autotune kernels.
     """
@@ -174,14 +168,8 @@ class GLABwdOp(Op):
     Layout: BTHD (batch, seq_len, heads, dim).
 
     Args:
-        batch: Batch size.
-        seq_len: Sequence length (must be divisible by chunk_size).
-        heads: Number of attention heads.
-        dim_k: Key/query dimension.
-        dim_v: Value dimension.
         chunk_size: Chunk size for chunked linear attention.
         scale: Query scale factor (default: dim_k**-0.5).
-        dtype: Data type for computation.
         kernel_map: Optional kernel overrides.
         tune: Whether to autotune kernels.
     """

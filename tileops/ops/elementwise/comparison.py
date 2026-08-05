@@ -3,20 +3,14 @@
 import torch
 
 from tileops.kernels.elementwise import (
-    EqBoolStorageFwdKernel,
     EqFwdKernel,
-    GeBoolStorageFwdKernel,
     GeFwdKernel,
-    GtBoolStorageFwdKernel,
     GtFwdKernel,
     IsfiniteFwdKernel,
     IsinfFwdKernel,
     IsnanFwdKernel,
-    LeBoolStorageFwdKernel,
     LeFwdKernel,
-    LtBoolStorageFwdKernel,
     LtFwdKernel,
-    NeBoolStorageFwdKernel,
     NeFwdKernel,
 )
 
@@ -34,7 +28,6 @@ class EqFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "eq"
     kernel_cls = EqFwdKernel
-    bool_storage_kernel_cls = EqBoolStorageFwdKernel
 
 
 class NeFwdOp(_BoolOutputBinaryOp):
@@ -42,7 +35,6 @@ class NeFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "ne"
     kernel_cls = NeFwdKernel
-    bool_storage_kernel_cls = NeBoolStorageFwdKernel
 
 
 class GtFwdOp(_BoolOutputBinaryOp):
@@ -50,7 +42,6 @@ class GtFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "gt"
     kernel_cls = GtFwdKernel
-    bool_storage_kernel_cls = GtBoolStorageFwdKernel
 
 
 class LtFwdOp(_BoolOutputBinaryOp):
@@ -58,7 +49,6 @@ class LtFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "lt"
     kernel_cls = LtFwdKernel
-    bool_storage_kernel_cls = LtBoolStorageFwdKernel
 
 
 class GeFwdOp(_BoolOutputBinaryOp):
@@ -66,7 +56,6 @@ class GeFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "ge"
     kernel_cls = GeFwdKernel
-    bool_storage_kernel_cls = GeBoolStorageFwdKernel
 
 
 class LeFwdOp(_BoolOutputBinaryOp):
@@ -74,7 +63,6 @@ class LeFwdOp(_BoolOutputBinaryOp):
 
     _op_name = "le"
     kernel_cls = LeFwdKernel
-    bool_storage_kernel_cls = LeBoolStorageFwdKernel
 
 
 class IsnanFwdOp(_IntIdentityUnaryOp):

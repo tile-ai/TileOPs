@@ -10,12 +10,15 @@ from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
 from ._base import (
+    KernelEntry,
     _ClampTensorBase,
+    _PerDtypeKernels,
     _validate_scalar_param_repr,
+    resolve_output_dtype,
 )
 
 
-class ClampFwdOp(_ClampTensorBase):
+class ClampFwdOp(_PerDtypeKernels, _ClampTensorBase):
     """Clamp with Tensor lower and/or upper bounds (broadcasting).
 
     Conforms to ``torch.clamp(input, min, max)`` where ``min`` and ``max``
@@ -30,7 +33,6 @@ class ClampFwdOp(_ClampTensorBase):
         input: Shape of the input tensor.
         min: Shape of the lower-bound tensor, or ``None`` for no lower bound.
         max: Shape of the upper-bound tensor, or ``None`` for no upper bound.
-        dtype: Torch dtype for all operands.
 
     Raises:
         ValueError: If both ``min`` and ``max`` are ``None``.
@@ -44,7 +46,6 @@ class ClampFwdOp(_ClampTensorBase):
         input: tuple,
         min: Optional[tuple] = None,
         max: Optional[tuple] = None,
-        dtype: torch.dtype = torch.float32,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -57,7 +58,6 @@ class ClampFwdOp(_ClampTensorBase):
         self.input_shape = tuple(input)
         self.min_shape = None if min is None else tuple(min)
         self.max_shape = None if max is None else tuple(max)
-        self.dtype = dtype
         broadcast_args = [self.input_shape]
         if self.min_shape is not None:
             broadcast_args.append(self.min_shape)
@@ -65,12 +65,23 @@ class ClampFwdOp(_ClampTensorBase):
             broadcast_args.append(self.max_shape)
         self.out_shape = tuple(torch.broadcast_shapes(*broadcast_args))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["clamp_tensor"](
-            self.N_total, dtype,
+        self._init_entries()
+
+    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
+        impl, ctor_dtype = self._selected_kernel_cls("clamp_tensor").specialize(dtype)
+        kernel = impl(
+            self.N_total, ctor_dtype,
             has_min=self.min_shape is not None,
             has_max=self.max_shape is not None,
-            tune=tune,
+            tune=self.tune,
+        )
+
+        return KernelEntry(
+            kernel=kernel,
+            compute_dtype=ctor_dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
     @property
@@ -91,7 +102,7 @@ class ClampFwdOp(_ClampTensorBase):
         x_flat = self._expand_flat(input, out_shape)
         lo_flat = None if min is None else self._expand_flat(min, out_shape)
         hi_flat = None if max is None else self._expand_flat(max, out_shape)
-        result = self.kernel(x_flat, lo_flat, hi_flat)
+        result = self._entry(x_flat.dtype).kernel(x_flat, lo_flat, hi_flat)
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
@@ -122,8 +133,8 @@ class ClampFwdOp(_ClampTensorBase):
             if not t.is_cuda:
                 raise ValueError("Inputs must be CUDA tensors")
         for name, t, expected in tensors:
-            if t.dtype != self.dtype:
-                raise ValueError(f"Expected {name}.dtype {self.dtype}, got {t.dtype}")
+            if t.dtype != input.dtype:
+                raise ValueError(f"Expected {name}.dtype {input.dtype}, got {t.dtype}")
             if tuple(t.shape) != expected:
                 raise ValueError(
                     f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
@@ -134,13 +145,12 @@ class ClampFwdOp(_ClampTensorBase):
         return self._eager_forward(input, min, max)
 
 
-class ClampMinFwdOp(_ClampTensorBase):
+class ClampMinFwdOp(_PerDtypeKernels, _ClampTensorBase):
     """Single-bound Tensor lower clamp (``torch.clamp_min``).
 
     Args:
         input: Shape of the input tensor.
         min: Shape of the lower-bound tensor.
-        dtype: Torch dtype.
     """
 
     _op_name = "clamp_min"
@@ -150,19 +160,28 @@ class ClampMinFwdOp(_ClampTensorBase):
         self,
         input: tuple,
         min: tuple,
-        dtype: torch.dtype,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.input_shape = tuple(input)
         self.min_shape = tuple(min)
-        self.dtype = dtype
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.min_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["clamp_tensor"](
-            self.N_total, dtype, has_min=True, has_max=False, tune=tune,
+        self._init_entries()
+
+    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
+        impl, ctor_dtype = self._selected_kernel_cls("clamp_tensor").specialize(dtype)
+        kernel = impl(
+            self.N_total, ctor_dtype, has_min=True, has_max=False, tune=self.tune,
+        )
+
+        return KernelEntry(
+            kernel=kernel,
+            compute_dtype=ctor_dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
     @property
@@ -177,7 +196,7 @@ class ClampMinFwdOp(_ClampTensorBase):
         out_shape = self.out_shape if self.out_shape else (1,)
         x_flat = self._expand_flat(input, out_shape)
         lo_flat = self._expand_flat(min, out_shape)
-        result = self.kernel(x_flat, lo_flat, None)
+        result = self._entry(x_flat.dtype).kernel(x_flat, lo_flat, None)
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
@@ -189,8 +208,8 @@ class ClampMinFwdOp(_ClampTensorBase):
             ("input", input, self.input_shape),
             ("min", min, self.min_shape),
         ]:
-            if t.dtype != self.dtype:
-                raise ValueError(f"Expected {name}.dtype {self.dtype}, got {t.dtype}")
+            if t.dtype != input.dtype:
+                raise ValueError(f"Expected {name}.dtype {input.dtype}, got {t.dtype}")
             if tuple(t.shape) != expected:
                 raise ValueError(
                     f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
@@ -201,13 +220,12 @@ class ClampMinFwdOp(_ClampTensorBase):
         return self._eager_forward(input, min)
 
 
-class ClampMaxFwdOp(_ClampTensorBase):
+class ClampMaxFwdOp(_PerDtypeKernels, _ClampTensorBase):
     """Single-bound Tensor upper clamp (``torch.clamp_max``).
 
     Args:
         input: Shape of the input tensor.
         max: Shape of the upper-bound tensor.
-        dtype: Torch dtype.
     """
 
     _op_name = "clamp_max"
@@ -217,19 +235,28 @@ class ClampMaxFwdOp(_ClampTensorBase):
         self,
         input: tuple,
         max: tuple,
-        dtype: torch.dtype,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.input_shape = tuple(input)
         self.max_shape = tuple(max)
-        self.dtype = dtype
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.max_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["clamp_tensor"](
-            self.N_total, dtype, has_min=False, has_max=True, tune=tune,
+        self._init_entries()
+
+    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
+        impl, ctor_dtype = self._selected_kernel_cls("clamp_tensor").specialize(dtype)
+        kernel = impl(
+            self.N_total, ctor_dtype, has_min=False, has_max=True, tune=self.tune,
+        )
+
+        return KernelEntry(
+            kernel=kernel,
+            compute_dtype=ctor_dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
     @property
@@ -244,7 +271,7 @@ class ClampMaxFwdOp(_ClampTensorBase):
         out_shape = self.out_shape if self.out_shape else (1,)
         x_flat = self._expand_flat(input, out_shape)
         hi_flat = self._expand_flat(max, out_shape)
-        result = self.kernel(x_flat, None, hi_flat)
+        result = self._entry(x_flat.dtype).kernel(x_flat, None, hi_flat)
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
@@ -256,8 +283,8 @@ class ClampMaxFwdOp(_ClampTensorBase):
             ("input", input, self.input_shape),
             ("max", max, self.max_shape),
         ]:
-            if t.dtype != self.dtype:
-                raise ValueError(f"Expected {name}.dtype {self.dtype}, got {t.dtype}")
+            if t.dtype != input.dtype:
+                raise ValueError(f"Expected {name}.dtype {input.dtype}, got {t.dtype}")
             if tuple(t.shape) != expected:
                 raise ValueError(
                     f"Expected {name}.shape {expected}, got {tuple(t.shape)}"
@@ -268,14 +295,13 @@ class ClampMaxFwdOp(_ClampTensorBase):
         return self._eager_forward(input, max)
 
 
-class ClampScalarFwdOp(Op):
+class ClampScalarFwdOp(_PerDtypeKernels, Op):
     """Scalar-bound clamp (``torch.clamp(input, min: Number|None, max: Number|None)``).
 
     Args:
         input: Shape of the input tensor.
         min: Lower bound (Number or None).
         max: Upper bound (Number or None).
-        dtype: Torch dtype.
     """
 
     _op_name = "clamp"
@@ -286,7 +312,6 @@ class ClampScalarFwdOp(Op):
         input: tuple,
         min: Optional[float] = None,
         max: Optional[float] = None,
-        dtype: torch.dtype = torch.float32,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -296,18 +321,30 @@ class ClampScalarFwdOp(Op):
                 "ClampScalarFwdOp requires at least one of `min` or `max` to be a "
                 "Number; both None is not a valid clamp."
             )
-        if min is not None:
-            _validate_scalar_param_repr("min", min, dtype, self._op_name)
-        if max is not None:
-            _validate_scalar_param_repr("max", max, dtype, self._op_name)
         self.input_shape = tuple(input)
         self.N_total = prod(self.input_shape) if self.input_shape else 1
-        self.dtype = dtype
         self.min = min
         self.max = max
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["clamp"](
-            self.N_total, dtype, min_val=min, max_val=max, tune=tune,
+        self._init_entries()
+
+    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
+        """The bounds are baked into the kernel, so they are checked per dtype."""
+        if self.min is not None:
+            _validate_scalar_param_repr("min", self.min, dtype, self._op_name)
+        if self.max is not None:
+            _validate_scalar_param_repr("max", self.max, dtype, self._op_name)
+        impl, ctor_dtype = self._selected_kernel_cls("clamp").specialize(dtype)
+        kernel = impl(
+            self.N_total, ctor_dtype, min_val=self.min, max_val=self.max,
+            tune=self.tune,
+        )
+
+        return KernelEntry(
+            kernel=kernel,
+            compute_dtype=ctor_dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
     @property
@@ -316,13 +353,14 @@ class ClampScalarFwdOp(Op):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         orig_shape = input.shape
-        return self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
+        return self._entry(input.dtype).kernel(
+            input.contiguous().reshape(-1)
+        ).reshape(orig_shape)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if input.dtype != self.dtype:
-            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        self._validate_dtypes(input)
         if tuple(input.shape) != self.input_shape:
             raise ValueError(
                 f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}"

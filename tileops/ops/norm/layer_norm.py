@@ -42,8 +42,6 @@ class LayerNormFwdOp(Op):
             reduction runs (manifest ``params.normalized_shape``).
         eps: Epsilon for numerical stability (manifest ``params.eps``).
             ``None`` uses the PyTorch default ``1e-5``.
-        dtype: Data type (``torch.float32``, ``torch.float16``, or
-            ``torch.bfloat16``).
         kernel_map: Optional kernel override dictionary.
         tune: If ``True``, autotune tile configurations.
     """

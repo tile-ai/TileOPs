@@ -44,7 +44,8 @@ class AlibiFwdOp(Op):
         self.num_heads = num_heads
         self.dtype = dtype
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](seq_len, num_heads, dtype)
+        impl, ctor_dtype = self.kernel_map[self._op_name].specialize(dtype)
+        self.kernel = impl(seq_len, num_heads, ctor_dtype)
 
     @property
     def default_kernel_map(self):
@@ -65,4 +66,7 @@ class AlibiFwdOp(Op):
         return 3 * n_elem, self.total_memory
 
     def forward(self) -> torch.Tensor:
-        return self.kernel().reshape(self.num_heads, self.seq_len, self.seq_len)
+        # The op promised ``self.dtype``; whichever storage the backend chose to
+        # compute in is its own business and does not reach the caller.
+        out = self.kernel().reshape(self.num_heads, self.seq_len, self.seq_len)
+        return out if out.dtype == self.dtype else out.to(self.dtype)

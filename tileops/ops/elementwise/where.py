@@ -9,9 +9,10 @@ from tileops.kernels.elementwise import WhereFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
+from ._base import KernelEntry, _PerDtypeKernels, resolve_output_dtype
 
 
-class WhereFwdOp(Op):
+class WhereFwdOp(_PerDtypeKernels, Op):
     """Where: out = condition ? input : other (with full PyTorch broadcasting).
 
     Conforms to ``torch.where(condition, input, other)``: ``condition`` is a
@@ -25,7 +26,6 @@ class WhereFwdOp(Op):
             with ``input`` / ``other``).
         input: Shape of the value-when-true tensor.
         other: Shape of the value-when-false tensor.
-        dtype: Torch dtype for ``input`` / ``other``.
         kernel_map: Optional dispatch override mapping kernel keys to
             ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
     """
@@ -43,26 +43,34 @@ class WhereFwdOp(Op):
         condition: tuple,
         input: tuple,
         other: tuple,
-        dtype: torch.dtype,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        self.condition_shape = tuple(condition)
+        self.input_shape = tuple(input)
+        self.other_shape = tuple(other)
+        self.out_shape = tuple(
+            torch.broadcast_shapes(self.condition_shape, self.input_shape, self.other_shape)
+        )
+        self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.dispatch_kernel(kernel_map)
+        self._init_entries()
+
+    def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         if dtype not in self._SUPPORTED_DTYPES:
             names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
             raise ValueError(
                 f"WhereFwdOp does not support dtype {dtype}. "
                 f"Supported: [{names}]"
             )
-        self.condition_shape = tuple(condition)
-        self.input_shape = tuple(input)
-        self.other_shape = tuple(other)
-        self.dtype = dtype
-        self.out_shape = tuple(
-            torch.broadcast_shapes(self.condition_shape, self.input_shape, self.other_shape)
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
+        kernel = impl(self.N_total, ctor_dtype)
+
+        return KernelEntry(
+            kernel=kernel,
+            compute_dtype=ctor_dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
-        self.N_total = prod(self.out_shape) if self.out_shape else 1
-        self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](self.N_total, dtype)
 
     @property
     def default_kernel_map(self):
@@ -116,10 +124,10 @@ class WhereFwdOp(Op):
     ) -> torch.Tensor:
         out_shape = self.out_shape if self.out_shape else (1,)
         cond_b = condition if condition.dtype == torch.bool else condition.bool()
-        cond_flat = self._expand_flat(cond_b, out_shape).view(torch.uint8)
+        cond_flat = self._expand_flat(cond_b, out_shape)
         x_flat = self._expand_flat(input, out_shape)
         y_flat = self._expand_flat(other, out_shape)
-        result = self.kernel(cond_flat, x_flat, y_flat).view(out_shape if self.out_shape else ())
+        result = self._entry(x_flat.dtype).kernel(cond_flat, x_flat, y_flat).view(out_shape if self.out_shape else ())
         return result
 
     def forward(
@@ -131,10 +139,10 @@ class WhereFwdOp(Op):
             raise ValueError(
                 f"Expected condition.dtype torch.bool, got {condition.dtype}"
             )
-        if input.dtype != self.dtype:
-            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
-        if other.dtype != self.dtype:
-            raise ValueError(f"Expected other.dtype {self.dtype}, got {other.dtype}")
+        self._validate_dtypes(condition, input, other)
+        if other.dtype != input.dtype:
+            raise ValueError(
+                f"Expected other.dtype {input.dtype}, got {other.dtype}")
         if tuple(condition.shape) != self.condition_shape:
             raise ValueError(
                 f"Expected condition.shape {self.condition_shape}, got {tuple(condition.shape)}"

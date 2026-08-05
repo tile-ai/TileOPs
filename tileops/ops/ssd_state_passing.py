@@ -20,12 +20,7 @@ class SSDStatePassingFwdOp(Op):
     with s_{-1} = initial_states (or 0 if has_initial_states=False).
 
     Args:
-        batch:              Batch size.
-        num_chunks:         Number of chunks (seq_len / chunk_len).
-        n_heads:            Number of heads.
-        d_state:            State Space Model (SSM) state dimension.
         has_initial_states: Whether to use initial_states as s_{-1}.
-        dtype:              Data type for inputs (float16 or bfloat16).
         tune:               Whether to autotune tile config on construction.
     """
 

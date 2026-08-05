@@ -113,6 +113,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   - A **fully-static op** (all non-static axes committed at ctor) may still precompute `self._infer_output_shapes(<input>_shape=(...))` eagerly if a caller needs output shapes before `forward()` — shape inference is dtype-independent. The `Op` base class does not currently consume an `_output_shapes` attribute; do not introduce one unless a concrete consumer requires it.
   - An **arbitrary-rank op** (at least one axis unknown until forward) defers `_infer_output_shapes` to `forward()` per unique input shape.
   - The cache key follows `Op._cache_key`'s `Hashable` return type paired with the forward-time dtype: `(self._cache_key(*input_shapes), dtype)`.
+  - The cache **value** is the kernel when the dtype is the whole story; when a specialization implies more — a compute dtype differing from the semantic one, an output dtype no input supplies — it is one frozen record holding them together. Those fields MUST NOT live in `self.*` slots written while building the kernel: a second dtype leaves them describing the first.
 - **Derivation.** Each `self.*` assignment mirrors one S12 kwarg. Kernel-build positional args follow the kernel class's ctor (kernel author's API). "Fully-static" iff every `signature.inputs` shape axis is either a manifest `shape` dim name or a `static_dims` key resolvable at ctor; the distinction now governs only when shape inference runs, not when the kernel is built.
 - **Example (arbitrary-rank).**
   ```python

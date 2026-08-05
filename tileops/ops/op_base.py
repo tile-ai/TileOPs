@@ -1,3 +1,4 @@
+import dataclasses
 import warnings
 from abc import ABC, abstractmethod
 from typing import Hashable, Optional, Union
@@ -13,11 +14,14 @@ from .compile_boundary import register_instance
 _EMPTY_STATIC_DIMS_WARNED: set = set()
 
 def _iter_kernels(value: object, _depth: int = 0) -> "list[Kernel]":
-    """Return the kernels *value* holds, descending through dicts and sequences.
+    """Return the kernels *value* holds, descending through its containers.
 
-    A kernel cache is a dict keyed by shape and dtype; an op that builds
+    A kernel cache is a dict keyed by shape and dtype. An op that builds
     several kernels together (preprocess plus backward, say) stores a tuple
-    per entry, so the search has to go two levels down.
+    per entry, and one whose specialization carries more than a kernel stores
+    a record, so the search goes two levels down through dicts, sequences and
+    dataclass instances alike. A cache value that hides its kernel from this
+    traversal is invisible to ``autotune``.
     """
     if isinstance(value, Kernel):
         return [value]
@@ -27,6 +31,9 @@ def _iter_kernels(value: object, _depth: int = 0) -> "list[Kernel]":
         return [k for v in value.values() for k in _iter_kernels(v, _depth + 1)]
     if isinstance(value, (tuple, list)):
         return [k for v in value for k in _iter_kernels(v, _depth + 1)]
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return [k for f in dataclasses.fields(value)
+                for k in _iter_kernels(getattr(value, f.name), _depth + 1)]
     return []
 
 
