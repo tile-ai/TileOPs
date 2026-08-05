@@ -543,7 +543,7 @@ def test_argreduce_large_n(op_kind: str, dtype: torch.dtype) -> None:
 
     x = torch.randn(4, 102400, dtype=dtype, device="cuda")
     op_cls = ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp
-    op = op_cls(dtype=dtype, dim=-1)
+    op = op_cls(dim=-1)
     ref = getattr(torch, op_kind)(x, dim=-1)
     y = _call(op, x)
     assert torch.equal(y, ref), f"large-N {op_kind} mismatch: {(y != ref).sum().item()}"
@@ -564,10 +564,56 @@ def test_argreduce_first_index_and_nan_semantics(op_kind: str) -> None:
         device="cuda",
     )
     op_cls = ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp
-    op = op_cls(dtype=x.dtype, dim=-1)
+    op = op_cls(dim=-1)
     ref = getattr(torch, op_kind)(x, dim=-1)
     y = _call(op, x)
     assert torch.equal(y, ref)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["argmax", "argmin"])
+@pytest.mark.parametrize("n", [8, 4096, 40960])
+def test_argreduce_ties_between_two_nans(op_kind: str, n: int) -> None:
+    """Two NaNs tie, so the lower index wins — on every reduction layout.
+
+    No float comparison can express this: every comparison between two NaNs is
+    false, so an ordering that leans on them returns whichever lane merged
+    first. The three row lengths select the warp, CTA and multi-CTA paths, and
+    the NaNs sit far enough apart to land in different lanes.
+    """
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
+
+    x = torch.arange(1, n + 1, dtype=torch.float32, device="cuda")
+    first, second = n // 4, n // 2
+    x[first] = float("nan")
+    x[second] = float("nan")
+
+    op = (ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp)(dim=-1)
+    ref = getattr(torch, op_kind)(x)
+    got = _call(op, x)
+    assert got.item() == ref.item() == first, (
+        f"{op_kind} n={n}: got {got.item()}, torch {ref.item()}, expected {first}"
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("m, n", [(4, 1024), (4, 8192), (1, 32768)])
+def test_argreduce_autotunes_every_strategy(m: int, n: int) -> None:
+    """Each strategy's tuning space names only knobs its own kernel takes.
+
+    The three shapes select the warp, CTA and multi-CTA kernels, whose JIT
+    signatures differ; a config space shared across them offers one of the
+    kernels a parameter it would reject.
+    """
+    from tileops.kernels.reduction.argreduce import ArgreduceKernel
+
+    kernel = ArgreduceKernel(m, n, "argmax", torch.float16)
+    accepted = set(kernel.kernel.signature.parameters)
+    assert set(kernel.default_config) <= accepted
+    for candidate in kernel.autotune_configs:
+        assert set(candidate) <= accepted, (
+            f"{kernel.strategy}: candidate {candidate} names a knob outside {accepted}"
+        )
 
 
 if __name__ == "__main__":

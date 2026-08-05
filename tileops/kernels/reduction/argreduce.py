@@ -46,24 +46,27 @@ def _make_pair_ops(op_kind: str, n: int):
 
     @T.macro
     def update(values, indices, slot, candidate_value, candidate_index):
+        """Merge a candidate into a slot under PyTorch's argreduce ordering.
+
+        NaN outranks every number, equal rank breaks to the lower index, and
+        two NaNs are equal in rank — the last of which no float comparison can
+        express, since every comparison between them is false.
+        """
         candidate_nan = T.isnan(candidate_value)
         current_nan = T.isnan(values[slot])
+        both_numeric = not candidate_nan and not current_nan
         if op_kind == "argmax":
-            better = (candidate_nan and not current_nan) or (
-                candidate_nan == current_nan
-                and (
-                    candidate_value > values[slot]
-                    or (candidate_value == values[slot] and candidate_index < indices[slot])
-                )
-            )
+            outranks = both_numeric and candidate_value > values[slot]
         else:
-            better = (candidate_nan and not current_nan) or (
-                candidate_nan == current_nan
-                and (
-                    candidate_value < values[slot]
-                    or (candidate_value == values[slot] and candidate_index < indices[slot])
-                )
-            )
+            outranks = both_numeric and candidate_value < values[slot]
+        same_rank = (candidate_nan and current_nan) or (
+            both_numeric and candidate_value == values[slot]
+        )
+        better = (
+            (candidate_nan and not current_nan)
+            or outranks
+            or (same_rank and candidate_index < indices[slot])
+        )
         if better:
             values[slot] = candidate_value
             indices[slot] = T.cast(candidate_index, "int32")
@@ -206,7 +209,7 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str):
     """Build the block-per-row kernel used for long rows."""
 
     @tilelang.jit(out_idx=[1])
-    def _func(block_m: int, threads: int):
+    def _func(threads: int):
         num_warps = threads // _WARP_SIZE
         iterations = (N + threads * _NUM_ACCUMULATORS - 1) // (threads * _NUM_ACCUMULATORS)
         (
@@ -409,7 +412,7 @@ def _argreduce_fwd_wrapped(
     x: torch.Tensor,
 ) -> torch.Tensor:
     if strategy == "cta":
-        return _argreduce_cta_kernel(M, N, op_kind, dtype_str)(block_m, threads)(x)
+        return _argreduce_cta_kernel(M, N, op_kind, dtype_str)(threads)(x)
     if strategy == "multi_cta":
         partial_values, partial_indices = _argreduce_multicta_partial_kernel(
             M, N, op_kind, dtype_str, ctas_per_row
@@ -480,27 +483,39 @@ class ArgreduceKernel(Kernel):
             self.kernel = _argreduce_warp_kernel(M, N, op_kind, self.dtype_str)
         self.init_config(config, tune)
 
+    def _knobs(self, config: dict) -> dict:
+        """Keep only the knobs this strategy's kernel actually takes.
+
+        ``block_m`` packs several rows into one block, which only the warp
+        layout does — the other two give a row its own block or its own group of
+        them. Deriving the keys from the built kernel keeps a config space from
+        naming a knob the kernel would reject.
+        """
+        parameters = self.kernel.signature.parameters
+        return {name: value for name, value in config.items() if name in parameters}
+
     @property
     def default_config(self) -> dict:
-        if self.strategy in {"cta", "multi_cta"}:
-            return {"block_m": 1, "threads": 256}
-
         lanes = _lanes_per_row(self.N)
         target_threads = 256 if self.M >= 8 else max(32, self.M * lanes)
         block_m = max(1, target_threads // lanes)
-        return {"block_m": block_m, "threads": block_m * lanes}
+        if self.strategy in {"cta", "multi_cta"}:
+            block_m, threads = 1, 256
+        else:
+            threads = block_m * lanes
+        return self._knobs({"block_m": block_m, "threads": threads})
 
     @property
     def autotune_configs(self) -> list[dict]:
         if self.strategy in {"cta", "multi_cta"}:
-            return [{"block_m": 1, "threads": threads} for threads in (128, 256, 512)]
-
-        lanes = _lanes_per_row(self.N)
-        configs = []
-        for target_threads in (64, 128, 256, 512):
-            block_m = max(1, target_threads // lanes)
-            configs.append({"block_m": block_m, "threads": block_m * lanes})
-        return configs
+            candidates = [{"block_m": 1, "threads": t} for t in (128, 256, 512)]
+        else:
+            lanes = _lanes_per_row(self.N)
+            candidates = []
+            for target_threads in (64, 128, 256, 512):
+                block_m = max(1, target_threads // lanes)
+                candidates.append({"block_m": block_m, "threads": block_m * lanes})
+        return [self._knobs(candidate) for candidate in candidates]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return _argreduce_fwd_wrapped(
@@ -510,7 +525,7 @@ class ArgreduceKernel(Kernel):
             self.dtype_str,
             self.strategy,
             self.ctas_per_row,
-            self.config["block_m"],
+            self.config.get("block_m", 1),
             self.config["threads"],
             x,
         )
