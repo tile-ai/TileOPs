@@ -710,12 +710,13 @@ class UnaryOp(_PerDtypeKernels, Op):
         self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
-        """Build one specialization. Subclasses override to reinterpret storage."""
+        """Build one specialization for the semantic *dtype*."""
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         return KernelEntry(
             kernel=self._build_kernel_instance(
-                N_total=self.N_total, dtype=dtype, tune=self.tune,
+                N_total=self.N_total, dtype=ctor_dtype, tune=self.tune, impl=impl,
             ),
-            compute_dtype=dtype,
+            compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
@@ -725,9 +726,10 @@ class UnaryOp(_PerDtypeKernels, Op):
         N_total: int,
         dtype: torch.dtype,
         tune: bool,
+        impl: type,
     ):
         """Construct the kernel. Subclasses override to specialize construction."""
-        return self.kernel_map[self._op_name](N_total, dtype, tune=tune)
+        return impl(N_total, dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -851,25 +853,24 @@ class BinaryOp(_PerDtypeKernels, Op):
         self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
-        """Build one specialization. Subclasses override to reinterpret storage."""
-        supported = self._selected_kernel_cls().SUPPORTED_DTYPES
-        if supported is not None and dtype not in supported:
+        """Build one specialization for the semantic *dtype*."""
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
+        supported = impl.SUPPORTED_DTYPES
+        if supported is not None and ctor_dtype not in supported:
             names = ", ".join(str(dt) for dt in supported)
             raise ValueError(
                 f"{self._op_name} does not support dtype {dtype}. "
                 f"Supported: [{names}]"
             )
         return KernelEntry(
-            kernel=self._build_kernel_instance(self.tune, dtype),
-            compute_dtype=dtype,
+            kernel=self._build_kernel_instance(self.tune, ctor_dtype, impl=impl),
+            compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
-    def _build_kernel_instance(self, tune, dtype):
+    def _build_kernel_instance(self, tune, dtype, impl):
         """Construct the kernel. Subclasses override to inject extra kwargs."""
-        return self.kernel_map[self._op_name](
-            self.a_shape, self.b_shape, dtype, tune=tune,
-        )
+        return impl(self.a_shape, self.b_shape, dtype, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1170,35 +1171,16 @@ class _AlphaScaledBinaryOp(BinaryOp):
         self.alpha = alpha
         super().__init__(a_shape, b_shape, kernel_map=kernel_map, tune=tune)
 
-    def _build_kernel_instance(self, tune, dtype):
-        return self.kernel_map[self._op_name](
-            self.a_shape, self.b_shape, dtype, tune=tune, alpha=self.alpha,
-        )
+    def _build_kernel_instance(self, tune, dtype, impl):
+        return impl(self.a_shape, self.b_shape, dtype, tune=tune, alpha=self.alpha)
 
 
 class _BoolOutputBinaryOp(BinaryOp):
-    """Binary op base whose public output dtype is bool."""
+    """Binary op base whose public output dtype is bool.
 
-    bool_storage_kernel_cls: Optional[type] = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernel_map = {self._op_name: self.kernel_cls}
-        if self.bool_storage_kernel_cls is not None:
-            kernel_map[f"{self._op_name}_bool_storage"] = self.bool_storage_kernel_cls
-        return kernel_map
-
-    def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
-        """A bool operand gets the uint8 kernel, which reinterprets it itself."""
-        if dtype != torch.bool or self.bool_storage_kernel_cls is None:
-            return super()._build_entry(dtype)
-        return KernelEntry(
-            kernel=self.kernel_map[f"{self._op_name}_bool_storage"](
-                self.a_shape, self.b_shape, torch.uint8, tune=self.tune,
-            ),
-            compute_dtype=torch.uint8,
-            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
-        )
+    A bool *operand* needs no special handling here: ``Kernel.specialize`` names
+    whichever implementation this backend uses for it.
+    """
 
     def _eager_forward(
         self,

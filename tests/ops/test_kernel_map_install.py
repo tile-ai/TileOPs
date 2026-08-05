@@ -184,3 +184,51 @@ def test_autotune_reaches_elementwise_entries():
 
     found = _iter_kernels(op._entries)
     assert len(found) == 2, f"autotune would see {len(found)} of 2 built kernels"
+
+
+# A backend answers which implementation serves a dtype, and in what storage.
+# The op passes the semantic dtype and names neither, so a backend that handles
+# bool natively is served by its own implementation rather than being handed a
+# uint8 construction argument the op chose for it.
+
+
+@pytest.mark.smoke
+def test_native_bool_backend_is_constructed_with_bool():
+    """An override declaring no bool substitute gets the semantic dtype."""
+    from tileops.kernels.elementwise import BitwiseAndFwdKernel
+    from tileops.ops.elementwise import BitwiseAndFwdOp
+
+    class NativeBoolAnd(BitwiseAndFwdKernel):
+        SUPPORTED_DTYPES = (torch.bool,)
+        BOOL_IMPL = None  # this backend needs no uint8 detour
+
+        def __init__(self, a_shape, b_shape, dtype, config=None, tune=False):
+            self.ctor_dtype = dtype
+
+        def forward(self, a, b):
+            return a & b
+
+    op = BitwiseAndFwdOp((64,), (64,), kernel_map={"bitwise_and": NativeBoolAnd})
+    x = torch.tensor([True, False] * 32, device="cuda")
+
+    torch.testing.assert_close(op(x, ~x), x & ~x)
+    entry = op._entries[torch.bool]
+    assert isinstance(entry.kernel, NativeBoolAnd)
+    assert entry.kernel.ctor_dtype == torch.bool, "the op imposed a storage dtype"
+    assert sorted(op.kernel_map) == ["bitwise_and"], "a second slot survives"
+
+
+@pytest.mark.smoke
+def test_default_backend_still_routes_bool_through_uint8():
+    """The shipped kernels declare the substitution, so bool keeps working."""
+    from tileops.kernels.elementwise import (
+        BitwiseAndBoolStorageFwdKernel,
+        BitwiseAndFwdKernel,
+    )
+
+    assert BitwiseAndFwdKernel.specialize(torch.bool) == (
+        BitwiseAndBoolStorageFwdKernel, torch.uint8,
+    )
+    assert BitwiseAndFwdKernel.specialize(torch.int32) == (
+        BitwiseAndFwdKernel, torch.int32,
+    )

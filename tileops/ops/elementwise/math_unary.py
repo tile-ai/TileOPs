@@ -97,9 +97,10 @@ class ReciprocalFwdOp(UnaryOp):
         for the compute dtype the float-only kernel requires.
         """
         compute = torch.float32 if dtype in _MANIFEST_INT_DTYPES else dtype
+        impl, compute = self._selected_kernel_cls().specialize(compute)
         return KernelEntry(
             kernel=self._build_kernel_instance(
-                N_total=self.N_total, dtype=compute, tune=self.tune,
+                N_total=self.N_total, dtype=compute, tune=self.tune, impl=impl,
             ),
             compute_dtype=compute,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),

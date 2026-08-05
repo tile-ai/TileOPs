@@ -167,10 +167,8 @@ class LerpFwdOp(BinaryOp):
         self._weight = weight
         super().__init__(a_shape, b_shape, kernel_map=kernel_map, tune=tune)
 
-    def _build_kernel_instance(self, tune, dtype):
-        return self.kernel_map[self._op_name](
-            self.a_shape, self.b_shape, dtype, tune=tune, weight=self._weight,
-        )
+    def _build_kernel_instance(self, tune, dtype, impl):
+        return impl(self.a_shape, self.b_shape, dtype, tune=tune, weight=self._weight)
 
 
 class MaximumFwdOp(BinaryOp):

@@ -58,19 +58,17 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
-        """bool runs in uint8 storage; the reinterpretation lives in the entry."""
-        supported = self._selected_kernel_cls("masked_fill_tensor_value").SUPPORTED_DTYPES
-        if dtype != torch.bool and supported is not None and dtype not in supported:
+        """The kernel names the implementation and storage for this dtype."""
+        impl, compute = self._selected_kernel_cls("masked_fill_tensor_value").specialize(dtype)
+        supported = impl.SUPPORTED_DTYPES
+        if supported is not None and compute not in supported:
             names = ", ".join(str(dt) for dt in (torch.bool, *supported))
             raise ValueError(
                 f"{self._op_name} does not support dtype {dtype}. "
                 f"Supported: [{names}]"
             )
-        compute = torch.uint8 if dtype == torch.bool else dtype
         return KernelEntry(
-            kernel=self.kernel_map["masked_fill_tensor_value"](
-                self.N_total, compute,
-            ),
+            kernel=impl(self.N_total, compute),
             compute_dtype=compute,
             output_dtype=dtype,
         )
@@ -173,10 +171,9 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         """The fill value is baked in, so it is checked against each dtype."""
-        # bool routes through uint8 (TileLang bool codegen is unvectorized);
-        # every other dtype must be one the kernel supports.
-        supported = self._selected_kernel_cls("masked_fill").SUPPORTED_DTYPES
-        if dtype != torch.bool and supported is not None and dtype not in supported:
+        impl, compute = self._selected_kernel_cls("masked_fill").specialize(dtype)
+        supported = impl.SUPPORTED_DTYPES
+        if supported is not None and compute not in supported:
             names = ", ".join(str(dt) for dt in (torch.bool, *supported))
             raise ValueError(
                 f"{self._op_name} does not support dtype {dtype}. "
@@ -186,13 +183,11 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
             "value", self.value, dtype, self._op_name,
             allow_nonfinite_float=True,
         )
-        # A bool operand computes on the uint8 kernel; the kernel reinterprets
-        # the storage itself, so only the fill value needs normalizing here.
-        is_bool = dtype == torch.bool
-        compute = torch.uint8 if is_bool else dtype
-        value = (1 if bool(self.value) else 0) if is_bool else self.value
+        # The scalar is baked in, so it is normalized to the semantic dtype's
+        # value set — bool takes 0 or 1 whatever storage the kernel picked.
+        value = (1 if bool(self.value) else 0) if dtype == torch.bool else self.value
         return KernelEntry(
-            kernel=self.kernel_map["masked_fill"](self.N_total, compute, value),
+            kernel=impl(self.N_total, compute, value),
             compute_dtype=compute,
             output_dtype=dtype,
         )

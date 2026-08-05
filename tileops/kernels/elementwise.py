@@ -3762,3 +3762,27 @@ class SinusoidalFwdKernel(Kernel):
 
     def forward(self):
         return self._compiled_fn()
+
+
+# Bool operands are served by the uint8-backed siblings defined above. Declaring
+# the pairing here — rather than having the op pick a second kernel_map slot and
+# a storage dtype — keeps the choice inside this backend. A backend with native
+# bool declares nothing and serves bool from its general implementation.
+for _primary, _impl in (
+    (EqFwdKernel, EqBoolStorageFwdKernel),
+    (NeFwdKernel, NeBoolStorageFwdKernel),
+    (GtFwdKernel, GtBoolStorageFwdKernel),
+    (LtFwdKernel, LtBoolStorageFwdKernel),
+    (GeFwdKernel, GeBoolStorageFwdKernel),
+    (LeFwdKernel, LeBoolStorageFwdKernel),
+    (LogicalAndFwdKernel, LogicalAndBoolStorageFwdKernel),
+    (LogicalOrFwdKernel, LogicalOrBoolStorageFwdKernel),
+    (LogicalNotFwdKernel, LogicalNotBoolStorageFwdKernel),
+    (BitwiseAndFwdKernel, BitwiseAndBoolStorageFwdKernel),
+    (BitwiseOrFwdKernel, BitwiseOrBoolStorageFwdKernel),
+    (BitwiseXorFwdKernel, BitwiseXorBoolStorageFwdKernel),
+    # masked_fill needs no sibling: the same kernel serves bool in uint8 storage.
+    (MaskedFillFwdKernel, MaskedFillFwdKernel),
+    (MaskedFillTensorValueFwdKernel, MaskedFillTensorValueFwdKernel),
+):
+    _primary.BOOL_IMPL = (_impl, torch.uint8)
