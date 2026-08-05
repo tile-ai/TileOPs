@@ -43,26 +43,31 @@ class WhereFwdOp(Op):
         condition: tuple,
         input: tuple,
         other: tuple,
-        dtype: torch.dtype,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
-        if dtype not in self._SUPPORTED_DTYPES:
-            names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
-            raise ValueError(
-                f"WhereFwdOp does not support dtype {dtype}. "
-                f"Supported: [{names}]"
-            )
         self.condition_shape = tuple(condition)
         self.input_shape = tuple(input)
         self.other_shape = tuple(other)
-        self.dtype = dtype
         self.out_shape = tuple(
             torch.broadcast_shapes(self.condition_shape, self.input_shape, self.other_shape)
         )
         self.N_total = prod(self.out_shape) if self.out_shape else 1
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](self.N_total, dtype)
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            if dtype not in self._SUPPORTED_DTYPES:
+                names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
+                raise ValueError(
+                    f"WhereFwdOp does not support dtype {dtype}. "
+                    f"Supported: [{names}]"
+                )
+            self._kernel_cache[dtype] = self.kernel_map[self._op_name](
+                self.N_total, dtype,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self):
@@ -119,7 +124,8 @@ class WhereFwdOp(Op):
         cond_flat = self._expand_flat(cond_b, out_shape).view(torch.uint8)
         x_flat = self._expand_flat(input, out_shape)
         y_flat = self._expand_flat(other, out_shape)
-        result = self.kernel(cond_flat, x_flat, y_flat).view(out_shape if self.out_shape else ())
+        self.dtype = x_flat.dtype
+        result = self._get_kernel(x_flat.dtype)(cond_flat, x_flat, y_flat).view(out_shape if self.out_shape else ())
         return result
 
     def forward(

@@ -1044,13 +1044,12 @@ class _ParamFreeActivationOp(_UnaryActivationMixin, UnaryOp):
     def __init__(
         self,
         N_total: int,
-        dtype: torch.dtype,
         inplace: bool = False,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        super().__init__(N_total, dtype, kernel_map=kernel_map, tune=tune)
+        super().__init__(N_total, kernel_map=kernel_map, tune=tune)
         self.inplace = inplace
 
 
@@ -1071,28 +1070,35 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
     ``_eager_forward`` are inherited from the mixin and ``UnaryOp``.
     """
 
-    def _finalize_init(
-        self,
-        N_total: int,
-        dtype: torch.dtype,
-        kernel: Kernel,
-        *,
-        inplace: bool = False,
-    ) -> None:
-        """Record the leaf-built kernel and wire shared base state.
+    #: Scalar parameters baked into the kernel, as ``{kernel kwarg: attribute}``.
+    #: The entry builder validates each against the element type before baking
+    #: it in — which is why the check cannot stay in ``__init__``: it needs a
+    #: dtype, and there is none until a tensor arrives.
+    _scalar_params: Dict[str, str] = {}
 
-        The leaf has already called ``self.dispatch_kernel(kernel_map)``
-        and instantiated its kernel directly with typed kwargs. This
-        helper records the kernel on ``self`` and runs the
-        instance registration shared by every parametric leaf.
+    def _finalize_init(self, N_total: int, *, inplace: bool = False) -> None:
+        """Wire shared base state for a leaf that owns its ``__init__``.
+
+        The leaf has recorded its scalars and called ``dispatch_kernel``;
+        kernels are built per element type by ``_build_entry``.
         """
         self.N_total = N_total
-        self.dtype = dtype
         self.inplace = inplace
-        self.kernel = kernel
-        # Surface ``output_dtype`` for ``total_memory`` accounting, as
-        # ``UnaryOp.__init__`` does.
-        self.output_dtype = resolve_output_dtype(type(self).__name__, dtype)
+        self._entries: Dict[torch.dtype, KernelEntry] = {}
+
+    def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
+        kwargs = {}
+        for kwarg, attr in type(self)._scalar_params.items():
+            value = getattr(self, attr)
+            _validate_scalar_param_repr(attr, value, dtype, self._op_name)
+            kwargs[kwarg] = value
+        return KernelEntry(
+            kernel=self.kernel_map[self._op_name](
+                self.N_total, dtype, tune=self.tune, **kwargs,
+            ),
+            compute_dtype=dtype,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
+        )
 
 
 class _AlphaScaledBinaryOp(BinaryOp):
@@ -1248,7 +1254,6 @@ class _GeluApproximateBase(UnaryOp):
     def __init__(
         self,
         N_total: int,
-        dtype: torch.dtype,
         *,
         approximate: str = "none",
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -1260,7 +1265,7 @@ class _GeluApproximateBase(UnaryOp):
                 f"'tanh', got {approximate!r}"
             )
         self.approximate = approximate
-        super().__init__(N_total, dtype, kernel_map=kernel_map, tune=tune)
+        super().__init__(N_total, kernel_map=kernel_map, tune=tune)
 
 
 class _ClampTensorBase(Op):

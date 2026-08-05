@@ -82,7 +82,6 @@ class DivFwdOp(BinaryOp):
         self,
         a_shape: tuple,
         b_shape: tuple,
-        dtype: torch.dtype,
         *,
         rounding_mode: Optional[str] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -100,7 +99,7 @@ class DivFwdOp(BinaryOp):
         # matching ``rounding_mode``.
         self.kernel_cls = _DIV_KERNEL_BY_ROUNDING_MODE[rounding_mode]
         super().__init__(
-            a_shape, b_shape, dtype, kernel_map=kernel_map, tune=tune,
+            a_shape, b_shape, kernel_map=kernel_map, tune=tune,
         )
 
 
@@ -156,13 +155,12 @@ class LerpFwdOp(BinaryOp):
         self,
         a_shape: tuple,
         b_shape: tuple,
-        dtype: torch.dtype,
         weight: float = 0.5,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self._weight = weight
-        super().__init__(a_shape, b_shape, dtype, kernel_map=kernel_map, tune=tune)
+        super().__init__(a_shape, b_shape, kernel_map=kernel_map, tune=tune)
 
     def _build_kernel_instance(self, tune):
         return self.kernel_map[self._op_name](
@@ -216,30 +214,34 @@ class LerpTensorFwdOp(Op):
         input: tuple,
         end: tuple,
         weight: tuple,
-        dtype: torch.dtype,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        if dtype not in self._SUPPORTED_DTYPES:
-            names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
-            raise ValueError(
-                f"LerpTensorFwdOp does not support dtype {dtype}. "
-                f"Supported: [{names}]"
-            )
         self.input_shape = tuple(input)
         self.end_shape = tuple(end)
         self.weight_shape = tuple(weight)
-        self.dtype = dtype
         self.out_shape = tuple(
             torch.broadcast_shapes(
                 self.input_shape, self.end_shape, self.weight_shape,
             )
         )
         self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](
-            self.N_total, dtype, tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            if dtype not in self._SUPPORTED_DTYPES:
+                names = ", ".join(str(dt) for dt in self._SUPPORTED_DTYPES)
+                raise ValueError(
+                    f"LerpTensorFwdOp does not support dtype {dtype}. "
+                    f"Supported: [{names}]"
+                )
+            self._kernel_cache[dtype] = self.kernel_map[self._op_name](
+                self.N_total, dtype, tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -262,7 +264,8 @@ class LerpTensorFwdOp(Op):
         a_flat = self._expand_flat(input, out_shape)
         b_flat = self._expand_flat(end, out_shape)
         w_flat = self._expand_flat(weight, out_shape)
-        result = self.kernel(a_flat, b_flat, w_flat)
+        self.dtype = a_flat.dtype
+        result = self._get_kernel(a_flat.dtype)(a_flat, b_flat, w_flat)
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(

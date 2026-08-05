@@ -31,13 +31,11 @@ class PreluFwdOp(Op):
     def __init__(
         self,
         shape: tuple,
-        dtype: torch.dtype,
         num_channels: int,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         self.shape = shape
-        self.dtype = dtype
         self.num_channels = num_channels
         # Manifest input bindings for the synthesized eval_roofline
         # (docs/design/roofline.md §4.4.3): each signature.inputs entry
@@ -51,7 +49,14 @@ class PreluFwdOp(Op):
         inner_size = (prod(shape[2:]) if len(shape) > 2 else 1) if len(shape) >= 2 else 1
         self.inner_size = inner_size
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](N_total, num_channels, inner_size, dtype)
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map[self._op_name](
+                self.N_total, self.num_channels, self.inner_size, dtype,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self):
@@ -63,7 +68,8 @@ class PreluFwdOp(Op):
         weight: torch.Tensor,
     ) -> torch.Tensor:
         orig_shape = input.shape
-        return self.kernel(
+        self.dtype = input.dtype
+        return self._get_kernel(input.dtype)(
             input.contiguous().reshape(-1), weight.contiguous().reshape(-1),
         ).reshape(orig_shape)
 

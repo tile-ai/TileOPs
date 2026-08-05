@@ -1,6 +1,5 @@
 """Unary math elementwise ops (exp/log/sqrt/abs/neg/round/etc.)."""
 
-from typing import Dict, Optional
 
 import torch
 
@@ -23,9 +22,14 @@ from tileops.kernels.elementwise import (
     SqrtFwdKernel,
     TruncFwdKernel,
 )
-from tileops.kernels.kernel_base import Kernel
 
-from ._base import _MANIFEST_INT_DTYPES, UnaryOp, _IntIdentityUnaryOp
+from ._base import (
+    _MANIFEST_INT_DTYPES,
+    KernelEntry,
+    UnaryOp,
+    _IntIdentityUnaryOp,
+    resolve_output_dtype,
+)
 
 
 class ExpFwdOp(UnaryOp):
@@ -85,37 +89,30 @@ class ReciprocalFwdOp(UnaryOp):
     _op_name = "reciprocal"
     kernel_cls = ReciprocalFwdKernel
 
-    def __init__(
-        self,
-        N_total: int,
-        dtype: torch.dtype,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ):
-        if dtype in _MANIFEST_INT_DTYPES:
-            # Build the kernel against the promoted compute dtype (float32)
-            # so the float-only ReciprocalFwdKernel can run, then restore
-            # the user-declared dtype on ``self.dtype`` so metadata and
-            # ``eval_roofline`` reflect the real I/O contract: integer
-            # input bytes + float32 output bytes. ``self.output_dtype``
-            # stays float32 (set by the kernel) per the manifest's
-            # ``promote_int_to_float`` contract.
-            super().__init__(
-                N_total, torch.float32, kernel_map=kernel_map, tune=tune,
-            )
-            self.dtype = dtype
-        else:
-            super().__init__(N_total, dtype, kernel_map=kernel_map, tune=tune)
+    def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
+        """An integer input computes in float32; the entry records both types.
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        if self.dtype in _MANIFEST_INT_DTYPES:
-            self._validate_input(input)
-            promoted = input.to(torch.float32)
-            wrapped = type(self)._wrapped
-            if wrapped is not None:
-                return wrapped(promoted, self._instance_key)
-            return self._eager_forward(promoted)
-        return super().forward(input)
+        The semantic dtype keys the entry and drives roofline accounting —
+        integer input bytes, float32 output bytes — while the kernel is built
+        for the compute dtype the float-only kernel requires.
+        """
+        compute = torch.float32 if dtype in _MANIFEST_INT_DTYPES else dtype
+        return KernelEntry(
+            kernel=self._build_kernel_instance(
+                N_total=self.N_total, dtype=compute, tune=self.tune,
+            ),
+            compute_dtype=compute,
+            output_dtype=resolve_output_dtype(type(self).__name__, dtype),
+        )
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Promote here, past the boundary, so the caller's dtype stays visible."""
+        self.dtype = input.dtype
+        entry = self._entry(input.dtype)
+        flat = input.contiguous().reshape(-1)
+        if entry.compute_dtype != input.dtype:
+            flat = flat.to(entry.compute_dtype)
+        return entry.kernel(flat).reshape(input.shape)
 
 
 class SignFwdOp(_IntIdentityUnaryOp):

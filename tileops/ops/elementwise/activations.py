@@ -2,8 +2,6 @@
 
 from typing import Dict, Optional
 
-import torch
-
 from tileops.kernels.elementwise import (
     EluFwdKernel,
     GeluAndMulFwdKernel,
@@ -31,7 +29,6 @@ from ._base import (
     _GeluApproximateBase,
     _ParametricActivationOp,
     _ParamFreeActivationOp,
-    _validate_scalar_param_repr,
 )
 
 
@@ -169,23 +166,21 @@ class LeakyReluFwdOp(_ParametricActivationOp):
     # compare-and-select(1) + mul = 2 per elem.
     FLOPS_PER_ELEM = 2
 
+    _scalar_params = {"negative_slope": "negative_slope"}
+
     def __init__(
         self,
         N_total: int,
-        dtype: torch.dtype,
         negative_slope: float = 0.01,
         inplace: bool = False,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        _validate_scalar_param_repr("negative_slope", negative_slope, dtype, self._op_name)
         self.negative_slope = negative_slope
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        kernel = self.kernel_map[self._op_name](
-            N_total, dtype, negative_slope=negative_slope, tune=tune,
-        )
-        self._finalize_init(N_total, dtype, kernel, inplace=inplace)
+        self._finalize_init(N_total, inplace=inplace)
 
     @property
     def default_kernel_map(self):
@@ -211,23 +206,21 @@ class EluFwdOp(_ParametricActivationOp):
     # compare-and-select(1) + exp + sub + mul = 4 per elem.
     FLOPS_PER_ELEM = 4
 
+    _scalar_params = {"alpha": "alpha"}
+
     def __init__(
         self,
         N_total: int,
-        dtype: torch.dtype,
         alpha: float = 1.0,
         inplace: bool = False,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        _validate_scalar_param_repr("alpha", alpha, dtype, self._op_name)
         self.alpha = alpha
         self.dispatch_kernel(kernel_map)
-        kernel = self.kernel_map[self._op_name](
-            N_total, dtype, alpha=alpha, tune=tune,
-        )
-        self._finalize_init(N_total, dtype, kernel, inplace=inplace)
+        self.tune = tune
+        self._finalize_init(N_total, inplace=inplace)
 
     @property
     def default_kernel_map(self):
@@ -254,10 +247,11 @@ class HardtanhFwdOp(_ParametricActivationOp):
     # collapses to 1 compare-and-select per output element.
     FLOPS_PER_ELEM = 1
 
+    _scalar_params = {"min_val": "min_val", "max_val": "max_val"}
+
     def __init__(
         self,
         N_total: int,
-        dtype: torch.dtype,
         min_val: float = -1.0,
         max_val: float = 1.0,
         inplace: bool = False,
@@ -265,15 +259,11 @@ class HardtanhFwdOp(_ParametricActivationOp):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        _validate_scalar_param_repr("min_val", min_val, dtype, self._op_name)
-        _validate_scalar_param_repr("max_val", max_val, dtype, self._op_name)
         self.min_val = min_val
         self.max_val = max_val
         self.dispatch_kernel(kernel_map)
-        kernel = self.kernel_map[self._op_name](
-            N_total, dtype, min_val=min_val, max_val=max_val, tune=tune,
-        )
-        self._finalize_init(N_total, dtype, kernel, inplace=inplace)
+        self.tune = tune
+        self._finalize_init(N_total, inplace=inplace)
 
     @property
     def default_kernel_map(self):
@@ -299,26 +289,23 @@ class SoftplusFwdOp(_ParametricActivationOp):
     # = 5 per elem.
     FLOPS_PER_ELEM = 5
 
+    _scalar_params = {"beta": "beta", "threshold": "threshold"}
+
     def __init__(
         self,
         N_total: int,
-        dtype: torch.dtype,
         beta: float = 1.0,
         threshold: float = 20.0,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        _validate_scalar_param_repr("beta", beta, dtype, self._op_name)
-        _validate_scalar_param_repr("threshold", threshold, dtype, self._op_name)
         self.beta = beta
         self.threshold = threshold
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        kernel = self.kernel_map[self._op_name](
-            N_total, dtype, beta=beta, threshold=threshold, tune=tune,
-        )
         # Softplus does not expose ``inplace`` to callers; default to False.
-        self._finalize_init(N_total, dtype, kernel, inplace=False)
+        self._finalize_init(N_total, inplace=False)
 
     @property
     def default_kernel_map(self):
