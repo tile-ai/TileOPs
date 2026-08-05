@@ -27,7 +27,9 @@ Op                          ← L1: thin base, shared by all ops
 | Fixed-rank     | `__init__` (all dims provided)                              | `_infer_output_shapes` runs once at init. |
 | Arbitrary-rank | `__init__` for `static_dims`; `forward` for everything else | `_infer_output_shapes` runs per shape.    |
 
-**Dtype is never a constructor parameter.** An op reads it from the input tensors in `forward()`. A caller who passes fp16 tensors gets the fp16 kernel without having said so twice, and an op can no longer be constructed in a state that disagrees with the tensors it is about to be handed.
+**Dtype is not a constructor parameter when the inputs determine it.** An op reads it from the input tensors in `forward()`: a caller who passes fp16 tensors gets the fp16 kernel without having said so twice, and an op can no longer be constructed in a state that disagrees with the tensors it is about to be handed.
+
+An output dtype is determined by the inputs when it is `same_as(...)`, `promote_int_to_float(...)`, one concrete dtype, or a union equal to some input's. When some output dtype is an independent choice — an op that generates a tensor from parameters alone, or an fp8 path whose output may be fp16 or bf16 — the tensors are not a second source and `dtype` stays a `signature.params` entry.
 
 The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — and the kernel cache is keyed by shape *and* dtype. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* and checking the architecture needs no tensor, and keeping it there preserves fast failure on an unsupported GPU.
 
@@ -302,8 +304,8 @@ satisfy the cold-call contract.
   `torch_compile_fullgraph` on an op whose compiled graph must
   backpropagate additionally requires registering an autograd formula for
   the dispatch custom op.
-- Ops that pre-build their kernel at `__init__` (constructor-known shapes)
-  do not need the boundary; the invariant still applies to their
+- An op that builds no kernel in `forward` — every kernel already in its
+  cache — does not need the boundary; the invariant still applies to its
   `forward`.
 
 ## Family-Base Refactoring

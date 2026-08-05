@@ -125,7 +125,6 @@ CBProducerOp:
       n_groups: {type: int}
       chunk_len: {type: int}
       d_state: {type: int}
-      dtype: {type: torch.dtype}
     shape_rules:
     - "B == batch"
     - "S == num_chunks * chunk_len"

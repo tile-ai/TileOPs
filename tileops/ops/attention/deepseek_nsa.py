@@ -40,7 +40,7 @@ class NSATopkVarlenOp(Op):
         for key, value in params.items():
             setattr(self, key, value)
 
-        self._kernel_params = {k: v for k, v in params.items() if k != "dtype"}
+        self._kernel_params = params
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
@@ -83,7 +83,7 @@ class NSAFwdVarlenOp(Op):
         for key, value in params.items():
             setattr(self, key, value)
 
-        self._kernel_params = {k: v for k, v in params.items() if k != "dtype"}
+        self._kernel_params = params
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 
@@ -140,7 +140,7 @@ class NSACmpFwdVarlenOp(Op):
         for key, value in params.items():
             setattr(self, key, value)
 
-        self._kernel_params = {k: v for k, v in params.items() if k != "dtype"}
+        self._kernel_params = params
         self.dispatch_kernel(kernel_map)
         self._kernel_cache: Dict[torch.dtype, Kernel] = {}
 

@@ -46,5 +46,6 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
 
     def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
                 k_pe: torch.Tensor) -> torch.Tensor:
+        self._validate_dtypes(q, q_pe, k, k_pe)
         self.dtype = q.dtype
         return self._get_kernel(q.dtype)(q, q_pe, k, k_pe)

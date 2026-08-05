@@ -924,11 +924,13 @@ class FusedGatedOp(Op):
         return self.kernel(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Pass the locally derived M/N rather than building the kernel to
+        # populate self.M/self.N: a traced forward must not enter the TileLang
+        # builder, and _eager_forward builds on the far side of the boundary.
         M, N = self._validate_runtime_input(x)
-        self._ensure_kernel(M, N, x.dtype)
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            return wrapped(x, self.M, self.N, self._instance_key)
+            return wrapped(x, M, N, self._instance_key)
         return self._eager_forward(x)
 
 

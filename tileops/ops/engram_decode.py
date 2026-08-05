@@ -96,6 +96,9 @@ class EngramDecodeOp(Op):
         """
         if not e_t.is_cuda:
             raise ValueError("e_t must be a CUDA tensor")
+        self._validate_dtypes(
+            e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
+        )
         self.dtype = e_t.dtype
 
         e_t = e_t.contiguous()

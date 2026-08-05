@@ -128,5 +128,6 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
             torch.Tensor: The result of applying the sparse attention
                             operation on the input tensors.
         """
+        self._validate_dtypes(q, kv, indices)
         self.dtype = q.dtype
         return self._get_kernel(q.dtype)(q, kv, indices)

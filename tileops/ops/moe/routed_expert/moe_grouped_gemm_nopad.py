@@ -83,5 +83,6 @@ class MoeGroupedGemmNopadFwdOp(Op):
         Returns:
             C: [numel, N] GEMM output.
         """
+        self._validate_dtypes(a, b, true_sizes, true_offsets)
         self.dtype = a.dtype
         return self._get_kernel(a.dtype)(a, b, true_sizes, true_offsets)

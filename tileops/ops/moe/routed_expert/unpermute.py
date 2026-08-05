@@ -85,5 +85,6 @@ class MoeUnpermuteFwdOp(Op):
         Returns:
             output: [T, H] bf16/fp16 (``out`` if provided).
         """
+        self._validate_dtypes(mm2_pad, fwd_idx, topk_weights)
         self.dtype = mm2_pad.dtype
         return self._get_kernel(mm2_pad.dtype)(mm2_pad, fwd_idx, topk_weights, out=out)

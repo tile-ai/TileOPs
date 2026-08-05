@@ -1373,6 +1373,7 @@ class GroupedQueryAttentionBwdOp(Op):
                 do: torch.Tensor,
                 lse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         do = do.contiguous()
+        self._validate_dtypes(q, k, v, o, do, lse)
         self.dtype = q.dtype
         prep_kernel, kernel = self._get_kernels(q.dtype)
         delta = prep_kernel(o, do)
@@ -1467,6 +1468,7 @@ class GroupedQueryAttentionDecodeWithKVCacheFwdOp(Op):
             v = F.pad(
                 v, pad=(0, 0, 0, 0, 0, self.seqlen_kv - real_seqlen_kv), mode='constant', value=0)
 
+        self._validate_dtypes(q, k, v)
         self.dtype = q.dtype
         return self._get_kernel(q.dtype)(q, k, v, real_seqlen_kv)
 

@@ -240,7 +240,6 @@ def synthesize_validate_dtypes(
     # manifest inputs natively. A ``**kwargs`` body would need a per-call
     # ``Signature.bind``, which is measurable on this ``forward()`` hot path.
     closure: dict[str, Any] = {
-        "per_input": per_input,
         "input_names": input_names,
         "combo_keys": combo_keys,
         "ValueError": ValueError,

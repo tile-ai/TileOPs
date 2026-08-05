@@ -144,5 +144,6 @@ class AdaLayerNormFwdOp(Op):
         kernel = self._get_kernel(M_actual, N, dtype, x.device.index)
         y = kernel(x, scale, shift)
         self._last_roofline_mn = (M_actual, N)
+        self.dtype = expected_dtype
 
         return y.reshape(orig_shape)

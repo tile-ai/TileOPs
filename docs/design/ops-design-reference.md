@@ -91,7 +91,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 ### Slot S12: <a id="slot-s12"></a> `__init__` signature
 
-- **Rule.** Keyword-only via `*`. Kwarg block order: (1) `static_dims` entries in manifest key order, no defaults; (2) `signature.params` entries in manifest key order; (3) `kernel_map` and `tune` last. **`dtype` is never a kwarg** — see [Parameter design](#parameter-design).
+- **Rule.** Keyword-only via `*`. Kwarg block order: (1) `static_dims` entries in manifest key order, no defaults; (2) `signature.params` entries in manifest key order; (3) `kernel_map` and `tune` last. **`dtype` is a kwarg only when the inputs do not determine every output dtype** — see [Parameter design](#parameter-design).
 - **Derivation.** Manifest `static_dims` + `signature.params`.
 - **Example.**
   ```python
