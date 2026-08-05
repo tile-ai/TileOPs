@@ -94,12 +94,8 @@ class MultiHeadAttentionFwdOp(Op):
         """
         # FIXME(staged-rollout): the manifest `lse` output is returned as None.
         #
-        # Broken invariant: the op declares outputs (o, lse) but yields no
-        #     log-sum-exp, so MultiHeadAttentionBwdOp cannot source lse here.
-        # Why: the GQA prefill kernels this op delegates to emit none (see the
-        #     marker on GroupedQueryAttentionFwdOp.forward), and a dispatch
-        #     custom_op return type admits tensors only, so the boundary could
-        #     not carry an Optional even once they do.
+        # Broken invariant: the op declares outputs (o, lse) but yields no log-sum-exp.
+        # Why: the delegate emits none, and a custom_op return admits tensors only.
         # Cleanup: when fwd emits a real lse consumable by the bwd op, widen the
         #     custom op to return both tensors and delete this marker.
         return _mha_fwd(q, k, v, self._instance_key), None

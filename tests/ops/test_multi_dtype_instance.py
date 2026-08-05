@@ -98,8 +98,7 @@ def test_attention_decode_reselects_the_kernel_per_dtype():
 def test_attention_square_prefill_reselects_the_kernel_per_dtype():
     """The BSHD square wrapper resolves its prefill kernel from the tensors.
 
-    Causal dim-128 takes the warp-specialized dense slot; the element type used
-    to reach that slot through a constructor dtype read by default_kernel_map.
+    Causal dim-128 takes the warp-specialized dense slot.
     """
     from tileops.ops.attention.gqa import GroupedQueryAttentionFwdOp
 

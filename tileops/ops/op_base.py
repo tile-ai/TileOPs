@@ -43,7 +43,7 @@ class Op(ABC):
         >>> from tileops.ops import MultiHeadAttentionFwdOp
         >>> op = MultiHeadAttentionFwdOp(batch=1, heads=8, seq_len=512, dim=64, is_causal=True)
         >>> Q, K, V = op.gen_inputs()
-        >>> output = op(Q, K, V)
+        >>> output, lse = op(Q, K, V)
         >>> op.check()  # Verify correctness
         >>> latency = op.profile()  # Benchmark performance
 

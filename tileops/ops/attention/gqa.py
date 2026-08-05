@@ -419,13 +419,8 @@ class GroupedQueryAttentionFwdOp(Op):
 
         # FIXME(staged-rollout): the manifest `lse` output is returned as None.
         #
-        # Broken invariant: the op declares outputs (o, lse) but yields no
-        #     log-sum-exp, so GroupedQueryAttentionBwdOp cannot source lse here
-        #     and its workload recomputes it in torch.
-        # Why: of the three kernels this op dispatches to, only GQAPrefillFwdKernel
-        #     emits lse; GQAFwdWsPersistentCausalKernel returns o alone and
-        #     GQAPrefillFwdWsPersistentCausalKernel returns (o, None), so no
-        #     dtype-and-geometry-independent contract can carry a tensor yet.
+        # Broken invariant: the op declares outputs (o, lse) but yields no log-sum-exp.
+        # Why: of its three dispatch targets only GQAPrefillFwdKernel emits lse.
         # Cleanup: when fwd emits a real lse consumable by the bwd op, return it
         #     from every dispatch target and delete this marker.
         return _attention_output(self._get_kernel(q.dtype)(q, k, v)), None
@@ -1093,7 +1088,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         self.max_cache_len = max_pages_per_req * page_size
         self.dim = dim
         self.is_causal = is_causal
-        # None: the cache holds the attention element type, whatever forward gets.
+        # None means the cache holds whatever element type forward is given.
         self.cache_dtype = cache_dtype
         self.sm_scale = _attention_scale(dim, sm_scale)
         self.softcap = _score_softcap(softcap)
