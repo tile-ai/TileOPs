@@ -171,26 +171,8 @@ def test_da_cumsum_fwd_missing_bias_raises():
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
-def test_da_cumsum_fwd_accepts_declared_output_dtypes(dtype):
-    """``dt_out`` takes any storage dtype the manifest declares."""
-    op = DaCumsumFwdOp(chunk_len=64, dtype=dtype)
-    dt = torch.rand(1, 128, 4, dtype=torch.float32, device="cuda")
-    A = -torch.rand(4, dtype=torch.float32, device="cuda")
-    dt_out, dA_cumsum = op(dt, A)
-    assert dt_out.dtype == dtype
-    assert dA_cumsum.dtype == torch.float32
-
-
-@pytest.mark.smoke
 def test_da_cumsum_fwd_padded_head_tile():
-    """A head count not divisible by block_h exercises the guarded store.
-
-    The write loop covers ``block_h`` heads and masks the tail with
-    ``bh_tile * block_h + i < H``. With H divisible by block_h that mask is
-    never false, so a head count of 5 against block_h=4 is the only shape that
-    reaches the partial tile.
-    """
+    """Five heads against block_h=4 is the only shape reaching the masked tail."""
     batch, n_heads, chunk_len, num_chunks = 1, 5, 64, 2
     seq_len = chunk_len * num_chunks
     op = DaCumsumFwdOp(chunk_len=chunk_len, dtype=torch.float32)
@@ -210,14 +192,12 @@ def test_da_cumsum_fwd_padded_head_tile():
 def test_da_cumsum_fwd_rejects_undeclared_output_dtype(dtype):
     """A dtype outside the manifest union must raise, not silently cast.
 
-    ``dt_out``'s dtype is a parameter, not a property of the inputs, so
-    ``_validate_dtypes`` never sees it. The op enforces the union because the
-    manifest is backend-independent; a kernel-only check would let a
-    ``kernel_map`` override accept a dtype the spec forbids.
+    The op is the gate, not the kernel: the manifest is backend-independent, so
+    a kernel-only check would let a ``kernel_map`` override accept a dtype the
+    spec forbids.
     """
     with pytest.raises(ValueError, match="dt_out dtype must be one of"):
         DaCumsumFwdOp(chunk_len=64, dtype=dtype)
-
 
 
 

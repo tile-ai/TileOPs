@@ -227,9 +227,8 @@ class DaCumsumFwdKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    #: This backend's own capability for the ``dt_out`` cast. The manifest
-    #: union is enforced by the op; a backend may support a narrower set, and
-    #: declines the call by raising here.
+    #: This backend's own capability, which may be narrower than the manifest
+    #: union the op enforces.
     SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
     def __init__(

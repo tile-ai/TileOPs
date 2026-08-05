@@ -16,10 +16,8 @@ __all__ = ["DaCumsumFwdOp"]
 def _dt_out_dtypes() -> tuple:
     """Storage dtypes ``dt_out`` may take, read from the manifest.
 
-    ``dt`` and ``A`` are always float32 and the prefix sum runs in float32, so
-    the ``dtype`` parameter constrains only the output cast. No input tensor
-    supplies it, which is why ``_validate_dtypes`` cannot be the gate — and why
-    the union is read from the spec rather than restated here.
+    No input tensor supplies this dtype — ``dt`` and ``A`` are always float32 —
+    so ``_validate_dtypes`` cannot be the gate.
     """
     expr = load_manifest()["DaCumsumFwdOp"]["signature"]["outputs"]["dt_out"]["dtype"]
     return tuple(getattr(torch, name.strip()) for name in expr.split("|"))
