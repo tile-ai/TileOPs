@@ -893,25 +893,17 @@ class FusedGatedOp(Op):
         self,
         M: Optional[int] = None,
         N: Optional[int] = None,
-        dtype: Optional[torch.dtype] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         if (M is None) != (N is None):
             raise ValueError("M and N must be provided together")
-        if dtype is not None:
-            self._validate_dtype(dtype)
         self._explicit_shape = M is not None and N is not None
-        self._explicit_dtype = dtype is not None
         self.M = M
         self.N = N
-        self.dtype = dtype
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
-        self._kernel_key = None
-        if M is not None and N is not None and dtype is not None:
-            self._ensure_kernel(M, N, dtype)
+        self._entries: Dict[tuple, KernelEntry] = {}
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -924,9 +916,9 @@ class FusedGatedOp(Op):
             raise RuntimeError(
                 "Fused gated dimensions are available after first forward"
             )
-        in_elem = self.dtype.itemsize
-        out_elem = resolve_output_dtype(type(self).__name__, self.dtype).itemsize
-        return self.M * 2 * self.N * in_elem + self.M * self.N * out_elem
+        out_elem = self._entry(self.M, self.N, self.dtype).output_dtype.itemsize
+        return (self.M * 2 * self.N * self.dtype.itemsize
+                + self.M * self.N * out_elem)
 
     def eval_roofline(self) -> tuple[int, int]:
         if self.M is None or self.N is None or self.dtype is None:
@@ -945,16 +937,22 @@ class FusedGatedOp(Op):
                 f"Supported: [{names}]"
             )
 
-    def _ensure_kernel(self, M: int, N: int, dtype: torch.dtype) -> None:
-        self._validate_dtype(dtype)
+    def _entry(self, M: int, N: int, dtype: torch.dtype) -> KernelEntry:
+        """Return the entry for this shape and element type, building once."""
         key = (M, N, dtype)
-        if self._kernel_key == key and self.kernel is not None:
-            return
+        entry = self._entries.get(key)
+        if entry is None:
+            self._validate_dtype(dtype)
+            entry = KernelEntry(
+                kernel=self.kernel_map[self._op_name](M, N, dtype, tune=self.tune),
+                compute_dtype=dtype,
+                output_dtype=resolve_output_dtype(type(self).__name__, dtype),
+            )
+            self._entries[key] = entry
         self.M = M
         self.N = N
         self.dtype = dtype
-        self.kernel = self.kernel_map[self._op_name](M, N, dtype, tune=self.tune)
-        self._kernel_key = key
+        return entry
 
     def _validate_runtime_input(self, x: torch.Tensor) -> tuple[int, int]:
         if not x.is_cuda:
@@ -969,16 +967,13 @@ class FusedGatedOp(Op):
             raise ValueError(
                 f"Expected shape ({self.M}, {2 * self.N}), got {tuple(x.shape)}"
             )
-        if self._explicit_dtype and x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
         return M, N
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Direct kernel call for use inside custom_op implementation."""
         M, N = self._validate_runtime_input(x)
-        self._ensure_kernel(M, N, x.dtype)
-        x = x.contiguous()
-        return self.kernel(x)
+        entry = self._entry(M, N, x.dtype)
+        return entry.kernel(x.contiguous())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Pass the locally derived M/N rather than building the kernel to

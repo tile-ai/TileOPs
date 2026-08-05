@@ -38,7 +38,6 @@ class NanToNumFwdOp(Op):
     def __init__(
         self,
         N_total: int,
-        dtype: torch.dtype,
         nan: float = 0.0,
         posinf: Optional[float] = None,
         neginf: Optional[float] = None,
@@ -46,28 +45,7 @@ class NanToNumFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        # The manifest default ``None`` resolves to the *final*
-        # user-facing dtype's max / min, not ``+/-inf``: the kernel runs
-        # in ``output_dtype`` (fp16 for e5m2 to preserve Inf/NaN) and
-        # _clamp_to_dtype_range targets that intermediate, so forwarding
-        # ``+inf`` would resolve to fp16's 65504.0 and then surface as
-        # ``+Inf`` after the e5m2 post-cast (e5m2 max is 57344.0).
-        # Picking ``torch.finfo(dtype).max`` here keeps the replacement
-        # value finite end-to-end and matches ``torch.nan_to_num``
-        # semantics (replace Inf with the dtype's max finite value).
-        _validate_scalar_param_repr("nan", nan, dtype, self._op_name)
-        if posinf is None:
-            kernel_posinf = torch.finfo(dtype).max
-        else:
-            _validate_scalar_param_repr("posinf", posinf, dtype, self._op_name)
-            kernel_posinf = posinf
-        if neginf is None:
-            kernel_neginf = torch.finfo(dtype).min
-        else:
-            _validate_scalar_param_repr("neginf", neginf, dtype, self._op_name)
-            kernel_neginf = neginf
         self.N_total = N_total
-        self.dtype = dtype
         self.nan = nan
         self.posinf = posinf
         self.neginf = neginf
@@ -76,12 +54,39 @@ class NanToNumFwdOp(Op):
         # input as ``self.input_shape`` since this op stores only the
         # flat element count, not the original-rank tensor.
         self.input_shape = (N_total,)
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        # Pass replacement values positionally; the kernel constructor's
-        # internal parameter naming is encapsulated below the Op layer.
-        self.kernel = self.kernel_map["nan_to_num"](
-            N_total, dtype, nan, kernel_posinf, kernel_neginf, tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        """Resolve the replacement values against *dtype*, then build.
+
+        A ``None`` bound means "this dtype's largest finite value", so it
+        cannot be resolved before the element type is known. Picking
+        ``finfo(dtype).max`` keeps the replacement finite end-to-end and
+        matches ``torch.nan_to_num``; forwarding ``+inf`` would resolve to
+        fp16's 65504.0 and resurface as ``+Inf`` after an e5m2 post-cast.
+        """
+        if dtype not in self._kernel_cache:
+            _validate_scalar_param_repr("nan", self.nan, dtype, self._op_name)
+            if self.posinf is None:
+                posinf = torch.finfo(dtype).max
+            else:
+                _validate_scalar_param_repr(
+                    "posinf", self.posinf, dtype, self._op_name)
+                posinf = self.posinf
+            if self.neginf is None:
+                neginf = torch.finfo(dtype).min
+            else:
+                _validate_scalar_param_repr(
+                    "neginf", self.neginf, dtype, self._op_name)
+                neginf = self.neginf
+            # Replacement values are positional; the kernel constructor's
+            # parameter naming is encapsulated below the Op layer.
+            self._kernel_cache[dtype] = self.kernel_map["nan_to_num"](
+                self.N_total, dtype, self.nan, posinf, neginf, tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self):
@@ -89,7 +94,10 @@ class NanToNumFwdOp(Op):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         orig_shape = input.shape
-        return self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
+        self.dtype = input.dtype
+        return self._get_kernel(input.dtype)(
+            input.contiguous().reshape(-1)
+        ).reshape(orig_shape)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:

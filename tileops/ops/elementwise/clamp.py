@@ -44,7 +44,6 @@ class ClampFwdOp(_ClampTensorBase):
         input: tuple,
         min: Optional[tuple] = None,
         max: Optional[tuple] = None,
-        dtype: torch.dtype = torch.float32,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -57,7 +56,6 @@ class ClampFwdOp(_ClampTensorBase):
         self.input_shape = tuple(input)
         self.min_shape = None if min is None else tuple(min)
         self.max_shape = None if max is None else tuple(max)
-        self.dtype = dtype
         broadcast_args = [self.input_shape]
         if self.min_shape is not None:
             broadcast_args.append(self.min_shape)
@@ -65,13 +63,19 @@ class ClampFwdOp(_ClampTensorBase):
             broadcast_args.append(self.max_shape)
         self.out_shape = tuple(torch.broadcast_shapes(*broadcast_args))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["clamp_tensor"](
-            self.N_total, dtype,
-            has_min=self.min_shape is not None,
-            has_max=self.max_shape is not None,
-            tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["clamp_tensor"](
+                self.N_total, dtype,
+                has_min=self.min_shape is not None,
+                has_max=self.max_shape is not None,
+                tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self):
@@ -91,7 +95,8 @@ class ClampFwdOp(_ClampTensorBase):
         x_flat = self._expand_flat(input, out_shape)
         lo_flat = None if min is None else self._expand_flat(min, out_shape)
         hi_flat = None if max is None else self._expand_flat(max, out_shape)
-        result = self.kernel(x_flat, lo_flat, hi_flat)
+        self.dtype = x_flat.dtype
+        result = self._get_kernel(x_flat.dtype)(x_flat, lo_flat, hi_flat)
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
@@ -150,20 +155,24 @@ class ClampMinFwdOp(_ClampTensorBase):
         self,
         input: tuple,
         min: tuple,
-        dtype: torch.dtype,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.input_shape = tuple(input)
         self.min_shape = tuple(min)
-        self.dtype = dtype
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.min_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["clamp_tensor"](
-            self.N_total, dtype, has_min=True, has_max=False, tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["clamp_tensor"](
+                self.N_total, dtype, has_min=True, has_max=False, tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self):
@@ -177,7 +186,8 @@ class ClampMinFwdOp(_ClampTensorBase):
         out_shape = self.out_shape if self.out_shape else (1,)
         x_flat = self._expand_flat(input, out_shape)
         lo_flat = self._expand_flat(min, out_shape)
-        result = self.kernel(x_flat, lo_flat, None)
+        self.dtype = x_flat.dtype
+        result = self._get_kernel(x_flat.dtype)(x_flat, lo_flat, None)
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
@@ -217,20 +227,24 @@ class ClampMaxFwdOp(_ClampTensorBase):
         self,
         input: tuple,
         max: tuple,
-        dtype: torch.dtype,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.input_shape = tuple(input)
         self.max_shape = tuple(max)
-        self.dtype = dtype
         self.out_shape = tuple(torch.broadcast_shapes(self.input_shape, self.max_shape))
         self.N_total = prod(self.out_shape) if self.out_shape else 1
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["clamp_tensor"](
-            self.N_total, dtype, has_min=False, has_max=True, tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["clamp_tensor"](
+                self.N_total, dtype, has_min=False, has_max=True, tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self):
@@ -244,7 +258,8 @@ class ClampMaxFwdOp(_ClampTensorBase):
         out_shape = self.out_shape if self.out_shape else (1,)
         x_flat = self._expand_flat(input, out_shape)
         hi_flat = self._expand_flat(max, out_shape)
-        result = self.kernel(x_flat, None, hi_flat)
+        self.dtype = x_flat.dtype
+        result = self._get_kernel(x_flat.dtype)(x_flat, None, hi_flat)
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
@@ -286,7 +301,6 @@ class ClampScalarFwdOp(Op):
         input: tuple,
         min: Optional[float] = None,
         max: Optional[float] = None,
-        dtype: torch.dtype = torch.float32,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -296,19 +310,26 @@ class ClampScalarFwdOp(Op):
                 "ClampScalarFwdOp requires at least one of `min` or `max` to be a "
                 "Number; both None is not a valid clamp."
             )
-        if min is not None:
-            _validate_scalar_param_repr("min", min, dtype, self._op_name)
-        if max is not None:
-            _validate_scalar_param_repr("max", max, dtype, self._op_name)
         self.input_shape = tuple(input)
         self.N_total = prod(self.input_shape) if self.input_shape else 1
-        self.dtype = dtype
         self.min = min
         self.max = max
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["clamp"](
-            self.N_total, dtype, min_val=min, max_val=max, tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        """The bounds are baked into the kernel, so they are checked per dtype."""
+        if dtype not in self._kernel_cache:
+            if self.min is not None:
+                _validate_scalar_param_repr("min", self.min, dtype, self._op_name)
+            if self.max is not None:
+                _validate_scalar_param_repr("max", self.max, dtype, self._op_name)
+            self._kernel_cache[dtype] = self.kernel_map["clamp"](
+                self.N_total, dtype, min_val=self.min, max_val=self.max,
+                tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self):
@@ -316,7 +337,10 @@ class ClampScalarFwdOp(Op):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         orig_shape = input.shape
-        return self.kernel(input.contiguous().reshape(-1)).reshape(orig_shape)
+        self.dtype = input.dtype
+        return self._get_kernel(input.dtype)(
+            input.contiguous().reshape(-1)
+        ).reshape(orig_shape)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not input.is_cuda:
