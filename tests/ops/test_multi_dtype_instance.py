@@ -132,6 +132,14 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillFwdKernel"
     _assert_two_entries(op._gqa_op)
 
+    # MHA owns no cache, so autotune has to reach the delegate's kernels — one
+    # per dtype — rather than relying on attribute traversal finding them here.
+    tuned = []
+    for kernel in op._gqa_op._kernel_cache.values():
+        kernel.autotune = lambda *_args, _k=kernel: tuned.append(id(_k))
+    op.autotune()
+    assert len(tuned) == len(_DTYPES)
+
 
 @pytest.mark.smoke
 def test_moe_unpermute_serves_two_dtypes_from_one_instance():

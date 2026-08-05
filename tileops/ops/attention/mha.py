@@ -70,6 +70,11 @@ class MultiHeadAttentionFwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self._gqa_op._get_kernel(dtype)
 
+    @property
+    def _kernel_cache(self) -> Dict[torch.dtype, Kernel]:
+        """Read-only view of the delegate's cache, the lazy-op introspection shape."""
+        return self._gqa_op._kernel_cache
+
     def autotune(self) -> None:
         """Tune through the delegate: every kernel this op runs is built there."""
         self._gqa_op.autotune()
