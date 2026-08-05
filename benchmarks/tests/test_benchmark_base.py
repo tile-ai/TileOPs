@@ -11,6 +11,7 @@ from benchmarks.benchmark_base import (
     BenchmarkReport,
     ManifestBenchmark,
     _bench_meta,
+    _kernel_span_us,
     bench_kernel,
     workloads_to_params,
 )
@@ -150,11 +151,28 @@ def test_multi_input_op_raises_keyerror():
         workloads_to_params("GroupedQueryAttentionFwdOp")
 
 
+def test_kernel_span_uses_activity_envelope():
+    kernels = [
+        {"name": "first", "start_ns": 1000, "end_ns": 9000},
+        {"name": "second", "start_ns": 5000, "end_ns": 7000},
+    ]
+    assert _kernel_span_us(kernels) == 8.0
+
+
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_projection_failure_falls_back_to_cuda_events():
-    """A callable launching no CUDA kernel projects no annotation windows;
-    bench_kernel must fall back and mark the deviating timing method."""
+def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
+    """A callable launching no CUDA kernel cannot be attributed by CUPTI."""
+    monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0")
+    with pytest.raises(RuntimeError, match="CUDA-events fallback is disabled"):
+        bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2, n_trials=1)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_native_cupti_failure_falls_back_when_enabled(monkeypatch):
+    """CUDA-event fallback remains available for local diagnosis."""
+    monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "1")
     latency = bench_kernel(lambda: sum(range(64)), n_warmup=1, n_repeat=2, n_trials=1)
     assert latency >= 0.0
     assert _bench_meta.timing == "cuda-events"

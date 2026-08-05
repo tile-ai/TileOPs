@@ -44,7 +44,7 @@ ctypes.CDLL(None).prctl(0x59616D61, os.getppid(), 0, 0, 0)
 
 import pytest
 
-rc_collect = int(pytest.main(["--collect-only", "-q", sys.argv[3]]))
+rc_collect = int(pytest.main(["--assert=plain", "--collect-only", "-q", sys.argv[3]]))
 torch_loaded = "torch" in sys.modules
 cuda_initialized = "not-loaded"
 if torch_loaded:
@@ -328,7 +328,7 @@ def main() -> int:
 
         def spawn_at(index: int) -> Child:
             fragment = work_dir / f"{index:03d}.xml"
-            argv = ["-q", bench_files[index], f"--junit-xml={fragment}"]
+            argv = ["-q", bench_files[index], "--assert=plain", f"--junit-xml={fragment}"]
             return Child(
                 _CHILD, argv, work_dir / f"{index:03d}.log", work_dir / f"{index:03d}.collect"
             )

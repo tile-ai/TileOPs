@@ -5,6 +5,33 @@ import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, _bench_results
 
+_BENCH_PROVENANCE_KEYS = (
+    "timing",
+    "cupti_sampled_calls",
+    "cupti_expected_kernel_count",
+    "cupti_begin_tolerance_us",
+    "cupti_end_tolerance_us",
+    "cupti_repeat_guard_us",
+    "input_policy",
+    "input_policy_seed",
+    "fallback_reason",
+    "inputs_cloned",
+)
+
+
+def _format_property_value(value) -> str:
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    return str(value)
+
+
+def _append_bench_provenance(item, prefix: str, entry: dict) -> None:
+    for key in _BENCH_PROVENANCE_KEYS:
+        if key in entry:
+            item.user_properties.append(
+                (f"{prefix}_{key}", _format_property_value(entry[key]))
+            )
+
 
 def _release_cuda_cache_after_case() -> None:
     """Drop per-case Python references and cached CUDA blocks between benchmarks."""
@@ -63,6 +90,7 @@ def pytest_runtest_call(item):
             bw = tileops_entry.get("bandwidth_tbs")
             if bw is not None:
                 item.user_properties.append(("tileops_bandwidth_tbs", f"{bw:.2f}"))
+            _append_bench_provenance(item, "tileops", tileops_entry)
 
         # Write all baselines into JUnit XML properties.
         # The first baseline uses the legacy unprefixed names (baseline_tag, etc.)
@@ -79,6 +107,7 @@ def pytest_runtest_call(item):
                 item.user_properties.append(("baseline_latency_ms", f"{bl_latency:.4f}"))
                 if bl_tflops is not None:
                     item.user_properties.append(("baseline_tflops", f"{bl_tflops:.2f}"))
+                _append_bench_provenance(item, "baseline", be)
                 if tileops_entry:
                     tl = tileops_entry.get("latency_ms", 0)
                     if tl > 0 and bl_latency > 0:
@@ -89,6 +118,7 @@ def pytest_runtest_call(item):
             item.user_properties.append((f"{tag}_latency_ms", f"{bl_latency:.4f}"))
             if bl_tflops is not None:
                 item.user_properties.append((f"{tag}_tflops", f"{bl_tflops:.2f}"))
+            _append_bench_provenance(item, tag, be)
             if tileops_entry:
                 tl = tileops_entry.get("latency_ms", 0)
                 if tl > 0 and bl_latency > 0:

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable
 
+import torch
 from torch.utils.cpp_extension import load
-
 
 _EXT = None
 
@@ -19,11 +20,15 @@ def load_extension():
     cuda_home = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda"))
     source = Path(__file__).with_name("native_cupti.cpp")
 
-    include_candidates = [
+    cuda_include_candidates = [
         cuda_home / "targets" / "x86_64-linux" / "include",
-        cuda_home / "extras" / "CUPTI" / "include",
         Path("/usr/local/cuda/targets/x86_64-linux/include"),
+    ]
+    cupti_include_candidates = [
+        cuda_home / "extras" / "CUPTI" / "include",
+        cuda_home / "targets" / "x86_64-linux" / "include",
         Path("/usr/local/cuda/extras/CUPTI/include"),
+        Path("/usr/local/cuda/targets/x86_64-linux/include"),
     ]
     lib_candidates = [
         cuda_home / "targets" / "x86_64-linux" / "lib",
@@ -32,20 +37,28 @@ def load_extension():
         Path("/usr/local/cuda/extras/CUPTI/lib64"),
     ]
 
-    include_dir = next((p for p in include_candidates if (p / "cupti.h").exists()), None)
-    lib_dir = next((p for p in lib_candidates if p.exists()), None)
-    if include_dir is None or lib_dir is None:
+    cuda_include_dir = next(
+        (p for p in cuda_include_candidates if (p / "cuda_runtime_api.h").exists()),
+        None,
+    )
+    cupti_include_dir = next(
+        (p for p in cupti_include_candidates if (p / "cupti.h").exists()),
+        None,
+    )
+    lib_dir = next((p for p in lib_candidates if (p / "libcupti.so").exists()), None)
+    if cuda_include_dir is None or cupti_include_dir is None or lib_dir is None:
         raise RuntimeError(
             "Could not locate CUPTI headers/library. Set CUDA_HOME to a CUDA "
             "toolkit path that contains CUPTI."
         )
+    include_dirs = list(dict.fromkeys([str(cuda_include_dir), str(cupti_include_dir)]))
 
     _EXT = load(
         name="tileops_native_cupti_ext",
         sources=[str(source)],
-        extra_include_paths=[str(include_dir)],
+        extra_include_paths=include_dirs,
         extra_cflags=["-O2", "-std=c++17"],
-        extra_ldflags=[f"-L{lib_dir}", "-lcupti"],
+        extra_ldflags=[f"-L{lib_dir}", f"-Wl,-rpath,{lib_dir}", "-lcupti"],
         verbose=bool(int(os.environ.get("TILEOPS_NATIVE_CUPTI_VERBOSE", "0"))),
     )
     return _EXT
@@ -76,12 +89,30 @@ def collect_repeats(
                 run_one(i)
                 # Host-side wait only; the selected latency comes from CUPTI
                 # GPU activity timestamps.
-                import torch
-
                 torch.cuda.synchronize()
             finally:
                 ext.end_repeat(i)
+                _guard_next_repeat()
     finally:
         if started:
             ext.stop()
     return ext.results()
+
+
+def _guard_next_repeat() -> None:
+    """Insert host-side spacing after the attribution window.
+
+    This keeps adjacent CPU/CUPTI timestamp windows separated without adding
+    CUDA work that could perturb the next iteration's activity sequence.
+    """
+    guard_us = repeat_guard_us()
+    if guard_us <= 0:
+        return
+
+    deadline_ns = time.perf_counter_ns() + int(guard_us * 1000.0)
+    while time.perf_counter_ns() < deadline_ns:
+        pass
+
+
+def repeat_guard_us() -> float:
+    return float(os.environ.get("TILEOPS_CUPTI_REPEAT_GUARD_US", "16.0"))

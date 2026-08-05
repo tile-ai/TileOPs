@@ -28,6 +28,18 @@ REGRESSION_ABS_MIN = 0.01  # ignore regressions < 0.01 ms
 NOISE_FLOOR = 0.05  # ignore <=5% fluctuations (measurement noise)
 BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
 HISTORY_RETENTION_DAYS = 14
+BENCH_PROVENANCE_KEYS = (
+    "timing",
+    "cupti_sampled_calls",
+    "cupti_expected_kernel_count",
+    "cupti_begin_tolerance_us",
+    "cupti_end_tolerance_us",
+    "cupti_repeat_guard_us",
+    "input_policy",
+    "input_policy_seed",
+    "fallback_reason",
+    "inputs_cloned",
+)
 
 # ── Emoji constants ───────────────────────────────────────────────────────
 _PASS = "\u2705"          # ✅
@@ -116,6 +128,12 @@ def parse_bench_xml(path: str) -> list[dict]:
                     entry[key] = float(props[key])
                 except ValueError:
                     entry[key] = props[key]
+        tileops_provenance = _extract_provenance(props, "tileops")
+        if tileops_provenance:
+            entry["tileops_provenance"] = tileops_provenance
+        baseline_provenance = _extract_provenance(props, "baseline")
+        if baseline_provenance:
+            entry["baseline_provenance"] = baseline_provenance
 
         # Collect tag-prefixed baselines written by conftest (e.g. fa3_latency_ms,
         # flashinfer_latency_ms).  Each baseline becomes a dict in "baselines".
@@ -132,11 +150,34 @@ def parse_bench_xml(path: str) -> list[dict]:
             elif pkey.endswith("_ratio") and pkey not in ("baseline_ratio",):
                 tag = pkey.removesuffix("_ratio")
                 baselines.setdefault(tag, {})["ratio"] = _try_float(pval)
+            else:
+                tag, provenance_key = _split_provenance_key(pkey)
+                if tag and tag not in ("tileops", "baseline"):
+                    baselines.setdefault(tag, {}).setdefault(
+                        "provenance", {}
+                    )[provenance_key] = _try_float(pval)
         if baselines:
             entry["baselines"] = baselines
 
         results.append(entry)
     return results
+
+
+def _extract_provenance(props: dict[str, str], prefix: str) -> dict:
+    provenance = {}
+    for key in BENCH_PROVENANCE_KEYS:
+        prop_key = f"{prefix}_{key}"
+        if prop_key in props:
+            provenance[key] = _try_float(props[prop_key])
+    return provenance
+
+
+def _split_provenance_key(prop_key: str) -> tuple[str | None, str | None]:
+    for key in BENCH_PROVENANCE_KEYS:
+        suffix = f"_{key}"
+        if prop_key.endswith(suffix):
+            return prop_key[: -len(suffix)], key
+    return None, None
 
 
 def _try_float(v):
@@ -188,7 +229,8 @@ def aggregate_bench_results(results: list[dict]) -> dict:
         for key in ("tileops_latency_ms", "tileops_tflops", "tileops_bandwidth_tbs",
                      "tileops_variant",
                      "baseline_tag", "baseline_latency_ms", "baseline_tflops",
-                     "baseline_ratio", "baselines"):
+                     "baseline_ratio", "tileops_provenance",
+                     "baseline_provenance", "baselines"):
             if key in r:
                 config_entry[key] = r[key]
         d["configs"].append(config_entry)
@@ -326,6 +368,105 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
     return alerts
 
 
+def summarize_bench_provenance(bench_ops: dict) -> list[dict]:
+    """Summarize benchmark timing/provenance metadata captured from JUnit."""
+    grouped = defaultdict(lambda: {
+        "count": 0,
+        "sampled": [],
+        "expected": [],
+        "guard": set(),
+        "tolerance": set(),
+        "fallback": 0,
+    })
+
+    def add(role: str, provenance: dict | None) -> None:
+        if not provenance:
+            return
+        key = (
+            role,
+            provenance.get("timing", "unknown"),
+            provenance.get("input_policy", "unknown"),
+        )
+        d = grouped[key]
+        d["count"] += 1
+        sampled = provenance.get("cupti_sampled_calls")
+        if isinstance(sampled, (int, float)):
+            d["sampled"].append(int(sampled))
+        expected = provenance.get("cupti_expected_kernel_count")
+        if isinstance(expected, (int, float)):
+            d["expected"].append(int(expected))
+        guard = provenance.get("cupti_repeat_guard_us")
+        if guard is not None:
+            d["guard"].add(guard)
+        begin = provenance.get("cupti_begin_tolerance_us")
+        end = provenance.get("cupti_end_tolerance_us")
+        if begin is not None or end is not None:
+            d["tolerance"].add((begin, end))
+        if provenance.get("fallback_reason"):
+            d["fallback"] += 1
+
+    for _, data in bench_ops.items():
+        for cfg in data["configs"]:
+            add("tileops", cfg.get("tileops_provenance"))
+            if cfg.get("baseline_provenance"):
+                tag = cfg.get("baseline_tag", "baseline")
+                add(str(tag), cfg.get("baseline_provenance"))
+            for tag, bl in cfg.get("baselines", {}).items():
+                if tag == cfg.get("baseline_tag"):
+                    continue
+                add(str(tag), bl.get("provenance"))
+
+    rows = []
+    for (role, timing, input_policy), d in grouped.items():
+        sampled = d["sampled"]
+        expected = d["expected"]
+        rows.append({
+            "role": role,
+            "timing": timing,
+            "input_policy": input_policy,
+            "count": d["count"],
+            "sampled_min": min(sampled) if sampled else None,
+            "sampled_max": max(sampled) if sampled else None,
+            "expected_min": min(expected) if expected else None,
+            "expected_max": max(expected) if expected else None,
+            "guard": _format_set(d["guard"]),
+            "tolerance": _format_tolerance_set(d["tolerance"]),
+            "fallback": d["fallback"],
+        })
+    return sorted(rows, key=lambda r: (r["role"], r["timing"], r["input_policy"]))
+
+
+def _format_set(values: set) -> str:
+    if not values:
+        return "-"
+    formatted = []
+    for value in sorted(values, key=str):
+        if isinstance(value, float):
+            formatted.append(f"{value:.1f}")
+        else:
+            formatted.append(str(value))
+    return ", ".join(formatted)
+
+
+def _format_tolerance_set(values: set[tuple]) -> str:
+    if not values:
+        return "-"
+    formatted = []
+    for begin, end in sorted(values, key=str):
+        begin_s = f"{begin:.1f}" if isinstance(begin, float) else str(begin)
+        end_s = f"{end:.1f}" if isinstance(end, float) else str(end)
+        formatted.append(f"{begin_s}/{end_s}")
+    return ", ".join(formatted)
+
+
+def _format_range(lo, hi) -> str:
+    if lo is None or hi is None:
+        return "-"
+    if lo == hi:
+        return str(lo)
+    return f"{lo}-{hi}"
+
+
 # ---------------------------------------------------------------------------
 # History update
 # ---------------------------------------------------------------------------
@@ -346,6 +487,9 @@ def build_history_entry(bench_ops: dict) -> dict:
                 tflops = cfg.get("tileops_tflops")
                 if tflops is not None:
                     entry["tileops"]["tflops"] = tflops
+                provenance = cfg.get("tileops_provenance")
+                if provenance:
+                    entry["tileops"]["benchmark"] = provenance
             bl_lat = cfg.get("baseline_latency_ms")
             if bl_lat is not None:
                 tag = cfg.get("baseline_tag", "baseline")
@@ -354,6 +498,9 @@ def build_history_entry(bench_ops: dict) -> dict:
                     bl_tflops = cfg.get("baseline_tflops")
                     if bl_tflops is not None:
                         entry[tag]["tflops"] = bl_tflops
+                    provenance = cfg.get("baseline_provenance")
+                    if provenance:
+                        entry[tag]["benchmark"] = provenance
             # Additional baselines
             for btag, bl in cfg.get("baselines", {}).items():
                 if btag == cfg.get("baseline_tag"):
@@ -363,6 +510,8 @@ def build_history_entry(bench_ops: dict) -> dict:
                     bl_entry["latency_ms"] = bl["latency_ms"]
                 if bl.get("tflops") is not None:
                     bl_entry["tflops"] = bl["tflops"]
+                if bl.get("provenance"):
+                    bl_entry["benchmark"] = bl["provenance"]
                 if bl_entry:
                     entry[btag] = bl_entry
             if entry:
@@ -465,6 +614,26 @@ def generate_report(
         lines.append(f"| **Improvements** (vs 14-day best) |"
                      f" {_PARTY} {len(improvements)} |")
     lines.append("")
+
+    if bench_ops:
+        provenance_rows = summarize_bench_provenance(bench_ops)
+        if provenance_rows:
+            lines.append("## Benchmark Timing Provenance")
+            lines.append("")
+            lines.append("| Role | Timing | Input Policy | Entries | Sampled Calls |"
+                         " Expected Kernels | Guard us | Tolerance begin/end us |"
+                         " Fallbacks |")
+            lines.append("|:-----|:-------|:-------------|--------:|:--------------|"
+                         ":-----------------|:---------|:-----------------------|----------:|")
+            for row in provenance_rows:
+                sampled = _format_range(row["sampled_min"], row["sampled_max"])
+                expected = _format_range(row["expected_min"], row["expected_max"])
+                lines.append(
+                    f"| {row['role']} | {row['timing']} | {row['input_policy']} "
+                    f"| {row['count']} | {sampled} | {expected} | {row['guard']} "
+                    f"| {row['tolerance']} | {row['fallback']} |"
+                )
+            lines.append("")
 
     # ── Test Failures (only if any) ───────────────────────────────────────
     if test_ops:
