@@ -2886,6 +2886,10 @@ class WhereFwdKernel(ParametricUnaryKernel):
         return _make_where_kernel
 
     def forward(self, cond, x, y):
+        # A bool condition is this backend's uint8 predicate; the caller passes
+        # semantic bool and never names the representation.
+        if cond.dtype == torch.bool:
+            cond = cond.view(torch.uint8)
         return self._compiled_fn(cond, x, y)
 
 
@@ -3390,6 +3394,8 @@ class MaskedFillFwdKernel(ParametricUnaryKernel):
         as_bool = x.dtype == torch.bool
         if as_bool:
             x = x.view(torch.uint8)
+        if mask.dtype == torch.bool:
+            mask = mask.view(torch.uint8)
         result = self._compiled_fn(x, mask)
         return result.view(torch.bool) if as_bool else result
 
@@ -3485,6 +3491,8 @@ class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
         if as_bool:
             x = x.view(torch.uint8)
             value = value.view(torch.uint8)
+        if mask.dtype == torch.bool:
+            mask = mask.view(torch.uint8)
         result = self._compiled_fn(x, mask, value)
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)

@@ -502,6 +502,28 @@ def test_round_decimals_binds_call_metadata() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("invoke", [
+    pytest.param(lambda op, x: op(x), id="call"),
+    pytest.param(lambda op, x: op.forward(x), id="forward"),
+    pytest.param(lambda op, x: op._eager_forward(x), id="eager_forward"),
+    pytest.param(lambda op, x: torch.compile(op, fullgraph=True)(x), id="compiled"),
+])
+def test_every_execution_path_records_its_dtype(invoke) -> None:
+    """Metadata must not depend on which entry point the caller used.
+
+    ``torch.compile`` reaches the op twice — once tracing, once through the
+    custom op — so a scheme that records on the outer call publishes nothing on
+    the first compiled invocation.
+    """
+    from tileops.ops.elementwise import AbsFwdOp
+
+    op = AbsFwdOp(N_total=256)
+    invoke(op, torch.randn(256, device="cuda", dtype=torch.float32))
+    assert op.dtype == torch.float32
+    assert op.total_memory == 2 * 256 * 4
+
+
+@pytest.mark.smoke
 def test_failed_call_does_not_publish_its_dtype() -> None:
     """Metadata describes the last *successful* call, so a failure leaves it alone.
 

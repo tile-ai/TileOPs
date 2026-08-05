@@ -86,13 +86,13 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
     def _eager_forward(
         self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,
     ) -> torch.Tensor:
-        # Broadcast input/mask to out_shape, pack mask as uint8, reshape
-        # the 0-dim value to (1,), and dispatch the TileLang kernel.
+        # Broadcast input/mask to out_shape and reshape the 0-dim value to
+        # (1,); the kernel owns however it represents the predicate.
         out_shape = self.out_shape if self.out_shape else (1,)
         entry = self._entry(input.dtype)
         x_flat = self._expand_flat(input, out_shape)
         mask_b = mask if mask.dtype == torch.bool else mask.bool()
-        mask_flat = self._expand_flat(mask_b, out_shape).view(torch.uint8)
+        mask_flat = self._expand_flat(mask_b, out_shape)
         value_1d = value.contiguous().view(1)
         result = entry.kernel(x_flat, mask_flat, value_1d)
         return result.view(self.out_shape if self.out_shape else ())
@@ -131,10 +131,9 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
 
     The manifest declares the PyTorch dtype union (``bool | uint8 |
     int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``); every
-    union member dispatches to a real kernel. The bool dtype path views
-    ``input`` as ``uint8`` before dispatch and the result as ``bool`` on
-    return, so the kernel itself only handles the integer and floating-
-    point storage dtypes.
+    union member dispatches to a real kernel. A bool operand is served by
+    whatever storage the selected kernel requires; the op passes and receives
+    semantic bool either way.
 
     Args:
         input: Shape of the input tensor.
@@ -207,7 +206,7 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
         entry = self._entry(input.dtype)
         x_flat = self._expand_flat(input, out_shape)
         mask_b = mask if mask.dtype == torch.bool else mask.bool()
-        mask_flat = self._expand_flat(mask_b, out_shape).view(torch.uint8)
+        mask_flat = self._expand_flat(mask_b, out_shape)
         result = entry.kernel(x_flat, mask_flat)
         return result.view(self.out_shape if self.out_shape else ())
 

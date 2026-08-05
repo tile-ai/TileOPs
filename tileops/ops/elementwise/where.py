@@ -125,7 +125,7 @@ class WhereFwdOp(_PerDtypeKernels, Op):
     ) -> torch.Tensor:
         out_shape = self.out_shape if self.out_shape else (1,)
         cond_b = condition if condition.dtype == torch.bool else condition.bool()
-        cond_flat = self._expand_flat(cond_b, out_shape).view(torch.uint8)
+        cond_flat = self._expand_flat(cond_b, out_shape)
         x_flat = self._expand_flat(input, out_shape)
         y_flat = self._expand_flat(other, out_shape)
         result = self._entry(x_flat.dtype).kernel(cond_flat, x_flat, y_flat).view(out_shape if self.out_shape else ())

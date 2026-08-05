@@ -623,26 +623,25 @@ class _PerDtypeKernels:
     must never read it: by the time a second dtype arrives it no longer
     describes the call in flight.
 
-    Recording it is split so that neither a cache lookup nor a failed call can
-    publish it. ``_note_call`` marks the dtype a call is running with;
-    ``__call__`` publishes it once ``forward`` has returned. A path that
-    answers without reaching a kernel — an integer identity, a decimals
-    decomposition running in torch — marks itself.
+    ``_note_call`` records it wherever the call commits to an element type,
+    which is every execution path: the eager one, the one ``torch.compile``
+    enters behind the custom op, and the ones that answer without a kernel at
+    all. ``__call__`` restores the previous value if the call then fails, so a
+    call that produced nothing does not describe the op.
     """
 
-    #: Marked while a call is in flight; published by ``__call__`` on success.
-    _pending_dtype: Optional[torch.dtype] = None
-
     def __call__(self, *args, **kwargs):
-        """Publish the call's element type only after ``forward`` succeeds."""
-        result = super().__call__(*args, **kwargs)
-        if self._pending_dtype is not None:
-            self.dtype = self._pending_dtype
-        return result
+        """Restore the previous element type if this call does not complete."""
+        previous = self.dtype
+        try:
+            return super().__call__(*args, **kwargs)
+        except BaseException:
+            self.dtype = previous
+            raise
 
     def _note_call(self, dtype: torch.dtype) -> None:
-        """Mark the element type this call is running with."""
-        self._pending_dtype = dtype
+        """Record the element type this call committed to."""
+        self.dtype = dtype
 
     def _selected_kernel_cls(self, slot: Optional[str] = None):
         """The kernel class that will run, honoring a ``kernel_map`` override.
