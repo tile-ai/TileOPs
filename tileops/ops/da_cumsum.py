@@ -1,20 +1,28 @@
+import functools
 from typing import Dict, Optional, Tuple
 
 import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.mamba import DaCumsumFwdKernel
+from tileops.manifest import load_manifest
 
 from .op_base import Op
 
 __all__ = ["DaCumsumFwdOp"]
 
 
-#: Storage dtypes ``dt_out`` may take, per the manifest ``outputs.dt_out``
-#: union. ``dt`` and ``A`` are always float32 and the prefix sum runs in
-#: float32, so this constrains only the output cast — no input tensor supplies
-#: it, which is why ``_validate_dtypes`` cannot be the gate.
-_DT_OUT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+@functools.lru_cache(maxsize=1)
+def _dt_out_dtypes() -> tuple:
+    """Storage dtypes ``dt_out`` may take, read from the manifest.
+
+    ``dt`` and ``A`` are always float32 and the prefix sum runs in float32, so
+    the ``dtype`` parameter constrains only the output cast. No input tensor
+    supplies it, which is why ``_validate_dtypes`` cannot be the gate — and why
+    the union is read from the spec rather than restated here.
+    """
+    expr = load_manifest()["DaCumsumFwdOp"]["signature"]["outputs"]["dt_out"]["dtype"]
+    return tuple(getattr(torch, name.strip()) for name in expr.split("|"))
 
 
 class DaCumsumFwdOp(Op):
@@ -50,8 +58,9 @@ class DaCumsumFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
-        if dtype not in _DT_OUT_DTYPES:
-            supported = ", ".join(str(dt) for dt in _DT_OUT_DTYPES)
+        declared = _dt_out_dtypes()
+        if dtype not in declared:
+            supported = ", ".join(str(dt) for dt in declared)
             raise ValueError(
                 f"{type(self).__name__} dt_out dtype must be one of "
                 f"[{supported}], got {dtype}"
