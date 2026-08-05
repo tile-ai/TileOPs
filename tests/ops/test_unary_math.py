@@ -502,6 +502,27 @@ def test_round_decimals_binds_call_metadata() -> None:
 
 
 @pytest.mark.smoke
+def test_failed_call_does_not_publish_its_dtype() -> None:
+    """Metadata describes the last *successful* call, so a failure leaves it alone.
+
+    A cache lookup happens before the work does. If it published the dtype, a
+    call that then raised would leave ``eval_roofline`` / ``total_memory``
+    describing a call that produced nothing.
+    """
+    op = RoundFwdOp(N_total=256)
+    op(torch.randn(256, device="cuda", dtype=torch.float32))
+    assert op.dtype == torch.float32
+
+    with pytest.raises(ValueError, match="dtype"):
+        op(torch.randn(256, device="cuda", dtype=torch.float64))
+    assert op.dtype == torch.float32, "a rejected dtype was published"
+
+    with pytest.raises(TypeError):
+        op(torch.randn(256, device="cuda", dtype=torch.float16), decimals="two")
+    assert op.dtype == torch.float32, "a failed decimals call was published"
+
+
+@pytest.mark.smoke
 def test_round_decimals_validates_input() -> None:
     """Non-zero decimals path must enforce the same input contract as decimals=0.
 

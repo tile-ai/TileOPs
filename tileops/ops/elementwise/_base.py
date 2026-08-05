@@ -619,22 +619,30 @@ class _PerDtypeKernels:
     ``compute_dtype == dtype``.
 
     ``self.dtype`` is metadata for ``eval_roofline`` and ``total_memory`` —
-    the element type of the most recent call — and execution must never read
-    it: by the time a second dtype arrives it no longer describes the call in
-    flight. It is bound by ``_note_call``, which is deliberately separate from
-    ``_entry``: a forward that answers without a kernel (an integer identity,
-    a decimals decomposition running in torch) is still a call, and binding
-    only inside the cache lookup would leave those paths describing the
-    previous one.
+    the element type of the most recent **successful** call — and execution
+    must never read it: by the time a second dtype arrives it no longer
+    describes the call in flight.
+
+    Recording it is split so that neither a cache lookup nor a failed call can
+    publish it. ``_note_call`` marks the dtype a call is running with;
+    ``__call__`` publishes it once ``forward`` has returned. A path that
+    answers without reaching a kernel — an integer identity, a decimals
+    decomposition running in torch — marks itself.
     """
 
-    def _note_call(self, dtype: torch.dtype) -> None:
-        """Record the element type this call ran with.
+    #: Marked while a call is in flight; published by ``__call__`` on success.
+    _pending_dtype: Optional[torch.dtype] = None
 
-        Every successful ``forward`` path calls this, whether or not it reached
-        a kernel.
-        """
-        self.dtype = dtype
+    def __call__(self, *args, **kwargs):
+        """Publish the call's element type only after ``forward`` succeeds."""
+        result = super().__call__(*args, **kwargs)
+        if self._pending_dtype is not None:
+            self.dtype = self._pending_dtype
+        return result
+
+    def _note_call(self, dtype: torch.dtype) -> None:
+        """Mark the element type this call is running with."""
+        self._pending_dtype = dtype
 
     def _selected_kernel_cls(self, slot: Optional[str] = None):
         """The kernel class that will run, honoring a ``kernel_map`` override.
