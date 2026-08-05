@@ -80,8 +80,20 @@ class MultiHeadAttentionFwdOp(Op):
     ) -> Dict[str, tuple[int, ...]]:
         return {"o": tuple(q_shape)}
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        return _mha_fwd(q, k, v, self._instance_key)
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Run MHA forward.
+
+        Returns:
+            ``(output, lse)``. The log-sum-exp slot is ``None``: a dispatch
+            ``custom_op`` return type admits tensors only, and the
+            warp-specialized prefill kernels emit no log-sum-exp.
+        """
+        return _mha_fwd(q, k, v, self._instance_key), None
 
     def _eager_forward(self, q: torch.Tensor, k: torch.Tensor,
                        v: torch.Tensor) -> torch.Tensor:

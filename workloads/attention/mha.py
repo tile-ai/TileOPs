@@ -51,7 +51,7 @@ class MhaBwdWorkload(WorkloadBase):
         fwd_op = MultiHeadAttentionFwdOp(self.batch, self.heads, self.seq_len, self.dim,
                                          self.is_causal)
         with torch.no_grad():
-            o = fwd_op(q, k, v)
+            o, _ = fwd_op(q, k, v)
             lse = _compute_gqa_square_lse(
                 q,
                 k,

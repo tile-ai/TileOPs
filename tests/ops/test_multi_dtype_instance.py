@@ -127,7 +127,8 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         q = torch.randn(batch, seq_len, heads, dim, dtype=dtype, device="cuda")
         k = torch.randn_like(q)
         v = torch.randn_like(q)
-        assert op(q, k, v).dtype == dtype
+        output, _ = op(q, k, v)
+        assert output.dtype == dtype
         assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillFwdKernel"
     _assert_two_entries(op)
 

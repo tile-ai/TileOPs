@@ -1,4 +1,6 @@
 
+from typing import Optional
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -47,14 +49,16 @@ class MhaBwdTest(MhaBwdWorkload, TestBase):
 
 
 class MhaFwdTest(MhaFwdWorkload, TestBase):
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor,
+                    v: torch.Tensor) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
-        return output_bhsd.transpose(1, 2).contiguous()
+        output = output_bhsd.transpose(1, 2).contiguous()
+        return output, None  # do not check lse
 
 
 class MhaFwdFixture(FixtureBase):
@@ -123,6 +127,23 @@ def test_mha_fwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, d
 def test_mha_fwd_dispatches_to_gqa_kernel() -> None:
     op = MultiHeadAttentionFwdOp(1, 8, 128, 64, False)
     assert op._get_kernel(torch.float16).__class__.__name__.startswith("GQA")
+
+
+@pytest.mark.smoke
+def test_mha_fwd_returns_output_lse_pair() -> None:
+    """The public return is the ``(output, lse)`` pair, not a bare tensor."""
+    batch, heads, seq_len, dim = 1, 8, 128, 64
+    op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, False)
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
+    k, v = torch.randn_like(q), torch.randn_like(q)
+
+    result = op(q, k, v)
+
+    assert isinstance(result, tuple) and len(result) == 2
+    output, lse = result
+    assert output.shape == q.shape
+    assert output.dtype == q.dtype
+    assert lse is None
 
 
 @pytest.mark.smoke
