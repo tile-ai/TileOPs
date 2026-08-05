@@ -941,5 +941,28 @@ def test_reciprocal_int_promotion_compiles(dtype):
     torch.testing.assert_close(compiled, torch.reciprocal(x.float()), atol=1e-6, rtol=1e-6)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64, torch.float16])
+def test_compiled_non_contiguous_input_matches_eager(dtype):
+    """The fake must not carry a non-contiguous input's strides.
+
+    The real path flattens to contiguous storage, so a fake built with
+    ``empty_like`` describes a layout the kernel never produces and the compiled
+    graph asserts on the mismatch. Integer reciprocal reaches this through the
+    promotion the kernel performs behind the custom-op boundary.
+    """
+    from tileops.ops.elementwise import ReciprocalFwdOp
+
+    n = 64
+    op = ReciprocalFwdOp(N_total=n)
+    x = torch.arange(1, n + 1, device="cuda", dtype=dtype).reshape(8, 8).t()
+    assert not x.is_contiguous()
+
+    compiled = torch.compile(op, fullgraph=True)(x)
+    eager = op._eager_forward(x)
+    assert compiled.dtype == eager.dtype
+    torch.testing.assert_close(compiled, eager, atol=1e-6, rtol=1e-6)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

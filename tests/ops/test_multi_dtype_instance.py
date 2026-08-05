@@ -13,6 +13,7 @@ entry.
 import pytest
 import torch
 
+from tileops.manifest import load_manifest
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.reduction.reduce import SumFwdOp
@@ -237,42 +238,72 @@ def test_masked_fill_alternates_between_bool_and_float_input():
     assert set(op._entries) == {torch.bool, torch.float32}
 
 
-@pytest.mark.smoke
-def test_every_elementwise_op_records_its_dtype_after_a_forward():
-    """No op may reach a result without recording the element type it used.
-
-    Recording lives in the shared cache lookup, so an op that answers on its own
-    path has to record for itself. Enumerating the family turns a forgotten one
-    into a failure here rather than into roofline numbers describing an earlier
-    call — which is how `RoundFwdOp` shipped a stale dtype.
-    """
+def _single_tensor_elementwise_ops():
+    """Every concrete elementwise op drivable from one ``N_total`` argument."""
     import inspect
 
     import tileops.ops.elementwise as ew
     from tileops.ops.elementwise._base import _PerDtypeKernels
 
-    checked, unrecorded = 0, []
+    found = {}
     for name in dir(ew):
         cls = getattr(ew, name)
         if not (inspect.isclass(cls) and issubclass(cls, _PerDtypeKernels)):
             continue
         if name.startswith("_") or getattr(cls, "_op_name", None) is None:
             continue  # a template base, not a concrete op
-        params = inspect.signature(cls.__init__).parameters
-        # Only the single-tensor, single-shape ops can be driven generically.
-        if set(params) - {"self", "kernel_map", "tune"} != {"N_total"}:
-            continue
-        op = cls(N_total=64)
-        try:
-            op(torch.randn(64, device="cuda", dtype=torch.float32))
-        except Exception:
-            continue  # dtype outside this op's union; another dtype covers it
-        checked += 1
-        if op.dtype is None:
-            unrecorded.append(name)
+        params = set(inspect.signature(cls.__init__).parameters)
+        if params - {"self", "kernel_map", "tune"} == {"N_total"}:
+            found[name] = cls
+    return found
 
-    assert checked >= 20, f"only drove {checked} ops; the enumeration stopped working"
-    assert not unrecorded, f"ops reached a result without recording a dtype: {unrecorded}"
+
+_SINGLE_TENSOR_OPS = _single_tensor_elementwise_ops()
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("name", sorted(_SINGLE_TENSOR_OPS))
+def test_single_tensor_op_records_its_dtype(name):
+    """No op may reach a result without recording the element type it used.
+
+    Recording lives in the shared specialization lookup, so an op answering on
+    its own path — an integer identity, a predicate fallback — has to record for
+    itself. Enumerating the family turns a forgotten one into a failure here
+    rather than into roofline numbers describing an earlier call, which is how
+    `RoundFwdOp` shipped a stale dtype.
+
+    Each op is driven on every dtype its manifest declares, not just float32:
+    the paths that skip the kernel are exactly the ones a float-only sweep
+    misses.
+    """
+    op = _SINGLE_TENSOR_OPS[name](N_total=64)
+    declared = load_manifest()[name]["signature"]["inputs"]
+    (spec,) = declared.values()
+    dtypes = [getattr(torch, d.strip()) for d in spec["dtype"].split("|")]
+    dtypes = [d for d in dtypes if d not in (torch.float64, torch.complex64, torch.complex128)]
+    assert dtypes, f"{name} declares no drivable input dtype"
+
+    for dtype in dtypes:
+        op = _SINGLE_TENSOR_OPS[name](N_total=64)
+        if dtype == torch.bool:
+            x = torch.tensor([True, False] * 32, device="cuda")
+        elif dtype.is_floating_point:
+            x = torch.rand(64, device="cuda", dtype=dtype) + 0.5
+        else:
+            x = torch.arange(1, 65, device="cuda", dtype=dtype)
+        op(x)  # an unexpected failure here is a real defect, not a skip
+        assert op.dtype == dtype, f"{name} did not record {dtype}"
+
+
+@pytest.mark.smoke
+def test_enumeration_still_sees_the_family():
+    """The sweep is worthless if the enumeration silently stops matching."""
+    assert len(_SINGLE_TENSOR_OPS) >= 24, (
+        f"only {len(_SINGLE_TENSOR_OPS)} single-tensor ops found; the filter broke"
+    )
+    for expected in ("AbsFwdOp", "ReciprocalFwdOp", "RoundFwdOp", "IsnanFwdOp",
+                     "LogicalNotFwdOp", "BitwiseNotFwdOp"):
+        assert expected in _SINGLE_TENSOR_OPS, f"{expected} dropped out of the sweep"
 
 
 if __name__ == "__main__":

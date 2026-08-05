@@ -149,8 +149,11 @@ def _register_unary_custom_op(op_cls):
     def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
         # Manifest-driven: covers a predicate's bool output and an integer
         # input promoted to float32 alike, without a per-registration override.
-        return torch.empty_like(
-            x, dtype=resolve_output_dtype(op_cls.__name__, x.dtype),
+        # ``new_empty``, not ``empty_like``: the real path flattens to
+        # contiguous storage, so a non-contiguous input's strides must not
+        # survive into the fake or the compiled graph asserts on the mismatch.
+        return x.new_empty(
+            x.shape, dtype=resolve_output_dtype(op_cls.__name__, x.dtype),
         )
 
     op_cls._wrapped = _wrapped
@@ -230,7 +233,7 @@ def _register_prelu_custom_op(op_cls):
         weight: torch.Tensor,
         instance_key: str,
     ) -> torch.Tensor:
-        return torch.empty_like(x)
+        return x.new_empty(x.shape, dtype=x.dtype)
 
     op_cls._wrapped = _wrapped
 
@@ -618,10 +621,9 @@ class _PerDtypeKernels:
     computing in float32); an op with no such split simply gets
     ``compute_dtype == dtype``.
 
-    ``self.dtype`` is metadata for ``eval_roofline`` and ``total_memory`` —
-    the element type of the most recent **successful** call — and execution
-    must never read it: by the time a second dtype arrives it no longer
-    describes the call in flight.
+    ``self.dtype`` is metadata for ``eval_roofline`` and ``total_memory``, and
+    execution must never read it: by the time a second dtype arrives it no
+    longer describes the call in flight.
 
     ``_note_call`` records it wherever a call commits to an element type, which
     is every execution path: the eager one, the one ``torch.compile`` enters
