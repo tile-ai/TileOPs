@@ -146,10 +146,9 @@ def _da_cumsum_fwd_kernel(
 
                 # ── Step 3: write outputs ─────────────────────────────────────
                 for i, j in T.Parallel(block_h, Q):
-                    bh = bh_tile * block_h + i
-                    with T.If(bh < H), T.Then():
-                        dt_out[bb, bh, bc, j]    = T.cast(dt_shared[i, j], dtype)  # Cast to dtype for storage
-                        dA_cumsum[bb, bh, bc, j] = dA_shared[i, j]
+                    with T.If(bh_tile * block_h + i < H), T.Then():
+                        dt_out[bb, bh_tile * block_h + i, bc, j] = T.cast(dt_shared[i, j], dtype)
+                        dA_cumsum[bb, bh_tile * block_h + i, bc, j] = dA_shared[i, j]
 
         return main
 
@@ -228,6 +227,10 @@ class DaCumsumFwdKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    #: This backend's own capability, which may be narrower than the manifest
+    #: union the op enforces.
+    SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
     def __init__(
         self,
         batch: int,
@@ -244,6 +247,11 @@ class DaCumsumFwdKernel(Kernel):
         tune: bool = False,
     ) -> None:
         super().__init__()
+        if dtype not in self.SUPPORTED_DTYPES:
+            supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
+            raise ValueError(
+                f"{self.__class__.__name__} only supports dtypes [{supported}], got {dtype}"
+            )
         self.batch = batch
         self.num_chunks = num_chunks
         self.chunk_len = chunk_len

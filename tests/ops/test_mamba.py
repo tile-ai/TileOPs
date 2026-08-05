@@ -170,6 +170,35 @@ def test_da_cumsum_fwd_missing_bias_raises():
         kernel(dt, A, dt_bias=None)
 
 
+@pytest.mark.smoke
+def test_da_cumsum_fwd_padded_head_tile():
+    """Five heads against block_h=4 is the only shape reaching the masked tail."""
+    batch, n_heads, chunk_len, num_chunks = 1, 5, 64, 2
+    seq_len = chunk_len * num_chunks
+    op = DaCumsumFwdOp(chunk_len=chunk_len, dtype=torch.float32)
+    dt = torch.rand(batch, seq_len, n_heads, dtype=torch.float32, device="cuda")
+    A = -torch.rand(n_heads, dtype=torch.float32, device="cuda")
+
+    dt_out, dA_cumsum = op(dt, A)
+    ref_dt, ref_cumsum = da_cumsum_fwd_ref(
+        dt, A, num_chunks, chunk_len, dtype=torch.float32,
+    )
+    torch.testing.assert_close(dt_out, ref_dt, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(dA_cumsum, ref_cumsum, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.int32, torch.float64])
+def test_da_cumsum_fwd_rejects_undeclared_output_dtype(dtype):
+    """A dtype outside the manifest union must raise, not silently cast.
+
+    The op is the gate, not the kernel: the manifest is backend-independent, so
+    a kernel-only check would let a ``kernel_map`` override accept a dtype the
+    spec forbids.
+    """
+    with pytest.raises(ValueError, match="dt_out dtype must be one of"):
+        DaCumsumFwdOp(chunk_len=64, dtype=dtype)
+
 
 
 class SSDChunkScanFwdTest(SSDChunkScanFwdWorkload, TestBase):

@@ -1,13 +1,26 @@
+import functools
 from typing import Dict, Optional, Tuple
 
 import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.mamba import DaCumsumFwdKernel
+from tileops.manifest import load_manifest
 
 from .op_base import Op
 
 __all__ = ["DaCumsumFwdOp"]
+
+
+@functools.lru_cache(maxsize=1)
+def _dt_out_dtypes() -> tuple:
+    """Storage dtypes ``dt_out`` may take, read from the manifest.
+
+    No input tensor supplies this dtype — ``dt`` and ``A`` are always float32 —
+    so ``_validate_dtypes`` cannot be the gate.
+    """
+    expr = load_manifest()["DaCumsumFwdOp"]["signature"]["outputs"]["dt_out"]["dtype"]
+    return tuple(getattr(torch, name.strip()) for name in expr.split("|"))
 
 
 class DaCumsumFwdOp(Op):
@@ -43,6 +56,13 @@ class DaCumsumFwdOp(Op):
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
+        declared = _dt_out_dtypes()
+        if dtype not in declared:
+            supported = ", ".join(str(dt) for dt in declared)
+            raise ValueError(
+                f"{type(self).__name__} dt_out dtype must be one of "
+                f"[{supported}], got {dtype}"
+            )
         self.batch = None
         self.num_chunks = None
         self.chunk_len = chunk_len
