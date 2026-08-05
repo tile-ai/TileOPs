@@ -61,7 +61,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @LayerNormFixture
 def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = LayerNormTest(m, n, dtype)
-    op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
+    op = LayerNormFwdOp(normalized_shape=(n,))
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -101,7 +101,7 @@ def test_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     weight = torch.randn(n, dtype=dtype, device="cuda")
     bias = torch.randn(n, dtype=dtype, device="cuda")
 
-    op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
+    op = LayerNormFwdOp(normalized_shape=(n,))
 
     # Reference using torch.nn.functional.layer_norm
     x_ref = x.contiguous()
@@ -133,7 +133,7 @@ def test_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) ->
     weight = torch.randn(hidden, dtype=dtype, device="cuda")
     bias = torch.randn(hidden, dtype=dtype, device="cuda")
 
-    op = LayerNormFwdOp(normalized_shape=(hidden,), dtype=dtype)
+    op = LayerNormFwdOp(normalized_shape=(hidden,))
 
     # Reference using torch.nn.functional.layer_norm
     y_ref = F.layer_norm(
@@ -176,7 +176,7 @@ def test_layer_norm_large_offset(m: int, n: int, dtype: torch.dtype) -> None:
     weight = torch.ones(n, dtype=dtype, device="cuda")
     bias = torch.zeros(n, dtype=dtype, device="cuda")
 
-    op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
+    op = LayerNormFwdOp(normalized_shape=(n,))
 
     y_ref = F.layer_norm(
         x.float(), (n,),
@@ -209,20 +209,21 @@ def test_layer_norm_rebuilds_kernel_on_m_change() -> None:
     n = 4096
     dtype = torch.float16
 
-    op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
+    op = LayerNormFwdOp(normalized_shape=(n,))
     weight = torch.randn(n, dtype=dtype, device="cuda")
     bias = torch.randn(n, dtype=dtype, device="cuda")
 
     x1 = torch.randn(512, n, dtype=dtype, device="cuda")
     y1 = op(x1, weight, bias)
-    first_kernel = op.kernel
+    first_kernel = op._kernel_cache[(512, dtype)]
     assert y1.shape == x1.shape
 
     x2 = torch.randn(1024, n, dtype=dtype, device="cuda")
     y2 = op(x2, weight, bias)
     assert y2.shape == x2.shape
-    # Kernel should have been rebuilt for the new M.
-    assert op.kernel is not first_kernel
+    # A separate cache entry for the new M, and the first one is still there.
+    assert op._kernel_cache[(1024, dtype)] is not first_kernel
+    assert op._kernel_cache[(512, dtype)] is first_kernel
 
     y_ref = F.layer_norm(
         x2.float(), (n,),

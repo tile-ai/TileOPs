@@ -32,7 +32,6 @@ class NSATopkVarlenOp(Op):
         selected_block_num: int,
         bc: int,
         bs: int,
-        dtype: torch.dtype,
         accum_dtype: torch.dtype,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -41,8 +40,16 @@ class NSATopkVarlenOp(Op):
         for key, value in params.items():
             setattr(self, key, value)
 
+        self._kernel_params = params
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["nsa_topk_varlen_kernel"](**params)
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["nsa_topk_varlen_kernel"](
+                **self._kernel_params, dtype=dtype,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -51,7 +58,8 @@ class NSATopkVarlenOp(Op):
     def forward(self, q: torch.Tensor, k_cmp: torch.Tensor, lse_in: torch.Tensor,
                 offsets: torch.Tensor, chunk_offsets: torch.Tensor,
                 token_indices: torch.Tensor) -> torch.Tensor:
-        return self.kernel(q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
+        self.dtype = q.dtype
+        return self._get_kernel(q.dtype)(q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
 
 
 class NSAFwdVarlenOp(Op):
@@ -67,7 +75,6 @@ class NSAFwdVarlenOp(Op):
         block_size: int,
         groups: int,
         selected_blocks: int,
-        dtype: torch.dtype,
         accum_dtype: torch.dtype,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -76,8 +83,16 @@ class NSAFwdVarlenOp(Op):
         for key, value in params.items():
             setattr(self, key, value)
 
+        self._kernel_params = params
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["nsa_fwd_varlen_kernel"](**params)
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["nsa_fwd_varlen_kernel"](
+                **self._kernel_params, dtype=dtype,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -86,7 +101,8 @@ class NSAFwdVarlenOp(Op):
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 block_indices: torch.Tensor, block_counts: torch.Tensor, offsets: torch.Tensor,
                 token_indices: torch.Tensor) -> torch.Tensor:
-        return self.kernel(q, k, v, block_indices, block_counts, offsets, token_indices)
+        self.dtype = q.dtype
+        return self._get_kernel(q.dtype)(q, k, v, block_indices, block_counts, offsets, token_indices)
 
 
 class NSACmpFwdVarlenOp(Op):
@@ -103,7 +119,6 @@ class NSACmpFwdVarlenOp(Op):
         scale: float,
         bc: int,
         bs: int,
-        dtype: torch.dtype,
         accum_dtype: torch.dtype,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -119,15 +134,22 @@ class NSACmpFwdVarlenOp(Op):
             "scale": scale,
             "bc": bc,
             "bs": bs,
-            "dtype": dtype,
             "accum_dtype": accum_dtype,
             "tune": tune,
         }
         for key, value in params.items():
             setattr(self, key, value)
 
+        self._kernel_params = params
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["nsa_cmp_fwd_varlen_kernel"](**params)
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["nsa_cmp_fwd_varlen_kernel"](
+                **self._kernel_params, dtype=dtype,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -136,4 +158,5 @@ class NSACmpFwdVarlenOp(Op):
     def forward(self, q: torch.Tensor, k_cmp: torch.Tensor, v_cmp: torch.Tensor,
                 offsets: torch.Tensor, chunk_offsets: torch.Tensor,
                 token_indices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.kernel(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
+        self.dtype = q.dtype
+        return self._get_kernel(q.dtype)(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)

@@ -66,7 +66,7 @@ def test_moe_permute_nopad_bench(
     hidden_states, topk_ids = workload.gen_inputs()
 
     # TileOPs
-    op = MoePermuteNopadFwdOp(num_experts=num_experts, dtype=dtype)
+    op = MoePermuteNopadFwdOp(num_experts=num_experts)
     bm = ManifestBenchmark(_OP_NAME, op, workload)
     op(hidden_states, topk_ids)  # warmup / JIT compile
     torch.cuda.synchronize()

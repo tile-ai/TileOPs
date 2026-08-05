@@ -2,8 +2,6 @@
 
 from typing import Dict, Optional
 
-import torch
-
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.argreduce import ArgreduceKernel
 
@@ -36,7 +34,6 @@ class ArgmaxFwdOp(_ReduceOpBase):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         dim: Optional[int] = None,
         keepdim: bool = False,
         *,
@@ -44,7 +41,7 @@ class ArgmaxFwdOp(_ReduceOpBase):
         tune: bool = False,
     ):
         super().__init__(
-            dtype=dtype, dim=dim, keepdim=keepdim,
+            dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
 
@@ -92,7 +89,6 @@ class ArgminFwdOp(_ReduceOpBase):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         dim: Optional[int] = None,
         keepdim: bool = False,
         *,
@@ -100,7 +96,7 @@ class ArgminFwdOp(_ReduceOpBase):
         tune: bool = False,
     ):
         super().__init__(
-            dtype=dtype, dim=dim, keepdim=keepdim,
+            dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
 

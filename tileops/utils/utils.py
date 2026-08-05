@@ -10,10 +10,6 @@ str2dtype = {
 }
 
 
-def is_hopper():
-    return torch.cuda.get_device_capability() == (9, 0)
-
-
 @functools.lru_cache(maxsize=1)
 def is_h200():
     if not torch.cuda.is_available():

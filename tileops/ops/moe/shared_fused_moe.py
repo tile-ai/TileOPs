@@ -80,7 +80,6 @@ class SharedFusedMoE(FusedMoe):
         renormalize: bool = False,
         with_correction_bias: bool = False,
         routed_scaling_factor: float = 1.0,
-        dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[torch.Tensor] = None,
         shared_ffn_size: Optional[int] = None,
         tp_size: int = 1,
@@ -112,7 +111,6 @@ class SharedFusedMoE(FusedMoe):
             renormalize=renormalize,
             with_correction_bias=with_correction_bias,
             routed_scaling_factor=routed_scaling_factor,
-            dtype=dtype,
             expert_map=expert_map,
             activation=activation,
             use_fused_activation=use_fused_activation,
@@ -127,21 +125,29 @@ class SharedFusedMoE(FusedMoe):
                 f"shared_ffn_size ({shared_ffn_size}) must be divisible by tp_size ({tp_size})"
             )
 
+        self.num_tokens = num_tokens
+        self.hidden_size = hidden_size
         self.shared_ffn_size = shared_ffn_size
         self.tp_size = tp_size
         self.tp_rank = tp_rank
 
         # Kernel operates on the local shard size
-        self._shared_mlp_kernel = (
-            SharedExpertMLPKernel(
-                num_tokens=num_tokens,
-                hidden_size=hidden_size,
-                ffn_size=shared_ffn_size // tp_size,
+        self._has_shared_mlp = shared_ffn_size is not None
+        self._shared_mlp_shard_ffn = (
+            shared_ffn_size // tp_size if shared_ffn_size is not None else None
+        )
+        self._shared_mlp_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _shared_mlp_kernel_for(self, dtype: torch.dtype) -> Kernel:
+        """Return the shared-expert MLP kernel for *dtype*, building on first use."""
+        if dtype not in self._shared_mlp_cache:
+            self._shared_mlp_cache[dtype] = SharedExpertMLPKernel(
+                num_tokens=self.num_tokens,
+                hidden_size=self.hidden_size,
+                ffn_size=self._shared_mlp_shard_ffn,
                 dtype=dtype,
             )
-            if shared_ffn_size is not None
-            else None
-        )
+        return self._shared_mlp_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -178,7 +184,7 @@ class SharedFusedMoE(FusedMoe):
                 shared_output is a partial sum when tp_size > 1;
                 caller must all-reduce across TP ranks.
         """
-        if self._shared_mlp_kernel is not None:
+        if self._has_shared_mlp:
             if shared_w_gate_up is None or shared_w_down is None:
                 raise ValueError(
                     "shared_w_gate_up and shared_w_down must be provided "
@@ -217,7 +223,9 @@ class SharedFusedMoE(FusedMoe):
                 gate_up_shard = shared_w_gate_up
                 down_shard = shared_w_down
 
-            shared_out = self._shared_mlp_kernel(hidden_states, gate_up_shard, down_shard)
+            shared_out = self._shared_mlp_kernel_for(hidden_states.dtype)(
+                hidden_states, gate_up_shard, down_shard,
+            )
         else:
             shared_out = None
 

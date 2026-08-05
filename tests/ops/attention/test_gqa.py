@@ -8,7 +8,6 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import (
-    GQAFwdKernel,
     GQAFwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
@@ -816,7 +815,7 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
         [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
 
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True, torch.float16,
+        batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True,
         validate_inputs=True)
     with pytest.raises(ValueError, match="Expected k shape"):
         op(q, k[:, :, :-1].contiguous(), v, cu_q, cu_kv)
@@ -824,8 +823,7 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
         op(q[:-1], k, v, cu_q, cu_kv)
     with pytest.raises(ValueError, match="max_seqlen_q"):
         bad_op = GroupedQueryAttentionPrefillVarlenFwdOp(
-            batch, heads, heads_kv, dim, max(q_lens) - 1, max(kv_lens), True,
-            torch.float16, validate_inputs=True)
+            batch, heads, heads_kv, dim, max(q_lens) - 1, max(kv_lens), True, validate_inputs=True)
         bad_op(q, k, v, cu_q, cu_kv)
     bad_cu = torch.tensor([0, 128, 96], device="cuda", dtype=torch.int32)
     with pytest.raises(ValueError, match="cu_seqlens_q must be non-decreasing"):
@@ -834,16 +832,23 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
 
 @pytest.mark.smoke
 def test_gqa_prefill_varlen_rejects_unsupported_dtype() -> None:
+    """The element type now arrives with the tensors, so the rejection does too."""
+    op = GroupedQueryAttentionPrefillVarlenFwdOp(
+        batch=1,
+        heads=8,
+        heads_kv=2,
+        dim=64,
+        max_seqlen_q=64,
+        max_seqlen_kv=128,
+    )
+    kwargs = {"dtype": torch.float32, "device": "cuda"}
+    q = torch.randn(64, 8, 64, **kwargs)
+    k = torch.randn(128, 2, 64, **kwargs)
+    v = torch.randn(128, 2, 64, **kwargs)
+    cu_q = torch.tensor([0, 64], device="cuda", dtype=torch.int32)
+    cu_kv = torch.tensor([0, 128], device="cuda", dtype=torch.int32)
     with pytest.raises(ValueError, match="Expected dtype torch.float16 or torch.bfloat16"):
-        GroupedQueryAttentionPrefillVarlenFwdOp(
-            batch=1,
-            heads=8,
-            heads_kv=2,
-            dim=64,
-            max_seqlen_q=64,
-            max_seqlen_kv=128,
-            dtype=torch.float32,
-        )
+        op(q, k, v, cu_q, cu_kv)
 
 
 
@@ -851,40 +856,37 @@ def test_gqa_prefill_varlen_rejects_unsupported_dtype() -> None:
 def test_gqa_bwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                  dtype: torch.dtype, tune: bool) -> None:
     test = GroupedQueryAttentionBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 
 @pytest.mark.smoke
 def test_gqa_fwd_dispatch_selects_ws_noncausal_on_h200() -> None:
     kernel_cls = _select_gqa_fwd_kernel_cls(
-        4, 64, 4, 512, 128, False, torch.float16, hopper=True, h200=True)
+        4, 64, 4, 512, 128, False, torch.float16, h200=True)
     assert kernel_cls is GQAFwdWsPersistentKernel
 
 
 @pytest.mark.smoke
 def test_gqa_fwd_dispatch_selects_ws_causal_on_h200() -> None:
     kernel_cls = _select_gqa_fwd_kernel_cls(
-        4, 64, 4, 512, 128, True, torch.float16, hopper=True, h200=True)
+        4, 64, 4, 512, 128, True, torch.float16, h200=True)
     assert kernel_cls is GQAFwdWsPersistentCausalKernel
 
 
 @pytest.mark.smoke
 def test_gqa_fwd_dispatch_falls_back_for_small_causal_shape() -> None:
     kernel_cls = _select_gqa_fwd_kernel_cls(
-        1, 32, 8, 1024, 128, True, torch.float16, hopper=True, h200=True)
+        1, 32, 8, 1024, 128, True, torch.float16, h200=True)
     assert kernel_cls is GQAFwdWgmmaPipelinedKernel
 
 
 @pytest.mark.smoke
-def test_gqa_fwd_dispatch_falls_back_off_h200() -> None:
-    hopper_cls = _select_gqa_fwd_kernel_cls(
-        4, 64, 4, 512, 128, False, torch.float16, hopper=True, h200=False)
-    assert hopper_cls is GQAFwdWgmmaPipelinedKernel
-
-    non_hopper_cls = _select_gqa_fwd_kernel_cls(
-        4, 64, 4, 512, 128, False, torch.float16, hopper=False, h200=False)
-    assert non_hopper_cls is GQAFwdKernel
+def test_gqa_fwd_dispatch_without_h200_work_threshold() -> None:
+    """Off the H200 warp-specialized contract, dispatch takes the WGMMA kernel."""
+    cls = _select_gqa_fwd_kernel_cls(
+        4, 64, 4, 512, 128, False, torch.float16, h200=False)
+    assert cls is GQAFwdWgmmaPipelinedKernel
 
 
 @pytest.mark.smoke
@@ -929,7 +931,6 @@ def test_gqa_prefill_dense_selector_widens_ws_capability() -> None:
         torch.float16,
         sm_scale=0.25,
         softcap=2.0,
-        hopper=True,
     ).__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
     assert _select_gqa_prefill_fwd_kernel_cls(
         128,
@@ -937,7 +938,6 @@ def test_gqa_prefill_dense_selector_widens_ws_capability() -> None:
         torch.bfloat16,
         sm_scale=128**-0.5,
         softcap=0.0,
-        hopper=True,
     ).__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
 
 

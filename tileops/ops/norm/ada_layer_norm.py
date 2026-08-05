@@ -48,17 +48,14 @@ class AdaLayerNormFwdOp(Op):
         self,
         M: Optional[int] = None,
         N: Optional[int] = None,
-        dtype: Optional[torch.dtype] = None,
         eps: float = 1e-5,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.M = M
         self.N = N
-        self.dtype = dtype
         self._committed_M = M
         self._committed_N = N
-        self._committed_dtype = dtype
         self.eps = eps
         self.tune = tune
         self.dispatch_kernel(kernel_map)
@@ -112,13 +109,7 @@ class AdaLayerNormFwdOp(Op):
             raise ValueError("scale must be a CUDA tensor")
         if not shift.is_cuda:
             raise ValueError("shift must be a CUDA tensor")
-        expected_dtype = self._committed_dtype
-        if expected_dtype is not None and x.dtype != expected_dtype:
-            raise ValueError(
-                f"Expected x.dtype {expected_dtype}, got {x.dtype}"
-            )
-        if expected_dtype is None:
-            expected_dtype = x.dtype
+        expected_dtype = x.dtype
         if scale.dtype != expected_dtype:
             raise ValueError(
                 f"Expected scale.dtype {expected_dtype}, got {scale.dtype}"
@@ -150,9 +141,9 @@ class AdaLayerNormFwdOp(Op):
         self.N = N
         dtype = expected_dtype
         assert dtype is not None
-        self.dtype = dtype
         kernel = self._get_kernel(M_actual, N, dtype, x.device.index)
         y = kernel(x, scale, shift)
         self._last_roofline_mn = (M_actual, N)
+        self.dtype = expected_dtype
 
         return y.reshape(orig_shape)

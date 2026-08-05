@@ -14,7 +14,7 @@ One or more YAML files per family (single file by default; large families may sh
 
 ```mermaid
 flowchart LR
-    H["Human reviewer"] -->|writes / approves| M["tileops/manifest/"]
+    R["Authoritative reference"] -->|specified from| M["tileops/manifest/"]
     M -->|reads spec from| A["Agent (codegen)"]
     A -->|produces| C["Op code, tests, benchmarks"]
     M -->|validates against| V["Validator (CI)"]

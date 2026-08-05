@@ -9,7 +9,6 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
-from tileops.utils import is_hopper
 from workloads.attention.gqa import (
     GroupedQueryAttentionDecodePagedWorkload,
 )
@@ -98,7 +97,6 @@ def test_gqa_decode_paged_op(
         seqlen_kv=seqlen_kv,
         dim=dim,
         page_size=page_size,
-        dtype=dtype,
         tune=tune,
     )
     test.check(op, *test.gen_inputs(), compare=test._maxdiff_cosine_compare)
@@ -115,9 +113,10 @@ def test_gqa_decode_paged_non_divisible_128_page_split() -> None:
     block_table.copy_(torch.arange(
         seqlen_kv // page_size, device="cuda", dtype=torch.int32).flip(0).unsqueeze(0))
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-        batch, heads, heads_kv, seqlen_kv, dim, page_size, torch.float16)
-    assert page_size % op.kernel.config["block_N"] == 0
-    assert {config["block_N"] for config in op.kernel.autotune_configs} == {64}
+        batch, heads, heads_kv, seqlen_kv, dim, page_size)
+    kernel = op._get_kernel(torch.float16)
+    assert page_size % kernel.config["block_N"] == 0
+    assert {config["block_N"] for config in kernel.autotune_configs} == {64}
     test.check(
         op, q, k, v, real_seqlen_kv, block_table,
         compare=test._maxdiff_cosine_compare)
@@ -128,9 +127,11 @@ def test_gqa_decode_paged_non_divisible_128_page_split() -> None:
 def test_gqa_decode_paged_rejects_unsupported_page_tile(page_size: int) -> None:
     """Reject page layouts that no supported generic N tile can cover exactly."""
     seqlen_kv = page_size * 16
+    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
+        1, 16, 4, seqlen_kv, 128, page_size)
+    # The page layout is rejected by the kernel, which is built on first use.
     with pytest.raises(ValueError, match="matches no supported block_N"):
-        GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-            1, 16, 4, seqlen_kv, 128, page_size, torch.float16)
+        op._get_kernel(torch.float16)
 
 
 @pytest.mark.smoke
@@ -162,7 +163,6 @@ def test_gqa_decode_paged_op_softmax_controls(
         seqlen_kv=seqlen_kv,
         dim=dim,
         page_size=page_size,
-        dtype=dtype,
         sm_scale=sm_scale,
         softcap=softcap,
     )
@@ -182,9 +182,6 @@ def test_gqa_decode_paged_bs1_fixed_tier_correctness(
     reverse_pages: bool,
 ) -> None:
     """Check both runtime tiers, including output-distinguishing page translation."""
-    if not is_hopper():
-        pytest.skip("batch=1 warp-specialized paged decode requires Hopper")
-
     torch.manual_seed(0)
     batch, heads, heads_kv, seqlen_kv, dim, page_size = 1, 32, 4, 4096, 128, 256
     dtype = torch.float16
@@ -192,15 +189,16 @@ def test_gqa_decode_paged_bs1_fixed_tier_correctness(
         batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype
     )
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-        batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype
+        batch, heads, heads_kv, seqlen_kv, dim, page_size
     )
     q, k, v, real_seqlen_kv, block_table = test.gen_inputs()
     real_seqlen_kv.fill_(real_seqlen_kv_value)
     if reverse_pages:
         block_table = block_table.flip(-1).contiguous()
 
-    assert op.kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
-    assert op.kernel._select_tier(real_seqlen_kv_value) == (
+    kernel = op._get_kernel(torch.float16)
+    assert kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
+    assert kernel._select_tier(real_seqlen_kv_value) == (
         "ctx" if real_seqlen_kv_value >= 1024 else "no_split"
     )
     test.check(
@@ -217,17 +215,16 @@ def test_gqa_decode_paged_bs1_fixed_tier_correctness(
 @pytest.mark.smoke
 def test_gqa_decode_paged_bs1_dispatch() -> None:
     """Eligible Hopper requests select the paged TMA/WGMMA kernel."""
-    if not is_hopper():
-        pytest.skip("batch=1 warp-specialized paged decode requires Hopper")
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-        1, 32, 4, 8192, 128, 256, torch.float16)
-    assert op._uses_bs1_fast_path()
-    assert op.kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
-    assert op.kernel._select_tier(1024) == "ctx"
-    assert op.kernel._select_tier(512) == "no_split"
-    assert op.kernel._ctx_splits_for(8192) == 32
-    assert op.kernel._ctx_splits_for(2048) == 16
-    assert op.kernel._ctx_splits_for(3072) == 8
+        1, 32, 4, 8192, 128, 256)
+    assert op._uses_bs1_fast_path(torch.float16)
+    kernel = op._get_kernel(torch.float16)
+    assert kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
+    assert kernel._select_tier(1024) == "ctx"
+    assert kernel._select_tier(512) == "no_split"
+    assert kernel._ctx_splits_for(8192) == 32
+    assert kernel._ctx_splits_for(2048) == 16
+    assert kernel._ctx_splits_for(3072) == 8
 
 
 @pytest.mark.smoke
@@ -252,9 +249,9 @@ def test_gqa_decode_paged_bs1_dispatch_fallbacks(
     """Unsupported shapes and features stay on the generic paged kernel."""
     seqlen_kv = 8064 if page_size == 192 else 8192
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-        batch, 32, 4, seqlen_kv, dim, page_size, dtype, softcap=softcap)
-    assert not op._uses_bs1_fast_path()
-    assert op.kernel.__class__.__name__ == "GQADecodePagedKernel"
+        batch, 32, 4, seqlen_kv, dim, page_size, softcap=softcap)
+    assert not op._uses_bs1_fast_path(dtype)
+    assert op._get_kernel(dtype).__class__.__name__ == "GQADecodePagedKernel"
 
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

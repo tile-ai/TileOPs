@@ -101,7 +101,7 @@ def cb_producer_fwd_ref(
     pytest.param(2, 4, 64, 4, 128, torch.bfloat16, False, marks=pytest.mark.full),
 ])
 def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune):
-    op = CBProducerOp(batch, num_chunks, n_groups, chunk_len, d_state, dtype=dtype, tune=tune)
+    op = CBProducerOp(batch, num_chunks, n_groups, chunk_len, d_state, tune=tune)
     seq_len = num_chunks * chunk_len
     C_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device="cuda") * 0.1
     B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device="cuda") * 0.1
@@ -123,7 +123,7 @@ def test_cb_producer_fwd_noncontiguous():
     assert not C_mat.is_contiguous()
     assert not B_mat.is_contiguous()
     ref = cb_producer_fwd_ref(C_mat.contiguous(), B_mat.contiguous(), num_chunks, chunk_len, dtype)
-    out = CBProducerOp(batch, num_chunks, n_groups, chunk_len, d_state, dtype=dtype)(C_mat, B_mat)
+    out = CBProducerOp(batch, num_chunks, n_groups, chunk_len, d_state)(C_mat, B_mat)
     allclose_compare(out, ref, atol=1e-3, rtol=1e-3)
 
 

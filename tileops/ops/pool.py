@@ -59,7 +59,6 @@ class MeanPoolingForwardOp(Op):
         chunks_per_batch: int,
         seq_num: int,
         use_offsets: int,
-        dtype: torch.dtype,
         accum_dtype: torch.dtype,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -68,8 +67,16 @@ class MeanPoolingForwardOp(Op):
         for key, value in params.items():
             setattr(self, key, value)
 
+        self._kernel_params = params
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["mean_pooling_fwd_kernel"](**params)
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["mean_pooling_fwd_kernel"](
+                **self._kernel_params, dtype=dtype,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -81,7 +88,8 @@ class MeanPoolingForwardOp(Op):
         offsets: torch.Tensor,
         indices: torch.Tensor,
     ) -> torch.Tensor:
-        return self.kernel(x, offsets, indices=indices)
+        self.dtype = x.dtype
+        return self._get_kernel(x.dtype)(x, offsets, indices=indices)
 
 
 def _device_index(tensor: torch.Tensor) -> int | None:

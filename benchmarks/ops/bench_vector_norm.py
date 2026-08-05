@@ -32,7 +32,7 @@ def test_l1_norm_bench(
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
-    op = L1NormFwdOp(dtype=dtype, **op_params)
+    op = L1NormFwdOp(**op_params)
     bm = ManifestBenchmark(_L1_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -68,7 +68,7 @@ def test_l2_norm_bench(
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
-    op = L2NormFwdOp(dtype=dtype, **op_params)
+    op = L2NormFwdOp(**op_params)
     bm = ManifestBenchmark(_L2_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -104,7 +104,7 @@ def test_inf_norm_bench(
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
-    op = InfNormFwdOp(dtype=dtype, **op_params)
+    op = InfNormFwdOp(**op_params)
     bm = ManifestBenchmark(_INF_NORM_OP, op, test)
     try:
         result = bm.profile(op, *inputs)

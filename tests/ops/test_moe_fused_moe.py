@@ -137,7 +137,6 @@ def test_fused_moe_qwen3(
         num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
         hidden_size=hidden_size, ffn_size=ffn_size,
         scoring_func=scoring_func, renormalize=renormalize,
-        dtype=dtype,
     )
 
     out_nopad = op_nopad(hidden, gating, w_gate_up, w_down)
@@ -208,7 +207,7 @@ def test_fused_moe_deterministic(case):
 
     op = FusedMoe(
         num_tokens=nt, num_experts=ne, top_k=tk, hidden_size=hs,
-        ffn_size=ff, scoring_func="softmax", renormalize=False, dtype=dtype,
+        ffn_size=ff, scoring_func="softmax", renormalize=False,
     )
     fk = FusedTopKOp(nt, ne, tk, "softmax", False)
     topk_weights, topk_ids = fk(gating)
@@ -292,7 +291,6 @@ def test_fused_moe_kimi(
         scoring_func="sigmoid", renormalize=True,
         with_correction_bias=with_correction_bias,
         routed_scaling_factor=routed_scaling_factor,
-        dtype=dtype,
     )
 
     out_nopad = op_nopad(hidden, gating, w_gate_up, w_down, correction_bias)
@@ -344,14 +342,14 @@ def test_expert_map_local_filter() -> None:
     # Full output (no expert_map)
     op_full = FusedMoe(
         num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F, dtype=dtype,
+        hidden_size=H, ffn_size=F,
     )
     out_full = op_full(hidden, gating, w_gate_up, w_down)
 
     # Rank-0 partial output (local experts 0..3)
     op_r0 = FusedMoe(
         num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F, dtype=dtype,
+        hidden_size=H, ffn_size=F,
         expert_map=expert_map_rank0,
     )
     out_r0 = op_r0(hidden, gating, w_gate_up[:E // 2], w_down[:E // 2])
@@ -359,7 +357,7 @@ def test_expert_map_local_filter() -> None:
     # Rank-1 partial output (local experts 4..7)
     op_r1 = FusedMoe(
         num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F, dtype=dtype,
+        hidden_size=H, ffn_size=F,
         expert_map=expert_map_rank1,
     )
     out_r1 = op_r1(hidden, gating, w_gate_up[E // 2:], w_down[E // 2:])
@@ -463,7 +461,6 @@ def test_fused_moe_vs_vllm(
         hidden_size=hidden_size, ffn_size=ffn_size,
         scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
         routed_scaling_factor=routed_scaling_factor,
-        dtype=dtype,
     )
     out_tileops = op(hidden, gating, w_gate_up, w_down, correction_bias)
 
@@ -494,7 +491,7 @@ def test_fused_moe_fwd_op_identity() -> None:
 
     op = FusedMoeFwdOp(
         num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F_, dtype=dtype,
+        hidden_size=H, ffn_size=F_,
     )
     out = op(hidden, gating, w_gate_up, w_down)
     assert out.shape == (T, H)
@@ -502,7 +499,7 @@ def test_fused_moe_fwd_op_identity() -> None:
 
     ref_op = FusedMoe(
         num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F_, dtype=dtype,
+        hidden_size=H, ffn_size=F_,
     )
     ref = ref_op(hidden, gating, w_gate_up, w_down)
     torch.testing.assert_close(out.float(), ref.float(), rtol=1e-2, atol=1e-2)
@@ -527,7 +524,7 @@ def test_fused_moe_fwd_cb_op_identity() -> None:
 
     op = FusedMoeFwdCbFwdOp(
         num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F_, renormalize=True, dtype=dtype,
+        hidden_size=H, ffn_size=F_, renormalize=True,
     )
     out = op(hidden, gating, correction_bias, w_gate_up, w_down)
     assert out.shape == (T, H)
@@ -537,7 +534,6 @@ def test_fused_moe_fwd_cb_op_identity() -> None:
         num_tokens=T, num_experts=E, top_k=K,
         hidden_size=H, ffn_size=F_,
         scoring_func="sigmoid", renormalize=True, with_correction_bias=True,
-        dtype=dtype,
     )
     ref = ref_op(hidden, gating, w_gate_up, w_down, correction_bias)
     torch.testing.assert_close(out.float(), ref.float(), rtol=1e-2, atol=1e-2)

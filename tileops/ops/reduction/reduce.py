@@ -86,7 +86,6 @@ class _ReduceOpBase(Op):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         keepdim: bool = False,
         *,
@@ -96,7 +95,6 @@ class _ReduceOpBase(Op):
         """Construct a reduce op.
 
         Args:
-            dtype: Input data type.
             dim: Reduction dimension (default ``None``, i.e. full reduction).
                 Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
                 ``None``.
@@ -104,7 +102,6 @@ class _ReduceOpBase(Op):
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
         """
-        self.dtype = dtype
         self.dim = dim
         self.keepdim = keepdim
         self._tune = tune
@@ -225,8 +222,8 @@ class _ReduceOpBase(Op):
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        self._validate_dtypes(x)
+        self.dtype = x.dtype
         if x.ndim == 0:
             raise ValueError("Input tensor must be at least 1D")
 
@@ -309,8 +306,8 @@ class _ReduceOpBase(Op):
             return None
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")
-        if x.dtype != self.dtype:
-            raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
+        self._validate_dtypes(x)
+        self.dtype = x.dtype
         self._validate_scalar_dim()
         self._last_roofline_mn = (1, 1)
         return self._scalar_forward(x)
@@ -354,6 +351,11 @@ class _ReduceOpBase(Op):
                 "call to bind dynamic input shape"
             )
         M, N = self._last_roofline_mn
+        if self.dtype is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.eval_roofline() requires a prior forward() "
+                "call to bind dtype"
+            )
         elem_bytes = self.dtype.itemsize
         op_kind = self._op_kind
 
@@ -395,13 +397,15 @@ class _ReduceOpBase(Op):
 
     # Kernel cache
 
-    def _get_or_create_kernel(self, M: int, N: int) -> object:
-        """Return a cached kernel for (M, N), creating one if needed."""
-        key = (M, N)
+    def _get_or_create_kernel(
+        self, M: int, N: int, dtype: torch.dtype,
+    ) -> object:
+        """Return a cached kernel for (M, N, dtype), creating one if needed."""
+        key = (M, N, dtype)
         if key not in self._kernel_cache:
             kernel_cls = self.kernel_map[self._kernel_key]
             self._kernel_cache[key] = kernel_cls(
-                M, N, self._op_kind, self.dtype,
+                M, N, self._op_kind, dtype,
                 tune=self._tune, **self._build_kernel_kwargs(),
             )
         return self._kernel_cache[key]
@@ -436,7 +440,7 @@ class _ReduceOpBase(Op):
             M = prod(x.shape[:-1])
             self._last_roofline_mn = (M, N)
             x = x.reshape(M, N)
-            kernel = self._get_or_create_kernel(M, N)
+            kernel = self._get_or_create_kernel(M, N, x.dtype)
             if not self._kernel_handles_padding:
                 N_padded = align_up(N, DEFAULT_ALIGNMENT)
                 if N_padded != N:
@@ -462,7 +466,7 @@ class _ReduceOpBase(Op):
 
         x = x.contiguous().reshape(M, N)
 
-        kernel = self._get_or_create_kernel(M, N)
+        kernel = self._get_or_create_kernel(M, N, x.dtype)
 
         if not self._kernel_handles_padding:
             N_padded = align_up(N, DEFAULT_ALIGNMENT)
@@ -563,7 +567,6 @@ class ProdFwdOp(_SimpleReduceOp):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         dim: int = -1,
         keepdim: bool = False,
         *,
@@ -573,14 +576,13 @@ class ProdFwdOp(_SimpleReduceOp):
         """Construct ProdFwdOp.
 
         Args:
-            dtype: Input data type.
             dim (int): reduction dimension (default ``-1``).
             keepdim: Whether to retain reduced dims as size 1.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
         """
         super().__init__(
-            dtype=dtype, dim=dim, keepdim=keepdim,
+            dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
 
@@ -623,7 +625,6 @@ class _WelfordReduceOp(_ReduceOpBase):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         dim: Union[int, List[int], Tuple[int, ...], None] = None,
         correction: int = 1,
         keepdim: bool = False,
@@ -634,7 +635,6 @@ class _WelfordReduceOp(_ReduceOpBase):
         """Construct a Welford-based reduce op.
 
         Args:
-            dtype: Input data type.
             dim: Reduction dimension (default ``None``, i.e. full reduction).
                 Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
                 ``None``.
@@ -645,7 +645,7 @@ class _WelfordReduceOp(_ReduceOpBase):
         """
         self.correction = correction
         super().__init__(
-            dtype=dtype, dim=dim, keepdim=keepdim,
+            dim=dim, keepdim=keepdim,
             kernel_map=kernel_map, tune=tune,
         )
 

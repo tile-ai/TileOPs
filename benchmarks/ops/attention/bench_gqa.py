@@ -239,8 +239,6 @@ def _tileops_gqa_variant(op: GroupedQueryAttentionFwdOp) -> str:
         return "ws_noncausal"
     if isinstance(kernel, GQAFwdWgmmaPipelinedKernel):
         return "wgmma_pipelined"
-    if isinstance(kernel, GQAFwdKernel):
-        return "legacy"
     return kernel.__class__.__name__
 
 
@@ -322,7 +320,7 @@ def test_gqa_bwd_bench(
     test = GroupedQueryAttentionBwdWorkload(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     inputs = test.gen_inputs()
 
-    op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
     bm = ManifestBenchmark(_GQA_BWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -457,7 +455,7 @@ def test_gqa_prefill_varlen_fwd_bench(
     inputs = test.gen_inputs()
 
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        batch, heads, heads_kv, dim, test.max_seqlen_q, test.max_seqlen_kv, causal, dtype, tune=tune
+        batch, heads, heads_kv, dim, test.max_seqlen_q, test.max_seqlen_kv, causal, tune=tune
     )
     bm = GQAPrefillVarlenFwdBenchmark(test)
     result = bm.profile(op, *inputs)

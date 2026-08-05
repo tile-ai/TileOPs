@@ -92,7 +92,7 @@ Record `observations` — design knowledge discovered during migration:
 - Edge cases
 - Abstraction opportunities
 
-Do NOT modify manifest or design docs. Observations are returned to orchestrator and surfaced in PR for human review.
+Do not change the manifest or a design doc to match code that does not conform — the spec is the reference, not a record of the implementation. Observations are returned to the orchestrator and surfaced in the PR.
 
 ### 6. COMMIT
 

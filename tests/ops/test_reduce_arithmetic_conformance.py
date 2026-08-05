@@ -85,7 +85,7 @@ def test_arithmetic_reduce_conformance(
     """Each (op, dim-shape, keepdim, dtype) cell must match PyTorch."""
     torch.manual_seed(0)
     x = torch.randn(*_SHAPE, dtype=dtype, device="cuda")
-    op = op_cls(dtype=dtype, dim=dim, keepdim=keepdim)
+    op = op_cls(dim=dim, keepdim=keepdim)
     y = op(x)
     ref = _ref(torch_fn, x, dim, keepdim)
     assert y.shape == ref.shape, (
@@ -100,7 +100,7 @@ def test_arithmetic_reduce_conformance(
 def test_dim_none_keepdim_false_returns_0d(op_cls: type, torch_fn: Callable) -> None:
     """``dim=None, keepdim=False`` must return a 0-D tensor matching PyTorch."""
     x = torch.randn(*_SHAPE, dtype=torch.float32, device="cuda")
-    op = op_cls(dtype=torch.float32, dim=None, keepdim=False)
+    op = op_cls(dim=None, keepdim=False)
     y = op(x)
     ref = _ref(torch_fn, x, None, False)
     assert y.ndim == 0, f"{op_cls.__name__}: expected 0-D, got shape {y.shape}"
@@ -133,7 +133,7 @@ def test_arithmetic_reduce_unaligned_innermost(
     unaligned_shape = (4, 8, 255)
     dtype = torch.float16
     x = torch.randn(*unaligned_shape, dtype=dtype, device="cuda")
-    op = op_cls(dtype=dtype, dim=dim, keepdim=False)
+    op = op_cls(dim=dim, keepdim=False)
     y = op(x)
     ref = _ref(torch_fn, x, dim, False)
     assert y.shape == ref.shape, (

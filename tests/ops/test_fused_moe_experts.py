@@ -167,7 +167,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         d = moe_meta
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
-            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+            hidden_size=d["H"], ffn_size=d["F"],
         )
         ws1, ws2 = experts.workspace_shapes(d["T"], d["F"], d["H"], d["K"], d["E"])
         assert ws1 == (0,) and ws2 == (0,)
@@ -177,7 +177,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         d = moe_meta
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
-            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+            hidden_size=d["H"], ffn_size=d["F"],
         )
         assert experts.output_shape(d["T"], d["H"]) == (d["T"], d["H"])
 
@@ -186,7 +186,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         d = moe_meta
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
-            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+            hidden_size=d["H"], ffn_size=d["F"],
         )
         assert isinstance(experts.make_weighted_reduce(), WeightedReduceNoOp)
 
@@ -196,7 +196,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         d = moe_tensors
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
-            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+            hidden_size=d["H"], ffn_size=d["F"],
         )
 
         ref_out = _torch_ref_moe(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
@@ -233,7 +233,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         ):
             experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
                 num_tokens=T, num_experts=E, top_k=K,
-                hidden_size=H, ffn_size=F_dim, dtype=dtype,
+                hidden_size=H, ffn_size=F_dim,
             )
         assert any(
             "falling back to MoeGroupedGemmNopadKernel" in rec.message
@@ -277,7 +277,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
 
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=T, num_experts=E_global, top_k=K,
-            hidden_size=H, ffn_size=F_dim, dtype=dtype,
+            hidden_size=H, ffn_size=F_dim,
             expert_map=expert_map,
         )
         output = torch.empty(T, H, dtype=dtype, device="cuda")
@@ -298,7 +298,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         d = moe_tensors
         experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=d["T"], num_experts=d["E"], top_k=d["K"],
-            hidden_size=d["H"], ffn_size=d["F"], dtype=d["dtype"],
+            hidden_size=d["H"], ffn_size=d["F"],
             activation=activation,
         )
         assert experts.activation == activation
@@ -336,7 +336,7 @@ def test_use_fused_activation_parity(activation):
     def run(use_fused):
         op = FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=T_count, num_experts=E, top_k=top_k, hidden_size=H,
-            ffn_size=Fdim, dtype=torch.bfloat16, activation=activation,
+            ffn_size=Fdim, activation=activation,
             use_fused_activation=use_fused)
         out = torch.empty(T_count, H, dtype=torch.bfloat16, device="cuda")
         ws = torch.empty(0, dtype=torch.bfloat16, device="cuda")
@@ -364,7 +364,7 @@ def test_use_fused_activation_disabled_on_gemm_override():
     from tileops.kernels.moe.moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
     experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
         num_tokens=256, num_experts=8, top_k=2, hidden_size=256, ffn_size=768,
-        dtype=torch.bfloat16, activation="silu_and_mul", use_fused_activation=True,
+        activation="silu_and_mul", use_fused_activation=True,
         kernel_map={"moe_grouped_gemm_kernel": MoeGroupedGemmNopadKernel},
     )
     assert experts.use_fused_activation is False
@@ -379,7 +379,7 @@ def test_top_level_api_forwards_use_fused_activation():
     from tileops.ops.moe.fused_moe import FusedMoe, FusedMoeFwdCbFwdOp, FusedMoeFwdOp
     from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
     common = dict(num_tokens=256, num_experts=8, top_k=2, hidden_size=256,
-                  ffn_size=768, dtype=torch.bfloat16)
+                  ffn_size=768)
     for cls in (FusedMoe, FusedMoeFwdOp, FusedMoeFwdCbFwdOp, SharedFusedMoE):
         assert cls(**common, use_fused_activation=True)._experts.use_fused_activation is True
         assert cls(**common)._experts.use_fused_activation is False
@@ -393,11 +393,10 @@ def test_use_fused_activation_rejected_with_injected_experts():
         pytest.skip("Requires SM90")
     from tileops.ops.moe.fused_moe import FusedMoeFwdOp
     experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
-        num_tokens=256, num_experts=8, top_k=2, hidden_size=256, ffn_size=768,
-        dtype=torch.bfloat16)
+        num_tokens=256, num_experts=8, top_k=2, hidden_size=256, ffn_size=768)
     with pytest.raises(ValueError, match="use_fused_activation"):
         FusedMoeFwdOp(num_tokens=256, num_experts=8, top_k=2, hidden_size=256,
-                      ffn_size=768, dtype=torch.bfloat16, experts=experts,
+                      ffn_size=768, experts=experts,
                       use_fused_activation=True)
 
 
@@ -406,19 +405,19 @@ class TestBuildActivationOp:
     @pytest.mark.smoke
     def test_silu_and_mul_returns_correct_type(self):
         from tileops.ops.elementwise import SiluAndMulFwdOp
-        op = build_activation_op("silu_and_mul", M=16, N=32, dtype=torch.bfloat16)
+        op = build_activation_op("silu_and_mul", M=16, N=32)
         assert isinstance(op, SiluAndMulFwdOp)
 
     @pytest.mark.smoke
     def test_gelu_and_mul_returns_correct_type(self):
         from tileops.ops.elementwise import GeluAndMulFwdOp
-        op = build_activation_op("gelu_and_mul", M=16, N=32, dtype=torch.bfloat16)
+        op = build_activation_op("gelu_and_mul", M=16, N=32)
         assert isinstance(op, GeluAndMulFwdOp)
 
     @pytest.mark.smoke
     def test_invalid_activation_raises(self):
         with pytest.raises(ValueError, match="activation must be one of"):
-            build_activation_op("unknown_act", M=16, N=32, dtype=torch.bfloat16)
+            build_activation_op("unknown_act", M=16, N=32)
 
 
 class TestFusedMoeActivationInjection:
@@ -426,7 +425,7 @@ class TestFusedMoeActivationInjection:
     def _make_experts(self, activation="silu_and_mul"):
         return FusedMoEExpertsNopadPersistent3WGFwdOp(
             num_tokens=128, num_experts=4, top_k=2,
-            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            hidden_size=256, ffn_size=128,
             activation=activation,
         )
 
@@ -438,7 +437,7 @@ class TestFusedMoeActivationInjection:
         with pytest.raises(ValueError, match="activation conflicts"):
             FusedMoe(
                 num_tokens=128, num_experts=4, top_k=2,
-                hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+                hidden_size=256, ffn_size=128,
                 experts=experts, activation="gelu_and_mul",
             )
 
@@ -449,7 +448,7 @@ class TestFusedMoeActivationInjection:
         experts = self._make_experts(activation="gelu_and_mul")
         moe = FusedMoe(
             num_tokens=128, num_experts=4, top_k=2,
-            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            hidden_size=256, ffn_size=128,
             experts=experts, activation="gelu_and_mul",
         )
         assert moe.activation == "gelu_and_mul"
@@ -461,7 +460,7 @@ class TestFusedMoeActivationInjection:
         experts = self._make_experts()
         moe = FusedMoe(
             num_tokens=128, num_experts=4, top_k=2,
-            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            hidden_size=256, ffn_size=128,
             experts=experts,
         )
         assert moe.activation == "silu_and_mul"
@@ -472,7 +471,7 @@ class TestFusedMoeActivationInjection:
         from tileops.ops.moe.fused_moe import FusedMoe
         moe = FusedMoe(
             num_tokens=128, num_experts=4, top_k=2,
-            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            hidden_size=256, ffn_size=128,
             activation="gelu_and_mul",
         )
         assert moe.activation == "gelu_and_mul"
@@ -517,7 +516,7 @@ class TestFusedMoeActivationInjection:
         with pytest.raises(ValueError, match="missing the required `.activation`"):
             FusedMoe(
                 num_tokens=128, num_experts=4, top_k=2,
-                hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+                hidden_size=256, ffn_size=128,
                 experts=ExpertsWithoutActivation(),
             )
 
@@ -530,7 +529,7 @@ class TestSharedFusedMoeActivation:
         from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
         moe = SharedFusedMoE(
             num_tokens=128, num_experts=4, top_k=2,
-            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            hidden_size=256, ffn_size=128,
             activation="gelu_and_mul",
         )
         assert moe.activation == "gelu_and_mul"
@@ -548,7 +547,7 @@ class TestSharedFusedMoeActivation:
         with pytest.raises(NotImplementedError, match="shared-expert path only supports"):
             SharedFusedMoE(
                 num_tokens=128, num_experts=4, top_k=2,
-                hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+                hidden_size=256, ffn_size=128,
                 shared_ffn_size=128,
                 activation="gelu_and_mul",
             )
@@ -559,7 +558,7 @@ class TestSharedFusedMoeActivation:
         from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
         moe = SharedFusedMoE(
             num_tokens=128, num_experts=4, top_k=2,
-            hidden_size=256, ffn_size=128, dtype=torch.bfloat16,
+            hidden_size=256, ffn_size=128,
             shared_ffn_size=128,
         )
         assert moe.activation == "silu_and_mul"
@@ -578,7 +577,7 @@ def test_fused_act_fwd_op_shape_and_values():
     A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
     B = torch.randn(E, 2 * ffn, K, dtype=torch.bfloat16, device="cuda") * 0.02
     op = MoeGroupedGemmNopad3WGFusedActFwdOp(
-        numel=numel, num_experts=E, ffn=ffn, k=K, dtype=torch.bfloat16,
+        numel=numel, num_experts=E, ffn=ffn, k=K,
         activation="silu_and_mul")
     out = op(A, B, sizes, offsets)
     assert out.shape == (numel, ffn)

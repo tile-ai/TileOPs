@@ -67,7 +67,7 @@ def test_mla_decode(batch: int, heads: int, heads_kv: int, seq_len_kv: int, dim:
                     dim_pe: int, dtype: torch.dtype, tune: bool):
     test = MlaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
     op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(
-        batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune=tune)
+        batch, heads, heads_kv, seq_len_kv, dim, dim_pe, tune=tune)
     test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
 
 

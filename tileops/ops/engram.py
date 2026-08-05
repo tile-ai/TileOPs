@@ -36,7 +36,6 @@ class EngramGateConvFwdOp(Op):
         M: int,
         seq_len: int,
         d: int,
-        dtype: torch.dtype,
         eps: float = 1e-6,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -44,12 +43,17 @@ class EngramGateConvFwdOp(Op):
         self.M = M
         self.seq_len = seq_len
         self.d = d
-        self.dtype = dtype
         self.eps = eps
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["engram_gate_conv_fwd"](
-            M, seq_len, d, eps, dtype, tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["engram_gate_conv_fwd"](
+                self.M, self.seq_len, self.d, self.eps, dtype, tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -84,8 +88,8 @@ class EngramGateConvFwdOp(Op):
         """
         if not H.is_cuda:
             raise ValueError("H must be a CUDA tensor")
-        if H.dtype != self.dtype:
-            raise ValueError(f"Expected dtype {self.dtype}, got {H.dtype}")
+        self._validate_dtypes(H, k, v, rms_w_h, rms_w_v, conv_w)
+        self.dtype = H.dtype
         if H.shape[-1] != self.d:
             raise ValueError(
                 f"Expected hidden dim {self.d}, got {H.shape[-1]}"
@@ -99,7 +103,7 @@ class EngramGateConvFwdOp(Op):
         k = k.contiguous()
         v = v.contiguous()
 
-        return self.kernel(H, k, v, rms_w_h, rms_w_v, conv_w)
+        return self._get_kernel(H.dtype)(H, k, v, rms_w_h, rms_w_v, conv_w)
 
 
 class EngramGateConvBwdOp(Op):
@@ -126,7 +130,6 @@ class EngramGateConvBwdOp(Op):
         M: int,
         seq_len: int,
         d: int,
-        dtype: torch.dtype,
         eps: float = 1e-6,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -134,12 +137,17 @@ class EngramGateConvBwdOp(Op):
         self.M = M
         self.seq_len = seq_len
         self.d = d
-        self.dtype = dtype
         self.eps = eps
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["engram_gate_conv_bwd"](
-            M, seq_len, d, eps, dtype, tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["engram_gate_conv_bwd"](
+                self.M, self.seq_len, self.d, self.eps, dtype, tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -186,8 +194,11 @@ class EngramGateConvBwdOp(Op):
         """
         if not dY.is_cuda:
             raise ValueError("dY must be a CUDA tensor")
-        if dY.dtype != self.dtype:
-            raise ValueError(f"Expected dtype {self.dtype}, got {dY.dtype}")
+        self._validate_dtypes(
+            dY, H, k, v, rms_w_h, rms_w_v, conv_w,
+            vhat, alpha, rrms_h, rrms_k, rrms_v,
+        )
+        self.dtype = dY.dtype
 
         dY = dY.contiguous()
         H = H.contiguous()
@@ -195,7 +206,7 @@ class EngramGateConvBwdOp(Op):
         v = v.contiguous()
         vhat = vhat.contiguous()
 
-        return self.kernel(
+        return self._get_kernel(dY.dtype)(
             dY, H, k, v, rms_w_h, rms_w_v, conv_w,
             vhat, alpha, rrms_h, rrms_k, rrms_v,
         )

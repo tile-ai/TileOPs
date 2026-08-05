@@ -25,7 +25,6 @@ EngramGateConvFwdOp:
       M: {type: int}
       seq_len: {type: int}
       d: {type: int}
-      dtype: {type: torch.dtype}
       eps: {type: float, default: 1.0e-6}
     shape_rules:
     - "H.shape == (M, seq_len, d)"
@@ -83,7 +82,6 @@ EngramGateConvBwdOp:
       M: {type: int}
       seq_len: {type: int}
       d: {type: int}
-      dtype: {type: torch.dtype}
       eps: {type: float, default: 1.0e-6}
     shape_rules:
     - "dY.shape == (M, seq_len, d)"
@@ -139,7 +137,6 @@ EngramDecodeOp:
       max_conv_len: {type: int}
       conv_kernel_size: {type: int}
       dilation: {type: int}
-      dtype: {type: torch.dtype}
       eps: {type: float, default: 1.0e-6}
     shape_rules:
     - "e_t.shape == (batch, d_mem)"

@@ -71,7 +71,7 @@ class EngramGateConvFwdFixture(FixtureBase):
 @EngramGateConvFwdFixture
 def test_engram_gate_conv_fwd(M, seq_len, d, dtype, tune):
     test = EngramGateConvFwdTest(M, seq_len, d, dtype)
-    op = EngramGateConvFwdOp(M, seq_len, d, dtype, tune=tune)
+    op = EngramGateConvFwdOp(M, seq_len, d, tune=tune)
     inputs = test.gen_inputs()
     atol = 1e-1 if dtype == torch.float16 else 2e-1
     rtol = 1e-1
@@ -150,7 +150,7 @@ class EngramGateConvBwdFixture(FixtureBase):
 @EngramGateConvBwdFixture
 def test_engram_gate_conv_bwd(M, seq_len, d, dtype, tune):
     test = EngramGateConvBwdTest(M, seq_len, d, dtype)
-    op = EngramGateConvBwdOp(M, seq_len, d, dtype, tune=tune)
+    op = EngramGateConvBwdOp(M, seq_len, d, tune=tune)
     inputs = test.gen_inputs()
     atol = 2e-1 if dtype == torch.float16 else 3e-1
     rtol = 2e-1
@@ -247,7 +247,7 @@ class EngramDecodeFixture(FixtureBase):
 def test_engram_decode(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune):
     test = EngramDecodeTest(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
     op = EngramDecodeOp(
-        batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune=tune,
+        batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, tune=tune,
     )
     inputs = test.gen_inputs()
     atol = 5e-2 if dtype == torch.float16 else 1e-1
@@ -272,7 +272,7 @@ def test_engram_decode_multi_step():
     rms_w_v = torch.ones(d, dtype=dtype, device="cuda")
     conv_w = torch.randn(conv_kernel_size, d, dtype=dtype, device="cuda") * 0.02
 
-    op = EngramDecodeOp(B, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
+    op = EngramDecodeOp(B, d_mem, d, max_conv_len, conv_kernel_size, dilation)
 
     # Start with empty conv_state (like empty KV cache)
     conv_state = torch.zeros(B, 0, d, dtype=dtype, device="cuda")

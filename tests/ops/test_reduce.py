@@ -190,7 +190,7 @@ def test_sum_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
     test = ReduceTest(m, n, dtype, "sum")
-    op = SumFwdOp(dtype=dtype, dim=-1)
+    op = SumFwdOp(dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -199,7 +199,7 @@ def test_sum_tiled(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
     test = ReduceTest(m, n, dtype, "sum")
-    op = SumFwdOp(dtype=dtype, dim=-1)
+    op = SumFwdOp(dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -208,7 +208,7 @@ def test_prod_tiled(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import ProdFwdOp
 
     test = ProdTest(m, n, dtype)
-    op = ProdFwdOp(dtype=dtype, dim=-1)
+    op = ProdFwdOp(dim=-1)
     tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
     test.check(op, *test.gen_inputs(), **tol)
 
@@ -218,7 +218,7 @@ def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
     test = WelfordTest(m, n, dtype, "var", correction=1)
-    op = VarFwdOp(dtype=dtype, dim=-1)
+    op = VarFwdOp(dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -272,10 +272,10 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
 
     m, n, dtype = 8, 20000, torch.float16
     test = ReduceTest(m, n, dtype, "sum")
-    op = SumFwdOp(dtype=dtype, dim=-1, tune=True)
+    op = SumFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
-    kernel = op._kernel_cache[(m, n)]
+    kernel = op._kernel_cache[(m, n, dtype)]
     assert not kernel._needs_tiling
     assert {c["block_m"] for c in kernel.autotune_configs} == {1}
 
@@ -299,13 +299,13 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
     m, n, dtype = 4, 40000, torch.float16
     if op_kind == "sum":
         test = ReduceTest(m, n, dtype, "sum")
-        op = SumFwdOp(dtype=dtype, dim=-1, tune=True)
+        op = SumFwdOp(dim=-1, tune=True)
     else:
         test = WelfordTest(m, n, dtype, "var", correction=1)
-        op = VarFwdOp(dtype=dtype, dim=-1, tune=True)
+        op = VarFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
-    kernel = op._kernel_cache[(m, n)]
+    kernel = op._kernel_cache[(m, n, dtype)]
     assert kernel._needs_tiling
     assert kernel.config in kernel.autotune_configs
 
@@ -316,7 +316,7 @@ def test_sum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = SumFwdOp(dtype=dtype, dim=-1)
+    op = SumFwdOp(dim=-1)
     ref = x.contiguous().float().sum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -328,7 +328,7 @@ def test_sum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = SumFwdOp(dtype=dtype, dim=-1)
+    op = SumFwdOp(dim=-1)
     ref = x.float().sum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -340,7 +340,7 @@ def test_sum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
-    op = SumFwdOp(dtype=dtype, dim=-1)
+    op = SumFwdOp(dim=-1)
     ref = x.float().sum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -355,7 +355,7 @@ def test_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import MeanFwdOp
 
     test = ReduceTest(m, n, dtype, "mean")
-    op = MeanFwdOp(dtype=dtype, dim=-1)
+    op = MeanFwdOp(dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -367,7 +367,7 @@ def test_amin_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import AminFwdOp
 
     test = ReduceTest(m, n, dtype, "amin")
-    op = AminFwdOp(dtype=dtype, dim=-1)
+    op = AminFwdOp(dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -379,7 +379,7 @@ def test_amax_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import AmaxFwdOp
 
     test = ReduceTest(m, n, dtype, "amax")
-    op = AmaxFwdOp(dtype=dtype, dim=-1)
+    op = AmaxFwdOp(dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -391,7 +391,7 @@ def test_prod_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import ProdFwdOp
 
     test = ProdTest(m, n, dtype)
-    op = ProdFwdOp(dtype=dtype, dim=-1)
+    op = ProdFwdOp(dim=-1)
     # Prod is more numerically sensitive
     tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
     test.check(op, *test.gen_inputs(), **tol)
@@ -405,7 +405,7 @@ def test_std_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import StdFwdOp
 
     test = WelfordTest(m, n, dtype, "std", correction=1)
-    op = StdFwdOp(dtype=dtype, dim=-1)
+    op = StdFwdOp(dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -414,7 +414,7 @@ def test_std_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
     from tileops.ops.reduction.reduce import StdFwdOp
 
     test = WelfordTest(m, n, dtype, "std", correction=correction)
-    op = StdFwdOp(dtype=dtype, correction=correction, dim=-1)
+    op = StdFwdOp(correction=correction, dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -426,7 +426,7 @@ def test_var_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
     test = WelfordTest(m, n, dtype, "var", correction=1)
-    op = VarFwdOp(dtype=dtype, dim=-1)
+    op = VarFwdOp(dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -435,7 +435,7 @@ def test_var_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
     from tileops.ops.reduction.reduce import VarFwdOp
 
     test = WelfordTest(m, n, dtype, "var", correction=correction)
-    op = VarFwdOp(dtype=dtype, correction=correction, dim=-1)
+    op = VarFwdOp(correction=correction, dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -447,7 +447,7 @@ def test_var_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
     test = WelfordTest(m, n, dtype, "var_mean", correction=1)
-    op = VarMeanFwdOp(dtype=dtype, dim=-1)
+    op = VarMeanFwdOp(dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -456,7 +456,7 @@ def test_var_mean_bessel(m: int, n: int, dtype: torch.dtype, correction: int) ->
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
     test = WelfordTest(m, n, dtype, "var_mean", correction=correction)
-    op = VarMeanFwdOp(dtype=dtype, correction=correction, dim=-1)
+    op = VarMeanFwdOp(correction=correction, dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
@@ -468,7 +468,7 @@ def test_var_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = VarFwdOp(dtype=dtype, dim=-1)
+    op = VarFwdOp(dim=-1)
     ref = x.float().var(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -480,7 +480,7 @@ def test_std_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import StdFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    op = StdFwdOp(dtype=dtype, dim=-1)
+    op = StdFwdOp(dim=-1)
     ref = x.float().std(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -495,7 +495,7 @@ def test_sum_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = SumFwdOp(dtype=dtype, dim=-1)
+    op = SumFwdOp(dim=-1)
     ref = x.float().sum(dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -509,7 +509,7 @@ def test_var_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = VarFwdOp(dtype=dtype, dim=-1)
+    op = VarFwdOp(dim=-1)
     ref = x.float().var(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -527,7 +527,7 @@ def test_var_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = VarFwdOp(dtype=dtype, dim=-1)
+    op = VarFwdOp(dim=-1)
     ref = x.contiguous().float().var(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -540,7 +540,7 @@ def test_std_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
-    op = StdFwdOp(dtype=dtype, dim=-1)
+    op = StdFwdOp(dim=-1)
     ref = x.contiguous().float().std(dim=-1, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -572,7 +572,7 @@ def test_sum_spec_basic(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(m, n, dtype=dtype, device="cuda")
-    op = SumFwdOp(dtype=dtype, dim=-1)
+    op = SumFwdOp(dim=-1)
     ref = torch.sum(x.float(), dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -585,7 +585,7 @@ def test_sum_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype)
     from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = SumFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    op = SumFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.sum(x.float(), dim=dim, keepdim=keepdim).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -599,7 +599,7 @@ def test_sum_spec_keepdim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dt
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     # Force keepdim=True regardless of fixture param to specifically test shape preservation
-    op = SumFwdOp(dtype=dtype, dim=dim, keepdim=True)
+    op = SumFwdOp(dim=dim, keepdim=True)
     ref = torch.sum(x.float(), dim=dim, keepdim=True).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -613,7 +613,7 @@ def test_sum_spec_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = SumFwdOp(dtype=dtype, dim=-1)
+    op = SumFwdOp(dim=-1)
     ref = torch.sum(x.float(), dim=-1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -628,7 +628,7 @@ def test_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
     from tileops.ops.reduction.reduce import MeanFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = MeanFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    op = MeanFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.mean(x.float(), dim=dim, keepdim=keepdim).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -642,7 +642,7 @@ def test_amax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
     from tileops.ops.reduction.reduce import AmaxFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = AmaxFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    op = AmaxFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.amax(x.float(), dim=dim, keepdim=keepdim).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -656,7 +656,7 @@ def test_amin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
     from tileops.ops.reduction.reduce import AminFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = AminFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    op = AminFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.amin(x.float(), dim=dim, keepdim=keepdim).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -670,7 +670,7 @@ def test_prod_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
     from tileops.ops.reduction.reduce import ProdFwdOp
 
     x = torch.rand(*shape, dtype=dtype, device="cuda") * 0.01 + 0.99
-    op = ProdFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    op = ProdFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.prod(x.float(), dim=dim, keepdim=keepdim).to(dtype)
     y = op(x)
     tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
@@ -684,7 +684,7 @@ def test_var_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype)
     from tileops.ops.reduction.reduce import VarFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = VarFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    op = VarFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.var(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -698,7 +698,7 @@ def test_std_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype)
     from tileops.ops.reduction.reduce import StdFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = StdFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    op = StdFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.std(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
     tol = _tol(dtype)
@@ -712,7 +712,7 @@ def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.d
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = VarMeanFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
+    op = VarMeanFwdOp(dim=dim, keepdim=keepdim)
     ref_var = torch.var(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
     ref_mean = torch.mean(x.float(), dim=dim, keepdim=keepdim).to(dtype)
     var_out, mean_out = op(x)

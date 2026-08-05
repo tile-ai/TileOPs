@@ -48,7 +48,7 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test = RMSNormTestBaseline(m, n, dtype)
     inputs = test.gen_inputs()
 
-    op = RMSNormFwdOp(normalized_shape=(n,), dtype=dtype, tune=tune)
+    op = RMSNormFwdOp(normalized_shape=(n,), tune=tune)
     bm = ManifestBenchmark(_RMS_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -85,7 +85,7 @@ def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool
     test = FusedAddRMSNormWorkload(m, n, dtype)
     inputs = test.gen_inputs()
 
-    op = FusedAddRMSNormFwdOp(dtype=dtype, tune=tune)
+    op = FusedAddRMSNormFwdOp(tune=tune)
     bm = ManifestBenchmark(_FUSED_RMS_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -121,7 +121,7 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
     test = LayerNormWorkload(m, n, dtype)
     inputs = test.gen_inputs()
 
-    op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype, tune=tune)
+    op = LayerNormFwdOp(normalized_shape=(n,), tune=tune)
     bm = ManifestBenchmark(_LN_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -154,7 +154,7 @@ def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bo
     test = FusedAddLayerNormWorkload(m, n, dtype)
     inputs = test.gen_inputs()
 
-    op = FusedAddLayerNormFwdOp(dtype=dtype, tune=tune)
+    op = FusedAddLayerNormFwdOp(tune=tune)
     bm = ManifestBenchmark(_FUSED_LN_OP_NAME, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

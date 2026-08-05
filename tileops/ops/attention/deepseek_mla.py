@@ -2,9 +2,8 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.attention import MLADecodeKernel, MLADecodeWsKernel
+from tileops.kernels.attention import MLADecodeWsKernel
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import is_hopper
 
 from ..op_base import Op
 
@@ -21,7 +20,6 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
                  seqlen_kv: int,
                  dim: int,
                  pe_dim: int,
-                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False) -> None:
         self.batch = batch
@@ -31,16 +29,23 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
         self.dim = dim
         self.pe_dim = pe_dim
 
-        self.dtype = dtype
-
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["mla_decode_kernel"](
-            batch, heads, heads_kv, seqlen_kv, dim, pe_dim, self.dtype, tune=tune)
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["mla_decode_kernel"](
+                self.batch, self.heads, self.heads_kv, self.seqlen_kv,
+                self.dim, self.pe_dim, dtype, tune=self.tune)
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mla_decode_kernel": MLADecodeWsKernel if is_hopper() else MLADecodeKernel}
+        return {"mla_decode_kernel": MLADecodeWsKernel}
 
     def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor,
                 k_pe: torch.Tensor) -> torch.Tensor:
-        return self.kernel(q, q_pe, k, k_pe)
+        self._validate_dtypes(q, q_pe, k, k_pe)
+        self.dtype = q.dtype
+        return self._get_kernel(q.dtype)(q, q_pe, k, k_pe)

@@ -12,6 +12,24 @@ from .compile_boundary import register_instance
 # Module-level dedup for empty-static_dims warnings; keyed by Op subclass.
 _EMPTY_STATIC_DIMS_WARNED: set = set()
 
+def _iter_kernels(value: object, _depth: int = 0) -> "list[Kernel]":
+    """Return the kernels *value* holds, descending through dicts and sequences.
+
+    A kernel cache is a dict keyed by shape and dtype; an op that builds
+    several kernels together (preprocess plus backward, say) stores a tuple
+    per entry, so the search has to go two levels down.
+    """
+    if isinstance(value, Kernel):
+        return [value]
+    if _depth >= 2:
+        return []
+    if isinstance(value, dict):
+        return [k for v in value.values() for k in _iter_kernels(v, _depth + 1)]
+    if isinstance(value, (tuple, list)):
+        return [k for v in value for k in _iter_kernels(v, _depth + 1)]
+    return []
+
+
 class Op(ABC):
     """Base class for TileOPs operations.
 
@@ -30,7 +48,8 @@ class Op(ABC):
         >>> latency = op.profile()  # Benchmark performance
 
     Attributes:
-        kernel: top.Kernel instance (e.g. mha_fwd_kernel)
+        kernel: single kernel, for ops that hold one; ops that build per
+            dtype keep a cache instead
         dtype: Data type for computation (e.g., torch.float16)
         device: Device for computation (e.g., 'cuda')
         input_shapes: Expected input tensor shapes
@@ -170,11 +189,23 @@ class Op(ABC):
         self._instance_key = register_instance(self)
 
     def autotune(self) -> None:
-        """Autotune all kernels of the op"""
+        """Autotune every kernel the op holds.
+
+        An op that builds its kernels at forward time keeps them in a cache
+        keyed by shape and dtype, so the search covers the values of dict
+        attributes and the items of tuple/list attributes as well as kernels
+        bound directly. Only kernels already built are tuned; a cache the op
+        has not populated yet has nothing to tune.
+        """
+        seen: set[int] = set()
         for attr_name in dir(self):
-            attr = getattr(self, attr_name)
-            if isinstance(attr, Kernel):
-                attr.autotune()
+            # ``__dict__`` would re-yield every kernel bound as an attribute.
+            if attr_name.startswith("__"):
+                continue
+            for kernel in _iter_kernels(getattr(self, attr_name, None)):
+                if id(kernel) not in seen:
+                    seen.add(id(kernel))
+                    kernel.autotune()
 
     @abstractmethod
     def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:

@@ -22,12 +22,18 @@ Op                          ← L1: thin base, shared by all ops
 
 **Do it at the first moment all required information is known, do it once, cache the result.**
 
-| Op category    | When all info is known                                      | Behaviour                                                |
-| -------------- | ----------------------------------------------------------- | -------------------------------------------------------- |
-| Fixed-rank     | `__init__` (all dims provided)                              | `_infer_output_shapes` runs once at init.                |
-| Arbitrary-rank | `__init__` for `static_dims`; `forward` for everything else | Kernel built on first encounter, cached by `_cache_key`. |
+| Op category    | When all info is known                                      | Behaviour                                 |
+| -------------- | ----------------------------------------------------------- | ----------------------------------------- |
+| Fixed-rank     | `__init__` (all dims provided)                              | `_infer_output_shapes` runs once at init. |
+| Arbitrary-rank | `__init__` for `static_dims`; `forward` for everything else | `_infer_output_shapes` runs per shape.    |
 
-`_validate_dtypes` runs on every `forward()` call — dtype validity depends on the actual tensors passed, not just their shapes. Roofline timing and formula semantics are defined in [roofline.md](roofline.md). See [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
+**Dtype is not a constructor parameter when the inputs determine it.** An op reads it from the input tensors in `forward()`: a caller who passes fp16 tensors gets the fp16 kernel without having said so twice, and an op can no longer be constructed in a state that disagrees with the tensors it is about to be handed.
+
+An output dtype is determined by the inputs when it is `same_as(...)`, `promote_int_to_float(...)`, one concrete dtype, or a union equal to some input's. When some output dtype is an independent choice — an op that generates a tensor from parameters alone, or an fp8 path whose output may be fp16 or bf16 — the tensors are not a second source and `dtype` stays a `signature.params` entry.
+
+The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — and the kernel cache is keyed by shape *and* dtype. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* and checking the architecture needs no tensor, and keeping it there preserves fast failure on an unsupported GPU.
+
+`_validate_dtypes` runs on every `forward()` call — dtype validity depends on the actual tensors passed, not just their shapes. It is the only dtype gate; an op does not compare an incoming tensor against a dtype it was constructed with, because there is no such dtype. Roofline timing and formula semantics are defined in [roofline.md](roofline.md). See [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
 
 ## Scaffolding an Op from a Manifest Entry
 
@@ -47,7 +53,7 @@ Provides:
 """
 
 import math
-from typing import Dict, Optional
+from typing import Dict, Hashable, Optional
 
 import torch
 
@@ -63,7 +69,7 @@ from ..op_base import Op
 
 ### Step 2: Class declaration + docstring + `__all__`
 
-**Input.** Manifest entry key (= class name); `signature.inputs`, `signature.params`, `static_dims`, per-tensor `dtype` (Args block content).
+**Input.** Manifest entry key (= class name); `signature.inputs`, `signature.params`, `static_dims` (Args block content).
 
 **Output.**
 
@@ -79,7 +85,6 @@ class ExampleCumsumFwdOp(Op):
     Args:
         N: Hidden dimension (size along the reduction axis), committed
             at ctor via ``static_dims: N: "x.shape[dim]"``.
-        dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default -1).
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
@@ -92,7 +97,7 @@ class ExampleCumsumFwdOp(Op):
 
 ### Step 3: `_static_axes` + `__init__` signature and body
 
-**Input.** `static_dims` (literal-axis → class-level `_static_axes` frozenset; param-axis → empty class-level default, bind at `forward()` after `dim % x.ndim` normalization); `signature.params`; `dtype`.
+**Input.** `static_dims` (literal-axis → class-level `_static_axes` frozenset; param-axis → empty class-level default, bind at `forward()` after `dim % x.ndim` normalization); `signature.params`.
 
 **Output.**
 
@@ -108,22 +113,20 @@ class ExampleCumsumFwdOp(Op):
         self,
         *,
         N: int,
-        dtype: torch.dtype,
         dim: int = -1,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
         self.N = N
-        self.dtype = dtype
         self.dim = dim
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         # M is not a static_dim — deferred to forward() where x.ndim
         # is known and M is derived from the non-reduction axes.
-        self._kernel_cache: Dict[tuple, Kernel] = {}
+        self._kernel_cache: Dict[Hashable, Kernel] = {}
 ```
 
-**Validation.** Every `__init__` kwarg has a manifest source (`static_dims` or `signature.params` or `dtype`); no extras except `kernel_map` / `tune`. In particular, `M` is NOT a ctor kwarg — `ExampleCumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Keyword-only via `*`, no defaults on `static_dims` entries. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
+**Validation.** Every `__init__` kwarg has a manifest source (`static_dims` or `signature.params`); no extras except `kernel_map` / `tune`. `dtype` is not a kwarg — it is read from the input in `forward()`. In particular, `M` is NOT a ctor kwarg — `ExampleCumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Keyword-only via `*`, no defaults on `static_dims` entries. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
 
 **Reference.** [Slot S21](ops-design-reference.md#slot-s21), [S12](ops-design-reference.md#slot-s12), [S13](ops-design-reference.md#slot-s13).
 
@@ -155,13 +158,14 @@ class ExampleCumsumFwdOp(Op):
                 f"got {x.shape[dim]}")
         # Bind _static_axes now that the concrete axis is known.
         self._static_axes = frozenset({(0, dim)})
-        # Derive M (product of non-reduction dims) and cache kernel by (M,).
+        # Derive M (product of non-reduction dims); cache by shape and dtype.
         M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
         self.M = M  # stored for eval_roofline
-        key = (M,)
+        self.dtype = x.dtype  # ditto; the op commits to no dtype before this
+        key = ((M,), x.dtype)
         if key not in self._kernel_cache:
             self._kernel_cache[key] = self.kernel_map["example_cumsum_fwd"](
-                M, self.N, "sum", self.dtype, tune=self.tune)
+                M, self.N, "sum", x.dtype, tune=self.tune)
         kernel = self._kernel_cache[key]
         # Move reduction axis to last, reshape to (M, N), compute, restore.
         orig_shape = x.shape
@@ -171,7 +175,7 @@ class ExampleCumsumFwdOp(Op):
         return y.movedim(-1, dim)
 ```
 
-**Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the kernel cache lookup. The op never trims kernel output: a kernel that pads internally returns the semantic shape.
+**Validation.** `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim. `forward` calls `self._validate_dtypes(...)` first (not inline dtype comparisons — that is Step 5's job). The kernel is built from `x.dtype`, and the cache key carries that dtype so a second call with a different dtype builds a second kernel rather than reusing the first. Every `static_dims` commitment is validated against the actual tensor shape at the normalized axis before the kernel is called. `_static_axes` is bound from the normalized (non-negative) axis before the kernel cache lookup. The op never trims kernel output: a kernel that pads internally returns the semantic shape.
 
 **Reference.** [Slot S14](ops-design-reference.md#slot-s14), [S15](ops-design-reference.md#slot-s15), [S16](ops-design-reference.md#slot-s16).
 
@@ -213,7 +217,7 @@ class ExampleCumsumFwdOp(Op):
         return flops, bytes_
 ```
 
-**Validation.** The body is **plain Python** reading `self.*` attributes. No class-level roofline expression strings, no `ast.parse`, no shared L1 evaluator — prohibited by [`roofline.md §4.4.6` Evaluator Surface Boundary](roofline.md#446-evaluator-surface-boundary). Return type is `tuple[int, int]`, not `float` or `numpy`. Expressions derive directly from `roofline.vars` bindings + `roofline.flops` + `roofline.bytes`; see [`roofline.md §4.4` Op Codegen](roofline.md#44-op-codegen).
+**Validation.** The body is **plain Python** reading `self.*` attributes. Those attributes — `self.M` and `self.dtype` here — are bound by `forward()`, so `eval_roofline` is callable only after at least one forward; there is no ctor-time dtype to read. No class-level roofline expression strings, no `ast.parse`, no shared L1 evaluator — prohibited by [`roofline.md §4.4.6` Evaluator Surface Boundary](roofline.md#446-evaluator-surface-boundary). Return type is `tuple[int, int]`, not `float` or `numpy`. Expressions derive directly from `roofline.vars` bindings + `roofline.flops` + `roofline.bytes`; see [`roofline.md §4.4` Op Codegen](roofline.md#44-op-codegen).
 
 **Reference.** [Slot S19](ops-design-reference.md#slot-s19).
 
@@ -300,8 +304,8 @@ satisfy the cold-call contract.
   `torch_compile_fullgraph` on an op whose compiled graph must
   backpropagate additionally requires registering an autograd formula for
   the dispatch custom op.
-- Ops that pre-build their kernel at `__init__` (constructor-known shapes)
-  do not need the boundary; the invariant still applies to their
+- An op that builds no kernel in `forward` — every kernel already in its
+  cache — does not need the boundary; the invariant still applies to its
   `forward`.
 
 ## Family-Base Refactoring

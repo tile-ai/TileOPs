@@ -207,7 +207,7 @@ def test_nsa_topk_varlen_op(
     inputs = test.gen_inputs()
     op = NSATopkVarlenOp(
         seq_num=seq_num, c_seq_len=c_seq_len, heads=heads, dim=dim, group=group, scale=scale,
-        selected_block_num=selected_block_num, bc=bc, bs=bs, dtype=dtype,
+        selected_block_num=selected_block_num, bc=bc, bs=bs,
         accum_dtype=accum_dtype, tune=tune, chunk_num=test.chunk_num)
     test.check_topk(op, *inputs)
 

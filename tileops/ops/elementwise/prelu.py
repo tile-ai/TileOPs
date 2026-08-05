@@ -9,7 +9,6 @@ from tileops.kernels.elementwise import PreluFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _OP_REGISTRY
 
 
 class PreluFwdOp(Op):
@@ -53,8 +52,6 @@ class PreluFwdOp(Op):
         self.inner_size = inner_size
         self.dispatch_kernel(kernel_map)
         self.kernel = self.kernel_map[self._op_name](N_total, num_channels, inner_size, dtype)
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):

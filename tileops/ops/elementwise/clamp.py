@@ -10,7 +10,6 @@ from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
 from ._base import (
-    _OP_REGISTRY,
     _ClampTensorBase,
     _validate_scalar_param_repr,
 )
@@ -73,8 +72,6 @@ class ClampFwdOp(_ClampTensorBase):
             has_max=self.max_shape is not None,
             tune=tune,
         )
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
@@ -167,8 +164,6 @@ class ClampMinFwdOp(_ClampTensorBase):
         self.kernel = self.kernel_map["clamp_tensor"](
             self.N_total, dtype, has_min=True, has_max=False, tune=tune,
         )
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
@@ -236,8 +231,6 @@ class ClampMaxFwdOp(_ClampTensorBase):
         self.kernel = self.kernel_map["clamp_tensor"](
             self.N_total, dtype, has_min=False, has_max=True, tune=tune,
         )
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):
@@ -316,8 +309,6 @@ class ClampScalarFwdOp(Op):
         self.kernel = self.kernel_map["clamp"](
             self.N_total, dtype, min_val=min, max_val=max, tune=tune,
         )
-        self._instance_key = id(self)
-        _OP_REGISTRY[self._instance_key] = self
 
     @property
     def default_kernel_map(self):

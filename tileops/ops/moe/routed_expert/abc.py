@@ -56,7 +56,9 @@ def _validate_fused_moe_experts_dtypes(
     """
     allowed = (torch.float16, torch.bfloat16)
     if op_dtype not in allowed:
-        raise ValueError(f"op dtype must be one of {allowed}, got {op_dtype}")
+        raise ValueError(
+            f"hidden_states.dtype must be one of {allowed}, got {op_dtype}"
+        )
     for name, t in (
         ("output", output),
         ("hidden_states", hidden_states),

@@ -71,7 +71,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 ### Slot S7: <a id="slot-s7"></a> Class docstring
 
 - **Rule.** One-sentence summary; `Args:` block enumerating every `__init__` kwarg (S12) with type and short description; optional `Example:` block.
-- **Derivation.** `Args` block from manifest `signature.params` + `static_dims` + `dtype`.
+- **Derivation.** `Args` block from manifest `signature.params` + `static_dims`.
 - **Example.**
   ```python
   class ExampleCumsumFwdOp(Op):
@@ -82,18 +82,17 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
       Args:
           M: Number of rows (product of all dims except the reduction axis).
           N: Hidden dimension (size along the reduction axis).
-          dtype: Data type (float32, float16, or bfloat16).
           dim: Reduction dimension (default -1).
           kernel_map: Optional override for kernel dispatch.
           tune: Whether to autotune (default False).
       """
   ```
-- **Common mistakes.** Args out of sync with `__init__`; listing tensor inputs in `Args` (they belong to `forward`).
+- **Common mistakes.** Args out of sync with `__init__`; listing tensor inputs in `Args` (they belong to `forward`); documenting a `dtype` kwarg (there is none — dtype comes from the input at `forward`).
 
 ### Slot S12: <a id="slot-s12"></a> `__init__` signature
 
-- **Rule.** Keyword-only via `*`. Kwarg block order: (1) `static_dims` entries in manifest key order, no defaults; (2) `dtype`; (3) `signature.params` entries in manifest key order; (4) `kernel_map` and `tune` last.
-- **Derivation.** Manifest `static_dims` + `dtype` + `signature.params`.
+- **Rule.** Keyword-only via `*`. Kwarg block order: (1) `static_dims` entries in manifest key order, no defaults; (2) `signature.params` entries in manifest key order; (3) `kernel_map` and `tune` last. **`dtype` is a kwarg only when the inputs do not determine every output dtype** — see [Parameter design](#parameter-design).
+- **Derivation.** Manifest `static_dims` + `signature.params`.
 - **Example.**
   ```python
   def __init__(
@@ -101,32 +100,31 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
       *,
       M: int,
       N: int,
-      dtype: torch.dtype,
       dim: int = -1,
       kernel_map: Optional[Dict[str, Kernel]] = None,
       tune: bool = False,
   ):
   ```
-- **Common mistakes.** Missing `*` (positional accepted); `static_dims` kwargs with defaults; params/static_dims block order inverted; kwargs not backed by a manifest source.
+- **Common mistakes.** Missing `*` (positional accepted); `static_dims` kwargs with defaults; params/static_dims block order inverted; kwargs not backed by a manifest source; accepting `dtype`, `in_dtype` or `out_dtype`.
 
 ### Slot S13: <a id="slot-s13"></a> `__init__` body
 
-- **Rule.** Body sequence: (a) `self.<name> = <name>` per kwarg; (b) `self.dispatch_kernel(kernel_map)`; then branch by op shape:
-  - **Fully-static op** (all non-static axes committed at ctor): (c-static) `self.kernel = self.kernel_map[<key>](...)` — kernel built once at init; (d-static) optionally precompute `self._infer_output_shapes(<input>_shape=(...))` eagerly if a caller needs the output shapes before `forward()`. The `Op` base class does not currently consume an `_output_shapes` attribute — do not introduce one unless a concrete consumer requires it.
-  - **Arbitrary-rank op** (at least one axis unknown until forward): (c-dyn) initialise `self._kernel_cache: Dict[Hashable, Kernel] = {}` (the cache key follows `Op._cache_key`'s `Hashable` return type — often a tuple, but overrides may return `int` or other hashables) and defer kernel construction to `forward()` keyed by `self._cache_key(*input_shapes)`; (d-dyn) defer `_infer_output_shapes` to `forward()` per unique input shape.
-- **Derivation.** Each `self.*` assignment mirrors one S12 kwarg. Kernel-build positional args follow the kernel class's ctor (kernel author's API). "Fully-static" iff every `signature.inputs` shape axis is either a manifest `shape` dim name or a `static_dims` key resolvable at ctor; otherwise arbitrary-rank and the deferred branch applies.
+- **Rule.** Body sequence: (a) `self.<name> = <name>` per kwarg; (b) `self.dispatch_kernel(kernel_map)`; (c) initialise `self._kernel_cache: Dict[Hashable, Kernel] = {}`. **No kernel is constructed here**, for any op shape: the kernel is dtype-specialized and no dtype is known until `forward()` receives a tensor. What the ctor does resolve is the kernel *class* and the architecture check, both of which `dispatch_kernel` performs without a tensor.
+  - A **fully-static op** (all non-static axes committed at ctor) may still precompute `self._infer_output_shapes(<input>_shape=(...))` eagerly if a caller needs output shapes before `forward()` — shape inference is dtype-independent. The `Op` base class does not currently consume an `_output_shapes` attribute; do not introduce one unless a concrete consumer requires it.
+  - An **arbitrary-rank op** (at least one axis unknown until forward) defers `_infer_output_shapes` to `forward()` per unique input shape.
+  - The cache key follows `Op._cache_key`'s `Hashable` return type paired with the forward-time dtype: `(self._cache_key(*input_shapes), dtype)`.
+- **Derivation.** Each `self.*` assignment mirrors one S12 kwarg. Kernel-build positional args follow the kernel class's ctor (kernel author's API). "Fully-static" iff every `signature.inputs` shape axis is either a manifest `shape` dim name or a `static_dims` key resolvable at ctor; the distinction now governs only when shape inference runs, not when the kernel is built.
 - **Example (arbitrary-rank).**
   ```python
   self.N = N
-  self.dtype = dtype
   self.dim = dim
   self.tune = tune
   self.dispatch_kernel(kernel_map)
-  # M unknown at init (only N committed via static_dims); kernel
-  # is built lazily in forward() once M is derived.
+  # M unknown at init (only N committed via static_dims), and no dtype
+  # is known at all; the kernel is built in forward() from both.
   self._kernel_cache: Dict[Hashable, Kernel] = {}
   ```
-- **Common mistakes.** `_infer_output_shapes` called before `dispatch_kernel`; hard-coding the kernel class instead of routing through `self.kernel_map`; building the kernel in `__init__` for an arbitrary-rank op (fails when a non-static axis value is required by the kernel ctor); omitting `self._kernel_cache` initialisation for the deferred branch (first forward-time cache lookup raises `AttributeError`).
+- **Common mistakes.** `_infer_output_shapes` called before `dispatch_kernel`; hard-coding the kernel class instead of routing through `self.kernel_map`; building the kernel in `__init__` (there is no dtype to build it with); storing a `self.dtype` at ctor time; omitting `self._kernel_cache` initialisation (the first forward-time cache lookup raises `AttributeError`).
 
 ### Slot S14: <a id="slot-s14"></a> `default_kernel_map` property
 
@@ -152,8 +150,8 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 ### Slot S16: <a id="slot-s16"></a> `forward` body
 
-- **Rule.** Body sequence: (a) `self._validate_dtypes(...)`; (b) validate `shape_rules` (e.g. `-x.ndim <= dim < x.ndim`) and normalise parameter-dependent axes via modulo (e.g. `dim = self.dim % x.ndim`); (c) validate each `static_dims` commitment (`x.shape[<resolved_axis>] == self.<kwarg>`); (d) for arbitrary-rank ops, bind `self._static_axes = frozenset({(input_index, resolved_axis)})` and look up / lazily build the kernel in `self._kernel_cache` keyed by `self._cache_key(*input_shapes)`; (e) `.contiguous()` + reshape to the kernel's expected 2D layout; (f) call the kernel; (g) restore the original shape. Fully-static ops skip the cache-lookup part of (d) since `self.kernel` was built at init.
-- **Derivation.** Validation expressions come from each `static_dims` entry's `<tensor>.shape[<axis>]` RHS; axis normalisation mirrors the param evaluation in `static_dims` + `shape_rules`; kernel cache key is whatever `_cache_key` projects (default: tuple of non-static-axis sizes). A kernel that pads internally returns the semantic shape, so the op does not trim.
+- **Rule.** Body sequence: (a) `self._validate_dtypes(...)`; (b) validate `shape_rules` (e.g. `-x.ndim <= dim < x.ndim`) and normalise parameter-dependent axes via modulo (e.g. `dim = self.dim % x.ndim`); (c) validate each `static_dims` commitment (`x.shape[<resolved_axis>] == self.<kwarg>`); (d) for arbitrary-rank ops, bind `self._static_axes = frozenset({(input_index, resolved_axis)})`, then — for every op shape — look up / lazily build the kernel in `self._kernel_cache` keyed by `(self._cache_key(*input_shapes), <input>.dtype)`; (e) `.contiguous()` + reshape to the kernel's expected 2D layout; (f) call the kernel; (g) restore the original shape.
+- **Derivation.** Validation expressions come from each `static_dims` entry's `<tensor>.shape[<axis>]` RHS; axis normalisation mirrors the param evaluation in `static_dims` + `shape_rules`; kernel cache key is whatever `_cache_key` projects (default: tuple of non-static-axis sizes), paired with the dtype of the dtype-defining input. A kernel that pads internally returns the semantic shape, so the op does not trim.
 - **Example (arbitrary-rank).**
   ```python
   self._validate_dtypes(x)
@@ -172,10 +170,11 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   self.M = M
   # default _cache_key projects non-static axes; override for coarser
   # keying when kernel math permits (see Optional Hooks appendix).
-  key = self._cache_key(x.shape)
+  self.dtype = x.dtype
+  key = (self._cache_key(x.shape), x.dtype)
   if key not in self._kernel_cache:
       self._kernel_cache[key] = self.kernel_map["example_cumsum_fwd"](
-          M, self.N, "sum", self.dtype, tune=self.tune
+          M, self.N, "sum", x.dtype, tune=self.tune
       )
   kernel = self._kernel_cache[key]
   orig_shape = x.shape
@@ -184,7 +183,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
   y = y2.reshape(*orig_shape[:dim], *orig_shape[dim + 1 :], self.N)
   return y.movedim(-1, dim)
   ```
-- **Common mistakes.** Skipping `_validate_dtypes`; reshape before `.contiguous()`; hard-coding `x.shape[-1]` instead of the normalised `x.shape[self.dim % x.ndim]`; binding `self._static_axes` before the axis is non-negative (violates `Op._static_axes` contract); forgetting the kernel cache lookup so every forward rebuilds the kernel; trimming padded kernel output in the op instead of leaving it to the kernel; not restoring the original shape.
+- **Common mistakes.** Skipping `_validate_dtypes`; keying the kernel cache on shape alone, so a second dtype silently reuses the first dtype's kernel; reshape before `.contiguous()`; hard-coding `x.shape[-1]` instead of the normalised `x.shape[self.dim % x.ndim]`; binding `self._static_axes` before the axis is non-negative (violates `Op._static_axes` contract); forgetting the kernel cache lookup so every forward rebuilds the kernel; trimming padded kernel output in the op instead of leaving it to the kernel; not restoring the original shape.
 
 ### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes` method body
 
@@ -211,7 +210,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
 
 ### Slot S19: <a id="slot-s19"></a> `eval_roofline` method body
 
-- **Rule.** Codegen emits a complete plain-Python body reading `self.*` attributes. Per [`roofline.md` §4.4.6](roofline.md#446-evaluator-surface-boundary) (Evaluator Surface Boundary) there is NO shared AST evaluator on L1 and NO class-level roofline expression strings (e.g. `_flops_str`, `_bytes_str`, `_roofline_vars`) that would be parsed at runtime. L1 stub raises `NotImplementedError` (FIXME staged-rollout).
+- **Rule.** Codegen emits a complete plain-Python body reading `self.*` attributes, which `forward()` binds — `self.dtype` among them. `eval_roofline` is therefore defined only after at least one `forward()`. Per [`roofline.md` §4.4.6](roofline.md#446-evaluator-surface-boundary) (Evaluator Surface Boundary) there is NO shared AST evaluator on L1 and NO class-level roofline expression strings (e.g. `_flops_str`, `_bytes_str`, `_roofline_vars`) that would be parsed at runtime. L1 stub raises `NotImplementedError` (FIXME staged-rollout).
 - **Derivation.** Manifest `roofline.vars`, `roofline.flops`, `roofline.bytes`; see [`roofline.md` §4.4](roofline.md#44-op-codegen).
 - **Example.**
   ```python
@@ -220,7 +219,7 @@ Slot-keyed rule dictionary consumed on demand by [ops-design.md](ops-design.md) 
       bytes_ = (2 * self.M * self.N + self.N) * self.dtype.itemsize
       return flops, bytes_
   ```
-- **Common mistakes.** Class-level roofline expression strings parsed at runtime (prohibited by §4.4.6); any `ast.parse` or shared `_safe_eval` path; returning `float` or `numpy` types (contract is `tuple[int, int]`).
+- **Common mistakes.** Class-level roofline expression strings parsed at runtime (prohibited by §4.4.6); any `ast.parse` or shared `_safe_eval` path; returning `float` or `numpy` types (contract is `tuple[int, int]`); assuming `self.dtype` is set on a freshly-constructed op.
 
 ### Slot S20: <a id="slot-s20"></a> Package `__init__.py` registration
 
@@ -281,9 +280,9 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 | Attribute      | Type                                 | Purpose                                                                                      |
 | -------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `kernel`       | `Kernel`                             | Kernel instance used by `forward()`                                                          |
+| `kernel`       | `Kernel`                             | Set only by an op that holds one kernel; an op that builds per dtype uses a cache instead    |
 | `kernel_map`   | `Optional[Dict[str, Kernel]]`        | Dispatched kernels keyed by name                                                             |
-| `dtype`        | `Optional[torch.dtype]`              | Computation dtype                                                                            |
+| `dtype`        | `Optional[torch.dtype]`              | Dtype of the most recent `forward()`; `None` before the first one                            |
 | `device`       | `Optional[Union[torch.device, str]]` | Device (default `'cuda'`)                                                                    |
 | `input_shapes` | `Optional[list[tuple]]`              | Expected input tensor shapes (for introspection and non-runtime consumers)                   |
 | `_static_axes` | `frozenset[tuple[int, int]]`         | Static axes as `(input_index, axis)` pairs (default `frozenset()`); consumed by `_cache_key` |
@@ -292,9 +291,11 @@ Abstract interface: `default_kernel_map` (property), `forward()`. Manifest-drive
 
 ### `Kernel` base class attributes ([`tileops/kernels/kernel_base.py`](../../tileops/kernels/kernel_base.py))
 
+Unlike `Op`, a `Kernel` **is** constructed for one element type — it compiles a dtype-specialized program, so `dtype` is a ctor argument here. The op supplies it from the tensors at `forward()`.
+
 | Attribute          | Type                    | Purpose                                        |
 | ------------------ | ----------------------- | ---------------------------------------------- |
-| `dtype`            | `Optional[torch.dtype]` | Data type                                      |
+| `dtype`            | `Optional[torch.dtype]` | Element type this kernel is specialized for    |
 | `config`           | `Dict[str, Any]`        | Tile configuration (block sizes, stages, etc.) |
 | `autotune_configs` | `Optional[list[dict]]`  | Search space for autotuning                    |
 | `supported_archs`  | `Optional[list[int]]`   | GPU SM versions (e.g., `[80, 86, 89, 90]`)     |
@@ -340,21 +341,24 @@ The manifest ([`tileops/manifest/`](../../tileops/manifest/)) is the sole source
 
 ### Parameter design <a id="parameter-design"></a>
 
-Three time points: (1) manifest — constraint structure; (2) `__init__` — user commits `static_dims` values; (3) `forward` — shapes concrete, commitments validated. See [manifest.md § `static_dims`](manifest.md#static_dims).
+Three time points: (1) manifest — constraint structure; (2) `__init__` — user commits `static_dims` values; (3) `forward` — shapes concrete, commitments validated, dtype read from the tensors. See [manifest.md § `static_dims`](manifest.md#static_dims).
 
-|                          | Fixed-rank op           | Arbitrary-rank op                                                  |
-| ------------------------ | ----------------------- | ------------------------------------------------------------------ |
-| Manifest has `shape`     | yes                     | no                                                                 |
-| `__init__` shape source  | `shape` dimension names | `static_dims`                                                      |
-| Undeclared dimensions    | none                    | derived from tensor at forward time                                |
-| Kernel construction time | init (all dims known)   | init (`static_dims` known) or forward (first encounter, cached)    |
-| Forward cache keying     | N/A (single kernel)     | `_cache_key(*input_shapes)` — default non-static axes, overridable |
+**Dtype belongs to time point 3, never to 2.** The tensors carry it, so requiring the caller to restate it at construction only creates a second source that can disagree with the first. Constructing an op therefore commits to shape structure and nothing about element type.
+
+|                          | Fixed-rank op           | Arbitrary-rank op                                                           |
+| ------------------------ | ----------------------- | --------------------------------------------------------------------------- |
+| Manifest has `shape`     | yes                     | no                                                                          |
+| `__init__` shape source  | `shape` dimension names | `static_dims`                                                               |
+| Undeclared dimensions    | none                    | derived from tensor at forward time                                         |
+| Kernel construction time | forward (first call)    | forward (first encounter)                                                   |
+| Forward cache keying     | dtype                   | `(_cache_key(*input_shapes), dtype)` — default non-static axes, overridable |
 
 ### Calling conventions
 
 - **Fully static op:** `_infer_output_shapes` called once in `__init__`, result stored as an instance attribute.
-- **Op with dynamic dims:** `_infer_output_shapes` called in `forward()` once dynamic dims resolve; kernel construction cached by `_cache_key(*input_shapes)`.
-- **`_validate_dtypes`:** runs on every `forward()` call.
+- **Op with dynamic dims:** `_infer_output_shapes` called in `forward()` once dynamic dims resolve.
+- **Kernel construction:** always in `forward()`, cached by `(_cache_key(*input_shapes), dtype)`.
+- **`_validate_dtypes`:** runs on every `forward()` call, and is the only place an op rejects a dtype.
 - **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
 
 ### Inheritance in family-base hierarchies

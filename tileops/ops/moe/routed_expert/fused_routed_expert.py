@@ -110,7 +110,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         hidden_size: int,
         ffn_size: int,
         routed_scaling_factor: float = 1.0,
-        dtype: torch.dtype = torch.bfloat16,
         expert_map: Optional[Tensor] = None,
         gemm_kernel: Optional[type] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -124,7 +123,6 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         self.top_k = top_k
         self.hidden_size = hidden_size
         self.ffn_size = ffn_size
-        self.dtype = dtype
         numel = num_tokens * top_k
         num_experts_local = (
             int((expert_map >= 0).sum().item()) if expert_map is not None else num_experts
@@ -183,7 +181,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
                 self.use_fused_activation = False
 
         self._permute = MoePermuteNopadFwdOp(
-            num_experts=num_experts, dtype=dtype, expert_map=expert_map,
+            num_experts=num_experts, expert_map=expert_map,
             kernel_map=kernel_map,
         )
         self.activation = activation
@@ -193,27 +191,27 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             )
             self._gemm_gate_up = MoeGroupedGemmNopad3WGFusedActFwdOp(
                 numel=numel, num_experts=num_experts_local,
-                ffn=ffn_size, k=hidden_size, dtype=dtype, activation=activation,
+                ffn=ffn_size, k=hidden_size, activation=activation,
                 kernel_map=kernel_map,
             )
             self._activation_op = None
         else:
             self._gemm_gate_up = MoeGroupedGemmNopadFwdOp(
                 numel=numel, num_experts=num_experts_local,
-                n=ffn_size * 2, k=hidden_size, dtype=dtype,
+                n=ffn_size * 2, k=hidden_size,
                 kernel_map={"moe_grouped_gemm_kernel": kernel_cls, **(kernel_map or {})},
             )
             self._activation_op = build_activation_op(
-                activation, M=numel, N=ffn_size, dtype=dtype, kernel_map=kernel_map,
+                activation, M=numel, N=ffn_size, kernel_map=kernel_map,
             )
         self._gemm_down = MoeGroupedGemmNopadFwdOp(
             numel=numel, num_experts=num_experts_local,
-            n=hidden_size, k=ffn_size, dtype=dtype,
+            n=hidden_size, k=ffn_size,
             kernel_map={"moe_grouped_gemm_kernel": kernel_cls, **(kernel_map or {})},
         )
         self._unpermute = MoeUnpermuteFwdOp(
             total_tokens=num_tokens, top_k=top_k,
-            hidden_size=hidden_size, dtype=dtype, padded_batch_sum=numel,
+            hidden_size=hidden_size, padded_batch_sum=numel,
             kernel_map=kernel_map,
             routed_scaling_factor=routed_scaling_factor,
         )
@@ -231,8 +229,11 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         workspace1: Tensor,
         workspace2: Tensor,
     ) -> None:
+        # hidden_states is the dtype anchor: the helper requires output,
+        # w_gate_up and w_down to agree with it.
+        self.dtype = hidden_states.dtype
         _validate_fused_moe_experts_dtypes(
-            self.dtype,
+            hidden_states.dtype,
             output, hidden_states, w_gate_up, w_down,
             topk_weights, topk_ids, expert_map, workspace1, workspace2,
         )

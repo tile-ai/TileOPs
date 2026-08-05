@@ -159,7 +159,6 @@ def test_mha_bwd_rejects_legacy_kernel_map_keys() -> None:
             seq_len=128,
             dim=64,
             is_causal=False,
-            dtype=torch.float16,
             kernel_map={"mha_bwd_kernel": _FakeLegacyMhaBwdKernel},
         )
 
@@ -168,7 +167,7 @@ def test_mha_bwd_rejects_legacy_kernel_map_keys() -> None:
 def test_mha_bwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype,
                  tune: bool) -> None:
     test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)
-    op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
+    op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 

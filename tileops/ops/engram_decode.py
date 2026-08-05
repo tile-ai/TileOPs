@@ -38,7 +38,6 @@ class EngramDecodeOp(Op):
         max_conv_len: int,
         conv_kernel_size: int,
         dilation: int,
-        dtype: torch.dtype,
         eps: float = 1e-6,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -49,13 +48,19 @@ class EngramDecodeOp(Op):
         self.max_conv_len = max_conv_len
         self.conv_kernel_size = conv_kernel_size
         self.dilation = dilation
-        self.dtype = dtype
         self.eps = eps
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["engram_decode"](
-            batch, d_mem, d, max_conv_len, conv_kernel_size, dilation,
-            eps, dtype, tune=tune,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["engram_decode"](
+                self.batch, self.d_mem, self.d, self.max_conv_len,
+                self.conv_kernel_size, self.dilation, self.eps, dtype,
+                tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -91,13 +96,15 @@ class EngramDecodeOp(Op):
         """
         if not e_t.is_cuda:
             raise ValueError("e_t must be a CUDA tensor")
-        if e_t.dtype != self.dtype:
-            raise ValueError(f"Expected dtype {self.dtype}, got {e_t.dtype}")
+        self._validate_dtypes(
+            e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
+        )
+        self.dtype = e_t.dtype
 
         e_t = e_t.contiguous()
         h_t = h_t.contiguous()
         conv_state = conv_state.contiguous()
 
-        return self.kernel(
+        return self._get_kernel(e_t.dtype)(
             e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w,
         )

@@ -37,7 +37,6 @@ class CBProducerOp(Op):
         n_groups: int,
         chunk_len: int,
         d_state: int,
-        dtype: torch.dtype = torch.float16,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
@@ -46,13 +45,19 @@ class CBProducerOp(Op):
         self.n_groups = n_groups
         self.chunk_len = chunk_len
         self.d_state = d_state
-        self.dtype = dtype
+        self.tune = tune
 
         # Use standard Op dispatch pattern
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["cb_producer"](
-            batch, num_chunks, n_groups, chunk_len, d_state, dtype, tune=tune
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["cb_producer"](
+                self.batch, self.num_chunks, self.n_groups, self.chunk_len,
+                self.d_state, dtype, tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -76,10 +81,11 @@ class CBProducerOp(Op):
         """
         S = self.num_chunks * self.chunk_len
         expected_shape = (self.batch, S, self.n_groups, self.d_state)
+        self.dtype = C_mat.dtype
         for name, t in (("C_mat", C_mat), ("B_mat", B_mat)):
-            if t.dtype != self.dtype:
+            if t.dtype != C_mat.dtype:
                 raise ValueError(
-                    f"{name}.dtype={t.dtype} does not match op dtype={self.dtype}"
+                    f"{name}.dtype={t.dtype} does not match C_mat.dtype={C_mat.dtype}"
                 )
             if t.shape != torch.Size(expected_shape):
                 raise ValueError(
@@ -87,4 +93,4 @@ class CBProducerOp(Op):
                 )
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
-        return self.kernel(C_mat, B_mat)
+        return self._get_kernel(C_mat.dtype)(C_mat, B_mat)

@@ -86,7 +86,7 @@ def test_sum_dim_none(
     from tileops.ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = SumFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = SumFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.sum(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
@@ -102,7 +102,7 @@ def test_mean_dim_none(
     from tileops.ops.reduction.reduce import MeanFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = MeanFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = MeanFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
@@ -118,7 +118,7 @@ def test_amax_dim_none(
     from tileops.ops.reduction.reduce import AmaxFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = AmaxFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = AmaxFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.amax(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
@@ -134,7 +134,7 @@ def test_amin_dim_none(
     from tileops.ops.reduction.reduce import AminFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = AminFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = AminFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.amin(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
@@ -151,7 +151,7 @@ def test_prod_dim_none_rejected() -> None:
     from tileops.ops.reduction.reduce import ProdFwdOp
 
     with pytest.raises(TypeError, match="ProdFwdOp.dim must be int"):
-        ProdFwdOp(dtype=torch.float16, dim=None)
+        ProdFwdOp(dim=None)
 
 
 # Welford ops: var, std, var_mean
@@ -164,7 +164,7 @@ def test_var_dim_none(
     from tileops.ops.reduction.reduce import VarFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = VarFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = VarFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.var(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
@@ -180,7 +180,7 @@ def test_std_dim_none(
     from tileops.ops.reduction.reduce import StdFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = StdFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = StdFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.std(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
@@ -196,7 +196,7 @@ def test_var_mean_dim_none(
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = VarMeanFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = VarMeanFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref_var = torch.var(
         x.float(), dim=dims, keepdim=keepdim, correction=1,
@@ -259,7 +259,7 @@ def test_all_dim_none(
     from tileops.ops.reduction.logical_reduce import AllFwdOp
 
     x = _make_logical_input(shape, dtype)
-    op = AllFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = AllFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.all(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
@@ -274,7 +274,7 @@ def test_any_dim_none(
     from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     x = _make_logical_input(shape, dtype)
-    op = AnyFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = AnyFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.any(x.bool(), dim=dims, keepdim=keepdim)
     y = op(x)
@@ -289,7 +289,7 @@ def test_count_nonzero_dim_none() -> None:
     shape = (4, 8, 256)
     x = torch.randn(*shape, dtype=torch.float32, device="cuda")
     x[x < 0] = 0.0
-    op = CountNonzeroFwdOp(dtype=torch.float32, dim=None)
+    op = CountNonzeroFwdOp(dim=None)
     dims = _all_dims(shape)
     ref = torch.count_nonzero(x, dim=dims)
     y = op(x)
@@ -307,7 +307,7 @@ def test_count_nonzero_dim_none_dtypes(dtype: torch.dtype) -> None:
     shape = (4, 8, 256)
     x = torch.randn(*shape, dtype=dtype, device="cuda")
     x[x < 0] = 0.0
-    op = CountNonzeroFwdOp(dtype=dtype, dim=None)
+    op = CountNonzeroFwdOp(dim=None)
     dims = _all_dims(shape)
     ref = torch.count_nonzero(x, dim=dims)
     y = op(x)
@@ -325,7 +325,7 @@ def test_l1_norm_dim_none(
     from tileops.ops.reduction.vector_norm import L1NormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = L1NormFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = L1NormFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.linalg.vector_norm(
         x.float(), ord=1, dim=dims, keepdim=keepdim,
@@ -343,7 +343,7 @@ def test_l2_norm_dim_none(
     from tileops.ops.reduction.vector_norm import L2NormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = L2NormFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = L2NormFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.linalg.vector_norm(
         x.float(), ord=2, dim=dims, keepdim=keepdim,
@@ -361,7 +361,7 @@ def test_inf_norm_dim_none(
     from tileops.ops.reduction.vector_norm import InfNormFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = InfNormFwdOp(dtype=dtype, dim=None, keepdim=keepdim)
+    op = InfNormFwdOp(dim=None, keepdim=keepdim)
     dims = _all_dims(shape)
     ref = torch.linalg.vector_norm(
         x.float(), ord=float("inf"), dim=dims, keepdim=keepdim,

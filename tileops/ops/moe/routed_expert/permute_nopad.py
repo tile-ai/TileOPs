@@ -27,8 +27,6 @@ class MoePermuteNopadFwdOp(Op):
         num_experts: Total number of experts E (global count).
         hidden_size: Optional committed hidden dimension H. Preferred API
             infers it from ``hidden_states.shape[1]``.
-        dtype: Data type of hidden_states (bf16 or fp16). If omitted,
-            inferred from ``hidden_states``.
         expert_map: Optional [E_global] int32 tensor mapping global expert ids
             to local ids (-1 = not on this rank).  When provided, only local
             token-expert pairs are counted; non-local positions get fwd_idx = -1.
@@ -45,7 +43,6 @@ class MoePermuteNopadFwdOp(Op):
         top_k: Optional[int] = None,
         num_experts: Optional[int] = None,
         hidden_size: Optional[int] = None,
-        dtype: Optional[torch.dtype] = None,
         expert_map: Optional[torch.Tensor] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ) -> None:
@@ -53,11 +50,9 @@ class MoePermuteNopadFwdOp(Op):
         self.top_k = top_k
         self.num_experts = num_experts
         self.hidden_size = hidden_size
-        self.dtype = dtype
         self._committed_total_tokens = total_tokens
         self._committed_top_k = top_k
         self._committed_hidden_size = hidden_size
-        self._committed_dtype = dtype
 
         self.dispatch_kernel(kernel_map)
         self.expert_map = expert_map
@@ -167,13 +162,6 @@ class MoePermuteNopadFwdOp(Op):
             )
         if self.num_experts is None:
             raise ValueError("num_experts must be provided at construction time")
-        if (
-            self._committed_dtype is not None
-            and hidden_states.dtype != self._committed_dtype
-        ):
-            raise ValueError(
-                f"Expected hidden_states.dtype {self._committed_dtype}, got {hidden_states.dtype}"
-            )
         if hidden_states.dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(
                 "Expected hidden_states.dtype to be torch.float16 or "
@@ -183,10 +171,10 @@ class MoePermuteNopadFwdOp(Op):
             raise ValueError(f"Expected topk_ids.dtype torch.int32, got {topk_ids.dtype}")
 
         dtype = hidden_states.dtype
+        self.dtype = dtype
         self.total_tokens = total_tokens
         self.top_k = top_k
         self.hidden_size = hidden_size
-        self.dtype = dtype
         self.hidden_states_shape = tuple(hidden_states.shape)
         self.topk_ids_shape = tuple(topk_ids.shape)
         kernel = self._get_kernel(

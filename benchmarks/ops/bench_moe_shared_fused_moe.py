@@ -133,7 +133,6 @@ def test_shared_fused_moe_bench(
         renormalize=renormalize,
         with_correction_bias=with_correction_bias,
         routed_scaling_factor=routed_scaling_factor,
-        dtype=dtype,
         shared_ffn_size=shared_ffn_size,
     )
     op(hidden, gating, w_gate_up, w_down, correction_bias,

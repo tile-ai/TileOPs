@@ -33,7 +33,6 @@ def test_shared_fused_moe_basic():
         num_tokens=T, num_experts=E, top_k=K,
         hidden_size=H, ffn_size=F,
         scoring_func="softmax", renormalize=False,
-        dtype=dtype,
         shared_ffn_size=F_s,
     )
 
@@ -60,7 +59,6 @@ def test_shared_fused_moe_basic():
         num_tokens=T, num_experts=E, top_k=K,
         hidden_size=H, ffn_size=F,
         scoring_func="softmax", renormalize=False,
-        dtype=dtype,
     )
     routed_ref = op_routed(hidden, gating, w_gate_up, w_down)
     torch.testing.assert_close(routed_out, routed_ref, rtol=1e-5, atol=1e-5)
@@ -83,7 +81,6 @@ def test_shared_fused_moe_none():
     op = SharedFusedMoE(
         num_tokens=T, num_experts=E, top_k=K,
         hidden_size=H, ffn_size=F,
-        dtype=dtype,
     )
 
     shared_out, routed_out = op(hidden, gating, w_gate_up, w_down)
@@ -132,7 +129,6 @@ def test_shared_fused_moe_tp():
         num_tokens=T, num_experts=E, top_k=K,
         hidden_size=H, ffn_size=F,
         scoring_func="softmax", renormalize=False,
-        dtype=dtype,
     )
     routed_ref = op_routed(hidden, gating, w_gate_up, w_down)
 
@@ -143,7 +139,6 @@ def test_shared_fused_moe_tp():
             num_tokens=T, num_experts=E, top_k=K,
             hidden_size=H, ffn_size=F,
             scoring_func="softmax", renormalize=False,
-            dtype=dtype,
             shared_ffn_size=F_s,
             tp_size=tp_size, tp_rank=tp_rank,
         )
@@ -179,7 +174,6 @@ def test_shared_fused_moe_tp_rejects_local_shards():
         num_tokens=T, num_experts=E, top_k=K,
         hidden_size=H, ffn_size=F,
         scoring_func="softmax", renormalize=False,
-        dtype=dtype,
         shared_ffn_size=F_s,
         tp_size=tp_size, tp_rank=0,
     )

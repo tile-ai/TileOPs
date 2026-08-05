@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-import torch
-
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops.elementwise import FusedGatedOp, GeluAndMulFwdOp, SiluAndMulFwdOp
 
@@ -20,7 +18,6 @@ def build_activation_op(
     activation: str,
     M: int,
     N: int,
-    dtype: torch.dtype,
     kernel_map: Optional[Dict[str, Kernel]] = None,
 ) -> FusedGatedOp:
     """Construct the activation sub-Op for an MoE experts pipeline.
@@ -29,7 +26,6 @@ def build_activation_op(
         activation: One of the keys in ``_ACTIVATION_REGISTRY``.
         M: Row count of the (M, 2N) gate_up tensor.
         N: Half column dim — the activation output width (= ffn_size).
-        dtype: Activation/output dtype.
         kernel_map: Forwarded to the inner activation op for kernel dispatch.
 
     Returns:
@@ -44,5 +40,5 @@ def build_activation_op(
             f"activation must be one of [{allowed}], got {activation!r}"
         )
     return _ACTIVATION_REGISTRY[activation](
-        M=M, N=N, dtype=dtype, kernel_map=kernel_map,
+        M=M, N=N, kernel_map=kernel_map,
     )

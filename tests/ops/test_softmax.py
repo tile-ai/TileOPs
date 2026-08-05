@@ -304,7 +304,7 @@ class LogSumExpTest(LogSumExpWorkload, TestBase):
 @LogSumExpFixture
 def test_logsumexp_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSumExpTest(shape, dtype, dim=dim)
-    op = LogSumExpFwdOp(dtype=dtype, dim=dim, tune=tune)
+    op = LogSumExpFwdOp(dim=dim, tune=tune)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -335,7 +335,7 @@ class LogSumExpKeepdimFixture(FixtureBase):
 def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     """Test logsumexp with keepdim=True — output retains reduced dim as size 1."""
     x = torch.randn(*shape, dtype=dtype, device="cuda")
-    op = LogSumExpFwdOp(dtype=dtype, dim=dim, keepdim=True)
+    op = LogSumExpFwdOp(dim=dim, keepdim=True)
 
     y_ref = torch.logsumexp(x.float(), dim=dim, keepdim=True).to(dtype)
     y = op(x)
@@ -405,7 +405,7 @@ def test_logsumexp_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
     x = x_full[:, :n]
 
-    op = LogSumExpFwdOp(dtype=dtype, dim=-1)
+    op = LogSumExpFwdOp(dim=-1)
 
     y_ref = torch.logsumexp(x.float().contiguous(), dim=-1).to(dtype)
     y = op(x)
@@ -468,7 +468,7 @@ class LogSumExp1DFixture(FixtureBase):
 def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
     """Test logsumexp with 1D input -- output should be a scalar."""
     x = torch.randn(n, dtype=dtype, device="cuda")
-    op = LogSumExpFwdOp(dtype=dtype, dim=-1)
+    op = LogSumExpFwdOp(dim=-1)
 
     y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
     y = op(x)
@@ -508,7 +508,7 @@ def test_log_softmax_rejects_multidim_before_kernel() -> None:
 def test_logsumexp_accepts_multidim() -> None:
     """LogSumExpFwdOp must accept list dim without error (multi-dim is supported)."""
     x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
-    op = LogSumExpFwdOp(dtype=torch.float32, dim=[0, 1])
+    op = LogSumExpFwdOp(dim=[0, 1])
     y = op(x)
     y_ref = torch.logsumexp(x.float(), dim=[0, 1])
     assert torch.allclose(y, y_ref, atol=1e-5, rtol=1e-5)

@@ -94,7 +94,7 @@ def test_gqa_sliding_window_fwd_op(
     op = GroupedQueryAttentionSlidingWindowFwdOp(
         batch=batch, heads=heads, heads_kv=heads_kv, seq_len=seq, dim=dim,
         is_causal=is_causal, window_size_left=wl, window_size_right=wr,
-        dtype=dtype, tune=tune)
+        tune=tune)
     test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
 
 
@@ -130,9 +130,16 @@ class TestGroupedQueryAttentionSlidingWindowFwdOpMetrics:
         op = GroupedQueryAttentionSlidingWindowFwdOp(
             batch=B, heads=H, heads_kv=Hkv, seq_len=S, dim=D,
             is_causal=True)
-        elem = torch.tensor([], dtype=torch.float16).element_size()
+        with pytest.raises(RuntimeError, match="requires a prior forward"):
+            _ = op.total_memory
+        dtype = torch.float16
+        op(
+            torch.randn(B, S, H, D, dtype=dtype, device="cuda"),
+            torch.randn(B, S, Hkv, D, dtype=dtype, device="cuda"),
+            torch.randn(B, S, Hkv, D, dtype=dtype, device="cuda"),
+        )
         # Q read + O write: heads each; K read + V read: heads_kv each
-        expected = 2 * B * S * (H + Hkv) * D * elem
+        expected = 2 * B * S * (H + Hkv) * D * dtype.itemsize
         assert op.total_memory == expected, f"got {op.total_memory}, expected {expected}"
 
 
@@ -161,12 +168,13 @@ class TestGroupedQueryAttentionSlidingWindowFwdOpValidation:
     def float16_op(self):
         return GroupedQueryAttentionSlidingWindowFwdOp(
             batch=1, heads=4, heads_kv=2, seq_len=64, dim=64,
-            is_causal=True, dtype=torch.float16)
+            is_causal=True)
 
     @pytest.mark.smoke
     def test_dtype_mismatch_raises(self, float16_op):
+        """q/k/v must agree with each other; q is the element-type anchor."""
         q = torch.randn(1, 64, 4, 64, dtype=torch.bfloat16, device="cuda")
-        k = torch.randn(1, 64, 2, 64, dtype=torch.bfloat16, device="cuda")
+        k = torch.randn(1, 64, 2, 64, dtype=torch.float16, device="cuda")
         v = torch.randn(1, 64, 2, 64, dtype=torch.bfloat16, device="cuda")
         with pytest.raises(ValueError, match="dtype"):
             float16_op.forward(q, k, v)

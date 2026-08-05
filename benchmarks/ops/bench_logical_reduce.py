@@ -32,7 +32,7 @@ def test_any_bench(
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
-    op = AnyFwdOp(dtype=dtype, **op_params)
+    op = AnyFwdOp(**op_params)
     bm = ManifestBenchmark(_ANY_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -66,7 +66,7 @@ def test_all_bench(
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
-    op = AllFwdOp(dtype=dtype, **op_params)
+    op = AllFwdOp(**op_params)
     bm = ManifestBenchmark(_ALL_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -100,7 +100,7 @@ def test_count_nonzero_bench(
     inputs = test.gen_inputs()
 
     op_params.setdefault("dim", -1)
-    op = CountNonzeroFwdOp(dtype=dtype, **op_params)
+    op = CountNonzeroFwdOp(**op_params)
     bm = ManifestBenchmark(_COUNT_NONZERO_OP, op, test)
     try:
         result = bm.profile(op, *inputs)

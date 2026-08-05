@@ -40,7 +40,6 @@ class MoeUnpermuteFwdOp(Op):
         total_tokens: int,
         top_k: int,
         hidden_size: int,
-        dtype: torch.dtype = torch.bfloat16,
         padded_batch_sum: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         routed_scaling_factor: float = 1.0,
@@ -48,14 +47,20 @@ class MoeUnpermuteFwdOp(Op):
         self.total_tokens = total_tokens
         self.top_k = top_k
         self.hidden_size = hidden_size
-        self.dtype = dtype
         self.padded_batch_sum = padded_batch_sum if padded_batch_sum is not None else total_tokens * top_k
 
+        self._routed_scaling_factor = routed_scaling_factor
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["unpermute_kernel"](
-            total_tokens, top_k, hidden_size, self.padded_batch_sum,
-            scaling=routed_scaling_factor, dtype=dtype,
-        )
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map["unpermute_kernel"](
+                self.total_tokens, self.top_k, self.hidden_size,
+                self.padded_batch_sum, scaling=self._routed_scaling_factor,
+                dtype=dtype,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -80,4 +85,6 @@ class MoeUnpermuteFwdOp(Op):
         Returns:
             output: [T, H] bf16/fp16 (``out`` if provided).
         """
-        return self.kernel(mm2_pad, fwd_idx, topk_weights, out=out)
+        self._validate_dtypes(mm2_pad, fwd_idx, topk_weights)
+        self.dtype = mm2_pad.dtype
+        return self._get_kernel(mm2_pad.dtype)(mm2_pad, fwd_idx, topk_weights, out=out)

@@ -37,7 +37,6 @@ class _SoftmaxBaseOp(Op):
     override output reshaping if needed.
 
     Args:
-        dtype: Optional committed dtype for subclasses that still expose it.
         dim: Reduction dimension (default -1).
         N: Optional committed reduction dim for subclasses that still expose it.
         kernel_map: Optional override for kernel dispatch.
@@ -57,15 +56,12 @@ class _SoftmaxBaseOp(Op):
 
     def __init__(
         self,
-        dtype: Optional[torch.dtype] = None,
         dim: Union[int, List[int]] = -1,
         N: Optional[int] = None,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        self.dtype = dtype
-        self._committed_dtype = dtype
         self.dim = dim
         self.N = N
         self.keepdim = False
@@ -89,10 +85,6 @@ class _SoftmaxBaseOp(Op):
             raise ValueError(
                 "x.dtype must be float16, bfloat16, or float32, "
                 f"got {x.dtype}"
-            )
-        if self._committed_dtype is not None and x.dtype != self._committed_dtype:
-            raise ValueError(
-                f"Expected x.dtype {self._committed_dtype}, got {x.dtype}"
             )
         if x.ndim == 0:
             raise ValueError("Input tensor must be at least 1D")
@@ -326,7 +318,6 @@ class LogSumExpFwdOp(_SoftmaxBaseOp):
     (or with size-1 if keepdim=True).
 
     Args:
-        dtype: Data type (float32, float16, or bfloat16).
         dim: Reduction dimension (default -1).
         keepdim: Retain reduced dimension (default False).
         kernel_map: Optional override for kernel dispatch.
@@ -340,12 +331,11 @@ class LogSumExpFwdOp(_SoftmaxBaseOp):
 
     def __init__(
         self,
-        dtype: torch.dtype,
         dim: Union[int, List[int]] = -1,
         keepdim: bool = False,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        super().__init__(dtype=dtype, dim=dim, kernel_map=kernel_map, tune=tune)
+        super().__init__(dim=dim, kernel_map=kernel_map, tune=tune)
         self.keepdim = keepdim

@@ -24,7 +24,6 @@ class MoeGroupedGemmNopad3WGFusedActFwdOp(Op):
         num_experts: Number of local experts E.
         ffn: FFN width (output column count); B has 2*ffn rows (gate||up).
         k: Hidden size K.
-        dtype: Activation/weight dtype (bf16 or fp16).
         activation: "silu_and_mul" or "gelu_and_mul".
         kernel_map: Optional kernel override.
         tune: Autotune flag.
@@ -32,7 +31,7 @@ class MoeGroupedGemmNopad3WGFusedActFwdOp(Op):
     Example:
         >>> op = MoeGroupedGemmNopad3WGFusedActFwdOp(
         ...     numel=16384, num_experts=256, ffn=768, k=2048,
-        ...     dtype=torch.bfloat16, activation="silu_and_mul")
+        ... activation="silu_and_mul")
         >>> C = op(A, B, true_sizes, true_offsets)  # [numel, ffn]
     """
 
@@ -42,7 +41,6 @@ class MoeGroupedGemmNopad3WGFusedActFwdOp(Op):
         num_experts: int,
         ffn: int,
         k: int,
-        dtype: torch.dtype = torch.bfloat16,
         activation: str = "silu_and_mul",
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -51,11 +49,20 @@ class MoeGroupedGemmNopad3WGFusedActFwdOp(Op):
         self.num_experts = num_experts
         self.ffn = ffn
         self.k = k
-        self.dtype = dtype
         self.activation = activation
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["moe_grouped_gemm_fused_act_kernel"](
-            numel, num_experts, ffn, k, dtype=dtype, activation=activation, tune=tune)
+        self._kernel_cache: Dict[torch.dtype, Kernel] = {}
+
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        if dtype not in self._kernel_cache:
+            self._kernel_cache[dtype] = self.kernel_map[
+                "moe_grouped_gemm_fused_act_kernel"
+            ](
+                self.numel, self.num_experts, self.ffn, self.k,
+                dtype=dtype, activation=self.activation, tune=self.tune,
+            )
+        return self._kernel_cache[dtype]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -79,4 +86,5 @@ class MoeGroupedGemmNopad3WGFusedActFwdOp(Op):
         Returns:
             C: [numel, ffn] activated gate_up output.
         """
-        return self.kernel(a, b, true_sizes, true_offsets)
+        self.dtype = a.dtype
+        return self._get_kernel(a.dtype)(a, b, true_sizes, true_offsets)
