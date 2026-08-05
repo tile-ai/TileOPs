@@ -12,7 +12,6 @@ from benchmarks.ops.attention.manifest_params import (
     manifest_params,
 )
 from tileops.kernels.attention import (
-    GQAFwdKernel,
     GQAFwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
     GQAFwdWsPersistentKernel,
