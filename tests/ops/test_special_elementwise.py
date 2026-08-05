@@ -54,7 +54,7 @@ class SpecialTest(SpecialWorkload, TestBase):
 
 def _make_special_test(n_total, dtype, op_cls, ref_fn, gen_fn=None) -> None:
     test = SpecialTest(n_total, dtype, ref_fn=ref_fn, gen_fn=gen_fn)
-    op = op_cls(N_total=n_total, dtype=dtype)
+    op = op_cls(N_total=n_total)
     test.check(op, *test.gen_inputs(), compare=exact_compare)
 
 
@@ -149,7 +149,7 @@ def test_where(n_total: int, dtype: torch.dtype) -> None:
     x = torch.randn(n_total, device="cuda", dtype=dtype)
     y = torch.randn(n_total, device="cuda", dtype=dtype)
     ref = torch.where(cond, x, y)
-    op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
+    op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,))
     out = op(cond, x, y)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
 
@@ -162,7 +162,7 @@ def test_clamp(n_total: int, dtype: torch.dtype) -> None:
 
     x = torch.randn(n_total, device="cuda", dtype=dtype)
     ref = torch.clamp(x, -0.5, 0.5)
-    op = ClampScalarFwdOp(input=(n_total,), min=-0.5, max=0.5, dtype=dtype)
+    op = ClampScalarFwdOp(input=(n_total,), min=-0.5, max=0.5)
     out = op(x)
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
@@ -184,7 +184,7 @@ def test_masked_fill(n_total: int, dtype: torch.dtype) -> None:
     # Use -100.0 to avoid fp16 overflow (fp16 max ~65504)
     fill_value = -100.0
     ref = x.masked_fill(mask, fill_value)
-    op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype)
+    op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value)
     out = op(x, mask)
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
@@ -207,7 +207,7 @@ def test_nan_to_num(n_total: int, dtype: torch.dtype) -> None:
     x[quarter:2 * quarter] = float("inf")
     x[2 * quarter:3 * quarter] = float("-inf")
     ref = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
-    op = NanToNumFwdOp(N_total=n_total, dtype=dtype, nan=0.0, posinf=1e4, neginf=-1e4)
+    op = NanToNumFwdOp(N_total=n_total, nan=0.0, posinf=1e4, neginf=-1e4)
     out = op(x)
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
@@ -233,7 +233,7 @@ class AlibiFixture(FixtureBase):
 def test_alibi(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import AlibiFwdOp
 
-    op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads, dtype=dtype)
+    op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads)
     out = op()
 
     # Reference: slope_h = 2^(-8*(h+1)/H), bias = -slope * |i - j|
@@ -265,7 +265,7 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
 
     from tileops.ops.elementwise import SinusoidalFwdOp
 
-    op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model, dtype=dtype)
+    op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model)
     out = op()
 
     # Reference
@@ -304,7 +304,7 @@ def test_clamp_dtype_size(n_total: int, dtype: torch.dtype) -> None:
 
     x = torch.randn(n_total, device="cuda", dtype=dtype)
     ref = torch.clamp(x, -0.5, 0.5)
-    op = ClampScalarFwdOp(input=(n_total,), min=-0.5, max=0.5, dtype=dtype)
+    op = ClampScalarFwdOp(input=(n_total,), min=-0.5, max=0.5)
     out = op(x)
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
@@ -326,7 +326,7 @@ def test_clamp_min_gt_max(n_total: int, dtype: torch.dtype) -> None:
     x = torch.randn(n_total, device="cuda", dtype=dtype)
     # When min > max, PyTorch clamp returns min_val for all elements
     ref = torch.clamp(x, min=0.5, max=-0.5)
-    op = ClampScalarFwdOp(input=(n_total,), min=0.5, max=-0.5, dtype=dtype)
+    op = ClampScalarFwdOp(input=(n_total,), min=0.5, max=-0.5)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
@@ -338,7 +338,7 @@ def test_clamp_upper_only(n_total: int, dtype: torch.dtype) -> None:
 
     x = torch.randn(n_total, device="cuda", dtype=dtype)
     ref = torch.clamp(x, min=None, max=0.5)
-    op = ClampScalarFwdOp(input=(n_total,), min=None, max=0.5, dtype=dtype)
+    op = ClampScalarFwdOp(input=(n_total,), min=None, max=0.5)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
@@ -350,7 +350,7 @@ def test_clamp_lower_only(n_total: int, dtype: torch.dtype) -> None:
 
     x = torch.randn(n_total, device="cuda", dtype=dtype)
     ref = torch.clamp(x, min=-0.5, max=None)
-    op = ClampScalarFwdOp(input=(n_total,), min=-0.5, max=None, dtype=dtype)
+    op = ClampScalarFwdOp(input=(n_total,), min=-0.5, max=None)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
@@ -364,7 +364,7 @@ def test_masked_fill_all_true(n_total: int, dtype: torch.dtype) -> None:
     mask = torch.ones(n_total, device="cuda", dtype=torch.bool)
     fill_value = -1e9
     ref = x.masked_fill(mask, fill_value)
-    op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype)
+    op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value)
     out = op(x, mask)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
@@ -378,7 +378,7 @@ def test_masked_fill_all_false(n_total: int, dtype: torch.dtype) -> None:
     mask = torch.zeros(n_total, device="cuda", dtype=torch.bool)
     fill_value = -1e9
     ref = x.masked_fill(mask, fill_value)
-    op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype)
+    op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value)
     out = op(x, mask)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
 
@@ -392,7 +392,7 @@ def test_where_all_true(n_total: int, dtype: torch.dtype) -> None:
     x = torch.randn(n_total, device="cuda", dtype=dtype)
     y = torch.randn(n_total, device="cuda", dtype=dtype)
     ref = torch.where(cond, x, y)
-    op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
+    op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,))
     out = op(cond, x, y)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
 
@@ -406,7 +406,7 @@ def test_where_all_false(n_total: int, dtype: torch.dtype) -> None:
     x = torch.randn(n_total, device="cuda", dtype=dtype)
     y = torch.randn(n_total, device="cuda", dtype=dtype)
     ref = torch.where(cond, x, y)
-    op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
+    op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,))
     out = op(cond, x, y)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
 
@@ -428,7 +428,7 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
             x[k + 3] = 1.0
 
     ref = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
-    op = NanToNumFwdOp(N_total=n_total, dtype=dtype, nan=0.0, posinf=1e4, neginf=-1e4)
+    op = NanToNumFwdOp(N_total=n_total, nan=0.0, posinf=1e4, neginf=-1e4)
     out = op(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5, equal_nan=True)
 
@@ -455,9 +455,9 @@ def test_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> None:
     import tileops.ops.elementwise as mod
     cls = getattr(mod, op_cls)
     if cls.__name__ == "ClampScalarFwdOp":
-        op = cls(input=(1024,), dtype=torch.float16, **kwargs)
+        op = cls(input=(1024,), **kwargs)
     else:
-        op = cls(N_total=1024, dtype=torch.float16, **kwargs)
+        op = cls(N_total=1024, **kwargs)
     x = torch.randn(1024, device="cuda", dtype=torch.float32)
     with pytest.raises(ValueError, match="dtype"):
         op(x)
@@ -479,7 +479,7 @@ def test_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> None:
     """
     import tileops.ops.elementwise as mod
     cls = getattr(mod, op_cls)
-    op = cls(N_total=1024, dtype=torch.float16, **kwargs)
+    op = cls(N_total=1024, **kwargs)
     x = torch.randn(512, device="cuda", dtype=torch.float16)
     with pytest.raises(ValueError, match="elements"):
         op(x)
@@ -493,7 +493,7 @@ def test_masked_fill_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> N
     """MaskedFillFwdOp forward() must raise ValueError when input dtype mismatches."""
     import tileops.ops.elementwise as mod
     cls = getattr(mod, op_cls)
-    op = cls(input=(1024,), mask=(1024,), dtype=torch.float16, **kwargs)
+    op = cls(input=(1024,), mask=(1024,), **kwargs)
     x = torch.randn(1024, device="cuda", dtype=torch.float32)
     mask = torch.ones(1024, device="cuda", dtype=torch.bool)
     with pytest.raises(ValueError, match="dtype"):
@@ -508,7 +508,7 @@ def test_masked_fill_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> N
     """MaskedFillFwdOp forward() must raise ValueError when input shape mismatches."""
     import tileops.ops.elementwise as mod
     cls = getattr(mod, op_cls)
-    op = cls(input=(1024,), mask=(1024,), dtype=torch.float16, **kwargs)
+    op = cls(input=(1024,), mask=(1024,), **kwargs)
     x = torch.randn(512, device="cuda", dtype=torch.float16)
     mask = torch.ones(512, device="cuda", dtype=torch.bool)
     with pytest.raises(ValueError, match="input.shape"):
@@ -520,19 +520,19 @@ def test_masked_fill_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> N
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("make_op", [
-    pytest.param(lambda: EluFwdOp(N_total=1024, dtype=torch.float16, alpha=1e6),
+    pytest.param(lambda: EluFwdOp(N_total=1024, alpha=1e6),
                  id="elu-alpha"),
-    pytest.param(lambda: HardtanhFwdOp(N_total=1024, dtype=torch.float16, min_val=1e6),
+    pytest.param(lambda: HardtanhFwdOp(N_total=1024, min_val=1e6),
                  id="hardtanh-min_val"),
-    pytest.param(lambda: HardtanhFwdOp(N_total=1024, dtype=torch.float16, max_val=1e6),
+    pytest.param(lambda: HardtanhFwdOp(N_total=1024, max_val=1e6),
                  id="hardtanh-max_val"),
-    pytest.param(lambda: SoftplusFwdOp(N_total=1024, dtype=torch.float16, beta=1e6),
+    pytest.param(lambda: SoftplusFwdOp(N_total=1024, beta=1e6),
                  id="softplus-beta"),
-    pytest.param(lambda: SoftplusFwdOp(N_total=1024, dtype=torch.float16, threshold=1e6),
+    pytest.param(lambda: SoftplusFwdOp(N_total=1024, threshold=1e6),
                  id="softplus-threshold"),
-    pytest.param(lambda: ClampScalarFwdOp(input=(1024,), min=1e6, dtype=torch.float16),
+    pytest.param(lambda: ClampScalarFwdOp(input=(1024,), min=1e6),
                  id="clamp-min"),
-    pytest.param(lambda: ClampScalarFwdOp(input=(1024,), max=1e6, dtype=torch.float16),
+    pytest.param(lambda: ClampScalarFwdOp(input=(1024,), max=1e6),
                  id="clamp-max"),
 ])
 def test_scalar_param_rejects_unrepresentable(make_op) -> None:
@@ -545,7 +545,7 @@ def test_scalar_param_rejects_unrepresentable(make_op) -> None:
 def test_masked_fill_forward_rejects_cpu_mask() -> None:
     """MaskedFillFwdOp forward() must raise ValueError when mask is not on CUDA."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
-    op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=-100.0, dtype=torch.float16)
+    op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=-100.0)
     x = torch.randn(1024, device="cuda", dtype=torch.float16)
     mask = torch.ones(1024, dtype=torch.bool)  # CPU mask
     with pytest.raises(ValueError, match="Mask must be a CUDA tensor"):
@@ -556,7 +556,7 @@ def test_masked_fill_forward_rejects_cpu_mask() -> None:
 def test_masked_fill_forward_rejects_non_bool_mask() -> None:
     """MaskedFillFwdOp forward() must raise ValueError when mask dtype is not bool."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
-    op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=-100.0, dtype=torch.float16)
+    op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=-100.0)
     x = torch.randn(1024, device="cuda", dtype=torch.float16)
     mask = torch.ones(1024, device="cuda", dtype=torch.float32)  # wrong dtype
     with pytest.raises(ValueError, match="mask.dtype"):
@@ -567,7 +567,7 @@ def test_masked_fill_forward_rejects_non_bool_mask() -> None:
 def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
     """MaskedFillFwdOp forward() must raise ValueError when mask numel mismatches."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
-    op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=-100.0, dtype=torch.float16)
+    op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=-100.0)
     x = torch.randn(1024, device="cuda", dtype=torch.float16)
     mask = torch.ones(512, device="cuda", dtype=torch.bool)  # wrong shape
     with pytest.raises(ValueError, match="mask.shape"):
@@ -602,7 +602,7 @@ def test_masked_fill_int_dtypes(dtype: torch.dtype) -> None:
     x, mask = _masked_fill_int_inputs(n_total, dtype)
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(
-        input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype,
+        input=(n_total,), mask=(n_total,), value=fill_value,
     )
     out = op(x, mask)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
@@ -617,7 +617,7 @@ def test_masked_fill_uint8_wraps_negative_int() -> None:
     x, mask = _masked_fill_int_inputs(n_total, torch.uint8)
     ref = x.masked_fill(mask, -1)
     op = MaskedFillScalarFwdOp(
-        input=(n_total,), mask=(n_total,), value=-1, dtype=torch.uint8,
+        input=(n_total,), mask=(n_total,), value=-1,
     )
     torch.testing.assert_close(op(x, mask), ref, atol=0, rtol=0)
 
@@ -631,7 +631,7 @@ def test_masked_fill_int_truncates_fractional_float() -> None:
     x, mask = _masked_fill_int_inputs(n_total, torch.int32)
     ref = x.masked_fill(mask, 1.5)
     op = MaskedFillScalarFwdOp(
-        input=(n_total,), mask=(n_total,), value=1.5, dtype=torch.int32,
+        input=(n_total,), mask=(n_total,), value=1.5,
     )
     torch.testing.assert_close(op(x, mask), ref, atol=0, rtol=0)
 
@@ -647,7 +647,7 @@ def test_masked_fill_bool(fill_value) -> None:
     mask = torch.randint(0, 2, (n_total,), device="cuda").bool()
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(
-        input=(n_total,), mask=(n_total,), value=fill_value, dtype=torch.bool,
+        input=(n_total,), mask=(n_total,), value=fill_value,
     )
     out = op(x, mask)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)
@@ -668,7 +668,7 @@ def test_masked_fill_float_nonfinite(dtype: torch.dtype, fill_value: float) -> N
     mask = torch.randint(0, 2, (n_total,), device="cuda").bool()
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(
-        input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype,
+        input=(n_total,), mask=(n_total,), value=fill_value,
     )
     out = op(x, mask)
     torch.testing.assert_close(out, ref, atol=0, rtol=0, equal_nan=True)
@@ -703,7 +703,7 @@ def test_masked_fill_rejects_when_pytorch_rejects(
 
     with pytest.raises(Exception):  # noqa: B017
         MaskedFillScalarFwdOp(
-            input=(1024,), mask=(1024,), value=fill_value, dtype=dtype,
+            input=(1024,), mask=(1024,), value=fill_value,
         )
 
 
@@ -712,7 +712,7 @@ def test_elu_rejects_infinite_alpha() -> None:
     """EluFwdOp must reject infinite alpha."""
     from tileops.ops.elementwise import EluFwdOp
     with pytest.raises(ValueError, match="finite"):
-        EluFwdOp(N_total=1024, dtype=torch.float32, alpha=float("inf"))
+        EluFwdOp(N_total=1024, alpha=float("inf"))
 
 
 @pytest.mark.smoke
@@ -720,7 +720,7 @@ def test_softplus_rejects_non_numeric_beta() -> None:
     """SoftplusFwdOp must reject non-numeric beta."""
     from tileops.ops.elementwise import SoftplusFwdOp
     with pytest.raises(TypeError, match="int/float"):
-        SoftplusFwdOp(N_total=1024, dtype=torch.float32, beta="bad")
+        SoftplusFwdOp(N_total=1024, beta="bad")
 
 
 if __name__ == "__main__":

@@ -43,7 +43,7 @@ def _construct_inplace_op(mod, op_name: str, n_total: int, dtype: torch.dtype, i
     """Build an instance with the manifest-spec construction signature."""
     cls = getattr(mod, op_name)
     if op_name in _INPLACE_PARAM_FREE_OPS:
-        return cls(N_total=n_total, dtype=dtype, inplace=inplace)
+        return cls(N_total=n_total, inplace=inplace)
     return cls(n_total, dtype, inplace=inplace)
 
 
@@ -97,7 +97,7 @@ def test_nan_to_num_canonical_kwarg_names() -> None:
     import tileops.ops.elementwise as mod
 
     op = mod.NanToNumFwdOp(
-        N_total=8, dtype=torch.float16, nan=0.0, posinf=1.0, neginf=-1.0,
+        N_total=8, nan=0.0, posinf=1.0, neginf=-1.0,
     )
     assert op.nan == 0.0
     assert op.posinf == 1.0
@@ -161,7 +161,7 @@ def test_gelu_approximate_validation() -> None:
     import tileops.ops.elementwise as mod
 
     with pytest.raises(ValueError, match="approximate"):
-        mod.GeluFwdOp(N_total=8, dtype=torch.float16, approximate="invalid")
+        mod.GeluFwdOp(N_total=8, approximate="invalid")
 
 
 @pytest.mark.smoke
@@ -178,7 +178,7 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
 
     n_total = 128
     dtype = torch.float16
-    op = mod.GeluFwdOp(N_total=n_total, dtype=dtype, approximate=approximate)
+    op = mod.GeluFwdOp(N_total=n_total, approximate=approximate)
     x = torch.randn(n_total, dtype=dtype, device="cuda")
     y = op(x)
     expected = torch.nn.functional.gelu(x, approximate=approximate)

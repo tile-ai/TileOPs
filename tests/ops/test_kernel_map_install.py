@@ -33,7 +33,7 @@ def test_install_kernel_map_user_supplied_incompatible_raises_valueerror() -> No
     import tileops.ops.elementwise as mod
 
     cls = mod.ReluFwdOp
-    inst = cls(N_total=8, dtype=torch.float16)
+    inst = cls(N_total=8)
     (key, default_kernel_cls), = inst.default_kernel_map.items()
     incompatible_archs = _make_incompatible_arch_list()
 
@@ -41,7 +41,7 @@ def test_install_kernel_map_user_supplied_incompatible_raises_valueerror() -> No
         supported_archs = incompatible_archs
 
     with pytest.raises(ValueError, match="not supported on architecture"):
-        cls(N_total=8, dtype=torch.float16, kernel_map={key: IncompatibleKernel})
+        cls(N_total=8, kernel_map={key: IncompatibleKernel})
 
 
 @pytest.mark.smoke
@@ -86,14 +86,14 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     n_total = 128
     dtype = torch.float16
 
-    baseline = cls(N_total=n_total, dtype=dtype)
+    baseline = cls(N_total=n_total)
     (key, default_kernel_cls), = baseline.default_kernel_map.items()
 
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         """Subclass marker; identical behavior, distinct identity."""
 
     overridden = cls(
-        N_total=n_total, dtype=dtype, kernel_map={key: MarkerKernel},
+        N_total=n_total, kernel_map={key: MarkerKernel},
     )
     assert isinstance(overridden.kernel, MarkerKernel)
 
@@ -118,13 +118,13 @@ def test_install_kernel_map_supported_archs_none() -> None:
     import tileops.ops.elementwise as mod
 
     cls = mod.ReluFwdOp
-    inst = cls(N_total=8, dtype=torch.float16)
+    inst = cls(N_total=8)
     (key, default_kernel_cls), = inst.default_kernel_map.items()
 
     class UnrestrictedKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = None
 
-    overridden = cls(N_total=8, dtype=torch.float16, kernel_map={key: UnrestrictedKernel})
+    overridden = cls(N_total=8, kernel_map={key: UnrestrictedKernel})
     assert overridden.kernel_map[key] is UnrestrictedKernel
 
 

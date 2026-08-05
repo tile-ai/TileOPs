@@ -51,7 +51,7 @@ class LogicalAndFixture(FixtureBase):
 def test_logical_and_op(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalTest(n_total, dtype, torch.logical_and)
     shape = (n_total,)
-    op = LogicalAndFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = LogicalAndFwdOp(a_shape=shape, b_shape=shape)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -72,7 +72,7 @@ class LogicalOrFixture(FixtureBase):
 def test_logical_or_op(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalTest(n_total, dtype, torch.logical_or)
     shape = (n_total,)
-    op = LogicalOrFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = LogicalOrFwdOp(a_shape=shape, b_shape=shape)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -109,7 +109,7 @@ def test_logical_broadcast(
     dtype = torch.float16
     a = (torch.randn(*a_shape, dtype=dtype, device="cuda") > 0).to(dtype)
     b = (torch.randn(*b_shape, dtype=dtype, device="cuda") > 0).to(dtype)
-    op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
+    op = op_cls(a_shape=a_shape, b_shape=b_shape)
     ref = ref_fn(a.bool(), b.bool())
     with torch.no_grad():
         out = op(a, b)
@@ -123,7 +123,7 @@ def test_logical_and_bool_broadcast() -> None:
     b_shape = (1, 1, 768)
     a = torch.randint(0, 2, a_shape, device="cuda").to(torch.bool)
     b = torch.randint(0, 2, b_shape, device="cuda").to(torch.bool)
-    op = LogicalAndFwdOp(a_shape=a_shape, b_shape=b_shape, dtype=torch.bool)
+    op = LogicalAndFwdOp(a_shape=a_shape, b_shape=b_shape)
     ref = torch.logical_and(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -161,7 +161,7 @@ class LogicalNotTest(LogicalNotWorkload, TestBase):
 @LogicalFixture
 def test_logical_not(n_total: int, dtype: torch.dtype) -> None:
     test = LogicalNotTest(n_total, dtype)
-    op = LogicalNotFwdOp(N_total=n_total, dtype=dtype)
+    op = LogicalNotFwdOp(N_total=n_total)
     test.check(op, *test.gen_inputs(), compare=exact_compare)
 
 
@@ -223,7 +223,7 @@ def test_logical_int_bool_matrix(
         b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
     else:
         a, b = _gen_int_logical_inputs(n, dtype)
-    op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = op_cls(a_shape=shape, b_shape=shape)
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)

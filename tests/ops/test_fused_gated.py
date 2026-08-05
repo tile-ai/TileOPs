@@ -53,7 +53,7 @@ def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @SiluAndMulFixture
 def test_silu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = SiluAndMulTest(m, n, dtype)
-    op = SiluAndMulFwdOp(M=m, N=n, dtype=dtype)
+    op = SiluAndMulFwdOp(M=m, N=n)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -106,7 +106,7 @@ class GeluAndMulTest(GatedRandnWorkload, TestBase):
 @GeluAndMulFixture
 def test_gelu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = GeluAndMulTest(m, n, dtype)
-    op = GeluAndMulFwdOp(M=m, N=n, dtype=dtype)
+    op = GeluAndMulFwdOp(M=m, N=n)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -137,7 +137,7 @@ class GeluTanhAndMulTest(GatedRandnWorkload, TestBase):
 @GeluTanhAndMulFixture
 def test_gelu_tanh_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = GeluTanhAndMulTest(m, n, dtype)
-    op = GeluTanhAndMulFwdOp(M=m, N=n, dtype=dtype)
+    op = GeluTanhAndMulFwdOp(M=m, N=n)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
@@ -146,13 +146,13 @@ def test_gelu_tanh_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
 def test_fused_gated_rejects_integer_dtype() -> None:
     """Fused gated ops are float-only and must reject integer dtypes early."""
     with pytest.raises(ValueError, match="does not support dtype"):
-        GeluAndMulFwdOp(M=16, N=16, dtype=torch.int32)
+        GeluAndMulFwdOp(M=16, N=16)
 
 
 @pytest.mark.smoke
 def test_fused_gated_rejects_runtime_dtype_mismatch() -> None:
     """Runtime inputs should match the construction-time dtype contract."""
-    op = SiluAndMulFwdOp(M=16, N=8, dtype=torch.float16)
+    op = SiluAndMulFwdOp(M=16, N=8)
     x = torch.randn(16, 16, device="cuda", dtype=torch.float32)
     with pytest.raises(ValueError, match="Expected x.dtype"):
         op(x)

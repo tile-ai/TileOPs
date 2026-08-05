@@ -88,7 +88,7 @@ def test_binary_op_bidirectional_broadcast(
     b_shape = (1, 4)
     a = gen_a(a_shape, dtype)
     b = gen_b(b_shape, dtype)
-    op = cls(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
+    op = cls(a_shape=a_shape, b_shape=b_shape)
     out = op(a, b)
     ref = ref_fn(a, b)
     assert tuple(out.shape) == (3, 4), (

@@ -210,7 +210,7 @@ for _cls in [
 
 # --- Unary ops: bool output (4 ops) ---
 for _cls in [LogicalNotFwdOp, IsnanFwdOp, IsinfFwdOp, IsfiniteFwdOp]:
-    _register_unary_custom_op(_cls, output_dtype_override=_torch.bool)
+    _register_unary_custom_op(_cls)
 
 # --- Binary ops: same-dtype output (10 + 3 = 13 ops) ---
 for _cls in [

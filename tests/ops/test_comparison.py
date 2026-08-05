@@ -50,7 +50,7 @@ class EqFixture(FixtureBase):
 def test_eq_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.eq)
     shape = (n_total,)
-    op = EqFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = EqFwdOp(a_shape=shape, b_shape=shape)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -71,7 +71,7 @@ class NeFixture(FixtureBase):
 def test_ne_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.ne)
     shape = (n_total,)
-    op = NeFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = NeFwdOp(a_shape=shape, b_shape=shape)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -92,7 +92,7 @@ class GtFixture(FixtureBase):
 def test_gt_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.gt)
     shape = (n_total,)
-    op = GtFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = GtFwdOp(a_shape=shape, b_shape=shape)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -113,7 +113,7 @@ class LtFixture(FixtureBase):
 def test_lt_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.lt)
     shape = (n_total,)
-    op = LtFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = LtFwdOp(a_shape=shape, b_shape=shape)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -134,7 +134,7 @@ class GeFixture(FixtureBase):
 def test_ge_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.ge)
     shape = (n_total,)
-    op = GeFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = GeFwdOp(a_shape=shape, b_shape=shape)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -155,7 +155,7 @@ class LeFixture(FixtureBase):
 def test_le_op(n_total: int, dtype: torch.dtype) -> None:
     test = ComparisonTest(n_total, dtype, torch.le)
     shape = (n_total,)
-    op = LeFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = LeFwdOp(a_shape=shape, b_shape=shape)
     test.check(op, *test.gen_inputs(), compare=_bool_compare)
 
 
@@ -196,7 +196,7 @@ def test_comparison_broadcast(
     dtype = torch.float16
     a = torch.randn(*a_shape, dtype=dtype, device="cuda")
     b = torch.randn(*b_shape, dtype=dtype, device="cuda")
-    op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
+    op = op_cls(a_shape=a_shape, b_shape=b_shape)
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -222,7 +222,7 @@ def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
     # Make some elements differ
     b[::2] = torch.randn(n_total // 2, dtype=dtype, device="cuda")
     shape = (n_total,)
-    op = EqFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = EqFwdOp(a_shape=shape, b_shape=shape)
     ref = torch.eq(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -275,7 +275,7 @@ def test_comparison_integer_dtype_eq(dtype: torch.dtype) -> None:
     n = 4_096
     shape = (n,)
     a, b = _gen_int_inputs(n, dtype)
-    op = EqFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
+    op = EqFwdOp(a_shape=shape, b_shape=shape)
     ref = torch.eq(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -301,7 +301,7 @@ def test_comparison_op_int32(op_cls, ref_fn) -> None:
     n = 4_096
     shape = (n,)
     a, b = _gen_int_inputs(n, torch.int32)
-    op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.int32)
+    op = op_cls(a_shape=shape, b_shape=shape)
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -324,7 +324,7 @@ def test_comparison_bool_dtype(op_cls, ref_fn) -> None:
     shape = (n,)
     a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
     b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
-    op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.bool)
+    op = op_cls(a_shape=shape, b_shape=shape)
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
@@ -359,7 +359,7 @@ def test_comparison_rejects_unsupported_dtype(
     """Comparison ops reject dtypes outside the supported set (e.g. complex)."""
     shape = (16,)
     with pytest.raises(ValueError, match="does not support dtype"):
-        op_cls(a_shape=shape, b_shape=shape, dtype=dtype)
+        op_cls(a_shape=shape, b_shape=shape)
 
 
 if __name__ == "__main__":

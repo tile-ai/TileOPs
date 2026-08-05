@@ -80,8 +80,7 @@ class PreluFwdOp(Op):
     ) -> torch.Tensor:
         if not input.is_cuda:
             raise ValueError("Input must be a CUDA tensor")
-        if input.dtype != self.dtype:
-            raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
+        self._validate_dtypes(input, weight)
         if tuple(input.shape) != tuple(self.shape):
             raise ValueError(
                 f"Expected input.shape {tuple(self.shape)}, got {tuple(input.shape)}"
@@ -91,9 +90,9 @@ class PreluFwdOp(Op):
         # boundary instead of corrupting the kernel.
         if not weight.is_cuda:
             raise ValueError("Weight must be a CUDA tensor")
-        if weight.dtype != self.dtype:
+        if weight.dtype != input.dtype:
             raise ValueError(
-                f"Expected weight.dtype {self.dtype}, got {weight.dtype}"
+                f"Expected weight.dtype {input.dtype}, got {weight.dtype}"
             )
         if weight.numel() != self.num_channels:
             raise ValueError(

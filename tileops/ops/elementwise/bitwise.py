@@ -18,7 +18,6 @@ from ._base import BinaryOp, KernelEntry, UnaryOp, resolve_output_dtype
 class _BoolStorageBitwiseBinaryOp(BinaryOp):
     """Binary bitwise op with a uint8-backed fast path for bool tensors."""
 
-    _bool_storage = False
     bool_storage_kernel_cls = None
 
     @property

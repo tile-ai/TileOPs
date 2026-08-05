@@ -96,7 +96,7 @@ def _repeat_values(values: list[float], n: int, dtype: torch.dtype) -> torch.Ten
 def _make_math_test(n_total, dtype, gen_fn, ref_fn, op_cls):
     """Build test, instantiate op, and run check."""
     test = UnaryMathTest(n_total, dtype, gen_fn=gen_fn, ref_fn=ref_fn)
-    op = op_cls(N_total=n_total, dtype=dtype)
+    op = op_cls(N_total=n_total)
     test.check(op, *test.gen_inputs(), **_get_tolerances(dtype))
 
 
@@ -242,7 +242,7 @@ def test_math_ops_reject_non_float_dtype() -> None:
 )
 def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
     n_total = 1024
-    op = op_cls(N_total=n_total, dtype=int_dtype)
+    op = op_cls(N_total=n_total)
     if int_dtype == torch.uint8:
         x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
     else:
@@ -257,7 +257,7 @@ def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
 def test_round_int_identity_with_decimals() -> None:
     """RoundFwdOp's decimals!=0 path also short-circuits on integer inputs."""
     n_total = 256
-    op = RoundFwdOp(N_total=n_total, dtype=torch.int32)
+    op = RoundFwdOp(N_total=n_total)
     x = torch.randint(-100, 100, (n_total,), device="cuda", dtype=torch.int32)
     y = op.forward(x, decimals=2)
     assert torch.equal(y, x)
@@ -287,7 +287,7 @@ _INT_DTYPES = [
 @pytest.mark.parametrize("int_dtype", _INT_DTYPES)
 def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
     n_total = 1024
-    op = op_cls(N_total=n_total, dtype=int_dtype)
+    op = op_cls(N_total=n_total)
     if int_dtype == torch.uint8:
         x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
     else:
@@ -311,7 +311,7 @@ def test_predicate_non_float_constant(op_cls, expected, non_float_dtype) -> None
     """Predicate ops return constant bool on every non-float dtype the
     manifest declares (integer dtypes plus ``torch.bool``)."""
     n_total = 256
-    op = op_cls(N_total=n_total, dtype=non_float_dtype)
+    op = op_cls(N_total=n_total)
     if non_float_dtype == torch.bool:
         x = torch.randint(0, 2, (n_total,), device="cuda", dtype=torch.bool)
     elif non_float_dtype == torch.uint8:
@@ -437,7 +437,7 @@ def test_round_decimals(dtype: torch.dtype, decimals: int) -> None:
     """
     n_total = 4096
     x = torch.randn(n_total, device="cuda", dtype=dtype) * 10.0
-    op = RoundFwdOp(N_total=n_total, dtype=dtype)
+    op = RoundFwdOp(N_total=n_total)
     out = op(x, decimals=decimals)
     ref = torch.round(x.float(), decimals=decimals).to(dtype)
     # The decimals path runs entirely in fp32 internally and only down-casts
@@ -457,7 +457,7 @@ def test_round_decimals_no_overflow_low_precision(dtype: torch.dtype) -> None:
     """
     n_total = 1
     x = torch.tensor([100.0], device="cuda", dtype=dtype)
-    op = RoundFwdOp(N_total=n_total, dtype=dtype)
+    op = RoundFwdOp(N_total=n_total)
     out = op(x, decimals=4)
     ref = torch.round(x.float(), decimals=4).to(dtype)
     assert torch.isfinite(out).all(), f"output contains non-finite values: {out}"
@@ -469,7 +469,7 @@ def test_round_decimals_default_is_zero() -> None:
     """Calling RoundFwdOp without ``decimals`` must round to nearest integer."""
     n_total = 1024
     x = torch.randn(n_total, device="cuda", dtype=torch.float32) * 5.0
-    op = RoundFwdOp(N_total=n_total, dtype=torch.float32)
+    op = RoundFwdOp(N_total=n_total)
     out = op(x)
     ref = torch.round(x)
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5)
@@ -483,7 +483,7 @@ def test_round_decimals_validates_input() -> None:
     short-circuit through the op-layer fp32 decomposition because the path
     bypassed ``UnaryOp.forward``'s validation.
     """
-    op = RoundFwdOp(N_total=2, dtype=torch.float32)
+    op = RoundFwdOp(N_total=2)
     # CPU tensor must raise (matches decimals=0 path).
     cpu_x = torch.ones(2, dtype=torch.float32)
     with pytest.raises(ValueError, match="CUDA tensor"):
@@ -522,7 +522,7 @@ def test_reciprocal_int_promotes_to_float32(dtype: torch.dtype) -> None:
     else:
         x = torch.randint(-1000, 1001, (n_total,), device="cuda", dtype=dtype)
         x = torch.where(x == 0, torch.ones_like(x), x)
-    op = ReciprocalFwdOp(N_total=n_total, dtype=dtype)
+    op = ReciprocalFwdOp(N_total=n_total)
     assert op.output_dtype == torch.float32, (
         f"ReciprocalFwdOp({dtype}).output_dtype must be float32, got {op.output_dtype}"
     )
@@ -554,7 +554,7 @@ def test_reciprocal_int_metadata_preserves_input_dtype(
     bandwidth math) see the real workload.
     """
     n_total = 4
-    op = ReciprocalFwdOp(N_total=n_total, dtype=dtype)
+    op = ReciprocalFwdOp(N_total=n_total)
     assert op.dtype == dtype, (
         f"op.dtype must keep declared input dtype, got {op.dtype}"
     )
@@ -577,7 +577,7 @@ def test_reciprocal_int_input_validation() -> None:
     raise rather than silently bypass promotion: the op's contract is
     ``input.dtype == declared dtype``.
     """
-    op = ReciprocalFwdOp(N_total=4, dtype=torch.int32)
+    op = ReciprocalFwdOp(N_total=4)
     wrong = torch.ones(4, device="cuda", dtype=torch.float32)
     with pytest.raises(ValueError, match="dtype"):
         op(wrong)

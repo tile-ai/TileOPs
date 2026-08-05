@@ -23,7 +23,7 @@ def test_where_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
     shape = (4, 8)
     with pytest.raises((ValueError, TypeError)):
         WhereFwdOp(
-            condition=shape, input=shape, other=shape, dtype=bad_dtype,
+            condition=shape, input=shape, other=shape,
         )
 
 
@@ -41,7 +41,7 @@ def test_where_accepts_manifest_dtypes(dtype: torch.dtype) -> None:
     cond = torch.randint(0, 2, shape, device="cuda").bool()
     inp = torch.randn(shape, device="cuda", dtype=dtype)
     other = torch.randn(shape, device="cuda", dtype=dtype)
-    op = WhereFwdOp(condition=shape, input=shape, other=shape, dtype=dtype)
+    op = WhereFwdOp(condition=shape, input=shape, other=shape)
     out = op(cond, inp, other)
     ref = torch.where(cond, inp, other)
     torch.testing.assert_close(out, ref, atol=0, rtol=0)

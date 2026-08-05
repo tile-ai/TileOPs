@@ -162,9 +162,9 @@ class LerpFwdOp(BinaryOp):
         self._weight = weight
         super().__init__(a_shape, b_shape, kernel_map=kernel_map, tune=tune)
 
-    def _build_kernel_instance(self, tune):
+    def _build_kernel_instance(self, tune, dtype):
         return self.kernel_map[self._op_name](
-            self.a_shape, self.b_shape, self.dtype, tune=tune, weight=self._weight,
+            self.a_shape, self.b_shape, dtype, tune=tune, weight=self._weight,
         )
 
 
@@ -281,9 +281,9 @@ class LerpTensorFwdOp(Op):
             ("end", end, self.end_shape),
             ("weight", weight, self.weight_shape),
         ]:
-            if t.dtype != self.dtype:
+            if t.dtype != input.dtype:
                 raise ValueError(
-                    f"Expected {name}.dtype {self.dtype}, got {t.dtype}"
+                    f"Expected {name}.dtype {input.dtype}, got {t.dtype}"
                 )
             if tuple(t.shape) != expected:
                 raise ValueError(

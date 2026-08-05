@@ -132,12 +132,11 @@ def _validate_scalar_param_repr(
         )
 
 
-def _register_unary_custom_op(op_cls, output_dtype_override=None):
+def _register_unary_custom_op(op_cls):
     """Register a unary elementwise op for torch.compile.
 
     Args:
         op_cls: The Op subclass to register (must have ``_op_name``).
-        output_dtype_override: If set, the output dtype (e.g. torch.bool for predicates).
     """
     op_name = op_cls._op_name
 
@@ -148,8 +147,11 @@ def _register_unary_custom_op(op_cls, output_dtype_override=None):
 
     @_wrapped.register_fake
     def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-        out_dtype = output_dtype_override if output_dtype_override is not None else x.dtype
-        return torch.empty_like(x, dtype=out_dtype)
+        # Manifest-driven: covers a predicate's bool output and an integer
+        # input promoted to float32 alike, without a per-registration override.
+        return torch.empty_like(
+            x, dtype=resolve_output_dtype(op_cls.__name__, x.dtype),
+        )
 
     op_cls._wrapped = _wrapped
 
