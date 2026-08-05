@@ -70,8 +70,9 @@ class ClampFwdOp(_PerDtypeKernels, _ClampTensorBase):
         self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
-        kernel = self.kernel_map["clamp_tensor"](
-            self.N_total, dtype,
+        impl, ctor_dtype = self._selected_kernel_cls("clamp_tensor").specialize(dtype)
+        kernel = impl(
+            self.N_total, ctor_dtype,
             has_min=self.min_shape is not None,
             has_max=self.max_shape is not None,
             tune=self.tune,
@@ -79,7 +80,7 @@ class ClampFwdOp(_PerDtypeKernels, _ClampTensorBase):
 
         return KernelEntry(
             kernel=kernel,
-            compute_dtype=dtype,
+            compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
@@ -172,13 +173,14 @@ class ClampMinFwdOp(_PerDtypeKernels, _ClampTensorBase):
         self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
-        kernel = self.kernel_map["clamp_tensor"](
-            self.N_total, dtype, has_min=True, has_max=False, tune=self.tune,
+        impl, ctor_dtype = self._selected_kernel_cls("clamp_tensor").specialize(dtype)
+        kernel = impl(
+            self.N_total, ctor_dtype, has_min=True, has_max=False, tune=self.tune,
         )
 
         return KernelEntry(
             kernel=kernel,
-            compute_dtype=dtype,
+            compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
@@ -246,13 +248,14 @@ class ClampMaxFwdOp(_PerDtypeKernels, _ClampTensorBase):
         self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
-        kernel = self.kernel_map["clamp_tensor"](
-            self.N_total, dtype, has_min=False, has_max=True, tune=self.tune,
+        impl, ctor_dtype = self._selected_kernel_cls("clamp_tensor").specialize(dtype)
+        kernel = impl(
+            self.N_total, ctor_dtype, has_min=False, has_max=True, tune=self.tune,
         )
 
         return KernelEntry(
             kernel=kernel,
-            compute_dtype=dtype,
+            compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
@@ -332,14 +335,15 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
             _validate_scalar_param_repr("min", self.min, dtype, self._op_name)
         if self.max is not None:
             _validate_scalar_param_repr("max", self.max, dtype, self._op_name)
-        kernel = self.kernel_map["clamp"](
-            self.N_total, dtype, min_val=self.min, max_val=self.max,
+        impl, ctor_dtype = self._selected_kernel_cls("clamp").specialize(dtype)
+        kernel = impl(
+            self.N_total, ctor_dtype, min_val=self.min, max_val=self.max,
             tune=self.tune,
         )
 
         return KernelEntry(
             kernel=kernel,
-            compute_dtype=dtype,
+            compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 

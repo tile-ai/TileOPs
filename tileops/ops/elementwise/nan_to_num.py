@@ -86,13 +86,14 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
             neginf = self.neginf
         # Replacement values are positional; the kernel constructor's
         # parameter naming is encapsulated below the Op layer.
-        kernel = self.kernel_map["nan_to_num"](
-            self.N_total, dtype, self.nan, posinf, neginf, tune=self.tune,
+        impl, ctor_dtype = self._selected_kernel_cls("nan_to_num").specialize(dtype)
+        kernel = impl(
+            self.N_total, ctor_dtype, self.nan, posinf, neginf, tune=self.tune,
         )
 
         return KernelEntry(
             kernel=kernel,
-            compute_dtype=dtype,
+            compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 

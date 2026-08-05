@@ -986,8 +986,9 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         return flops, int(self.total_memory)
 
     def _validate_dtype(self, dtype: torch.dtype) -> None:
-        supported = self._selected_kernel_cls().SUPPORTED_DTYPES
-        if supported is not None and dtype not in supported:
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
+        supported = impl.SUPPORTED_DTYPES
+        if supported is not None and ctor_dtype not in supported:
             names = ", ".join(str(dt) for dt in supported)
             raise ValueError(
                 f"{self._op_name} does not support dtype {dtype}. "
@@ -997,9 +998,10 @@ class FusedGatedOp(_PerDtypeKernels, Op):
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         M, N = shape
         self._validate_dtype(dtype)
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         return KernelEntry(
-            kernel=self.kernel_map[self._op_name](M, N, dtype, tune=self.tune),
-            compute_dtype=dtype,
+            kernel=impl(M, N, ctor_dtype, tune=self.tune),
+            compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
@@ -1135,11 +1137,10 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
             value = getattr(self, name)
             _validate_scalar_param_repr(name, value, dtype, self._op_name)
             kwargs[name] = value
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         return KernelEntry(
-            kernel=self.kernel_map[self._op_name](
-                self.N_total, dtype, tune=self.tune, **kwargs,
-            ),
-            compute_dtype=dtype,
+            kernel=impl(self.N_total, ctor_dtype, tune=self.tune, **kwargs),
+            compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 

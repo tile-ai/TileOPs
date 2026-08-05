@@ -239,13 +239,12 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
                 f"LerpTensorFwdOp does not support dtype {dtype}. "
                 f"Supported: [{names}]"
             )
-        kernel = self.kernel_map[self._op_name](
-            self.N_total, dtype, tune=self.tune,
-        )
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
+        kernel = impl(self.N_total, ctor_dtype, tune=self.tune)
 
         return KernelEntry(
             kernel=kernel,
-            compute_dtype=dtype,
+            compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 

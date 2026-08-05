@@ -266,3 +266,46 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
     entry = op._entries[torch.int32]
     assert isinstance(entry.kernel, NativeIntFloor), "the override was bypassed"
     assert entry.kernel.dtype == torch.int32
+
+
+# Rounds of review kept surfacing the same shape: an op deciding something on the
+# backend's behalf instead of asking it. The instances were removable one at a
+# time; the pattern was not, until stated as an invariant.
+
+
+@pytest.mark.smoke
+def test_no_build_entry_constructs_the_backend_directly():
+    """Every `_build_entry` must build what `specialize` names, nothing else.
+
+    Indexing `kernel_map` inside `_build_entry` skips the backend's answer about
+    which implementation and construction dtype serve this dtype, so an override
+    that differs from the family default is silently discarded. Ops that
+    generate a tensor from their arguments have no input dtype to specialize on
+    and are exempt.
+    """
+    import ast
+    import pathlib
+
+    import tileops.ops.elementwise as ew
+
+    exempt = {"alibi.py", "sinusoidal.py"}
+    offenders = []
+    for path in sorted(pathlib.Path(ew.__file__).parent.glob("*.py")):
+        if path.name in exempt:
+            continue
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or node.name != "_build_entry":
+                continue
+            for sub in ast.walk(node):
+                if not isinstance(sub, ast.Subscript):
+                    continue
+                value = sub.value
+                if (isinstance(value, ast.Attribute) and value.attr == "kernel_map"
+                        and isinstance(value.value, ast.Name) and value.value.id == "self"):
+                    offenders.append(f"{path.name}:{sub.lineno}")
+
+    assert not offenders, (
+        "_build_entry must construct the class specialize() returns, not index "
+        f"kernel_map directly: {offenders}"
+    )

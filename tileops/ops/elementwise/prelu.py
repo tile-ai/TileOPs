@@ -52,13 +52,14 @@ class PreluFwdOp(_PerDtypeKernels, Op):
         self._init_entries()
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
-        kernel = self.kernel_map[self._op_name](
-            self.N_total, self.num_channels, self.inner_size, dtype,
+        impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
+        kernel = impl(
+            self.N_total, self.num_channels, self.inner_size, ctor_dtype,
         )
 
         return KernelEntry(
             kernel=kernel,
-            compute_dtype=dtype,
+            compute_dtype=ctor_dtype,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
         )
 
