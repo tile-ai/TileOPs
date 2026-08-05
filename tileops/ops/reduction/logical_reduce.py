@@ -20,7 +20,7 @@ __all__ = ["AllFwdOp", "AnyFwdOp", "CountNonzeroFwdOp"]
 class AllFwdOp(_ReduceOpBase):
     """All reduction along ``dim``, returning bool.
 
-    Construction: ``AllFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N
+    Construction: ``AllFwdOp(dim=None, keepdim=False)``.  M and N
     are derived from the input tensor at forward time, and kernels are
     cached by ``(M, N)`` to avoid rebuilds.
 
@@ -90,7 +90,7 @@ class AllFwdOp(_ReduceOpBase):
 class AnyFwdOp(_ReduceOpBase):
     """Any reduction along ``dim``, returning bool.
 
-    Construction: ``AnyFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N
+    Construction: ``AnyFwdOp(dim=None, keepdim=False)``.  M and N
     are derived from the input tensor at forward time, and kernels are
     cached by ``(M, N)`` to avoid rebuilds.
 
@@ -160,7 +160,7 @@ class AnyFwdOp(_ReduceOpBase):
 class CountNonzeroFwdOp(_ReduceOpBase):
     """Count nonzero reduction along ``dim``, returning int64.
 
-    Construction: ``CountNonzeroFwdOp(dtype=..., dim=None)``.  M and N are
+    Construction: ``CountNonzeroFwdOp(dim=None)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 

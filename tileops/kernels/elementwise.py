@@ -1316,7 +1316,11 @@ class LogicalUnaryKernel(UnaryKernel):
 
 
 class _Uint8StorageUnaryKernel(UnaryKernel):
-    """Unary bool-storage kernel: public bool tensors are viewed as uint8."""
+    """Unary kernel that computes on uint8 but accepts and returns bool.
+
+    Reinterpreting bool storage as uint8 is this backend's requirement, not part
+    of the op's semantics, so the reinterpretation happens here.
+    """
 
     DEFAULT_STRATEGY = "register_copy"
     SUPPORTED_DTYPES = (torch.uint8,)
@@ -1325,9 +1329,22 @@ class _Uint8StorageUnaryKernel(UnaryKernel):
     def default_config(self) -> dict:
         return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
 
+    def forward(self, x):
+        as_bool = x.dtype == torch.bool
+        if as_bool:
+            x = x.view(torch.uint8)
+        result = super().forward(x)
+        return result.view(torch.bool) if as_bool else result
+
 
 class _Uint8StorageBinaryKernel(BinaryKernel):
-    """Binary bool-storage kernel: public bool tensors are viewed as uint8."""
+    """Binary kernel that computes on uint8 but accepts and returns bool.
+
+    Reinterpreting bool storage as uint8 is this backend's requirement, not part
+    of the op's semantics, so the reinterpretation happens here. Callers pass
+    bool tensors and get a bool result; a caller that already holds uint8 is
+    passed through unchanged.
+    """
 
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = (torch.uint8,)
@@ -1335,6 +1352,15 @@ class _Uint8StorageBinaryKernel(BinaryKernel):
     @property
     def default_config(self) -> dict:
         return {"strategy": self.strategy, "threads": 256, "num_per_thread": 16}
+
+    def forward(self, a, b):
+        as_bool = a.dtype == torch.bool
+        if as_bool:
+            a = a.view(torch.uint8)
+        if b.dtype == torch.bool:
+            b = b.view(torch.uint8)
+        result = super().forward(a, b)
+        return result.view(torch.bool) if as_bool else result
 
 
 class ReluFwdKernel(FloatUnaryKernel):
@@ -3338,10 +3364,9 @@ class MaskedFillFwdKernel(ParametricUnaryKernel):
     """MaskedFill: out = mask ? fill_value : x.
 
     Supports the PyTorch ``Tensor.masked_fill(mask, value: Number)`` dtype
-    union of integer and floating-point input dtypes. The bool dtype path
-    is handled at the Op layer by viewing the input as uint8 and casting
-    the result back to bool, so the kernel itself only sees integer and
-    floating-point storage dtypes.
+    union of integer and floating-point input dtypes, plus bool: bool storage
+    is reinterpreted as uint8 here, because that is this backend's requirement
+    rather than part of the op's semantics.
     """
 
     _DEFAULT_THREADS = 512
@@ -3362,7 +3387,11 @@ class MaskedFillFwdKernel(ParametricUnaryKernel):
         return (self.fill_value,)
 
     def forward(self, x, mask):
-        return self._compiled_fn(x, mask)
+        as_bool = x.dtype == torch.bool
+        if as_bool:
+            x = x.view(torch.uint8)
+        result = self._compiled_fn(x, mask)
+        return result.view(torch.bool) if as_bool else result
 
 
 @functools.lru_cache(maxsize=32)
@@ -3439,9 +3468,9 @@ class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
     Computes ``out = mask ? value : x`` over flat tensors of length
     ``N_total``. The Op layer broadcasts ``input`` and ``mask`` to the
     output shape, flattens them, packs the mask as uint8, and reshapes
-    the 0-dim ``value`` to a length-1 tensor before dispatch. The bool
-    input dtype is routed through uint8 at the Op layer, so this kernel
-    only sees integer and floating-point storage dtypes.
+    the 0-dim ``value`` to a length-1 tensor before dispatch. Bool storage is
+    reinterpreted as uint8 here, being this backend's requirement rather than
+    part of the op's semantics.
     """
 
     _DEFAULT_THREADS = 512
@@ -3452,10 +3481,14 @@ class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
         return _make_masked_fill_tensor_value_kernel
 
     def forward(self, x, mask, value):
+        as_bool = x.dtype == torch.bool
+        if as_bool:
+            x = x.view(torch.uint8)
+            value = value.view(torch.uint8)
         result = self._compiled_fn(x, mask, value)
         if self._fp8_output_dtype is not None:
             result = result.to(self._fp8_output_dtype)
-        return result
+        return result.view(torch.bool) if as_bool else result
 
 
 @functools.lru_cache(maxsize=32)

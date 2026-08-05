@@ -59,22 +59,20 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
 
     def _build_entry(self, dtype: torch.dtype, *shape: int) -> KernelEntry:
         """bool runs in uint8 storage; the reinterpretation lives in the entry."""
-        supported = MaskedFillTensorValueFwdKernel.SUPPORTED_DTYPES
+        supported = self._selected_kernel_cls("masked_fill_tensor_value").SUPPORTED_DTYPES
         if dtype != torch.bool and supported is not None and dtype not in supported:
             names = ", ".join(str(dt) for dt in (torch.bool, *supported))
             raise ValueError(
                 f"{self._op_name} does not support dtype {dtype}. "
                 f"Supported: [{names}]"
             )
-        bool_storage = dtype == torch.bool
-        compute = torch.uint8 if bool_storage else dtype
+        compute = torch.uint8 if dtype == torch.bool else dtype
         return KernelEntry(
             kernel=self.kernel_map["masked_fill_tensor_value"](
                 self.N_total, compute,
             ),
             compute_dtype=compute,
             output_dtype=dtype,
-            bool_storage=bool_storage,
         )
 
     @property
@@ -95,16 +93,10 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         out_shape = self.out_shape if self.out_shape else (1,)
         entry = self._entry(input.dtype)
         x_flat = self._expand_flat(input, out_shape)
-        if entry.bool_storage:
-            x_flat = x_flat.view(torch.uint8)
         mask_b = mask if mask.dtype == torch.bool else mask.bool()
         mask_flat = self._expand_flat(mask_b, out_shape).view(torch.uint8)
         value_1d = value.contiguous().view(1)
-        if entry.bool_storage:
-            value_1d = value_1d.view(torch.uint8)
         result = entry.kernel(x_flat, mask_flat, value_1d)
-        if entry.bool_storage:
-            result = result.view(torch.bool)
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(
@@ -183,7 +175,7 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
         """The fill value is baked in, so it is checked against each dtype."""
         # bool routes through uint8 (TileLang bool codegen is unvectorized);
         # every other dtype must be one the kernel supports.
-        supported = MaskedFillFwdKernel.SUPPORTED_DTYPES
+        supported = self._selected_kernel_cls("masked_fill").SUPPORTED_DTYPES
         if dtype != torch.bool and supported is not None and dtype not in supported:
             names = ", ".join(str(dt) for dt in (torch.bool, *supported))
             raise ValueError(
@@ -194,14 +186,15 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
             "value", self.value, dtype, self._op_name,
             allow_nonfinite_float=True,
         )
-        bool_storage = dtype == torch.bool
-        compute = torch.uint8 if bool_storage else dtype
-        value = (1 if bool(self.value) else 0) if bool_storage else self.value
+        # A bool operand computes on the uint8 kernel; the kernel reinterprets
+        # the storage itself, so only the fill value needs normalizing here.
+        is_bool = dtype == torch.bool
+        compute = torch.uint8 if is_bool else dtype
+        value = (1 if bool(self.value) else 0) if is_bool else self.value
         return KernelEntry(
             kernel=self.kernel_map["masked_fill"](self.N_total, compute, value),
             compute_dtype=compute,
             output_dtype=dtype,
-            bool_storage=bool_storage,
         )
 
     @property
@@ -218,13 +211,9 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
         out_shape = self.out_shape if self.out_shape else (1,)
         entry = self._entry(input.dtype)
         x_flat = self._expand_flat(input, out_shape)
-        if entry.bool_storage:
-            x_flat = x_flat.view(torch.uint8)
         mask_b = mask if mask.dtype == torch.bool else mask.bool()
         mask_flat = self._expand_flat(mask_b, out_shape).view(torch.uint8)
         result = entry.kernel(x_flat, mask_flat)
-        if entry.bool_storage:
-            result = result.view(torch.bool)
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:

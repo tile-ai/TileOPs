@@ -586,18 +586,23 @@ class KernelEntry:
     call with a different dtype would read the earlier call's value. Each
     entry is built once and carries everything a call needs.
 
+    The fields state semantics only. How a backend represents those semantics
+    — reinterpreting bool storage as uint8, say — belongs to the kernel, not
+    here: an op that branches on a backend's representation cannot be served by
+    a second backend that represents it differently.
+
     Attributes:
         kernel: built for ``compute_dtype``.
         compute_dtype: what the kernel was specialized for. Differs from the
-            key when the op reinterprets storage — bool runs on a uint8 kernel.
+            key when the semantic dtype cannot be computed in directly — an
+            integer input computing in float32, a bool operand on a uint8
+            kernel.
         output_dtype: resolved from the manifest for the *semantic* dtype.
-        bool_storage: whether the caller's bool operands are reinterpreted.
     """
 
     kernel: Optional[Kernel]
     compute_dtype: torch.dtype
     output_dtype: torch.dtype
-    bool_storage: bool = False
 
 
 class _PerDtypeKernels:
@@ -611,13 +616,34 @@ class _PerDtypeKernels:
     A subclass supplies ``_build_entry(dtype)``. It may return extra state in
     the entry (bool operands running on a uint8 kernel, an integer input
     computing in float32); an op with no such split simply gets
-    ``compute_dtype == dtype`` and ``bool_storage=False``.
+    ``compute_dtype == dtype``.
 
-    ``self.dtype`` is bound here and nowhere else. It is metadata for
-    ``eval_roofline`` and ``total_memory`` — the dtype of the most recent
-    call — and execution must never read it: by the time a second dtype
-    arrives it no longer describes the call in flight.
+    ``self.dtype`` is metadata for ``eval_roofline`` and ``total_memory`` —
+    the element type of the most recent call — and execution must never read
+    it: by the time a second dtype arrives it no longer describes the call in
+    flight. It is bound by ``_note_call``, which is deliberately separate from
+    ``_entry``: a forward that answers without a kernel (an integer identity,
+    a decimals decomposition running in torch) is still a call, and binding
+    only inside the cache lookup would leave those paths describing the
+    previous one.
     """
+
+    def _note_call(self, dtype: torch.dtype) -> None:
+        """Record the element type this call ran with.
+
+        Every successful ``forward`` path calls this, whether or not it reached
+        a kernel.
+        """
+        self.dtype = dtype
+
+    def _selected_kernel_cls(self, slot: Optional[str] = None):
+        """The kernel class that will run, honoring a ``kernel_map`` override.
+
+        Capability questions must go to this class, never to the family default:
+        an override that supports a different dtype set is the whole point of
+        supplying one.
+        """
+        return self.kernel_map[slot if slot is not None else self._op_name]
 
     def _entry(self, dtype: torch.dtype, *shape: int) -> "KernelEntry":
         """Return the specialization for *dtype*, building it on first use.
@@ -630,7 +656,7 @@ class _PerDtypeKernels:
         if entry is None:
             entry = self._build_entry(dtype, *shape)
             self._entries[key] = entry
-        self.dtype = dtype
+        self._note_call(dtype)
         return entry
 
     def _init_entries(self) -> None:
@@ -818,7 +844,7 @@ class BinaryOp(_PerDtypeKernels, Op):
 
     def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
         """Build one specialization. Subclasses override to reinterpret storage."""
-        supported = self.kernel_cls.SUPPORTED_DTYPES
+        supported = self._selected_kernel_cls().SUPPORTED_DTYPES
         if supported is not None and dtype not in supported:
             names = ", ".join(str(dt) for dt in supported)
             raise ValueError(
@@ -952,7 +978,7 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         return flops, int(self.total_memory)
 
     def _validate_dtype(self, dtype: torch.dtype) -> None:
-        supported = self.kernel_cls.SUPPORTED_DTYPES
+        supported = self._selected_kernel_cls().SUPPORTED_DTYPES
         if supported is not None and dtype not in supported:
             names = ", ".join(str(dt) for dt in supported)
             raise ValueError(
@@ -1155,9 +1181,8 @@ class _BoolOutputBinaryOp(BinaryOp):
         return kernel_map
 
     def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
-        """bool operands run on a uint8 kernel; the mode travels with the entry."""
-        bool_storage = dtype == torch.bool and self.bool_storage_kernel_cls is not None
-        if not bool_storage:
+        """A bool operand gets the uint8 kernel, which reinterprets it itself."""
+        if dtype != torch.bool or self.bool_storage_kernel_cls is None:
             return super()._build_entry(dtype)
         return KernelEntry(
             kernel=self.kernel_map[f"{self._op_name}_bool_storage"](
@@ -1165,7 +1190,6 @@ class _BoolOutputBinaryOp(BinaryOp):
             ),
             compute_dtype=torch.uint8,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
-            bool_storage=True,
         )
 
     def _eager_forward(
@@ -1173,13 +1197,6 @@ class _BoolOutputBinaryOp(BinaryOp):
         input: torch.Tensor,
         other: torch.Tensor,
     ) -> torch.Tensor:
-        entry = self._entry(input.dtype)
-        if entry.bool_storage:
-            result = entry.kernel(
-                input.contiguous().view(-1).view(torch.uint8),
-                other.contiguous().view(-1).view(torch.uint8),
-            )
-            return result.view(torch.bool).reshape(self.out_shape)
         result = super()._eager_forward(input, other)
         if result.dtype is not torch.bool:
             return result.to(torch.bool)

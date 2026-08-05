@@ -17,7 +17,7 @@ __all__ = ["InfNormFwdOp", "L1NormFwdOp", "L2NormFwdOp"]
 class L1NormFwdOp(_ReduceOpBase):
     """L1 norm reduction along a configurable dim.
 
-    Construction: ``L1NormFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N
+    Construction: ``L1NormFwdOp(dim=None, keepdim=False)``.  M and N
     are derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 
@@ -65,7 +65,7 @@ class L1NormFwdOp(_ReduceOpBase):
 class L2NormFwdOp(_ReduceOpBase):
     """L2 norm reduction along a configurable dim.
 
-    Construction: ``L2NormFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N
+    Construction: ``L2NormFwdOp(dim=None, keepdim=False)``.  M and N
     are derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 
@@ -113,7 +113,7 @@ class L2NormFwdOp(_ReduceOpBase):
 class InfNormFwdOp(_ReduceOpBase):
     """Infinity norm reduction along a configurable dim.
 
-    Construction: ``InfNormFwdOp(dtype=..., dim=None, keepdim=False)``.  M and
+    Construction: ``InfNormFwdOp(dim=None, keepdim=False)``.  M and
     N are derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 

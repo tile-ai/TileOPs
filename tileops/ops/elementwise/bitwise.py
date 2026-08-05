@@ -28,9 +28,8 @@ class _BoolStorageBitwiseBinaryOp(BinaryOp):
         return kernel_map
 
     def _build_entry(self, dtype: torch.dtype) -> KernelEntry:
-        """bool operands run on a uint8 kernel; the mode travels with the entry."""
-        bool_storage = dtype == torch.bool and self.bool_storage_kernel_cls is not None
-        if not bool_storage:
+        """A bool operand gets the uint8 kernel, which reinterprets it itself."""
+        if dtype != torch.bool or self.bool_storage_kernel_cls is None:
             return super()._build_entry(dtype)
         return KernelEntry(
             kernel=self.kernel_map[f"{self._op_name}_bool_storage"](
@@ -38,22 +37,7 @@ class _BoolStorageBitwiseBinaryOp(BinaryOp):
             ),
             compute_dtype=torch.uint8,
             output_dtype=resolve_output_dtype(type(self).__name__, dtype),
-            bool_storage=True,
         )
-
-    def _eager_forward(
-        self,
-        input: torch.Tensor,
-        other: torch.Tensor,
-    ) -> torch.Tensor:
-        entry = self._entry(input.dtype)
-        if entry.bool_storage:
-            result = entry.kernel(
-                input.contiguous().view(-1).view(torch.uint8),
-                other.contiguous().view(-1).view(torch.uint8),
-            )
-            return result.view(torch.bool).reshape(self.out_shape)
-        return super()._eager_forward(input, other)
 
 
 class BitwiseAndFwdOp(_BoolStorageBitwiseBinaryOp):

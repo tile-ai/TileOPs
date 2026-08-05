@@ -179,6 +179,9 @@ class RoundFwdOp(_IntIdentityUnaryOp):
         # before any fp32 arithmetic so a CPU tensor / wrong dtype / wrong
         # numel cannot silently bypass the checks.
         self._validate_input(input)
+        # This path answers without a kernel, so it binds the call metadata
+        # itself; _entry never runs.
+        self._note_call(input.dtype)
         # Integer dtypes are no-ops regardless of decimals (rounding an int
         # produces the same int). Match the float-path identity contract.
         if input.dtype in _MANIFEST_INT_DTYPES:

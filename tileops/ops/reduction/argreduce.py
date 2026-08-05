@@ -13,7 +13,7 @@ __all__ = ["ArgmaxFwdOp", "ArgminFwdOp"]
 class ArgmaxFwdOp(_ReduceOpBase):
     """Argmax reduction along an arbitrary dim, returning int64 indices.
 
-    Construction: ``ArgmaxFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N are
+    Construction: ``ArgmaxFwdOp(dim=None, keepdim=False)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 
@@ -67,7 +67,7 @@ class ArgmaxFwdOp(_ReduceOpBase):
 class ArgminFwdOp(_ReduceOpBase):
     """Argmin reduction along an arbitrary dim, returning int64 indices.
 
-    Construction: ``ArgminFwdOp(dtype=..., dim=None, keepdim=False)``.  M and N are
+    Construction: ``ArgminFwdOp(dim=None, keepdim=False)``.  M and N are
     derived from the input tensor at forward time, and kernels are cached
     by ``(M, N)`` to avoid rebuilds.
 

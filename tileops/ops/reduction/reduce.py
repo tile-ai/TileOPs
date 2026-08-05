@@ -601,7 +601,7 @@ class ProdFwdOp(_SimpleReduceOp):
 class _WelfordReduceOp(_ReduceOpBase):
     """Base for Welford-based reduce ops (std, var, var_mean).
 
-    Construction: ``op(dtype=..., dim=None, correction=1, keepdim=False)``.
+    Construction: ``op(dim=None, correction=1, keepdim=False)``.
     M and N are derived from the input tensor at forward time, and kernels
     are cached by ``(M, N)`` to avoid rebuilds.
 

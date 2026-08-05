@@ -54,13 +54,4 @@ class LogicalNotFwdOp(UnaryOp):
             ),
             compute_dtype=torch.uint8,
             output_dtype=torch.bool,
-            bool_storage=True,
         )
-
-    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        entry = self._entry(input.dtype)
-        if entry.bool_storage:
-            orig_shape = input.shape
-            flat = input.contiguous().view(-1).view(torch.uint8)
-            return entry.kernel(flat).view(torch.bool).reshape(orig_shape)
-        return super()._eager_forward(input)

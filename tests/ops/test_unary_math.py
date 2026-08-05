@@ -476,6 +476,32 @@ def test_round_decimals_default_is_zero() -> None:
 
 
 @pytest.mark.smoke
+def test_round_decimals_binds_call_metadata() -> None:
+    """A forward that answers without a kernel still records its element type.
+
+    ``self.dtype`` feeds ``eval_roofline`` / ``total_memory``. The non-zero
+    decimals path runs in torch and never reaches ``_entry``, so if binding
+    lived only in the cache lookup this path would leave the metadata
+    describing the previous call — or no call at all.
+    """
+    op = RoundFwdOp(N_total=256)
+    op(torch.randn(256, device="cuda", dtype=torch.float32), decimals=2)
+    assert op.dtype == torch.float32
+    assert op.total_memory == 2 * 256 * 4
+
+    op(torch.randn(256, device="cuda", dtype=torch.float16), decimals=2)
+    assert op.dtype == torch.float16, "metadata still describes the float32 call"
+    assert op.total_memory == 2 * 256 * 2
+
+    op(torch.arange(256, device="cuda", dtype=torch.int32), decimals=2)
+    assert op.dtype == torch.int32
+
+    fresh = RoundFwdOp(N_total=256)
+    fresh(torch.randn(256, device="cuda", dtype=torch.float32), decimals=2)
+    assert fresh.dtype == torch.float32, "a decimals-only instance never bound a dtype"
+
+
+@pytest.mark.smoke
 def test_round_decimals_validates_input() -> None:
     """Non-zero decimals path must enforce the same input contract as decimals=0.
 

@@ -916,5 +916,30 @@ def test_div_rounding_mode_compile(rounding_mode: str, dtype: torch.dtype) -> No
     torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+def test_reciprocal_int_promotion_compiles(dtype):
+    """The integer path promotes to float32, and the fake tensor must agree.
+
+    ``register_fake`` derives the output dtype from the manifest rather than
+    from the input, which is the only way to express this promotion. If the
+    fake and the eager result disagree, ``fullgraph=True`` fails or the
+    compiled graph carries the wrong dtype downstream.
+    """
+    from tileops.ops.elementwise import ReciprocalFwdOp
+
+    n = 256
+    op = ReciprocalFwdOp(N_total=n)
+    x = torch.arange(1, n + 1, device="cuda", dtype=dtype)
+
+    eager = op(x)
+    compiled = torch.compile(op, fullgraph=True)(x)
+
+    assert eager.dtype == torch.float32
+    assert compiled.dtype == eager.dtype
+    torch.testing.assert_close(compiled, eager, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(compiled, torch.reciprocal(x.float()), atol=1e-6, rtol=1e-6)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])
