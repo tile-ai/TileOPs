@@ -1,6 +1,4 @@
 
-from typing import Optional
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -49,16 +47,14 @@ class MhaBwdTest(MhaBwdWorkload, TestBase):
 
 
 class MhaFwdTest(MhaFwdWorkload, TestBase):
-    def ref_program(self, q: torch.Tensor, k: torch.Tensor,
-                    v: torch.Tensor) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
         with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
             output_bhsd = F.scaled_dot_product_attention(
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal)
-        output = output_bhsd.transpose(1, 2).contiguous()
-        return output, None  # do not check lse
+        return output_bhsd.transpose(1, 2).contiguous()
 
 
 class MhaFwdFixture(FixtureBase):
@@ -119,14 +115,14 @@ class MhaBwdFixture(FixtureBase):
 def test_mha_fwd(batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype,
                  tune: bool) -> None:
     test = MhaFwdTest(batch, heads, seq_len, dim, causal, dtype)
-    op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, dtype, tune=tune)
+    op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 
 @pytest.mark.smoke
 def test_mha_fwd_dispatches_to_gqa_kernel() -> None:
-    op = MultiHeadAttentionFwdOp(1, 8, 128, 64, False, torch.float16)
-    assert op.kernel.__class__.__name__.startswith("GQA")
+    op = MultiHeadAttentionFwdOp(1, 8, 128, 64, False)
+    assert op._get_kernel(torch.float16).__class__.__name__.startswith("GQA")
 
 
 @pytest.mark.smoke
@@ -140,14 +136,13 @@ def test_mha_fwd_preserves_gqa_square_dense_fast_path(
         seq_len=512,
         dim=128,
         is_causal=True,
-        dtype=torch.float16,
         kernel_map={
-            "gqa_prefill_fwd_kernel": _FakeDenseKernel,
+            "gqa_prefill_fwd_ws_persistent_causal_kernel": _FakeDenseKernel,
             "gqa_prefill_square_fwd_kernel": _FakeSquareDenseKernel,
         },
     )
 
-    assert isinstance(op.kernel, _FakeSquareDenseKernel)
+    assert isinstance(op._get_kernel(torch.float16), _FakeSquareDenseKernel)
 
 
 @pytest.mark.smoke

@@ -21,7 +21,7 @@ from tileops.ops import (
 from tileops.ops.attention.gqa import (
     _select_gqa_fwd_kernel_cls,
     _select_gqa_paged_prefill_kernel_keys,
-    _select_gqa_prefill_fwd_kernel_cls,
+    _select_gqa_prefill_dense_kernel_key,
     _select_gqa_prefill_kernel_key,
 )
 from tileops.utils import is_h200
@@ -178,7 +178,7 @@ class GroupedQueryAttentionBwdFixture(FixtureBase):
 def test_gqa_fwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, causal: bool,
                  dtype: torch.dtype, tune: bool) -> None:
     test = GroupedQueryAttentionFwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, dtype, tune=tune)
+    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
 
 
@@ -513,7 +513,7 @@ def test_gqa_fwd_bshd_wrapper_uses_dense_kernel_without_uniform_check(
     q = torch.empty(batch, seq_len, heads, dim, dtype=torch.float16)
     k = torch.empty(batch, seq_len, heads_kv, dim, dtype=torch.float16)
     v = torch.empty_like(k)
-    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, True, torch.float16)
+    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, True)
 
     def fail_uniform_check(*args: object, **kwargs: object) -> bool:
         pytest.fail("BSHD wrapper should not inspect packed cu_seqlens")
@@ -521,9 +521,10 @@ def test_gqa_fwd_bshd_wrapper_uses_dense_kernel_without_uniform_check(
     def fake_dense_kernel(*args: torch.Tensor) -> torch.Tensor:
         return torch.empty_like(args[0])
 
-    monkeypatch.setattr(op._prefill_op, "_uniform_cu_seqlens", fail_uniform_check)
-    monkeypatch.setattr(op._prefill_op, "_uses_square_dense_fast_path", lambda: False)
-    monkeypatch.setattr(op._prefill_op, "_get_dense_kernel", lambda: fake_dense_kernel)
+    prefill_op = op._prefill_op_for(torch.float16)
+    monkeypatch.setattr(prefill_op, "_uniform_cu_seqlens", fail_uniform_check)
+    monkeypatch.setattr(prefill_op, "_uses_square_dense_fast_path", lambda: False)
+    monkeypatch.setattr(prefill_op, "_get_dense_kernel", lambda: fake_dense_kernel)
 
     out = op(q, k, v)
     assert out.shape == q.shape
@@ -924,21 +925,20 @@ def test_gqa_prefill_dispatch_key_selector_rejects_forced_dense_ragged() -> None
 
 
 @pytest.mark.smoke
-def test_gqa_prefill_dense_selector_widens_ws_capability() -> None:
-    assert _select_gqa_prefill_fwd_kernel_cls(
-        128,
-        True,
-        torch.float16,
-        sm_scale=0.25,
-        softcap=2.0,
-    ).__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
-    assert _select_gqa_prefill_fwd_kernel_cls(
-        128,
-        True,
-        torch.bfloat16,
-        sm_scale=128**-0.5,
-        softcap=0.0,
-    ).__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
+@pytest.mark.parametrize("dim, is_causal, dtype, expected", [
+    (128, True, torch.float16, "gqa_prefill_fwd_ws_persistent_causal_kernel"),
+    (128, True, torch.bfloat16, "gqa_prefill_fwd_ws_persistent_causal_kernel"),
+    (128, False, torch.float16, "gqa_prefill_fwd_kernel"),
+    (64, True, torch.float16, "gqa_prefill_fwd_kernel"),
+])
+def test_gqa_prefill_dense_slot_key_selector(
+    dim: int,
+    is_causal: bool,
+    dtype: torch.dtype,
+    expected: str,
+) -> None:
+    """Each dense candidate owns a slot key; the element type picks the key."""
+    assert _select_gqa_prefill_dense_kernel_key(dim, is_causal, dtype) == expected
 
 
 @pytest.mark.smoke

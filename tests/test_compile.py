@@ -26,7 +26,7 @@ class MhaCompileFixture(FixtureBase):
 @MhaCompileFixture
 def test_mha_kernel_compile(B: int, S: int, H: int, D: int, causal: bool, dtype: torch.dtype):
     test = MhaFwdTest(B, H, S, D, causal, dtype)
-    op = MultiHeadAttentionFwdOp(B, H, S, D, causal, dtype)
+    op = MultiHeadAttentionFwdOp(B, H, S, D, causal)
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
     test.check(compiled_op, *inputs, atol=5e-3, rtol=1e-5)

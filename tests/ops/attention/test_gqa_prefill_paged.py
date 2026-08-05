@@ -186,7 +186,6 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
         page_size=page_size,
         dim=dim,
         is_causal=is_causal,
-        dtype=dtype,
     )
     k_scale, v_scale = _ones_cache_scales()
 
@@ -285,7 +284,6 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
         page_size=page_size,
         dim=dim,
         is_causal=is_causal,
-        dtype=dtype,
         cache_dtype=cache_dtype,
         softcap=softcap,
     )
@@ -349,7 +347,6 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_rejects_invalid_scales(
         max_pages_per_req=max_pages_per_req,
         page_size=page_size,
         dim=dim,
-        dtype=torch.float16,
         cache_dtype=torch.float8_e4m3fn,
     )
 
@@ -443,7 +440,6 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         page_size=page_size,
         dim=dim,
         is_causal=is_causal,
-        dtype=dtype,
         softcap=softcap,
         fuse_rope=True,
         max_position=max_position,
@@ -490,7 +486,6 @@ def test_gqa_prefill_paged_with_kv_cache_validates_capacity() -> None:
         max_pages_per_req=max_pages_per_req,
         page_size=page_size,
         dim=dim,
-        dtype=torch.float16,
     )
     k_scale, v_scale = _ones_cache_scales()
 
@@ -510,7 +505,6 @@ def test_gqa_prefill_paged_with_kv_cache_requires_power_of_two_page_size() -> No
             max_pages_per_req=8,
             page_size=24,
             dim=64,
-            dtype=torch.float16,
         )
 
 
@@ -564,7 +558,6 @@ def test_gqa_prefill_paged_with_kv_cache_page_sizes(page_size: int) -> None:
         max_pages_per_req=max_pages_per_req,
         page_size=page_size,
         dim=dim,
-        dtype=dtype,
     )
     k_scale, v_scale = _ones_cache_scales()
 
@@ -573,3 +566,63 @@ def test_gqa_prefill_paged_with_kv_cache_page_sizes(page_size: int) -> None:
         block_table,
         max(q_lens))
     torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
+    """One instance answers both element types, each on its own kernel."""
+    q_lens = [32, 64]
+    old_lens = [48, 80]
+    batch, heads, heads_kv, dim = 2, 8, 2, 64
+    page_size, max_pages_per_req = 64, 8
+    num_pages = batch * max_pages_per_req
+    total_q = sum(q_lens)
+    block_table = _make_block_table(batch, max_pages_per_req)
+    cu_seqlens_q = _make_cu_seqlens(q_lens)
+    cache_seqlens = torch.tensor(old_lens, device="cuda", dtype=torch.int32)
+    k_scale, v_scale = _ones_cache_scales()
+    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        max_pages_per_req=max_pages_per_req,
+        page_size=page_size,
+        dim=dim,
+    )
+
+    for dtype in (torch.float16, torch.bfloat16):
+        q = torch.randn(total_q, heads, dim, device="cuda", dtype=dtype).contiguous()
+        k_new = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        v_new = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        k_pages = torch.zeros(num_pages * page_size, heads_kv, dim, device="cuda",
+                              dtype=dtype).contiguous()
+        v_pages = torch.zeros_like(k_pages)
+        k_old = [
+            torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+            for old_len in old_lens
+        ]
+        v_old = [
+            torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+            for old_len in old_lens
+        ]
+        _fill_paged_cache_from_logical(k_pages, v_pages, k_old, v_old, block_table, page_size)
+        ref = _gqa_prefill_paged_ref(
+            q,
+            k_new,
+            v_new,
+            k_old,
+            v_old,
+            cu_seqlens_q,
+            batch=batch,
+            heads=heads,
+            heads_kv=heads_kv,
+            is_causal=True,
+        )
+        output = op(
+            q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_seqlens_q, cache_seqlens,
+            block_table, max(q_lens))
+        assert output.dtype == dtype
+        atol, rtol = _PREFILL_PAGED_TOLERANCE[dtype]
+        torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
+
+    assert set(op._kernel_cache) == {torch.float16, torch.bfloat16}

@@ -39,7 +39,8 @@ MultiHeadAttentionFwdOp:
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
     kernel_map:
-      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel | GQAPrefillFwdWsPersistentCausalKernel
+      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
+      gqa_prefill_fwd_ws_persistent_causal_kernel: GQAPrefillFwdWsPersistentCausalKernel
       gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha.py
@@ -132,7 +133,8 @@ GroupedQueryAttentionFwdOp:
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
     kernel_map:
-      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel | GQAPrefillFwdWsPersistentCausalKernel
+      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
+      gqa_prefill_fwd_ws_persistent_causal_kernel: GQAPrefillFwdWsPersistentCausalKernel
       gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
@@ -207,7 +209,8 @@ GroupedQueryAttentionPrefillFwdOp:
   source:
     kernel: tileops/kernels/attention/gqa_fwd.py
     kernel_map:
-      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel | GQAPrefillFwdWsPersistentCausalKernel
+      gqa_prefill_fwd_kernel: GQAPrefillFwdKernel
+      gqa_prefill_fwd_ws_persistent_causal_kernel: GQAPrefillFwdWsPersistentCausalKernel
       gqa_prefill_square_fwd_kernel: GQAFwdWsPersistentCausalKernel
       gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
       gqa_sliding_window_varlen_fwd: GQASlidingWindowVarlenFwdWgmmaPipelinedKernel

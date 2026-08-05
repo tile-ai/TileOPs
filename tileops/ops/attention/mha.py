@@ -7,17 +7,16 @@ from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
     GQAFwdWsPersistentCausalKernel,
+    GQAPrefillFwdKernel,
+    GQAPrefillFwdWsPersistentCausalKernel,
     MHADecodeKernel,
     MHADecodePagedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 
+from ..compile_boundary import get_instance
 from ..op_base import Op
-from .gqa import (
-    GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionFwdOp,
-    _select_gqa_prefill_fwd_kernel_cls,
-)
+from .gqa import GroupedQueryAttentionBwdOp, GroupedQueryAttentionFwdOp
 
 __all__ = [
     "MultiHeadAttentionBwdOp",
@@ -31,8 +30,7 @@ class MultiHeadAttentionFwdOp(Op):
     """Layout: BSHD.
 
     MHA is the heads_kv == heads specialization of GQA, so route the
-    maintained forward path through the GQA prefill dispatcher while keeping
-    the historical MHA return contract `(output, lse)`.
+    maintained forward path through the GQA prefill dispatcher.
     """
 
     def __init__(self,
@@ -41,7 +39,6 @@ class MultiHeadAttentionFwdOp(Op):
                  seq_len: int,
                  dim: int,
                  is_causal: bool = True,
-                 dtype: torch.dtype = torch.float16,
                  kernel_map: Optional[Dict[str, Kernel]] = None,
                  tune: bool = False) -> None:
         self.batch = batch
@@ -49,7 +46,6 @@ class MultiHeadAttentionFwdOp(Op):
         self.seq_len = seq_len  # TODO: support s_q != s_kv
         self.dim = dim
         self.is_causal = is_causal
-        self.dtype = dtype
 
         self.dispatch_kernel(kernel_map)
         self._gqa_op = GroupedQueryAttentionFwdOp(
@@ -59,43 +55,38 @@ class MultiHeadAttentionFwdOp(Op):
             seq_len=seq_len,
             dim=dim,
             is_causal=is_causal,
-            dtype=dtype,
             kernel_map=self.kernel_map,
             tune=tune,
         )
-        # GroupedQueryAttentionFwdOp instantiates its kernel lazily. MHA's
-        # torch.compile smoke expects forward to call an already-built custom op,
-        # so instantiate the same dense-path choice at construction time.
-        self._kernel = (
-            self._gqa_op._prefill_op._get_square_dense_kernel()
-            if self._gqa_op._prefill_op._uses_square_dense_fast_path()
-            else self._gqa_op.kernel
-        )
+        # MHA holds no kernels of its own; report the delegate's cache.
+        self._kernel_cache = self._gqa_op._kernel_cache
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gqa_prefill_fwd_kernel": _select_gqa_prefill_fwd_kernel_cls(
-                self.dim,
-                self.is_causal,
-                self.dtype,
-                sm_scale=None,
-                softcap=0.0,
-            ),
+            "gqa_prefill_fwd_kernel": GQAPrefillFwdKernel,
+            "gqa_prefill_fwd_ws_persistent_causal_kernel": GQAPrefillFwdWsPersistentCausalKernel,
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
         }
 
-    @property
-    def kernel(self) -> Kernel:
-        return self._kernel
+    def _get_kernel(self, dtype: torch.dtype) -> Kernel:
+        return self._gqa_op._get_kernel(dtype)
 
-    def forward(
+    def _infer_output_shapes(
         self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        return self.kernel(q, k, v)
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+    ) -> Dict[str, tuple[int, ...]]:
+        return {"o": tuple(q_shape)}
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return _mha_fwd(q, k, v, self._instance_key)
+
+    def _eager_forward(self, q: torch.Tensor, k: torch.Tensor,
+                       v: torch.Tensor) -> torch.Tensor:
+        self.dtype = q.dtype
+        return self._gqa_op(q, k, v)
 
 
 class MultiHeadAttentionBwdOp(Op):
@@ -252,3 +243,20 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
                 real_seqlen_kv: torch.Tensor, block_table: torch.Tensor) -> torch.Tensor:
         self.dtype = q.dtype
         return self._get_kernel(q.dtype)(q, k, v, real_seqlen_kv, block_table)
+
+
+# torch.compile dispatch boundary (see tileops/ops/compile_boundary.py)
+
+
+@torch.library.custom_op("top::mha_fwd", mutates_args=())
+def _mha_fwd(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+             instance_key: str) -> torch.Tensor:
+    return get_instance(instance_key)._eager_forward(q, k, v)
+
+
+@_mha_fwd.register_fake
+def _mha_fwd_fake(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                  instance_key: str) -> torch.Tensor:
+    op = get_instance(instance_key)
+    shapes = op._infer_output_shapes(tuple(q.shape), tuple(k.shape), tuple(v.shape))
+    return q.new_empty(shapes["o"])

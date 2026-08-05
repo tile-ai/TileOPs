@@ -95,6 +95,44 @@ def test_attention_decode_reselects_the_kernel_per_dtype():
 
 
 @pytest.mark.smoke
+def test_attention_square_prefill_reselects_the_kernel_per_dtype():
+    """The BSHD square wrapper resolves its prefill kernel from the tensors.
+
+    Causal dim-128 takes the warp-specialized dense slot; the element type used
+    to reach that slot through a constructor dtype read by default_kernel_map.
+    """
+    from tileops.ops.attention.gqa import GroupedQueryAttentionFwdOp
+
+    batch, heads, heads_kv, seq_len, dim = 1, 8, 2, 256, 128
+    op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, is_causal=True)
+    for dtype in _DTYPES:
+        q = torch.randn(batch, seq_len, heads, dim, dtype=dtype, device="cuda")
+        k = torch.randn(batch, seq_len, heads_kv, dim, dtype=dtype, device="cuda")
+        v = torch.randn_like(k)
+        assert op(q, k, v).dtype == dtype
+        kernel = op._get_kernel(dtype)
+        assert kernel.__class__.__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
+        assert kernel.dtype == dtype
+    _assert_two_entries(op)
+
+
+@pytest.mark.smoke
+def test_attention_mha_serves_two_dtypes_from_one_instance():
+    """MHA delegates to the GQA wrapper and shares its per-dtype kernel cache."""
+    from tileops.ops.attention.mha import MultiHeadAttentionFwdOp
+
+    batch, heads, seq_len, dim = 1, 8, 256, 64
+    op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, is_causal=False)
+    for dtype in _DTYPES:
+        q = torch.randn(batch, seq_len, heads, dim, dtype=dtype, device="cuda")
+        k = torch.randn_like(q)
+        v = torch.randn_like(q)
+        assert op(q, k, v).dtype == dtype
+        assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillFwdKernel"
+    _assert_two_entries(op)
+
+
+@pytest.mark.smoke
 def test_moe_unpermute_serves_two_dtypes_from_one_instance():
     from tileops.ops.moe.routed_expert.unpermute import MoeUnpermuteFwdOp
 

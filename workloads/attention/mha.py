@@ -49,10 +49,9 @@ class MhaBwdWorkload(WorkloadBase):
             self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device='cuda')
 
         fwd_op = MultiHeadAttentionFwdOp(self.batch, self.heads, self.seq_len, self.dim,
-                                         self.is_causal, self.dtype)
+                                         self.is_causal)
         with torch.no_grad():
-            result = fwd_op(q, k, v)
-            o = result[0] if isinstance(result, tuple) else result
+            o = fwd_op(q, k, v)
             lse = _compute_gqa_square_lse(
                 q,
                 k,
