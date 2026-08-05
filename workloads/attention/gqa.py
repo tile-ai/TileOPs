@@ -74,7 +74,7 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
         fwd_op = GroupedQueryAttentionFwdOp(self.batch, self.heads, self.heads_kv, self.seq_len,
                                             self.dim, self.is_causal)
         with torch.no_grad():
-            o, _ = fwd_op(q, k, v)
+            o = fwd_op(q, k, v)
             lse = _compute_gqa_square_lse(
                 q,
                 k,

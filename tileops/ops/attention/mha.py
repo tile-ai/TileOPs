@@ -78,33 +78,16 @@ class MultiHeadAttentionFwdOp(Op):
         k_shape: tuple[int, ...],
         v_shape: tuple[int, ...],
     ) -> Dict[str, tuple[int, ...]]:
-        batch, seq_len, heads, _ = q_shape
-        return {"o": tuple(q_shape), "lse": (batch, heads, seq_len)}
+        return {"o": tuple(q_shape)}
 
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Run MHA forward.
-
-        Returns:
-            ``(output, lse)``.
-        """
-        # FIXME(staged-rollout): the manifest `lse` output is returned as None.
-        #
-        # Broken invariant: the op declares outputs (o, lse) but yields no log-sum-exp.
-        # Why: the delegate emits none, and a custom_op return admits tensors only.
-        # Cleanup: when fwd emits a real lse consumable by the bwd op, widen the
-        #     custom op to return both tensors and delete this marker.
-        return _mha_fwd(q, k, v, self._instance_key), None
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Run MHA forward."""
+        return _mha_fwd(q, k, v, self._instance_key)
 
     def _eager_forward(self, q: torch.Tensor, k: torch.Tensor,
                        v: torch.Tensor) -> torch.Tensor:
         self.dtype = q.dtype
-        output, _ = self._gqa_op(q, k, v)
-        return output
+        return self._gqa_op(q, k, v)
 
 
 class MultiHeadAttentionBwdOp(Op):

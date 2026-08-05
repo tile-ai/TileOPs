@@ -34,18 +34,17 @@ def test_mha_kernel_compile(B: int, S: int, H: int, D: int, causal: bool, dtype:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
-def test_mha_compiled_returns_output_lse_pair():
-    """A cold fullgraph trace returns the same ``(output, lse)`` pair as eager."""
+def test_mha_cold_fullgraph_trace_matches_eager():
+    """The kernel is built inside the custom op, so a cold trace must still match."""
     B, S, H, D = 1, 128, 8, 64
     op = MultiHeadAttentionFwdOp(B, H, S, D, False)
     q = torch.randn(B, S, H, D, device="cuda", dtype=torch.float16)
     k, v = torch.randn_like(q), torch.randn_like(q)
 
-    output, lse = torch.compile(op, fullgraph=True)(q, k, v)
+    output = torch.compile(op, fullgraph=True)(q, k, v)
 
     assert output.shape == q.shape
-    assert lse is None
-    torch.testing.assert_close(output, op(q, k, v)[0])
+    torch.testing.assert_close(output, op(q, k, v))
 
 
 if __name__ == "__main__":

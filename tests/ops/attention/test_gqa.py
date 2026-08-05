@@ -55,7 +55,7 @@ class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
 
 class GroupedQueryAttentionFwdTest(GroupedQueryAttentionFwdWorkload, TestBase):
     def ref_program(self, q: torch.Tensor, k: torch.Tensor,
-                    v: torch.Tensor) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+                    v: torch.Tensor) -> torch.Tensor:
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
@@ -63,7 +63,7 @@ class GroupedQueryAttentionFwdTest(GroupedQueryAttentionFwdWorkload, TestBase):
             output_bhsd = F.scaled_dot_product_attention(
                 q_bhsd, k_bhsd, v_bhsd, is_causal=self.is_causal, enable_gqa=True)
         output = output_bhsd.transpose(1, 2).contiguous()
-        return output, None  # do not check lse
+        return output
 
 
 def _gqa_prefill_ref(
@@ -184,24 +184,20 @@ def test_gqa_fwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, 
 
 
 @pytest.mark.smoke
-def test_gqa_fwd_returns_output_lse_pair() -> None:
-    """The manifest declares outputs (o, lse); the op returns both slots."""
+def test_gqa_fwd_output_matches_the_declared_shape() -> None:
+    """``H % H_kv`` keeps the validator's mocks away, so assert parity here."""
     batch, seq_len, heads, heads_kv, dim = 1, 128, 8, 2, 64
     op = GroupedQueryAttentionFwdOp(batch, heads, heads_kv, seq_len, dim, False)
     q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
     k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
     v = torch.randn_like(k)
 
-    result = op(q, k, v)
+    o = op(q, k, v)
 
-    assert isinstance(result, tuple) and len(result) == 2
-    o, lse = result
     assert o.shape == q.shape
     assert o.dtype == q.dtype
-    assert lse is None  # see the FIXME(staged-rollout) on the op
     assert op._infer_output_shapes(tuple(q.shape), tuple(k.shape), tuple(v.shape)) == {
         "o": (batch, seq_len, heads, dim),
-        "lse": (batch, heads, seq_len),
     }
 
 
@@ -549,9 +545,8 @@ def test_gqa_fwd_bshd_wrapper_uses_dense_kernel_without_uniform_check(
     monkeypatch.setattr(prefill_op, "_uses_square_dense_fast_path", lambda: False)
     monkeypatch.setattr(prefill_op, "_get_dense_kernel", lambda: fake_dense_kernel)
 
-    out, lse = op(q, k, v)
+    out = op(q, k, v)
     assert out.shape == q.shape
-    assert lse is None
 
 
 @pytest.mark.smoke

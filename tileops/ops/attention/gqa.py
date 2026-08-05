@@ -387,21 +387,10 @@ class GroupedQueryAttentionFwdOp(Op):
         k_shape: tuple[int, ...],
         v_shape: tuple[int, ...],
     ) -> Dict[str, tuple[int, ...]]:
-        batch, seq_len, heads, _ = q_shape
-        return {"o": tuple(q_shape), "lse": (batch, heads, seq_len)}
+        return {"o": tuple(q_shape)}
 
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Run square GQA forward.
-
-        Returns:
-            ``(o, lse)``, the pair ``MultiHeadAttentionFwdOp`` returns for the
-            same kernels.
-        """
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Run square GQA forward."""
         expected_q = (self.batch, self.seq_len, self.heads, self.dim)
         expected_kv = (self.batch, self.seq_len, self.heads_kv, self.dim)
         if tuple(q.shape) != expected_q:
@@ -417,13 +406,7 @@ class GroupedQueryAttentionFwdOp(Op):
         v = v.contiguous()
         self.dtype = q.dtype
 
-        # FIXME(staged-rollout): the manifest `lse` output is returned as None.
-        #
-        # Broken invariant: the op declares outputs (o, lse) but yields no log-sum-exp.
-        # Why: of its three dispatch targets only GQAPrefillFwdKernel emits lse.
-        # Cleanup: when fwd emits a real lse consumable by the bwd op, return it
-        #     from every dispatch target and delete this marker.
-        return _attention_output(self._get_kernel(q.dtype)(q, k, v)), None
+        return _attention_output(self._get_kernel(q.dtype)(q, k, v))
 
 
 class GroupedQueryAttentionPrefillFwdOp(Op):

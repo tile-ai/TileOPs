@@ -108,7 +108,7 @@ def test_attention_square_prefill_reselects_the_kernel_per_dtype():
         q = torch.randn(batch, seq_len, heads, dim, dtype=dtype, device="cuda")
         k = torch.randn(batch, seq_len, heads_kv, dim, dtype=dtype, device="cuda")
         v = torch.randn_like(k)
-        output, _ = op(q, k, v)
+        output = op(q, k, v)
         assert output.dtype == dtype
         kernel = op._get_kernel(dtype)
         assert kernel.__class__.__name__ == "GQAPrefillFwdWsPersistentCausalKernel"
@@ -127,7 +127,7 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         q = torch.randn(batch, seq_len, heads, dim, dtype=dtype, device="cuda")
         k = torch.randn_like(q)
         v = torch.randn_like(q)
-        output, _ = op(q, k, v)
+        output = op(q, k, v)
         assert output.dtype == dtype
         assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillFwdKernel"
     _assert_two_entries(op)
