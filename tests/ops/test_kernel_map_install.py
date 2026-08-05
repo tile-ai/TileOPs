@@ -270,42 +270,114 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
 
 # Rounds of review kept surfacing the same shape: an op deciding something on the
 # backend's behalf instead of asking it. The instances were removable one at a
-# time; the pattern was not, until stated as an invariant.
+# time; the pattern was not, until stated as a contract every builder must meet.
+#
+# A syntactic check ("no `_build_entry` may index `kernel_map`") is not that
+# contract: it cannot see a helper that indexes it elsewhere, an alias, a
+# construction in `__init__`, or a `_build_kernel_instance` override that ignores
+# the class it was handed. Injecting a backend and observing what gets built
+# does, wherever the construction happens.
+
+
+class _ProbeKernel:
+    """Stands in for whatever the injected backend says should be built."""
+
+    instances: list = []
+    SUPPORTED_DTYPES = None  # the probe accepts whatever it is handed
+    supported_archs = None
+
+    def __init__(self, *args, **kwargs):
+        type(self).instances.append(self)
+        self.ctor_args = args
+        self.ctor_kwargs = kwargs
+        self.ctor_dtype = next((a for a in args if isinstance(a, torch.dtype)), None)
+
+    def __call__(self, *args, **kwargs):
+        raise AssertionError("the probe is not meant to run")
+
+
+def _probe_backend(probe_dtype: torch.dtype):
+    """A backend whose ``specialize`` answers with the probe and *probe_dtype*."""
+
+    class ProbeBackend:
+        SUPPORTED_DTYPES = None
+        supported_archs = None  # installable on any arch
+
+        @classmethod
+        def specialize(cls, dtype):
+            return _ProbeKernel, probe_dtype
+
+    return ProbeBackend
+
+
+# One entry per distinct builder shape: (op class, ctor kwargs, slots, entry args).
+_BUILDER_SHAPES = [
+    ("AbsFwdOp", {"N_total": 64}, ["abs"], ()),
+    ("ReciprocalFwdOp", {"N_total": 64}, ["reciprocal"], ()),
+    ("FloorFwdOp", {"N_total": 64}, ["floor"], ()),
+    ("EluFwdOp", {"N_total": 64, "alpha": 1.0}, ["elu"], ()),
+    ("AddFwdOp", {"a_shape": (64,), "b_shape": (64,)}, ["add"], ()),
+    ("EqFwdOp", {"a_shape": (64,), "b_shape": (64,)}, ["eq"], ()),
+    ("BitwiseAndFwdOp", {"a_shape": (64,), "b_shape": (64,)}, ["bitwise_and"], ()),
+    ("LogicalNotFwdOp", {"N_total": 64}, ["logical_not"], ()),
+    ("LerpTensorFwdOp", {"input": (64,), "end": (64,), "weight": (64,)}, ["lerp_tensor"], ()),
+    ("SiluAndMulFwdOp", {"M": 16, "N": 8}, ["silu_and_mul"], (16, 8)),
+    ("WhereFwdOp", {"condition": (64,), "input": (64,), "other": (64,)}, ["where"], ()),
+    ("PreluFwdOp", {"shape": (4, 8), "num_channels": 8}, ["prelu"], ()),
+    ("NanToNumFwdOp", {"N_total": 64}, ["nan_to_num"], ()),
+    ("ClampFwdOp", {"input": (64,), "min": (64,), "max": (64,)}, ["clamp_tensor"], ()),
+    ("ClampScalarFwdOp", {"input": (64,), "min": 0.0}, ["clamp"], ()),
+    ("MaskedFillScalarFwdOp", {"input": (64,), "mask": (64,), "value": 1.0}, ["masked_fill"], ()),
+    ("MaskedFillFwdOp", {"input": (64,), "mask": (64,), "value": ()},
+     ["masked_fill_tensor_value"], ()),
+]
 
 
 @pytest.mark.smoke
-def test_no_build_entry_constructs_the_backend_directly():
-    """Every `_build_entry` must build what `specialize` names, nothing else.
-
-    Indexing `kernel_map` inside `_build_entry` skips the backend's answer about
-    which implementation and construction dtype serve this dtype, so an override
-    that differs from the family default is silently discarded. Ops that
-    generate a tensor from their arguments have no input dtype to specialize on
-    and are exempt.
-    """
-    import ast
-    import pathlib
-
+@pytest.mark.parametrize(
+    ("op_name", "kwargs", "slots", "entry_args"),
+    _BUILDER_SHAPES,
+    ids=[c[0] for c in _BUILDER_SHAPES],
+)
+def test_builder_constructs_what_the_backend_specialized(op_name, kwargs, slots, entry_args):
+    """Whatever `specialize` returns is what gets built, and nothing else."""
     import tileops.ops.elementwise as ew
 
-    exempt = {"alibi.py", "sinusoidal.py"}
-    offenders = []
-    for path in sorted(pathlib.Path(ew.__file__).parent.glob("*.py")):
-        if path.name in exempt:
-            continue
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef) or node.name != "_build_entry":
-                continue
-            for sub in ast.walk(node):
-                if not isinstance(sub, ast.Subscript):
-                    continue
-                value = sub.value
-                if (isinstance(value, ast.Attribute) and value.attr == "kernel_map"
-                        and isinstance(value.value, ast.Name) and value.value.id == "self"):
-                    offenders.append(f"{path.name}:{sub.lineno}")
+    probe_dtype = torch.bfloat16
+    backend = _probe_backend(probe_dtype)
+    op = getattr(ew, op_name)(kernel_map={slot: backend for slot in slots}, **kwargs)
 
-    assert not offenders, (
-        "_build_entry must construct the class specialize() returns, not index "
-        f"kernel_map directly: {offenders}"
+    _ProbeKernel.instances = []
+    entry = op._build_entry(torch.float16, *entry_args)
+
+    assert len(_ProbeKernel.instances) == 1, (
+        f"{op_name} built {len(_ProbeKernel.instances)} kernels; the backend's "
+        "answer was ignored or something else was constructed too"
     )
+    assert entry.kernel is _ProbeKernel.instances[0]
+    assert entry.kernel.ctor_dtype == probe_dtype, (
+        f"{op_name} constructed with {entry.kernel.ctor_dtype}, not the dtype "
+        "the backend asked for"
+    )
+    assert entry.compute_dtype == probe_dtype
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_name,kwargs", [
+    ("AlibiFwdOp", {"seq_len": 8, "num_heads": 4}),
+    ("SinusoidalFwdOp", {"seq_len": 8, "d_model": 8}),
+])
+def test_generative_op_also_defers_to_the_backend(op_name, kwargs):
+    """A dtype supplied as a parameter is still the backend's to specialize on."""
+    import tileops.ops.elementwise as ew
+
+    probe_dtype = torch.bfloat16
+    slot = {"AlibiFwdOp": "alibi", "SinusoidalFwdOp": "sinusoidal"}[op_name]
+    _ProbeKernel.instances = []
+    op = getattr(ew, op_name)(
+        dtype=torch.float16, kernel_map={slot: _probe_backend(probe_dtype)}, **kwargs,
+    )
+
+    assert len(_ProbeKernel.instances) == 1
+    assert op.kernel is _ProbeKernel.instances[0]
+    assert op.kernel.ctor_dtype == probe_dtype

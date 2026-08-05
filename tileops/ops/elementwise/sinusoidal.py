@@ -44,7 +44,10 @@ class SinusoidalFwdOp(Op):
         self.d_model = d_model
         self.dtype = dtype
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map[self._op_name](seq_len, d_model, dtype)
+        # The output dtype is a parameter here, but choosing the
+        # implementation for it is still the backend's call.
+        impl, ctor_dtype = self.kernel_map[self._op_name].specialize(dtype)
+        self.kernel = impl(seq_len, d_model, ctor_dtype)
 
     @property
     def default_kernel_map(self):
