@@ -623,21 +623,19 @@ class _PerDtypeKernels:
     must never read it: by the time a second dtype arrives it no longer
     describes the call in flight.
 
-    ``_note_call`` records it wherever the call commits to an element type,
-    which is every execution path: the eager one, the one ``torch.compile``
-    enters behind the custom op, and the ones that answer without a kernel at
-    all. ``__call__`` restores the previous value if the call then fails, so a
-    call that produced nothing does not describe the op.
-    """
+    ``_note_call`` records it wherever a call commits to an element type, which
+    is every execution path: the eager one, the one ``torch.compile`` enters
+    behind the custom op, and the ones that answer without a kernel at all.
 
-    def __call__(self, *args, **kwargs):
-        """Restore the previous element type if this call does not complete."""
-        previous = self.dtype
-        try:
-            return super().__call__(*args, **kwargs)
-        except BaseException:
-            self.dtype = previous
-            raise
+    The record therefore describes the most recent call that *selected a
+    specialization*, not the most recent one that succeeded — a call that fails
+    afterwards leaves its dtype behind. Narrowing it to successful calls needs
+    the invocation context to reach ``eval_roofline`` instead of living in a
+    mutable slot, which is an ``Op``-wide contract change. A snapshot-and-restore
+    transaction here is not that fix: it cannot see the paths that bypass
+    ``__call__``, and two calls sharing an instance can erase each other's
+    published value.
+    """
 
     def _note_call(self, dtype: torch.dtype) -> None:
         """Record the element type this call committed to."""

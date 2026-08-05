@@ -96,8 +96,7 @@ class ReciprocalFwdOp(UnaryOp):
         integer input bytes, float32 output bytes — while the kernel is built
         for the compute dtype the float-only kernel requires.
         """
-        compute = torch.float32 if dtype in _MANIFEST_INT_DTYPES else dtype
-        impl, compute = self._selected_kernel_cls().specialize(compute)
+        impl, compute = self._selected_kernel_cls().specialize(dtype)
         return KernelEntry(
             kernel=self._build_kernel_instance(
                 N_total=self.N_total, dtype=compute, tune=self.tune, impl=impl,
@@ -107,11 +106,9 @@ class ReciprocalFwdOp(UnaryOp):
         )
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Promote here, past the boundary, so the caller's dtype stays visible."""
+        """The kernel converts if its compute type differs from the input's."""
         entry = self._entry(input.dtype)
         flat = input.contiguous().reshape(-1)
-        if entry.compute_dtype != input.dtype:
-            flat = flat.to(entry.compute_dtype)
         return entry.kernel(flat).reshape(input.shape)
 
 

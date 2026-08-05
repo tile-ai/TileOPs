@@ -237,5 +237,43 @@ def test_masked_fill_alternates_between_bool_and_float_input():
     assert set(op._entries) == {torch.bool, torch.float32}
 
 
+@pytest.mark.smoke
+def test_every_elementwise_op_records_its_dtype_after_a_forward():
+    """No op may reach a result without recording the element type it used.
+
+    Recording lives in the shared cache lookup, so an op that answers on its own
+    path has to record for itself. Enumerating the family turns a forgotten one
+    into a failure here rather than into roofline numbers describing an earlier
+    call — which is how `RoundFwdOp` shipped a stale dtype.
+    """
+    import inspect
+
+    import tileops.ops.elementwise as ew
+    from tileops.ops.elementwise._base import _PerDtypeKernels
+
+    checked, unrecorded = 0, []
+    for name in dir(ew):
+        cls = getattr(ew, name)
+        if not (inspect.isclass(cls) and issubclass(cls, _PerDtypeKernels)):
+            continue
+        if name.startswith("_") or getattr(cls, "_op_name", None) is None:
+            continue  # a template base, not a concrete op
+        params = inspect.signature(cls.__init__).parameters
+        # Only the single-tensor, single-shape ops can be driven generically.
+        if set(params) - {"self", "kernel_map", "tune"} != {"N_total"}:
+            continue
+        op = cls(N_total=64)
+        try:
+            op(torch.randn(64, device="cuda", dtype=torch.float32))
+        except Exception:
+            continue  # dtype outside this op's union; another dtype covers it
+        checked += 1
+        if op.dtype is None:
+            unrecorded.append(name)
+
+    assert checked >= 20, f"only drove {checked} ops; the enumeration stopped working"
+    assert not unrecorded, f"ops reached a result without recording a dtype: {unrecorded}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-vvs"])

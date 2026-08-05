@@ -86,15 +86,14 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
     def _eager_forward(
         self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,
     ) -> torch.Tensor:
-        # Broadcast input/mask to out_shape and reshape the 0-dim value to
-        # (1,); the kernel owns however it represents the predicate.
+        # Broadcast input/mask to out_shape; the kernel owns how it represents
+        # the predicate and the scalar.
         out_shape = self.out_shape if self.out_shape else (1,)
         entry = self._entry(input.dtype)
         x_flat = self._expand_flat(input, out_shape)
         mask_b = mask if mask.dtype == torch.bool else mask.bool()
         mask_flat = self._expand_flat(mask_b, out_shape)
-        value_1d = value.contiguous().view(1)
-        result = entry.kernel(x_flat, mask_flat, value_1d)
+        result = entry.kernel(x_flat, mask_flat, value)
         return result.view(self.out_shape if self.out_shape else ())
 
     def forward(

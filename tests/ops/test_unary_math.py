@@ -524,12 +524,13 @@ def test_every_execution_path_records_its_dtype(invoke) -> None:
 
 
 @pytest.mark.smoke
-def test_failed_call_does_not_publish_its_dtype() -> None:
-    """Metadata describes the last *successful* call, so a failure leaves it alone.
+def test_rejected_dtype_never_reaches_the_metadata() -> None:
+    """A dtype the op refuses cannot appear in the roofline metadata.
 
-    A cache lookup happens before the work does. If it published the dtype, a
-    call that then raised would leave ``eval_roofline`` / ``total_memory``
-    describing a call that produced nothing.
+    Validation runs before the specialization is selected, so the refusal path
+    never records anything. A call that fails *after* selecting one does leave
+    its dtype — see ``_PerDtypeKernels`` for why narrowing that needs the
+    invocation context rather than a slot.
     """
     op = RoundFwdOp(N_total=256)
     op(torch.randn(256, device="cuda", dtype=torch.float32))
@@ -537,11 +538,7 @@ def test_failed_call_does_not_publish_its_dtype() -> None:
 
     with pytest.raises(ValueError, match="dtype"):
         op(torch.randn(256, device="cuda", dtype=torch.float64))
-    assert op.dtype == torch.float32, "a rejected dtype was published"
-
-    with pytest.raises(TypeError):
-        op(torch.randn(256, device="cuda", dtype=torch.float16), decimals="two")
-    assert op.dtype == torch.float32, "a failed decimals call was published"
+    assert op.dtype == torch.float32, "a rejected dtype reached the metadata"
 
 
 @pytest.mark.smoke

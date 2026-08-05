@@ -2054,11 +2054,30 @@ class NegFwdKernel(FloatUnaryKernel):
 
 
 class ReciprocalFwdKernel(FloatUnaryKernel):
-    """Element-wise 1/x."""
+    """Element-wise 1/x.
+
+    Integral inputs are this backend's business: it has no integer kernel, so it
+    declares float32 as the type it computes them in and converts at the
+    boundary. A backend with a native integer-input reciprocal declares nothing
+    and receives the integers.
+    """
+
+    _INT_DTYPES = (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
+
+    @classmethod
+    def specialize(cls, dtype: torch.dtype) -> tuple:
+        if dtype in cls._INT_DTYPES:
+            return cls, torch.float32
+        return super().specialize(dtype)
 
     @staticmethod
     def op_func(x):
         return T.cast(1.0, "float32") / x
+
+    def forward(self, x):
+        if x.dtype != self.dtype:
+            x = x.to(self.dtype)
+        return super().forward(x)
 
 
 class SignFwdKernel(FloatUnaryKernel):
@@ -3490,6 +3509,10 @@ class MaskedFillTensorValueFwdKernel(ParametricUnaryKernel):
         as_bool = x.dtype == torch.bool
         if as_bool:
             x = x.view(torch.uint8)
+        # A 0-d scalar is the semantic form; this kernel reads it from a
+        # length-one buffer.
+        value = value.contiguous().view(1)
+        if as_bool:
             value = value.view(torch.uint8)
         if mask.dtype == torch.bool:
             mask = mask.view(torch.uint8)
