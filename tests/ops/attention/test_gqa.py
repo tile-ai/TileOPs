@@ -914,7 +914,7 @@ def test_gqa_fwd_dispatch_without_h200_work_threshold() -> None:
     ("auto", False, False, True, "gqa_prefill_fwd_kernel"),
     ("auto", False, False, False, "gqa_prefill_varlen_fwd_kernel"),
     ("varlen", False, False, True, "gqa_prefill_varlen_fwd_kernel"),
-    ("auto", False, True, True, "gqa_sliding_window_varlen_fwd"),
+    ("auto", False, True, True, "gqa_sliding_window_varlen_fwd_kernel"),
     ("auto", True, False, True, "gqa_prefill_fp8_tensor_core_fwd_kernel"),
 ])
 def test_gqa_prefill_dispatch_key_selector(
@@ -945,8 +945,8 @@ def test_gqa_prefill_dispatch_key_selector_rejects_forced_dense_ragged() -> None
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("dim, is_causal, dtype, expected", [
-    (128, True, torch.float16, "gqa_prefill_fwd_ws_persistent_causal_kernel"),
-    (128, True, torch.bfloat16, "gqa_prefill_fwd_ws_persistent_causal_kernel"),
+    (128, True, torch.float16, "gqa_prefill_causal_fwd_kernel"),
+    (128, True, torch.bfloat16, "gqa_prefill_causal_fwd_kernel"),
     (128, False, torch.float16, "gqa_prefill_fwd_kernel"),
     (64, True, torch.float16, "gqa_prefill_fwd_kernel"),
 ])

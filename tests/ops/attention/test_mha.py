@@ -139,7 +139,7 @@ def test_mha_fwd_preserves_gqa_square_dense_fast_path(
         dim=128,
         is_causal=True,
         kernel_map={
-            "gqa_prefill_fwd_ws_persistent_causal_kernel": _FakeDenseKernel,
+            "gqa_prefill_causal_fwd_kernel": _FakeDenseKernel,
             "gqa_prefill_square_fwd_kernel": _FakeSquareDenseKernel,
         },
     )

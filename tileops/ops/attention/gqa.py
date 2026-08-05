@@ -155,7 +155,7 @@ def _select_gqa_prefill_dense_kernel_key(
     rather than a class and stays out of ``default_kernel_map``.
     """
     if is_causal and dim == 128 and dtype in (torch.float16, torch.bfloat16):
-        return "gqa_prefill_fwd_ws_persistent_causal_kernel"
+        return "gqa_prefill_causal_fwd_kernel"
     return "gqa_prefill_fwd_kernel"
 
 
@@ -205,7 +205,7 @@ def _select_gqa_prefill_kernel_key(
         if backend not in ("auto", "sliding_window"):
             raise ValueError(
                 "sliding-window prefill requires backend='auto' or backend='sliding_window'.")
-        return "gqa_sliding_window_varlen_fwd"
+        return "gqa_sliding_window_varlen_fwd_kernel"
     if is_uniform and backend in ("auto", "dense"):
         return "gqa_prefill_fwd_kernel"
     if backend == "dense":
@@ -316,7 +316,7 @@ class GroupedQueryAttentionFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gqa_prefill_fwd_kernel": GQAPrefillFwdKernel,
-            "gqa_prefill_fwd_ws_persistent_causal_kernel": GQAPrefillFwdWsPersistentCausalKernel,
+            "gqa_prefill_causal_fwd_kernel": GQAPrefillFwdWsPersistentCausalKernel,
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
         }
 
@@ -468,10 +468,10 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gqa_prefill_fwd_kernel": GQAPrefillFwdKernel,
-            "gqa_prefill_fwd_ws_persistent_causal_kernel": GQAPrefillFwdWsPersistentCausalKernel,
+            "gqa_prefill_causal_fwd_kernel": GQAPrefillFwdWsPersistentCausalKernel,
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
             "gqa_prefill_varlen_fwd_kernel": GQAPrefillVarlenFwdKernel,
-            "gqa_sliding_window_varlen_fwd": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
+            "gqa_sliding_window_varlen_fwd_kernel": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
             "gqa_prefill_fp8_tensor_core_fwd_kernel":
                 GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
         }
@@ -650,7 +650,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
     def _get_sliding_window_varlen_kernel(self) -> Kernel:
         if self._sliding_window_varlen_kernel is None:
             self._sliding_window_varlen_kernel = self.kernel_map[
-                "gqa_sliding_window_varlen_fwd"](
+                "gqa_sliding_window_varlen_fwd_kernel"](
                     batch=self.batch,
                     heads=self.heads,
                     heads_kv=self.heads_kv,
@@ -743,7 +743,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             self._record_roofline(q, k, cu_seqlens_q, cu_seqlens_kv)
             return out.reshape(q.shape)
 
-        if kernel_key == "gqa_sliding_window_varlen_fwd":
+        if kernel_key == "gqa_sliding_window_varlen_fwd_kernel":
             output, _ = self._get_sliding_window_varlen_kernel()(
                 q, k, v, cu_seqlens_q, cu_seqlens_kv, self.max_seqlen_q)
             self._record_roofline(q, k, cu_seqlens_q, cu_seqlens_kv)
@@ -1625,7 +1625,7 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         if dtype not in self._kernel_cache:
-            self._kernel_cache[dtype] = self.kernel_map["gqa_sliding_window_fwd"](
+            self._kernel_cache[dtype] = self.kernel_map["gqa_sliding_window_fwd_kernel"](
                 batch=self.batch,
                 heads=self.heads,
                 heads_kv=self.heads_kv,
@@ -1642,7 +1642,7 @@ class GroupedQueryAttentionSlidingWindowFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         kernel = GQASlidingWindowFwdWgmmaPipelinedKernel
-        return {"gqa_sliding_window_fwd": kernel}
+        return {"gqa_sliding_window_fwd_kernel": kernel}
 
     def forward(
         self,
@@ -1783,7 +1783,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         if dtype not in self._kernel_cache:
             self._kernel_cache[dtype] = self.kernel_map[
-                "gqa_sliding_window_varlen_fwd"
+                "gqa_sliding_window_varlen_fwd_kernel"
             ](
                 batch=self.batch,
                 heads=self.heads,
@@ -1801,7 +1801,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         kernel = GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
-        return {"gqa_sliding_window_varlen_fwd": kernel}
+        return {"gqa_sliding_window_varlen_fwd_kernel": kernel}
 
     def forward(
         self,

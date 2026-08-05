@@ -63,7 +63,7 @@ class MultiHeadAttentionFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gqa_prefill_fwd_kernel": GQAPrefillFwdKernel,
-            "gqa_prefill_fwd_ws_persistent_causal_kernel": GQAPrefillFwdWsPersistentCausalKernel,
+            "gqa_prefill_causal_fwd_kernel": GQAPrefillFwdWsPersistentCausalKernel,
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
         }
 
