@@ -942,6 +942,29 @@ def test_reciprocal_int_promotion_compiles(dtype):
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("op_name", ["FloorFwdOp", "AbsFwdOp", "NegFwdOp", "SignFwdOp"])
+def test_compiled_non_contiguous_integer_fallback(op_name):
+    """An op answering without a kernel owes the same layout as one that uses it.
+
+    The integer handlers (`clone`, `abs`, `neg`, `sign`) inherit the input's
+    strides, so a transposed integer input produced a non-contiguous result
+    while the registered fake promised contiguous — the same contradiction as
+    the kernel path, arriving from the other side.
+    """
+    import tileops.ops.elementwise as ew
+
+    n = 64
+    op = getattr(ew, op_name)(N_total=n)
+    x = torch.arange(1, n + 1, device="cuda", dtype=torch.int32).reshape(8, 8).t()
+    assert not x.is_contiguous()
+
+    eager = op._eager_forward(x)
+    assert eager.is_contiguous(), "the fallback kept the input's layout"
+    compiled = torch.compile(op, fullgraph=True)(x)
+    torch.testing.assert_close(compiled, eager)
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.int32, torch.int64, torch.float16])
 def test_compiled_non_contiguous_input_matches_eager(dtype):
     """The fake must not carry a non-contiguous input's strides.

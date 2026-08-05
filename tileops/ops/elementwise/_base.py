@@ -1250,7 +1250,10 @@ class _IntIdentityUnaryOp(UnaryOp):
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         if self._entry(input.dtype).kernel is None:
-            return type(self)._int_handler(input)
+            # The kernel path returns contiguous storage; a handler that
+            # inherits the input's strides would make the op's layout depend on
+            # which dtype it was handed, and disagree with the registered fake.
+            return type(self)._int_handler(input).contiguous()
         return super()._eager_forward(input)
 
 
