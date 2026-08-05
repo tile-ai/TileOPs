@@ -35,8 +35,8 @@ class AddFwdOp(_AlphaScaledBinaryOp):
     """Element-wise addition with broadcast: y = input + alpha * other.
 
     Conforms to ``torch.add(input, other, *, alpha=1)``. ``alpha`` is baked
-    into the kernel at construction time, so non-default ``alpha`` runs
-    through the same fast kernel as the default.
+    into the kernel, so non-default ``alpha`` runs through the same fast
+    kernel as the default.
     """
 
     _op_name = "add"
@@ -47,8 +47,8 @@ class SubFwdOp(_AlphaScaledBinaryOp):
     """Element-wise subtraction with broadcast: y = input - alpha * other.
 
     Conforms to ``torch.sub(input, other, *, alpha=1)``. ``alpha`` is baked
-    into the kernel at construction time, so non-default ``alpha`` runs
-    through the same fast kernel as the default.
+    into the kernel, so non-default ``alpha`` runs through the same fast
+    kernel as the default.
     """
 
     _op_name = "sub"
@@ -77,8 +77,8 @@ class DivFwdOp(BinaryOp):
     (truncation toward zero), or ``"floor"`` (floor division); each
     value selects a dedicated kernel specialization. The leading ``*``
     makes ``rounding_mode`` and the existing ``kernel_map`` / ``tune``
-    parameters keyword-only; only the positional triplet
-    ``(a_shape, b_shape, dtype)`` is shared with ``BinaryOp``.
+    parameters keyword-only; only the positional pair
+    ``(a_shape, b_shape)`` is shared with ``BinaryOp``.
     """
 
     _op_name = "div"

@@ -274,7 +274,7 @@ def _register_lerp_tensor_custom_op(op_cls):
     ``end`` / ``weight`` so that ``torch.compile(fullgraph=True)`` works
     for both same-shape and broadcasting inputs. Registered under a
     distinct ``_tensor`` namespace to avoid colliding with the scalar
-    ``LerpFwdOp`` (which bakes ``weight`` at construction time and uses
+    ``LerpFwdOp`` (which takes ``weight`` as a constructor argument and uses
     the binary registration path).
     """
     op_name = op_cls._op_name
@@ -720,7 +720,7 @@ class UnaryOp(_PerDtypeKernels, Op):
         whose output dtype matches the input (e.g. ``neg``, ``abs``), bytes
         collapse to ``2 * N * elem_bytes``; for ops with a smaller output
         dtype (e.g. ``isnan`` / ``isinf`` / ``isfinite`` / ``logical_not`` →
-        bool), ``self.output_dtype.itemsize`` already captures the difference.
+        bool), the entry's ``output_dtype.itemsize`` already captures it.
         """
         return self.FLOPS_PER_ELEM * self.N_total, int(self.total_memory)
 
@@ -1115,9 +1115,9 @@ class _AlphaScaledBinaryOp(BinaryOp):
 
     PyTorch ``torch.add(input, other, alpha=1)`` and ``torch.sub(input,
     other, alpha=1)`` scale ``other`` by ``alpha`` before the binary op.
-    ``alpha`` is baked into the kernel at construction time (one
-    specialization per distinct alpha value), so non-default alpha runs
-    through the same fast kernel as the default.
+    ``alpha`` is baked into the kernel — one specialization per
+    ``(alpha, element type)`` pair, built on first use — so non-default alpha
+    runs through the same fast kernel as the default.
 
     The leading ``*`` makes ``alpha`` and the existing
     ``kernel_map`` / ``tune`` parameters keyword-only; only the

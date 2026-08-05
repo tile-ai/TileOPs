@@ -81,9 +81,9 @@ class ReciprocalFwdOp(UnaryOp):
 
     Mirrors ``torch.reciprocal`` int-input promotion: integral dtypes
     (uint8 / int8 / int16 / int32 / int64) are cast to float32 before the
-    float kernel runs, and the op's ``output_dtype`` is float32 in that
-    case. Floating inputs (float16 / bfloat16 / float32) follow the
-    standard same-dtype path.
+    float kernel runs, so their entry carries ``compute_dtype`` and
+    ``output_dtype`` of float32 against an integral key. Floating inputs
+    (float16 / bfloat16 / float32) follow the standard same-dtype path.
     """
 
     _op_name = "reciprocal"
