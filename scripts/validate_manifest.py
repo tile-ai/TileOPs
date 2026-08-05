@@ -3170,8 +3170,7 @@ def check_c3_ctor_signature_parity(
         code_p = code_params[pname]
 
         # A declared default must match the ctor default value-for-value;
-        # ``REQUIRED`` or absent means no manifest default. ``compat_default``
-        # keeps a ctor default without advertising it to manifest callers.
+        # ``REQUIRED`` or absent means no manifest default.
         manifest_default = pattrs.get("default", _MISSING)
         manifest_has_default = (
             manifest_default is not _MISSING and manifest_default != "REQUIRED"
@@ -3189,10 +3188,6 @@ def check_c3_ctor_signature_parity(
             resolved = getattr(torch, manifest_default, None)
             if isinstance(resolved, torch.dtype):
                 manifest_default = resolved
-        compat_default = pattrs.get("compat_default", _MISSING)
-        manifest_has_compat_default = (
-            compat_default is not _MISSING and not manifest_has_default
-        )
         code_has_default = code_p.default is not inspect.Parameter.empty
         if manifest_has_default and not code_has_default:
             err(
@@ -3200,14 +3195,10 @@ def check_c3_ctor_signature_parity(
                 f"{manifest_default!r} but no default on __init__"
             )
         elif (not manifest_has_default) and code_has_default:
-            if (
-                not manifest_has_compat_default
-                or code_p.default != compat_default
-            ):
-                err(
-                    f"param {pname!r} has __init__ default "
-                    f"{code_p.default!r} but no manifest default"
-                )
+            err(
+                f"param {pname!r} has __init__ default "
+                f"{code_p.default!r} but no manifest default"
+            )
         elif (
             manifest_has_default
             and code_has_default

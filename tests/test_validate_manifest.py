@@ -2574,19 +2574,6 @@ class TestCtorSignatureParity:
         }}
         assert validator.check_c3_ctor_signature_parity("Op1", entry, cls) == []
 
-        # compat_default: required manifest param with a ctor-only default.
-        cls = _strict_op(
-            "OpCompat", init=lambda self, num_experts=None, kernel_map=None: None,
-        )
-        entry = {"signature": {
-            "params": {
-                "num_experts": {"type": "int", "compat_default": None},
-            },
-        }}
-        assert validator.check_c3_ctor_signature_parity(
-            "OpCompat", entry, cls
-        ) == []
-
     def test_dtype_default_compared_as_dtype(self, validator):
         """A ``torch.dtype`` default is spelled by name in YAML.
 
@@ -2615,17 +2602,17 @@ class TestCtorSignatureParity:
         assert any("default mismatch" in e for e in errs), errs
 
     def test_ctor_mismatches_fail(self, validator):
-        """Case table: missing default, compat_default mismatch, kw-only."""
+        """Case table: missing default, undeclared ctor default, kw-only."""
         cases = [
             ("param default missing on __init__",
              _strict_op("OpNoDefault",
                         init=lambda self, dim, kernel_map=None: None),
              {"dim": {"type": "int", "default": -1}},
              "no default on __init__"),
-            ("compat_default value mismatch",
-             _strict_op("OpCompatMismatch",
+            ("ctor default the manifest does not declare",
+             _strict_op("OpUndeclaredDefault",
                         init=lambda self, num_experts=0, kernel_map=None: None),
-             {"num_experts": {"type": "int", "compat_default": None}},
+             {"num_experts": {"type": "int"}},
              "no manifest default"),
             ("kw_only mismatch",
              _strict_op("OpKwOnly",

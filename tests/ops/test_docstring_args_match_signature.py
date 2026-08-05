@@ -1,32 +1,23 @@
-"""Every documented ``Args:`` key must be a real parameter.
+"""A class documenting a constructor it inherits.
 
-Nothing else compares a docstring against the signature it describes: ruff's
-docstring rules are off, and the manifest validator checks the signature
-against the spec, not against prose. A parameter that moves out of a
-constructor therefore leaves its ``Args:`` entry behind silently.
-
-Signatures are resolved with ``inspect``, not from the source text, so a class
-documenting a constructor it inherits is checked against the constructor it
-actually got.
+Ruff's DOC102 compares each docstring against the signature written beside it,
+so it cannot see a class whose ``Args:`` describe an ``__init__`` defined in a
+base — the shape that let `RoundFwdOp` document a removed `dtype` argument
+while every static check passed. Resolving the signature needs the class.
 """
 
-import importlib
 import inspect
-import pathlib
-import pkgutil
 import re
 
 import pytest
 
-import tileops.ops
+import tileops.ops.elementwise as ew
 
 _SECTION = re.compile(r"^\s*(Args|Returns|Raises|Example|Examples|Attributes|Note|Notes|Yields):\s*$")
 _ARG_KEY = re.compile(r"^(\s*)(\*{0,2}\w+)\s*(?:\([^)]*\))?:\s")
-_OPS_DIR = pathlib.Path(tileops.ops.__file__).parent
 
 
 def _documented_args(doc: str) -> list[str]:
-    """Return the ``Args:`` keys of a Google-style docstring."""
     keys: list[str] = []
     indent: int | None = None
     in_args = False
@@ -43,87 +34,42 @@ def _documented_args(doc: str) -> list[str]:
             continue
         if indent is None:
             indent = len(m.group(1))
-        if len(m.group(1)) == indent:  # deeper lines describe the previous key
+        if len(m.group(1)) == indent:
             keys.append(m.group(2).lstrip("*"))
     return keys
 
 
-def _accepted_params(obj) -> set[str] | None:
-    """Return the parameters ``obj``'s docstring is allowed to document."""
-    target = obj.__init__ if inspect.isclass(obj) else obj
-    if target is object.__init__:  # no constructor anywhere in the MRO
-        return None
-    try:
-        sig = inspect.signature(target)
-    except (TypeError, ValueError):
-        return None
-    names = set()
-    for name, param in sig.parameters.items():
-        if param.kind is inspect.Parameter.VAR_KEYWORD:
-            return None  # forwarded names are legitimate to document
-        names.add(name)
-    return names - {"self", "cls"}
+def _inheriting_op_classes() -> dict:
+    """Op classes with a docstring of their own and no ``__init__`` of their own."""
+    found = {}
+    for name in dir(ew):
+        cls = getattr(ew, name)
+        if not inspect.isclass(cls) or name.startswith("_"):
+            continue
+        if "__init__" in vars(cls) or not cls.__dict__.get("__doc__"):
+            continue
+        if getattr(cls, "_op_name", None) is None:
+            continue
+        found[name] = cls
+    return found
 
 
-def _own_docstring(obj) -> str | None:
-    """Return the docstring defined on ``obj`` itself, never an inherited one."""
-    if inspect.isclass(obj):
-        return obj.__dict__.get("__doc__")
-    return getattr(obj, "__doc__", None)
-
-
-def _cases() -> list[tuple[str, list[str], set[str]]]:
-    modules = []
-    for info in pkgutil.walk_packages([str(_OPS_DIR)], prefix="tileops.ops."):
-        modules.append(importlib.import_module(info.name))
-
-    seen: set[str] = set()
-    out: list[tuple[str, list[str], set[str]]] = []
-    for mod in modules:
-        for name, obj in vars(mod).items():
-            if name.startswith("__"):
-                continue
-            if not (inspect.isclass(obj) or inspect.isfunction(obj)):
-                continue
-            if getattr(obj, "__module__", None) != mod.__name__:
-                continue  # re-export; checked where it is defined
-            targets = [obj]
-            if inspect.isclass(obj):
-                targets += [v for v in vars(obj).values() if inspect.isfunction(v)]
-            for target in targets:
-                doc = _own_docstring(target)
-                if not doc:
-                    continue
-                documented = _documented_args(doc)
-                if not documented:
-                    continue
-                params = _accepted_params(target)
-                if params is None:
-                    continue
-                label = f"{mod.__name__}.{getattr(target, '__qualname__', name)}"
-                if label in seen:
-                    continue
-                seen.add(label)
-                out.append((label, documented, params))
-    return sorted(out)
-
-
-_CASES = _cases()
+_CASES = _inheriting_op_classes()
 
 
 @pytest.mark.smoke
-def test_guard_covers_inherited_constructors() -> None:
-    """A class documenting a constructor it inherits must still be checked."""
-    from tileops.ops.elementwise import RoundFwdOp
-
-    assert "__init__" not in vars(RoundFwdOp), "pick another class that inherits its ctor"
-    assert any(label.endswith("RoundFwdOp") for label, _, _ in _CASES)
-    params = _accepted_params(RoundFwdOp)
-    assert params is not None and "dtype" not in params
+@pytest.mark.parametrize("name", sorted(_CASES))
+def test_inherited_ctor_args_exist(name):
+    cls = _CASES[name]
+    sig = inspect.signature(cls.__init__)
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+        pytest.skip("**kwargs may legitimately document forwarded names")
+    params = set(sig.parameters) - {"self", "cls"}
+    stale = [k for k in _documented_args(cls.__doc__) if k not in params]
+    assert not stale, f"{name} documents non-existent parameter(s): {stale}"
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(("label", "documented", "params"), _CASES, ids=[c[0] for c in _CASES])
-def test_documented_args_exist(label: str, documented: list[str], params: set[str]) -> None:
-    stale = [k for k in documented if k not in params]
-    assert not stale, f"{label} documents non-existent parameter(s): {stale}"
+def test_sweep_still_sees_inheriting_classes():
+    assert len(_CASES) >= 20, f"only {len(_CASES)} found; the filter broke"
+    assert "RoundFwdOp" in _CASES

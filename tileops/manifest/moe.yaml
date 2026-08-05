@@ -66,7 +66,7 @@ MoePermuteNopadFwdOp:
       expert_first_token_offset: {dtype: "int64"}
       fwd_idx: {dtype: "int32"}
     params:
-      num_experts: {type: int, compat_default: null}
+      num_experts: {type: int}
     shape_rules:
     - "hidden_states.ndim == 2"
     - "topk_ids.ndim == 2"
