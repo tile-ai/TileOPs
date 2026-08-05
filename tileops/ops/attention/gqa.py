@@ -234,40 +234,14 @@ def _select_gqa_paged_prefill_kernel_keys(
     return ("gqa_prefill_paged_with_kv_cache_fwd_kernel",)
 
 
-def _paged_cache_dtype(cache_dtype: torch.dtype | str | None) -> Optional[torch.dtype]:
-    """Normalize a paged KV cache element type; ``None`` follows the attention dtype."""
+def _paged_cache_dtype(cache_dtype: Optional[torch.dtype]) -> Optional[torch.dtype]:
+    """Validate a paged KV cache element type; ``None`` follows the attention dtype."""
     if cache_dtype is None:
         return None
-    if isinstance(cache_dtype, str):
-        candidate = getattr(torch, cache_dtype, None)
-        if not isinstance(candidate, torch.dtype):
-            raise ValueError(f"Unknown cache_dtype {cache_dtype}")
-        cache_dtype = candidate
     fp8_dtype = getattr(torch, "float8_e4m3fn", None)
     if cache_dtype != fp8_dtype:
         _validate_attention_dtype(cache_dtype)
     return cache_dtype
-
-
-def _select_gqa_prefill_varlen_fwd_kernel_cls() -> Type[Kernel]:
-    return GQAPrefillVarlenFwdKernel
-
-
-def _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
-    return GQAPrefillPagedWithKVCacheFwdKernel
-
-
-def _select_gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel_cls() -> Type[Kernel]:
-    # Selector hook for future FP8 paged-cache kernel variants.
-    return GQAPrefillPagedWithFP8KVCacheFwdKernel
-
-
-def _select_gqa_prefill_paged_with_kv_cache_rope_fwd_kernel_cls() -> Type[Kernel]:
-    return GQAPrefillPagedWithKVCacheRopeFwdKernel
-
-
-def _select_gqa_prefill_paged_with_kv_cache_rope_append_kernel_cls() -> Type[Kernel]:
-    return GQAPrefillPagedWithKVCacheRopeAppendKernel
 
 
 def _validate_gqa_dims(heads: int, heads_kv: int, dim: int) -> None:
@@ -496,7 +470,7 @@ class GroupedQueryAttentionPrefillFwdOp(Op):
             "gqa_prefill_fwd_kernel": GQAPrefillFwdKernel,
             "gqa_prefill_fwd_ws_persistent_causal_kernel": GQAPrefillFwdWsPersistentCausalKernel,
             "gqa_prefill_square_fwd_kernel": GQAFwdWsPersistentCausalKernel,
-            "gqa_prefill_varlen_fwd_kernel": _select_gqa_prefill_varlen_fwd_kernel_cls(),
+            "gqa_prefill_varlen_fwd_kernel": GQAPrefillVarlenFwdKernel,
             "gqa_sliding_window_varlen_fwd": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
             "gqa_prefill_fp8_tensor_core_fwd_kernel":
                 GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel,
@@ -875,7 +849,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_prefill_varlen_fwd_kernel": _select_gqa_prefill_varlen_fwd_kernel_cls()}
+        return {"gqa_prefill_varlen_fwd_kernel": GQAPrefillVarlenFwdKernel}
 
     @staticmethod
     def _lengths_from_cu_seqlens(cu_seqlens: torch.Tensor) -> list[int]:
@@ -1031,7 +1005,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         page_size: int,
         dim: int,
         is_causal: bool = True,
-        cache_dtype: torch.dtype | str | None = None,
+        cache_dtype: Optional[torch.dtype] = None,
         sm_scale: Optional[float] = None,
         softcap: Optional[float] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -1091,13 +1065,13 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gqa_prefill_paged_with_kv_cache_fwd_kernel":
-                _select_gqa_prefill_paged_with_kv_cache_fwd_kernel_cls(),
+                GQAPrefillPagedWithKVCacheFwdKernel,
             "gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel":
-                _select_gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel_cls(),
+                GQAPrefillPagedWithFP8KVCacheFwdKernel,
             "gqa_prefill_paged_with_kv_cache_rope_append_kernel":
-                _select_gqa_prefill_paged_with_kv_cache_rope_append_kernel_cls(),
+                GQAPrefillPagedWithKVCacheRopeAppendKernel,
             "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel":
-                _select_gqa_prefill_paged_with_kv_cache_rope_fwd_kernel_cls(),
+                GQAPrefillPagedWithKVCacheRopeFwdKernel,
         }
 
     def _resolved_cache_dtype(self, dtype: torch.dtype) -> torch.dtype:

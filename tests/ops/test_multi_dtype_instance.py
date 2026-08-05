@@ -118,7 +118,7 @@ def test_attention_square_prefill_reselects_the_kernel_per_dtype():
 
 @pytest.mark.smoke
 def test_attention_mha_serves_two_dtypes_from_one_instance():
-    """MHA delegates to the GQA wrapper and shares its per-dtype kernel cache."""
+    """MHA owns no kernels; the per-dtype cache lives on the GQA delegate."""
     from tileops.ops.attention.mha import MultiHeadAttentionFwdOp
 
     batch, heads, seq_len, dim = 1, 8, 256, 64
@@ -130,7 +130,7 @@ def test_attention_mha_serves_two_dtypes_from_one_instance():
         output = op(q, k, v)
         assert output.dtype == dtype
         assert op._get_kernel(dtype).__class__.__name__ == "GQAPrefillFwdKernel"
-    _assert_two_entries(op)
+    _assert_two_entries(op._gqa_op)
 
 
 @pytest.mark.smoke

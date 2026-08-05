@@ -58,8 +58,6 @@ class MultiHeadAttentionFwdOp(Op):
             kernel_map=self.kernel_map,
             tune=tune,
         )
-        # MHA holds no kernels of its own; report the delegate's cache.
-        self._kernel_cache = self._gqa_op._kernel_cache
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -71,6 +69,10 @@ class MultiHeadAttentionFwdOp(Op):
 
     def _get_kernel(self, dtype: torch.dtype) -> Kernel:
         return self._gqa_op._get_kernel(dtype)
+
+    def autotune(self) -> None:
+        """Tune through the delegate: every kernel this op runs is built there."""
+        self._gqa_op.autotune()
 
     def _infer_output_shapes(
         self,
