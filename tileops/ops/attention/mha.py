@@ -78,7 +78,8 @@ class MultiHeadAttentionFwdOp(Op):
         k_shape: tuple[int, ...],
         v_shape: tuple[int, ...],
     ) -> Dict[str, tuple[int, ...]]:
-        return {"o": tuple(q_shape)}
+        batch, seq_len, heads, _ = q_shape
+        return {"o": tuple(q_shape), "lse": (batch, heads, seq_len)}
 
     def forward(
         self,
@@ -89,16 +90,25 @@ class MultiHeadAttentionFwdOp(Op):
         """Run MHA forward.
 
         Returns:
-            ``(output, lse)``. The log-sum-exp slot is ``None``: a dispatch
-            ``custom_op`` return type admits tensors only, and the
-            warp-specialized prefill kernels emit no log-sum-exp.
+            ``(output, lse)``.
         """
+        # FIXME(staged-rollout): the manifest `lse` output is returned as None.
+        #
+        # Broken invariant: the op declares outputs (o, lse) but yields no
+        #     log-sum-exp, so MultiHeadAttentionBwdOp cannot source lse here.
+        # Why: the GQA prefill kernels this op delegates to emit none (see the
+        #     marker on GroupedQueryAttentionFwdOp.forward), and a dispatch
+        #     custom_op return type admits tensors only, so the boundary could
+        #     not carry an Optional even once they do.
+        # Cleanup: when fwd emits a real lse consumable by the bwd op, widen the
+        #     custom op to return both tensors and delete this marker.
         return _mha_fwd(q, k, v, self._instance_key), None
 
     def _eager_forward(self, q: torch.Tensor, k: torch.Tensor,
                        v: torch.Tensor) -> torch.Tensor:
         self.dtype = q.dtype
-        return self._gqa_op(q, k, v)
+        output, _ = self._gqa_op(q, k, v)
+        return output
 
 
 class MultiHeadAttentionBwdOp(Op):

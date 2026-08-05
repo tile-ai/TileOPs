@@ -381,7 +381,27 @@ class GroupedQueryAttentionFwdOp(Op):
             self._kernel_cache[dtype] = kernel
         return kernel
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+    ) -> Dict[str, tuple[int, ...]]:
+        batch, seq_len, heads, _ = q_shape
+        return {"o": tuple(q_shape), "lse": (batch, heads, seq_len)}
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Run square GQA forward.
+
+        Returns:
+            ``(o, lse)``, the pair ``MultiHeadAttentionFwdOp`` returns for the
+            same kernels.
+        """
         expected_q = (self.batch, self.seq_len, self.heads, self.dim)
         expected_kv = (self.batch, self.seq_len, self.heads_kv, self.dim)
         if tuple(q.shape) != expected_q:
@@ -396,7 +416,19 @@ class GroupedQueryAttentionFwdOp(Op):
         k = k.contiguous()
         v = v.contiguous()
         self.dtype = q.dtype
-        return _attention_output(self._get_kernel(q.dtype)(q, k, v))
+
+        # FIXME(staged-rollout): the manifest `lse` output is returned as None.
+        #
+        # Broken invariant: the op declares outputs (o, lse) but yields no
+        #     log-sum-exp, so GroupedQueryAttentionBwdOp cannot source lse here
+        #     and its workload recomputes it in torch.
+        # Why: of the three kernels this op dispatches to, only GQAPrefillFwdKernel
+        #     emits lse; GQAFwdWsPersistentCausalKernel returns o alone and
+        #     GQAPrefillFwdWsPersistentCausalKernel returns (o, None), so no
+        #     dtype-and-geometry-independent contract can carry a tensor yet.
+        # Cleanup: when fwd emits a real lse consumable by the bwd op, return it
+        #     from every dispatch target and delete this marker.
+        return _attention_output(self._get_kernel(q.dtype)(q, k, v)), None
 
 
 class GroupedQueryAttentionPrefillFwdOp(Op):

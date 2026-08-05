@@ -17,6 +17,7 @@ MultiHeadAttentionFwdOp:
       v: {dtype: "same_as(q)"}
     outputs:
       o: {dtype: "same_as(q)"}
+      lse: {dtype: "float32"}
     params:
       is_causal: {type: bool, default: true}
     shape_rules:
@@ -24,6 +25,7 @@ MultiHeadAttentionFwdOp:
       - "k.shape == (B, S, H, D)"
       - "v.shape == (B, S, H, D)"
       - "o.shape == (B, S, H, D)"
+      - "lse.shape == (B, H, S)"
 
   workloads:
     # Llama-3.1-8B (H=32, D=128)
@@ -110,6 +112,7 @@ GroupedQueryAttentionFwdOp:
       v: {dtype: "same_as(q)"}
     outputs:
       o: {dtype: "same_as(q)"}
+      lse: {dtype: "float32"}
     params:
       is_causal: {type: bool, default: true}
     shape_rules:
@@ -118,6 +121,7 @@ GroupedQueryAttentionFwdOp:
       - "v.shape == (B, S, H_kv, D)"
       - "o.shape == (B, S, H, D)"
       - "H % H_kv == 0"
+      - "lse.shape == (B, H, S)"
 
   workloads:
     # Llama-3.1-8B (H=32, H_kv=8, D=128)
